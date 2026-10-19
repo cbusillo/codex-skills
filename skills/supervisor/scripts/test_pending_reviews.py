@@ -1492,7 +1492,7 @@ class NotificationTests(unittest.TestCase):
                     "input_line": {"style": "empty", "text": "", "line_index": 1}}
         self.read = self.enterContext(patch("tmux_terminal.Terminal.read", side_effect=lambda _: copy.deepcopy(self.row)))
         self.send = self.enterContext(patch("tmux_terminal.Terminal.send", new_callable=AsyncMock))
-        self.enterContext(patch("close_ttys.inventory", return_value=[(789, "ttys123", "claude")]))
+        self.enterContext(patch("session_liveness.inventory", return_value=[(789, "ttys123", "claude")]))
         self.enterContext(patch("tmux_terminal.process_parents", return_value={789: 456, 456: 1}))
 
     def test_codex_notification_uses_supported_queue_with_exact_home_and_native_identity(self):
@@ -1527,6 +1527,17 @@ class NotificationTests(unittest.TestCase):
         notifications.send(self.entry, "Read review")
         self.assertEqual(self.read.call_count, 2)
         self.send.assert_awaited_once_with(self.entry["tmux_session_id"], "Read review")
+
+    def test_idle_scheduled_wakeup_does_not_suppress_review_but_firing_turn_does(self):
+        self.claude()
+        status = {"at_turn_end": True, "background_tasks": [{"task_id": "wake", "kind": "scheduled"}]}
+        with patch.object(notifications, "session_status", return_value=status):
+            notifications.send(self.entry, "Read review")
+        self.send.assert_awaited_once_with(self.entry["tmux_session_id"], "Read review")
+        self.send.reset_mock()
+        with patch.object(notifications, "session_status", return_value={**status, "at_turn_end": False}), self.assertRaises(notifications.NotSent):
+            notifications.send(self.entry, "Read review")
+        self.send.assert_not_called()
 
     def test_claude_real_prompt_parser_accepts_cursor_padding_but_never_visible_input(self):
         from iterm_tab import ansi_screen, input_line

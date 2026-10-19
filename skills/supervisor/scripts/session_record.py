@@ -121,6 +121,27 @@ def read_jsonl(path: Path) -> list[dict]:
     return records
 
 
+def normalize_ledger_entry(path: Path, entry: dict) -> dict:
+    """Use the ledger's directory for native paths, including launch-only rows."""
+    entry = dict(entry)
+    if isinstance(entry.get("tty"), str):
+        entry["tty"] = entry["tty"].removeprefix("/dev/")
+    if isinstance(entry.get("transcript"), str) and entry["transcript"]:
+        entry["transcript"] = str((path.parent / Path(entry["transcript"]).expanduser()).resolve())
+    return entry
+
+
+def terminal_entry(path: Path, key: str, identity: str) -> dict:
+    """Select one owned launch without requiring native fields not yet bound."""
+    entries = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(entries, list) or not all(isinstance(entry, dict) for entry in entries):
+        raise ValueError("ledger must contain session objects")
+    matches = [entry for entry in entries if entry.get(key) == identity]
+    if len(matches) != 1 or matches[0].get("supervisor_owned") is not True:
+        raise ValueError("terminal is not uniquely Supervisor-owned in the launch ledger")
+    return normalize_ledger_entry(path, matches[0])
+
+
 def load_ledger(path: Path, *, harness: str | None = None,
                 skipped: list[dict] | None = None, closed_log: bool = False) -> list[dict]:
     """Resolve ledger-relative paths, validating only the explicitly selected harness.
@@ -154,11 +175,7 @@ def load_ledger(path: Path, *, harness: str | None = None,
         if entry["session_id"] in seen:
             raise ValueError("duplicate session_id")
         seen.add(entry["session_id"])
-        if isinstance(entry.get("tty"), str):
-            entry["tty"] = entry["tty"].removeprefix("/dev/")
-        transcript = Path(entry["transcript"]).expanduser()
-        entry["transcript"] = str((path.parent / transcript).resolve())
-        selected.append(entry)
+        selected.append(normalize_ledger_entry(path, entry))
     return selected
 
 
@@ -202,8 +219,8 @@ def strip_claude_exit_tail(records: list[dict]) -> list[dict]:
     return records
 
 
-def track_claude_background_tasks(record: dict, running: dict) -> None:
-    """Follow Bash run_in_background and Monitor tasks from start to their terminal notice or TaskStop."""
+def track_claude_background_tasks(record: dict, running: dict, scheduled: dict, tools: dict) -> None:
+    """Follow Bash/Monitor tasks and native scheduled jobs through their completion or deletion."""
     message = record.get("message")
     if not isinstance(message, dict):
         message = {}
@@ -227,10 +244,66 @@ def track_claude_background_tasks(record: dict, running: dict) -> None:
                 running.pop(task_id.group(1).strip(), None)
     if record.get("type") == "assistant":
         for block in message.get("content") or []:
+            if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") in {"CronCreate", "CronDelete", "CronList"}:
+                identity = block.get("id")
+                if isinstance(identity, str) and identity not in tools:
+                    tools[identity] = {"name": block["name"], "input": block.get("input") or {}, "complete": False}
+                    if block["name"] == "CronCreate":
+                        scheduled.setdefault("cron-create:" + identity, {
+                            "started": record.get("timestamp"), "kind": "scheduled", "recurring": None})
             if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") == "TaskStop":
                 stopped = (block.get("input") or {}).get("task_id")
                 if isinstance(stopped, str):
                     running.pop(stopped, None)
+    if record.get("type") == "user":
+        result_blocks = [block for block in message.get("content") or []
+                         if isinstance(block, dict) and block.get("type") == "tool_result"]
+        for block in message.get("content") or []:
+            if not isinstance(block, dict) or block.get("type") != "tool_result":
+                continue
+            identity = block.get("tool_use_id")
+            if identity not in tools:
+                continue
+            tool = tools[identity]
+            if tool["complete"]:
+                continue
+            name, values = tool["name"], tool["input"]
+            if block.get("is_error") is True:
+                if name == "CronCreate":
+                    scheduled.pop("cron-create:" + identity, None)
+                tool["complete"] = True
+                continue
+            result = record.get("toolUseResult") if len(result_blocks) == 1 else None
+            if not isinstance(result, dict):
+                continue  # Replayed text alone is not a successful native observation.
+            if name == "CronCreate":
+                if (isinstance(result.get("id"), str) and result["id"]
+                        and type(result.get("recurring")) is bool and type(result.get("durable")) is bool):
+                    pending = scheduled.pop("cron-create:" + identity, {})
+                    scheduled[result["id"]] = {"started": pending.get("started", record.get("timestamp")),
+                                               "kind": "scheduled", "recurring": result["recurring"],
+                                               "durable": result["durable"]}
+                    tool["complete"] = True
+            elif name == "CronDelete":
+                if result.get("id") == values.get("id") and isinstance(result.get("id"), str):
+                    scheduled.pop(result["id"], None)
+                    tool["complete"] = True
+            elif name == "CronList":
+                jobs = result.get("jobs")
+                if isinstance(jobs, list) and all(
+                    isinstance(job, dict) and isinstance(job.get("id"), str) and job["id"]
+                    and type(job.get("recurring")) is bool and type(job.get("durable")) is bool for job in jobs
+                ):
+                    previous = scheduled.copy()
+                    scheduled.clear()
+                    scheduled.update({job["id"]: {"started": previous.get(job["id"], {}).get("started", record.get("timestamp")),
+                                                  "kind": "scheduled", "recurring": job["recurring"],
+                                                  "durable": job["durable"]} for job in jobs})
+                    tool["complete"] = True
+    fired = (record.get("taskId") if record.get("type") == "system" and record.get("subtype") == "scheduled_task_fire"
+             else record.get("scheduledTaskId") if record.get("type") == "user" and record.get("turnOrigin") == "scheduled" else None)
+    if isinstance(fired, str) and scheduled.get(fired, {}).get("recurring") is False:
+        scheduled.pop(fired)
 
 
 def summarize(records: list[dict], harness: str) -> dict:
@@ -245,6 +318,8 @@ def summarize(records: list[dict], harness: str) -> dict:
         "capacity_stop": None,
     }
     running_tasks: dict = {}
+    scheduled_jobs: dict = {}
+    scheduled_tools: dict = {}
     if harness == "claude":
         records = strip_claude_exit_tail(records)
     previous: dict = {}
@@ -252,7 +327,7 @@ def summarize(records: list[dict], harness: str) -> dict:
         payload = record.get("payload") or {}
         kind = payload.get("type")
         if harness == "claude":
-            track_claude_background_tasks(record, running_tasks)
+            track_claude_background_tasks(record, running_tasks, scheduled_jobs, scheduled_tools)
             message = record.get("message") or {}
             # Compaction writes its summary as a user record right after the boundary;
             # it is no new request, so only a later real turn changes the verdict.
@@ -346,7 +421,7 @@ def summarize(records: list[dict], harness: str) -> dict:
     # A turn end with a live task is a wait on that task; with none, nothing will resume the turn.
     result["background_tasks"] = [
         {"task_id": task_id, "started": started} for task_id, started in running_tasks.items()
-    ]
+    ] + [{"task_id": identity, **job} for identity, job in scheduled_jobs.items()]
     result["state"] = (
         "provider_capacity" if result["capacity_stop"] else
         "turn_ended" if result["at_turn_end"] else "active"

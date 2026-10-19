@@ -43,6 +43,8 @@ class ReleaseTests(unittest.TestCase):
                 self.assertEqual(result["ended_at"], saved["ended_at"])
 
     def setUp(self):
+        self.enterContext(patch.object(helper.session_liveness, "process_arguments",
+            side_effect=lambda _pid, command: (helper.session_liveness.harness_arguments(command), True)))
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
@@ -195,6 +197,7 @@ class ReleaseTests(unittest.TestCase):
         ledger, log = self.root / "ledger.json", self.root / "closed.json"
         ledger.write_text(json.dumps([{**self.entry, "handoff_url": None}]))
         log.write_text(json.dumps([{**self.entry, "handoff_url": None}]))
+        log.chmod(0o600)
         records = helper.session_record.read_jsonl(self.transcript)
         records[1]["payload"]["message"] = "Finished.\n" + verdict
         self.transcript.write_text("\n".join(json.dumps(r) for r in records) + "\n")
@@ -242,14 +245,20 @@ class ReleaseTests(unittest.TestCase):
     def test_finish_retry_uses_original_closure_to_distinguish_tty_reuse(self):
         ended = helper.release.stamp(self.entry["ended_at"])
         for apply in (False, True):
-            for command in ("python gh_pr_watch.py", "codex exec fresh-job", "codex resume different-session", "claude -c",
-                            "python codex-session.py launch -- codex --remote unix:///new-client"):
+            wrapper = "python codex-session.py launch -- codex --remote unix:///new-client"
+            for command, guarded in (("python gh_pr_watch.py", False), ("codex exec fresh-job", False),
+                                     ("codex resume 11111111-1111-4111-8111-111111111111", False), ("claude -c", False),
+                                     (wrapper, False), (wrapper, True)):
                 for born, expected in ((ended - timedelta(seconds=1), 1), (ended, 1),
                                        (ended + timedelta(seconds=22), 0),
                                        (datetime.now(timezone.utc) + timedelta(days=1), 1)):
-                    with self.subTest(apply=apply, command=command, born=born), \
+                    if command == wrapper and not guarded:
+                        expected = 1
+                    with self.subTest(apply=apply, command=command, born=born, guarded=guarded), \
                             patch.object(helper, "inventory", return_value=[(456, self.entry["tty"], command)]), \
-                            patch.object(helper.closure, "process_started_at", return_value=born):
+                            patch.object(helper.closure, "process_started_at", return_value=born), \
+                            patch.object(helper.closure, "closed_log", return_value=self.root / "closed.json"), \
+                            patch.object(helper.closure, "guarded_launch_endpoint", return_value="/new-client" if guarded else None):
                         result, report = self.finish_thread([self.source, self.own_release()], apply=apply)
                         self.assertEqual(result, expected, report)
                         saved = json.loads((self.root / "closed.json").read_text())[0]
@@ -311,6 +320,62 @@ class ReleaseTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 helper.record_closure(log, self.entry, "supervisor")
         self.assertFalse(log.exists())
+
+    def test_first_recovery_finish_uses_native_dead_pane_cutoff_then_retains_it(self):
+        import tmux_terminal
+        ended = helper.release.stamp(self.entry["ended_at"])
+        entry = {**self.entry, "tmux_socket": "fixture", "tmux_session_id": "tmux:fixture:" + "a" * 32,
+                 "window_id": "$1", "tab_id": "@1", "tty_exited_at": "2099-01-01T00:00:00Z",
+                 "launch_pid": 123, "launch_generation": "new-generation",
+                 "launch_started_at": (ended - timedelta(minutes=1)).isoformat(), "codex_home": str(self.root)}
+        pane = {"session_id": entry["tmux_session_id"], "pane_id": "%1", "pid": 789,
+                "tmux_socket": "fixture", "window_id": "$1", "tab_id": "@1", "tty": entry["tty"],
+                "dead": True, "exited_at": ended.isoformat()}
+        for recovered in (False, True):
+            log = self.root / f"recovery-{recovered}.json"
+            if recovered:
+                metadata = {key: entry[key] for key in (
+                    "launch_pid", "launch_generation", "launch_started_at", "pid", "tty", "codex_home")}
+                log.write_text(json.dumps([{**self.entry, "pid": 122, "tty": "old-tty",
+                                            "resumed_at": (ended - timedelta(minutes=1)).isoformat(),
+                                            "resumed_generation": metadata}]))
+            with self.subTest(recovery=recovered), \
+                    patch.object(tmux_terminal.Terminal, "list", return_value=[pane]), \
+                    patch.object(helper, "inventory", return_value=[(456, entry["tty"], "codex --remote unix:///new-client")]), \
+                    patch.object(helper.closure, "process_started_at", return_value=ended + timedelta(seconds=22)), \
+                    patch.object(helper.closure, "guarded_launch_endpoint", return_value="/new-client"):
+                closed = helper.record_closure(log, entry, "supervisor")
+                self.assertEqual(closed["tty_exited_at"], ended.isoformat())
+                self.assertGreater(helper.release.stamp(closed["ended_at"]), ended + timedelta(seconds=22))
+                with patch.object(tmux_terminal.Terminal, "list", side_effect=AssertionError("dead pane already removed")):
+                    retried = helper.record_closure(log, entry, "supervisor")
+                self.assertEqual(retried["ended_at"], closed["ended_at"])
+                self.assertEqual(retried["tty_exited_at"], closed["tty_exited_at"])
+
+    def test_missing_dead_pane_uses_strict_exit_check_without_accepting_caller_cutoff(self):
+        import tmux_terminal
+        entry = {**self.entry, "tmux_socket": "fixture", "tmux_session_id": "tmux:fixture:" + "a" * 32,
+                 "tty_exited_at": "2099-01-01T00:00:00Z"}
+        for error in (ValueError("pane missing"), OSError("inventory unavailable")):
+            with self.subTest(error=type(error).__name__), patch.object(tmux_terminal.Terminal, "dead_pane", side_effect=error):
+                log = self.root / f"fallback-{type(error).__name__}.json"
+                closed = helper.record_closure(log, entry, "supervisor")
+                self.assertNotIn("tty_exited_at", closed)
+                with patch.object(helper, "inventory", return_value=[(456, entry["tty"], "codex exec -- new work")]), self.assertRaises(ValueError):
+                    helper.record_closure(self.root / "must-not-publish.json", entry, "supervisor")
+                self.assertFalse((self.root / "must-not-publish.json").exists())
+
+    def test_scheduled_jobs_do_not_change_post_exit_finish_policy(self):
+        entry = {**self.entry, "harness": "claude"}
+        records = [
+            {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "create", "name": "CronCreate", "input": {}}]}},
+            {"type": "user", "toolUseResult": {"id": "wake", "recurring": True, "durable": False},
+             "message": {"content": [{"type": "tool_result", "tool_use_id": "create", "content": "fixture"}]}},
+            {"type": "assistant", "timestamp": "2026-01-01T00:01:00Z", "message": {
+                "stop_reason": "end_turn", "content": [{"type": "text", "text": "Safe to exit: yes"}]}},
+        ]
+        self.transcript.write_text("".join(json.dumps({**r, "sessionId": SOURCE["session"]}) + "\n" for r in records))
+        helper.validate_closure(entry, "supervisor")
 
     def test_finish_self_release_with_session_field_and_progress_note(self):
         released = self.own_release(body="Released claim 1\n\nSession: source-session\nEngineering handoff")
@@ -979,7 +1044,7 @@ else:
 
     def test_backfill_reused_tty_is_not_source_identity_but_pid_still_refuses(self):
         old = {**self.entry, "_backfill": True}
-        with patch.object(helper, "inventory", return_value=[(456, "ttys123", "codex resume different-session")]):
+        with patch.object(helper, "inventory", return_value=[(456, "ttys123", "codex resume 11111111-1111-4111-8111-111111111111")]):
             self.assertTrue(helper.validate_closure(old, "supervisor")["safe_verdict"])
             with self.assertRaises(ValueError):
                 helper.validate_closure(self.entry, "supervisor")

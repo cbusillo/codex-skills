@@ -14,10 +14,10 @@ import subprocess
 import sys
 import tempfile
 import stat
-import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
 import github_plan_closure as closure
+import session_liveness
 
 # App thread IDs select effective configuration, not execution ownership.
 READS = {"app/installed", "app/list", "app/read", "thread/read", "thread/list", "thread/loaded/list", "thread/items/list",
@@ -48,8 +48,7 @@ def source_endpoint(session, home, *, transcript=None):
     """Validate native recovery identity without taking a lease or changing state."""
     from github_plan_sessions import codex_homes
     import session_record
-    if str(uuid.UUID(session)) != session:
-        raise ValueError("use the canonical native thread UUID")
+    require_native_identity(session)
     if home not in codex_homes(strict=True, configured_only=True):
         raise ValueError("resume requires the source's configured account home")
     paths = [p for root in ("sessions", "archived_sessions") for p in (home / root).rglob(f"*{session}*.jsonl")]
@@ -72,6 +71,12 @@ def source_endpoint(session, home, *, transcript=None):
     return endpoint
 
 
+def require_native_identity(value):
+    if session_liveness.native_uuid(value) != value or not isinstance(value, str):
+        raise ValueError("use the canonical native thread UUID")
+    return value
+
+
 def thread_targets(value):
     if isinstance(value, dict):
         for key, child in value.items():
@@ -82,11 +87,11 @@ def thread_targets(value):
             if key in {"threadId", "conversationId"}:
                 if not isinstance(child, str) or not child:
                     raise ValueError("native thread identity is unavailable")
-                yield child
+                yield require_native_identity(child)
             elif key == "threadIds":
                 if not isinstance(child, list) or not all(isinstance(s, str) and s for s in child):
                     raise ValueError("native thread identities are unavailable")
-                yield from child
+                yield from (require_native_identity(identity) for identity in child)
             else:
                 yield from thread_targets(child)
     elif isinstance(value, list):
@@ -145,6 +150,7 @@ class Ingress:
         params = message.get("params")
         if not isinstance(params, dict) or not isinstance(params.get("threadId"), str) or not params["threadId"]:
             raise ValueError("native resume requires an exact thread identity")
+        require_native_identity(params["threadId"])
         if params.get("history") is not None:
             raise ValueError("managed resume requires a native thread ID, not inline cloud history")
         if params.get("path") is not None:
@@ -268,6 +274,7 @@ class Ingress:
                                     try:
                                         if not isinstance(target, str) or not target:
                                             raise ValueError("started native thread identity is unavailable")
+                                        require_native_identity(target)
                                         owned = acquire({target})
                                     except (OSError, ValueError) as error:
                                         raw = json.dumps({"id": identity, "error": {"code": -32603,
