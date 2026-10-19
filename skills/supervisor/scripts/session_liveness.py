@@ -175,9 +175,8 @@ def claude_invocation(argv):
                 "--settings", "--setting-sources", "--output-format", "--input-format", "--debug-file"}
     switches = {"--verbose", "--dangerously-skip-permissions", "--allow-dangerously-skip-permissions",
                 "-p", "--print", "-c", "--continue"}
-    candidates, kind, _ = uncertain_invocation(argv)
     words = list(argv[1:])
-    parsed, index, uncertain, continued = [], 0, False, False
+    parsed, index, uncertain, continued, kind = [], 0, False, False, None
     while index < len(words):
         arg = words[index]
         if arg == "--":
@@ -217,8 +216,11 @@ def claude_invocation(argv):
             # exemption from a later flag that may belong to a subcommand.
             uncertain = True
         index += 1
+    # Only a wholly known native walk can establish a prompt delimiter. An
+    # unknown option may consume that token as its value instead.
+    candidates, candidate_kind, _ = uncertain_invocation(argv if uncertain else argv[:index + 1])
     exact = parsed[0] if len(parsed) == 1 and not uncertain and not continued else None
-    return list(dict.fromkeys([*candidates, *parsed])), "resume" if continued else kind, exact
+    return list(dict.fromkeys([*candidates, *parsed])), "resume" if continued else kind or candidate_kind, exact
 
 
 def uncertain_invocation(argv):
@@ -226,10 +228,9 @@ def uncertain_invocation(argv):
     family = harness_family(argv[0]) if argv else None
     if family is None:
         return [], None, None
-    # A fresh prompt after an explicit separator cannot introduce a command.
-    prefix = argv[:argv.index("--")] if "--" in argv else argv
-    resume_before_separator = family == "codex" and "resume" in prefix[1:]
-    words = argv if resume_before_separator else prefix
+    # With lost boundaries or unknown arities, a standalone '--' may be an
+    # option value or part of quoted text. It cannot truncate veto candidates.
+    words = argv
     markers = [i for i, arg in enumerate(words) if arg in {"--resume", "-r"} or family == "codex" and arg == "resume"]
     candidates = [value for i in markers for value in words[i + 1:] if value and not value.startswith("-")]
     candidates.extend(arg.split("=", 1)[1] for arg in words if arg.startswith("--resume=") and arg.split("=", 1)[1])
@@ -244,9 +245,6 @@ def uncertain_invocation(argv):
 def invocation(argv, *, bounded=True):
     """Return source candidates, command kind, and an exact native resume operand."""
     if not bounded:
-        if argv and harness_family(argv[0]) == "claude":
-            candidates, kind, _ = claude_invocation(argv)
-            return candidates, kind, None
         return uncertain_invocation(argv)
     if not argv:
         return [], None, None

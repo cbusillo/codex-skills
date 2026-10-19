@@ -1441,7 +1441,39 @@ class ProcessArgumentsTests(unittest.TestCase):
                 peers = sessions.process_sessions("456 " + " ".join(argv), {self.source})
                 self.assertEqual([peer["sessionId"] for peer in peers], [self.source])
         with patch.object(session_liveness, "native_arguments", side_effect=OSError("argv unavailable")):
+            peers = sessions.process_sessions("456 codex -- please resume " + self.source, {self.source})
+            self.assertEqual([peer["sessionId"] for peer in peers], [self.source])
+        with patch.object(session_liveness, "native_arguments", return_value=["codex", "--", "please resume " + self.source]):
             self.assertEqual(sessions.process_sessions("456 codex -- please resume " + self.source, {self.source}), [])
+
+    def test_uncertain_delimiters_do_not_hide_source_veto_candidates(self):
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
+        cases = ((["claude", "--mcp-config", "--", "--resume", self.source], True),
+                 (["claude", "--append-system-prompt", "keep -- terse", "--resume", self.source], False),
+                 (["codex", "-c", 'key="a -- b"', "resume", self.source], False))
+        for argv, available in cases:
+            kwargs = {"return_value": argv} if available else {"side_effect": OSError("argv unavailable")}
+            entry = {"session_id": self.source, "harness": argv[0], "pid": 123, "tty": "source-tty"}
+            with self.subTest(argv=argv, available=available), patch.object(session_liveness, "native_arguments", **kwargs):
+                for tty in (entry["tty"], "other"):
+                    with self.subTest(tty=tty), self.assertRaisesRegex(ValueError, "resumed harness"):
+                        session_liveness.verify_process_exit(entry, rows=[(456, tty, " ".join(argv))],
+                            ended_at=cutoff, started_at=lambda _pid: cutoff + timedelta(seconds=1),
+                            independent_harness=lambda *_args: True)
+                self.assertIsNone(session_liveness.invocation(argv, bounded=available)[2])
+
+    def test_known_native_separator_keeps_fresh_prompt_boundary(self):
+        for argv in (["codex", "--", "please resume " + self.source],
+                     ["claude", "--", "please --resume " + self.source]):
+            with self.subTest(argv=argv):
+                self.probe(argv, tty="other", harness=argv[0])
+                with self.assertRaisesRegex(ValueError, "unidentified harness"):
+                    self.probe(argv, harness=argv[0])
+                # The same flattened text cannot prove where the prompt began.
+                candidates, kind, exact = session_liveness.invocation(" ".join(argv).split(), bounded=False)
+                self.assertIn(self.source, candidates)
+                self.assertNotEqual(kind, "exec")
+                self.assertIsNone(exact)
 
     def test_claude_attached_resume_supplies_only_source_veto_candidates(self):
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
