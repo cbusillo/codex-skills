@@ -143,6 +143,16 @@ class ApprovalTests(unittest.TestCase):
                           "mention searches under your own login?"},
                          {**valid, "body": "Owner question: Q100 — may I disable search for "
                           "mentions under your own login?"},
+                         {**valid, "body": "Owner question: Q100 — may the watcher search GitHub for "
+                          "mentions with the automation App, not your own login?"},
+                         {**valid, "body": "Owner question: Q100 — may our agents run mention searches "
+                          "under the App instead of my login?"},
+                         {**valid, "body": "Owner question: Q100 — can you search GitHub for mentions "
+                          "under your own login and paste what you find?"},
+                         {**valid, "body": "Owner question: Q100 — may I search for mentions "
+                          "under my login just this once?"},
+                         {**valid, "body": "Owner question: Q100 — may the watcher search for mentions "
+                          "under your login in repo example/project today?"},
                          {**valid, "updated_at": "2026-10-18T00:00:00Z"},
                          {**valid, "body": "> " + valid["body"]},
                          {**valid, "user": {"login": "stranger"}},
@@ -162,7 +172,7 @@ class ApprovalTests(unittest.TestCase):
         for heading in (
             "Owner question: Q100 — may the Supervisor's watcher and the comment radar search "
             "GitHub for mentions of you under your own login, unattended, on every pass?",
-            "Owner question: Q100 — may I search for mentions under my login, not only the App's?",
+            "Owner question: Q100 — may I search for mentions under my login, unattended?",
             "Director question: Q100 — can our agents run read-only mention searches under your login?",
         ):
             with self.subTest(heading=heading):
@@ -211,6 +221,7 @@ class ApprovalTests(unittest.TestCase):
                           (APPROVAL_URL, approval(f"{Q} no")),
                           (APPROVAL_URL, approval(f"{Q} yes?")),
                           (APPROVAL_URL, approval(f"{Q} yes, if I am watching")),
+                          (APPROVAL_URL, approval(f"{Q} yes, only for example/project")),
                           (APPROVAL_URL, approval(f"> {Q} yes\n\nNo, I do not approve this.")),
                           (APPROVAL_URL, approval(f"{Q} yes, but not unattended")),
                           (APPROVAL_URL, approval(f"Thinking about it. {Q} yes?")),

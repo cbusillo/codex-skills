@@ -2620,3 +2620,35 @@ metadata/check/status slice measures eighteen REST requests versus one GraphQL
 request/point; unchanged REST revalidation still costs zero primary requests.
 Whole-observer savings include the remaining evidence reads and are measured
 separately from that slice.
+
+
+### Mention Search Approval
+
+The watch and radar accept `--mention-approval <GitHub-comment-link>`. The
+linked comment's first unquoted line must be the configured Director's own
+unqualified `Q<number> yes`, or `Director decision: Q<number> yes` from
+configured automation. Quoted, questioned, conditional and unauthorized
+answers do not approve searches. No later answer to that ID may withdraw it.
+Q455 on [codex-skills#2073](https://github.com/cbusillo/codex-skills/issues/2073)
+is one Director's example, not a required ID.
+
+The ID must match a preceding question in that thread from the Director or
+configured automation. Only its first physical heading line supplies scope.
+Use a direct permission clause, for example:
+
+```text
+Owner question: Q100 — may the watcher search GitHub for mentions under your own login, unattended?
+Owner question: Q100 — can our agents run read-only mention searches under your login?
+```
+
+Supported clauses ask whether the watcher, radar, Supervisor or agents may,
+can, should, could or will search mentions (or run mention searches), followed
+directly by the Director-login phrase. The action, login and any trailing
+schedule must all match this permission; requests to use the App, requests for
+the Director to search by hand, one-time and repository-limited permissions
+cannot grant unattended searches. Optional trailing terms are `unattended`,
+`read-only`, and `on every/each pass/run`. Body prose cannot supply permission.
+Same-ID reminders must all ask for that permission, and the question must not
+have been edited after approval. Unsupported wording or a later question edit
+reports a coverage gap: use a supported heading and link a fresh unqualified
+Director approval to resume. The helper never edits the question or config.

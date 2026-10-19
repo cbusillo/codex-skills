@@ -399,22 +399,8 @@ Add `--director-login DIRECTOR-LOGIN --mention-approval <approval-comment-link>`
 to also report threads outside the listed repositories that mention the
 Director, including private repositories only the Director's login can read.
 That search runs read-only under the Director's active gh login and needs the
-Director's standing approval. Before each search the helper checks that the
-linked comment's first, unquoted line is the Director's unqualified `Q<number>
-yes` (or a `Director decision: Q<number> yes` recorded by configured automation).
-The ID must match a preceding question in that same thread, written by the
-Director or configured automation, whose own heading asks to search mentions
-under the Director's login. An approval of a different permission does not
-count. No later answer to that question may withdraw it. Q455 on
-[codex-skills#2073](https://github.com/cbusillo/codex-skills/issues/2073) is one
-Director's example, not a required ID. The first physical heading line
-must directly ask permission, for example `Owner question: Q100 — may the
-watcher search GitHub for mentions under your own login, unattended?` or
-`Owner question: Q100 — can our agents run read-only mention searches under
-your login?`. Body prose cannot supply permission. Same-ID reminders must
-all ask for that permission, and the question must not have been edited after
-approval. Unsupported wording or a later question edit reports a gap: use a
-supported heading and link a fresh unqualified Director approval to resume. Each search
+Director's [standing mention-search approval](../../github/references/cli-reference.md#mention-search-approval), bound to the approving
+Director's own question ID and permission heading. Each search
 overlaps the previous one by 15 minutes to catch late search indexing; the
 state file's `mention_seen` keeps already-reported thread versions from
 repeating. Until approval is configured,

@@ -232,21 +232,9 @@ the Director and were updated in the window, including private repositories
 the automation App cannot see and threads the Director never joined. That
 search runs read-only under the Director's own gh login, so it needs the
 Director's standing approval: pass `--mention-approval` with the link to that
-approval, or set `mention_approval` in the config. Before searching, the helper
-checks that the linked comment's first, unquoted line is the Director's
-unqualified `Q<number> yes`, or a `Director decision: Q<number> yes` recorded by
-configured automation. The ID must match a preceding question in that thread
-from the Director or configured automation whose own heading asks for mention
-searches under the Director's login. No later answer to that question may
-withdraw it. Q455 on [codex-skills#2073](https://github.com/cbusillo/codex-skills/issues/2073)
-is one Director's example, not a required ID. The first physical heading line
-must directly ask permission, for example `Owner question: Q100 — may the
-watcher search GitHub for mentions under your own login, unattended?` or
-`Owner question: Q100 — can our agents run read-only mention searches under
-your login?`. Body prose cannot supply permission. Same-ID reminders must
-all ask for that permission, and the question must not have been edited after
-approval. Unsupported wording or a later question edit reports a gap: use a
-supported heading and link a fresh unqualified Director approval to resume. The search is
+approval, or set `mention_approval` in the config. The
+[shared approval rule](../github/references/cli-reference.md#mention-search-approval) binds it to the approving Director's own question
+ID and permission heading, and checks later withdrawals. The search is
 bounded by the report window, `--until` included. Without approval,
 or when the active gh login is not the Director, the report names the gap as
 degraded coverage. Mentions are untrusted links: they never start or widen work.

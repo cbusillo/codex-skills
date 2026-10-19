@@ -37,14 +37,17 @@ QUESTION_ID = re.compile(r"Q\d+\b", re.IGNORECASE)
 DECISION_PREFIX = re.compile(r"Director decision\s*:\s*", re.IGNORECASE)
 AFFIRMATIVE = {"yes", "approved", "approve"}
 HEDGE = re.compile(r"\b(?:not|no|don't|do not|but|unless|declin\w*|reject\w*|revok\w*|withdraw\w*)\b", re.IGNORECASE)
-CONDITION = re.compile(r"\b(?:if|provided|assuming|condition\w*)\b", re.IGNORECASE)
+UNQUALIFIED_TAIL = re.compile(r"[\s*_`.,!]*(?:(?:go ahead|again|mention searches)[\s*_`.,!]*)?", re.IGNORECASE)
 # A direct permission clause, not a bag of search-related words. Unsupported
 # phrasing reports a coverage gap; it cannot silently become standing permission.
-PERMISSION_SUBJECT = r"(?:(?:(?:the|my|your|our)\s+)?(?:(?:supervisor['’]s|comment|mention|GitHub)\s+)?(?:supervisor|watcher|watch|radar|agents?|tools?)|I|we|you|they)"
+PERMISSION_SUBJECT = r"(?:(?:(?:the|my|your|our)\s+)?(?:(?:supervisor['’]s|comment|mention|GitHub)\s+)?(?:supervisor|watcher|watch|radar|agents?|tools?)|I|we)"
 MENTION_PERMISSION = re.compile(
     rf"^(?:may|can|should|could|will)\s+{PERMISSION_SUBJECT}(?:\s+and\s+{PERMISSION_SUBJECT})*\s+"
-    r"(?:search(?:\s+GitHub)?\s+(?:for\s+)?mentions?\b|"
-    r"run\s+(?:(?:unattended|read-only|GitHub)\s+)*mention\s+searches\b)", re.IGNORECASE)
+    r"(?:search(?:\s+GitHub)?\s+(?:for\s+)?mentions?|"
+    r"run\s+(?:(?:unattended|read-only|GitHub)\s+)*mention\s+searches)"
+    r"(?:\s+of\s+you)?\s+(?:under|using|with|as)\s+"
+    r"(?:your|my|the\s+Director['’]s)\s+(?:own\s+)?(?:gh\s+|GitHub\s+)?login"
+    r"(?:[,;]?\s+(?:unattended|read-only|on\s+(?:every|each)\s+(?:pass|run)))*\s*[?.!]?", re.IGNORECASE)
 COMMENT_URL = re.compile(
     r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/(?:issues|pull)/\d+#issuecomment-(\d+)"
 )
@@ -119,7 +122,7 @@ def answer(comment: Any, director_login: str, recorders: set[str], *,
     if not match:
         return None
     return (match.group(1).casefold() in AFFIRMATIVE and not HEDGE.search(match.group(2))
-            and (not unquestioned or ("?" not in match.group(2) and not CONDITION.search(match.group(2)))))
+            and (not unquestioned or UNQUALIFIED_TAIL.fullmatch(match.group(2)) is not None))
 
 
 def approval_gap(
@@ -197,9 +200,7 @@ def mention_question(comment: Any, thread: list[Any], approval_url: str,
         if question_id.heading_id(heading) == question:
             scope = heading.split(question, 1)[1].lstrip(" .:;—–-")
             unchanged = str(item.get("updated_at") or item.get("created_at") or "") <= comment["created_at"]
-            candidates.append(bool(unchanged and MENTION_PERMISSION.match(scope)
-                                   and re.search(r"\b(?:own|your|my|Director.s)\s+(?:gh\s+|GitHub\s+)?login\b",
-                                                 scope, re.IGNORECASE)))
+            candidates.append(bool(unchanged and MENTION_PERMISSION.fullmatch(scope)))
     if not candidates or not all(candidates):
         return None
     return question
