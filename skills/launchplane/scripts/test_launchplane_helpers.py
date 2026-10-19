@@ -1324,9 +1324,13 @@ def test_controller_projects_bounded_last_result_without_losing_empty_evidence()
 def test_controller_rejects_unsafe_or_unbound_diagnostic_shapes(change: dict[str, object]) -> None:
     diagnosis = {**_controller_last_result_fixture(), **change}
     response = {"status": "accepted", "trace_id": "launchplane_req_example", "records": {}, "result": {"controller_action": "candidate_failed", "last_controller_result": diagnosis}}
-    status, payload = _run_controller_response(response, mutate=True)
+    received = write_action._ServiceResponse(response, 202)
+    status, payload = _run_controller_response(received, mutate=True)
     assert status != 0
     assert not payload.get("result")
+    assert payload["summary"]["http_status"] == received.http_status
+    assert payload["summary"]["trace_id"] == response["trace_id"]
+    assert "secret-value" not in json.dumps(payload)
 
 
 def test_controller_block_and_reconciliation_preserve_durable_diagnostics() -> None:
@@ -1396,9 +1400,14 @@ def test_controller_block_projection_rejects_unsafe_or_invalid_fields() -> None:
 
 
 def test_controller_client_timeout_is_not_a_service_outage_and_never_retries() -> None:
+    response = Mock(status=202)
+    response.read.side_effect = TimeoutError("private-provider")
+    with pytest.raises(TimeoutError) as interrupted:
+        write_action._read_service_response(response)
     for error in (
         TimeoutError("timed out"),
         urllib.error.URLError(TimeoutError("timed out")),
+        interrupted.value,
     ):
         for mutate in (False, True):
             status, payload = _run_controller_response(error, mutate=mutate, timeout=7.5)
@@ -1407,6 +1416,9 @@ def test_controller_client_timeout_is_not_a_service_outage_and_never_retries() -
             assert payload["summary"]["timeout_seconds"] == 7.5
             assert payload["warnings"][0]["code"] == "client_timeout"
             assert "7.5 s" in payload["warnings"][0]["message"]
+            if error is interrupted.value:
+                assert payload["summary"]["http_status"] == response.status
+            assert "private-provider" not in json.dumps(payload)
     for error in (
         urllib.error.URLError("connection refused"),
         http.client.RemoteDisconnected("remote disconnected"),
@@ -9100,6 +9112,8 @@ def test_privileged_policy_propose_rejects_malformed_result_without_echoing_priv
         (http.client.IncompleteRead(b"partial"), "outcome_unknown"),
         (json.JSONDecodeError("cut off", "{", 1), "accepted_unverified"),
         ("malformed", "accepted_unverified"),
+        ("partial_body", "outcome_unknown"),
+        ("non_object_body", "accepted_unverified"),
         (403, "denied"),
         (409, "conflict"),
         (404, "unsupported"),
@@ -9124,6 +9138,7 @@ def test_privileged_policy_propose_failure_reports_safe_reconciliation(
             "reason": "Review access.",
         },
     }
+    received_status = None
     if isinstance(failure, int):
         error_code = (
             "authorization_denied" if failure == 403 else "privileged_operation_plan_conflict"
@@ -9155,6 +9170,17 @@ def test_privileged_policy_propose_failure_reports_safe_reconciliation(
         target = response if failure["field"] == "write_status" else response["summary"]
         target[failure["field"]] = failure["value"]
         post = Mock(return_value=response)
+    elif failure in ("partial_body", "non_object_body"):
+        response = Mock(status=202)
+        received_status = response.status
+        response.read = (Mock(side_effect=http.client.IncompleteRead(b"never-emit"))
+                         if failure == "partial_body" else Mock(return_value=b"null"))
+        try:
+            write_action._read_service_response(response)
+        except (write_action.ServiceResponseError, http.client.HTTPException) as error:
+            post = Mock(side_effect=error)
+        else:
+            raise AssertionError("fixture must fail while reading the response")
     else:
         post = Mock(
             return_value={
@@ -9188,6 +9214,8 @@ def test_privileged_policy_propose_failure_reports_safe_reconciliation(
         result = json.loads(output.getvalue())
         assert result["status"] == expected
         post.assert_called_once()
+        if received_status is not None:
+            assert result["summary"]["http_status"] == received_status
         if isinstance(failure, dict):
             assert result["summary"]["http_status"] == post.return_value.http_status
             assert result["summary"]["trace_id"] == post.return_value["trace_id"]
@@ -9904,7 +9932,7 @@ def test_interrupted_http_verified_apply_preserves_failure_phase(kind: str, phas
     assert payload["summary"]["read_back_http_status" if phase == "readback" else "http_status"] == 202
 
 
-@pytest.mark.parametrize("kind", ["incomplete", "disconnected", "gateway", "denial"])
+@pytest.mark.parametrize("kind", ["incomplete", "disconnected", "gateway", "denial", "projection"])
 @pytest.mark.parametrize("mode", ["dry-run", "apply"])
 @pytest.mark.parametrize("purpose", ["staff_testing", "isolation_staging"])
 def test_interrupted_http_simple_post_preserves_write_uncertainty(kind: str, mode: str, purpose: str) -> None:
@@ -9926,10 +9954,19 @@ def test_interrupted_http_simple_post_preserves_write_uncertainty(kind: str, mod
             error_body.read.side_effect = _interrupted_http("incomplete")
             fault = urllib.error.HTTPError("https://example.invalid", 502 if kind == "gateway" else 403,
                                            "private-message", Message(), error_body)
+        if kind == "projection":
+            fault = write_action._ServiceResponse({
+                **_testing_hold_response(_testing_hold_plan(after=hold)),
+                "unexpected": "private-provider",
+            }, 202)
         code, payload, posts, _ = _run_main(argv, post=fault)
-    assert code == 1 and len(posts) == 1
+    assert code == (0 if kind == "projection" and mode == "apply" else 1)
+    assert len(posts) == 1
     assert posts[0]["body"].get("purpose", "staff_testing") == purpose
-    expected = "denied" if kind == "denial" else "outcome_unknown" if mode == "apply" else "unavailable"
+    expected = ("accepted_unverified" if mode == "apply" else "invalid") if kind == "projection" else "denied" if kind == "denial" else "outcome_unknown" if mode == "apply" else "unavailable"
+    if kind == "projection":
+        assert payload["summary"]["http_status"] == fault.http_status
+        assert payload["summary"]["trace_id"] == fault["trace_id"]
     assert payload["status"] == expected
     if expected == "outcome_unknown":
         assert "read" in payload["summary"]["recommendation"].lower()

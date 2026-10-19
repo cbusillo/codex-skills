@@ -7024,6 +7024,7 @@ def execute_post(
                     code=exc.code, message="Launchplane returned an invalid response.",
                 )
                 summary = cast(dict[str, object], payload["summary"])
+                summary.update(service_response_diagnostics(provider_payload))
                 summary.update(_controller_error_diagnostics(provider_payload))
                 summary["projection_error_code"] = exc.code
                 if isinstance(exc, _UnknownResponseField) and exc.unrecognized_key:
@@ -7046,17 +7047,13 @@ def execute_post(
                 "product-expected-config-apply",
             }:
                 raise
-            try:
-                trace_id = public_trace_id(provider_payload.get("trace_id"))
-            except LaunchplaneSafetyError:
-                trace_id = ""
             payload = base_payload(
                 status="accepted_unverified", operation=operation, request=request
             )
             recovery_apply = operation == "generic-web-deploy-recovery-apply"
             inventory_apply = operation == "repository-inventory-apply"
             payload["summary"] = {
-                "trace_id": trace_id,
+                **service_response_diagnostics(provider_payload),
                 "recommendation": (
                     "Launchplane accepted the recovery apply, but the response could not be "
                     "verified locally. Inspect the original deploy reservation and normal deploy "
@@ -7109,7 +7106,7 @@ def execute_post(
     except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException) as exc:
         if operation == "privileged-policy-propose":
             payload = unavailable_payload(operation=operation, request=request, status="outcome_unknown", code="proposal_transport_uncertain", message="The proposal response was interrupted; this does not prove a service outage or an unsaved plan.")
-            payload["summary"] = {"recommendation": "Retain and re-run the identical private envelope and source event. Replay returns the same plan; do not force a duplicate."}
+            payload["summary"] = {**service_response_diagnostics(exc), "recommendation": "Retain and re-run the identical private envelope and source event. Replay returns the same plan; do not force a duplicate."}
             emit(payload)
             return 1
         if operation == "merge-train-controller-run-once" and (
@@ -7121,6 +7118,7 @@ def execute_post(
                 code="client_timeout", message=f"Controller request timed out after {args.timeout:g} s.",
             )
             payload["summary"] = {
+                **service_response_diagnostics(exc),
                 "error_code": "client_timeout", "timeout_seconds": args.timeout,
                 "recommendation": (
                     "Read the PR and controller state before any retry; the mutating pass may have completed."
@@ -7152,7 +7150,7 @@ def execute_post(
             return 1
         if operation == "privileged-policy-propose":
             payload = unavailable_payload(operation=operation, request=request, status="accepted_unverified", code="proposal_response_unverified", message="The proposal response could not be read; the plan may have been saved.")
-            payload["summary"] = {"recommendation": "Retain and re-run the identical private envelope and source event. Replay returns the same plan; do not force a duplicate."}
+            payload["summary"] = {**service_response_diagnostics(exc if isinstance(exc, ServiceResponseError) else provider_payload), "recommendation": "Retain and re-run the identical private envelope and source event. Replay returns the same plan; do not force a duplicate."}
             emit(payload)
             return 1
         emit_safety_error_payload(operation=operation, request=request,
