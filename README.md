@@ -660,12 +660,14 @@ read every adopted repository. It prints at most two reminder lines, the same
 in every folder: one while the daily turn is more than a day old, and one while
 the weekly audit is more than a week old for an account with direction set up.
 Audits of single repositories never clear the weekly line. The account is the
-owner of the direction repository the marker last recorded; only an empty
-marker falls back to the folder's origin owner, and only when that owner has
-`OWNER/direction` set up as above. While either local stamp is stale it reads
+owner of the direction repository named by the marker's newest turn or weekly
+audit. Only when the marker records no account does it fall back to the
+folder's origin owner, and only when that owner has `OWNER/direction` set up
+as above. While either local stamp is stale it reads
 the shared turn and weekly-audit records in `OWNER/direction` once (see the
-`direction` skill), so a turn or audit on another machine counts. When that
-read fails, the line says unconfirmed instead of overdue. It never
+`direction` skill), so a turn or audit on another machine counts. When it
+cannot read every open issue there, the line says unconfirmed instead of
+overdue. It never
 reads stdin, always exits 0, runs only on `startup`, `resume`, and `clear`
 (not after a compaction), and uses the registered hook timeout with Python downloads
 disabled. The marker is `~/.code/direction-last-check.json` on every host

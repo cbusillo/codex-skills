@@ -236,7 +236,7 @@ class ReminderTests(IsolatedDirectionHookTests):
         with mock.patch.dict(os.environ, {"CLAUDECODE": "1"}), mock.patch.object(hook, "SKILLS_PROTOCOL_PATH", Path("/missing/protocol.md")), mock.patch.object(hook, "direction_root", return_value=Path.cwd()), mock.patch.object(hook, "read_marker", return_value={}), mock.patch.object(hook, "resolve_account", return_value=None), contextlib.redirect_stdout(output):
             self.assertEqual(hook.main(), 0)
         self.assertIn(str(hook.LOOP_PATH), output.getvalue())
-        self.assertIn("Direction turn overdue", output.getvalue())
+        self.assertIn(hook.REMINDER_LINES["turn", "due"], output.getvalue())
 
     def test_current_checks_print_nothing(self) -> None:
         m = {**marker(ago(hours=3)), "weekly": ago(days=6), "weekly_record": "owner/direction"}
@@ -349,7 +349,7 @@ class ReminderTests(IsolatedDirectionHookTests):
             output = io.StringIO()
             with mock.patch.object(hook, "LOOP_PATH", root / "missing.md"), mock.patch.object(hook, "marker_path", return_value=root / "missing-marker.json"), mock.patch("pathlib.Path.cwd", return_value=root), contextlib.redirect_stdout(output):
                 self.assertEqual(hook.main(), 0)
-            self.assertIn("Direction turn overdue", output.getvalue())
+            self.assertIn(hook.REMINDER_LINES["turn", "due"], output.getvalue())
 
     def test_hook_process_never_blocks_and_ignores_stdin(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -357,7 +357,7 @@ class ReminderTests(IsolatedDirectionHookTests):
             env = {"HOME": tmp, "DIRECTION_MARKER": str(Path(tmp) / hook.MARKER_NAME), "PATH": "/usr/bin:/bin"}
             proc = subprocess.run([sys.executable, str(HOOK), "--catalog-root", str(root)], input='{"hook_event_name":"SessionStart"}', capture_output=True, text=True, env=env, cwd=tmp)
             self.assertEqual(proc.returncode, 0)
-            self.assertIn("Direction turn overdue", proc.stdout)
+            self.assertIn(hook.REMINDER_LINES["turn", "due"], proc.stdout)
             (Path(tmp) / hook.MARKER_NAME).write_text(json.dumps({"turn": dt.datetime.now(dt.timezone.utc).isoformat(), "audits": {}}))
             proc = subprocess.run([sys.executable, str(HOOK), "--catalog-root", str(root)], stdin=subprocess.DEVNULL, capture_output=True, text=True, env=env, cwd=tmp)
             self.assertEqual((proc.returncode, proc.stdout), (0, ""))
@@ -586,7 +586,7 @@ class AccountResolutionTests(IsolatedDirectionHookTests):
         return root.resolve()
 
     def session(self, local: dict[str, object], checkout: Path | None) -> str:
-        def read(*args: str) -> subprocess.CompletedProcess[str]:
+        def read(*args: str, **_kwargs: object) -> subprocess.CompletedProcess[str]:
             self.reads.append(args)
             return subprocess.CompletedProcess(list(args), 0, "[]", "")
 
@@ -602,7 +602,14 @@ class AccountResolutionTests(IsolatedDirectionHookTests):
         text = texts.pop()
         self.assertEqual(len(text.splitlines()), 2)
         self.assertNotIn("owner/adopted", text)
-        self.assertEqual({args[1] for args in self.reads}, {"repos/owner/direction/issues?state=open&sort=created&direction=asc&per_page=100"})
+        self.assertEqual({args[1].split("?")[0] for args in self.reads}, {"repos/owner/direction/issues"},
+                         "only the account's own shared records are read")
+
+    def test_the_newest_recorded_stamp_names_the_account(self) -> None:
+        older_turn = {**marker(ago(days=5)), "turn_repo": "first/direction", "weekly": ago(days=1), "weekly_record": "second/direction"}
+        self.assertEqual(hook.resolve_account(older_turn, None), "second")
+        newer_turn = {**older_turn, "turn": ago(hours=1)}
+        self.assertEqual(hook.resolve_account(newer_turn, None), "first")
 
     def test_an_empty_marker_outside_any_repository_has_no_account(self) -> None:
         empty = {"turn": None, "audits": {}}

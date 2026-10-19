@@ -42,6 +42,9 @@ WEEKLY_RECORD_TAG = "<!-- direction-weekly-audit-record -->"
 WEEKLY_RECORD_TITLE = "Weekly direction audits"
 OVERALL_REPO = "direction"
 SHARED_TIMEOUT = 60
+# Pages of open issues read to find a record. A record not found within them is unconfirmed.
+RECORD_PAGES = 10
+TRUSTED_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
 
 
 def marker_path(env: Mapping[str, str] | None = None) -> Path:
@@ -214,29 +217,53 @@ def share_weekly(stamp: str, owner: str) -> dict[str, object]:
     return share_record(direction_repo(owner), WEEKLY_RECORD_TAG, WEEKLY_RECORD_TITLE, weekly_record_body(stamp))
 
 
-def share_record(record_repo: str, tag: str, title: str, body: str) -> dict[str, object]:
-    """Find the lowest-numbered open issue carrying `tag`, then rewrite it, or create one."""
-    try:
+def trusted_record(issue: object, tag: str) -> bool:
+    """An open issue carrying `tag`, written by a repository member or a bot, as the hook trusts."""
+    if not isinstance(issue, dict) or "pull_request" in issue or tag not in str(issue.get("body") or ""):
+        return False
+    user = issue.get("user")
+    return issue.get("author_association") in TRUSTED_ASSOCIATIONS or (isinstance(user, dict) and user.get("type") == "Bot")
+
+
+def oldest_record(record_repo: str, tag: str) -> tuple[int | None, str | None]:
+    """The lowest-numbered trusted open issue carrying `tag`, or None and why the search did not finish.
+
+    Issues are listed oldest first, so the first record found is the oldest. Not finding
+    one is confirmed only when every open issue was read.
+    """
+    for page in range(1, RECORD_PAGES + 1):
         listed = run_helper([str(GITHUB_SCRIPTS / "gh-with-env-token"), "api",
-                             f"repos/{record_repo}/issues?state=open&sort=created&direction=asc&per_page=100", "--method", "GET"])
+                             f"repos/{record_repo}/issues?state=open&sort=created&direction=asc&per_page=100&page={page}",
+                             "--method", "GET"])
         if listed.returncode != 0:
-            return {"ok": False, "repo": record_repo, "error": f"could not list issues: {failure(listed)}"}
+            return None, f"could not list issues: {failure(listed)}"
         issues = json.loads(listed.stdout)
-        records = sorted(
-            issue["number"] for issue in issues
-            if isinstance(issue, dict) and "pull_request" not in issue
-            and tag in str(issue.get("body") or "")
-        )
-        issue_helper = str(GITHUB_SCRIPTS / "gh-issue")
+        if not isinstance(issues, list):
+            return None, "could not list issues: GitHub returned something other than an issue list"
+        records = sorted(issue["number"] for issue in issues if trusted_record(issue, tag))
         if records:
-            written = run_helper([issue_helper, "edit", str(records[0]), "--repo", record_repo, "--body-file", "-"], body)
+            return records[0], None
+        if len(issues) < 100:
+            return None, None
+    return None, f"no record in the first {RECORD_PAGES * 100} open issues and more exist; not creating another"
+
+
+def share_record(record_repo: str, tag: str, title: str, body: str) -> dict[str, object]:
+    """Rewrite the oldest trusted open issue carrying `tag`, or create one when a full search found none."""
+    try:
+        number, error = oldest_record(record_repo, tag)
+        if error:
+            return {"ok": False, "repo": record_repo, "error": error}
+        issue_helper = str(GITHUB_SCRIPTS / "gh-issue")
+        if number is not None:
+            written = run_helper([issue_helper, "edit", str(number), "--repo", record_repo, "--body-file", "-"], body)
         else:
             written = run_helper([issue_helper, "create", title, "--repo", record_repo], body)
-    except (OSError, subprocess.SubprocessError, ValueError, TypeError) as exc:
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError, KeyError) as exc:
         return {"ok": False, "repo": record_repo, "error": str(exc)[:300]}
     if written.returncode != 0:
         return {"ok": False, "repo": record_repo, "error": failure(written)}
-    return {"ok": True, "repo": record_repo, "issue": records[0] if records else "created"}
+    return {"ok": True, "repo": record_repo, "issue": number if number is not None else "created"}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -247,16 +274,18 @@ def main(argv: list[str] | None = None) -> int:
     coverage.add_argument("--repo", type=legacy_repo, dest="owner", metavar="OWNER/REPO",
                           help="older form: OWNER/REPO, recorded as OWNER/direction")
     args = parser.parse_args(argv)
-    path: Path | str = os.environ.get("DIRECTION_MARKER") or "default direction marker"
+    shown = os.environ.get("DIRECTION_MARKER") or "default direction marker"
+    now = dt.datetime.now(dt.timezone.utc)
     try:
         path = marker_path()
-        written = mark_turn(path, args.owner, dt.datetime.now(dt.timezone.utc))
+        shown = str(path)
+        written = mark_turn(path, args.owner, now)
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
-        error = f"Could not record daily direction marker at {path}: {exc}"
-        print(json.dumps({"ok": False, "marker": str(path), "local_recorded": False, "error": error}))
+        error = f"Could not record daily direction marker at {shown}: {exc}"
+        print(json.dumps({"ok": False, "marker": shown, "local_recorded": False, "error": error}))
         print(f"ERROR: {error}. The turn was not recorded locally or shared.", file=sys.stderr)
         return 1
-    shared = share_turn(str(written["turn"]), args.owner)
+    shared = share_turn(utc_stamp(now), args.owner)
     if not shared["ok"]:
         print(f"ERROR: Daily turn recorded at {path}, but the shared record failed: {shared['error']}", file=sys.stderr)
     print(json.dumps({"ok": shared["ok"], "marker": str(path), "turn": written["turn"], "turn_repo": written["turn_repo"], "shared": shared}))

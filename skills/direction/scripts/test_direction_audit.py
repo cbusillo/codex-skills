@@ -20,7 +20,7 @@ import types
 from contextlib import nullcontext, redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
-from typing import Any, Self
+from typing import Any, Callable, Self
 from unittest.mock import patch
 
 SCRIPT = Path(__file__).with_name("direction_audit.py")
@@ -1114,9 +1114,9 @@ def test_waiting_unmilestoned_cross_repository_blocker_is_a_named_finding() -> N
 def test_waiting_inbound_fetch_coverage_includes_caps_errors_and_ambiguous_targets() -> None:
     module = load()
     gates = [issue(number, "Gate", labels=("plan:waiting",)) for number in (1, 2)]
-    assert module.enrich_waiting_inbound_blockers(gates, "o/r", fetch=lambda _: [], max_issues=1)
-    assert module.enrich_waiting_inbound_blockers(gates, "o/r", fetch=lambda _: [{"state": "open", "number": 3}])
-    assert module.enrich_waiting_inbound_blockers(gates, "o/r", fetch=lambda _: [{"state": "open", "html_url": "https://github.com/o/other/issues/3"}] * 100)
+    assert module.enrich_waiting_inbound_blockers(gates, "o/r", fetch=lambda _: [], max_issues=1) == module.BOUNDED
+    assert module.enrich_waiting_inbound_blockers(gates, "o/r", fetch=lambda _: [{"state": "open", "number": 3}]) == module.UNAVAILABLE
+    assert module.enrich_waiting_inbound_blockers(gates, "o/r", fetch=lambda _: [{"state": "open", "html_url": "https://github.com/o/other/issues/3"}] * 100) == module.BOUNDED
 
     def denied(_args: list[str]) -> Any:
         raise module.AuditError("permission denied")
@@ -1129,7 +1129,7 @@ def test_waiting_inbound_fetch_coverage_includes_caps_errors_and_ambiguous_targe
         return []
 
     found, incomplete = module.fetch_audit_issues("o/r", [], {}, NOW, fetch=fetch)
-    assert "waiting_inbound_blockers" in incomplete
+    assert "waiting_inbound_blockers_unavailable" in incomplete, "a denied read is not reported as a cap"
     assert "coverage_incomplete" in kinds(run(module, issues=found, truncated=incomplete))
     zero = {**gates[0], "issue_dependencies_summary": {"blocking": 0}}
     assert not module.enrich_waiting_inbound_blockers([zero], "o/r", fetch=denied)
@@ -2718,7 +2718,7 @@ def test_overall_audit_follows_track_to_invalid_cross_repository_wait() -> None:
     assert (finding["repo"], finding["number"]) == ("owner/business", 120)
     assert sum(item["kind"] == "milestone_wait_invalid" for item in result["findings"]) == 1
     assert module.enrich_milestone_waits([root], "owner/direction", ["Dogfood week"],
-                                       fetch=lambda _: (_ for _ in ()).throw(module.AuditError("unavailable")))
+                                       fetch=lambda _: (_ for _ in ()).throw(module.AuditError("unavailable"))) == module.UNAVAILABLE
 
 
 def test_overall_audit_reads_current_structured_wait_before_prose() -> None:
@@ -3045,6 +3045,10 @@ class WeeklyAccount:
         self.failing: set[str] = set()   # repositories whose milestone read fails
         self.capped: set[str] = set()    # repositories whose closed audit listing hits the page cap
         self.unknown: set[str] = set()   # repositories whose DIRECTION.md answer is not a 404 or a file
+        self.capacity_errors: list[str] = []  # what the OWNER/direction capacity read reports as incomplete
+        self.stale_incomplete: set[str] = set()  # repositories whose stale-wait report could not finish
+        self.unadopted_complete = True   # whether the active unadopted repositories were all read
+        self.outcomes_failing = False    # whether the milestone outcome graph read fails
         self.names = ["direction", "a", "b", "plain"]
         self.content = {"type": "file", "content": base64.b64encode(DIRECTION.encode()).decode()}
         self.closed = {**issue(20, "Finished", labels=("audit",)), "state": "closed", "closed_at": stamp(NOW)}
@@ -3063,6 +3067,8 @@ class WeeklyAccount:
             return self.content
         if path == f"repos/{repo}":
             return {"full_name": repo, "archived": False, "default_branch": "main"}
+        if self.outcomes_failing and path.startswith("repos/o/direction/issues?state=all&milestone="):
+            raise self.module.AuditError("gh: HTTP 502 Bad Gateway")
         if "/milestones?" in path:
             if repo in self.failing:
                 raise self.module.AuditError("gh: HTTP 502 Bad Gateway")
@@ -3080,12 +3086,23 @@ class WeeklyAccount:
                 shared.append((stamp_text, owner))
             return {"ok": True, "repo": f"{owner}/direction", "issue": 7}
 
+        stale_wait_report = self.module.stale_wait_report
+
+        def stale_waits(issues: Any, repo: str, **kwargs: Any) -> dict[str, Any]:
+            report = stale_wait_report(issues, repo, **kwargs)
+            if repo in self.stale_incomplete:
+                report = {**report, "complete": False, "unavailable": [{"number": 1, "source": "native_blockers", "reason": "unavailable"}]}
+            return report
+
         output = StringIO()
         with (patch.dict(os.environ, {"DIRECTION_MARKER": str(marker)}),
               patch.dict(vars(self.module), {
                   "gh_json": self.fetch,
-                  "fetch_capacity": lambda *_args, **_kwargs: (summary(self.module), []),
-                  "active_unadopted_report": lambda *_args, **_kwargs: {"complete": True, "repositories": [], "unavailable": []},
+                  "fetch_capacity": lambda *_args, **_kwargs: (summary(self.module), list(self.capacity_errors)),
+                  "active_unadopted_report": lambda *_args, **_kwargs: {
+                      "complete": self.unadopted_complete, "repositories": [],
+                      "unavailable": [] if self.unadopted_complete else [{"repo": "o/quiet", "source": "issues", "reason": "unavailable"}]},
+                  "stale_wait_report": stale_waits,
               }),
               patch.object(self.module.direction_mark, "share_weekly", share),
               patch.dict(vars(self.module.github_identity), {"configured_bot_logins": lambda: ("bot",),
@@ -3153,6 +3170,59 @@ def test_weekly_audit_counts_a_held_window_as_read_but_not_failed_reads() -> Non
                 assert list(receipt["unread"]) == ["o/b"] and code == 1
                 assert "o/a" in saved["audits"], "repositories that were read keep their own stamps"
                 assert weekly_state(marker) == "due"
+
+
+def capacity_with_one_failed_repository(module: Any) -> list[str]:
+    """What the real capacity read reports when one repository's pull request listing answers 502."""
+    import base64
+
+    def fetch(args: list[str]) -> Any:
+        path = args[1]
+        if "/contents/" in path:
+            return {"content": base64.b64encode(OWN_DIRECTION.encode()).decode()}
+        if path.startswith("installation/repositories"):
+            return {"repositories": [{"full_name": "o/fun", "owner": {"login": "o"}, "pushed_at": stamp(NOW)}]}
+        if path.startswith("repos/o/fun/pulls"):
+            raise module.AuditError("gh: HTTP 502 Bad Gateway")
+        return []
+    return module.fetch_capacity("o/direction", SINCE, WINDOW_END, fetch=fetch)[1]
+
+
+def test_weekly_audit_does_not_count_unavailable_required_reads_as_read() -> None:
+    module = load()
+    failed_capacity = capacity_with_one_failed_repository(module)
+    assert failed_capacity == ["capacity_reads:o/fun"], "the 502 becomes a capacity entry, not an exception"
+    cases: dict[str, tuple[str, Callable[[WeeklyAccount], None]]] = {
+        "capacity read 502": ("o/direction", lambda account: setattr(account, "capacity_errors", failed_capacity)),
+        "stale-wait report": ("o/b", lambda account: account.stale_incomplete.add("o/b")),
+        "active unadopted report": ("o/direction", lambda account: setattr(account, "unadopted_complete", False)),
+        "milestone outcomes": ("o/direction", lambda account: setattr(account, "outcomes_failing", True)),
+    }
+    for case, (repo, breaks) in cases.items():
+        account = WeeklyAccount(module)
+        breaks(account)
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = Path(tmp) / "marker.json"
+            shared: list[tuple[str, str]] = []
+            code, receipt = account.run(["--weekly", "--owner", "o"], marker, shared)
+            assert receipt["audits"][repo]["run_recorded"], "the run is recorded, but it does not count as read"
+            assert code == 1 and receipt["weekly_recorded"] is None and not shared, (case, receipt["unread"])
+            assert list(receipt["unread"]) == [repo], (case, receipt["unread"])
+            assert receipt["unread"][repo] == "reads unavailable: " + ", ".join(receipt["audits"][repo]["unavailable_reads"])
+            assert "weekly_audit" not in json.loads(marker.read_text())
+            assert weekly_state(marker) == "due"
+
+
+def test_weekly_audit_counts_a_capped_capacity_listing_as_a_held_window() -> None:
+    module = load()
+    account = WeeklyAccount(module)
+    account.capacity_errors = ["capacity_pulls:o/fun"]
+    with tempfile.TemporaryDirectory() as tmp:
+        marker = Path(tmp) / "marker.json"
+        code, receipt = account.run(["--weekly", "--owner", "o"], marker, [])
+        assert receipt["unread"] == {} and list(receipt["held"]) == ["o/direction"], receipt["unread"]
+        assert code == 3 and receipt["weekly_recorded"], "a page cap inside a held window still counts as read"
+        assert weekly_state(marker) == "current"
 
 
 def test_weekly_audit_refuses_an_incomplete_or_unknown_repository_listing() -> None:

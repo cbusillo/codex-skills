@@ -9,9 +9,9 @@
 
 Reports, as JSON, where milestones, escalations, and issue text have drifted
 from the direction file. `--repo` audits one repository and stamps only its
-own window in the local marker. `--weekly --owner OWNER` audits OWNER/direction
-and then every adopted repository of the account, and records the weekly audit
-only when every one of them was read. It never writes to the checkout, and to
+own window in the local marker. `--weekly` audits the account named by
+`--owner`: its direction repository first, then every adopted repository. It
+records the weekly audit only when every one of them was read. It never writes to the checkout, and to
 GitHub only the weekly run's one shared weekly-audit record in OWNER/direction.
 """
 
@@ -60,6 +60,9 @@ GATE_PHRASES: tuple[tuple[str, re.Pattern[str]], ...] = (
 WRAPPER = pathlib.Path(__file__).resolve().parents[2] / "github" / "scripts" / "gh-with-env-token"
 MAX_ADMISSION_ISSUES = 50
 MAX_INBOUND_ISSUES = 50
+# How an enrichment read ended short: a cap or the data itself, or a read that failed.
+BOUNDED = "bounded"
+UNAVAILABLE = "unavailable"
 WAIT_REFERENCE = re.compile(
     r"https://github\.com/([\w.-]+/[\w.-]+)/(issues|pull)/(\d+)"
     r"|(?<![\w/])([\w.-]+/[\w.-]+)?#(\d+)\b"
@@ -602,9 +605,14 @@ def prune_unadopted(
 def enrich_waiting_inbound_blockers(
     issues: list[dict[str, Any]], repo: str, *, fetch: Callable[[list[str]], Any],
     max_issues: int = MAX_INBOUND_ISSUES,
-) -> bool:
-    """Read native inbound dependencies for waiting issues, including unmilestoned ones."""
+) -> str:
+    """Read native inbound dependencies for waiting issues, including unmilestoned ones.
+
+    Returns "" when complete, BOUNDED when a cap cut the reads short, and
+    UNAVAILABLE when a read failed or gave an answer it could not use.
+    """
     incomplete = False
+    failed = False
     examined = 0
     for issue in issues:
         labels = {str(label.get("name", "")).lower() for label in issue.get("labels") or []}
@@ -638,8 +646,8 @@ def enrich_waiting_inbound_blockers(
                                      "url": f"https://github.com/{target_repo}/issues/{match.group(2)}"})
             issue["_blocking_work_elsewhere"] = blocking
         except AuditError:
-            incomplete = True
-    return incomplete
+            failed = True
+    return UNAVAILABLE if failed else BOUNDED if incomplete else ""
 
 
 def parked_issue(issue: dict[str, Any]) -> bool:
@@ -1127,11 +1135,13 @@ def fetch_audit_issues(
     issues = list({issue.get("number"): issue for issue in issues}.values())
     if enrich_admission_actors(issues, milestone_lines, repo, fetch=fetch, since=audit_since or since):
         truncated.append("milestone_issue_events")
-    if enrich_waiting_inbound_blockers(issues, repo, fetch=fetch):
-        truncated.append("waiting_inbound_blockers")
-    if enrich_milestone_waits(issues, repo, list(milestone_lines), fetch=fetch,
-                              completed_titles=[item["title"] for item in milestones if item.get("state") == "closed"]):
-        truncated.append("milestone_waits")
+    waiting = enrich_waiting_inbound_blockers(issues, repo, fetch=fetch)
+    if waiting:
+        truncated.append("waiting_inbound_blockers" if waiting == BOUNDED else "waiting_inbound_blockers_unavailable")
+    waits = enrich_milestone_waits(issues, repo, list(milestone_lines), fetch=fetch,
+                                   completed_titles=[item["title"] for item in milestones if item.get("state") == "closed"])
+    if waits:
+        truncated.append("milestone_waits" if waits == BOUNDED else "milestone_waits_unavailable")
     return issues, truncated
 
 
@@ -1143,12 +1153,18 @@ def planning_config(repo: str) -> dict[str, Any]:
 def enrich_milestone_waits(
     issues: list[dict[str, Any]], repo: str, titles: list[str], *, fetch: Callable[[list[str]], Any],
     completed_titles: list[str] | None = None,
-) -> bool:
-    """Use the selection graph for overall Tracks; local audits check assigned work."""
+) -> str:
+    """Use the selection graph for overall Tracks; local audits check assigned work.
+
+    Returns "" when complete, BOUNDED when a cap or the graph itself left it
+    incomplete (such as a listed milestone with no Track), and UNAVAILABLE when
+    a node read failed.
+    """
     seeds = {(repo.casefold(), item["number"]): item for item in issues}
     for item in issues:
         item["repo"] = repo
     incomplete = False
+    failed = False
     configs: dict[str, dict[str, Any]] = {}
     wait_helpers = runpy.run_path(str(GITHUB_SCRIPTS / "gh-plan.py"))
 
@@ -1161,7 +1177,7 @@ def enrich_milestone_waits(
         item["_plan_status"] = github_direction_next.next_plan_status(item, config(repo))
 
     def read_node(target_repo: str, number: int) -> dict[str, Any]:
-        nonlocal incomplete
+        nonlocal incomplete, failed
         try:
             raw = seeds.get((target_repo.casefold(), number))
             if raw is None:
@@ -1191,7 +1207,7 @@ def enrich_milestone_waits(
             return github_direction_next.evaluate_direction_node({**raw, "repo": target_repo}, config=config(target_repo),
                                                                   focus=None, relationships=relations, structured_wait=wait)
         except AuditError:
-            incomplete = True
+            failed = True
             return {"item": {"repo": target_repo, "number": number,
                              "url": f"https://github.com/{target_repo}/issues/{number}",
                              "exclusion": "unknown_dependencies"}}
@@ -1205,7 +1221,7 @@ def enrich_milestone_waits(
         if target is not None:
             target["_milestone_wait_findings"] = graph["findings"]
         incomplete |= not graph["dependency_context"]["complete"]
-    return incomplete
+    return UNAVAILABLE if failed else BOUNDED if incomplete else ""
 
 
 def own_project_order(text: str) -> str:
@@ -1798,9 +1814,11 @@ def weekly_audit(
             unread[repo] = "marker_error"
             marker_error = marker_error or result["marker_error"]
         elif not result.get("run_recorded"):
-            # Archived, unknown archive state, a missing DIRECTION.md, or a held window
-            # whose required reads were not all available: no run was recorded.
+            # Archived, unknown archive state or a missing DIRECTION.md: no run was recorded.
             unread[repo] = str(result.get("marked_skipped") or "direction_missing")
+        elif result.get("unavailable_reads"):
+            # The run was recorded, but a required read failed or stayed incomplete.
+            unread[repo] = "reads unavailable: " + ", ".join(result["unavailable_reads"])
         elif result.get("marked_skipped") == "window_open":
             held[repo] = ", ".join(held_reads([item for finding in result.get("findings", [])
                                                if finding.get("kind") == "coverage_incomplete"
@@ -1816,19 +1834,20 @@ def weekly_audit(
     if not discovery["complete"] or unread or marker_error:
         receipt["weekly_skipped"] = "not every adopted repository was read" if unread or marker_error else "repository listing incomplete"
         return 1, receipt
-    path: pathlib.Path | str = os.environ.get("DIRECTION_MARKER") or "default direction marker"
+    shown = os.environ.get("DIRECTION_MARKER") or "default direction marker"
     try:
         path = direction_mark.marker_path()
+        shown = str(path)
         written = direction_mark.mark_weekly(path, owner, started)
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         receipt["ok"] = False
-        receipt["marker_error"] = f"Could not record the weekly audit at {path}: {exc}"
+        receipt["marker_error"] = f"Could not record the weekly audit at {shown}: {exc}"
         print(f"ERROR: {receipt['marker_error']}. The weekly audit was not recorded or shared.", file=sys.stderr)
         return 1, receipt
-    receipt["weekly_recorded"] = {"marker": str(path), **written["weekly_audit"]}  # type: ignore[dict-item]
-    receipt["shared"] = direction_mark.share_weekly(str(receipt["weekly_recorded"]["ran"]), owner)
+    receipt["weekly_recorded"] = {"marker": shown, **written["weekly_audit"]}  # type: ignore[dict-item]
+    receipt["shared"] = direction_mark.share_weekly(direction_mark.utc_stamp(started), owner)
     if not receipt["shared"]["ok"]:
-        print(f"ERROR: Weekly audit recorded at {path}, but the shared record failed: {receipt['shared']['error']}", file=sys.stderr)
+        print(f"ERROR: Weekly audit recorded at {shown}, but the shared record failed: {receipt['shared']['error']}", file=sys.stderr)
         return 2, receipt
     return (0 if receipt["ok"] else 3), receipt
 
@@ -2016,11 +2035,38 @@ def fetch_capacity(
 
 
 WINDOW_READS = {"recent_closed_audit_issues", "recent_closed_milestone_issues", "milestone_issue_events"}
+# Entries written when a read failed rather than reached a cap. A failed capacity read
+# still holds the window open, but no failed read counts as read for the weekly audit.
+FAILED_READS = {"capacity_own_projects", "capacity_tracks", "waiting_inbound_blockers_unavailable",
+                "milestone_waits_unavailable"}
+FAILED_READ_PREFIXES = ("capacity_reads:", "capacity_issue_labels:", "capacity_pull_links:", "capacity_graph:",
+                        "capacity_reporting_files:", "capacity_reporting_labels:", "capacity_reporting_links:")
+# Milestone outcome entries that name a bound or a finding about the file, not a failed read.
+OUTCOME_BOUNDS = ("milestone_missing", "graph_limit", ":read_limit", ":history_limit")
 
 
 def held_reads(truncated: list[str]) -> list[str]:
     """The incomplete reads that keep an audit's evidence window open for a rerun."""
     return sorted(item for item in truncated if item in WINDOW_READS or item.startswith("capacity_"))
+
+
+def unavailable_reads(truncated: list[str], result: dict[str, Any]) -> list[str]:
+    """Required reads that failed or did not finish, so the weekly audit cannot count the repository as read.
+
+    A page cap still counts as read: the audit reports it, and a cap inside the
+    evidence window holds that window for a rerun (#1812). A failed read does
+    not count, even while it holds the window. Neither does an incomplete
+    stale-wait report, active-unadopted report or milestone outcome.
+    """
+    unread = [item for item in truncated if item in FAILED_READS or item.startswith(FAILED_READ_PREFIXES)]
+    if not result["stale_wait_report"].get("complete"):
+        unread.append("stale_wait_report")
+    if "active_unadopted" in result and not result["active_unadopted"].get("complete"):
+        unread.append("active_unadopted")
+    for row in (result.get("capacity") or {}).get("milestone_outcomes") or []:
+        if any(not str(item).endswith(OUTCOME_BOUNDS) for item in row.get("unavailable") or []):
+            unread.append(f"milestone_outcomes:{row.get('milestone')}")
+    return sorted(set(unread))
 
 
 def audit_one(
@@ -2111,6 +2157,7 @@ def audit_one(
     archived = result["stale_wait_report"]["repository"]["archived"]
     result["marked_skipped"] = ("archived" if archived is True else "window_open" if held
                                 else "archive_state_unknown" if archived is not False else None)
+    result["unavailable_reads"] = unavailable_reads(truncated, result)
     result["marked"] = result["run_recorded"] = result["dropped"] = None
     try:
         result["marked"] = None if result["marked_skipped"] else record_audit(repo, now, direction_text)

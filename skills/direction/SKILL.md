@@ -285,7 +285,9 @@ uv run <skill-dir>/scripts/direction_mark.py turn --owner OWNER
 The older `--repo OWNER/REPO` form still works and records the same
 `OWNER/direction` coverage. It writes the local marker, then keeps the shared
 turn record current: one open issue titled "Daily direction turns" in
-`OWNER/direction`, written through the automation helpers. Exit 2 with the
+`OWNER/direction`, written through the automation helpers. The helper reads
+every open issue to find it. If it cannot finish that search, it does not
+create a new record. Exit 2 with the
 local-turn JSON receipt described below means the local turn was recorded but
 the shared record was not, so other machines keep
 reminding; report its `shared.error` to the Director. Exit 1 reports a local
@@ -319,10 +321,13 @@ do not stamp a turn just because direction was discussed.
 
 A `--weekly` receipt lists `repos` audited, `unread` (each with its reason),
 `held` and `weekly_recorded`, with every repository's own audit under
-`audits`. A repository counts as read when its run was recorded, including
-one that held its evidence window open. A repository whose required reads
-failed, whose archive state is unknown, or whose `DIRECTION.md` could not be
-read as present or absent is unread. A repository listing cut at its page
+`audits`. A repository counts as read when its run was recorded and none of
+its required reads failed. A page cap still counts as read, including one that
+held its evidence window open. A repository is unread when a read failed, even
+if it held the window; when its stale-wait report, active-unadopted report or
+milestone outcomes did not finish; when its archive state is unknown; or when
+its `DIRECTION.md` could not be read as present or absent. Its audit names the
+failed reads in `unavailable_reads`, and `unread` repeats them. A repository listing cut at its page
 limit or an App installed on selected repositories only also stops the record;
 `discovery` names the gap. Exit 1 means the weekly audit was not recorded, or
 `marker_error` reports a local write failure, and nothing is shared. Exit 2 means it was recorded on
@@ -370,13 +375,13 @@ The catalog's session-start hook reads that marker on every host. It prints
 at most two lines, the same in every folder: one when the last turn is more
 than a day old, and one when the last weekly audit is more than a week old.
 The audit line shows only for an account with direction set up, and it names
-no repository. The account is the owner of the direction repository the
-marker last recorded. Only an empty marker falls back to the folder's origin
-owner, and only when that owner's `OWNER/direction` has been audited here or
+no repository. The account is the owner of the direction repository named by
+the marker's newest turn or weekly audit. Only when the marker records no
+account does the hook fall back to the folder's origin owner, and only when that owner's `OWNER/direction` has been audited here or
 is checked out beside the folder. While either local stamp is stale, the hook
-reads the shared turn and weekly-audit records in `OWNER/direction` once and
-uses the newer stamps. When they cannot be read, the line says unconfirmed
-rather than overdue. A
+reads the open issues in `OWNER/direction` once and uses the newest stamp
+across every record it finds. When it cannot read them all, the line says
+unconfirmed rather than overdue. A
 reminder that will not clear means the marker was not written where the hook
 reads it; the reminder names the path. The marker is one file for every host,
 `~/.code/direction-last-check.json` unless `DIRECTION_MARKER` names another,

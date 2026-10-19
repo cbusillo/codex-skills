@@ -216,7 +216,13 @@ class FakeGitHub:
         self.failure = root / "fail"
         shebang = f"#!{sys.executable}\nimport json, sys\nfrom pathlib import Path\nstate = Path({str(self.state)!r})\n"
         guard = f"if Path({str(self.failure)!r}).exists():\n    sys.exit('gh: HTTP 403 Resource not accessible by integration')\n"
-        (self.scripts / "gh-with-env-token").write_text(shebang + guard + "print(state.read_text())\n")
+        # Serve one page of the issue list, as GitHub does for page=N&per_page=M.
+        (self.scripts / "gh-with-env-token").write_text(shebang + guard + (
+            "import re\n"
+            "query = dict(re.findall(r'[?&](\\w+)=([^&]+)', sys.argv[2]))\n"
+            "size, page = int(query.get('per_page', 30)), int(query.get('page', 1))\n"
+            "print(json.dumps(json.loads(state.read_text())[(page - 1) * size:page * size]))\n"
+        ))
         (self.scripts / "gh-issue").write_text(shebang + guard + (
             "issues = json.loads(state.read_text())\n"
             "body = sys.stdin.read()\n"
@@ -239,6 +245,21 @@ class FakeGitHub:
 
     def issues(self) -> list[dict[str, Any]]:
         return json.loads(self.state.read_text())
+
+    def seed(self, count: int) -> None:
+        """Open issues the Director filed that are not records."""
+        issues = self.issues()
+        start = len(issues)
+        issues += [{"number": start + n + 1, "body": "Other work", "author_association": "OWNER", "user": {"type": "User"}}
+                   for n in range(count)]
+        self.state.write_text(json.dumps(issues))
+
+    def add_record(self, body: str, **issue: object) -> int:
+        issues = self.issues()
+        number = len(issues) + 1
+        issues.append({"number": number, "body": body, "author_association": "NONE", "user": {"type": "Bot"}, **issue})
+        self.state.write_text(json.dumps(issues))
+        return number
 
 
 def test_two_machines_one_turn() -> None:
@@ -312,6 +333,66 @@ def test_turn_and_weekly_records_leave_each_other_untouched() -> None:
             assert mark.share_weekly("2026-09-23T00:00:00Z", "owner")["ok"]
             issues = github.issues()
             assert len(issues) == 2 and "2026-09-22T00:00:00Z" in issues[0]["body"] and "2026-09-23T00:00:00Z" in issues[1]["body"]
+
+
+def test_a_record_beyond_the_first_page_is_found_and_updated() -> None:
+    mark = load(SCRIPT, "direction_mark_paged_records")
+    hook = load(HOOK, "direction_check_hook_paged_records")
+    with tempfile.TemporaryDirectory() as tmp:
+        github = FakeGitHub(Path(tmp) / "github")
+        github.seed(150)
+        record = github.add_record(mark.weekly_record_body("2026-09-01T00:00:00Z"))
+        github.seed(10)
+        with patch.object(mark, "GITHUB_SCRIPTS", github.scripts):
+            assert mark.share_weekly(mark.utc_stamp(NOW), "owner") == {"ok": True, "repo": "owner/direction", "issue": record}
+        issues = github.issues()
+        assert len(issues) == 161, "the record is updated, not duplicated"
+        assert mark.utc_stamp(NOW) in issues[record - 1]["body"]
+        local = hook.read_marker(Path(tmp) / "fresh-machine.json")
+        soon = NOW + dt.timedelta(hours=1)
+        with patch.object(hook, "GH_READER", github.scripts / "gh-with-env-token"):
+            seen = hook.with_shared_records(local, soon, "owner")
+        assert hook.reminder_states(seen, soon, "owner")["audit"] == "current", "the reader finds it beyond the first page"
+
+
+def test_incomplete_record_discovery_is_unconfirmed_and_creates_nothing() -> None:
+    mark = load(SCRIPT, "direction_mark_bounded_discovery")
+    hook = load(HOOK, "direction_check_hook_bounded_discovery")
+    with tempfile.TemporaryDirectory() as tmp:
+        github = FakeGitHub(Path(tmp) / "github")
+        github.seed(2 * 100)
+        path = Path(tmp) / "marker.json"
+        printed = io.StringIO()
+        with (patch.object(mark, "GITHUB_SCRIPTS", github.scripts), patch.object(mark, "RECORD_PAGES", 2),
+              patch.dict(os.environ, {"DIRECTION_MARKER": str(path)}), redirect_stdout(printed), redirect_stderr(io.StringIO())):
+            assert mark.share_weekly(mark.utc_stamp(NOW), "owner")["ok"] is False
+            assert mark.main(["turn", "--owner", "owner"]) == 2, "an unfinished search is not shared"
+        assert len(github.issues()) == 200, "no record is created when one may exist beyond the pages read"
+        assert json.loads(printed.getvalue())["shared"]["ok"] is False
+        soon = NOW + dt.timedelta(hours=1)
+        with patch.object(hook, "GH_READER", github.scripts / "gh-with-env-token"), patch.object(hook, "RECORD_PAGES", 2):
+            seen = hook.with_shared_records(hook.read_marker(Path(tmp) / "other.json"), soon, "owner")
+        assert hook.reminder_states(seen, soon, "owner") == {"turn": "unconfirmed", "audit": "unconfirmed"}
+
+
+def test_several_records_reader_takes_the_newest_and_writer_updates_the_oldest_trusted() -> None:
+    mark = load(SCRIPT, "direction_mark_duplicate_records")
+    hook = load(HOOK, "direction_check_hook_duplicate_records")
+    with tempfile.TemporaryDirectory() as tmp:
+        github = FakeGitHub(Path(tmp) / "github")
+        forged = github.add_record(mark.weekly_record_body("2026-09-01T00:00:00Z"), author_association="NONE", user={"type": "User"})
+        oldest = github.add_record(mark.weekly_record_body("2026-09-10T00:00:00Z"))
+        newest = github.add_record(mark.weekly_record_body(mark.utc_stamp(NOW)), author_association="MEMBER", user={"type": "User"})
+        with patch.object(hook, "GH_READER", github.scripts / "gh-with-env-token"):
+            shared, error = hook.read_shared_records("owner")
+        assert error is None and shared["weekly"] == NOW.replace(microsecond=0), "the newest stamp across the records"
+        before = github.issues()
+        with patch.object(mark, "GITHUB_SCRIPTS", github.scripts):
+            assert mark.share_weekly("2026-09-23T00:00:00Z", "owner")["issue"] == oldest
+        after = github.issues()
+        assert "2026-09-23T00:00:00Z" in after[oldest - 1]["body"], "the oldest trusted record is the one written"
+        assert after[forged - 1] == before[forged - 1] and after[newest - 1] == before[newest - 1]
+        assert len(after) == 3
 
 
 def test_overlapping_audits_and_turn_preserve_updates() -> None:
