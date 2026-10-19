@@ -602,8 +602,10 @@ After the real-data import, check the imported parts and supplier costs.
 ```
 
 The notes classify the PR: `Nothing for the Client to test: <reason>` and this
-engineering marker allow ordinary checked `ready`. Unmarked test steps need
-Client acceptance before merge. Never use the engineering marker when the Client
+engineering marker allow ordinary checked `ready`. The legacy marker
+`Nothing for the owner to test` also accepts `:` or `.` followed by a nonempty
+reason. Unmarked test steps need Client acceptance before merge. Never use
+the engineering marker when the Client
 must approve wording, screens, workflows or data before merge; keep those PRs on
 `--waiting-for-client`. A review label, a non-neutral review check, or another
 section or batch member requiring acceptance still keeps that gate. The marker
