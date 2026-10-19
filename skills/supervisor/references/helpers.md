@@ -462,6 +462,14 @@ ready handoff path as other repositories, per
 [Q312](https://github.com/cbusillo/launchplane/issues/3327#issuecomment-6182485308).
 Launchplane owns product release holds; do not copy them into this record.
 
+On a normally completed pass, every observed trusted current-head ready handoff the watcher leaves unenqueued is
+named in a `skipped` event with its reason, including repository holds, busy
+controllers, controller ineligibility, dry runs and batch selection. Controller
+rejections retain `ineligible_reasons`; a busy event alone is not a PR inventory.
+Unavailable inventory is explicit as `skip_inventory_unavailable`. Stops propagate
+without further diagnostic reads. These observations do not authorize enqueueing
+or replace the fresh write gates.
+
 ```sh
 uv run skills/supervisor/scripts/auto_enqueue.py holds --hold-file <private-holds.json> --init
 uv run skills/supervisor/scripts/auto_enqueue.py --owner OWNER --hold-file <private-holds.json> --handoff-login AGENT_LOGIN --once
