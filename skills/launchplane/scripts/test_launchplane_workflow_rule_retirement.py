@@ -90,7 +90,7 @@ def test_read_posts_exact_selection_and_projects_rules(command, mode):
     assert payload_path not in json.dumps(output)
     result = output["result"]
     assert result["apply_supported"] is False
-    assert result["dependency_verification"] == "unknown_requires_source_review"
+    assert result["dependency_verification"] == retirement.SOURCE_REVIEW_REQUIRED
     managed, unmanaged = result["selected_rules"]
     assert (managed["management"], managed["managed_set_id"], managed["managed_rule_id"]) == ("managed", "set-1", "rule-1")
     assert managed["scope"]["refs"] == ["refs/heads/*"]

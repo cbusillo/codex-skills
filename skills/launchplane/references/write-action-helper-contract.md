@@ -1918,11 +1918,13 @@ before you propose a retirement.
 The helper checks the response against the request. A different policy
 record, revision or digest, a missing or extra rule, a wrong management value,
 `apply_supported` other than `false`, plan fields on the wrong mode, a missing
-scope field, or any `dependency_verification` other than
-`unknown_requires_source_review` return `invalid`. A 409 `workflow_rule_selection_changed` or
-`active_authz_policy_ambiguous` returns `stale`: re-read the active policy and
-the rules, then rerun. A 400 returns `invalid_request`, a 403 returns `denied`
-with its trace, and a client timeout returns `client_timeout`. The service
+or mistyped repository or selector field in a scope (only null managed ids may
+be absent), or any `dependency_verification` other than
+`unknown_requires_source_review` return `invalid`. A 409
+`workflow_rule_selection_changed` or `active_authz_policy_ambiguous` returns
+`stale`: re-read the active policy and the rules, then rerun. A 400 returns
+`invalid_request`, and a 403 returns `denied` with its trace. A client timeout
+returns `unavailable` with the error code `client_timeout`. The service
 needs service-wide policy read authority to show full scopes.
 
 ## Policy Proposals
