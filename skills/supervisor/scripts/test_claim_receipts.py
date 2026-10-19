@@ -750,6 +750,114 @@ class ReceiptTests(unittest.TestCase):
             with self.subTest(body=body):
                 self.assertEqual(receipts.python_ownership(setup + body), owning)
 
+    def assert_python_patch_ownership(self, program, expected):
+        for harness in ("codex", "claude"):
+            with self.subTest(harness=harness, program=program):
+                rows = history(harness, {})
+                command = "python3 -c " + shlex.quote(program)
+                if harness == "codex":
+                    rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                else:
+                    rows[1]["message"]["content"][0]["input"] = {"command": command}
+                self.assertEqual(receipts.ownership_state(rows, harness)["pending"], expected)
+                self.assertEqual(receipts.executable_file_content("run.py", program), expected)
+
+    def test_python_patch_decorators_preserve_receivers(self):
+        setup = 'import os, subprocess, asyncio\nfrom unittest.mock import patch, Mock, MagicMock, AsyncMock, NonCallableMock, NonCallableMagicMock, DEFAULT\nWRITER=\'uv run /catalog/gh-plan.py --repo o/r claim 12\'\nPROGRAM="import os\\nos.system(\'uv run /catalog/gh-plan.py --repo o/r claim 12\')"\ndef record(*a, **k): return 0\n'
+        programs = (
+            ("class F:\n def claim(self): os.system(WRITER)\n @patch('subprocess.run',record)\n def run(self): self.claim()\nF().run()", True),
+            ("class F:\n def claim(self): os.system(WRITER)\n @patch('subprocess.run')\n def run(self,mock): self.claim()\nF().run()", True),
+            ("@patch('os.system',record)\nclass F:\n def __init__(self): os.system(WRITER)\nF()", True),
+            ("@patch('os.system',record)\nclass F:\n def test_claim(self): os.system(WRITER)\nF().test_claim()", False),
+            ("@patch('os.system',record)\nclass F:\n @staticmethod\n def claim(): os.system(WRITER)\nF.claim()", True),
+            ("class Base:\n def claim(self): os.system(WRITER)\nclass Child(Base):\n @patch('subprocess.run',record)\n def run(self): super().claim()\nChild().run()", True),
+            ("class Base:\n def test_claim(self): os.system(WRITER)\n@patch('os.system',record)\nclass Child(Base): pass\nChild().test_claim()", False),
+            ("@patch('os.system',record)\nclass F:\n @staticmethod\n def test_claim(): os.system(WRITER)\nF.test_claim()", False),
+            ("@patch('os.system',record)\nclass F:\n @classmethod\n def test_claim(cls): os.system(WRITER)\nF.test_claim()", False),
+            ("patch.TEST_PREFIX='case_'\n@patch('os.system',record)\nclass F:\n def case_claim(self): os.system(WRITER)\nF().case_claim()", False),
+        )
+        for body, expected in programs:
+            self.assert_python_patch_ownership(setup + body, expected)
+            if expected:
+                self.assert_python_patch_ownership((setup + body).replace("uv run /catalog/gh-plan.py --repo o/r claim 12", "echo safe"), False)
+
+    def test_python_explicit_mock_replacements_preserve_behavior(self):
+        setup = 'import os, subprocess, asyncio\nfrom unittest.mock import patch, Mock, MagicMock, AsyncMock, NonCallableMock, NonCallableMagicMock, DEFAULT\nWRITER=\'uv run /catalog/gh-plan.py --repo o/r claim 12\'\nPROGRAM="import os\\nos.system(\'uv run /catalog/gh-plan.py --repo o/r claim 12\')"\ndef record(*a, **k): return 0\n'
+        programs = (
+            ("with patch('os.system',Mock(return_value=0)): exec(PROGRAM,{})", False),
+            ("with patch('os.system',new_callable=Mock): exec(PROGRAM,{})", False),
+            ("with patch.object(os,'system',new=Mock()): exec(PROGRAM,{})", False),
+            ("with patch('os.system',MagicMock(return_value=0)): exec(PROGRAM,{})", False),
+            ("with patch('os.system',new_callable=MagicMock): exec(PROGRAM,{})", False),
+            ("with patch.object(os,'system',new=MagicMock()): exec(PROGRAM,{})", False),
+            ("with patch('os.system',AsyncMock(return_value=0)): exec(PROGRAM,{})", False),
+            ("with patch('os.system',new_callable=AsyncMock): exec(PROGRAM,{})", False),
+            ("with patch.object(os,'system',new=AsyncMock()): exec(PROGRAM,{})", False),
+            ("with patch('os.system',NonCallableMock(return_value=0)): exec(PROGRAM,{})", False),
+            ("with patch('os.system',new_callable=NonCallableMock): exec(PROGRAM,{})", False),
+            ("with patch.object(os,'system',new=NonCallableMock()): exec(PROGRAM,{})", False),
+            ("with patch('os.system',NonCallableMagicMock(return_value=0)): exec(PROGRAM,{})", False),
+            ("with patch('os.system',new_callable=NonCallableMagicMock): exec(PROGRAM,{})", False),
+            ("with patch.object(os,'system',new=NonCallableMagicMock()): exec(PROGRAM,{})", False),
+            ("@patch.multiple('os',system=DEFAULT)\ndef run(system):\n system.return_value=WRITER\n return os.system('x')\nos.system(run())", True),
+            ("def factory(): return record\nwith patch('os.system',new_callable=factory): exec(PROGRAM,{})", False),
+            ("with patch('os.system',Mock(wraps=os.system)): exec(PROGRAM,{})", True),
+            ("with patch('os.system',Mock(side_effect=os.system)): exec(PROGRAM,{})", True),
+            ("Mock(return_value=os.system)('x')(WRITER)", True),
+            ("mock=Mock(wraps=os.system)\nmock(WRITER)", True),
+            ("with patch('os.system',AsyncMock(wraps=os.system)): exec(PROGRAM,{})", False),
+            ("async def run():\n with patch('os.system',AsyncMock(wraps=os.system)):\n  await os.system(WRITER)\nasyncio.run(run())", True),
+            ("with patch.multiple('os',system=record): exec(PROGRAM,{})", False),
+            ("with patch.multiple('os',system=record): exec(PROGRAM,{})\nos.system(WRITER)", True),
+            ('os.system=record\nexec(PROGRAM,{})', False),
+            ('os.system=MagicMock()\nexec(PROGRAM,{})', False),
+            ('from os import system\nos.system=record\nsystem(WRITER)', True),
+        )
+        for body, expected in programs:
+            self.assert_python_patch_ownership(setup + body, expected)
+            if expected:
+                self.assert_python_patch_ownership((setup + body).replace("uv run /catalog/gh-plan.py --repo o/r claim 12", "echo safe"), False)
+
+    def test_python_patch_exceptions_do_not_call_original(self):
+        setup = 'import os, subprocess, asyncio\nfrom unittest.mock import patch, Mock, MagicMock, AsyncMock, NonCallableMock, NonCallableMagicMock, DEFAULT\nWRITER=\'uv run /catalog/gh-plan.py --repo o/r claim 12\'\nPROGRAM="import os\\nos.system(\'uv run /catalog/gh-plan.py --repo o/r claim 12\')"\ndef record(*a, **k): return 0\n'
+        programs = (
+            ("with patch('os.system',side_effect=OSError):\n try: exec(PROGRAM,{})\n except OSError: pass", False),
+            ("with patch('os.system',side_effect=RuntimeError('x')):\n try: exec(PROGRAM,{})\n except RuntimeError: pass", False),
+            ("with patch('os.system',side_effect=subprocess.CalledProcessError(1,'x')):\n try: exec(PROGRAM,{})\n except subprocess.CalledProcessError: pass", False),
+            ("def OSError(command): os.system(command)\nfrom os import system as original\ndef OSError(command): original(command)\nwith patch('os.system',side_effect=OSError): exec(PROGRAM,{})", True),
+        )
+        for body, expected in programs:
+            self.assert_python_patch_ownership(setup + body, expected)
+            if expected:
+                self.assert_python_patch_ownership((setup + body).replace("uv run /catalog/gh-plan.py --repo o/r claim 12", "echo safe"), False)
+
+    def test_python_patch_lifecycle_preserves_injections(self):
+        setup = 'import os, subprocess, asyncio\nfrom unittest.mock import patch, Mock, MagicMock, AsyncMock, NonCallableMock, NonCallableMagicMock, DEFAULT\nWRITER=\'uv run /catalog/gh-plan.py --repo o/r claim 12\'\nPROGRAM="import os\\nos.system(\'uv run /catalog/gh-plan.py --repo o/r claim 12\')"\ndef record(*a, **k): return 0\n'
+        programs = (
+            ("with patch('os.system',record):\n p=patch('subprocess.run',record)\n p.start()\n patch.stopall()\n exec(PROGRAM,{})", False),
+            ("p=patch('os.system',record)\np.start()\nexec(PROGRAM,{})\npatch.stopall()\nos.system(WRITER)", True),
+            ("@patch('os.system')\n@patch('shutil.which')\ndef run(mock_which,mock_system):\n mock_system.return_value=WRITER\n return os.system('x')\nos.system(run())", True),
+        )
+        for body, expected in programs:
+            self.assert_python_patch_ownership(setup + body, expected)
+            if expected:
+                self.assert_python_patch_ownership((setup + body).replace("uv run /catalog/gh-plan.py --repo o/r claim 12", "echo safe"), False)
+
+    def test_python_patch_mutations_prevent_result_reuse(self):
+        setup = 'import os, subprocess, asyncio\nfrom unittest.mock import patch, Mock, MagicMock, AsyncMock, NonCallableMock, NonCallableMagicMock, DEFAULT\nWRITER=\'uv run /catalog/gh-plan.py --repo o/r claim 12\'\nPROGRAM="import os\\nos.system(\'uv run /catalog/gh-plan.py --repo o/r claim 12\')"\ndef record(*a, **k): return 0\n'
+        programs = (
+            ("def quiet(): patch('os.system',record).start()\nif cond: quiet()\nelse: quiet()\nexec(PROGRAM,{})", False),
+        )
+        for body, expected in programs:
+            self.assert_python_patch_ownership(setup + body, expected)
+            if expected:
+                self.assert_python_patch_ownership((setup + body).replace("uv run /catalog/gh-plan.py --repo o/r claim 12", "echo safe"), False)
+
+    def test_recorded_mocked_escape_diagnostic_is_not_ownership(self):
+        # Immutable historical command input; analyze it without executing it.
+        program = 'import sys,types,json\nfrom unittest.mock import patch\nfrom pathlib import Path\nsys.path.insert(0,str(Path.cwd()/\'skills/supervisor/scripts\'))\nimport claim_receipts\nclaim=\'uv run /catalog/gh-plan.py --repo client/repo claim 12\'\nreport=[]\nfor wrapped in (\'(q,)\',\'{"pack": (q,)}\'):\n module=types.ModuleType(\'fill_fixture\')\n def fill(argument):\n  (argument[\'pack\'][0] if isinstance(argument,dict) else argument[0]).append(\'item\')\n module.fill=fill\n program=\'from fill_fixture import fill\\nimport os\\nq=[]\\nfill(\'+wrapped+\')\\nfor item in q: os.system(\'+repr(claim)+\')\'\n called=[]\n with patch.dict(sys.modules,{\'fill_fixture\':module}),patch(\'os.system\',side_effect=called.append):exec(program,{})\n report.append({\'wrapper\':wrapped,\'actual_commands\':called,\'classified\':claim_receipts.python_ownership(program)})\np=Path(\'/Volumes/Developer-Artifacts/task-evidence/codex-skills/claimrel-native-regression\')\n(p/\'r7-wrapped-escape-before.json\').write_text(json.dumps(report,indent=2)+\'\\n\')\nprint(json.dumps(report))\n'
+        self.assert_python_patch_ownership(program, False)
+
     def test_python_fixture_tables_keep_sources_under_patch(self):
         writer = "uv run /catalog/gh-plan.py --repo o/r claim 12"
         sources = ["import os\nos.system(" + repr(writer) + ")\nmarker=" + repr(index) for index in range(12)]
@@ -779,6 +887,108 @@ class ReceiptTests(unittest.TestCase):
                 state = receipts.ownership_state(rows, harness)
                 self.assertFalse(state['indices'])
                 self.assertFalse(state['pending'])
+
+    def test_python_source_products_preserve_linear_execution_cost(self):
+        writer = "uv run /catalog/gh-plan.py --repo o/r claim 12"
+        for mocked in (False, True):
+            counts = []
+            for size in (2, 4):
+                tables = ([f'import os\na={index}\n' for index in range(size)],
+                          ['os.system(' + repr(writer) + f')\nb={index}\n' for index in range(size)],
+                          [f'print({index})\n' for index in range(size)])
+                program = ('import os\nfrom unittest.mock import patch\ndef record(*a): return 0\nA='
+                           + repr(tables[0]) + '\nB=' + repr(tables[1]) + '\nC=' + repr(tables[2]) + '\n')
+                body = 'for a in A:\n    for b in B:\n        for c in C: exec(a+b+c, {})\n'
+                program += ('with patch("os.system", record):\n' + '\n'.join('    ' + line for line in body.splitlines())) if mocked else body
+                calls = []
+                def profile(frame, event, _argument):
+                    if event == 'call' and frame.f_code.co_filename == receipts.__file__ and frame.f_code.co_name in {'walk', 'scan'}:
+                        calls.append(None)
+                previous = sys.getprofile()
+                try:
+                    sys.setprofile(profile)
+                    self.assertEqual(receipts.python_ownership(program), not mocked)
+                finally:
+                    sys.setprofile(previous)
+                counts.append(len(calls))
+            with self.subTest(mocked=mocked):
+                self.assertLessEqual(counts[1], counts[0] * 3)
+
+    def test_python_source_products_preserve_consumers_and_large_fixture_tables(self):
+        writer = "uv run /catalog/gh-plan.py --repo o/r claim 12"
+        for size, consumers in ((12, ("exec(a+b,{})", "exec(str(a+b),{})", "exec(f'{a+b}',{})",
+                                     "exec(compile(a+b,'<fixture>','exec'),{})", "print(a+b)",
+                                     "subprocess.run(['python','-c',a+b])")), (65, ("exec(a+b,{})",))):
+            setup = ('import os, subprocess\nfrom unittest.mock import patch\ndef record(*a): return 0\nA='
+                     + repr([f'import os\na={index}\n' for index in range(size)]) + '\nB='
+                     + repr(['os.system(' + repr(writer) + f')\nb={index}\n' for index in range(size)]) + '\n')
+            for consumer in consumers:
+                body = 'for a in A:\n    for b in B: ' + consumer + '\n'
+                for mocked in (False, True):
+                    program = setup + ('with patch("os.system", record):\n' + '\n'.join('    ' + line for line in body.splitlines()) if mocked else body)
+                    owning = not consumer.startswith('print') and (not mocked or consumer.startswith('subprocess'))
+                    with self.subTest(size=size, consumer=consumer, mocked=mocked):
+                        self.assertEqual(receipts.python_ownership(program), owning)
+
+    def test_python_nonseparable_sources_keep_an_owning_witness(self):
+        writer = "uv run /catalog/gh-plan.py --repo o/r claim 12"
+        program = ('import os\ndef factory(index): return os.system\nA='
+                   + repr([f'factory({index})' for index in range(12)]) + '\nB='
+                   + repr(['(' + repr(writer + ' --worker w' + str(index)) + ')' for index in range(12)])
+                   + '\nfor a in A:\n    for b in B: exec(a+b)')
+        self.assertTrue(receipts.python_ownership(program))
+        setup = ('A=' + repr([f'import os\na={index}\n' for index in range(12)]) + '\nB='
+                 + repr(['os.system(' + repr(writer) + f')\nb={index}\n' for index in range(12)]))
+        self.assertTrue(receipts.python_ownership(setup + "\nfor a in A:\n    for b in B: exec((a+b).replace('\\n',';'),{})"))
+
+    def test_python_argv_source_products_bound_repeated_analysis(self):
+        counts = []
+        for size in (2, 4):
+            program = ('import subprocess\nC=' + repr([f'print({index})' for index in range(size)])
+                       + '\nA=' + repr([f'print({index})' for index in range(size)])
+                       + '\nfor code in C:\n    for first in A:\n        for second in A: subprocess.run(["python","-c",code,first,second])')
+            calls = []
+            def profile(frame, event, _argument):
+                if event == 'call' and frame.f_code.co_filename == receipts.__file__ and frame.f_code.co_name == 'python_ownership':
+                    calls.append(None)
+            previous = sys.getprofile()
+            try:
+                sys.setprofile(profile)
+                self.assertFalse(receipts.python_ownership(program))
+            finally:
+                sys.setprofile(previous)
+            counts.append(len(calls))
+        # Two independent data columns can grow quadratically before their
+        # existing value bound; the source choices must add no third factor.
+        self.assertLessEqual(counts[1], counts[0] * 4)
+
+    def test_python_recreated_classes_keep_independent_bindings(self):
+        writer = "uv run /catalog/gh-plan.py --repo o/r claim 12"
+        source = "class C:\n    command=command\n    def run(self): os.system(self.command)"
+        property_source = "class C:\n    command=command\n    @property\n    def run(self): os.system(self.command)"
+        inherited_source = ("class Base:\n    command=command\n    def run(self): os.system(self.command)\n"
+                            "class C(Base):\n    def run(self): super().run()")
+        programs = []
+        for definition, access in ((source, 'first.run()'), (property_source, 'first.run'), (inherited_source, 'first.run()')):
+            for initial, later, expected in ((writer, 'echo safe', True), ('echo safe', writer, False)):
+                programs.append(("SOURCE=" + repr(definition) + "\ncommand=" + repr(initial)
+                                 + "\nexec(SOURCE)\nfirst=C()\ncommand=" + repr(later) + "\nexec(SOURCE)\n" + access, expected))
+        programs.append(("SOURCE=" + repr(source) + "\ncommand=WRITER\nexec(SOURCE)\nfirst=C\ncommand='echo safe'\nexec(SOURCE)\nfirst().run()", True))
+        for returns_instance in (False, True):
+            factory = ("def build(operand):\n    class C:\n        command=operand\n        def run(self): os.system(self.command)\n    return C" + ('()' if returns_instance else '') + "\n")
+            access = 'first.run()' if returns_instance else 'first().run()'
+            for initial, later, expected in ((writer, 'echo safe', True), ('echo safe', writer, False)):
+                programs.append((factory + "first=build(" + repr(initial) + ")\nsecond=build(" + repr(later) + ")\n" + access, expected))
+            access_second = 'second.run()' if returns_instance else 'second().run()'
+            programs.append((factory + "first=build('echo safe')\nsecond=build('echo safe')\nfirst.command=WRITER\n" + access_second, False))
+        programs.append(("saved=[]\nfor command in [WRITER, 'echo safe']:\n    class C:\n        command=command\n        def run(self): os.system(self.command)\n    saved.append(C)\nsaved[0]().run()", True))
+        for first, second, expected in ((writer, 'echo safe', True), ('echo safe', writer, False)):
+            programs.append(("pending=" + repr([first, second])
+                             + "\ndef decorate():\n    os.system(pending.pop(0))\n    return lambda cls: cls\n@decorate()\nclass C: pass", expected))
+        for body, expected in programs:
+            program = "import os\nWRITER=" + repr(writer) + "\n" + body
+            with self.subTest(program=program):
+                self.assertEqual(receipts.python_ownership(program), expected)
 
     def test_python_model_cache_does_not_confuse_transient_values(self):
         import builtins
@@ -3224,6 +3434,34 @@ class ReceiptTests(unittest.TestCase):
             "d={}\nd.update({a: COMMAND})\nd.update({b: 'echo safe'})",
             "d={**{a: COMMAND}, **{b: 'echo safe'}}",
             "d={a: COMMAND}\nd.update([(b, 'echo safe')])",
+        )
+        for form in forms:
+            for command, owning in ((writer, True), ("echo safe", False)):
+                program = ("import os,sys\na=sys.argv[1]\nb=sys.argv[2]\n"
+                           + form.replace("COMMAND", repr(command))
+                           + "\nfor command in d.values(): os.system(command)")
+                for harness in ("codex", "claude"):
+                    with self.subTest(harness=harness, form=form, owning=owning):
+                        rows = history(harness, {})
+                        shell = "python -c " + shlex.quote(program)
+                        if harness == "codex":
+                            rows[1]["payload"]["arguments"] = json.dumps({"cmd": shell})
+                        else:
+                            rows[1]["message"]["content"][0]["input"] = {"command": shell}
+                        self.assertEqual(receipts.ownership_state(rows, harness)["pending"], owning)
+
+    def test_dynamic_dictionary_constructor_and_keywords_keep_values(self):
+        writer = "uv run gh-plan.py --repo example/a claim 1"
+        forms = (
+            "d=dict([(a, COMMAND), ('k', 'echo safe')])",
+            "d=dict({a: COMMAND, b: 'echo safe'})",
+            "d=dict(**{a: COMMAND, b: 'echo safe'})",
+            "d={}\nd.update(**{a: COMMAND})\nd.update(**{b: 'echo safe'})",
+            "def collect(**kw): return kw\nd=collect(**{a: COMMAND, b: 'echo safe'})",
+            "from functools import partial\ndef collect(**kw): return kw\nd=partial(collect, **{a: COMMAND})(known='echo safe')",
+            "from functools import partial\ndef collect(**kw): return kw\nd=partial(collect, **{a: COMMAND})(**{b: 'echo safe'})",
+            "def collect(command='echo safe'): return {'value': command}\nd=collect(**{a: COMMAND})",
+            "def collect(*, command='echo safe'): return {'value': command}\nd=collect(**{a: COMMAND})",
         )
         for form in forms:
             for command, owning in ((writer, True), ("echo safe", False)):
