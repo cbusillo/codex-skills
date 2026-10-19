@@ -1224,9 +1224,10 @@ verification.
   workflow. `dokploy-target-create-application-dry-run` / `-apply` create a
   conventional testing application in new placement, optionally with a new
   service-named state volume; apply reuses the saved storage plan and needs the
-  same `--idempotency-key` on every retry. Read
+  same `--idempotency-key` on every retry. `-readback` and `-retain` recover an
+  uncertain allocation from that evidence and key. Read
   [Provider target](references/write-action-helper-contract.md#provider-target)
-  before it.
+  before any of them.
 - `dokploy-target-repair-domain-authority-dry-run` uses that setup route with
   `operation: repair-domain-authority` and fixed `mode: dry-run`.
   `ingress-route-dry-run` uses the local-extension

@@ -4199,7 +4199,12 @@ def _project_success_output(
         return records, _project_dokploy_compose_setup(
             provider_payload.get("result"), request=request
         )
-    if operation in DOKPLOY_APPLICATION_COMMANDS:
+    if operation == DOKPLOY_APPLICATION_READBACK_COMMAND:
+        records = _project_records(provider_payload.get("records"), set())
+        return records, _project_dokploy_application_readback(
+            provider_payload.get("result"), request=request
+        )
+    if operation in DOKPLOY_APPLICATION_COMMANDS or operation == DOKPLOY_APPLICATION_RETAIN_COMMAND:
         records = _project_records(provider_payload.get("records"), set())
         return records, _project_dokploy_application_setup(
             provider_payload.get("result"), request=request
@@ -4433,6 +4438,13 @@ def summarize_success(
                 else "Check read_back_matches and allocation_state before relying on the target. "
                 "Retry only with the original key and evidence."
             )
+        elif operation == DOKPLOY_APPLICATION_READBACK_COMMAND:
+            summary["plan_sha256"] = result.get("plan_sha256")
+            summary["recommendation"] = (
+                "Readback created and adopted nothing. Save this output. If the allocation cannot "
+                "resume under the original key, retain it with this custody_sha256, the same "
+                "payload, evidence and original key."
+            )
         elif operation in {
             "private-health-endpoint-dry-run",
             "private-health-endpoint-apply",
@@ -4544,6 +4556,12 @@ def summarize_http_error(
         **diagnostics,
         "recommendation": http_error_recommendation(status),
     }
+    if request.get("setup_operation") == "create-application" and isinstance(
+        summary["error_code"], str
+    ):
+        summary["recommendation"] = APPLICATION_STATE_VOLUME_NEXT_STEPS.get(
+            summary["error_code"], summary["recommendation"]
+        )
     payload["summary"] = summary
     if operation == "privileged-policy-propose" and (exc.code in {404, 409} or 500 <= exc.code < 600):
         payload["status"] = (
@@ -7595,6 +7613,49 @@ DOKPLOY_APPLICATION_RETAINED_RESULT_FIELDS = {
     "reviewed_custody_sha256",
     "retained_provider_effect_phase",
 }
+# Recovery of an uncertain storage allocation: readback reports custody without
+# creating or adopting, and retain keeps that exact custody under the original key.
+DOKPLOY_APPLICATION_READBACK_COMMAND = "dokploy-target-create-application-readback"
+DOKPLOY_APPLICATION_RETAIN_COMMAND = "dokploy-target-create-application-retain"
+DOKPLOY_APPLICATION_READBACK_RESULT_FIELDS = DOKPLOY_APPLICATION_STATE_VOLUME_RESULT_FIELDS - {
+    "setup",
+} | {"operation_state", "provider_effect_phase", "custody_sha256"}
+DOKPLOY_APPLICATION_CONFIGURATION_EVIDENCE = {"matches", "differs", "unavailable"}
+# The durable phase names generated provider ids; only its step names are shown.
+STATE_VOLUME_CREATED_STEPS = ("project", "environment", "application")
+STATE_VOLUME_PENDING_STEPS = {
+    "/api/project.create": "project",
+    "/api/environment.create": "environment",
+    "/api/application.create": "application",
+    "/api/mounts.create": "mount",
+}
+# Plain next steps for the service's stable storage refusal codes; never parse messages.
+APPLICATION_STATE_VOLUME_NEXT_STEPS = {
+    "application_state_volume_execution_active": (
+        "The original execution lease is still active. Wait for it to expire, then retain "
+        "again with the same readback evidence and original key."
+    ),
+    "application_state_volume_lane_busy": (
+        "The testing lane executor is busy. Retry the original operation with the original "
+        "key after it releases the lane."
+    ),
+    "application_state_volume_custody_changed": (
+        "Custody changed since the reviewed readback. Read back again with the original key "
+        "and plan, review the new custody_sha256, then retain with it."
+    ),
+    "application_state_volume_already_adopted": (
+        "The allocation is already the tracked target. Do not retain; apply again with the "
+        "original key and saved evidence to complete the adoption receipt."
+    ),
+    "application_state_volume_owner_changed": (
+        "Context ownership changed. Resolve current ownership through the existing authority "
+        "process before retrying."
+    ),
+    "application_state_volume_unqualified": (
+        "The request does not match the original plan and key. Use the unchanged private "
+        "payload, its saved dry-run evidence and the original key; new work needs a fresh dry run."
+    ),
+}
 # Launchplane's typed confirmation for a target-setup apply; the reviewed dry-run
 # evidence and plan digest are what the helper checks before sending it.
 DOKPLOY_TARGET_SETUP_CONFIRMATION = "APPLY DOKPLOY TARGET SETUP"
@@ -8058,6 +8119,86 @@ def _project_dokploy_application_setup(
     return projected
 
 
+def _project_dokploy_application_readback(
+    result: object, *, request: dict[str, object] | None
+) -> dict[str, object]:
+    """Original-key custody evidence for the reviewed storage plan; generated names,
+    provider ids and the server id drop, and the durable phase keeps only step names."""
+    request = request or {}
+    source = _require_dict(result)
+    payload_digest = request.get("payload_digest")
+    if not isinstance(payload_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", payload_digest):
+        raise LaunchplaneSafetyError("invalid_response")
+    if any(str(key) not in DOKPLOY_APPLICATION_READBACK_RESULT_FIELDS for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    evidence = source.get("configuration_evidence")
+    custody = source.get("custody_sha256")
+    if (
+        source.get("operation") != "create-application"
+        or source.get("instance") != "testing"
+        or source.get("deployment_performed") is not False
+        # Readback answers for the plan it was sent, never another one.
+        or source.get("state_volume_plan_id") != request.get("state_volume_plan_id")
+        or source.get("plan_sha256") != request.get("service_plan_sha256")
+        or evidence not in DOKPLOY_APPLICATION_CONFIGURATION_EVIDENCE
+        or source.get("configuration_matches") is not (evidence == "matches")
+        or not isinstance(custody, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", custody)
+    ):
+        raise LaunchplaneSafetyError("invalid_response")
+    state_volume = {
+        "plan_id": cast(str, request["state_volume_plan_id"]),
+        "service_plan_sha256": cast(str, request["service_plan_sha256"]),
+    }
+    context = public_identifier(source.get("context"))
+    if context != request.get("context"):
+        raise LaunchplaneSafetyError("invalid_response")
+    projected: dict[str, object] = {
+        "mode": "readback",
+        "operation": "create-application",
+        "context": context,
+        "instance": "testing",
+        "applied": bool(_optional_bool(source.get("applied"))),
+        "state_volume": state_volume,
+        "operation_state": public_code(source.get("operation_state")),
+        "provider_effect_phase": _state_volume_phase_steps(source.get("provider_effect_phase")),
+        "configuration_matches": evidence == "matches",
+        "configuration_evidence": evidence,
+        "custody_sha256": custody,
+        "allocation_state": public_code(source.get("allocation_state"), default="unknown"),
+        # The same review digest as the dry run, so retention can bind this readback to it.
+        "plan_sha256": _application_plan_digest(
+            payload_digest, context, {"state_volume": state_volume}
+        ),
+    }
+    assert_public_safe_shape(projected)
+    return projected
+
+
+def _state_volume_phase_steps(value: object) -> dict[str, object]:
+    if value is None or value == "":
+        return {"recorded": False}
+    if not isinstance(value, str):
+        raise LaunchplaneSafetyError("invalid_response")
+    try:
+        phase = json.loads(value)
+    except json.JSONDecodeError:
+        raise LaunchplaneSafetyError("invalid_response") from None
+    if not isinstance(phase, dict):
+        raise LaunchplaneSafetyError("invalid_response")
+    pending = phase.get("pending")
+    return {
+        "recorded": True,
+        "created": [step for step in STATE_VOLUME_CREATED_STEPS if phase.get(step)],
+        "mount_verified": phase.get("mount_verified") == "true",
+        "pending": (
+            STATE_VOLUME_PENDING_STEPS.get(pending, "unknown")
+            if isinstance(pending, str)
+            else "none" if pending is None else "unknown"
+        ),
+    }
+
+
 def _application_plan_digest(
     payload_digest: str, context: str, digest_inputs: dict[str, object]
 ) -> str:
@@ -8501,41 +8642,117 @@ def dokploy_application_body(
         "product": "launchplane",
         "mode": mode,
     }
-    if mode == "apply":
-        expected_plan_digest = _reviewed_apply_digest(args)
-        evidence, result = _load_reviewed_evidence(
-            args,
-            operation="dokploy-target-create-application-dry-run",
-            expected_digest=expected_plan_digest,
-            result_status=None,
-        )
-        if (
-            evidence["request"].get("payload_digest") != request["payload_digest"]
-            or evidence["request"].get("state_volume") is not request["state_volume"]
-        ):
-            raise ValueError("reviewed_dry_run_not_apply_eligible")
-        # Recompute the digest from this payload and the saved plan before sending, so
-        # edited evidence cannot carry the reviewed digest onto a different plan.
-        state_volume = result.get("state_volume")
-        if request["state_volume"]:
-            if not isinstance(state_volume, dict):
-                raise ValueError("reviewed_dry_run_not_apply_eligible")
-            digest_inputs: dict[str, object] = {"state_volume": {
-                "plan_id": state_volume.get("plan_id"),
-                "service_plan_sha256": state_volume.get("service_plan_sha256"),
-            }}
-        else:
-            digest_inputs = {"plan_actions": result.get("plan_actions")}
-        if expected_plan_digest != _application_plan_digest(
-            cast(str, request["payload_digest"]), cast(str, request["context"]), digest_inputs
-        ):
-            raise ValueError("reviewed_dry_run_not_apply_eligible")
+    if mode in {"apply", "readback"}:
+        state_volume = _reviewed_application_plan(args, request)
         if isinstance(state_volume, dict):
-            # Apply reuses the service's saved storage plan; a new dry run would allocate
-            # different names, so the reviewed one is the only one sent.
+            # Apply and recovery reuse the service's saved storage plan; a new dry run
+            # would allocate different names, so the reviewed one is the only one sent.
             body["state_volume_plan_id"] = state_volume["plan_id"]
             body["expected_plan_sha256"] = state_volume["service_plan_sha256"]
-        body["confirmation"] = DOKPLOY_TARGET_SETUP_CONFIRMATION
+        if mode == "readback":
+            # Readback evidence names the plan and original key it answers for, so
+            # retention can require the same ones.
+            request.update(
+                state_volume_plan_id=body["state_volume_plan_id"],
+                service_plan_sha256=body["expected_plan_sha256"],
+                idempotency_key_fingerprint=repository_inventory_idempotency_key_fingerprint(
+                    args.idempotency_key
+                ),
+            )
+        if mode == "apply":
+            body["confirmation"] = DOKPLOY_TARGET_SETUP_CONFIRMATION
+    return body, request
+
+
+def _reviewed_application_plan(
+    args: argparse.Namespace, request: dict[str, object]
+) -> dict[str, object] | None:
+    """The saved storage plan, or None without storage, when the dry-run evidence
+    matches this payload and its recomputed digest is the reviewed one."""
+    if request["mode"] == "readback":
+        # Readback only observes, so it needs no apply acknowledgement; recording the
+        # original key's fingerprint in the request requires that key.
+        expected_plan_digest = args.expected_plan_digest.strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_plan_digest):
+            raise ValueError("invalid_expected_plan_digest")
+    else:
+        expected_plan_digest = _reviewed_apply_digest(args)
+    evidence, result = _load_reviewed_evidence(
+        args,
+        operation="dokploy-target-create-application-dry-run",
+        expected_digest=expected_plan_digest,
+        result_status=None,
+    )
+    if (
+        evidence["request"].get("payload_digest") != request["payload_digest"]
+        or evidence["request"].get("state_volume") is not request["state_volume"]
+    ):
+        raise ValueError("reviewed_dry_run_not_apply_eligible")
+    # Recompute the digest from this payload and the saved plan before sending, so
+    # edited evidence cannot carry the reviewed digest onto a different plan.
+    state_volume = result.get("state_volume")
+    if request["state_volume"]:
+        if not isinstance(state_volume, dict):
+            raise ValueError("reviewed_dry_run_not_apply_eligible")
+        digest_inputs: dict[str, object] = {"state_volume": {
+            "plan_id": state_volume.get("plan_id"),
+            "service_plan_sha256": state_volume.get("service_plan_sha256"),
+        }}
+    elif request["mode"] == "readback":
+        # Only a storage allocation has original-key custody to read back.
+        raise ValueError("state_volume_plan_required")
+    else:
+        digest_inputs = {"plan_actions": result.get("plan_actions")}
+    if expected_plan_digest != _application_plan_digest(
+        cast(str, request["payload_digest"]), cast(str, request["context"]), digest_inputs
+    ):
+        raise ValueError("reviewed_dry_run_not_apply_eligible")
+    return state_volume if isinstance(state_volume, dict) else None
+
+
+def dokploy_application_retain_body(
+    args: argparse.Namespace,
+) -> tuple[dict[str, object], dict[str, object]]:
+    """Explicit custody retention: the reviewed apply, under the original key, with the
+    custody digest from that key's saved readback evidence."""
+    body, request = dokploy_application_body(args, mode="apply")
+    if not request["state_volume"]:
+        raise ValueError("state_volume_plan_required")
+    expected_custody = str(args.expected_custody_digest or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", expected_custody):
+        raise ValueError("invalid_expected_custody_digest")
+    key_fingerprint = repository_inventory_idempotency_key_fingerprint(args.idempotency_key)
+    try:
+        evidence = read_payload_file(str(args.readback_evidence_file or "").strip())
+    except ValueError:
+        raise ValueError("reviewed_readback_not_retain_eligible") from None
+    readback = evidence.get("result")
+    readback_request = evidence.get("request")
+    if (
+        not isinstance(readback, dict)
+        or not isinstance(readback_request, dict)
+        or evidence.get("operation") != DOKPLOY_APPLICATION_READBACK_COMMAND
+        or evidence.get("status") != "accepted"
+        or readback.get("mode") != "readback"
+        # The same payload, review, plan and original key as this retention.
+        or readback_request.get("payload_digest") != request["payload_digest"]
+        or readback_request.get("idempotency_key_fingerprint") != key_fingerprint
+        or readback.get("plan_sha256") != args.expected_plan_digest.strip().lower()
+        or readback.get("state_volume") != {
+            "plan_id": body["state_volume_plan_id"],
+            "service_plan_sha256": body["expected_plan_sha256"],
+        }
+        or readback.get("custody_sha256") != expected_custody
+    ):
+        raise ValueError("reviewed_readback_not_retain_eligible")
+    body["retain_state_volume_allocation"] = True
+    body["expected_state_volume_custody_sha256"] = expected_custody
+    request.update(
+        retain_state_volume_allocation=True,
+        expected_custody_sha256=expected_custody,
+        state_volume_plan_id=body["state_volume_plan_id"],
+        idempotency_key_fingerprint=key_fingerprint,
+    )
     return body, request
 
 
@@ -9096,6 +9313,56 @@ def execute_dokploy_compose_apply(
         preflight=preflight,
         finish=finish,
         label="Dokploy target",
+    )
+
+
+def execute_dokploy_application_retain(
+    *, args: argparse.Namespace, request: dict[str, object], body: dict[str, object]
+) -> int:
+    expected_custody = cast(str, body["expected_state_volume_custody_sha256"])
+
+    def finish(
+        _settings: dict[str, str], provider_payload: dict[str, Any], payload: dict[str, Any]
+    ) -> bool:
+        # Retention performs no provider effect, so the receipt itself is the evidence:
+        # it must name this plan, key and reviewed custody, and nothing became the target.
+        receipt = _require_dict(provider_payload.get("result"))
+        retained = (
+            receipt.get("allocation_state") == "retained_uncertain"
+            and receipt.get("applied") is False
+            and receipt.get("deployment_performed") is False
+            and receipt.get("resources_retained") is True
+            and receipt.get("plan_id") == body["state_volume_plan_id"]
+            and receipt.get("original_key") == args.idempotency_key.strip()
+            and receipt.get("reviewed_custody_sha256") == expected_custody
+        )
+        result = payload["result"]
+        result["reviewed_plan_sha256"] = args.expected_plan_digest.strip().lower()
+        if retained:
+            result["reviewed_custody_sha256"] = expected_custody
+            payload["summary"]["recommendation"] = (
+                "Launchplane retained the uncertain allocation's custody; it can never resume. "
+                "Keep its resources. To continue, run a fresh dry run and apply it with a new key."
+            )
+        else:
+            payload["warnings"].append(
+                warning(
+                    "retention_differs_from_review",
+                    "Launchplane did not report retaining the reviewed allocation custody "
+                    "under the original key.",
+                )
+            )
+        return retained
+
+    return execute_verified_apply(
+        args=args,
+        operation=args.command,
+        request=request,
+        path=helper_command_path(args.command),
+        body=body,
+        preflight=lambda _settings: None,
+        finish=finish,
+        label="storage allocation",
     )
 
 
@@ -10260,6 +10527,40 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             "--payload-file", required=True, help="Private local JSON payload file."
         )
         _add_reviewed_apply_arguments(application_target, apply=command.endswith("-apply"))
+    application_readback = subparsers.add_parser(
+        DOKPLOY_APPLICATION_READBACK_COMMAND,
+        help="Read back an uncertain storage allocation under its original key; never creates or adopts.",
+    )
+    application_readback.add_argument(
+        "--payload-file", required=True, help="The unchanged private JSON payload file."
+    )
+    application_readback.add_argument(
+        "--idempotency-key", required=True, help="The original apply's key."
+    )
+    application_readback.add_argument("--expected-plan-digest", required=True)
+    application_readback.add_argument(
+        "--dry-run-evidence-file",
+        required=True,
+        help="Private saved JSON output from the reviewed dry-run.",
+    )
+    application_retain = subparsers.add_parser(
+        DOKPLOY_APPLICATION_RETAIN_COMMAND,
+        help="Retain an uncertain storage allocation's reviewed custody under its original key.",
+    )
+    application_retain.add_argument(
+        "--payload-file", required=True, help="The unchanged private JSON payload file."
+    )
+    _add_reviewed_apply_arguments(application_retain, apply=True)
+    application_retain.add_argument(
+        "--readback-evidence-file",
+        required=True,
+        help="Private saved JSON output from the original-key readback.",
+    )
+    application_retain.add_argument(
+        "--expected-custody-digest",
+        required=True,
+        help="The readback's custody_sha256.",
+    )
 
     domain_plan = subparsers.add_parser(
         "dokploy-target-repair-domain-authority-dry-run",
@@ -11148,6 +11449,18 @@ def main(argv: list[str]) -> int:
                 request=request,
                 body=body,
             )
+        if args.command == DOKPLOY_APPLICATION_READBACK_COMMAND:
+            body, request = dokploy_application_body(args, mode="readback")
+            return execute_post(
+                args=args,
+                operation=args.command,
+                path=helper_command_path(args.command),
+                request=request,
+                body=body,
+            )
+        if args.command == DOKPLOY_APPLICATION_RETAIN_COMMAND:
+            body, request = dokploy_application_retain_body(args)
+            return execute_dokploy_application_retain(args=args, request=request, body=body)
         if args.command in DOKPLOY_APPLICATION_COMMANDS:
             mode = "apply" if args.command.endswith("-apply") else "dry-run"
             body, request = dokploy_application_body(args, mode=mode)
