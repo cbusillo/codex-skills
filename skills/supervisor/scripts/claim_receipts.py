@@ -369,6 +369,164 @@ def javascript_projection(native):
     return atoms, code, regions, complete
 
 
+def javascript_bindings(code):
+    """Resolve only a single declaration site, never a reused lexical name.
+
+    This projection deliberately does not guess which block/function owns a
+    command. Parameters and pattern targets invalidate a same-named constant
+    rather than allowing a different scope's value to prove the command safe.
+    """
+    sites, declarations = {}, {}
+
+    def bind(start, end):
+        target = code[start:end].strip()
+        start += len(code[start:end]) - len(code[start:end].lstrip())
+        if target.startswith("..."):
+            start += 3
+            target = target[3:].lstrip()
+            start = end - len(target)
+        parts = node_expression_parts(code, start, end, "=")
+        end = parts[0][1]
+        target = code[start:end].strip()
+        if target.startswith(("{", "[")):
+            for begin, finish in node_expression_parts(code, start + 1, end - 1):
+                keyed = node_expression_parts(code, begin, finish, ":")
+                bind(*(keyed[-1] if len(keyed) > 1 else (begin, finish)))
+        elif re.fullmatch(r"[A-Za-z_$][\w$]*", target):
+            sites.setdefault(target, set()).add(start)
+
+    def parameters(opening):
+        for begin, end in node_expression_parts(code, opening + 1, len(code)):
+            bind(begin, end)
+
+    for declaration in re.finditer(r"\b(?:const|let|var)\s+", code):
+        end = node_expression_parts(code, declaration.end(), len(code), ";\n")[0][1]
+        for begin, finish in node_expression_parts(code, declaration.end(), end):
+            assignment = node_expression_parts(code, begin, finish, "=")
+            target_end = assignment[0][1]
+            loop = re.search(r"\b(?:of|in)\b", code[begin:target_end])
+            if loop:
+                target_end = begin + loop.start()
+            bind(begin, target_end)
+            named = re.fullmatch(r"\s*([A-Za-z_$][\w$]*)\s*", code[begin:target_end])
+            if named and len(assignment) > 1:
+                declarations[named[1]] = (target_end + 1, finish)
+    for function in re.finditer(r"\bfunction\s*\*?\s*([A-Za-z_$][\w$]*)?\s*\(", code):
+        if function[1]:
+            bind(function.start(1), function.end(1))
+        parameters(function.end() - 1)
+    for arrow in re.finditer(r"=>", code):
+        end = arrow.start()
+        while end and code[end - 1].isspace():
+            end -= 1
+        if end and code[end - 1] == ")":
+            depth, opening = 1, end - 2
+            while opening >= 0 and depth:
+                depth += (code[opening] == ")") - (code[opening] == "(")
+                opening -= 1
+            if not depth:
+                parameters(opening + 1)
+        else:
+            name = re.search(r"[A-Za-z_$][\w$]*$", code[:end])
+            if name:
+                bind(name.start(), name.end())
+    for caught in re.finditer(r"\bcatch\s*\(", code):
+        parameters(caught.end() - 1)
+    for loop in re.finditer(r"\bfor\s*(?:await\s*)?\(\s*(?!const\b|let\b|var\b)", code):
+        end = node_expression_parts(code, loop.end(), len(code), ";")[0][1]
+        delimiter = re.search(r"\b(?:of|in)\b", code[loop.end():end])
+        if delimiter:
+            bind(loop.end(), loop.end() + delimiter.start())
+    # Method parameters share the same lexical rule as named functions.
+    for method in re.finditer(r"\b([A-Za-z_$][\w$]*)\s*\(", code):
+        if method[1] in {"if", "for", "while", "switch", "catch", "with", "function"}:
+            continue
+        end = node_expression_parts(code, method.end(), len(code))[ -1][1]
+        if code[end:end + 1] == ")" and code[end + 1:].lstrip().startswith("{"):
+            parameters(method.end() - 1)
+    for assignment in re.finditer(r"(?<![\w.$])([A-Za-z_$][\w$]*)\s*(?:=(?!=|>)|[+*/%&|^-]=|\?\?=|&&=|\|\|=)", code):
+        if not code[:assignment.start(1)].rstrip().endswith("."):
+            sites.setdefault(assignment[1], set()).add(assignment.start(1))
+    return {name: expression for name, expression in declarations.items()
+            if len(sites.get(name, ())) == 1}, set(sites)
+
+
+
+def javascript_tool_calls(native, code, method):
+    # Possible tool aliases are deliberately broader than safe operand values:
+    # a reused/mutable name can still invoke a tool, even though its initializer
+    # cannot prove one particular command argument safe.
+    assignments = []
+    for match in re.finditer(r"(?<![\w.$])([A-Za-z_$][\w$]*)\s*=\s*(?!=|>)", code):
+        if code[:match.start()].rstrip().endswith("."):
+            continue
+        end = node_expression_parts(code, match.end(), len(code), ";,\n")[0][1]
+        assignments.append((match[1], match.start(), native[match.end():end].strip()))
+    objects, aliases = {"tools"}, set()
+
+    def member():
+        return (r"(?:" + "|".join(map(re.escape, objects)) + r")\s*(?:\.\s*" + method
+                + r"|\[\s*['\"]" + method + r"['\"]\s*\])")
+
+    for _ in assignments:
+        added_objects = {name for name, _, expression in assignments if expression in objects}
+        added_aliases = {name for name, _, expression in assignments
+                         if re.fullmatch(member(), expression) or expression in aliases}
+        if added_objects <= objects and added_aliases <= aliases:
+            break
+        objects.update(added_objects)
+        aliases.update(added_aliases)
+    pattern = r"(?<![\w.$])(?:" + member() + ("|" + "|".join(map(re.escape, aliases)) if aliases else "") + r")\s*\("
+    calls = list(javascript_call_starts(native, pattern))
+    positions = {position for _, position, _ in assignments} | {call.start() for call in calls}
+    scopes, stack = {}, []
+    for index, char in enumerate(code):
+        if index in positions:
+            scopes[index] = tuple(position for position in stack if code[position] == "{")
+        if char in "([{":
+            stack.append(index)
+        elif char in ")]}":
+            if stack:
+                stack.pop()
+    _, bound = javascript_bindings(code)
+    for call in calls:
+        if code[:call.start()].rstrip().endswith("."):
+            continue
+        name = re.match(r"[A-Za-z_$][\w$]*", call[0])[0]
+        before = [(position, expression) for target, position, expression in assignments
+                  if target == name and position < call.start()]
+        if name in aliases and before:
+            position, expression = before[-1]
+            beginning = max(code.rfind(char, 0, position) for char in ";{}") + 1
+            straight = re.fullmatch(r"\s*(?:(?:const|let|var)\s+)?", code[beginning:position])
+            sink = re.fullmatch(r"console\s*\.\s*(?:log|info|warn|error|debug|dir|table)|text", expression)
+            root = expression.split(".")[0].strip()
+            sink_objects = {root}
+            for _ in assignments:
+                added = {target for target, _, expression in assignments if expression in sink_objects}
+                if added <= sink_objects:
+                    break
+                sink_objects.update(added)
+            changed_sink = re.search(r"\b(?:" + "|".join(map(re.escape, sink_objects))
+                                     + r")\s*(?:\.\s*[A-Za-z_$][\w$]*|\[[^]]*\])\s*=", code)
+            if (straight and sink and root not in bound and not changed_sink
+                    and scopes[position] == scopes[call.start()]):
+                # Only an unconditional assignment in this very scope can
+                # discharge a possible alias. A conditional/different scope
+                # remains uncertainty, never evidence that no tool ran.
+                continue
+        yield call
+
+
+def javascript_source_literals(atoms):
+    for atom in atoms:
+        try:
+            text = javascript_string(atom[0])
+        except ValueError:
+            continue
+        yield text
+
+
 def javascript_generated_sources(value):
     """Discover generated code once, carrying only reached literal bindings.
 
@@ -377,18 +535,12 @@ def javascript_generated_sources(value):
     existing delimiter splitter joins known literal source fragments. Unknown
     computation keeps its selected operands as possible command input.
     """
-    pending, seen, queued = [(value, {}, {}, False)], set(), {(value, (), ())}
+    pending, seen, queued = [(value, {}, {}, False, ())], set(), {(value, (), (), ())}
     while pending:
-        current, inherited, inherited_globals, generated = pending.pop()
+        current, inherited, inherited_globals, generated, fallback = pending.pop()
         current_atoms, current_code, regions, _ = javascript_projection(current)
-        bindings = dict(inherited)
-        declarations = {}
-        for declaration in re.finditer(r"\b(?:const|let|var)\s+", current_code):
-            end = node_expression_parts(current_code, declaration.end(), len(current_code), ";\n")[0][1]
-            for begin, finish in node_expression_parts(current_code, declaration.end(), end):
-                binding = re.match(r"\s*(\w+)\s*=", current_code[begin:finish])
-                if binding:
-                    declarations[binding[1]] = (begin + binding.end(), finish)
+        declarations, bound = javascript_bindings(current_code)
+        bindings = {name: text for name, text in inherited.items() if name not in bound}
 
         def literal(expression, active=()):
             expression = expression.strip()
@@ -450,7 +602,7 @@ def javascript_generated_sources(value):
                 globals_[match[1]] = text
         global_context = tuple(sorted(globals_.items()))
         context = tuple(sorted(bindings.items()))
-        key = current, context, global_context
+        key = current, context, global_context, fallback
         if key in seen:
             continue
         seen.add(key)
@@ -458,7 +610,7 @@ def javascript_generated_sources(value):
             text, projected = current, current_code
             replacements = []
             command_regions = [(call.end(), node_expression_parts(projected, call.end(), len(projected))[0][1])
-                               for call in javascript_call_starts(text, r"\btools\.exec_command\s*\(")]
+                               for call in javascript_tool_calls(text, projected, "exec_command")]
             for match in re.finditer(r"(\b(?:cmd|command)\s*:\s*|\btools\.apply_patch\s*\(\s*)((?:(?:globalThis|global|window|self)\s*\.\s*)?(\w+))\b", projected):
                 command_position = any(begin <= match.start() < finish for begin, finish in command_regions)
                 if not command_position and "apply_patch" not in match[1]:
@@ -488,6 +640,13 @@ def javascript_generated_sources(value):
             for start, end, replacement in sorted(replacements, reverse=True):
                 text = text[:start] + replacement + text[end:]
             yield text
+            parsed_patches = {position for position, _ in composed_patch_fields(text)}
+            unknown_patch = any(call.start() not in parsed_patches
+                                for call in javascript_call_starts(text, r"\btools\.apply_patch\s*\("))
+            if fallback and (unknown_patch or _unparsed_command_text(text, generated_sources=False)[1]):
+                for operand in fallback:
+                    yield ("tools.apply_patch(" + json.dumps(operand) + ")" if operand.startswith("*** Begin Patch")
+                           else "tools.exec_command({cmd:" + json.dumps(operand) + "})")
         selected, visited, sources = [], set(), []
         for start, end in regions:
             call = re.search(r"\b(\w+)\s*\(\s*$", current_code[:start])
@@ -500,6 +659,7 @@ def javascript_generated_sources(value):
                 name = current_code[begin:finish].strip()
             constructor = name not in {"eval", "import"}
             child_bindings = {**globals_, **bindings} if direct else dict(globals_)
+            child_fallback = list(dict.fromkeys((*fallback, *javascript_source_literals(current_atoms)))) if direct else list(globals_.values())
             parts = node_expression_parts(current_code, start, end)
             if constructor:
                 # Function constructors have their global scope and explicit
@@ -511,6 +671,32 @@ def javascript_generated_sources(value):
                 if following < len(current_code) and current_code[following] == "(":
                     actuals = [(begin, finish) for begin, finish in node_expression_parts(current_code, following + 1, len(current_code))
                                if current[begin:finish].strip()]
+                assigned = re.search(r"\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:new\s+)?[\w.$]+\s*\(\s*$", current_code[:start])
+                invocations = [actuals] if actuals else []
+                if assigned:
+                    call_names = {assigned[1]}
+                    for _ in declarations:
+                        added = {name for name, (begin, finish) in declarations.items()
+                                 if current[begin:finish].strip() in call_names}
+                        if added <= call_names:
+                            break
+                        call_names.update(added)
+                    for invocation in re.finditer(r"\b(?:" + "|".join(map(re.escape, call_names)) + r")\s*\(", current_code):
+                        invocations.append([(begin, finish) for begin, finish in node_expression_parts(current_code, invocation.end(), len(current_code))
+                                            if current[begin:finish].strip()])
+                reached = [part for invocation in invocations for part in invocation]
+                visited_actuals = set()
+                while reached:
+                    begin, finish = reached.pop()
+                    if (begin, finish) in visited_actuals:
+                        continue
+                    visited_actuals.add((begin, finish))
+                    child_fallback.extend(javascript_source_literals(atom for atom in current_atoms if begin <= atom.start() < finish))
+                    for word in re.findall(r"\b\w+\b", current_code[begin:finish]):
+                        if word in declarations:
+                            reached.append(declarations[word])
+                        if word in bindings:
+                            child_fallback.append(bindings[word])
                 parameters = [literal(current[begin:finish]) for begin, finish in parts[:-1]]
                 parameter_parts = []
                 for parameter in parameters:
@@ -526,22 +712,27 @@ def javascript_generated_sources(value):
                     named = re.fullmatch(r"([A-Za-z_$][\w$]*)(?:\s*=\s*([\s\S]*))?", parameter)
                     if named is None:
                         continue
-                    expression = current[slice(*actuals[index])].strip() if index < len(actuals) else "undefined"
-                    operand = literal(expression)
-                    if expression == "undefined" and named[2] is not None:
-                        try:
-                            operand = javascript_string(named[2])
-                        except ValueError:
-                            operand = globals_.get(named[2].strip())
-                    if operand is not None:
-                        child_bindings[named[1]] = operand
+                    values = []
+                    for actuals in invocations or [[]]:
+                        expression = current[slice(*actuals[index])].strip() if index < len(actuals) else "undefined"
+                        operand = literal(expression)
+                        if expression == "undefined" and named[2] is not None:
+                            try:
+                                operand = javascript_string(named[2])
+                            except ValueError:
+                                operand = globals_.get(named[2].strip())
+                        values.append(operand)
+                        if operand is not None:
+                            child_fallback.append(operand)
+                    if values[0] is not None and all(value == values[0] for value in values):
+                        child_bindings[named[1]] = values[0]
                 parts = parts[-1:]
             else:
                 parts = parts[:1]
-            selected.extend((begin, finish, child_bindings) for begin, finish in parts)
+            selected.extend((begin, finish, child_bindings, tuple(dict.fromkeys(child_fallback))) for begin, finish in parts)
         while selected:
-            start, end, child_bindings = selected.pop()
-            selected_key = start, end, tuple(sorted(child_bindings.items()))
+            start, end, child_bindings, child_fallback = selected.pop()
+            selected_key = start, end, tuple(sorted(child_bindings.items())), child_fallback
             if selected_key in visited:
                 continue
             visited.add(selected_key)
@@ -550,28 +741,28 @@ def javascript_generated_sources(value):
                 expression = current[begin:finish]
                 text = literal(expression)
                 if text is not None:
-                    sources.append((text, False, child_bindings))
+                    sources.append((text, False, child_bindings, child_fallback))
                     continue
                 # An unresolved source expression may concatenate or transform
                 # selected literals. Preserve those inputs, not unrelated data.
                 reached = [declarations[word] for word in re.findall(r"\b\w+\b", current_code[begin:finish])
                            if word in declarations]
-                selected.extend((begin, finish, child_bindings) for begin, finish in reached)
+                selected.extend((begin, finish, child_bindings, child_fallback) for begin, finish in reached)
                 for word in re.findall(r"\b\w+\b", current_code[begin:finish]):
                     if word in bindings:
-                        sources.append((bindings[word], True, child_bindings))
+                        sources.append((bindings[word], True, child_bindings, child_fallback))
                 for atom in current_atoms:
                     if begin <= atom.start() < finish:
                         try:
-                            sources.append((javascript_string(atom[0]), True, child_bindings))
+                            sources.append((javascript_string(atom[0]), True, child_bindings, child_fallback))
                         except ValueError:
                             pass
-        for text, uncertain, child_bindings in sources:
+        for text, uncertain, child_bindings, child_fallback in sources:
             child_context = tuple(sorted(child_bindings.items()))
-            nested_key = text, child_context, global_context
+            nested_key = text, child_context, global_context, child_fallback
             if nested_key not in queued:
                 queued.add(nested_key)
-                pending.append((text, child_bindings, globals_, True))
+                pending.append((text, child_bindings, globals_, True, child_fallback))
             if uncertain:
                 # Computed source may turn a selected literal into shell or
                 # patch input. These alternatives affect discovery only; they
@@ -2270,7 +2461,7 @@ def shell_effect_order(tokens, events):
     return list(walk(0, len(tokens)))
 
 
-def unparsed_command_text(value, *, generated_sources=True):
+def _unparsed_command_text(value, *, generated_sources=True):
     """Keep command expressions and referenced declarations, excluding JS prose.
 
     This is conservative command discovery, not evaluation or completion proof.
@@ -2291,12 +2482,13 @@ def unparsed_command_text(value, *, generated_sources=True):
         start += len(re.match(r"\s*", value[start:])[0])
         end = re.search(delimiter, code[start:])
         return start, start + end.start() if end else len(code)
-    declarations = {m[1]: region(m.end(), r"[;\n]")
-                    for m in re.finditer(r"\b(?:const|let|var)\s+(\w+)\s*=", code)}
-    pending = [region(m.end(), r"[,};\n]") for m in re.finditer(r"\b(?:cmd|command)\s*:", code)]
-    pending += [(m.start(1), m.end(1)) for m in re.finditer(r"[{,]\s*(cmd|command)\s*(?=[,}])", code)]
+    declarations, _ = javascript_bindings(code)
     command_regions = [(call.end(), node_expression_parts(code, call.end(), len(code))[0][1])
-                       for call in javascript_call_starts(value, r"\btools\.exec_command\s*\(")]
+                       for call in javascript_tool_calls(value, code, "exec_command")]
+    pending = [region(m.end(), r"[,};\n]") for m in re.finditer(r"\b(?:cmd|command)\s*:", code)
+               if any(begin <= m.start() < end for begin, end in command_regions)]
+    pending += [(m.start(1), m.end(1)) for m in re.finditer(r"[{,]\s*(cmd|command)\s*(?=[,}])", code)
+                if any(begin <= m.start() < end for begin, end in command_regions)]
     for match in re.finditer(r"([\"'])(cmd|command)\1\s*:", value):
         key_end = match.start() + len(match[2]) + 2
         if (any(atom.start() == match.start() and atom.end() == key_end for atom in atoms)
@@ -2316,7 +2508,8 @@ def unparsed_command_text(value, *, generated_sources=True):
                 continue
             pieces.extend(shlex.join(argv) for argv in shell_commands("exec_command", {"cmd": command})
                           if ownership_command(argv))
-        pieces.append(unparsed_command_text(text, generated_sources=False))
+        nested, _ = _unparsed_command_text(text, generated_sources=False)
+        pieces.append(nested)
     def literal_writers():
         for literal in literals:
             try:
@@ -2332,6 +2525,15 @@ def unparsed_command_text(value, *, generated_sources=True):
             continue
         seen.add((start, end))
         expression = value[start:end].strip()
+        if expression.startswith(("'", '"', '`')):
+            try:
+                command = javascript_string(expression)
+            except ValueError:
+                pass
+            else:
+                pieces.extend(shlex.join(argv) for argv in shell_commands("exec_command", {"cmd": command})
+                              if ownership_command(argv))
+                continue
         if expression.startswith('`') and re.fullmatch(JS_STRING, expression) is not None:
             command = re.sub(r"\$\{[^}]*\}", "computed-operand", expression.strip('`'))
             substitutions = re.findall(r"\$\{([^}]*)\}", expression)
@@ -2365,7 +2567,11 @@ def unparsed_command_text(value, *, generated_sources=True):
         # Parameters, destructuring and for-of bindings do not have a simple
         # declaration to follow. They must not hide executable cell literals.
         pieces.extend(writers)
-    return " ".join(pieces)
+    return " ".join(pieces), unresolved
+
+
+def unparsed_command_text(value, *, generated_sources=True):
+    return _unparsed_command_text(value, generated_sources=generated_sources)[0]
 
 
 def opaque_ownership(name, value):
@@ -2995,10 +3201,10 @@ def python_ownership(content, *, partial=False):
             lambda row: (row if isinstance(row, (list, tuple)) else [row],),
             concatenate, alternatives))
         if item.unique:
-            # A different interpreter may place any member at any position.
+            # Unique collections do not expose insertion order.
             # Keep shape and a writer witness without enumerating permutations.
             return choices((*rows, *([widen(row)] * len(row) for row in rows
-                           if len(row) > 1 and any(process_salted(child) for child in row))))
+                           if len(row) > 1)))
         return rows
 
     def sequence_members(item):
@@ -3286,6 +3492,8 @@ def python_ownership(content, *, partial=False):
         native = json_native_kind(item.kind)
         if native not in {"list", "tuple", "dict"}:
             return ()
+        if skip_empty and (member(item, "__bool__", scope, special=True) or member(item, "__len__", scope, special=True)):
+            return (Bound(ast.alias(name="json.container"), item),)
         if (native == "dict" or skip_empty) and item.json_payload and all(
                 isinstance(child, Keywords) and not child.items or isinstance(child, Sequence) and all(not row for row in sequence_rows(child))
                 for child in item.json_payload):
@@ -4361,7 +4569,7 @@ def python_ownership(content, *, partial=False):
                     protocols = json_native_protocols(item, scope, skip_empty=skip_empty)
                     if protocols:
                         yield item
-                    else:
+                    elif native in {"list", "tuple", "dict"}:
                         pending.extend(item.json_payload)
                 elif isinstance(item, Instance):
                     yield item
@@ -4627,6 +4835,9 @@ def python_ownership(content, *, partial=False):
             return result
         if isinstance(node, ast.Constant):
             return (node.value,)
+        if (isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub))
+                and isinstance(node.operand, ast.Constant) and type(node.operand.value) in (int, float, complex)):
+            return (ast.literal_eval(node),)
         if isinstance(node, ast.Dict):
             items = {}
             for key, expression in zip(node.keys, node.values):
@@ -4649,6 +4860,8 @@ def python_ownership(content, *, partial=False):
                             resolved.extend(container.items.get(unknown, ()))
                         elif isinstance(container, (list, tuple)) and isinstance(key, int) and -len(container) <= key < len(container):
                             resolved.append(container[key])
+                        elif isinstance(container, (list, tuple)) and (key is unknown or unresolved_text(key)):
+                            resolved.extend(container)
             return choices(resolved) or (unknown,)
         if isinstance(node, ast.Attribute):
             cached = expression_values.get((scope, id(node)))
@@ -5330,6 +5543,15 @@ def python_ownership(content, *, partial=False):
             for hook in member(instance, "__post_init__"):
                 invoke(hook, scope)
         native = json_native_kind(kind)
+        if native == "int":
+            # PyNumber_Index reads an int subclass's stored value without
+            # calling an overridden __index__.
+            if class_member(kind, "__new__") or keywords or len(arguments) > 1:
+                instance.json_payload = (unknown,)
+            elif arguments:
+                instance.json_payload = tuple(item if type(item) in (int, bool) else unknown for item in arguments[0])
+            else:
+                instance.json_payload = (0,)
         if native in {"list", "tuple", "dict"}:
             if initializers:
                 instance.json_payload = (unknown,)
@@ -5343,6 +5565,24 @@ def python_ownership(content, *, partial=False):
         nonlocal found, recursion_skips, expression_values
         argument_values = list(arguments) if evaluated else expanded_arguments(arguments, caller)
         keyword_values = dict(keywords) if evaluated else call_keywords(keywords, caller)
+        if isinstance(wrapper, Bound) and isinstance(wrapper.function, ast.alias) and wrapper.function.name == "json.container":
+            item = wrapper.receiver
+            boolean = member(item, "__bool__", caller, special=True)
+            callbacks = boolean or member(item, "__len__", caller, special=True)
+            outputs = choices(result for callback in callbacks for result in invoke(callback, caller))
+            if not boolean:
+                outputs = choices(indexed for output in outputs
+                                  for indexed in (output.json_payload if isinstance(output, Instance) and json_native_kind(output.kind) == "int"
+                                                  else data_call_protocol("index", [(output,)], {}, caller)
+                                                  if isinstance(output, Instance) else (output,)))
+            if not any(result is unknown or (type(result) is bool if boolean else type(result) in (int, bool)) and 0 < result <= sys.maxsize
+                       for result in outputs):
+                return ()
+            native = json_native_kind(item.kind)
+            protocols = member(item, "items" if native == "dict" else "__iter__", caller, special=native != "dict")
+            # The outer iterable consumer must retain the built-in payload's
+            # shape so dictionary values reach JSON's normal leaf traversal.
+            return choices(result for callback in protocols for result in invoke(callback, caller)) if protocols else (item.json_payload,)
         if isinstance(wrapper, Bound) and isinstance(wrapper.function, ast.alias) and wrapper.function.name == "json.iterate":
             returned = invoke(wrapper.receiver, caller, argument_values, keyword_values, evaluated=True)
             return iterate_values(returned, caller)
