@@ -522,7 +522,8 @@ def transcript_identity(info: os.stat_result) -> list[int]:
     return [info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns]
 
 
-def transcripts(session: str, primary: str, *, include_status: bool = False, additional_homes: set[Path] | None = None) -> dict:
+def transcript_facts(session: str, primary: str, *, include_status: bool = False, additional_homes: set[Path] | None = None, additional_roots: set[Path] | frozenset[Path] | None = None, reader=None) -> dict:
+    """Authenticate stable native transcripts without deciding final-safe authority."""
     from github_plan_sessions import codex_homes, native_helpers
     from github_plan_release import stamp
     deadline = time.monotonic() + 3
@@ -530,55 +531,84 @@ def transcripts(session: str, primary: str, *, include_status: bool = False, add
     def fail(error):
         raise error
     homes = {*codex_homes(strict=True, configured_only=True), *(additional_homes or set())}
-    for home in sorted(homes):
+    roots = set()
+    for home in homes:
         for root in (home / "sessions", home / "archived_sessions"):
             try:
                 root.stat()
             except FileNotFoundError:
                 continue
-            for directory, _, names in os.walk(root, onerror=fail):
+            roots.add(root)
+    for root in additional_roots or set():
+        root = root.resolve(strict=True)
+        if not root.is_dir():
+            raise ValueError("source transcript root is unavailable")
+        roots.add(root)
+    for root in sorted(roots):
+        for directory, _, names in os.walk(root, onerror=fail):
+            if time.monotonic() > deadline:
+                raise TimeoutError("native closure scan exceeded its budget")
+            for name in names:
+                if session not in name or not name.endswith(".jsonl"):
+                    continue
+                path = Path(directory) / name
                 if time.monotonic() > deadline:
                     raise TimeoutError("native closure scan exceeded its budget")
-                for name in names:
-                    if session not in name or not name.endswith(".jsonl"):
-                        continue
-                    path = Path(directory) / name
-                    if time.monotonic() > deadline:
-                        raise TimeoutError("native closure scan exceeded its budget")
-                    paths.add(path.resolve(strict=True))
+                paths.add(path.resolve(strict=True))
     snapshots = {}
     for path in sorted(paths):
         before = path.stat()
-        records, digest = [], hashlib.sha256()
+        records, digest, lines = [], hashlib.sha256(), []
         with path.open("rb") as stream:
             for line in stream:
                 if time.monotonic() > deadline:
                     raise TimeoutError("native closure read exceeded its budget")
                 digest.update(line)
-                if line.strip():
+                if reader is not None:
+                    lines.append(line.decode("utf-8"))
+                if line.strip() and reader is None:
                     record = json.loads(line)
                     if not isinstance(record, dict):
                         raise TypeError("native transcript record must be an object")
                     native_helpers()[1].validate_record(record)
                     records.append(record)
+        if reader is not None:
+            records, truncated = reader(lines)
+            if time.monotonic() > deadline:
+                raise TimeoutError("native closure read exceeded its budget")
         identities = {r.get("payload", {}).get("id") for r in records if r.get("type") == "session_meta"}
         if identities != {session}:
             raise ValueError("native transcript identity mismatch")
         status = native_helpers()[1].summarize(records, "codex")
         after = path.stat()
-        if (transcript_identity(before) != transcript_identity(after)
-                or not status.get("declared_safe_verdict", status["safe_verdict"])):
-            raise ValueError("native transcript is changing or lacks a final safe verdict")
+        if transcript_identity(before) != transcript_identity(after):
+            raise ValueError("native transcript is changing")
         timestamps = [r["timestamp"] for r in records if r.get("timestamp")]
         if not timestamps:
             raise ValueError("native transcript lacks timestamped evidence")
         latest = max(timestamps, key=stamp)
         snapshots[str(path)] = {"identity": transcript_identity(after),
                                 "sha256": digest.hexdigest(), "latest": latest}
+        if reader is not None:
+            snapshots[str(path)]["truncated"] = truncated
         if include_status:
             snapshots[str(path)]["status"] = {key: status[key] for key in (
                 "safe_verdict", "timestamp", "turn_id", "turn_started_at", "turn_completed_at", "message_at", "actual_turn_ids", "background_tasks",
                 "active_realtime_sessions", "realtime_coverage")}
+            snapshots[str(path)]["status"]["declared_safe_verdict"] = status.get("declared_safe_verdict", status["safe_verdict"])
+    return snapshots
+
+
+def transcripts(session: str, primary: str, *, include_status: bool = False, additional_homes: set[Path] | None = None) -> dict:
+    snapshots = transcript_facts(session, primary, include_status=True, additional_homes=additional_homes)
+    # This wrapper supplies final-declaration evidence for independently
+    # verified post-exit closure; neutral readers keep the live claim verdict.
+    if any(not snapshot["status"].get("declared_safe_verdict", snapshot["status"]["safe_verdict"])
+           for snapshot in snapshots.values()):
+        raise ValueError("native transcript lacks a final safe verdict")
+    if not include_status:
+        snapshots = {path: {key: value for key, value in snapshot.items() if key != "status"}
+                     for path, snapshot in snapshots.items()}
     return snapshots
 
 

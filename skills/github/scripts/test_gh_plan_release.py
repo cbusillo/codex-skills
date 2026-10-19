@@ -317,9 +317,27 @@ class ReleaseTests(ReleaseHarness):
             release.termination.verify(self.termination_record, "session-b")
             with patch.object(github_plan_closure, "action_pending", return_value=True), self.assertRaises(ValueError):
                 release.termination.verify(self.termination_record, "session-b")
+            with patch.object(github_plan_closure, "action_pending", return_value=True):
+                process = release.termination._verify_queue_source(self.termination_record, "session-b")
+                with patch.object(tmux_terminal.Terminal, "run", return_value=SimpleNamespace(returncode=0, stdout="")):
+                    release.termination._recheck_queue_process(process)
             self.termination_record["tab_id"] = "@wrong"
             with self.assertRaises(ValueError):
                 release.termination.verify(self.termination_record, "session-b")
+            with self.assertRaises(ValueError):
+                release.termination._verify_queue_source(self.termination_record, "session-b")
+
+    def test_public_termination_rechecks_terminal_after_transcript_quietness(self):
+        self.termination_setup()
+        original = release.termination.transcript_snapshot
+        def source(*args):
+            value = original(*args)
+            release.termination.run_terminal.return_value = SimpleNamespace(
+                returncode=0, stdout="a" * 32 + "\t0\t1\n", stderr="")
+            return value
+        with patch.object(release.termination, "transcript_snapshot", side_effect=source), self.assertRaises(ValueError):
+            release.termination.verify(self.termination_record, "session-b")
+        self.f.assert_no_writes()
 
     def test_terminated_session_recent_or_resumed_transcript_refuses(self):
         for mode in ("mtime", "native_record", "other_account"):

@@ -1167,6 +1167,12 @@ uv run skills/supervisor/scripts/codex-session.py resume --session-id <native-id
 uv run skills/supervisor/scripts/codex-session.py status --session-id <native-id>
 ```
 
+Queue submission reports success only after its acknowledgement and connection
+and ownership cleanup complete. Once submission may have started, any failure,
+including timeout or cancellation during cleanup, reports uncertainty with
+no-replay guidance. Inspect fresh queue state before further action; never resend
+the message automatically. Pre-send cancellation still propagates normally.
+
 Use the canonical lowercase, hyphenated UUID from the native thread record.
 The managed RPC ingress requires that same spelling for every action, so another
 spelling cannot select a different source freeze or ownership lease. Process
@@ -2017,6 +2023,60 @@ jobs or active loaded native goal. It reads the original/effective account,
 accounts touched by guarded actions and every authenticated relevant copy's
 account. Retained original accounts may supply recovery reads without becoming
 eligible for configured resume. Missing required current-work coverage refuses.
+For a stopped source with stale queued input, preview bounded IDs and full native
+entry digests, then explicitly select one entry:
+
+```sh
+uv run skills/supervisor/scripts/codex-session.py queue-cancel --session-id <native-id> --codex-home <target-home> --ledger <original-ledger.json>
+uv run skills/supervisor/scripts/codex-session.py queue-cancel --session-id <native-id> --codex-home <target-home> --ledger <original-ledger.json> --queued-submission-id <selected-id> --entry-sha256 <observed-sha256> --apply
+```
+
+Use one original private Supervisor-owned ledger or `--termination-record` with
+the original source-host record. An output termination attestation cannot replace
+the original record. The input must be a regular file owned by the current user,
+with no group or other write permission. Read access such as mode `0644` is allowed;
+the helper checks integrity and does not change file permissions. Keep operational
+records private in their existing storage. Relative ledger transcript paths remain
+supported. If the
+original account is no longer configured, retain its absolute `codex_home` in the
+record. Without that field a termination transcript must bind to a known account's
+actual `sessions` or `archived_sessions` directory. Keep the matching recovery
+ledger when a later generation exists; an older termination record cannot authorize
+cleanup for that generation.
+The cleanup adapter validates the original retained-artifact metadata without
+requiring historical worktrees to remain on disk. Public termination verification
+for claim release still checks those Git artifacts. Cleanup binds the original
+host, PID/TTY and native terminal once, then rechecks physical exit, source files
+and native runtime state at each boundary. Every original termination transcript
+root remains covered, including retained archives outside account directories;
+these roots do not grant account or target authority.
+
+Preview creates no lease or source state. With no existing ownership file, its
+identities are observations only. Apply acquires ownership directly and repeats
+every check, preserving an existing successor freeze.
+The selected target must already be **NotLoaded**. Deleting from LoadedIdle can
+wake another queued entry through the native revision watcher. Other authenticated
+copies may be LoadedIdle only with empty queues and complete quiet runtime coverage.
+There is no automatic unload, resume, archive or drain step. Stop the source through
+its supported native lifecycle before retrying. Restore an unavailable required
+daemon using the account's existing launch procedure, then repeat the preview.
+
+Preview identifies the target `codexHome` and reports opaque entries in other
+relevant homes too. Success names only the deleted entry and target home and gives
+remaining queue counts per home; another stale copy may still need cleanup.
+
+Cancellation sends one native ID deletion and checks the full queue readback. It
+preserves unrelated entries, source transcripts, pending-action floors, action homes
+and successor freezes. It does not prove completion or release claims. Native delete
+has no digest compare-and-swap: the digest guards the observed full entry, including
+opaque native fields, but cannot bind an unmanaged concurrent same-ID edit atomically.
+Success requires clean native connection and ownership teardown after readback.
+Any failure after deletion may have started, including timeout or cancellation
+during teardown, returns uncertainty. This top-level queue-cancel command reports
+post-send cancellation as a failed operation with no-replay guidance. Before the
+delete starts, cancellation propagates normally. On uncertainty, preserve the
+result and inspect fresh state; never replay the deletion automatically.
+
 If a pending source's required daemon is unavailable, verify that it is stopped,
 restore it on that exact home with `env CODEX_HOME="<source-home>" codex app-server daemon start`
 as described below, then retry observation or `finish`. Repeat for each required

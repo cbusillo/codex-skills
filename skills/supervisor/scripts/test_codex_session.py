@@ -101,6 +101,20 @@ class ResumeTests(unittest.TestCase):
             "launch_pid": self.child.pid, "launch_generation": "new-generation", "launch_started_at": "2026-10-01T01:00:00Z",
             "codex_home": str(self.home)}))
 
+    def test_queue_cancel_cli_refuses_malformed_original_without_traceback_or_state(self):
+        record = self.root / "original-termination.json"
+        record.write_text(json.dumps({"session_id": self.native, "harness": "codex", "private": "never echo input"}))
+        record.chmod(0o600)
+        output = io.StringIO()
+        with patch.object(SESSION.sys, "argv", ["codex-session.py", "queue-cancel", "--session-id", self.native,
+                "--codex-home", str(self.home), "--termination-record", str(record)]), contextlib.redirect_stdout(output):
+            self.assertEqual(SESSION.main(), 1)
+        self.assertFalse(json.loads(output.getvalue())["ok"])
+        self.assertNotIn("never echo input", output.getvalue())
+        self.assertFalse(self.log.exists())
+        self.assertFalse(SESSION.closure.lease_path(self.native).exists())
+        self.spawn.assert_not_called()
+
     def test_resume_records_new_generation_and_uses_exact_home_and_id(self):
         with patch.object(SESSION, "run_client", new_callable=AsyncMock, return_value=0) as guarded:
             self.assertEqual(SESSION.run(self.args), 0)

@@ -8,7 +8,7 @@ import copy
 import threading
 import json
 import io
-from contextlib import redirect_stdout
+from contextlib import asynccontextmanager, contextmanager, redirect_stdout
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -167,6 +167,711 @@ class NativeFactsTests(unittest.IsolatedAsyncioTestCase):
 
 
 class NativeQueueTests(unittest.TestCase):
+    @contextmanager
+    def queue_exit_failure(self, target, sent, failure, boundary):
+        """Fail actual resource cleanup only after the fixture accepted a mutation."""
+        if boundary == "ownership":
+            original = CLOSURE.ownership
+            @contextmanager
+            def ownership(*args, **kwargs):
+                with original(*args, **kwargs) as held:
+                    yield held
+                if sent:
+                    raise failure
+            with patch.object(CLOSURE, "ownership", ownership):
+                yield
+        else:
+            original = NATIVE.connection
+            @asynccontextmanager
+            async def connection(home, **kwargs):
+                async with original(home, **kwargs) as request:
+                    yield request
+                if sent and ((home == target) == (boundary == "target")):
+                    raise failure
+            with patch.object(NATIVE, "connection", connection):
+                yield
+
+    @contextmanager
+    def cancel_read_boundaries(self, *, before_metadata=None, after_metadata=None, after_facts=None):
+        """Observe real reader boundaries without depending on its nested RPC count."""
+        original_read, original_facts = NATIVE.read_thread, NATIVE.read_thread_facts
+        facts_depth = 0
+        async def facts(request, session):
+            nonlocal facts_depth
+            facts_depth += 1
+            try:
+                value = await original_facts(request, session)
+            finally:
+                facts_depth -= 1
+            if after_facts is not None: after_facts(request.codex_home, value)
+            return value
+        async def metadata(request, session, **kwargs):
+            direct = facts_depth == 0
+            if direct and before_metadata is not None: before_metadata(request.codex_home)
+            value = await original_read(request, session, **kwargs)
+            if direct and after_metadata is not None: after_metadata(request.codex_home, value)
+            return value
+        with patch.object(NATIVE, "read_thread", side_effect=metadata), patch.object(NATIVE, "read_thread_facts", side_effect=facts):
+            yield
+
+    def cancel_setup(self, f):
+        f.transcript.write_text(f.transcript.read_text().replace("Safe to exit: yes", "Interrupted work"))
+        other = f.root / "other-account"
+        f.add_home(other)
+        f.native_state = "notLoaded"
+        selected = {"id": "selected", "clientUserMessageId": "selected-client",
+                    "input": [{"type": "text", "text": "private stale input"}], "opaqueFutureField": {"value": 1}}
+        retained = {"id": "retained", "clientUserMessageId": "retained-client", "input": []}
+        f.home_queues[str(other)] = [selected, retained]
+        f.home_queues[str(f.home)] = [{"id": "other-home", "clientUserMessageId": "other-client", "input": []}]
+        ledger = f.root / "original-ledger.json"
+        ledger.write_text(json.dumps([f.entry]))
+        ledger.chmod(0o600)
+        with CLOSURE.resume_guard(f.session, method="turn/start", home=f.home): pass
+        with CLOSURE.ownership(f.session): CLOSURE.admit_sources({f.session})
+        deleted = []
+        def remove(request):
+            deleted.append(request["params"])
+            f.home_queues[str(other)] = [entry for entry in f.home_queues[str(other)]
+                                        if entry["id"] != request["params"]["queuedSubmissionId"]]
+            return {"deleted": True}
+        f.rpc_results["thread/queue/delete"] = remove
+        return other, ledger, selected, retained, deleted
+
+    def test_cancel_unloaded_frozen_pending_source_preserves_other_work_and_private_input(self):
+        import uuid
+        with ReceiptFixture(str(uuid.uuid4())) as f:
+            other, ledger, selected, retained, deleted = self.cancel_setup(f)
+            before = {path: path.read_bytes() for path in (f.transcript, f.log, CLOSURE.lease_path(f.session), ledger)}
+            preview = asyncio.run(NATIVE.cancel_queue(other, f.session, ledger=ledger))
+            self.assertFalse(deleted)
+            self.assertEqual(preview["codexHome"], str(other))
+            self.assertEqual([entry["queuedSubmissionId"] for entry in preview["otherHomes"][str(f.home)]], ["other-home"])
+            self.assertTrue(preview["otherHomes"][str(f.home)][0]["sha256"])
+            self.assertNotIn(selected["input"][0]["text"], json.dumps(preview))
+            digest = next(entry["sha256"] for entry in preview["entries"] if entry["queuedSubmissionId"] == selected["id"])
+            result = asyncio.run(NATIVE.cancel_queue(other, f.session, ledger=ledger, apply=True,
+                queued_submission_id=selected["id"], entry_sha256=digest))
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["codexHome"], str(other))
+            self.assertEqual(result["queuedSubmissionId"], selected["id"])
+            self.assertEqual(result["remainingQueues"], {str(f.home): 1, str(other): 1})
+            self.assertEqual(deleted, [{"threadId": f.session, "queuedSubmissionId": selected["id"]}])
+            self.assertEqual(f.home_queues[str(other)], [retained])
+            self.assertEqual(f.home_queues[str(f.home)][0]["id"], "other-home")
+            self.assertEqual({path: path.read_bytes() for path in before}, before)
+            with self.assertRaises(ValueError):
+                with CLOSURE.resume_guard(f.session): pass
+            self.assertFalse(f.mutations)
+
+    def test_cancel_loaded_target_never_triggers_its_other_queued_input(self):
+        import uuid
+        with ReceiptFixture(str(uuid.uuid4())) as f:
+            other, ledger, selected, _retained, deleted = self.cancel_setup(f)
+            preview = asyncio.run(NATIVE.cancel_queue(other, f.session, ledger=ledger))
+            digest = next(entry["sha256"] for entry in preview["entries"] if entry["queuedSubmissionId"] == selected["id"])
+            f.home_states[str(other)] = "idle"
+            def unsafe_watcher(request):
+                deleted.append(request)
+                f.home_states[str(other)] = "active"
+                return {"deleted": True}
+            f.rpc_results["thread/queue/delete"] = unsafe_watcher
+            with self.assertRaises(ValueError):
+                asyncio.run(NATIVE.cancel_queue(other, f.session, ledger=ledger, apply=True,
+                    queued_submission_id=selected["id"], entry_sha256=digest))
+            self.assertFalse(deleted)
+            self.assertEqual(f.home_states[str(other)], "idle")
+
+    def test_cancel_other_loaded_home_requires_empty_queue_and_quiet_runtime(self):
+        import uuid
+        for obstruction in (None, "queue", "goal", "realtime", "background", "active", "missing_api"):
+            with self.subTest(obstruction=obstruction), ReceiptFixture(str(uuid.uuid4())) as f:
+                other, ledger, selected, _retained, deleted = self.cancel_setup(f)
+                preview = asyncio.run(NATIVE.cancel_queue(other, f.session, ledger=ledger))
+                digest = next(entry["sha256"] for entry in preview["entries"] if entry["queuedSubmissionId"] == selected["id"])
+                f.home_states[str(f.home)] = "idle"
+                if obstruction != "queue": f.home_queues[str(f.home)] = []
+                if obstruction == "goal": f.rpc_results["thread/goal/get"] = {"goal": {"threadId": f.session, "status": "active"}}
+                if obstruction == "background": f.rpc_results["thread/backgroundTerminals/list"] = {"data": [{"itemId": "work"}], "nextCursor": None}
+                if obstruction == "active": f.home_states[str(f.home)] = "active"
+                if obstruction == "missing_api": f.rpc_results["thread/goal/get"] = ValueError("fixture unavailable")
+                if obstruction == "realtime":
+                    with f.transcript.open("a") as stream:
+                        stream.write(json.dumps({"type": "realtime_item", "timestamp": "2026-10-02T00:00:00Z", "payload": {
+                            "id": "start", "realtime_session_id": "rtc", "type": "realtime_session_started"}}) + "\n")
+                if obstruction:
+                    with self.assertRaises(ValueError): asyncio.run(NATIVE.cancel_queue(other, f.session, ledger=ledger, apply=True,
+                        queued_submission_id=selected["id"], entry_sha256=digest))
+                    self.assertFalse(deleted)
+                else:
+                    result = asyncio.run(NATIVE.cancel_queue(other, f.session, ledger=ledger, apply=True,
+                        queued_submission_id=selected["id"], entry_sha256=digest))
+                    self.assertTrue(result["ok"])
+                    self.assertEqual(len(deleted), 1)
+
+    def cancel_digest(self, other, f, ledger):
+        preview = asyncio.run(NATIVE.cancel_queue(other, f.session, ledger=ledger))
+        return next(entry["sha256"] for entry in preview["entries"] if entry["queuedSubmissionId"] == "selected")
+
+    def test_cancel_preview_without_lease_does_not_create_state(self):
+        import uuid
+        with ReceiptFixture(str(uuid.uuid4())) as f:
+            other, ledger, _selected, _retained, deleted = self.cancel_setup(f)
+            CLOSURE.lease_path(f.session).unlink()
+            before = {path: path.read_bytes() for path in (ledger, f.log, f.transcript)}
+            preview = asyncio.run(NATIVE.cancel_queue(other, f.session, ledger=ledger))
+            self.assertEqual(len(preview["entries"]), 2)
+            self.assertFalse(CLOSURE.lease_path(f.session).exists())
+            self.assertEqual({path: path.read_bytes() for path in before}, before)
+            self.assertFalse(deleted)
+
+    def test_cancel_retained_original_home_and_deconfigured_copy_authority(self):
+        import uuid
+        with ReceiptFixture(str(uuid.uuid4())) as f:
+            other, ledger, selected, _retained, deleted = self.cancel_setup(f)
+            f.home_queues[str(f.home)] = f.home_queues[str(other)]
+            f.homes = [other]
+            preview = asyncio.run(NATIVE.cancel_queue(f.home, f.session, ledger=ledger))
+            digest = next(entry["sha256"] for entry in preview["entries"] if entry["queuedSubmissionId"] == selected["id"])
+            def remove(request):
+                deleted.append(request)
+                f.home_queues[str(f.home)] = [entry for entry in f.home_queues[str(f.home)] if entry["id"] != selected["id"]]
+                return {"deleted": True}
+            f.rpc_results["thread/queue/delete"] = remove
+            self.assertTrue(asyncio.run(NATIVE.cancel_queue(f.home, f.session, ledger=ledger, apply=True,
+                queued_submission_id=selected["id"], entry_sha256=digest))["ok"])
+            self.assertEqual(len(deleted), 1)
+
+    def test_cancel_recovery_ledger_retains_original_home_without_authorizing_other_copies(self):
+        import uuid
+        for target_kind in ("original", "untouched_copy"):
+            with self.subTest(target=target_kind), ReceiptFixture(str(uuid.uuid4())) as f:
+                original = f.home
+                recovery = f.root / "recovery-account"
+                recovered_path = f.add_home(recovery)
+                untouched = f.root / "untouched-account"
+                untouched_path = f.add_home(untouched)
+                owned = {**f.entry, "codex_home": str(recovery), "transcript": str(recovered_path),
+                    "pid": 456, "launch_pid": 456, "tty": "recovery-tty", "launch_generation": "recovery-generation",
+                    "launch_started_at": "2026-10-02T01:00:00Z"}
+                metadata = {key: owned[key] for key in ("codex_home", "launch_pid", "launch_generation", "launch_started_at")}
+                with CLOSURE.resume_guard(f.session, method="thread/resume", home=recovery):
+                    CLOSURE.resumed_launch(f.session, metadata, str(recovered_path), owned["tty"])
+                with CLOSURE.ownership(f.session): CLOSURE.admit_sources({f.session})
+                ledger = f.root / "owned-recovery-ledger.json"
+                ledger.write_text(json.dumps([owned]))
+                ledger.chmod(0o600)
+                f.native_state = "notLoaded"
+                selected = {"id": "selected", "clientUserMessageId": "selected-client", "input": []}
+                retained = {"id": "retained", "clientUserMessageId": "retained-client", "input": []}
+                f.home_queues[str(original)] = [selected, retained]
+                f.home_queues[str(recovery)] = []
+                f.home_queues[str(untouched)] = [selected]
+                f.homes = [recovery]
+                deleted = []
+                def remove(request):
+                    deleted.append(request["params"])
+                    f.home_queues[str(original)] = [retained]
+                    return {"deleted": True}
+                f.rpc_results["thread/queue/delete"] = remove
+                before = {path: path.read_bytes() for path in (ledger, f.log, f.transcript, recovered_path,
+                    untouched_path, CLOSURE.lease_path(f.session))}
+                if target_kind == "untouched_copy":
+                    with self.assertRaises(ValueError): asyncio.run(NATIVE.cancel_queue(untouched, f.session,
+                        ledger=ledger, apply=True, queued_submission_id=selected["id"], entry_sha256="0" * 64))
+                    self.assertFalse(deleted)
+                    self.assertEqual(f.home_queues[str(original)], [selected, retained])
+                else:
+                    preview = asyncio.run(NATIVE.cancel_queue(original, f.session, ledger=ledger))
+                    digest = next(entry["sha256"] for entry in preview["entries"] if entry["queuedSubmissionId"] == selected["id"])
+                    self.assertTrue(asyncio.run(NATIVE.cancel_queue(original, f.session, ledger=ledger, apply=True,
+                        queued_submission_id=selected["id"], entry_sha256=digest))["ok"])
+                    self.assertEqual(deleted, [{"threadId": f.session, "queuedSubmissionId": selected["id"]}])
+                    self.assertEqual(f.home_queues[str(original)], [retained])
+                self.assertEqual(f.home_queues[str(untouched)], [selected])
+                self.assertEqual({path: path.read_bytes() for path in before}, before)
+
+    def test_cancel_digest_guard_and_live_source_veto_every_tty(self):
+        import uuid
+        for mode in ("opaque_digest", "pid", "native_sid", "new_generation"):
+            with self.subTest(mode=mode), ReceiptFixture(str(uuid.uuid4())) as f:
+                other, ledger, selected, _retained, deleted = self.cancel_setup(f)
+                digest = self.cancel_digest(other, f, ledger)
+                if mode == "opaque_digest": selected["opaqueFutureField"]["value"] = 2
+                if mode == "pid": f.process_rows = [(f.entry["pid"], "different-tty", "worker")]
+                if mode == "native_sid": f.process_rows = [(456, "different-tty", "codex resume " + f.session)]
+                if mode == "new_generation":
+                    rows = json.loads(f.log.read_text())
+                    rows[0]["resumed_at"] = "2026-10-02T00:00:00Z"
+                    rows[0]["resumed_generation"] = {**f.entry, "pid": 456, "launch_pid": 456, "launch_generation": "new"}
+                    CLOSURE.replace_rows(rows)
+                with self.assertRaises(ValueError): asyncio.run(NATIVE.cancel_queue(other, f.session, ledger=ledger,
+                    apply=True, queued_submission_id=selected["id"], entry_sha256=digest))
+                self.assertFalse(deleted)
+
+    def test_cancel_original_authority_cannot_inherit_inventory_or_backfill_exemptions(self):
+        import uuid
+        cases = [("valid", "none"), ("missing_identity", "none"), ("source_tty_occupant", "none")]
+        cases += [(kind, origin) for kind in ("missing_identity", "source_tty_occupant", "inventory_marker", "backfill_marker")
+                  for origin in ("ledger", "saved", "saved_generation")]
+        for kind, origin in cases:
+            with self.subTest(kind=kind, origin=origin), ReceiptFixture(str(uuid.uuid4())) as f:
+                other, ledger, selected, _retained, deleted = self.cancel_setup(f)
+                digest = self.cancel_digest(other, f, ledger)
+                CLOSURE.replace_rows([])
+                entry = dict(f.entry)
+                marker = "_inventory" if kind in {"missing_identity", "inventory_marker"} else "_backfill"
+                if kind == "valid": entry.update(_inventory=False, _backfill=False)
+                if kind == "missing_identity":
+                    for key in ("pid", "tty", "launch_pid"): entry.pop(key)
+                if kind == "source_tty_occupant": f.process_rows = [(456, entry["tty"], "unrelated-worker")]
+                if origin == "ledger": entry[marker] = True
+                ledger.write_text(json.dumps([entry]))
+                if origin == "saved": CLOSURE.replace_rows([{**entry, marker: True}])
+                if origin == "saved_generation": CLOSURE.replace_rows([{**entry,
+                    "resumed_generation": {**entry, marker: True}}])
+                if kind == "valid":
+                    self.assertTrue(asyncio.run(NATIVE.cancel_queue(other, f.session, ledger=ledger, apply=True,
+                        queued_submission_id=selected["id"], entry_sha256=digest))["ok"])
+                else:
+                    with self.assertRaises(ValueError): asyncio.run(NATIVE.cancel_queue(other, f.session,
+                        ledger=ledger, apply=True, queued_submission_id=selected["id"], entry_sha256=digest))
+                self.assertEqual(len(deleted), int(kind == "valid"))
+
+    def test_cancel_refuses_unowned_wrong_home_native_identity_and_unknown_queue(self):
+        import uuid
+        for mode in ("unowned", "source_home", "initialize_home", "native_id", "native_path", "queue_api"):
+            with self.subTest(mode=mode), ReceiptFixture(str(uuid.uuid4())) as f:
+                other, ledger, selected, _retained, deleted = self.cancel_setup(f)
+                digest = self.cancel_digest(other, f, ledger)
+                entry = dict(f.entry)
+                if mode == "unowned": entry["supervisor_owned"] = False
+                if mode == "source_home": entry["codex_home"] = str(other)
+                ledger.write_text(json.dumps([entry]))
+                if mode == "initialize_home": f.rpc_results["initialize"] = {"codexHome": str(f.root)}
+                if mode in {"native_id", "native_path"}: f.rpc_results["thread/read"] = {"thread": {
+                    "id": "different-source" if mode == "native_id" else f.session,
+                    "path": str(f.root / "unbound.jsonl") if mode == "native_path" else str(f.transcript),
+                    "status": {"type": "notLoaded"}}}
+                if mode == "queue_api": f.rpc_results["thread/queue/list"] = ValueError("fixture queue unavailable")
+                with self.assertRaises(ValueError): asyncio.run(NATIVE.cancel_queue(other, f.session,
+                    ledger=ledger, apply=True, queued_submission_id=selected["id"], entry_sha256=digest))
+                self.assertFalse(deleted)
+
+    def test_cancel_selected_authority_stability_ignores_unrelated_ledger_rows(self):
+        import uuid
+        for changed in ("unrelated", "selected", "shared"):
+            with self.subTest(changed=changed), ReceiptFixture(str(uuid.uuid4())) as f:
+                other, ledger, selected, _retained, deleted = self.cancel_setup(f)
+                digest = self.cancel_digest(other, f, ledger)
+                injected = False
+                def after_target_facts(home, _facts):
+                    nonlocal injected
+                    if home != str(other) or injected: return
+                    injected = True
+                    if changed == "shared":
+                        rows = json.loads(f.log.read_text())
+                        rows[0]["launch_generation"] = "changed"
+                        CLOSURE.replace_rows(rows)
+                    else:
+                        rows = json.loads(ledger.read_text())
+                        if changed == "selected": rows[0]["retained_note"] = "changed authority"
+                        else: rows.append({"session_id": "unrelated", "harness": "claude", "note": "independent launch"})
+                        ledger.write_text(json.dumps(rows))
+                with self.cancel_read_boundaries(after_facts=after_target_facts):
+                    if changed == "unrelated":
+                        self.assertTrue(asyncio.run(NATIVE.cancel_queue(other, f.session, ledger=ledger,
+                            apply=True, queued_submission_id=selected["id"], entry_sha256=digest))["ok"])
+                    else:
+                        with self.assertRaises(ValueError): asyncio.run(NATIVE.cancel_queue(other, f.session, ledger=ledger,
+                            apply=True, queued_submission_id=selected["id"], entry_sha256=digest))
+                self.assertEqual(len(deleted), int(changed == "unrelated"))
+
+    def test_cancel_final_metadata_race_and_uncertain_readback_never_replay(self):
+        import uuid
+        for mode in ("preload", "postload", "false_ack", "malformed_ack", "disconnect", "other_changed"):
+            with self.subTest(mode=mode), ReceiptFixture(str(uuid.uuid4())) as f:
+                other, ledger, selected, _retained, deleted = self.cancel_setup(f)
+                digest = self.cancel_digest(other, f, ledger)
+                def before_metadata(home):
+                    if mode == "preload" and home == str(other): f.home_states[str(other)] = "idle"
+                remove = f.rpc_results["thread/queue/delete"]
+                def mutation(request):
+                    result = remove(request)
+                    if mode == "postload": f.home_states[str(other)] = "idle"
+                    if mode == "other_changed": f.home_queues[str(f.home)][0]["opaque"] = "changed"
+                    if mode == "false_ack": return {"deleted": False}
+                    if mode == "malformed_ack": return {"deleted": 1}
+                    if mode == "disconnect": return ValueError("fixture transport unavailable")
+                    return result
+                f.rpc_results["thread/queue/delete"] = mutation
+                with self.cancel_read_boundaries(before_metadata=before_metadata), self.assertRaises(ValueError):
+                    asyncio.run(NATIVE.cancel_queue(other, f.session, ledger=ledger, apply=True,
+                        queued_submission_id=selected["id"], entry_sha256=digest))
+                self.assertEqual(len(deleted), int(mode != "preload"))
+                self.assertEqual(len(f.home_queues[str(other)]), 2 if mode == "preload" else 1)
+
+    def test_cancel_postdelete_source_failures_are_private_uncertainty_without_replay(self):
+        import subprocess
+        import uuid
+        for failure in (subprocess.CalledProcessError(1, ["fixture", "private-argument"]),
+                        subprocess.TimeoutExpired(["fixture", "private-argument"], 1),
+                        KeyError("private-key"), TypeError("private-source"), OSError("private-source"),
+                        ValueError("private-source"), TimeoutError("private-source"), asyncio.CancelledError("private-source")):
+            with self.subTest(failure=type(failure).__name__), ReceiptFixture(str(uuid.uuid4())) as f:
+                other, ledger, selected, retained, deleted = self.cancel_setup(f)
+                digest = self.cancel_digest(other, f, ledger)
+                original = CLOSURE.transcript_facts
+                def read(*args, **kwargs):
+                    if deleted: raise failure
+                    return original(*args, **kwargs)
+                with patch.object(CLOSURE, "transcript_facts", side_effect=read), self.assertRaises(ValueError) as refused:
+                    asyncio.run(NATIVE.cancel_queue(other, f.session, ledger=ledger, apply=True,
+                        queued_submission_id=selected["id"], entry_sha256=digest))
+                self.assertEqual(len(deleted), 1)
+                self.assertEqual(f.home_queues[str(other)], [retained])
+                self.assertNotIn("private-", str(refused.exception))
+                fresh = asyncio.run(NATIVE.cancel_queue(other, f.session, ledger=ledger))
+                self.assertEqual([entry["queuedSubmissionId"] for entry in fresh["entries"]], [retained["id"]])
+                self.assertEqual(len(deleted), 1)
+
+    def test_cancel_cli_postsend_failure_preserves_deleted_state_without_resubmission(self):
+        import sys
+        import uuid
+        with ReceiptFixture(str(uuid.uuid4())) as f:
+            from test_codex_session import SESSION
+            other, ledger, selected, retained, deleted = self.cancel_setup(f)
+            digest = self.cancel_digest(other, f, ledger)
+            original = CLOSURE.transcript_facts
+            def read(*args, **kwargs):
+                if deleted: raise KeyError("private-readback-key")
+                return original(*args, **kwargs)
+            output = io.StringIO()
+            with patch.object(CLOSURE, "transcript_facts", side_effect=read), \
+                    patch.object(sys, "argv", ["codex-session.py", "queue-cancel", "--session-id", f.session,
+                        "--codex-home", str(other), "--ledger", str(ledger), "--apply",
+                        "--queued-submission-id", selected["id"], "--entry-sha256", digest]), redirect_stdout(output):
+                self.assertEqual(SESSION.main(), 1)
+            self.assertFalse(json.loads(output.getvalue())["ok"])
+            self.assertNotIn("private-readback-key", output.getvalue())
+            self.assertEqual(len(deleted), 1)
+            self.assertEqual(f.home_queues[str(other)], [retained])
+            fresh = asyncio.run(NATIVE.cancel_queue(other, f.session, ledger=ledger))
+            self.assertEqual([entry["queuedSubmissionId"] for entry in fresh["entries"]], [retained["id"]])
+            self.assertEqual(len(deleted), 1)
+
+    def test_cancel_resource_exit_failures_preserve_uncertain_deletion_without_replay(self):
+        import uuid
+        for boundary in ("target", "peer", "ownership"):
+            for error_type in (TimeoutError, asyncio.CancelledError, OSError, KeyboardInterrupt):
+                with self.subTest(boundary=boundary, failure=error_type.__name__), ReceiptFixture(str(uuid.uuid4())) as f:
+                    other, ledger, selected, retained, deleted = self.cancel_setup(f)
+                    digest = self.cancel_digest(other, f, ledger)
+                    preserved = {path: path.read_bytes() for path in (ledger, f.log, f.transcript, CLOSURE.lease_path(f.session))}
+                    other_queue = copy.deepcopy(f.home_queues[str(f.home)])
+                    failure = error_type("private-exit-details")
+                    with self.queue_exit_failure(other, deleted, failure, boundary), self.assertRaises(ValueError) as refused:
+                        asyncio.run(NATIVE.cancel_queue(other, f.session, ledger=ledger, apply=True,
+                            queued_submission_id=selected["id"], entry_sha256=digest))
+                    self.assertNotIn("private-", str(refused.exception))
+                    self.assertEqual(len(deleted), 1)
+                    self.assertEqual(f.home_queues[str(other)], [retained])
+                    self.assertEqual(f.home_queues[str(f.home)], other_queue)
+                    self.assertEqual({path: path.read_bytes() for path in preserved}, preserved)
+                    fresh = asyncio.run(NATIVE.cancel_queue(other, f.session, ledger=ledger))
+                    self.assertEqual([entry["queuedSubmissionId"] for entry in fresh["entries"]], [retained["id"]])
+                    self.assertEqual(len(deleted), 1)
+
+    def test_cancel_cli_resource_exit_failure_is_private_uncertainty(self):
+        import sys
+        import uuid
+        for error_type in (TimeoutError, asyncio.CancelledError, OSError):
+            with self.subTest(failure=error_type.__name__), ReceiptFixture(str(uuid.uuid4())) as f:
+                from test_codex_session import SESSION
+                other, ledger, selected, retained, deleted = self.cancel_setup(f)
+                digest = self.cancel_digest(other, f, ledger)
+                output = io.StringIO()
+                with self.queue_exit_failure(other, deleted, error_type("private-exit-details"), "target"), \
+                        patch.object(sys, "argv", ["codex-session.py", "queue-cancel", "--session-id", f.session,
+                            "--codex-home", str(other), "--ledger", str(ledger), "--apply",
+                            "--queued-submission-id", selected["id"], "--entry-sha256", digest]), redirect_stdout(output):
+                    self.assertEqual(SESSION.main(), 1)
+                receipt = json.loads(output.getvalue())
+                self.assertFalse(receipt["ok"])
+                self.assertNotIn("private-", output.getvalue())
+                self.assertEqual(len(deleted), 1)
+                self.assertEqual(f.home_queues[str(other)], [retained])
+                self.assertEqual([entry["queuedSubmissionId"] for entry in
+                    asyncio.run(NATIVE.cancel_queue(other, f.session, ledger=ledger))["entries"]], [retained["id"]])
+                self.assertEqual(len(deleted), 1)
+
+    def test_cancel_presend_cancellation_preserves_source_and_queue(self):
+        import uuid
+        with ReceiptFixture(str(uuid.uuid4())) as f:
+            other, ledger, selected, _retained, deleted = self.cancel_setup(f)
+            digest = self.cancel_digest(other, f, ledger)
+            before = copy.deepcopy(f.home_queues)
+            source = {path: path.read_bytes() for path in (ledger, f.log, f.transcript, CLOSURE.lease_path(f.session))}
+            failure = asyncio.CancelledError("fixture cancellation before deletion")
+            def cancel(_home, _metadata):
+                raise failure
+            with self.cancel_read_boundaries(after_metadata=cancel), self.assertRaises(asyncio.CancelledError) as stopped:
+                asyncio.run(NATIVE.cancel_queue(other, f.session, ledger=ledger, apply=True,
+                    queued_submission_id=selected["id"], entry_sha256=digest))
+            self.assertIs(stopped.exception, failure)
+            self.assertFalse(deleted)
+            self.assertEqual(f.home_queues, before)
+            self.assertEqual({path: path.read_bytes() for path in source}, source)
+
+    def test_cancel_final_metadata_cannot_change_source_authority(self):
+        import uuid
+        for boundary in ("metadata", "inventory"):
+            for changed in ("unrelated", "selected", "shared", "lease", "process"):
+                with self.subTest(boundary=boundary, changed=changed), ReceiptFixture(str(uuid.uuid4())) as f:
+                    other, ledger, selected, _retained, deleted = self.cancel_setup(f)
+                    digest = self.cancel_digest(other, f, ledger)
+                    final_inventory = False
+                    def mutate():
+                        if changed in {"selected", "unrelated"}:
+                            rows = json.loads(ledger.read_text())
+                            if changed == "selected": rows[0]["launch_generation"] = "new"
+                            else: rows.append({"session_id": "unrelated", "harness": "claude"})
+                            ledger.write_text(json.dumps(rows))
+                        if changed == "shared": CLOSURE.replace_rows([{**f.entry, "launch_generation": "new"}])
+                        if changed == "lease":
+                            path = CLOSURE.lease_path(f.session)
+                            action = json.loads(path.read_text())
+                            action["action_at"] = "2026-10-03T00:00:00Z"
+                            path.write_text(json.dumps(action))
+                        if changed == "process": f.process_rows = [(f.entry["pid"], "different-tty", "worker")]
+                    def after_metadata(home, _metadata):
+                        nonlocal final_inventory
+                        if home == str(other):
+                            if boundary == "metadata": mutate()
+                            else: final_inventory = True
+                    def inventory():
+                        nonlocal final_inventory
+                        if final_inventory:
+                            final_inventory = False
+                            mutate()
+                        return list(f.process_rows)
+                    with self.cancel_read_boundaries(after_metadata=after_metadata), patch.object(f.release, "inventory", side_effect=inventory):
+                        if changed == "unrelated":
+                            self.assertTrue(asyncio.run(NATIVE.cancel_queue(other, f.session, ledger=ledger, apply=True,
+                                queued_submission_id=selected["id"], entry_sha256=digest))["ok"])
+                        else:
+                            with self.assertRaises(ValueError): asyncio.run(NATIVE.cancel_queue(other, f.session,
+                                ledger=ledger, apply=True, queued_submission_id=selected["id"], entry_sha256=digest))
+                    self.assertEqual(len(deleted), int(changed == "unrelated"))
+
+    def test_cancel_original_termination_record_and_partial_tail_authority(self):
+        import os
+        import socket
+        import uuid
+        from types import SimpleNamespace
+        import github_plan_termination as termination
+        for mode in ("minimal", "historical", "historical_markers", "known_launch_pid", "matching_generation", "stale_generation", "partial_tail", "interior", "complete_corrupt", "wrong_host", "new_generation", "inventory_marker", "backfill_marker", "gone_artifact"):
+            with self.subTest(mode=mode), ReceiptFixture(str(uuid.uuid4())) as f:
+                other, _ledger, selected, _retained, deleted = self.cancel_setup(f)
+                # Preserve the original object; an output attestation is insufficient.
+                record = {key: value for key, value in f.entry.items() if key not in {
+                    "supervisor_owned", "codex_home", "launch_pid", "launch_generation", "launch_started_at"}}
+                record.update(host=socket.gethostname(), cause="fixture host crash", retained_artifacts=[],
+                    ended_at=(datetime.now(timezone.utc) - timedelta(days=1)).isoformat(),
+                    transcript_roots=[str(home / "sessions") for home in (f.home, other)],
+                    tmux_socket="fixture", tmux_session_id="tmux:fixture:" + "a" * 32)
+                CLOSURE.replace_rows([f.entry] if mode in {"historical", "historical_markers", "known_launch_pid"} else [])
+                if mode == "historical_markers": CLOSURE.replace_rows([{**f.entry, "_inventory": True, "_backfill": True}])
+                if mode == "known_launch_pid":
+                    CLOSURE.replace_rows([{**f.entry, "launch_pid": 456}])
+                    f.process_rows = [(456, "different-tty", "worker")]
+                if mode == "new_generation": CLOSURE.replace_rows([{**f.entry, "resumed_at": record["ended_at"],
+                    "resumed_generation": {**f.entry, "pid": 456, "launch_pid": 456, "launch_generation": "new"}}])
+                if mode in {"matching_generation", "stale_generation"}:
+                    generation = {**f.entry, "pid": 456, "launch_pid": 456, "launch_generation": "recovery"}
+                    CLOSURE.replace_rows([{**f.entry, "resumed_at": record["ended_at"], "resumed_generation": generation}])
+                    if mode == "matching_generation":
+                        record.update({key: generation[key] for key in ("pid", "launch_pid", "launch_generation", "launch_started_at")})
+                if mode == "wrong_host": record["host"] = "different-source-host"
+                if mode == "inventory_marker": record["_inventory"] = True
+                if mode == "backfill_marker": record["_backfill"] = True
+                if mode == "gone_artifact": record["retained_artifacts"] = [{"branch": "already-merged", "worktree": str(f.root / "removed-worktree")}]
+                if mode in {"partial_tail", "interior", "complete_corrupt"}:
+                    with f.transcript.open("a") as stream:
+                        stream.write('{"type":' + ("\n" if mode != "partial_tail" else ""))
+                        if mode == "interior": stream.write(json.dumps({"type": "session_meta", "payload": {"id": f.session}}) + "\n")
+                    f.rpc_results["thread/turns/list"] = {"data": [], "nextCursor": None}
+                old = (datetime.now(timezone.utc) - timedelta(days=2)).timestamp()
+                for path in (f.transcript, other / "sessions" / f.transcript.name): os.utime(path, (old, old))
+                path = f.root / "original-termination.json"
+                path.write_text(json.dumps(record))
+                path.chmod(0o600)
+                before = {value: value.read_bytes() for value in (path, f.transcript, f.log, CLOSURE.lease_path(f.session))}
+                with patch.object(termination, "inventory", side_effect=lambda: f.process_rows), \
+                        patch.object(termination, "run_terminal", return_value=SimpleNamespace(
+                        returncode=0, stdout="a" * 32 + "\t1\t1\n", stderr="")):
+                    if mode not in {"minimal", "historical", "historical_markers", "matching_generation", "partial_tail", "gone_artifact"}:
+                        with self.assertRaises(ValueError): asyncio.run(NATIVE.cancel_queue(other, f.session, termination_record=path))
+                        self.assertFalse(deleted)
+                        continue
+                    if mode == "gone_artifact":
+                        import subprocess
+                        with self.assertRaises((ValueError, subprocess.SubprocessError)): termination.verify(record, f.session)
+                    preview = asyncio.run(NATIVE.cancel_queue(other, f.session, termination_record=path))
+                    digest = next(entry["sha256"] for entry in preview["entries"] if entry["queuedSubmissionId"] == selected["id"])
+                    self.assertTrue(asyncio.run(NATIVE.cancel_queue(other, f.session, termination_record=path,
+                        apply=True, queued_submission_id=selected["id"], entry_sha256=digest))["ok"])
+                self.assertEqual(len(deleted), 1)
+                self.assertEqual({value: value.read_bytes() for value in before}, before)
+
+    def test_cancel_termination_covers_archive_roots_without_granting_account_authority(self):
+        import os
+        import socket
+        import uuid
+        from types import SimpleNamespace
+        import github_plan_termination as termination
+        for change in ("existing_activity", "fingerprint", "new_copy"):
+            with self.subTest(change=change), ReceiptFixture(str(uuid.uuid4())) as f:
+                other, _ledger, selected, _retained, deleted = self.cancel_setup(f)
+                CLOSURE.replace_rows([])
+                archive = f.root / "retained-transcripts-outside-accounts"
+                archive.mkdir()
+                archived = archive / ("archive-" + f.session + ".jsonl")
+                archived.write_bytes(f.transcript.read_bytes())
+                record = {**f.entry, "host": socket.gethostname(), "cause": "fixture crash", "retained_artifacts": [],
+                    "ended_at": (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(),
+                    "transcript_roots": [str(f.home / "sessions"), str(archive)],
+                    "tmux_socket": "fixture", "tmux_session_id": "tmux:fixture:" + "a" * 32}
+                old = (datetime.now(timezone.utc) - timedelta(days=2)).timestamp()
+                for file in (f.transcript, other / "sessions" / f.transcript.name, archived): os.utime(file, (old, old))
+                authority = f.root / "original-termination.json"
+                authority.write_text(json.dumps(record))
+                authority.chmod(0o600)
+                with patch.object(termination, "run_terminal", return_value=SimpleNamespace(
+                        returncode=0, stdout="a" * 32 + "\t1\t1\n", stderr="")):
+                    with self.assertRaises(ValueError):
+                        asyncio.run(NATIVE.cancel_queue(archive, f.session, termination_record=authority))
+                    preview = asyncio.run(NATIVE.cancel_queue(other, f.session, termination_record=authority))
+                    digest = next(entry["sha256"] for entry in preview["entries"] if entry["queuedSubmissionId"] == selected["id"])
+                    seen = set()
+                    def after_facts(home, _facts):
+                        if home in seen and home == str(other):
+                            if change == "fingerprint": archived.write_bytes(archived.read_bytes() + b" \n")
+                            if change == "new_copy":
+                                copy = archive / ("later-" + f.session + ".jsonl")
+                                copy.write_bytes(archived.read_bytes())
+                                os.utime(copy, (old, old))
+                            os.utime(archived, (old, old))
+                        seen.add(home)
+                    if change == "existing_activity":
+                        with archived.open("a") as stream: stream.write(json.dumps({"type": "event_msg",
+                            "timestamp": datetime.now(timezone.utc).isoformat(), "payload": {"type": "agent_message", "message": "new activity"}}) + "\n")
+                    with self.cancel_read_boundaries(after_facts=after_facts), self.assertRaises(ValueError):
+                        asyncio.run(NATIVE.cancel_queue(other, f.session, termination_record=authority, apply=True,
+                            queued_submission_id=selected["id"], entry_sha256=digest))
+                self.assertFalse(deleted)
+
+    def test_termination_transcript_uses_physical_lines_for_valid_unicode_and_crash_tail(self):
+        import uuid
+        import github_plan_termination as termination
+        with ReceiptFixture(str(uuid.uuid4())) as f:
+            for separator in ("\u2028", "\u2029", "\u0085"):
+                for tail in ("", '{"type":'):
+                    with self.subTest(separator=repr(separator), tail=bool(tail)):
+                        rows = [{"type": "session_meta", "payload": {"id": f.session}},
+                            {"type": "event_msg", "timestamp": "2026-10-01T02:00:00Z", "payload": {
+                                "type": "agent_message", "message": "interrupted" + separator + "work"}}]
+                        f.transcript.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows) + tail)
+                        observed, _mtime, _size, truncated = termination.transcript_snapshot(f.entry, f.transcript)
+                        self.assertEqual(observed, rows)
+                        self.assertEqual(truncated, bool(tail))
+            f.transcript.write_text('{"type":\n' + json.dumps(rows[0]) + "\n")
+            with self.assertRaises(ValueError): termination.transcript_snapshot(f.entry, f.transcript)
+
+    def test_cancel_guarded_reused_tty_uses_original_pane_without_clearing_pending(self):
+        import os
+        import socket
+        import uuid
+        from types import SimpleNamespace
+        import github_plan_termination as termination
+        with ReceiptFixture(str(uuid.uuid4())) as f:
+            import tmux_terminal
+            other, _ledger, selected, _retained, deleted = self.cancel_setup(f)
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=1)).replace(microsecond=0)
+            record = {**f.entry, "host": socket.gethostname(), "cause": "fixture terminal crash",
+                "ended_at": cutoff.isoformat(), "retained_artifacts": [], "tmux_socket": "fixture",
+                "tmux_session_id": "tmux:fixture:" + "a" * 32, "window_id": "$1", "tab_id": "@1",
+                "transcript_roots": [str(home / "sessions") for home in (f.home, other)]}
+            old = (cutoff - timedelta(days=1)).timestamp()
+            for transcript in (f.transcript, other / "sessions" / f.transcript.name): os.utime(transcript, (old, old))
+            path = f.root / "original-termination.json"
+            path.write_text(json.dumps(record))
+            path.chmod(0o600)
+            values = {"session_id": "$1", "window_id": "@1", "pane_id": "%1", "pane_title": "ended",
+                "pane_tty": "/dev/" + f.entry["tty"], "pane_pid": "", "pane_dead": "1", "pane_dead_status": "0",
+                "@supervisor_identity": "a" * 32, "pid": "999", "pane_dead_time": str(int(cutoff.timestamp()))}
+            native = "\t".join(values.get(field, "") for field in tmux_terminal.PANE_FIELDS) + "\n"
+            shared = termination.native_helpers()[1]
+            state = CLOSURE.lease_path(f.session).read_bytes()
+            with patch.object(termination, "inventory", return_value=[(88, f.entry["tty"], "codex --remote unix:///new-client")]), \
+                    patch.object(shared, "process_started_at", return_value=cutoff + timedelta(seconds=1)), \
+                    patch.object(tmux_terminal.Terminal, "run", return_value=SimpleNamespace(returncode=0, stdout=native)), \
+                    patch.object(tmux_terminal.Terminal, "readonly_control_supported", return_value=True), \
+                    patch.object(CLOSURE, "guarded_launch_endpoint", return_value="/new-client"), \
+                    patch.object(termination, "run_terminal", return_value=SimpleNamespace(
+                        returncode=0, stdout="a" * 32 + "\t1\t1\n", stderr="")):
+                with self.assertRaises(ValueError): termination.verify(record, f.session)
+                preview = asyncio.run(NATIVE.cancel_queue(other, f.session, termination_record=path))
+                digest = next(entry["sha256"] for entry in preview["entries"] if entry["queuedSubmissionId"] == selected["id"])
+                self.assertTrue(asyncio.run(NATIVE.cancel_queue(other, f.session, termination_record=path, apply=True,
+                    queued_submission_id=selected["id"], entry_sha256=digest))["ok"])
+            self.assertEqual(len(deleted), 1)
+            self.assertEqual(CLOSURE.lease_path(f.session).read_bytes(), state)
+
+    def test_cancel_private_ledger_relative_path_and_busy_ownership(self):
+        import uuid
+        with ReceiptFixture(str(uuid.uuid4())) as f:
+            other, ledger, selected, _retained, deleted = self.cancel_setup(f)
+            ledger.write_text(json.dumps([{**f.entry, "transcript": str(f.transcript.relative_to(ledger.parent)),
+                                          "tty": "/dev/" + f.entry["tty"]}]))
+            digest = self.cancel_digest(other, f, ledger)
+            acquired, release = threading.Event(), threading.Event()
+            def holder():
+                with CLOSURE.ownership(f.session):
+                    acquired.set()
+                    release.wait(5)
+            with ThreadPoolExecutor() as pool:
+                task = pool.submit(holder)
+                self.assertTrue(acquired.wait(2))
+                try:
+                    with self.assertRaises(CLOSURE.LeaseBusy): asyncio.run(NATIVE.cancel_queue(other, f.session,
+                        ledger=ledger, apply=True, queued_submission_id=selected["id"], entry_sha256=digest))
+                finally: release.set()
+                task.result()
+            self.assertFalse(deleted)
+            self.assertTrue(asyncio.run(NATIVE.cancel_queue(other, f.session, ledger=ledger, apply=True,
+                queued_submission_id=selected["id"], entry_sha256=digest))["ok"])
+
+    def test_cancel_original_authority_allows_read_access_but_refuses_shared_write_access(self):
+        import uuid
+        for permissions in (0o644, 0o664):
+            with self.subTest(permissions=oct(permissions)), ReceiptFixture(str(uuid.uuid4())) as f:
+                other, ledger, selected, _retained, deleted = self.cancel_setup(f)
+                digest = self.cancel_digest(other, f, ledger)
+                ledger.chmod(permissions)
+                before = ledger.read_bytes()
+                if permissions & 0o022:
+                    with self.assertRaises(ValueError):
+                        asyncio.run(NATIVE.cancel_queue(other, f.session, ledger=ledger, apply=True,
+                            queued_submission_id=selected["id"], entry_sha256=digest))
+                    self.assertFalse(deleted)
+                else:
+                    self.assertTrue(asyncio.run(NATIVE.cancel_queue(other, f.session, ledger=ledger, apply=True,
+                        queued_submission_id=selected["id"], entry_sha256=digest))["ok"])
+                    self.assertEqual(len(deleted), 1)
+                self.assertEqual(ledger.read_bytes(), before)
+                self.assertEqual(ledger.stat().st_mode & 0o777, permissions)
+
     def test_finish_keeps_one_native_cutoff_through_proof_and_later_safe_turn(self):
         import uuid
         from github_plan_sessions import native_helpers
@@ -749,6 +1454,51 @@ class NativeQueueTests(unittest.TestCase):
             self.assertNotIn("input", result)
             self.assertNotIn(json.dumps(text), json.dumps(result))
             self.assertEqual(len(sent), 1)
+
+    def test_queue_submission_exit_failure_is_private_uncertainty_without_replay(self):
+        import sys
+        import uuid
+        for boundary in ("target", "ownership"):
+            for error_type in (TimeoutError, asyncio.CancelledError, OSError):
+                with self.subTest(boundary=boundary, failure=error_type.__name__), ReceiptFixture(str(uuid.uuid4())) as f:
+                    from test_codex_session import SESSION
+                    sent = []
+                    def queued(request):
+                        sent.append(request["params"])
+                        entry = {"id": "added-once", **{key: request["params"][key]
+                            for key in ("clientUserMessageId", "input")}}
+                        f.home_queues[str(f.home)] = [entry]
+                        return {"queuedSubmission": entry}
+                    f.rpc_results["thread/queue/add"] = queued
+                    output = io.StringIO()
+                    with self.queue_exit_failure(f.home, sent, error_type("private-submission-teardown"), boundary), \
+                            patch.object(sys, "argv", ["codex-session.py", "queue", "--session-id", f.session,
+                                "--codex-home", str(f.home), "--message", "private-input"]), redirect_stdout(output):
+                        self.assertEqual(SESSION.main(), 1)
+                    receipt = json.loads(output.getvalue())
+                    self.assertFalse(receipt["ok"])
+                    self.assertNotIn("private-", output.getvalue())
+                    self.assertEqual(len(sent), 1)
+                    self.assertTrue(CLOSURE.action_pending(f.session))
+                    async def readback():
+                        async with NATIVE.connection(f.home) as request:
+                            return await NATIVE.read_queue(request, f.session)
+                    self.assertEqual(list(asyncio.run(readback())), ["added-once"])
+                    self.assertEqual(len(sent), 1)
+
+    def test_queue_submission_presend_cancellation_never_sends_input(self):
+        import uuid
+        with ReceiptFixture(str(uuid.uuid4())) as f:
+            original = NATIVE.connection
+            @asynccontextmanager
+            async def connection(*args, **kwargs):
+                async with original(*args, **kwargs) as request:
+                    asyncio.current_task().cancel()
+                    await asyncio.sleep(0)
+                    yield request
+            with patch.object(NATIVE, "connection", connection), self.assertRaises(asyncio.CancelledError):
+                asyncio.run(NATIVE.queue_input(f.home, f.session, "private-input"))
+            self.assertNotIn("thread/queue/add", f.rpc_requests)
 
     def test_malformed_queue_ack_is_uncertain_without_replay(self):
         import uuid
