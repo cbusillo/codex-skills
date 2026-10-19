@@ -6,13 +6,12 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager, AsyncExitStack
+from contextlib import asynccontextmanager, contextmanager, AsyncExitStack
 import hashlib
 import json
 import os
 from pathlib import Path
 import stat
-import subprocess
 import uuid
 from typing import NamedTuple
 from datetime import datetime
@@ -247,7 +246,23 @@ async def read_thread_facts(request, session):
     return facts
 
 
+@contextmanager
+def _queue_outcome(operation):
+    """Top-level queue CLI operations preserve uncertainty through all cleanup exits."""
+    sent = False
+    def mark_sent():
+        nonlocal sent
+        sent = True
+    try:
+        yield mark_sent
+    except BaseException as error:
+        if not sent:
+            raise
+        raise ValueError(f"queue {operation} is uncertain; preserve state and do not replay") from error
+
+
 async def queue_input(home: Path, session: str, text: str, *, transcript: Path | None = None):
+    """Submit once; normalize post-send cancellation at the top-level CLI boundary."""
     from github_plan_sessions import native_helpers
     native_helpers()
     from codex_session_proxy import source_endpoint
@@ -258,14 +273,17 @@ async def queue_input(home: Path, session: str, text: str, *, transcript: Path |
     # Native echoes the full input. Escaped/multibyte valid text can exceed the
     # observer's fixed cap; bound this acknowledgement to the actual request.
     allowance = max(1024 * 1024, len(json.dumps(params, ensure_ascii=True).encode()) + 65536)
-    with closure.resume_guard(session, method="thread/queue/add", home=home):
-        async with connection(home, max_msg_size=allowance) as request:
-            result = await request("thread/queue/add", params)
-            entry = result.get("queuedSubmission") if isinstance(result, dict) else None
-            if (not isinstance(entry, dict) or not isinstance(entry.get("id"), str) or not entry["id"]
-                    or entry.get("clientUserMessageId") != client_id or entry.get("input") != params["input"]):
-                raise ValueError("native queue acknowledgement is unavailable; do not replay")
-            return {"queuedSubmissionId": entry["id"], "clientUserMessageId": client_id}
+    with _queue_outcome("submission") as mark_sent:
+        with closure.resume_guard(session, method="thread/queue/add", home=home):
+            async with connection(home, max_msg_size=allowance) as request:
+                mark_sent()
+                result = await request("thread/queue/add", params)
+                entry = result.get("queuedSubmission") if isinstance(result, dict) else None
+                if (not isinstance(entry, dict) or not isinstance(entry.get("id"), str) or not entry["id"]
+                        or entry.get("clientUserMessageId") != client_id or entry.get("input") != params["input"]):
+                    raise ValueError("native queue acknowledgement is unavailable")
+                receipt = {"queuedSubmissionId": entry["id"], "clientUserMessageId": client_id}
+    return receipt
 
 
 class _SourceProcess(NamedTuple):
@@ -487,7 +505,7 @@ def _require_cancel_original(entry):
 
 
 def _cancel_selected(path, session, *, ledger=False):
-    """Read one private authority row; unrelated ledger entries are not its identity."""
+    """Read one integrity-protected authority row; unrelated rows are not its identity."""
     from github_plan_sessions import native_helpers
     native_helpers()
     import session_record
@@ -495,8 +513,8 @@ def _cancel_selected(path, session, *, ledger=False):
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     with os.fdopen(fd) as stream:
         before = os.fstat(stream.fileno())
-        if not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid() or before.st_mode & 0o077:
-            raise ValueError("queue cleanup requires a private original source record")
+        if not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid() or before.st_mode & 0o022:
+            raise ValueError("queue cleanup requires an original regular source record owned by the current user and not writable by group or others")
         value = json.load(stream)
         if closure.transcript_identity(before) != closure.transcript_identity(os.fstat(stream.fileno())):
             raise ValueError("source record changed while reading")
@@ -526,7 +544,7 @@ def _cancel_saved(session):
 
 
 def _cancel_generation(entry, saved):
-    """A selected current row can veto old authority, never supply ownership."""
+    """Return the matching current row as negative evidence, never ownership."""
     if saved is None:
         return
     current = saved.get("resumed_generation") if "resumed_generation" in saved else saved
@@ -543,6 +561,7 @@ def _cancel_generation(entry, saved):
             continue
         if key in current and identity(key, current[key]) != identity(key, entry.get(key)):
             raise ValueError("original source authority does not match the current generation")
+    return current
 
 
 def _cancel_origin(entry, action):
@@ -593,6 +612,7 @@ async def cancel_queue(home: Path, session: str, *, ledger: Path | None = None,
 
     Native delete has no digest CAS: the digest guards our last observation, not
     an unmanaged same-ID edit concurrent with the deletion. Never replay uncertainty.
+    This top-level CLI coroutine normalizes cancellation after deletion may start.
     """
     import github_plan_termination as termination
     if (ledger is None) == (termination_record is None):
@@ -604,97 +624,98 @@ async def cancel_queue(home: Path, session: str, *, ledger: Path | None = None,
     authority_path = ledger if ledger is not None else termination_record
     def authority():
         return _cancel_selected(authority_path, session, ledger=ledger is not None)
-    with closure.ownership(session, create=apply) as held:
-        entry, saved, action = authority(), _cancel_saved(session), closure.lease_state(session)
-        reader = None if ledger is not None else lambda lines: termination.transcript_records(entry, lines)
-        retained_homes = {Path(saved["codex_home"]).expanduser().resolve(strict=True)} if saved and saved.get("codex_home") else set()
-        _primary, original_home, configured, _known = _cancel_origin(entry, action)
-        _cancel_generation({**entry, "codex_home": str(original_home)}, saved)
-        if Path(target) not in configured | retained_homes | {original_home}:
-            raise ValueError("target must be configured or a validated retained source home")
-        process = _source_process(entry, saved) if ledger is not None else None
-        if process is not None:
-            _require_cancel_original(process.effective)
-        termination_process = None
-        def check_identity():
-            if authority() != entry or _cancel_saved(session) != saved or closure.lease_state(session) != action:
-                raise ValueError("source authority, generation or ownership state changed")
-        def source():
-            nonlocal termination_process
-            check_identity()
+    with _queue_outcome("deletion") as mark_sent:
+        with closure.ownership(session, create=apply) as held:
+            entry, saved, action = authority(), _cancel_saved(session), closure.lease_state(session)
+            reader = None if ledger is not None else lambda lines: termination.transcript_records(entry, lines)
+            retained_homes = {Path(saved["codex_home"]).expanduser().resolve(strict=True)} if saved and saved.get("codex_home") else set()
+            _primary, original_home, configured, _known = _cancel_origin(entry, action)
+            current = _cancel_generation({**entry, "codex_home": str(original_home)}, saved)
+            if Path(target) not in configured | retained_homes | {original_home}:
+                raise ValueError("target must be configured or a validated retained source home")
+            process = _source_process(entry, saved) if ledger is not None else None
             if process is not None:
-                recheck_source_process(process)
-            elif termination_process is None:
-                termination_process = termination._verify_queue_source(entry, session,
-                    latest_pid=saved.get("launch_pid") if saved else None)
-            else:
-                termination._recheck_queue_process(termination_process)
-            files = _cancel_files(entry, action, reader, retained_homes,
-                                  termination_process.roots if termination_process is not None else None)
-            if ledger is None:
-                from datetime import timezone
-                now, ended = datetime.now(timezone.utc), termination.stamp(entry["ended_at"])
-                for snapshot in files["transcripts"].values():
-                    termination._transcript_activity([termination.stamp(snapshot["latest"])], snapshot["identity"][3],
-                        snapshot["truncated"], now, ended)
-            return files
-        before = await asyncio.to_thread(source)
-        if target not in before["homes"]:
-            raise ValueError("target has no authenticated copy of the original source")
-        async with AsyncExitStack() as connections:
-            readers = {value: await connections.enter_async_context(connection(Path(value))) for value in before["homes"]}
-            async def facts():
-                return {value: await read_thread_facts(request, session) for value, request in readers.items()}
-            first = await facts()
-            baseline = await asyncio.to_thread(source)  # After loaded canonical persistence fences.
-            if baseline["homes"] != before["homes"] or baseline["home_paths"] != before["home_paths"]:
-                raise ValueError("authenticated source copies changed")
-            for value, observed in first.items():
-                _cancel_quiet(observed, baseline, value, target)
-            second = await facts()
-            after = await asyncio.to_thread(source)
-            if after != baseline or any(current_facts(first[value]) != current_facts(observed) for value, observed in second.items()):
-                raise ValueError("source changed during queue preview")
-            for value, observed in second.items():
-                _cancel_quiet(observed, after, value, target)
-            queue = second[target]["queue"]
-            def identities(observed):
-                return [{"queuedSubmissionId": key, "clientUserMessageId": client, "sha256": digest}
-                        for key, (client, digest) in sorted(observed.items())]
-            entries = identities(queue)
-            if not apply:
-                return {"ok": True, "preview": True, "codexHome": target, "entries": entries,
-                        "otherHomes": {value: identities(observed["queue"]) for value, observed in second.items() if value != target},
-                        "notice": "Apply acquires ownership and repeats every check." if not held else
-                                  "Apply repeats every check under ownership."}
-            if queued_submission_id not in queue or queue[queued_submission_id][1] != entry_sha256:
-                raise ValueError("selected native queue entry or digest changed")
-            # Last metadata-only read before the sole mutation. LoadedIdle delete
-            # can wake OTHER input through the daemon's revision watcher.
-            metadata = await read_thread(readers[target], session)
-            if metadata["state"] != "notLoaded" or metadata["path"] != second[target]["path"]:
-                raise ValueError("target loaded or changed before queue deletion")
-            if process is not None:
-                recheck_source_process(process)
-            else:
-                termination._recheck_queue_process(termination_process)
-            check_identity()
-            try:
-                ack = await readers[target]("thread/queue/delete", {"threadId": session,
-                                                                "queuedSubmissionId": queued_submission_id})
-                if not isinstance(ack, dict) or ack.get("deleted") is not True:
-                    raise ValueError("native deletion acknowledgement is unavailable")
-                final = await facts()
-                final_source = await asyncio.to_thread(source)
-                if final_source != baseline:
-                    raise ValueError("source changed after queue deletion")
-                for value, observed in final.items():
-                    _cancel_quiet(observed, final_source, value, target)
-                    expected = {key: item for key, item in second[value]["queue"].items()
-                                if value != target or key != queued_submission_id}
-                    if observed["queue"] != expected or observed["path"] != second[value]["path"]:
-                        raise ValueError("native queue readback changed")
-            except (OSError, ValueError, TimeoutError, asyncio.CancelledError, subprocess.SubprocessError, KeyError, TypeError) as error:
-                raise ValueError("queue deletion is uncertain; preserve state and do not replay") from error
-            return {"ok": True, "codexHome": target, "queuedSubmissionId": queued_submission_id, "deleted": True,
-                    "remainingQueues": {value: len(observed["queue"]) for value, observed in final.items()}}
+                _require_cancel_original(process.effective)
+            termination_process = None
+            def check_identity():
+                if authority() != entry or _cancel_saved(session) != saved or closure.lease_state(session) != action:
+                    raise ValueError("source authority, generation or ownership state changed")
+            def source():
+                nonlocal termination_process
+                check_identity()
+                if process is not None:
+                    recheck_source_process(process)
+                elif termination_process is None:
+                    termination_process = termination._verify_queue_source(entry, session,
+                        latest_pid=current.get("launch_pid") if current else None)
+                else:
+                    termination._recheck_queue_process(termination_process)
+                files = _cancel_files(entry, action, reader, retained_homes,
+                                      termination_process.roots if termination_process is not None else None)
+                if ledger is None:
+                    from datetime import timezone
+                    now, ended = datetime.now(timezone.utc), termination.stamp(entry["ended_at"])
+                    for snapshot in files["transcripts"].values():
+                        termination._transcript_activity([termination.stamp(snapshot["latest"])], snapshot["identity"][3],
+                            snapshot["truncated"], now, ended)
+                return files
+            before = await asyncio.to_thread(source)
+            if target not in before["homes"]:
+                raise ValueError("target has no authenticated copy of the original source")
+            async with AsyncExitStack() as connections:
+                readers = {value: await connections.enter_async_context(connection(Path(value))) for value in before["homes"]}
+                async def facts():
+                    return {value: await read_thread_facts(request, session) for value, request in readers.items()}
+                first = await facts()
+                baseline = await asyncio.to_thread(source)  # After loaded canonical persistence fences.
+                if baseline["homes"] != before["homes"] or baseline["home_paths"] != before["home_paths"]:
+                    raise ValueError("authenticated source copies changed")
+                for value, observed in first.items():
+                    _cancel_quiet(observed, baseline, value, target)
+                second = await facts()
+                after = await asyncio.to_thread(source)
+                if after != baseline or any(current_facts(first[value]) != current_facts(observed) for value, observed in second.items()):
+                    raise ValueError("source changed during queue preview")
+                for value, observed in second.items():
+                    _cancel_quiet(observed, after, value, target)
+                queue = second[target]["queue"]
+                def identities(observed):
+                    return [{"queuedSubmissionId": key, "clientUserMessageId": client, "sha256": digest}
+                            for key, (client, digest) in sorted(observed.items())]
+                entries = identities(queue)
+                if not apply:
+                    result = {"ok": True, "preview": True, "codexHome": target, "entries": entries,
+                            "otherHomes": {value: identities(observed["queue"]) for value, observed in second.items() if value != target},
+                            "notice": "Apply acquires ownership and repeats every check." if not held else
+                                      "Apply repeats every check under ownership."}
+                else:
+                    if queued_submission_id not in queue or queue[queued_submission_id][1] != entry_sha256:
+                        raise ValueError("selected native queue entry or digest changed")
+                    # Last metadata-only read before the sole mutation. LoadedIdle delete
+                    # can wake OTHER input through the daemon's revision watcher.
+                    metadata = await read_thread(readers[target], session)
+                    if metadata["state"] != "notLoaded" or metadata["path"] != second[target]["path"]:
+                        raise ValueError("target loaded or changed before queue deletion")
+                    if process is not None:
+                        recheck_source_process(process)
+                    else:
+                        termination._recheck_queue_process(termination_process)
+                    check_identity()
+                    mark_sent()
+                    ack = await readers[target]("thread/queue/delete", {"threadId": session,
+                                                                    "queuedSubmissionId": queued_submission_id})
+                    if not isinstance(ack, dict) or ack.get("deleted") is not True:
+                        raise ValueError("native deletion acknowledgement is unavailable")
+                    final = await facts()
+                    final_source = await asyncio.to_thread(source)
+                    if final_source != baseline:
+                        raise ValueError("source changed after queue deletion")
+                    for value, observed in final.items():
+                        _cancel_quiet(observed, final_source, value, target)
+                        expected = {key: item for key, item in second[value]["queue"].items()
+                                    if value != target or key != queued_submission_id}
+                        if observed["queue"] != expected or observed["path"] != second[value]["path"]:
+                            raise ValueError("native queue readback changed")
+                    result = {"ok": True, "codexHome": target, "queuedSubmissionId": queued_submission_id, "deleted": True,
+                            "remainingQueues": {value: len(observed["queue"]) for value, observed in final.items()}}
+    return result

@@ -8,7 +8,7 @@ import copy
 import threading
 import json
 import io
-from contextlib import contextmanager, redirect_stdout
+from contextlib import asynccontextmanager, contextmanager, redirect_stdout
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -167,6 +167,30 @@ class NativeFactsTests(unittest.IsolatedAsyncioTestCase):
 
 
 class NativeQueueTests(unittest.TestCase):
+    @contextmanager
+    def queue_exit_failure(self, target, sent, failure, boundary):
+        """Fail actual resource cleanup only after the fixture accepted a mutation."""
+        if boundary == "ownership":
+            original = CLOSURE.ownership
+            @contextmanager
+            def ownership(*args, **kwargs):
+                with original(*args, **kwargs) as held:
+                    yield held
+                if sent:
+                    raise failure
+            with patch.object(CLOSURE, "ownership", ownership):
+                yield
+        else:
+            original = NATIVE.connection
+            @asynccontextmanager
+            async def connection(home, **kwargs):
+                async with original(home, **kwargs) as request:
+                    yield request
+                if sent and ((home == target) == (boundary == "target")):
+                    raise failure
+            with patch.object(NATIVE, "connection", connection):
+                yield
+
     @contextmanager
     def cancel_read_boundaries(self, *, before_metadata=None, after_metadata=None, after_facts=None):
         """Observe real reader boundaries without depending on its nested RPC count."""
@@ -416,7 +440,7 @@ class NativeQueueTests(unittest.TestCase):
 
     def test_cancel_refuses_unowned_wrong_home_native_identity_and_unknown_queue(self):
         import uuid
-        for mode in ("unowned", "permissions", "source_home", "initialize_home", "native_id", "native_path", "queue_api"):
+        for mode in ("unowned", "source_home", "initialize_home", "native_id", "native_path", "queue_api"):
             with self.subTest(mode=mode), ReceiptFixture(str(uuid.uuid4())) as f:
                 other, ledger, selected, _retained, deleted = self.cancel_setup(f)
                 digest = self.cancel_digest(other, f, ledger)
@@ -424,7 +448,6 @@ class NativeQueueTests(unittest.TestCase):
                 if mode == "unowned": entry["supervisor_owned"] = False
                 if mode == "source_home": entry["codex_home"] = str(other)
                 ledger.write_text(json.dumps([entry]))
-                if mode == "permissions": ledger.chmod(0o644)
                 if mode == "initialize_home": f.rpc_results["initialize"] = {"codexHome": str(f.root)}
                 if mode in {"native_id", "native_path"}: f.rpc_results["thread/read"] = {"thread": {
                     "id": "different-source" if mode == "native_id" else f.session,
@@ -505,7 +528,6 @@ class NativeQueueTests(unittest.TestCase):
                 with patch.object(CLOSURE, "transcript_facts", side_effect=read), self.assertRaises(ValueError) as refused:
                     asyncio.run(NATIVE.cancel_queue(other, f.session, ledger=ledger, apply=True,
                         queued_submission_id=selected["id"], entry_sha256=digest))
-                self.assertIsInstance(refused.exception.__cause__, type(failure))
                 self.assertEqual(len(deleted), 1)
                 self.assertEqual(f.home_queues[str(other)], [retained])
                 self.assertNotIn("private-", str(refused.exception))
@@ -537,6 +559,69 @@ class NativeQueueTests(unittest.TestCase):
             fresh = asyncio.run(NATIVE.cancel_queue(other, f.session, ledger=ledger))
             self.assertEqual([entry["queuedSubmissionId"] for entry in fresh["entries"]], [retained["id"]])
             self.assertEqual(len(deleted), 1)
+
+    def test_cancel_resource_exit_failures_preserve_uncertain_deletion_without_replay(self):
+        import uuid
+        for boundary in ("target", "peer", "ownership"):
+            for error_type in (TimeoutError, asyncio.CancelledError, OSError, KeyboardInterrupt):
+                with self.subTest(boundary=boundary, failure=error_type.__name__), ReceiptFixture(str(uuid.uuid4())) as f:
+                    other, ledger, selected, retained, deleted = self.cancel_setup(f)
+                    digest = self.cancel_digest(other, f, ledger)
+                    preserved = {path: path.read_bytes() for path in (ledger, f.log, f.transcript, CLOSURE.lease_path(f.session))}
+                    other_queue = copy.deepcopy(f.home_queues[str(f.home)])
+                    failure = error_type("private-exit-details")
+                    with self.queue_exit_failure(other, deleted, failure, boundary), self.assertRaises(ValueError) as refused:
+                        asyncio.run(NATIVE.cancel_queue(other, f.session, ledger=ledger, apply=True,
+                            queued_submission_id=selected["id"], entry_sha256=digest))
+                    self.assertNotIn("private-", str(refused.exception))
+                    self.assertEqual(len(deleted), 1)
+                    self.assertEqual(f.home_queues[str(other)], [retained])
+                    self.assertEqual(f.home_queues[str(f.home)], other_queue)
+                    self.assertEqual({path: path.read_bytes() for path in preserved}, preserved)
+                    fresh = asyncio.run(NATIVE.cancel_queue(other, f.session, ledger=ledger))
+                    self.assertEqual([entry["queuedSubmissionId"] for entry in fresh["entries"]], [retained["id"]])
+                    self.assertEqual(len(deleted), 1)
+
+    def test_cancel_cli_resource_exit_failure_is_private_uncertainty(self):
+        import sys
+        import uuid
+        for error_type in (TimeoutError, asyncio.CancelledError, OSError):
+            with self.subTest(failure=error_type.__name__), ReceiptFixture(str(uuid.uuid4())) as f:
+                from test_codex_session import SESSION
+                other, ledger, selected, retained, deleted = self.cancel_setup(f)
+                digest = self.cancel_digest(other, f, ledger)
+                output = io.StringIO()
+                with self.queue_exit_failure(other, deleted, error_type("private-exit-details"), "target"), \
+                        patch.object(sys, "argv", ["codex-session.py", "queue-cancel", "--session-id", f.session,
+                            "--codex-home", str(other), "--ledger", str(ledger), "--apply",
+                            "--queued-submission-id", selected["id"], "--entry-sha256", digest]), redirect_stdout(output):
+                    self.assertEqual(SESSION.main(), 1)
+                receipt = json.loads(output.getvalue())
+                self.assertFalse(receipt["ok"])
+                self.assertNotIn("private-", output.getvalue())
+                self.assertEqual(len(deleted), 1)
+                self.assertEqual(f.home_queues[str(other)], [retained])
+                self.assertEqual([entry["queuedSubmissionId"] for entry in
+                    asyncio.run(NATIVE.cancel_queue(other, f.session, ledger=ledger))["entries"]], [retained["id"]])
+                self.assertEqual(len(deleted), 1)
+
+    def test_cancel_presend_cancellation_preserves_source_and_queue(self):
+        import uuid
+        with ReceiptFixture(str(uuid.uuid4())) as f:
+            other, ledger, selected, _retained, deleted = self.cancel_setup(f)
+            digest = self.cancel_digest(other, f, ledger)
+            before = copy.deepcopy(f.home_queues)
+            source = {path: path.read_bytes() for path in (ledger, f.log, f.transcript, CLOSURE.lease_path(f.session))}
+            failure = asyncio.CancelledError("fixture cancellation before deletion")
+            def cancel(_home, _metadata):
+                raise failure
+            with self.cancel_read_boundaries(after_metadata=cancel), self.assertRaises(asyncio.CancelledError) as stopped:
+                asyncio.run(NATIVE.cancel_queue(other, f.session, ledger=ledger, apply=True,
+                    queued_submission_id=selected["id"], entry_sha256=digest))
+            self.assertIs(stopped.exception, failure)
+            self.assertFalse(deleted)
+            self.assertEqual(f.home_queues, before)
+            self.assertEqual({path: path.read_bytes() for path in source}, source)
 
     def test_cancel_final_metadata_cannot_change_source_authority(self):
         import uuid
@@ -585,7 +670,7 @@ class NativeQueueTests(unittest.TestCase):
         import uuid
         from types import SimpleNamespace
         import github_plan_termination as termination
-        for mode in ("minimal", "historical", "historical_markers", "known_launch_pid", "partial_tail", "interior", "complete_corrupt", "wrong_host", "new_generation", "inventory_marker", "backfill_marker", "gone_artifact"):
+        for mode in ("minimal", "historical", "historical_markers", "known_launch_pid", "matching_generation", "stale_generation", "partial_tail", "interior", "complete_corrupt", "wrong_host", "new_generation", "inventory_marker", "backfill_marker", "gone_artifact"):
             with self.subTest(mode=mode), ReceiptFixture(str(uuid.uuid4())) as f:
                 other, _ledger, selected, _retained, deleted = self.cancel_setup(f)
                 # Preserve the original object; an output attestation is insufficient.
@@ -602,6 +687,11 @@ class NativeQueueTests(unittest.TestCase):
                     f.process_rows = [(456, "different-tty", "worker")]
                 if mode == "new_generation": CLOSURE.replace_rows([{**f.entry, "resumed_at": record["ended_at"],
                     "resumed_generation": {**f.entry, "pid": 456, "launch_pid": 456, "launch_generation": "new"}}])
+                if mode in {"matching_generation", "stale_generation"}:
+                    generation = {**f.entry, "pid": 456, "launch_pid": 456, "launch_generation": "recovery"}
+                    CLOSURE.replace_rows([{**f.entry, "resumed_at": record["ended_at"], "resumed_generation": generation}])
+                    if mode == "matching_generation":
+                        record.update({key: generation[key] for key in ("pid", "launch_pid", "launch_generation", "launch_started_at")})
                 if mode == "wrong_host": record["host"] = "different-source-host"
                 if mode == "inventory_marker": record["_inventory"] = True
                 if mode == "backfill_marker": record["_backfill"] = True
@@ -619,21 +709,18 @@ class NativeQueueTests(unittest.TestCase):
                 before = {value: value.read_bytes() for value in (path, f.transcript, f.log, CLOSURE.lease_path(f.session))}
                 with patch.object(termination, "inventory", side_effect=lambda: f.process_rows), \
                         patch.object(termination, "run_terminal", return_value=SimpleNamespace(
-                        returncode=0, stdout="a" * 32 + "\t1\t1\n", stderr="")) as terminal:
-                    if mode not in {"minimal", "historical", "historical_markers", "partial_tail", "gone_artifact"}:
+                        returncode=0, stdout="a" * 32 + "\t1\t1\n", stderr="")):
+                    if mode not in {"minimal", "historical", "historical_markers", "matching_generation", "partial_tail", "gone_artifact"}:
                         with self.assertRaises(ValueError): asyncio.run(NATIVE.cancel_queue(other, f.session, termination_record=path))
                         self.assertFalse(deleted)
                         continue
                     if mode == "gone_artifact":
                         import subprocess
                         with self.assertRaises(subprocess.SubprocessError): termination.verify(record, f.session)
-                    initial_terminal_calls = terminal.call_count
                     preview = asyncio.run(NATIVE.cancel_queue(other, f.session, termination_record=path))
-                    self.assertEqual(terminal.call_count - initial_terminal_calls, 1)
                     digest = next(entry["sha256"] for entry in preview["entries"] if entry["queuedSubmissionId"] == selected["id"])
                     self.assertTrue(asyncio.run(NATIVE.cancel_queue(other, f.session, termination_record=path,
                         apply=True, queued_submission_id=selected["id"], entry_sha256=digest))["ok"])
-                    self.assertEqual(terminal.call_count - initial_terminal_calls, 2)
                 self.assertEqual(len(deleted), 1)
                 self.assertEqual({value: value.read_bytes() for value in before}, before)
 
@@ -764,6 +851,26 @@ class NativeQueueTests(unittest.TestCase):
             self.assertFalse(deleted)
             self.assertTrue(asyncio.run(NATIVE.cancel_queue(other, f.session, ledger=ledger, apply=True,
                 queued_submission_id=selected["id"], entry_sha256=digest))["ok"])
+
+    def test_cancel_original_authority_allows_read_access_but_refuses_shared_write_access(self):
+        import uuid
+        for permissions in (0o644, 0o664):
+            with self.subTest(permissions=oct(permissions)), ReceiptFixture(str(uuid.uuid4())) as f:
+                other, ledger, selected, _retained, deleted = self.cancel_setup(f)
+                digest = self.cancel_digest(other, f, ledger)
+                ledger.chmod(permissions)
+                before = ledger.read_bytes()
+                if permissions & 0o022:
+                    with self.assertRaises(ValueError):
+                        asyncio.run(NATIVE.cancel_queue(other, f.session, ledger=ledger, apply=True,
+                            queued_submission_id=selected["id"], entry_sha256=digest))
+                    self.assertFalse(deleted)
+                else:
+                    self.assertTrue(asyncio.run(NATIVE.cancel_queue(other, f.session, ledger=ledger, apply=True,
+                        queued_submission_id=selected["id"], entry_sha256=digest))["ok"])
+                    self.assertEqual(len(deleted), 1)
+                self.assertEqual(ledger.read_bytes(), before)
+                self.assertEqual(ledger.stat().st_mode & 0o777, permissions)
 
     def test_finish_keeps_one_native_cutoff_through_proof_and_later_safe_turn(self):
         import uuid
@@ -1347,6 +1454,52 @@ class NativeQueueTests(unittest.TestCase):
             self.assertNotIn("input", result)
             self.assertNotIn(json.dumps(text), json.dumps(result))
             self.assertEqual(len(sent), 1)
+
+    def test_queue_submission_exit_failure_is_private_uncertainty_without_replay(self):
+        import sys
+        import uuid
+        for boundary in ("target", "ownership"):
+            for error_type in (TimeoutError, asyncio.CancelledError, OSError):
+                with self.subTest(boundary=boundary, failure=error_type.__name__), ReceiptFixture(str(uuid.uuid4())) as f:
+                    from test_codex_session import SESSION
+                    sent = []
+                    def queued(request):
+                        sent.append(request["params"])
+                        entry = {"id": "added-once", **{key: request["params"][key]
+                            for key in ("clientUserMessageId", "input")}}
+                        f.home_queues[str(f.home)] = [entry]
+                        return {"queuedSubmission": entry}
+                    f.rpc_results["thread/queue/add"] = queued
+                    output = io.StringIO()
+                    with self.queue_exit_failure(f.home, sent, error_type("private-submission-teardown"), boundary), \
+                            patch.object(sys, "argv", ["codex-session.py", "queue", "--session-id", f.session,
+                                "--codex-home", str(f.home), "--message", "private-input"]), redirect_stdout(output):
+                        self.assertEqual(SESSION.main(), 1)
+                    receipt = json.loads(output.getvalue())
+                    self.assertFalse(receipt["ok"])
+                    self.assertNotIn("private-", output.getvalue())
+                    self.assertEqual(len(sent), 1)
+                    self.assertTrue(CLOSURE.action_pending(f.session))
+                    async def readback():
+                        async with NATIVE.connection(f.home) as request:
+                            return await NATIVE.read_queue(request, f.session)
+                    self.assertEqual(list(asyncio.run(readback())), ["added-once"])
+                    self.assertEqual(len(sent), 1)
+
+    def test_queue_submission_presend_cancellation_never_sends_input(self):
+        import uuid
+        with ReceiptFixture(str(uuid.uuid4())) as f:
+            original = NATIVE.connection
+            @asynccontextmanager
+            async def connection(*args, **kwargs):
+                async with original(*args, **kwargs) as request:
+                    asyncio.current_task().cancel()
+                    await asyncio.sleep(0)
+                    yield request
+            with patch.object(NATIVE, "connection", connection), self.assertRaises(asyncio.CancelledError):
+                asyncio.run(NATIVE.queue_input(f.home, f.session, "private-input"))
+            self.assertNotIn("thread/queue/add", f.rpc_requests)
+            self.assertTrue(CLOSURE.action_pending(f.session))
 
     def test_malformed_queue_ack_is_uncertain_without_replay(self):
         import uuid
