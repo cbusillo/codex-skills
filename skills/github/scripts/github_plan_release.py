@@ -393,12 +393,19 @@ def validate_evidence(receipt: dict[str, Any], evidence: dict[str, Any], author:
         raise ValueError("Closed-session evidence changed or no longer attests this release")
 
 
-def followup_release(source: dict[str, Any], comments: list[dict[str, Any]], *, actor: str,
-                     session: str, ended: datetime, repo: str, number: int) -> dict[str, Any] | None:
-    """Consume an exact worker release or a follow-up bound to validated closure.
+def exact_source_release(source_id: int, candidate: dict[str, Any], comments: list[dict[str, Any]]) -> bool:
+    """Apply the shared exact-release guard to one canonical candidate pair."""
+    pair = [c for c in comments if c.get("id") in {source_id, candidate["id"]}]
+    return len(pair) == 2 and bool(claim.exact_released_sources(pair))
 
-    A later Supervisor release needs the same structured receipt/related-ID facts
-    that produced it, plus the actual authored exact-ID follow-up release.
+
+def followup_release(source: dict[str, Any], comments: list[dict[str, Any]], *, actor: str,
+                     session: str, ended: datetime) -> dict[str, Any] | None:
+    """Consume an authored exact release using the producer's relationship facts.
+
+    Worker releases precede their own end. A later release needs an earlier
+    validated parent receipt selecting this follow-up through related_ids;
+    explanatory prose and the hand claim's position confer no authority.
     """
     if (source.get("user") or {}).get("login") != actor or claim.records(source.get("body") or ""):
         return None
@@ -413,31 +420,18 @@ def followup_release(source: dict[str, Any], comments: list[dict[str, Any]], *, 
             continue
         if stamp(released.get("updated_at") or released["created_at"]) <= ended:
             return released
-        # Only the maintained release command's exact canonical linkage can
-        # bind a follow-up posted after its original source ended.
-        notes = [line for line in (released.get("body") or "").splitlines()
-                 if line.startswith("Ownership follow-up of claim ")]
-        if len(notes) != 1:
-            continue
-        note = re.fullmatch(r"Ownership follow-up of claim ([1-9]\d*); closed-session release (\S+)\.", notes[0])
-        link = COMMENT_URL.fullmatch(note[2]) if note else None
-        if link is None or link[1].casefold() != repo.casefold() or int(link[2]) != number:
-            continue
-        for confirmed, receipt in receipts(comments[:release_index]):
+        prior = comments[:release_index]
+        for confirmed, receipt in receipts(prior):
             related_ids = receipt.get("related_ids", [])
-            if not isinstance(related_ids, list):
-                continue
-            if (confirmed.get("id") != int(link[3]) or receipt["source_id"] != int(note[1])
-                    or "_release_evidence" not in confirmed
+            if ("_release_evidence" not in confirmed
                     or (confirmed.get("user") or {}).get("login") != actor
                     or receipt["source"]["session"] != session
-                    or source["id"] not in related_ids
+                    or not isinstance(related_ids, list) or source["id"] not in related_ids
                     or stamp(receipt["evidence_at"]) > ended):
                 continue
-            original_index = next((i for i, c in enumerate(comments) if c.get("id") == receipt["source_id"]), None)
-            if original_index is None or not original_index < index < comments.index(confirmed):
-                continue
-            if stamp(released["created_at"]) < stamp(confirmed.get("updated_at") or confirmed["created_at"]):
+            # Check this canonical source/receipt pair independently: an older
+            # ordinary release of the same source must not shadow its receipt.
+            if not exact_source_release(receipt["source_id"], confirmed, prior):
                 continue
             try:
                 check_related(receipt["source"], source, actor, stamp(receipt["evidence_at"]))

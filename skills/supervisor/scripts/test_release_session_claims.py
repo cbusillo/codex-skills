@@ -1043,12 +1043,54 @@ class ReleaseTests(unittest.TestCase):
         found = helper.active_claims(self.reader, "test/a", 1, SOURCE["session"], ACTOR)
         self.assertEqual(found[0][1], [2])
 
-    def test_related_alias_without_exact_session_or_before_source_is_not_released(self):
+    def test_related_alias_without_exact_session_is_not_released(self):
         for body in ("Claimed by trial", "Claimed by trial\nSession: another-session"):
             self.reader.paged_json.return_value = [self.source, comment(2, body)]
             self.assertEqual(helper.active_claims(self.reader, "test/a", 1, SOURCE["session"], ACTOR)[0][1], [])
-        self.reader.paged_json.return_value = [comment(2, "Claimed by trial\nSession: source-session"), self.source]
-        self.assertEqual(helper.active_claims(self.reader, "test/a", 1, SOURCE["session"], ACTOR)[0][1], [])
+
+    def test_earlier_exact_native_hand_claim_uses_issue_and_pr_backfill_release_gate(self):
+        source = {**self.source, "created_at": "2026-01-01T00:00:20Z", "updated_at": "2026-01-01T00:00:20Z"}
+        hand = {**comment(3, "Claimed by trial\nSession: source-session"),
+                "created_at": "2026-01-01T00:00:10Z", "updated_at": "2026-01-01T00:00:10Z"}
+        comments = [hand, source]
+        self.reader.paged_json.side_effect = lambda path, **_kw: [] if path.endswith("/pulls") else comments
+        found = helper.active_claims(self.reader, "test/a", 1, SOURCE["session"], ACTOR)
+        self.assertEqual([(c["id"], related, unresolved) for c, related, unresolved in found], [(1, [3], [])])
+        rows = [self.inventory_row(handoff_url=self.entry["handoff_url"]),
+                self.inventory_row(claim_comment_id=3, handoff_url=self.entry["handoff_url"])]
+        entries, errors = helper.backfill_inventory.load(rows, {"codex": [str(self.root)]})
+        self.assertFalse(errors)
+        handoff = dict(self.reader.get_json.return_value)
+        for pr in (False, True):
+            with self.subTest(pr=pr):
+                issue = {"number": 1, "body": "", **({"pull_request": {}} if pr else {})}
+                self.reader.get_json.side_effect = lambda path, **_kw: handoff if "/issues/comments/" in path else issue
+                with patch.object(helper, "comment") as write, patch.object(helper, "run_release") as command:
+                    report = helper.release_session(self.reader, {**entries[0], "_backfill": True}, ACTOR,
+                        "supervisor", [("test/a", 1)], self.root, False)
+                self.assertFalse(report["issue_refusals"])
+                if pr:
+                    argv = report["pr_claim_handoffs"][0]["release_argv"]
+                    at = argv.index("--related-claim-comment")
+                    self.assertEqual(argv[at + 1], str(hand["id"]))
+                else:
+                    self.assertEqual(report["claims"][0]["related_claim_comments"], [hand["id"]])
+                write.assert_not_called()
+                command.assert_not_called()
+
+    def test_earlier_hand_claim_grouping_keeps_author_worker_native_and_unstructured_checks(self):
+        cases = [comment(3, "Claimed by trial"), comment(3, "Claimed by trial\nSession: other-session"),
+                 comment(3, "Claimed by other-worker\nSession: source-session"),
+                 comment(3, "Claimed by trial\nSession: source-session", author="foreign[bot]"),
+                 comment(3, helper.claim.marker(SOURCE))]
+        for hand in cases:
+            with self.subTest(hand=hand):
+                self.reader.paged_json.return_value = [hand, self.source]
+                try:
+                    found = helper.active_claims(self.reader, "test/a", 1, SOURCE["session"], ACTOR)
+                except ValueError:
+                    continue
+                self.assertNotIn(hand["id"], [identifier for _source, related, _unresolved in found for identifier in related])
 
     def test_unavailable_or_foreign_handoff_is_not_accepted(self):
         self.reader.get_json.return_value["user"]["login"] = "human"

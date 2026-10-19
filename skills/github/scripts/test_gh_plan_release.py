@@ -149,21 +149,32 @@ class ReleaseTests(ReleaseHarness):
         self.assertFalse(any(release.receipt_for(c) for c in canonical))
         self.assertTrue(CLAIM.discussion_evidence("", canonical, fixtures.OWNER)[0])
 
-    def test_actual_supervisor_related_release_is_consumed_after_source_end(self):
-        self.f.comments.append(self.comment(3, "Claimed by trial-b\nSession: session-b", "2026-10-01T01:00:00Z"))
+    def produced_related_release(self, *, earlier_hand=False, ordinary_source_release=False):
+        hand = self.comment(3, "Claimed by trial-b\nSession: session-b",
+            "2026-09-30T23:59:00Z" if earlier_hand else "2026-10-01T01:00:00Z")
+        if earlier_hand:
+            self.f.comments.insert(0, hand)
+        else:
+            self.f.comments.append(hand)
+        if ordinary_source_release:
+            self.f.comments.append(self.comment(4, "Released claim 1", "2026-10-01T02:00:00Z"))
         self.args.related_claim_comment = [3]
         self.f.comment_id_offset = 10
         self.run_release()
-        produced = copy.deepcopy(self.f.comments)
+        return copy.deepcopy(self.f.comments)
+
+    def consume_related_release(self, comments, *, ended="2026-10-02T00:00:00Z"):
         release.termination.native_helpers()
         import release_session_claims as supervisor
         reader = Mock()
         reader.get_json.side_effect = lambda path, **_kw: self.evidence if "/issues/comments/" in path else {"body": ""}
-        entry = {"session_id": "session-b", "ended_at": "2026-10-02T00:00:00Z", "_finish_scope": "explicit scope"}
-        def consume(comments):
-            reader.paged_json.return_value = comments
-            return supervisor.finished_claims(reader, entry, BOT, [("owner/repo", 42)], True)
-        report = consume(produced)
+        reader.paged_json.return_value = comments
+        entry = {"session_id": "session-b", "ended_at": ended, "_finish_scope": "explicit scope"}
+        return supervisor.finished_claims(reader, entry, BOT, [("owner/repo", 42)], True)
+
+    def test_actual_supervisor_related_release_is_consumed_after_source_end(self):
+        produced = self.produced_related_release()
+        report = self.consume_related_release(produced)
         self.assertFalse(report["issue_refusals"])
         self.assertEqual({r["claim_comment"] for r in report["released_claims"]}, {1, 3})
         source_receipt = next(c for c in produced if release.receipt_for(c))
@@ -171,33 +182,86 @@ class ReleaseTests(ReleaseHarness):
         def alter(identifier, **fields):
             return [{**c, **fields} if c["id"] == identifier else c for c in produced]
         receipt = release.receipt_for(source_receipt)
-        unrelated_body = source_receipt["body"].replace(json.dumps(receipt, sort_keys=True),
-            json.dumps({**receipt, "related_ids": []}, sort_keys=True))
+        def receipt_fields(**fields):
+            return source_receipt["body"].replace(json.dumps(receipt, sort_keys=True),
+                json.dumps({**receipt, **fields}, sort_keys=True))
+        reordered = [c for c in produced if c["id"] != related_release["id"]]
+        reordered.insert(next(i for i, c in enumerate(reordered) if c["id"] == source_receipt["id"]), related_release)
         cases = [
-            alter(source_receipt["id"], body=unrelated_body),
+            alter(source_receipt["id"], body=receipt_fields(related_ids=[])),
+            alter(source_receipt["id"], created_at=next(c["created_at"] for c in produced if c["id"] == 1)),
+            alter(source_receipt["id"], user={"login": "foreign[bot]"}),
+            alter(source_receipt["id"], body=receipt_fields(source={**receipt["source"], "session": "another-session"})),
             alter(1, user={"login": "foreign[bot]"}),
+            alter(1, updated_at="2026-10-04T00:00:00Z"),
             alter(3, user={"login": "foreign[bot]"}),
-            alter(related_release["id"], body="Released claim 3\n\nEngineering handoff"),
             [c for c in produced if c["id"] != related_release["id"]],
             alter(related_release["id"], user={"login": "foreign[bot]"}),
-            alter(related_release["id"], body=related_release["body"].replace("/issues/42#", "/issues/43#")),
-            alter(related_release["id"], body=related_release["body"].replace("of claim 1;", "of claim 9;")),
             alter(source_receipt["id"], body=release.pending_body(source_receipt["body"])),
             alter(3, body="Claimed by wrong-worker\nSession: session-b"),
             alter(3, body="Claimed by trial-b\nSession: other-session", updated_at="2026-10-04T00:00:00Z"),
             alter(3, updated_at="2026-10-04T00:00:00Z"),
+            reordered,
         ]
         for comments in cases:
             with self.subTest(comments=comments):
-                failed = consume(comments)
+                failed = self.consume_related_release(comments)
                 self.assertTrue(failed["issue_refusals"])
                 self.assertNotIn(3, [r["claim_comment"] for r in failed["released_claims"]])
-
         changed_evidence = {**self.evidence, "updated_at": "2026-10-04T00:00:00Z"}
         with patch.object(self, "evidence", changed_evidence):
-            failed = consume(produced)
+            failed = self.consume_related_release(produced)
         self.assertTrue(failed["issue_refusals"])
         self.assertNotIn(3, [r["claim_comment"] for r in failed["released_claims"]])
+        failed = self.consume_related_release(produced, ended="2026-10-01T23:00:00Z")
+        self.assertTrue(failed["issue_refusals"])
+        self.assertNotIn(3, [r["claim_comment"] for r in failed["released_claims"]])
+
+    def test_receipt_related_authority_survives_earlier_hand_worker_release_and_narrative_edits(self):
+        for case in ("earlier-hand", "ordinary-source-release", "narrative", "receipt-edit", "earlier-hand-and-ordinary-release"):
+            with self.subTest(case=case):
+                self.setUp()
+                produced = self.produced_related_release(
+                    earlier_hand=case in {"earlier-hand", "earlier-hand-and-ordinary-release"},
+                    ordinary_source_release=case in {"ordinary-source-release", "earlier-hand-and-ordinary-release"})
+                if case == "narrative":
+                    produced = [{**c, "body": "Released claim 3\n\nReconciled ownership."}
+                        if CLAIM.released_claim_id(c["body"]) == 3 else c for c in produced]
+                if case == "receipt-edit":
+                    produced = [{**c, "body": c["body"] + "\nAdditional explanation.", "updated_at": "2026-10-05T00:00:00Z"}
+                        if release.receipt_for(c) else c for c in produced]
+                report = self.consume_related_release(produced)
+                self.assertFalse(report["issue_refusals"])
+                self.assertEqual({r["claim_comment"] for r in report["released_claims"]}, {1, 3})
+
+    def test_structured_finish_uses_later_valid_receipt_when_first_worker_release_is_ineligible(self):
+        for case in ("posted-after-end", "edited-after-end"):
+            with self.subTest(case=case):
+                self.setUp()
+                first = self.comment(4, "Released claim 1",
+                    "2026-10-02T02:00:00Z" if case == "posted-after-end" else "2026-10-01T02:00:00Z")
+                if case == "edited-after-end":
+                    first["updated_at"] = "2026-10-02T02:00:00Z"
+                self.f.comments.append(first)
+                self.f.comment_id_offset = 10
+                self.run_release()
+                produced = copy.deepcopy(self.f.comments)
+                receipt_comment = next(c for c in produced if release.receipt_for(c))
+                accepted = self.consume_related_release(produced)
+                self.assertFalse(accepted["issue_refusals"])
+                self.assertEqual(accepted["released_claims"][0]["handoff_url"], receipt_comment["html_url"])
+                without = [c for c in produced if c["id"] != receipt_comment["id"]]
+                invalid = [{**c, "body": release.pending_body(c["body"])} if c["id"] == receipt_comment["id"] else c for c in produced]
+                for remaining in (without, invalid):
+                    with self.subTest(remaining=remaining):
+                        refused = self.consume_related_release(remaining)
+                        self.assertTrue(refused["issue_refusals"])
+                        self.assertFalse(refused["released_claims"])
+                changed_evidence = {**self.evidence, "updated_at": "2026-10-04T00:00:00Z"}
+                with patch.object(self, "evidence", changed_evidence):
+                    refused = self.consume_related_release(produced)
+                self.assertTrue(refused["issue_refusals"])
+                self.assertFalse(refused["released_claims"])
 
     def test_known_source_refusals_precede_retained_pr_transport_failure(self):
         cases = ("different-peer", "anonymous-peer", "native-session", "source-activity", "related-activity", "related-identity")

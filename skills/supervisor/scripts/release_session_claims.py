@@ -395,7 +395,7 @@ def active_claims(reader, repo, number, session, actor, *, comments=None, verifi
             if (c.get("user") or {}).get("login") != actor:
                 raise ValueError("session has a claim held by another identity; report without releasing")
             record = release.source_record(c)
-            related = [r["id"] for r in comments[comments.index(c) + 1:] if r["id"] in active_ids
+            related = [r["id"] for r in comments if r["id"] != c["id"] and r["id"] in active_ids
                        and not claim.records(r.get("body") or "")
                        and re.match(rf"Claimed by {re.escape(record['worker'])}(?:\s|$)", r.get("body") or "")
                        and (r.get("user") or {}).get("login") == actor
@@ -526,19 +526,16 @@ def finished_claims(reader, entry, actor, issues, apply):
                 if not body_records or any(r not in source_records for r in body_records):
                     retained_status.append({**identity, "next_action": "reconcile the authored Current Status ownership"})
                     refused.append({**identity, "error": "status-only ownership has no matching canonical structured source"})
-            exact = {comments[i]["id"]: comments[j] for i, record, j in claim.exact_released_sources(comments)
-                     if record["session"] == entry["session_id"]}
             for source in sources:
                 source_identity = {**identity, "claim_comment": source["id"]}
                 parsed = claim.records(source.get("body") or "")
-                evidence = exact.get(source["id"])
                 if not parsed:
                     index = comments.index(source)
                     if (claim.released_explanatory_note(source.get("body") or "", index, comments)
                             or claim.attested_handoff_note(source.get("body") or "", index, comments)):
                         continue
                     evidence = release.followup_release(source, comments, actor=actor,
-                        session=entry["session_id"], ended=ended, repo=repo, number=number)
+                        session=entry["session_id"], ended=ended)
                     if evidence is not None and (source.get("user") or {}).get("login") == actor:
                         released.append({**source_identity,
                             "handoff_url": f"https://github.com/{repo}/issues/{number}#issuecomment-{evidence['id']}"})
@@ -551,17 +548,24 @@ def finished_claims(reader, entry, actor, issues, apply):
                 if (source.get("user") or {}).get("login") != actor:
                     refused.append({**source_identity, "error": "source claim belongs to another automation identity"})
                     continue
+                evidence = None
+                for candidate in comments:
+                    if (claim.released_claim_id(candidate.get("body") or "") != source["id"]
+                            or not release.exact_source_release(source["id"], candidate, comments)):
+                        continue
+                    receipt = release.receipt_for(candidate)
+                    # Worker releases precede their end. A later validated
+                    # Supervisor receipt may still qualify after an earlier
+                    # ineligible naked release; inspect each canonical pair.
+                    cutoff = (release.stamp(receipt["evidence_at"]) if receipt is not None else
+                              release.stamp(candidate.get("updated_at") or candidate.get("created_at")))
+                    if (not release.related_sessions_match(candidate.get("body") or "", entry["session_id"])
+                            or cutoff > ended or receipt is not None and "_release_evidence" not in candidate):
+                        continue
+                    evidence = candidate
+                    break
                 if evidence is None:
-                    refused.append({**source_identity, "error": "source claim has no valid exact-ID release"})
-                    continue
-                receipt = release.receipt_for(evidence)
-                # A worker release must precede its own end. A Supervisor's
-                # validated attestation can be published after that source ends.
-                cutoff = (release.stamp(receipt["evidence_at"]) if receipt is not None else
-                          release.stamp(evidence.get("updated_at") or evidence.get("created_at")))
-                if (not release.related_sessions_match(evidence.get("body") or "", entry["session_id"])
-                        or cutoff > ended or receipt is not None and "_release_evidence" not in evidence):
-                    refused.append({**source_identity, "error": "release does not attest this exact ended source"})
+                    refused.append({**source_identity, "error": "source claim has no valid exact-ID release for this ended source"})
                     continue
                 released.append({**source_identity,
                     "handoff_url": f"https://github.com/{repo}/issues/{number}#issuecomment-{evidence['id']}"})

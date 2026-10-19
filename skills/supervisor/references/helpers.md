@@ -2182,7 +2182,14 @@ comment/evidence snapshot is reused only within that read phase. Related
 ownership follow-ups released after the source ended also need their actual
 exact-ID release, linked to the same validated structured receipt and its
 selected related IDs. The receipt binds their source author, worker, native
-session and original closure chronology; shared-bot prose alone cannot do so.
+session and original closure chronology. The receipt must precede the actual
+related release in canonical creation order, and its source/receipt pair must
+independently satisfy the shared exact-release guard. An earlier ordinary release
+of that source does not hide its later validated receipt. Structured-source
+reporting also uses the first qualifying canonical proof, keeping the original
+worker end cutoff even when an earlier ineligible release precedes a valid
+receipt. Explanatory prose and later explanation-only edits carry no authority
+and need no fresh related post.
 When every source has that evidence, the report says `already released` and
 names the release handoffs without writing another release. A verified session
 that never claimed reports `nothing to release`. A body marker matching the
@@ -2254,8 +2261,10 @@ structured claims and their related ownership follow-ups use `release-claim`.
 Hand-written and status-only ownership are explicitly reported instead of
 silently dropped. Planning refusals are isolated by issue and session, so
 verified independent claims still proceed; `issue_refusals` prevents an all-clear.
-Automatic follow-up selection requires an exact native `Session:` field and
-ordering after the structured source; a reused worker token alone is not evidence.
+Automatic follow-up selection requires the same actor and worker, unstructured
+ownership and an exact native `Session:` field. It covers hand claims made before
+or after the structured source. The shared release preflight still checks native
+identity and original closure chronology; a reused worker token alone is not evidence.
 The shared bot login alone never identifies a session. Native session coverage
 remains explicit in the release receipts; missing peer APIs are covered only
 by the Supervisor's actual transcript/closure verification.
