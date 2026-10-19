@@ -1176,7 +1176,7 @@ def resume_input(text):
 def validate_resume_input(text, *, tty=None):
     if resume_input(text):
         if isinstance(tty, str) and tty:
-            from close_ttys import inventory
+            from session_liveness import inventory
             commands = [command.split() for _, terminal, command in inventory()
                         if terminal == tty.removeprefix("/dev/")]
             # A positively identified Claude-only target keeps its own resume
@@ -1197,12 +1197,11 @@ def source_launch_metadata(result, choice):
     if choice.get("resume_session_id"):
         result["native_session_id"] = choice["resume_session_id"]
     try:
-        from close_ttys import inventory
+        from session_liveness import harness_arguments, inventory
         github = str(Path(__file__).resolve().parents[2] / "github/scripts")
         if github not in sys.path:
             sys.path.append(github)
         import github_plan_closure
-        from github_plan_sessions import codex_argv_start
         tty = result.get("tty")
         if not isinstance(tty, str) or not tty:
             raise ValueError("launch TTY is unavailable")
@@ -1223,11 +1222,14 @@ def source_launch_metadata(result, choice):
                 raise ValueError("resumed generation does not match this terminal")
             result.update(generation)
             return result
-        candidates = [(pid, codex_argv_start(command.split())) for pid, terminal, command in inventory()
-                      if terminal == tty.removeprefix("/dev/") and codex_argv_start(command.split()) is not None]
+        candidates = []
+        for pid, terminal, command in inventory():
+            argv = harness_arguments(command)
+            if terminal == tty.removeprefix("/dev/") and argv and Path(argv[0]).name.casefold().startswith("codex"):
+                candidates.append((pid, command.split()[0] == argv[0]))
         # The guarded parent is a Python helper on the same TTY. Prefer the
         # native executable over the wrapper when both are visible.
-        matches = [pid for pid, kind in candidates if kind == 0]
+        matches = [pid for pid, direct in candidates if direct]
         if not matches:
             proxies = {r.get("launch_pid"): r for r in github_plan_closure.log_rows()
                        if r.get("record_kind") == "managed_proxy" and r.get("codex_home") == result["codex_home"]}
@@ -1254,17 +1256,11 @@ def cancel_unsubmitted_gui(choice, progress):
 
 async def close_session(app, session_id, ledger):
     """Close one owned, unsplit tab only with current idle-shell/input proof."""
-    # Loaded here because close_ttys also uses this module's exact selector.
-    from close_ttys import inventory, idle_terminal_command
+    import session_liveness
+    import session_record
     import iterm2
 
-    entries = json.loads(ledger.read_text(encoding="utf-8"))
-    if not isinstance(entries, list) or not all(isinstance(e, dict) for e in entries):
-        raise ValueError("ledger must contain session objects")
-    matches = [e for e in entries if e.get("iterm_session_id") == session_id]
-    if len(matches) != 1 or matches[0].get("supervisor_owned") is not True:
-        raise ValueError("exact session is not uniquely Supervisor-owned in the launch ledger")
-    entry = matches[0]
+    entry = session_record.terminal_entry(ledger, "iterm_session_id", session_id)
 
     async def verify():
         await app.async_refresh()
@@ -1284,14 +1280,9 @@ async def close_session(app, session_id, ledger):
         tty = live_tty.removeprefix("/dev/")
         if not tty or tty != expected_tty.removeprefix("/dev/"):
             raise ValueError("terminal TTY differs from launch ledger")
-        rows = inventory()
+        rows = session_liveness.inventory()
         jobs = [row for row in rows if row[1] == tty]
-        if not jobs:
-            raise ValueError("no processes match this TTY; preserve ended or uncertain tab and report its profile setting")
-        if any(not idle_terminal_command(row[2]) for row in jobs):
-            raise ValueError("process remains on this TTY; tab kept")
-        if isinstance(entry.get("pid"), int) and any(row[0] == entry["pid"] for row in rows):
-            raise ValueError("recorded agent PID remains or was reused; tab kept")
+        session_liveness.verify_process_exit(entry, rows=rows, require_tty=True, scope="terminal")
         prompt = await iterm2.async_get_last_prompt(app.connection, session_id)
         if prompt is None or prompt.state != iterm2.PromptState.EDITING:
             raise ValueError("empty input cannot be proved; shell integration must report an editing prompt")

@@ -22,6 +22,7 @@ sys.path.insert(0, str(SKILLS / "github/scripts"))
 sys.path.insert(0, str(SKILLS / "github-work-rollup/scripts"))
 from github_read import GitHubReader, GitHubReadError, GitHubReadShapeError, automation_only_gh_prefix_args, path_with_query
 import github_direction_next
+import github_plan_wait
 import github_repository_scope as repository_scope
 import github_unanswered_comments as attention
 
@@ -47,7 +48,23 @@ def parse_date(value):
     return None
 
 
-def wait_rows(repo, issues, terms, owner, now) -> list[dict[str, Any]]:
+def resolve_wait(repo, issue, comments, trusted=None):
+    """Return the shared resolver's current wait and why it needs review, if it does.
+
+    ``comments`` is None when the discussion was not completely read. Without a
+    trusted readable record the recorded prose stays visible, marked for review.
+    """
+    if comments is None:
+        return None, "discussion_unread"
+    try:
+        wait = github_plan_wait.current(issue, comments, github_plan_wait.authors(repo) if trusted is None else trusted)
+    except (ValueError, TypeError, KeyError, AttributeError) as error:
+        return None, f"structured_wait_unreadable: {error}"
+    return (None, "no_structured_record") if wait["state"] == "review" else (wait, None)
+
+
+def wait_rows(repo, issues, terms, owner, now, discussions=None, trusted=None, errors=None) -> list[dict[str, Any]]:
+    """``discussions`` maps issue numbers to completely read comments."""
     rows = []
     for issue in issues:
         if "pull_request" in issue or issue.get("state") != "open":
@@ -58,6 +75,32 @@ def wait_rows(repo, issues, terms, owner, now) -> list[dict[str, Any]]:
         status = next((v for k, v in sections.items() if k.casefold() == "current status"), issue.get("body") or "")
         item = {"repo": repo, "number": issue["number"], "url": issue.get("html_url"),
                 "updated_at": issue.get("updated_at")}
+        prose = github_direction_next.waiting_records(item, status)
+        wait_record, review = resolve_wait(repo, issue, (discussions or {}).get(issue["number"]), trusted)
+        item.update({"structured_wait": wait_record} if wait_record else {"wait_review_required": True})
+        # The status line's verification still dates the issue's recorded state.
+        verified = next((record.get("last_verified") for record in prose if record.get("last_verified")), None)
+        last_verified = parse_date(verified)
+        missing_date_basis = ("verification_commit_only" if verified and re.fullmatch(r"[0-9a-fA-F]{7,40}", verified.strip())
+                              else "verification_unparseable" if verified else "verification_missing")
+        if review and review.startswith("structured_wait_unreadable"):
+            # A record that cannot be read may hide or release a hold. Like the goal
+            # board, keep the issue as an unknown wait for review, never resolve
+            # it from prose, and report partial coverage.
+            if errors is not None:
+                errors.append({"scope": "structured wait", "repo": repo, "number": issue["number"], "error": review})
+            rows.append({
+                "repo": repo, "number": issue["number"], "title": issue.get("title"),
+                "url": issue.get("html_url"), "waiting_for": "unknown: the structured wait record needs review",
+                "wait_kind": "unresolved", "waiting_since": None, "wait_age_days": None, "wait_age_unknown": True,
+                "recorded_at": None, "last_verified": last_verified.isoformat() if last_verified else None,
+                "last_verified_raw": verified,
+                "verification_age_days": max(0, (now - last_verified).total_seconds() / 86400) if last_verified else None,
+                "possibly_stale": True, "staleness_basis": "structured_wait_unreadable",
+                "verification_unknown": last_verified is None, "wait_source": "unresolved_structured_wait",
+                "wait_review_required": True, "wait_review_reason": review,
+            })
+            continue
         records = github_direction_next.waiting_records(item, status)
         candidates = []
         for record in records:
@@ -76,10 +119,6 @@ def wait_rows(repo, issues, terms, owner, now) -> list[dict[str, Any]]:
             since = parse_date(inline_since[1])
         elif sum(not record["no_current_wait"] for record in records) > 1:
             since = None  # A status-wide start cannot date one of several waits.
-        verified = next((record.get("last_verified") for record in records if record.get("last_verified")), None)
-        last_verified = parse_date(verified)
-        missing_date_basis = ("verification_commit_only" if verified and re.fullmatch(r"[0-9a-fA-F]{7,40}", verified.strip())
-                              else "verification_unparseable" if verified else "verification_missing")
         rows.append({
             "repo": repo, "number": issue["number"], "title": issue.get("title"),
             "url": issue.get("html_url"), "waiting_for": wait[0], "wait_kind": wait[1],
@@ -94,15 +133,36 @@ def wait_rows(repo, issues, terms, owner, now) -> list[dict[str, Any]]:
             "staleness_basis": missing_date_basis if last_verified is None else
                 "verification_predates_wait" if since and last_verified < since else None,
             "verification_unknown": last_verified is None,
+            "wait_source": "structured_wait" if wait_record else "legacy_wait_review",
+            "wait_review_required": wait_record is None,
+            "wait_review_reason": review,
         })
     return rows
 
 
-def collect_query(reader, owner, terms, now, issue_limit=1000, phrase="Waiting for", *, include_archived=False) -> dict[str, Any]:
-    query = repository_scope.search_query(f'user:{owner} is:issue is:open in:body "{phrase}"', include_archived=include_archived)
+def read_discussion(reader, repo, number, discussions, errors):
+    """Read one issue's complete discussion once per report; None when unread."""
+    key = (repo.casefold(), number)
+    if key not in discussions:
+        try:
+            comments = reader.paged_json(f"/repos/{repo}/issues/{number}/comments", step_prefix="director_wait_comments")
+            if not isinstance(comments, list) or not all(isinstance(comment, dict) for comment in comments):
+                raise GitHubReadShapeError("issue comments response was not a list of comments")
+        except (GitHubReadError, GitHubReadShapeError, ValueError, TypeError) as error:
+            comments = None
+            errors.append({"scope": "discussion", "repo": repo, "number": number, "error": str(error)})
+        discussions[key] = comments
+    return discussions[key]
+
+
+def collect_query(reader, owner, terms, now, issue_limit=1000, phrase="Waiting for", *, include_archived=False,
+                  where="body", discussions=None) -> dict[str, Any]:
+    query = repository_scope.search_query(f'user:{owner} is:issue is:open in:{where} "{phrase}"', include_archived=include_archived)
+    discussions = {} if discussions is None else discussions
     result = {"waits": [], "complete": False, "errors": [],
               "repositories_with_matches": [], "query": query, "total_count": None,
-              "scope": "Open issue bodies in the Director's repositories visible to GitHub Search; search indexing may lag live records"}
+              "scope": "Open issues in the Director's repositories visible to GitHub Search, by wait fields in the body "
+                       "or structured wait records in comments, resolved from each complete discussion; search indexing may lag live records"}
     rows, seen, totals = [], set(), []
     # GitHub Search exposes at most 1,000 results for a query. Read response
     # metadata on every page so timeouts/truncation cannot look complete.
@@ -139,7 +199,9 @@ def collect_query(reader, owner, terms, now, issue_limit=1000, phrase="Waiting f
                         result["errors"].append({"scope": "search", "error": "duplicate issue during pagination"})
                         continue
                     seen.add(key)
-                    rows.extend(wait_rows(repo, [entry], terms, owner, now))
+                    comments = read_discussion(reader, repo, entry["number"], discussions, result["errors"])
+                    rows.extend(wait_rows(repo, [entry], terms, owner, now, {entry["number"]: comments},
+                                          errors=result["errors"]))
                 except (GitHubReadShapeError, ValueError, TypeError, KeyError) as error:
                     result["errors"].append({"scope": "search item", "error": str(error)})
             if read_count >= total or len(items) < min(bound, 100) or read_count >= bound:
@@ -158,10 +220,14 @@ def collect_query(reader, owner, terms, now, issue_limit=1000, phrase="Waiting f
 
 
 def collect(reader, owner, terms, now, issue_limit=1000, *, include_archived=False) -> dict[str, Any]:
-    # Two scoped searches cover both supported status fields without relying
-    # on provider-specific boolean query parsing or visiting each repository.
-    reports = [collect_query(reader, owner, terms, now, issue_limit, phrase, include_archived=include_archived)
-               for phrase in ("Waiting for", "Parked until")]
+    # Scoped searches cover both supported status fields and structured wait
+    # records written only in comments, without relying on provider-specific
+    # boolean query parsing or visiting each repository. Each candidate's
+    # discussion is read once and resolved with the shared wait resolver.
+    discussions: dict[tuple[str, int], Any] = {}
+    reports = [collect_query(reader, owner, terms, now, issue_limit, phrase, include_archived=include_archived,
+                             where=where, discussions=discussions)
+               for phrase, where in (("Waiting for", "body"), ("Parked until", "body"), ("waiting_for", "comments"))]
     rows = {(row["repo"], row["number"]): row for report in reports for row in report["waits"]}
     return {"waits": sorted(rows.values(), key=lambda row: (row["repo"], row["number"])),
             "complete": all(report["complete"] for report in reports),

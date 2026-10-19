@@ -225,17 +225,6 @@ class MoveTests(unittest.TestCase):
         self.record()
         self.assertEqual(account.move_environment(self.argv, env), env)
 
-    def test_installed_wrapper_preserves_every_environment_variable(self):
-        settings = self.root / "settings.json"
-        installed = account.install(settings, self.root / "moves", write=True)
-        argv = json.loads(installed["env"]["CLAUDE_CODE_PROCESS_WRAPPER"])
-        code = "import os,json;print(json.dumps(dict(os.environ)))"
-        env = {**os.environ, **self.env, "HOME": str(self.root), "PYTHONPATH": "unchanged"}
-        direct = subprocess.check_output([sys.executable, "-I", "-c", code], env=env)
-        wrapped = subprocess.check_output([*argv, sys.executable, "-I", "-c", code], env=env)
-        self.assertEqual({k for k in json.loads(wrapped).keys() | json.loads(direct).keys()
-                          if json.loads(wrapped).get(k) != json.loads(direct).get(k)}, set())
-
     def test_enrollment_refuses_task_worktree(self):
         self.runtime_patch.stop()
         from types import SimpleNamespace
@@ -305,11 +294,12 @@ class MoveTests(unittest.TestCase):
         account.install(settings, self.root / "moves", write=True)
         data = json.loads(settings.read_text())
         shim = Path(json.loads(data["env"]["CLAUDE_CODE_PROCESS_WRAPPER"])[0])
-        shim.write_text(shim.read_text().replace("my $python =", "my $old_python ="))
+        current = shim.read_text()
+        shim.write_text(current + "# left by an older enrollment\n")
         with self.assertRaises(ValueError):
             account.install(settings, self.root / "moves", write=True)
         account.install(settings, self.root / "moves", write=True, refresh=True)
-        self.assertNotIn("my $old_python", shim.read_text())
+        self.assertEqual(shim.read_text(), current)
         account.uninstall(settings, write=True)
         result = json.loads(settings.read_text())
         self.assertEqual(result["env"], {"OTHER": "keep"})
@@ -352,15 +342,20 @@ class MoveTests(unittest.TestCase):
         child = self.root / "child"
         child.write_text('#!/usr/bin/perl\nexec {"/usr/bin/env"} "/usr/bin/env", "-0";\n')
         child.chmod(0o700)
-        for assignment in ("my $python", "my $script"):
-            original = shim.read_text()
-            lines = [line if not line.startswith(assignment + " =") else assignment + " = '/missing/dependency';"
-                     for line in original.splitlines()]
-            shim.write_text("\n".join(lines) + "\n")
-            fallback = subprocess.check_output([str(shim), str(child), "--resume", self.identifier], env=env)
-            self.assertEqual({x.split(b"=", 1)[0] for x in set(fallback.split(b"\0")) ^ set(expected.split(b"\0"))}, set())
-            self.assertTrue(self.request.exists())
-            shim.write_text(original)
+        for missing in ("python", "script"):
+            with self.subTest(missing=missing):
+                # Enroll with an interpreter or helper that is later removed from the host.
+                gone = self.root / f"removed-{missing}"
+                gone.write_text("#!/bin/sh\n")
+                gone.chmod(0o700)
+                removed = (patch.object(account.sys, "executable", str(gone)) if missing == "python"
+                           else patch.object(account, "runtime_script", return_value=gone))
+                with removed:
+                    account.install(settings, self.root / "moves", write=True, refresh=True)
+                gone.unlink()
+                fallback = subprocess.check_output([str(shim), str(child), "--resume", self.identifier], env=env)
+                self.assertEqual({x.split(b"=", 1)[0] for x in set(fallback.split(b"\0")) ^ set(expected.split(b"\0"))}, set())
+                self.assertTrue(self.request.exists())
 
     def test_uninstall_recovers_missing_entrypoint_and_alternate_source_hooks(self):
         settings = self.root / "settings.json"

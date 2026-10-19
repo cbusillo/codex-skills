@@ -65,7 +65,7 @@ def prepare(entry, message):
         return queue
     if entry.get("harness") != "claude" or entry.get("backend") != "tmux":
         raise ValueError("Claude review notification requires the ledger's supported tmux route")
-    from close_ttys import inventory
+    from session_liveness import inventory
     from tmux_terminal import Terminal, belongs_to, process_parents
 
     if not entry.get("tmux_socket"):
@@ -77,7 +77,7 @@ def prepare(entry, message):
 
     def verify():
         current = session_status(entry)
-        if not current["at_turn_end"] or current["background_tasks"]:
+        if not current["at_turn_end"] or any(task.get("kind") != "scheduled" for task in current["background_tasks"]):
             raise NotSent("Claude author is not at a verified idle prompt", needs_attention=False)
         row = terminal.read(identity)
         if row["dead"]:

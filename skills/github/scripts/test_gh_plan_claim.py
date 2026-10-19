@@ -91,6 +91,8 @@ class ClaimTests(unittest.TestCase):
         self.parent = None
         self.children = {}
         self.timelines = {}
+        self.history_nodes = {}
+        self.history_reads = []
         self.api_failure = None
         self.configs = {}
         self.planning_inventory = None
@@ -115,7 +117,13 @@ class ClaimTests(unittest.TestCase):
         issue["repo"], issue["number"] = PLAN.issue_ref(ref, repo)
         return "bot", issue
 
-    def read_api(self, _method, path, **_):
+    def read_api(self, _method, path, payload=None, **options):
+        if path == "/graphql":
+            self.history_reads.append((_method, copy.deepcopy(payload), options))
+            response = self.history_nodes[payload["variables"]["id"]]
+            if isinstance(response, Exception):
+                raise response
+            return "bot", copy.deepcopy(response)
         if path.endswith("/parent"):
             if self.api_failure:
                 raise PLAN.PlanError("Unavailable", api_result=self.api_failure)
@@ -169,11 +177,16 @@ class ClaimTests(unittest.TestCase):
         return {"ok": True}
 
     def run_claim(self, *, route=None, command=None):
+        # Wait-review ownership fixtures isolate record publication/readback;
+        # persisted label projection has stateful mutation tests of its own.
+        projection = ({"refresh_planning_targets": lambda *_a, **_k: {
+            "ok": True, "coverage": "complete", "issues": []}} if command is PLAN.cmd_wait else {})
         with patch.multiple(PLAN, default_repo=lambda repo: repo or "owner/repo", get_issue=self.get_issue,
                             EXPECTED_ACTOR=TEST_BOT,
                             collect_paged_rest_items=self.read_pages, rest_edit_issue=self.edit,
                             comment_route=route or (lambda: ("bot", "bot-gh", TEST_BOT)),
-                            load_config=lambda repo, **_: copy.deepcopy(self.configs.get(repo, PLAN.DEFAULT_CONFIG)), emit=self.emitted, api_json=self.read_api), \
+                            load_config=lambda repo, **_: copy.deepcopy(self.configs.get(repo, PLAN.DEFAULT_CONFIG)),
+                            emit=self.emitted, api_json=self.read_api, **projection), \
                 patch.object(CLAIM, "local_inventory", side_effect=self.inventory_for), \
                 patch.object(CLAIM, "observe_sessions", side_effect=self.observe_inventory), \
                 patch.object(github_identity, "configured_bot_logins", return_value=[]), \
@@ -1089,6 +1102,105 @@ class ClaimTests(unittest.TestCase):
         self.run_claim()
         self.assertTrue(self.emitted.call_args.args[0]["ok"])
         self.assertEqual(len(self.comments), 1)  # Same-session recovery reuses its claim.
+
+    def omitted_history_child(self, child):
+        node_id = "fixture-sub-issue-added-event"
+        event = {"event": "sub_issue_added", "node_id": node_id, "sub_issue": None}
+        self.history_nodes[node_id] = {"data": {"node": {
+            "id": node_id, "__typename": "SubIssueAddedEvent", "subIssue": {
+                "id": f"fixture-issue-{child['number']}", "number": child["number"],
+                "state": child["state"].upper(), "title": child["title"],
+                "url": f"https://github.com/owner/repo/issues/{child['number']}",
+                "repository": {"nameWithOwner": "owner/repo"}}}}}
+        self.timelines["/repos/owner/repo/issues/41/timeline"] = [event]
+        return event, self.history_nodes[node_id]
+
+    def test_native_child_resolves_omitted_rest_history_through_exact_event(self):
+        for missing_key in (False, True):
+            with self.subTest(missing_key=missing_key):
+                self.setUp()
+                self.parent_handoff_fixture()
+                parent_before = copy.deepcopy((self.targets, self.target_comments))
+                event, _ = self.omitted_history_child(self.issue)
+                if missing_key:
+                    event.pop("sub_issue")
+                self.run_claim()
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
+                self.assertEqual(parent_before, (self.targets, self.target_comments))
+                self.assertTrue(self.history_reads)
+                for _, payload, _ in self.history_reads:
+                    self.assertEqual(payload["variables"]["id"], event["node_id"])
+
+    def test_hydrated_history_keeps_detached_live_child_ownership(self):
+        for phase in ("preflight", "after_post", "after_status"):
+            with self.subTest(phase=phase):
+                self.setUp()
+                self.parent_handoff_fixture()
+                successor = {**OTHER, "session": "detached-child-session", "branch": "work/detached-source",
+                             "resume_from": str(self.args.resume_from),
+                             "retained_handoff": f"{self.parent['html_url']}#issuecomment-{self.args.handoff_comment}"}
+                sibling = {**copy.deepcopy(self.issue), "number": 43,
+                           "body": "## Current Status\n\n" + CLAIM.marker(successor)}
+                self.targets["43"] = sibling
+                self.target_comments["/repos/owner/repo/issues/43/comments"] = [
+                    {"id": 88, "body": CLAIM.marker(successor), "user": {"login": TEST_BOT},
+                     "created_at": successor["claimed_at"]}]
+                def detached():
+                    self.omitted_history_child(sibling)
+                if phase == "preflight":
+                    detached()
+                else:
+                    setattr(self, phase, detached)
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.run_claim()
+                self.assertEqual(caught.exception.code, "claim_conflict")
+                self.assertEqual(caught.exception.payload["competing_evidence"][0]["record"], successor)
+                self.assertTrue(self.history_reads)
+                if phase == "preflight":
+                    self.assert_no_writes()
+                else:
+                    self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
+
+    def test_unresolved_history_event_refuses_without_claim_writes(self):
+        for failure in ("unreadable", "errors", "wrong_id", "wrong_type", "missing_child",
+                        "missing_issue_id", "repository", "number", "state", "url"):
+            with self.subTest(failure=failure):
+                self.setUp()
+                self.parent_handoff_fixture()
+                event, response = self.omitted_history_child(self.issue)
+                node = response["data"]["node"]
+                if failure == "unreadable":
+                    self.history_nodes[event["node_id"]] = PLAN.PlanError("History unavailable", api_result={"status": 403})
+                elif failure == "errors":
+                    response["errors"] = [{"message": "History unavailable"}]
+                elif failure == "wrong_id":
+                    node["id"] = "another-event"
+                elif failure == "wrong_type":
+                    node["__typename"] = "IssueComment"
+                elif failure == "missing_child":
+                    node["subIssue"] = None
+                else:
+                    node["subIssue"][{"missing_issue_id": "id", "repository": "repository"}.get(failure, failure)] = None
+                with self.assertRaises(PLAN.PlanError):
+                    self.run_claim()
+                self.assert_no_writes()
+
+    def test_unresolved_history_after_claim_write_requires_exact_release(self):
+        for phase, failure in product(("after_post", "after_status"), ("unreadable", "missing_child")):
+            with self.subTest(phase=phase, failure=failure):
+                self.setUp()
+                self.parent_handoff_fixture()
+                event, response = self.omitted_history_child(self.issue)
+                def unavailable():
+                    if failure == "unreadable":
+                        self.history_nodes[event["node_id"]] = PLAN.PlanError("History unavailable", api_result={"status": 403})
+                    else:
+                        response["data"]["node"]["subIssue"] = None
+                setattr(self, phase, unavailable)
+                with self.assertRaises(PLAN.PlanError) as caught:
+                    self.run_claim()
+                self.assertIn("post_claim", caught.exception.payload["completed_steps"])
+                self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
 
     def nested_handoff_fixture(self):
         self.parent_handoff_fixture()
@@ -2061,7 +2173,9 @@ class ClaimTests(unittest.TestCase):
                 if change == "child_blocker": self.blockers = [{"state": "open"}]
                 if change == "child_wait": self.wait = wait_record.reviewed(evidence="Child needs acceptance", waiting_for="Client", ends_when="Client accepts")
                 if change == "parent_status": self.targets["41"]["body"] += "\n" + CLAIM.marker({**OTHER, "session": "third"})
-                if change == "retained_pr_wait": self.targets["99"]["labels"] = [{"name": PLAN.DEFAULT_CONFIG["labels"]["waiting"]}]
+                if change == "retained_pr_wait":
+                    self.targets["99"]["labels"] = [{"name": PLAN.DEFAULT_CONFIG["labels"]["waiting"]}]
+                    self.record_wait(target="99")
                 with self.assertRaises(PLAN.PlanError) as caught:
                     self.run_claim()
                 if change in conflicts:
@@ -2158,6 +2272,7 @@ class ClaimTests(unittest.TestCase):
         self.ordinary_handoff_fixture()
         self.run_claim()
         self.targets["99"]["labels"] = [{"name": PLAN.DEFAULT_CONFIG["labels"]["waiting"]}]
+        self.record_wait(target="99")
         self.args.wait_resolved = "Fresh authorization for this step; preserve the new PR hold."
         self.run_claim()
         self.assertEqual(self.events.count("post"), 1)
@@ -3195,8 +3310,9 @@ class ClaimTests(unittest.TestCase):
 
     def test_open_native_blocker_is_preserved(self):
         self.blockers = [{"number": 1, "state": "open"}]
-        with self.assertRaisesRegex(PLAN.PlanError, "resolved native blockers"):
+        with self.assertRaises(PLAN.PlanError) as caught:
             self.run_claim()
+        self.assertEqual(caught.exception.code, "claim_native_blockers_unresolved")
         self.assert_no_writes()
 
     def released_note_fixture(self):
@@ -4103,7 +4219,7 @@ class ClaimTests(unittest.TestCase):
     def test_global_invalid_wait_selection_still_requires_actual_claim_resolution(self):
         import test_gh_plan_next as selection
         root = selection.track("someone/direction", 1, "First")
-        leaf = selection.global_issue("owner/repo", 42, labels=["plan", "plan:waiting"],
+        leaf = selection.global_issue("owner/repo", 42, wait_reviewed=False, labels=["plan", "plan:waiting"],
             body=PLAN.PLAN_MANAGED_PROVENANCE_MARKER + "\n## Current Status\nState: Waiting.\nWaiting for: starts after First\nBlocked by: None.")
         edges = {("someone/direction", 1): selection.relationships(sub_issues=[leaf])}
         with selection.global_fixture([root], [leaf], edges) as (module, result, _reads):
@@ -4116,6 +4232,7 @@ class ClaimTests(unittest.TestCase):
             self.assertEqual([item["number"] for item in result["candidates"]], [42])
         self.issue.update(leaf)
         self.issue["user"] = {"login": TEST_BOT}
+        self.wait = None  # The legacy issue has not received its structured review.
         with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
             self.run_claim()
         self.assertEqual(caught.exception.code, "claim_wait_unresolved")
@@ -4137,12 +4254,8 @@ class ClaimTests(unittest.TestCase):
             self.run_claim()
         self.assert_no_writes()
 
-    def test_wait_labels_refuse_until_existing_resolution_recorded(self):
+    def test_stale_wait_label_does_not_override_reviewed_clear_record(self):
         self.issue["labels"] = [{"name": PLAN.DEFAULT_CONFIG["labels"]["waiting"]}]
-        with self.assertRaises(PLAN.ClassifiedPlanError):
-            self.run_claim()
-        self.assert_no_writes()
-        self.args.wait_resolved = "Recorded owner release on this issue"
         self.run_claim()
         self.assertEqual(PLAN.normalize_labels(self.issue["labels"]), [PLAN.DEFAULT_CONFIG["labels"]["active"]])
 
@@ -4332,6 +4445,7 @@ class ClaimTests(unittest.TestCase):
                         load_config=lambda repo: PLAN.DEFAULT_CONFIG,
                         find_existing_plan_issues=lambda *a, **k: ("bot", []),
                         ensure_labels=lambda *a, **k: ("bot", []),
+                        refresh_planning_targets=lambda *a, **k: {"ok": True, "coverage": "complete", "issues": []},
                         comment_route=lambda: ("bot", "bot-gh", TEST_BOT), emit=Mock()), \
                         patch.object(github_issue, "create_issue", create):
                     PLAN.cmd_create(args)
@@ -4364,201 +4478,12 @@ class ClaimTests(unittest.TestCase):
             self.run_claim()
         self.assertEqual(caught.exception.payload["claim_recovery"]["release_own_claim"]["body"], "Released claim 1")
 
-    # A claim names the Order rule that admits its work; milestone work is linked first.
-    TRACK = {"title": "Track: CM website live", "milestone": {"title": "CM website live and used"}}
-
-    @staticmethod
-    def walk(graph, start=("owner/product", 7), **kwargs):
-        reads = []
-
-        def read_issue(repo, number):
-            reads.append((repo, number))
-            return graph.get((repo, number), {}).get("issue", {"title": "Work"})
-
-        return CLAIM.admission_track(
-            start, "owner", read_issue=read_issue,
-            read_parent=lambda repo, number: graph.get((repo, number), {}).get("parent"),
-            read_blocking=lambda repo, number: graph.get((repo, number), {}).get("blocking", []),
-            **kwargs,
-        ), reads
-
-    def test_walk_reaches_the_track_through_a_parent_and_a_blocked_issue(self):
-        graph = {
-            ("owner/product", 7): {"parent": {"html_url": "https://github.com/owner/product/issues/3"}},
-            ("owner/product", 3): {"blocking": [{"html_url": "https://github.com/owner/direction/issues/9"}]},
-            ("owner/direction", 9): {"issue": self.TRACK},
-        }
-        (track, complete), _ = self.walk(graph)
-        self.assertTrue(complete)
-        self.assertEqual(track["url"], "https://github.com/owner/direction/issues/9")
-        self.assertEqual(track["milestone"], "CM website live and used")
-
-    def test_walk_without_a_track_is_complete_and_unlinked_and_survives_cycles(self):
-        graph = {
-            ("owner/product", 7): {"blocking": [{"html_url": "https://github.com/owner/product/issues/8"}]},
-            ("owner/product", 8): {"parent": {"html_url": "https://github.com/owner/product/issues/7"}},
-            # A Track title outside OWNER/direction, or without a milestone, is not the graph.
-            ("owner/product", 9): {"issue": self.TRACK},
-        }
-        retired = {("owner/product", 7): {"parent": {"html_url": "https://github.com/owner/direction/issues/2"}},
-                   ("owner/direction", 2): {"issue": {**self.TRACK, "milestone": {"title": "Old", "state": "closed"}}}}
-        self.assertEqual(self.walk(retired)[0], (None, True))
-        (track, complete), reads = self.walk(graph)
-        self.assertEqual((track, complete), (None, True))
-        self.assertEqual(reads, [("owner/product", 7), ("owner/product", 8)])
-        limited, _ = self.walk(graph, max_nodes=1)
-        self.assertEqual(limited, (None, False))
-
-    def test_foreign_direction_track_reports_incomplete_instead_of_verified_unlinked(self):
-        graph = {
-            ("owner/product", 7): {"parent": {"html_url": "https://github.com/director/direction/issues/9"}},
-            ("director/direction", 9): {"issue": self.TRACK},
-        }
-        limitations = []
-        self.assertEqual(self.walk(graph, limitations=limitations)[0], (None, False))
-        self.assertIn("cross_owner_direction_account", limitations)
-
-    def test_cross_owner_product_can_still_reach_the_repository_owners_track(self):
-        graph = {
-            ("owner/product", 7): {"parent": {"html_url": "https://github.com/client/product/issues/8"}},
-            ("client/product", 8): {"blocking": [{"html_url": "https://github.com/owner/direction/issues/9"}]},
-            ("owner/direction", 9): {"issue": self.TRACK},
-        }
-        (track, complete), _ = self.walk(graph)
-        self.assertTrue(complete)
-        self.assertEqual(track["url"], "https://github.com/owner/direction/issues/9")
-
-    def test_foreign_track_claim_reports_its_limitation_and_records_explanation(self):
-        self.args.admission = "milestone"
-        self.targets["9"] = self.TRACK
-
-        def parent(_method, path, **_):
-            return "bot", ({"html_url": "https://github.com/director/direction/issues/9"}
-                           if path.endswith("/42/parent") else None)
-
-        with patch.object(self, "read_api", side_effect=parent):
-            with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
-                self.run_claim()
-            self.assertFalse(caught.exception.payload["graph_walk_complete"])
-            self.assertIn("cross_owner_direction_account", caught.exception.payload["graph_limitations"])
-            self.assert_no_writes()
-            self.args.admission_unlinked = "The Director's Track lives in director/direction, a different account"
-            self.run_claim()
-        self.assertIn(self.args.admission_unlinked, self.comments[-1]["body"])
-        self.assertIn("Track link not verified:", self.comments[-1]["body"])
-        self.assertIn("graph verification incomplete: cross_owner_direction_account", self.comments[-1]["body"])
-
-    def test_unreadable_side_branch_does_not_hide_a_reachable_track(self):
-        self.args.admission = "milestone"
-        self.targets["9"] = self.TRACK
-        original_issue, original_pages = self.get_issue, self.read_pages
-
-        def issue(ref, repo):
-            if str(ref) == "8":
-                raise PLAN.PlanError("Side branch unavailable", api_result={"status": 502})
-            return original_issue(ref, repo)
-
-        def parent(_method, path, **_):
-            linked = {"42": "owner/product/issues/3", "3": "owner/direction/issues/9"}.get(path.split("/")[-2])
-            return "bot", {"html_url": "https://github.com/" + linked} if linked else None
-
-        def pages(path, **kwargs):
-            if path.endswith("/blocking"):
-                return "bot", [{"html_url": "https://github.com/owner/product/issues/8"}] if "/42/" in path else []
-            return original_pages(path, **kwargs)
-
-        with patch.object(self, "get_issue", side_effect=issue), \
-                patch.object(self, "read_api", side_effect=parent), \
-                patch.object(self, "read_pages", side_effect=pages):
-            self.run_claim()
-        self.assertIn("reaches https://github.com/owner/direction/issues/9", self.comments[-1]["body"])
-        self.assertNotIn("graph verification incomplete", self.comments[-1]["body"])
-
-    def unavailable_admission_read(self, surface, *, route=None):
-        self.args.admission = "milestone"
-        error = PLAN.PlanError("Graph unavailable", api_result={"status": 403})
-        original_issue, original_pages = self.get_issue, self.read_pages
-
-        def issue(ref, repo):
-            # Initial issue/ownership reads succeed; the linked node is unreadable.
-            if surface == "issue" and str(ref) == "9":
-                raise error
-            return original_issue(ref, repo)
-
-        def api(_method, _path, **_):
-            if surface == "parent":
-                raise error
-            return "bot", {"html_url": "https://github.com/owner/direction/issues/9"}
-
-        def pages(path, **kwargs):
-            if path.endswith("/blocking"):
-                if surface == "blocking":
-                    raise error
-                return "bot", []
-            return original_pages(path, **kwargs)
-
-        with patch.object(self, "get_issue", side_effect=issue), \
-                patch.object(self, "read_api", side_effect=api), \
-                patch.object(self, "read_pages", side_effect=pages):
-            self.run_claim(route=route)
-
-    def test_unavailable_admission_reads_refuse_or_use_explicit_explanation(self):
-        for surface in ("issue", "parent", "blocking"):
-            with self.subTest(surface=surface):
-                self.setUp()
-                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
-                    self.unavailable_admission_read(surface)
-                self.assertEqual(caught.exception.code, "claim_admission_unlinked")
-                self.assertFalse(caught.exception.payload["graph_walk_complete"])
-                self.assertIn("graph_read_unavailable", caught.exception.payload["graph_limitations"])
-                self.assertEqual(caught.exception.payload["graph_read_failures"][0]["surface"], surface)
-                self.assertEqual(caught.exception.payload["graph_read_failures"][0]["status"], 403)
-                self.assert_no_writes()
-                self.args.admission_unlinked = "The Track graph is not readable by this repository App"
-                self.unavailable_admission_read(surface)
-                self.assertIn(self.args.admission_unlinked, self.comments[-1]["body"])
-                self.assertIn("Track link not verified:", self.comments[-1]["body"])
-                self.assertIn("graph verification incomplete: graph_read_unavailable", self.comments[-1]["body"])
-
-    def test_admission_explanation_preserves_independent_refusals(self):
-        for refusal in ("ownership", "blocker", "human_claim", "artifact", "initial_read"):
-            with self.subTest(refusal=refusal):
-                self.setUp()
-                self.args.admission_unlinked = "Graph is unreadable"
-                if refusal == "ownership":
-                    self.compete()
-                elif refusal == "blocker":
-                    self.blockers = [{"state": "open"}]
-                elif refusal == "human_claim":
-                    self.issue["user"]["login"] = "human"
-                    self.comments = [{"id": 1, "body": CLAIM.marker(OTHER), "user": {"login": "human"}}]
-                elif refusal == "artifact":
-                    self.inventory["local_branches"] = ["work/other-42"]
-                    self.inventory["worktrees"] = [{"path": "/retained/issue-42", "branch": "work/other-42"}]
-                else:
-                    def initial_read(*_):
-                        raise PLAN.PlanError("Initial issue authentication failed", api_result={"status": 401})
-                    self.get_issue = initial_read
-                with self.assertRaises(PLAN.PlanError) as caught:
-                    self.unavailable_admission_read("parent")
-                if refusal in ("ownership", "human_claim", "artifact"):
-                    self.assertEqual(caught.exception.code, "claim_conflict")
-                elif refusal == "initial_read":
-                    self.assertEqual(caught.exception.api_result["status"], 401)
-                else:
-                    self.assertIn("resolved native blockers", str(caught.exception))
-                self.assert_no_writes()
-
-    def test_admission_explanation_does_not_recover_write_authentication_failure(self):
-        self.args.admission_unlinked = "The graph reader is unavailable"
-
-        def rejected_actor():
-            raise PLAN.PlanError("Automation authentication failed", api_result={"status": 401})
-
-        with self.assertRaises(PLAN.PlanError) as caught:
-            self.unavailable_admission_read("parent", route=rejected_actor)
-        self.assertEqual(caught.exception.api_result["status"], 401)
-        self.assert_no_writes()
+    def test_milestone_admission_needs_no_graph_certificate(self):
+        link = "https://github.com/owner/direction/issues/9#issuecomment-123"
+        self.args.admission, self.args.admission_link = "milestone", [link]
+        self.run_claim()
+        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+        self.assertIn(link, self.comments[-1]["body"])
 
     def test_identity_refused_required_blocker_read_refuses_claim_without_writes(self):
         failure = PLAN.github_api_core.FailureDetail(
@@ -4577,60 +4502,28 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(caught.exception.failure.cause, failure.cause)
         self.assert_no_writes()
 
-    def admit(self, kind, links=(), unlinked=None, track=None, complete=True):
+    def admit(self, kind, links=(), unlinked=None):
         self.args.admission, self.args.admission_link, self.args.admission_unlinked = kind, list(links), unlinked
-        with patch.object(CLAIM, "admission_track", return_value=(track, complete)) as walk:
-            self.run_claim()
-        return walk
+        self.run_claim()
 
-    def test_unlinked_milestone_claim_refuses_before_any_write(self):
-        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
-            self.admit("milestone")
-        self.assertEqual(caught.exception.code, "claim_admission_unlinked")
-        self.assert_no_writes()
+    def test_milestone_admission_records_optional_context(self):
+        context = "The Director's Track is in a different account"
+        self.admit("milestone", unlinked=context)
+        self.assertIn(context, self.comments[-1]["body"])
+        self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
-    def test_linked_or_explained_milestone_claim_records_its_admission(self):
-        track = {"url": "https://github.com/owner/direction/issues/9", "title": "Track: CM website live",
-                 "milestone": "CM website live and used"}
-        walk = self.admit("milestone", track=track)
-        self.assertEqual(walk.call_args.args[:2], (("owner/repo", 42), "owner"))
-        self.assertIn("Admission: milestone; reaches https://github.com/owner/direction/issues/9 "
-                      "(Track: CM website live, milestone `CM website live and used`)", self.comments[-1]["body"])
-        self.setUp()
-        self.admit("milestone", unlinked="the Track issue is not created yet")
-        self.assertIn("Admission: milestone; no Track link found in the readable graph: the Track issue is not created yet",
-                      self.comments[-1]["body"])
-
-    def test_recovered_linked_claim_uses_the_found_track_instead_of_stale_explanation(self):
-        track = {"url": "https://github.com/owner/direction/issues/9", "title": "Track: Release", "milestone": "Release"}
-        self.admit("milestone", track=track, unlinked="Previous graph read failed")
-        self.assertIn("reaches " + track["url"], self.comments[-1]["body"])
-        self.assertNotIn("Previous graph read failed", self.comments[-1]["body"])
-
-    def test_partial_claim_recovery_reuses_its_existing_admission_without_another_walk(self):
+    def test_partial_claim_recovery_reuses_existing_admission(self):
         self.args.admission = "milestone"
-        track = {"url": "https://github.com/owner/direction/issues/9", "title": "Track: Release", "milestone": "Release"}
-        with patch.object(CLAIM, "admission_track", return_value=(track, True)), \
-                patch.object(self, "edit", side_effect=PLAN.PlanError("Status write failed")):
+        link = "https://github.com/owner/direction/issues/9"
+        self.args.admission_link = [link]
+        with patch.object(self, "edit", side_effect=PLAN.PlanError("Status write failed")):
             with self.assertRaises(PLAN.PlanError):
                 self.run_claim()
         original = copy.deepcopy(self.comments)
-        with patch.object(CLAIM, "admission_track", side_effect=PLAN.PlanError("Graph now unavailable")) as walk:
-            self.run_claim()
-        walk.assert_not_called()
+        self.run_claim()
         self.assertEqual(self.comments, original)
-        self.assertIn("reaches " + track["url"], self.comments[-1]["body"])
+        self.assertIn(link, self.comments[-1]["body"])
         self.assertTrue(self.emitted.call_args.args[0]["ok"])
-
-    def test_artifact_conflict_is_reported_before_admission_link_suggestions(self):
-        self.args.admission = "milestone"
-        self.inventory["worktrees"] = [{"path": "/retained/issue-42", "branch": OTHER["branch"]}]
-        with patch.object(CLAIM, "admission_track") as walk:
-            with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
-                self.run_claim()
-        self.assertEqual(caught.exception.code, "claim_conflict")
-        walk.assert_not_called()
-        self.assert_no_writes()
 
     def test_repeat_stop_needs_both_occurrences_and_spare_capacity_is_named(self):
         first = "https://github.com/owner/repo/issues/5"
@@ -4641,11 +4534,10 @@ class ClaimTests(unittest.TestCase):
             self.assert_no_writes()
         self.setUp()
         self.admit("repeat-stop", (first, "https://github.com/owner/other/pull/6"))
-        self.assertIn(f"Admission: repeat-stop; {first}, https://github.com/owner/other/pull/6", self.comments[-1]["body"])
+        self.assertIn(CLAIM.admission_text("repeat-stop", [first, "https://github.com/owner/other/pull/6"]), self.comments[-1]["body"])
         self.setUp()
-        walk = self.admit("spare-capacity")
-        walk.assert_not_called()
-        self.assertIn("Admission: spare-capacity\n", self.comments[-1]["body"])
+        self.admit("spare-capacity")
+        self.assertIn(CLAIM.admission_text("spare-capacity", []), self.comments[-1]["body"])
 
     def test_admission_details_require_the_kind_they_describe(self):
         for kind, links, unlinked in ((None, ("https://github.com/owner/repo/issues/5",), None),
@@ -4683,27 +4575,6 @@ class ClaimTests(unittest.TestCase):
                     self.admit("repeat-stop", (first, second))
                 self.assert_no_writes()
 
-    def test_walk_does_not_follow_a_comment_link_as_a_graph_node(self):
-        graph = {("owner/product", 7): {"parent": {"html_url": "https://github.com/owner/direction/issues/9#issuecomment-1"}},
-                 ("owner/direction", 9): {"issue": self.TRACK}}
-        (track, _), reads = self.walk(graph)
-        self.assertIsNone(track)
-        self.assertEqual(reads, [("owner/product", 7)])
-
-    def test_comment_evidence_does_not_supply_a_missing_occurrence_or_track(self):
-        link = "https://github.com/owner/repo/issues/5#issuecomment-123"
-        with self.assertRaises(PLAN.PlanError):
-            self.admit("repeat-stop", (link, link))
-        self.assert_no_writes()
-        self.setUp()
-        self.args.admission, self.args.admission_link = "milestone", [link]
-        with patch.object(CLAIM, "admission_track", return_value=(None, True)) as walk, \
-                self.assertRaises(PLAN.ClassifiedPlanError) as caught:
-            self.run_claim()
-        self.assertEqual(walk.call_args.args[:2], (("owner/repo", 42), "owner"))
-        self.assertEqual(caught.exception.code, "claim_admission_unlinked")
-        self.assert_no_writes()
-
     def test_invalid_admission_links_refuse_before_writes(self):
         parent = "https://github.com/owner/repo/issues/5"
         for link in (
@@ -4721,18 +4592,102 @@ class ClaimTests(unittest.TestCase):
 
     def test_comment_admission_preserves_ownership_and_wait_refusals(self):
         link = "https://github.com/owner/repo/issues/5#issuecomment-123"
-        for blocked in ("ownership", "wait"):
+        for blocked, code in (
+            ("ownership", "claim_conflict"),
+            ("wait", "claim_wait_unresolved"),
+            ("blocker", "claim_native_blockers_unresolved"),
+            ("human_claim", "claim_conflict"),
+        ):
             with self.subTest(blocked=blocked):
                 self.setUp()
                 if blocked == "ownership":
                     self.inventory["worktrees"] = [{"path": "/retained/issue-42", "branch": OTHER["branch"]}]
+                elif blocked == "blocker":
+                    self.blockers = [{"state": "open"}]
+                elif blocked == "human_claim":
+                    self.issue["user"]["login"] = "human"
+                    self.comments = [{"id": 1, "body": CLAIM.marker(OTHER), "user": {"login": "human"}}]
                 else:
                     self.wait = wait_record.reviewed(evidence="Device test pending", waiting_for="Director",
                                                      ends_when="Device acceptance recorded")
-                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
-                    self.admit("spare-capacity", (link,))
-                self.assertEqual(caught.exception.code, "claim_conflict" if blocked == "ownership" else "claim_wait_unresolved")
+                with self.assertRaises(PLAN.PlanError) as caught:
+                    self.admit("milestone", (link,))
+                self.assertEqual(caught.exception.code, code)
                 self.assert_no_writes()
+
+
+class GraphQLRepositoryIdentityTests(unittest.TestCase):
+    def test_source_node_reads_select_its_app_independently_of_command_repository(self):
+        for read, source_repo, command_repo in product(
+                ("history", "owner_decision", "delivery"), ("client/data", "owner/repo"), ("client/command", "owner/command")):
+            with self.subTest(read=read, source_repo=source_repo, command_repo=command_repo), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                environment = {"HOME": folder, "PATH": os.environ["PATH"], "GH_REPO": command_repo,
+                               "CODEX_SKILLS_ENV_FILE": str(root / "missing.env"),
+                               "CODEX_AUTOMATION_LOGIN": TEST_BOT, "GITHUB_CLIENT_APP_OWNERS": "client",
+                               "GITHUB_RETRY_STATE_DIR": str(root / "retry"),
+                               "GITHUB_REQUEST_USAGE_DIR": str(root / "usage")}
+                client_actor = "fixture-client-app[bot]"
+                expected_actor = client_actor if source_repo.startswith("client/") else TEST_BOT
+                event = {"event": "sub_issue_added", "node_id": "fixture-event", "sub_issue": None}
+                child = {"id": "fixture-child", "number": 43, "state": "OPEN", "title": "Child",
+                         "url": f"https://github.com/{source_repo}/issues/43",
+                         "repository": {"nameWithOwner": source_repo}}
+                comment = {"id": 7, "node_id": "fixture-comment",
+                           "body": "Director decision: Close #42 as not planned.",
+                           "created_at": "2026-10-02T00:00:00Z", "user": {"login": TEST_BOT}}
+                node = ({"id": event["node_id"], "__typename": "SubIssueAddedEvent", "subIssue": child}
+                        if read == "history" else
+                        {"databaseId": comment["id"], "body": comment["body"],
+                         "createdAt": comment["created_at"], "lastEditedAt": None})
+                authentications, executions = [], []
+
+                def authenticate(_config, *, repository=None, **_):
+                    authentications.append(repository)
+                    actor = client_actor if github_identity.github_app_prefix(repository) == "GITHUB_CLIENT_APP" else TEST_BOT
+                    return "synthetic-token", actor
+
+                def execute(command, **kwargs):
+                    # Exercise the wrapper's repository/App selection at the process boundary.
+                    with patch.dict(os.environ, kwargs.get("env") or os.environ.copy(), clear=True):
+                        repository = github_identity.repository_context()
+                        actor = (client_actor if github_identity.github_app_prefix(repository) == "GITHUB_CLIENT_APP"
+                                 else TEST_BOT)
+                    executions.append((repository, actor))
+                    body = ({"data": {"node": node, "repository": {"issue": {
+                        "createdAt": "2026-10-01T00:00:00Z", "lastEditedAt": None}}}}
+                            if actor == expected_actor else {"errors": [{"message": "Wrong App"}]})
+                    return subprocess.CompletedProcess(command, 0, "HTTP/2.0 200\n\n" + json.dumps(body), f"acting as {actor}")
+
+                reactions = [{"id": 8, "content": "+1", "created_at": "2026-10-03T00:00:00Z",
+                              "user": {"login": source_repo.split("/")[0]}}]
+                with patch.dict(os.environ, environment, clear=True), \
+                        patch.multiple(PLAN, BOT_GH=Path(__file__).with_name("gh-with-env-token"),
+                                       EXPECTED_ACTOR=TEST_BOT, CURRENT_OPERATION="github.plan.claim", NEXT_READS=None), \
+                        patch.object(github_identity, "github_app_config", return_value=object()), \
+                        patch.object(github_identity, "github_app_auth", side_effect=authenticate), \
+                        patch.object(PLAN.subprocess, "run", side_effect=execute), \
+                        patch.object(PLAN, "load_direction", return_value="## Milestones\n- `Inventory` proves the trial."), \
+                        patch.object(PLAN, "collect_paged_rest_items", side_effect=lambda path, **_: (
+                            "bot", reactions if path.endswith("/reactions") else [comment])):
+                    if read == "history":
+                        result = PLAN.read_handoff_history_child(event, source_repo)
+                        self.assertEqual(result["html_url"], child["url"])
+                    elif read == "owner_decision":
+                        result = PLAN.check_owner_decides_not_planned(source_repo, 42, {
+                            "milestone": {"title": "Inventory"}, "created_at": "2026-10-01T00:00:00Z"})
+                        self.assertEqual(result["reaction_id"], reactions[0]["id"])
+                    else:
+                        result = PLAN.next_source_delivery({"repo": source_repo, "number": 42, "discussion": {
+                            "body": "## Current Status\n\nState: Open.", "comments": [{"author": TEST_BOT,
+                                "body": "## Current Status\n\nState: Waiting.", "created_at": "2026-10-02T00:00:00Z"}]}},
+                            {TEST_BOT})
+                        self.assertTrue(result["complete"])
+                        self.assertEqual(result["body_recorded_at"], "2026-10-01T00:00:00Z")
+                    self.assertTrue(executions)
+                    self.assertTrue(all(execution == (source_repo, expected_actor) for execution in executions))
+                    self.assertTrue(all(repository == source_repo for repository in authentications))
+                    self.assertEqual(os.environ["GH_REPO"], command_repo)
 
 
 if __name__ == "__main__":

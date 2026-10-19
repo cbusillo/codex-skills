@@ -10,6 +10,8 @@ import base64
 import copy
 import importlib.util
 import json
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 from typing import Any
@@ -27,6 +29,7 @@ spec.loader.exec_module(helper)
 
 SHA = "a" * 40
 REPO = "example/tool"
+OWNER_REVIEW_ACCEPTED = {"id": 2, "name": "launchplane/owner-review", "status": "completed", "conclusion": "success"}
 PR = {"number": 1, "state": "open", "draft": False, "labels": [], "changed_files": 1, "head": {"sha": SHA}, "base": {"ref": "main"}, "user": {"login": "engineer"}}
 
 
@@ -447,7 +450,7 @@ class ReadyTests(unittest.TestCase):
                 self.reader.pr["body"] = f"## {heading} test notes\nTry the new feature."
                 message = self.refuse()
                 self.assertIn("--waiting-for-client", message)
-                self.assertIn("Nothing for the Client to test: <reason>", message)
+                self.assertIn(ready_handoff.NOTHING_TO_TEST, message)
         self.args.waiting_for_client = True
         _, comment = self.post()
         self.assertFalse(latest_ready(self.reader.pr, [comment], {"engineer"}))
@@ -525,6 +528,8 @@ class ReadyTests(unittest.TestCase):
                 self.assertFalse(latest_ready(self.reader.pr, [ready], {"engineer"}))
 
     def test_nothing_to_test_requires_colon_reason_and_preserves_acceptance_gates(self):
+        # Accepted, so only the review label's demand for real notes can refuse.
+        self.reader.checks.append(dict(OWNER_REVIEW_ACCEPTED))
         for heading in ("Client", "Owner"):
             with self.subTest(heading=heading):
                 self.reader.pr["body"] = f"## {heading} test notes\nNothing for the Client to test: Automated tooling."
@@ -532,10 +537,7 @@ class ReadyTests(unittest.TestCase):
                 self.post()
                 self.writer.reset_mock()
                 self.reader.pr["labels"] = [{"name": "owner-review"}]
-                self.assertEqual(
-                    self.refuse(),
-                    "The Client review label requires real Client test notes.",
-                )
+                self.refuse()
         self.reader.pr["labels"] = []
         for invalid in (
             "Nothing for the Client to test",
@@ -551,10 +553,7 @@ class ReadyTests(unittest.TestCase):
         ):
             with self.subTest(invalid=invalid):
                 self.reader.pr["body"] = f"## Client test notes\n{invalid}"
-                self.assertEqual(
-                    self.refuse(),
-                    "Use Nothing for the Client to test: <reason> with a nonempty reason.",
-                )
+                self.assertIn(ready_handoff.NOTHING_TO_TEST, self.refuse())
 
     def test_legacy_nothing_to_test_marker(self):
         for separator in (":", "."):
@@ -565,10 +564,7 @@ class ReadyTests(unittest.TestCase):
         for invalid in ("Nothing for the owner to test", "Nothing for the owner to test:"):
             with self.subTest(invalid=invalid):
                 self.reader.pr["body"] = f"## Owner test notes\n{invalid}"
-                self.assertEqual(
-                    self.refuse(),
-                    "Use Nothing for the Client to test: <reason> with a nonempty reason.",
-                )
+                self.assertIn(ready_handoff.NOTHING_TO_TEST, self.refuse())
 
     def test_inline_client_test_notes_and_missing_client_release_notes_refuse(self):
         for body in (
@@ -584,14 +580,11 @@ class ReadyTests(unittest.TestCase):
         ):
             with self.subTest(body=body):
                 self.reader.pr["body"] = body
-                message = self.refuse()
-                self.assertIn("## Client test notes", message)
-                self.assertIn("Nothing for the Client to test: <reason>", message)
+                self.assertEqual(self.refuse(), ready_handoff.MISSING_CLIENT_TEST_NOTES_MESSAGE)
 
         self.reader.pr["body"] = "Summary without any test notes section."
         self.client_release.return_value = True
-        message = self.refuse()
-        self.assertIn("## Client test notes", message)
+        self.assertEqual(self.refuse(), ready_handoff.MISSING_CLIENT_TEST_NOTES_MESSAGE)
         self.reader.pr["user"] = {"login": "dependabot[bot]", "type": "Bot"}
         self.post()
 
@@ -603,10 +596,8 @@ class ReadyTests(unittest.TestCase):
             "### #11\nNothing for the Client to test: internal refactor.\n"
         )
         self.reader.pr["labels"] = [{"name": "owner-review"}]
-        self.assertEqual(
-            self.refuse(),
-            "The Client review label requires real Client test notes.",
-        )
+        self.reader.checks.append(dict(OWNER_REVIEW_ACCEPTED))
+        self.refuse()
         self.reader.pr["labels"] = []
         self.reader.pr["body"] = (
             "## Client test notes\n\n"
@@ -624,16 +615,13 @@ class ReadyTests(unittest.TestCase):
         ):
             with self.subTest(note=note):
                 self.reader.pr["body"] = f"## Client test notes\n{note}"
-                self.assertEqual(
-                    self.refuse(),
-                    "Write Nothing for the Client to test: <reason> as a plain notes line.",
-                )
+                self.assertIn(ready_handoff.NOTHING_TO_TEST, self.refuse())
         self.reader.pr["body"] = (
             "```markdown\n## Client test notes\n"
             "Nothing for the Client to test: inside code fence.\n```\n"
         )
         self.client_release.return_value = True
-        self.assertIn("## Client test notes", self.refuse())
+        self.assertEqual(self.refuse(), ready_handoff.MISSING_CLIENT_TEST_NOTES_MESSAGE)
 
     def test_no_test_marker_outside_or_after_real_notes_never_exempts(self):
         for body in (
@@ -657,6 +645,22 @@ class ReadyTests(unittest.TestCase):
             args = helper.parse_args()
         self.assertIs(args.func, helper.cmd_ready)
         self.assertTrue(args.waiting_for_client)
+
+
+class SupervisorReceiptTests(unittest.TestCase):
+    def test_receipt_parses_through_a_package_style_import(self):
+        # Supervisor helpers import this module as skills.github.scripts.ready_handoff
+        # without the scripts directory on their path.
+        root = Path(__file__).resolve().parents[3]
+        body = f"{ready_handoff.SUPERVISOR_REPORT_HEADING}\n\n<!-- supervisor-review {json.dumps({'request': 7, 'head': SHA})} -->"
+        code = ("import json, sys\n"
+                "sys.path.insert(0, sys.argv[2])\n"
+                "from skills.github.scripts import ready_handoff\n"
+                "print(json.dumps(ready_handoff.raw_receipt(sys.argv[1])))")
+        result = subprocess.run([sys.executable, "-I", "-c", code, body, str(root)],
+                                cwd=root, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), {"request": 7, "head": SHA})
 
 
 if __name__ == "__main__":

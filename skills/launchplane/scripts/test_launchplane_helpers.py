@@ -166,7 +166,9 @@ def test_agent_operator_contract_routes_every_local_consumer() -> None:
         operation["operation_id"]: operation["path"]
         for operation in artifact["contract"]["operations"]
     }
-    for command, (operation_id, modes) in contract.PROJECTED_HELPER_COMMANDS.items():
+    for command, (operation_id, modes) in {
+        **contract.PROJECTED_HELPER_COMMANDS, **contract.SERVICE_API_HELPER_COMMANDS,
+    }.items():
         assert contract.helper_command_path(command) == operation_paths[operation_id]
         assert modes
     for command, extension in contract.LOCAL_EXTENSION_ROUTES.items():
@@ -1322,9 +1324,13 @@ def test_controller_projects_bounded_last_result_without_losing_empty_evidence()
 def test_controller_rejects_unsafe_or_unbound_diagnostic_shapes(change: dict[str, object]) -> None:
     diagnosis = {**_controller_last_result_fixture(), **change}
     response = {"status": "accepted", "trace_id": "launchplane_req_example", "records": {}, "result": {"controller_action": "candidate_failed", "last_controller_result": diagnosis}}
-    status, payload = _run_controller_response(response, mutate=True)
+    received = write_action._ServiceResponse(response, 202)
+    status, payload = _run_controller_response(received, mutate=True)
     assert status != 0
     assert not payload.get("result")
+    assert payload["summary"]["http_status"] == received.http_status
+    assert payload["summary"]["trace_id"] == response["trace_id"]
+    assert "secret-value" not in json.dumps(payload)
 
 
 def test_controller_block_and_reconciliation_preserve_durable_diagnostics() -> None:
@@ -1393,10 +1399,99 @@ def test_controller_block_projection_rejects_unsafe_or_invalid_fields() -> None:
         assert payload["status"] == "invalid"
 
 
+def _candidate_failure_isolated_response() -> dict[str, Any]:
+    """Launchplane's culprit block after a batch candidate failed (merge_train_controller_run_once)."""
+    response = _queue_refusal_response()
+    result = response["result"]
+    culprit = {**result["dry_run_result"]["queue"][0], "eligible": True, "ineligible_reasons": [],
+               "actor_role": "repo_admin"}
+    detail = "Pull request #42 failed the merge-train candidate checks when tested without the other queued pull requests."
+    result.update({
+        "mode": "block", "controller_action": "block", "reason_code": "candidate_failure_isolated",
+        "merge_train_batch_candidate_record_id": "merge-train-batch-candidate-intent",
+        "retired_merge_train_batch_candidate_record_id": "merge-train-batch-candidate-failed",
+        "blocking_reason": {"code": "merge_train_candidate_failure_isolated", "message": detail},
+        "details": {
+            "failed_checks": [{"name": "test_shard (0)", "conclusion": "failure",
+                               "url": "https://github.com/example/repo/actions/runs/1/job/2"}],
+            "failed_tests": ["tests.test_widget.WidgetTests.test_renders"],
+            "recovery_source_record_id": "merge-train-batch-candidate-source",
+        },
+        "conflict_probe": {"status": "persisted", "pull_request_numbers": [], "held_out": [
+            {"pull_request_number": 43, "head_sha": "3" * 40, "reason": "failure_isolation", "conflicts_with": []},
+        ]},
+        "block_result": {"status": "blocked", "repository": "example/repo", "base_branch": "main",
+                         "pull_request_number": 42, "blocked_label": "merge-blocked",
+                         "train_should_continue": True, "detail": "Applied merge-blocked to pull request #42."},
+    })
+    result["dry_run_result"].update({"selected_pr": culprit, "intended_next_action": "block",
+                                     "next_action_detail": detail})
+    response["records"] = {
+        "merge_train_batch_candidate_record_id": "merge-train-batch-candidate-intent",
+        "retired_merge_train_batch_candidate_record_id": "merge-train-batch-candidate-failed",
+    }
+    return response
+
+
+def test_controller_candidate_failure_isolated_block_is_a_confirmed_result() -> None:
+    response = _candidate_failure_isolated_response()
+    status, payload = _run_controller_response(response, mutate=True)
+    assert status == 0
+    assert payload["status"] == "accepted"
+    assert payload["records"] == response["records"]
+    result = payload["result"]
+    assert result["reason_code"] == "candidate_failure_isolated"
+    assert result["retired_merge_train_batch_candidate_record_id"] == response["records"][
+        "retired_merge_train_batch_candidate_record_id"]
+    assert result["block_result"] == response["result"]["block_result"]
+    assert payload["summary"]["error_code"] == "merge_train_candidate_failure_isolated"
+    assert "private" not in json.dumps(payload)
+    driver = load_module("launchplane-train-drive.py", "culprit_block_driver")
+    assert not driver._uncertain(payload)
+    # The held-out innocent PR keeps going; the culprit's own driver stops.
+    innocent = driver.DriveSettings(repository="example/repo", number=43)
+    assert driver._judge(innocent, None, driver.DriveState(), result, "block") is None
+    culprit = driver.DriveSettings(repository="example/repo", number=42)
+    assert driver._judge(culprit, None, driver.DriveState(), result, "block")[0] == "failed"
+
+
+def test_controller_land_batch_reports_landing_progress() -> None:
+    for progress in ("partial", "cleanup_pending"):
+        response = {"status": "accepted", "trace_id": "launchplane_req_land", "records": {}, "result": {
+            "controller_action": "land_batch", "mode": "land", "landing_progress": progress,
+            "merge_train_batch_landing_plan_record_id": "landing-plan-example",
+        }}
+        status, payload = _run_controller_response(response, mutate=True)
+        assert status == 0
+        assert payload["result"]["landing_progress"] == progress
+    response["result"]["landing_progress"] = "Bearer private-fixture-value"
+    status, payload = _run_controller_response(response, mutate=True)
+    assert status == 1 and "private-fixture-value" not in json.dumps(payload)
+
+
+def test_controller_unreadable_reply_says_whether_launchplane_accepted_it() -> None:
+    body = _candidate_failure_isolated_response()
+    body["result"]["later_unknown_field"] = "private-fixture-value"
+    for http_status, service_status, accepted in (
+        (202, "accepted", True), (200, "accepted", True), (202, "pending", False), (None, "accepted", False),
+    ):
+        response = write_action._ServiceResponse({**body, "status": service_status}, http_status)
+        status, payload = _run_controller_response(response, mutate=True)
+        assert status == 1 and payload["status"] == "invalid"
+        assert payload["summary"]["unrecognized_key"] == "later_unknown_field"
+        assert (payload["summary"].get("launchplane_status") == "accepted") is accepted
+        assert "private-fixture-value" not in json.dumps(payload)
+
+
 def test_controller_client_timeout_is_not_a_service_outage_and_never_retries() -> None:
+    response = Mock(status=202)
+    response.read.side_effect = TimeoutError("private-provider")
+    with pytest.raises(TimeoutError) as interrupted:
+        write_action._read_service_response(response)
     for error in (
         TimeoutError("timed out"),
         urllib.error.URLError(TimeoutError("timed out")),
+        interrupted.value,
     ):
         for mutate in (False, True):
             status, payload = _run_controller_response(error, mutate=mutate, timeout=7.5)
@@ -1405,6 +1500,9 @@ def test_controller_client_timeout_is_not_a_service_outage_and_never_retries() -
             assert payload["summary"]["timeout_seconds"] == 7.5
             assert payload["warnings"][0]["code"] == "client_timeout"
             assert "7.5 s" in payload["warnings"][0]["message"]
+            if error is interrupted.value:
+                assert payload["summary"]["http_status"] == response.status
+            assert "private-provider" not in json.dumps(payload)
     for error in (
         urllib.error.URLError("connection refused"),
         http.client.RemoteDisconnected("remote disconnected"),
@@ -1499,7 +1597,7 @@ def test_controller_rejected_response_names_unknown_key(section: str) -> None:
     assert payload["summary"]["projection_error_code"] == "unsafe_response_shape"
     assert payload["summary"]["unrecognized_key"] == "historical_stack_child_label_status"
     assert payload["summary"]["trace_id"] == response["trace_id"]
-    assert "Read the PR and controller state before any retry" in payload["summary"]["recommendation"]
+    assert payload["summary"]["recommendation"]
     assert "private-fixture-value" not in json.dumps(payload)
     assert "another-private-value" not in json.dumps(payload)
 
@@ -1521,7 +1619,7 @@ def test_controller_rejected_response_names_bad_value() -> None:
     assert payload["summary"]["projection_error_code"] == "invalid_response"
     assert payload["warnings"][0]["code"] == "invalid_response"
     assert "unrecognized_key" not in payload["summary"]
-    assert "Read the PR and controller state before any retry" in payload["summary"]["recommendation"]
+    assert payload["summary"]["recommendation"]
 
 
 def test_controller_rejected_response_keeps_only_safe_trace_and_code() -> None:
@@ -1556,39 +1654,49 @@ def test_controller_rejected_response_keeps_only_safe_trace_and_code() -> None:
         assert ("error_code" in payload["summary"]) == (code == "merge_readiness_not_ready")
 
 
-def test_controller_http_error_keeps_safe_identifiers_without_raw_error_text() -> None:
+@pytest.mark.parametrize("mutate", [False, True])
+@pytest.mark.parametrize("error_location", ["error", "result.error", "result.blocking_reason"])
+def test_controller_http_error_keeps_safe_identifiers_without_raw_error_text(mutate: bool, error_location: str) -> None:
     for http_status, error_code in (
         (403, "merge_readiness_not_ready"), (409, "merge_readiness_not_ready"),
-        (502, "merge_readiness_not_ready"), (409, "merge_train_controller_lease_held"),
+        (502, "merge_readiness_not_ready"), (408, "merge_readiness_not_ready"),
+        (409, "merge_train_controller_lease_held"),
     ):
         response = {
             "trace_id": "launchplane_req_http", "error": {
                 "code": error_code, "message": "Bearer private-fixture-value",
             }, "token": "private-fixture-value",
         }
+        if error_location != "error":
+            response["result"] = {error_location.split(".")[1]: response.pop("error")}
         error = urllib.error.HTTPError(
             "https://launchplane.example.invalid/controller", http_status, "Rejected", Message(),
             io.BytesIO(json.dumps(response).encode()),
         )
-        status, payload = _run_controller_response(error)
+        status, payload = _run_controller_response(error, mutate=mutate)
         assert status == 1
+        if mutate and (http_status >= 500 or http_status == 408):
+            assert payload["status"] == "outcome_unknown"
+            assert payload["summary"]["recommendation"]
         assert payload["summary"]["http_status"] == http_status
         assert payload["summary"]["trace_id"] == response["trace_id"]
-        assert payload["summary"]["error_code"] == response["error"]["code"]
+        assert payload["summary"]["error_code"] == error_code
         assert "private-fixture-value" not in json.dumps(payload)
 
 
-def test_controller_merge_refusal_projects_only_valid_pr_number() -> None:
+@pytest.mark.parametrize("mutate", [False, True])
+@pytest.mark.parametrize("http_status", [409, 502, 408])
+def test_controller_merge_refusal_projects_only_valid_pr_number(mutate: bool, http_status: int) -> None:
     for number in (7, True, -1, 0, "7", "Bearer private-fixture-value"):
         response = {
             "trace_id": "launchplane_req_http", "error": {"code": "github_merge_rejected"},
             "details": {"pull_request_number": number, "message": "Bearer private-fixture-value"},
         }
         error = urllib.error.HTTPError(
-            "https://launchplane.example.invalid/controller", 409, "Rejected", Message(),
+            "https://launchplane.example.invalid/controller", http_status, "Rejected", Message(),
             io.BytesIO(json.dumps(response).encode()),
         )
-        status, payload = _run_controller_response(error)
+        status, payload = _run_controller_response(error, mutate=mutate)
         assert status == 1
         assert payload["summary"].get("pull_request_number") == (7 if number == 7 else None)
         assert "private-fixture-value" not in json.dumps(payload)
@@ -7724,6 +7832,200 @@ def test_application_target_apply_reuses_the_reviewed_storage_plan() -> None:
         assert (status, posts) == (2, [])
 
 
+STATE_CUSTODY_SHA256 = "c" * 64
+
+
+def _state_volume_readback_response(**result: object) -> dict[str, Any]:
+    response = _state_volume_response()
+    response["result"].update(
+        operation_state="reconcile_required",
+        provider_effect_phase=json.dumps(
+            {"project": "project-private-1", "environment": "environment-private-1",
+             "pending": "/api/application.create"},
+            sort_keys=True,
+        ),
+        configuration_matches=False,
+        configuration_evidence="unavailable",
+        custody_sha256=STATE_CUSTODY_SHA256,
+        allocation_state="reconcile_required",
+    )
+    response["result"].update(result)
+    return response
+
+
+def _state_volume_refusal(code: str) -> urllib.error.HTTPError:
+    return urllib.error.HTTPError(
+        "https://launchplane.example.invalid", 409, "Conflict", Message(),
+        io.BytesIO(json.dumps({"status": "error", "trace_id": "launchplane_req_refused",
+                              "error": {"code": code, "message": "private detail"}}).encode()),
+    )
+
+
+def _saved_state_volume_dry_run(directory: str) -> tuple[str, dict[str, Any], str]:
+    payload_path = _write_json(directory, "application.json", _application_payload())
+    status, evidence, _posts, _reads = _run_main(
+        ["dokploy-target-create-application-dry-run", "--payload-file", payload_path],
+        post=_state_volume_response(),
+    )
+    assert status == 0, evidence
+    return payload_path, evidence, _write_json(directory, "application-dry-run.json", evidence)
+
+
+def test_application_storage_readback_uses_saved_plan_and_original_key() -> None:
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        payload_path, evidence, evidence_path = _saved_state_volume_dry_run(directory)
+        digest = evidence["result"]["plan_sha256"]
+        argv = [
+            "dokploy-target-create-application-readback", "--payload-file", payload_path,
+            "--idempotency-key", "original-key", "--expected-plan-digest", digest,
+            "--dry-run-evidence-file", evidence_path,
+        ]
+        status, readback, posts, _reads = _run_main(argv, post=_state_volume_readback_response())
+        assert status == 0, readback
+        body = posts[0]["body"]
+        assert posts[0]["idempotency_key"] == "original-key"
+        assert (body["mode"], body["state_volume_plan_id"], body["expected_plan_sha256"]) == (
+            "readback", STATE_PLAN_ID, STATE_PLAN_SHA256,
+        )
+        # Readback observes only: no apply confirmation and no retention request.
+        assert "confirmation" not in body and "retain_state_volume_allocation" not in body
+        result = readback["result"]
+        assert result["plan_sha256"] == digest
+        assert (result["operation_state"], result["configuration_evidence"], result["custody_sha256"]) == (
+            "reconcile_required", "unavailable", STATE_CUSTODY_SHA256,
+        )
+        assert result["configuration_matches"] is False
+        assert result["provider_effect_phase"] == {
+            "recorded": True, "created": ["project", "environment"],
+            "mount_verified": False, "pending": "application",
+        }
+        printed = json.dumps(readback)
+        for private in ("project-private-1", "environment-private-1", "server-private-1", "lp-testing-", "/srv/state"):
+            assert private not in printed, private
+
+        # A response for another plan is never reported as this plan's custody.
+        other_plan = _state_volume_readback_response(state_volume_plan_id="a" * 32)
+        status, refused, _posts, _reads = _run_main(argv, post=other_plan)
+        assert status == 1 and "custody_sha256" not in json.dumps(refused["result"])
+
+        # Missing or edited evidence, a different digest or no key never reach the service.
+        edited = copy.deepcopy(evidence)
+        edited["result"]["state_volume"]["plan_id"] = "a" * 32
+        edited_path = _write_json(directory, "edited-dry-run.json", edited)
+        for changed in (
+            [edited_path if value == evidence_path else value for value in argv],
+            [str(Path(directory) / "missing.json") if value == evidence_path else value for value in argv],
+            ["e" * 64 if value == digest else value for value in argv],
+            [" " if value == "original-key" else value for value in argv],
+        ):
+            status, refused, posts, _reads = _run_main(changed, post=_state_volume_readback_response())
+            assert (status, posts) == (2, []), refused
+
+        # The service refuses another key by code; the next step comes from that code.
+        status, refused, _posts, _reads = _run_main(
+            argv, post=_state_volume_refusal("application_state_volume_unqualified")
+        )
+        assert status == 1
+        assert refused["summary"]["error_code"] == "application_state_volume_unqualified"
+        assert refused["summary"]["recommendation"] == write_action.APPLICATION_STATE_VOLUME_NEXT_STEPS[
+            "application_state_volume_unqualified"
+        ]
+        assert "private detail" not in json.dumps(refused)
+
+
+def test_application_storage_retention_requires_original_key_readback_custody() -> None:
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        payload_path, evidence, evidence_path = _saved_state_volume_dry_run(directory)
+        digest = evidence["result"]["plan_sha256"]
+
+        def readback_evidence(key: str, name: str) -> str:
+            readback_status, readback, *_ = _run_main(
+                [
+                    "dokploy-target-create-application-readback", "--payload-file", payload_path,
+                    "--idempotency-key", key, "--expected-plan-digest", digest,
+                    "--dry-run-evidence-file", evidence_path,
+                ],
+                post=_state_volume_readback_response(),
+            )
+            assert readback_status == 0, readback
+            return _write_json(directory, name, readback)
+
+        readback_path = readback_evidence("original-key", "readback.json")
+        argv = [
+            "dokploy-target-create-application-retain", "--payload-file", payload_path,
+            *_reviewed_apply_argv(digest, evidence_path, "original-key"),
+            "--readback-evidence-file", readback_path,
+            "--expected-custody-digest", STATE_CUSTODY_SHA256,
+        ]
+        receipt_result = {
+            "applied": False, "allocation_state": "retained_uncertain", "original_key": "original-key",
+            "plan_id": STATE_PLAN_ID, "deployment_performed": False, "resources_retained": True,
+            "reviewed_custody_sha256": STATE_CUSTODY_SHA256,
+            "retained_provider_effect_phase": '{"project": "project-private-1"}',
+        }
+        retained = {"status": "accepted", "trace_id": "launchplane_req_retained", "records": {}, "result": receipt_result}
+        status, receipt, posts, reads = _run_main(argv, post=retained)
+        assert status == 0, receipt
+        assert reads == [] and posts[0]["idempotency_key"] == "original-key"
+        body = posts[0]["body"]
+        assert body["retain_state_volume_allocation"] is True
+        assert body["expected_state_volume_custody_sha256"] == STATE_CUSTODY_SHA256
+        assert (body["mode"], body["state_volume_plan_id"], body["expected_plan_sha256"]) == (
+            "apply", STATE_PLAN_ID, STATE_PLAN_SHA256,
+        )
+        assert body["confirmation"] == write_action.DOKPLOY_TARGET_SETUP_CONFIRMATION
+        assert receipt["result"]["allocation_state"] == "retained_uncertain"
+        assert receipt["result"]["reviewed_custody_sha256"] == STATE_CUSTODY_SHA256
+        assert "project-private-1" not in json.dumps(receipt)
+
+        # A receipt that differs from the reviewed retention in any binding is not it.
+        for field, value in (
+            ("reviewed_custody_sha256", "d" * 64),
+            ("plan_id", "a" * 32),
+            ("original_key", "other-key"),
+            ("allocation_state", "adopted"),
+            ("applied", True),
+            ("deployment_performed", True),
+            ("resources_retained", False),
+        ):
+            other = {**retained, "result": {**receipt_result, field: value}}
+            status, receipt, _posts, _reads = _run_main(argv, post=other)
+            assert (status, receipt["status"]) == (1, "accepted_unverified"), field
+
+        # Without readback custody from the original key, payload and plan, nothing is sent.
+        other_key_readback = readback_evidence("other-key", "other-readback.json")
+        saved_readback = json.loads(Path(readback_path).read_text(encoding="utf-8"))
+        edited_readbacks = []
+        for section, field, value in (
+            ("result", "custody_sha256", "d" * 64),
+            ("result", "plan_sha256", "e" * 64),
+            ("result", "state_volume", {"plan_id": "a" * 32, "service_plan_sha256": STATE_PLAN_SHA256}),
+            ("request", "payload_digest", "f" * 64),
+        ):
+            edited = copy.deepcopy(saved_readback)
+            edited[section][field] = value
+            edited_readbacks.append(_write_json(directory, f"edited-readback-{field}.json", edited))
+        for changed in (
+            ["d" * 64 if value == STATE_CUSTODY_SHA256 else value for value in argv],
+            [other_key_readback if value == readback_path else value for value in argv],
+            *([edited_path if value == readback_path else value for value in argv] for edited_path in edited_readbacks),
+            [str(Path(directory) / "missing.json") if value == readback_path else value for value in argv],
+            ["other-key" if value == "original-key" else value for value in argv],
+            [value for value in argv if value != "--reviewed-dry-run"],
+        ):
+            status, refused, posts, _reads = _run_main(changed, post=retained)
+            assert (status, posts) == (2, []), refused
+
+        # A service refusal is answered by its code's next step.
+        status, refused, _posts, _reads = _run_main(
+            argv, post=_state_volume_refusal("application_state_volume_custody_changed")
+        )
+        assert status == 1
+        assert refused["summary"]["recommendation"] == write_action.APPLICATION_STATE_VOLUME_NEXT_STEPS[
+            "application_state_volume_custody_changed"
+        ]
+
+
 def _application_response(mode: str = "dry-run", target_id: str = "app-private-9") -> dict[str, Any]:
     response = _compose_response(mode, target_id)
     result = response["result"]
@@ -8201,6 +8503,8 @@ def _run_read_transport(
     calls: list[dict[str, object]] = []
 
     class Response:
+        status = 202
+
         def __enter__(self) -> "Response":
             return self
 
@@ -8549,6 +8853,31 @@ def test_compose_domain_review_apply_and_read_back() -> None:
             assert posts[0]["body"]["confirmation"] == write_action.DOKPLOY_TARGET_SETUP_CONFIRMATION
             for hidden in ("public.example.invalid", "private.example.invalid", "compose-private-9", "private-route-id"):
                 assert hidden not in json.dumps(evidence) and hidden not in json.dumps(result)
+            for invalid_id in ({"private": "PRIVATE_SENTINEL"}, ["PRIVATE_SENTINEL"]):
+                changed = write_action._ServiceResponse(_domain_inspect(operation, True), 202)
+                changed["trace_id"] = "launchplane_req_invalid_target"
+                changed["inspect"]["provider"]["id"] = invalid_id
+                status, result, posts, reads = run(changed)
+                assert status == 1 and result["status"] == "accepted_unverified"
+                assert len(posts) == 1 and len(reads) == 2
+                assert result["summary"]["read_back_http_status"] == changed.http_status
+                assert result["summary"]["read_back_trace_id"] == changed["trace_id"]
+                assert result["summary"]["trace_id"] == _domain_setup_response(operation, "apply")["trace_id"]
+                status, result, posts, reads = _run_main(argv, read=changed)
+                assert status == 1 and result["status"] == "invalid" and not posts
+                assert len(reads) == 1 and result["summary"]["trace_id"] == changed["trace_id"]
+                assert "PRIVATE_SENTINEL" not in json.dumps(result)
+            for invalid_routes in ({"private": "PRIVATE_SENTINEL"}, [{"host": ["PRIVATE_SENTINEL"]}]):
+                changed = write_action._ServiceResponse(_domain_inspect(operation, True), 202)
+                changed["trace_id"] = "launchplane_req_invalid_routes"
+                changed["inspect"]["provider"]["domains"] = invalid_routes
+                status, result, posts, reads = run(changed)
+                assert status == 1 and result["status"] == "accepted_unverified"
+                assert len(posts) == 1 and len(reads) == 2
+                assert result["summary"]["read_back_http_status"] == changed.http_status
+                assert result["summary"]["read_back_trace_id"] == changed["trace_id"]
+                assert result["summary"]["trace_id"] == _domain_setup_response(operation, "apply")["trace_id"]
+                assert "PRIVATE_SENTINEL" not in json.dumps(result)
             # A provider route failure cannot be hidden by the tracked record.
             changed = _domain_inspect(operation, True)
             changed["inspect"]["provider"] = _domain_inspect(operation)["inspect"]["provider"]
@@ -8666,6 +8995,8 @@ def test_runtime_sync_review_persistence_and_boundaries() -> None:
         for http_status, service_code, expected_status in (
             (403, "authorization_denied", "denied"),
             (400, "dokploy_target_verification_failed", "accepted_unverified"),
+            (502, "service_timeout", "accepted_unverified"),
+            (408, "service_timeout", "accepted_unverified"),
         ):
             error = urllib.error.HTTPError("https://example.invalid", http_status, "Refused", Message(), io.BytesIO(json.dumps({
                 "error": {"code": service_code}, "trace_id": "launchplane_req_apply_error"
@@ -8675,6 +9006,7 @@ def test_runtime_sync_review_persistence_and_boundaries() -> None:
             assert refused["summary"]["error_code"] == service_code
             assert refused["summary"]["trace_id"] == "launchplane_req_apply_error"
             assert refused_transport.call_count == 2
+            assert refused["summary"]["http_status"] == error.code
         assert [call.kwargs["body"]["mode"] for call in transport.call_args_list] == ["dry-run", "apply", "dry-run"]
         assert [call.kwargs["idempotency_key"] for call in transport.call_args_list] == ["", "example-sync", ""]
         code, result, transport = _run_runtime_sync(apply_argv, [_runtime_sync_response(changed=False)])
@@ -8693,18 +9025,23 @@ def test_runtime_sync_review_persistence_and_boundaries() -> None:
         assert code == 2 and transport.call_count == 0
         code, result, transport = _run_runtime_sync(apply_argv, [_runtime_sync_response(), TimeoutError()])
         assert code == 1 and result["status"] == "accepted_unverified" and transport.call_count == 2
-        denied_readback = urllib.error.HTTPError(
-            "https://example.invalid", 401, "Expired", Message(), io.BytesIO(json.dumps({
-                "error": {"code": "authorization_denied"}, "trace_id": "launchplane_req_expired"
-            }).encode())
-        )
-        code, result, _ = _run_runtime_sync(apply_argv, [
-            _runtime_sync_response(), _runtime_sync_response(mode="apply"), denied_readback,
-        ])
-        assert code == 1 and result["status"] == "accepted_unverified"
-        assert result["summary"]["trace_id"] == "launchplane_req_runtime_sync"
-        assert result["summary"]["read_back_trace_id"] == "launchplane_req_expired"
-        assert result["summary"]["read_back_error_code"] == "authorization_denied"
+        for http_status, service_code in ((401, "authorization_denied"), (502, "service_timeout"), (408, "service_timeout")):
+            failed_readback = urllib.error.HTTPError(
+                "https://example.invalid", http_status, "PRIVATE_SENTINEL", Message(), io.BytesIO(json.dumps({
+                    "error": {"code": service_code, "message": "PRIVATE_SENTINEL"},
+                    "trace_id": "launchplane_req_failed_readback",
+                }).encode())
+            )
+            code, result, readback_transport = _run_runtime_sync(apply_argv, [
+                _runtime_sync_response(), _runtime_sync_response(mode="apply"), failed_readback,
+            ])
+            assert code == 1 and result["status"] == "accepted_unverified"
+            assert readback_transport.call_count == 3
+            assert result["summary"]["trace_id"] == "launchplane_req_runtime_sync"
+            assert result["summary"]["read_back_trace_id"] == "launchplane_req_failed_readback"
+            assert result["summary"]["read_back_error_code"] == service_code
+            assert result["summary"]["read_back_http_status"] == failed_readback.code
+            assert "PRIVATE_SENTINEL" not in json.dumps(result)
         code, result, _ = _run_runtime_sync(apply_argv, [
             _runtime_sync_response(), http.client.IncompleteRead(b"private-provider-response", 10),
         ])
@@ -9298,6 +9635,8 @@ def test_privileged_policy_propose_rejects_malformed_result_without_echoing_priv
         (http.client.IncompleteRead(b"partial"), "outcome_unknown"),
         (json.JSONDecodeError("cut off", "{", 1), "accepted_unverified"),
         ("malformed", "accepted_unverified"),
+        ("partial_body", "outcome_unknown"),
+        ("non_object_body", "accepted_unverified"),
         (403, "denied"),
         (409, "conflict"),
         (404, "unsupported"),
@@ -9305,6 +9644,9 @@ def test_privileged_policy_propose_rejects_malformed_result_without_echoing_priv
         (502, "outcome_unknown"),
         (503, "outcome_unknown"),
         (504, "outcome_unknown"),
+        *(({"field": field, "value": value}, "accepted_unverified")
+          for field in ("status", "write_status", "result_status")
+          for value in ({"private": "never-emit"}, ["never-emit"])),
     ],
 )
 def test_privileged_policy_propose_failure_reports_safe_reconciliation(
@@ -9319,6 +9661,7 @@ def test_privileged_policy_propose_failure_reports_safe_reconciliation(
             "reason": "Review access.",
         },
     }
+    received_status = None
     if isinstance(failure, int):
         error_code = (
             "authorization_denied" if failure == 403 else "privileged_operation_plan_conflict"
@@ -9337,6 +9680,30 @@ def test_privileged_policy_propose_failure_reports_safe_reconciliation(
         post = Mock(side_effect=exception)
     elif isinstance(failure, BaseException):
         post = Mock(side_effect=failure)
+    elif isinstance(failure, dict):
+        response = write_action._ServiceResponse({
+            "status": "ok", "trace_id": "launchplane_req_" + "c" * 32, "write_status": "written",
+            "summary": {"operation_id": "privileged-operation-" + "a" * 32,
+                "descriptor_id": "managed-authz-policy-set", "status": "planned",
+                "result_status": "ok", "changed": True, "expires_at": "",
+                **{field: 0 for field in ("added_rule_count", "adopted_rule_count", "updated_rule_count",
+                    "removed_rule_count", "unchanged_rule_count", "policy_safety_blocker_count",
+                    "operational_readiness_blocked_rule_count")}},
+        }, 202)
+        target = response if failure["field"] == "write_status" else response["summary"]
+        target[failure["field"]] = failure["value"]
+        post = Mock(return_value=response)
+    elif failure in ("partial_body", "non_object_body"):
+        response = Mock(status=202)
+        received_status = response.status
+        response.read = (Mock(side_effect=http.client.IncompleteRead(b"never-emit"))
+                         if failure == "partial_body" else Mock(return_value=b"null"))
+        try:
+            write_action._read_service_response(response)
+        except (write_action.ServiceResponseError, http.client.HTTPException) as error:
+            post = Mock(side_effect=error)
+        else:
+            raise AssertionError("fixture must fail while reading the response")
     else:
         post = Mock(
             return_value={
@@ -9369,6 +9736,12 @@ def test_privileged_policy_propose_failure_reports_safe_reconciliation(
             )
         result = json.loads(output.getvalue())
         assert result["status"] == expected
+        post.assert_called_once()
+        if received_status is not None:
+            assert result["summary"]["http_status"] == received_status
+        if isinstance(failure, dict):
+            assert result["summary"]["http_status"] == post.return_value.http_status
+            assert result["summary"]["trace_id"] == post.return_value["trace_id"]
         if expected in {"outcome_unknown", "accepted_unverified"}:
             assert result["summary"]["recommendation"]
         if failure in (403, 409, "malformed"):
@@ -10028,9 +10401,10 @@ def test_event_recovery_product_whitespace_is_normalized_before_review() -> None
     assert posts[0]["body"]["product"] == receipt["request"]["product"] == "example-product"
 
 def _interrupted_http(kind: str) -> Exception:
-    if kind == "incomplete":
-        return http.client.IncompleteRead(b"private-provider-body", 100)
-    return http.client.RemoteDisconnected("private-provider-message")
+    error = (http.client.IncompleteRead(b"private-provider-body", 100) if kind == "incomplete"
+             else http.client.RemoteDisconnected("private-provider-message"))
+    setattr(error, "http_status", 202)
+    return error
 
 
 @pytest.mark.parametrize("kind", ["incomplete", "disconnected"])
@@ -10046,19 +10420,27 @@ def _interrupted_http(kind: str) -> Exception:
 def test_interrupted_http_admin_reads_emit_bounded_json(argv: list[str], kind: str) -> None:
     code, payload, calls = _run_read_transport(argv, response=_interrupted_http(kind))
     assert code == 1 and payload["status"] == "unavailable"
+    assert payload["summary"]["http_status"] == 202
     assert len(calls) == 1
     assert "private-provider" not in json.dumps(payload)
 
 
-@pytest.mark.parametrize("kind", ["incomplete", "disconnected"])
-@pytest.mark.parametrize("phase", ["preflight", "post", "readback"])
+@pytest.mark.parametrize("kind,phase", [('incomplete', 'preflight'), ('incomplete', 'post'), ('incomplete', 'readback'), ('disconnected', 'preflight'), ('disconnected', 'post'), ('disconnected', 'readback'), ('decoding', 'preflight'), ('gateway', 'preflight'), ('gateway', 'post'), ('gateway', 'readback'), ('http_timeout', 'preflight'), ('http_timeout', 'post'), ('http_timeout', 'readback')])
 def test_interrupted_http_verified_apply_preserves_failure_phase(kind: str, phase: str) -> None:
     with TemporaryDirectory(dir=Path.home()) as directory:
         evidence = _saved_dry_run_output("product-owner-dry-run", _owner_response(_owner_plan()))
         path = _write_json(directory, "owner-review.json", evidence)
         argv = ["product-owner-apply", *OWNER_DRY_RUN_ARGV[1:],
                 *_reviewed_apply_argv(evidence["result"]["plan_sha256"], path)]
-        fault = _interrupted_http(kind)
+        fault = (write_action.ServiceResponseError({"http_status": 202})
+             if kind == "decoding" else _interrupted_http(kind))
+        if kind in {"gateway", "http_timeout"}:
+            fault = urllib.error.HTTPError("https://private.invalid", 502 if kind == "gateway" else 408,
+                "PRIVATE_SENTINEL", Message(), io.BytesIO(json.dumps({
+                    "trace_id": "launchplane_req_failed_exchange", "error": {
+                        "code": "service_timeout", "message": "PRIVATE_SENTINEL",
+                    },
+                }).encode()))
         reads = iter([fault] if phase == "preflight" else [_profile_response(), fault])
         applied = _owner_response(_owner_plan(mode="apply", applied=True))
         code, payload, posts, gets = _run_main(
@@ -10066,17 +10448,26 @@ def test_interrupted_http_verified_apply_preserves_failure_phase(kind: str, phas
         )
     assert code == 1
     assert payload["status"] == {
-        "preflight": "unavailable", "post": "outcome_unknown", "readback": "accepted_unverified",
+        "preflight": "invalid" if kind == "decoding" else "unavailable", "post": "outcome_unknown", "readback": "accepted_unverified",
     }[phase]
     assert len(posts) == (0 if phase == "preflight" else 1)
     assert len(gets) == (2 if phase == "readback" else 1)
     if phase != "preflight":
-        assert "read" in payload["summary"]["recommendation"].lower()
+        assert payload["summary"]["recommendation"]
         assert posts[0]["idempotency_key"] == "apply-1"
+    if phase == "readback":
+        assert payload["summary"]["trace_id"] == applied["trace_id"]
     assert "private-provider" not in json.dumps(payload)
 
+    expected_http_status = fault.code if isinstance(fault, urllib.error.HTTPError) else 202
+    assert payload["summary"]["read_back_http_status" if phase == "readback" else "http_status"] == expected_http_status
+    if kind in {"gateway", "http_timeout"} and phase == "post":
+        assert payload["summary"]["trace_id"] == "launchplane_req_failed_exchange"
+        assert payload["summary"]["error_code"] == "service_timeout"
+    assert "PRIVATE_SENTINEL" not in json.dumps(payload)
 
-@pytest.mark.parametrize("kind", ["incomplete", "disconnected", "gateway", "denial"])
+
+@pytest.mark.parametrize("kind", ["incomplete", "disconnected", "gateway", "denial", "projection", "decoding", "non_object"])
 @pytest.mark.parametrize("mode", ["dry-run", "apply"])
 @pytest.mark.parametrize("purpose", ["staff_testing", "isolation_staging"])
 def test_interrupted_http_simple_post_preserves_write_uncertainty(kind: str, mode: str, purpose: str) -> None:
@@ -10098,13 +10489,31 @@ def test_interrupted_http_simple_post_preserves_write_uncertainty(kind: str, mod
             error_body.read.side_effect = _interrupted_http("incomplete")
             fault = urllib.error.HTTPError("https://example.invalid", 502 if kind == "gateway" else 403,
                                            "private-message", Message(), error_body)
+        if kind == "projection":
+            fault = write_action._ServiceResponse({
+                **_testing_hold_response(_testing_hold_plan(after=hold)),
+                "unexpected": "private-provider",
+            }, 202)
+        if kind in {"decoding", "non_object"}:
+            response = Mock(status=202)
+            response.read.return_value = b"PRIVATE_SENTINEL" if kind == "decoding" else b"null"
+            with pytest.raises(write_action.ServiceResponseError) as unreadable:
+                write_action._read_service_response(response)
+            fault = unreadable.value
         code, payload, posts, _ = _run_main(argv, post=fault)
-    assert code == 1 and len(posts) == 1
+    assert code == (0 if kind == "projection" and mode == "apply" else 1)
+    assert len(posts) == 1
     assert posts[0]["body"].get("purpose", "staff_testing") == purpose
-    expected = "denied" if kind == "denial" else "outcome_unknown" if mode == "apply" else "unavailable"
+    expected = ("accepted_unverified" if mode == "apply" else "invalid") if kind in {"projection", "decoding", "non_object"} else "denied" if kind == "denial" else "outcome_unknown" if mode == "apply" else "unavailable"
+    if kind in {"decoding", "non_object"}:
+        assert payload["summary"]["http_status"] == response.status
+        assert "PRIVATE_SENTINEL" not in json.dumps(payload)
+    if kind == "projection":
+        assert payload["summary"]["http_status"] == fault.http_status
+        assert payload["summary"]["trace_id"] == fault["trace_id"]
     assert payload["status"] == expected
-    if expected == "outcome_unknown":
-        assert "read" in payload["summary"]["recommendation"].lower()
+    if expected in {"outcome_unknown", "accepted_unverified"}:
+        assert payload["summary"]["recommendation"]
     assert "private-provider" not in json.dumps(payload)
 
 
@@ -10153,30 +10562,6 @@ def test_interrupted_http_error_body_keeps_admin_refusal_bounded(kind: str, stat
     code, payload, _ = _run_read_transport(["product-profile-read", "--product", "example-product"], response=error)
     assert code == 1 and payload["status"] == ("denied" if status == 403 else "unavailable")
     assert "private-" not in json.dumps(payload)
-
-
-@pytest.mark.parametrize("kind", ["incomplete", "disconnected"])
-@pytest.mark.parametrize("phase", ["preflight", "post"])
-def test_interrupted_http_policy_import_preserves_failure_phase(kind: str, phase: str) -> None:
-    fault = _interrupted_http(kind)
-    output = io.StringIO()
-    with (
-        patch.object(write_action, "prepare_operator_settings", return_value=SETTINGS),
-        patch.object(write_action, "request_launchplane_read", side_effect=fault if phase == "preflight" else None,
-                     return_value=_merge_train_policy_targets_payload()),
-        patch.object(write_action, "request_launchplane", side_effect=fault) as post,
-        redirect_stdout(output),
-    ):
-        code = write_action.execute_merge_train_policy_import(
-            args=argparse.Namespace(timeout=3, idempotency_key="policy-import-example"),
-            operation="merge-train-policy-import-apply", request={"mode": "apply"},
-            body=_merge_train_policy_import_payload(mode="apply", reason="Approved policy import."),
-            expected_current_policy_digest="a" * 64, expected_candidate_policy_digest="c" * 64,
-        )
-    payload = json.loads(output.getvalue())
-    assert code == 1 and payload["status"] == ("unavailable" if phase == "preflight" else "outcome_unknown")
-    assert post.call_count == (0 if phase == "preflight" else 1)
-    assert "private-provider" not in output.getvalue()
 
 
 @pytest.mark.parametrize("service_url", ["https://private.example.invalid", "https://private.example.invalid/launchplane/"])
@@ -10255,5 +10640,332 @@ def test_backup_proposal_malformed_product_is_a_local_input_error(policy: object
             write_action.privileged_policy_proposal_body(argparse.Namespace(payload_file=str(file)))
 
 
+
+@pytest.mark.parametrize("argv", [
+    ["repository-inventory-read", "--repository-id", "123"],
+    ["production-backup-authority-read", "--product", "example-product", "--context", "example", "--instance", "prod", "--promotion-action", "example.promote"],
+    ["private-health-endpoint-read", "--product", "example-product", "--context", "example", "--instance", "testing"],
+    ["product-promotion-status-read", "--product", "example-product"],
+])
+@pytest.mark.parametrize("decoding_failure", [False, True])
+def test_legacy_read_failure_keeps_safe_exchange_diagnostics(argv, decoding_failure):
+    response = write_action._ServiceResponse({"trace_id": "launchplane_req_invalid", "private": "PRIVATE_SENTINEL"}, 202)
+    source = write_action.ServiceResponseError(write_action.service_response_diagnostics(response)) if decoding_failure else response
+    code, payload, posts, reads = _run_main(argv, read=source)
+    assert code == 1 and not posts and len(reads) == 1
+    assert payload["summary"]["http_status"] == response.http_status
+    assert payload["summary"]["trace_id"] == response["trace_id"]
+    assert "PRIVATE_SENTINEL" not in json.dumps(payload)
+
+
+
+RECORD_READ_CASES = [
+    (write_action.read_product_owner, {"product": "example-product"}),
+    (write_action.read_product_image_repository, {"product": "example-product"}),
+    (write_action.read_production_backup_authority, {"query": {}}),
+    (write_action.read_dokploy_target, {"context": "example", "instance": "testing"}),
+    (write_action.read_health_monitoring, {"body": {"product": "example-product"}}),
+    (write_action.read_private_health_endpoint, {"endpoint": {"endpoint_key": "health", "product": "example-product", "context": "example", "instance": "testing"}}),
+]
+
+@pytest.mark.parametrize("reader,kwargs", RECORD_READ_CASES)
+@pytest.mark.parametrize("safe_trace", [False, True])
+def test_record_projection_failures_carry_only_their_safe_exchange_diagnostics(reader, kwargs, safe_trace):
+    response = write_action._ServiceResponse({"trace_id": "launchplane_req_preflight" if safe_trace else {"private": "PRIVATE_SENTINEL"}}, 202)
+    with patch.object(write_action, "request_launchplane_read", return_value=response):
+        with pytest.raises(write_action.ServiceResponseError) as caught:
+            reader(settings=SETTINGS, timeout=3, **kwargs)
+    diagnostics = write_action.service_response_diagnostics(caught.value)
+    assert diagnostics["http_status"] == response.http_status
+    assert diagnostics.get("trace_id") == (response["trace_id"] if safe_trace else None)
+    assert "PRIVATE_SENTINEL" not in json.dumps(diagnostics)
+
+
+@pytest.mark.parametrize("error", [write_action.LaunchplaneSafetyError("unsafe_redirect"), _interrupted_http("incomplete")])
+@pytest.mark.parametrize("reader,kwargs", RECORD_READ_CASES)
+def test_record_reader_preserves_request_failure_type(error, reader, kwargs):
+    with patch.object(write_action, "request_launchplane_read", side_effect=error):
+        with pytest.raises(type(error)) as caught:
+            reader(settings=SETTINGS, timeout=3, **kwargs)
+    assert caught.value is error
+
+
+@pytest.mark.parametrize("mode", ["dry-run", "apply"])
+@pytest.mark.parametrize("phase", ["preflight", "post"])
+@pytest.mark.parametrize("failure", ["projection", "decoding", "redirect", "transport", "disconnected", "gateway", "http_timeout", "denial"])
+def test_policy_import_failure_diagnostics_belong_to_the_failing_exchange(mode, phase, failure):
+    preflight = write_action._ServiceResponse(_merge_train_policy_targets_payload(), 201)
+    preflight["trace_id"] = "launchplane_req_preflight"
+    response = write_action._ServiceResponse(_merge_train_policy_import_response(mode="apply" if mode == "dry-run" else "dry_run"), 202)
+    response["trace_id"] = "launchplane_req_post"
+    current = preflight if phase == "preflight" else response
+    if failure == "projection":
+        fault = write_action._ServiceResponse({"trace_id": current["trace_id"]}, current.http_status) if phase == "preflight" else response
+    elif failure == "decoding":
+        fault = write_action.ServiceResponseError({"http_status": current.http_status})
+    elif failure == "redirect":
+        fault = write_action.LaunchplaneSafetyError("unsafe_redirect")
+    elif failure in {"gateway", "http_timeout", "denial"}:
+        fault = urllib.error.HTTPError("https://private.invalid",
+            {"gateway": 502, "http_timeout": 408, "denial": 403}[failure],
+            "PRIVATE_SENTINEL", Message(), io.BytesIO(json.dumps({
+                "trace_id": current["trace_id"], "error": {"code": "service_timeout", "message": "PRIVATE_SENTINEL"},
+            }).encode()))
+    else:
+        fault = (http.client.IncompleteRead(b"PRIVATE_SENTINEL") if failure == "transport"
+                 else http.client.RemoteDisconnected("PRIVATE_SENTINEL"))
+        setattr(fault, "http_status", current.http_status)
+    output = io.StringIO()
+    with (
+        patch.object(write_action, "prepare_operator_settings", return_value=SETTINGS),
+        patch.object(write_action, "request_launchplane_read", side_effect=fault if phase == "preflight" and isinstance(fault, BaseException) else None,
+                     return_value=fault if phase == "preflight" else preflight) as get,
+        patch.object(write_action, "request_launchplane", side_effect=fault if isinstance(fault, BaseException) else None, return_value=fault) as post,
+        redirect_stdout(output),
+    ):
+        code = write_action.execute_merge_train_policy_import(
+            args=argparse.Namespace(timeout=3, idempotency_key="policy-import-example"),
+            operation="merge-train-policy-import-" + mode, request={"mode": mode},
+            body=_merge_train_policy_import_payload(mode="apply" if mode == "apply" else "dry_run", reason="Approved policy import."),
+            expected_current_policy_digest="a" * 64, expected_candidate_policy_digest="c" * 64,
+        )
+    payload = json.loads(output.getvalue())
+    assert get.call_count == 1 and post.call_count == (phase == "post")
+    mutating = mode == "apply" and phase == "post"
+    if mutating:
+        assert payload["status"] == ("accepted_unverified" if failure in {"projection", "decoding"} else "denied" if failure == "denial" else "outcome_unknown")
+        if failure in {"gateway", "http_timeout"}:
+            assert payload["summary"]["recommendation"]
+        assert code == (0 if failure in {"projection", "decoding"} else 1)
+    else:
+        assert code == 1
+        assert payload["status"] == ("unavailable" if failure in {"redirect", "transport", "disconnected", "gateway", "http_timeout"} else "denied" if failure == "denial" else "invalid")
+    if failure == "redirect":
+        assert "trace_id" not in payload["summary"] and "http_status" not in payload["summary"]
+        if not mutating:
+            assert payload["warnings"][0]["code"] == fault.code
+    else:
+        assert payload["summary"]["http_status"] == (fault.code if isinstance(fault, urllib.error.HTTPError) else current.http_status)
+        if failure in {"projection", "gateway", "http_timeout", "denial"}:
+            assert payload["summary"]["trace_id"] == current["trace_id"]
+    if phase == "post":
+        assert preflight["trace_id"] not in json.dumps(payload["summary"])
+    assert "PRIVATE_SENTINEL" not in json.dumps(payload)
+
+
+@pytest.mark.parametrize("decoding", [False, True])
+def test_verified_apply_malformed_receipt_keeps_the_apply_diagnostics(decoding):
+    response = write_action._ServiceResponse(_owner_response(_owner_plan(mode="apply", applied=True)), 202)
+    response["unexpected"] = "PRIVATE_SENTINEL"
+    fault = write_action.ServiceResponseError({"http_status": response.http_status}) if decoding else response
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        evidence = _saved_dry_run_output("product-owner-dry-run", _owner_response(_owner_plan()))
+        path = _write_json(directory, "owner-review.json", evidence)
+        argv = ["product-owner-apply", *OWNER_DRY_RUN_ARGV[1:], *_reviewed_apply_argv(evidence["result"]["plan_sha256"], path)]
+        code, payload, posts, reads = _run_main(argv, post=fault, read=_profile_response())
+    assert code == 1 and payload["status"] == "accepted_unverified"
+    assert len(posts) == 1 and len(reads) == 1
+    assert payload["summary"]["http_status"] == response.http_status
+    if not decoding:
+        assert payload["summary"]["trace_id"] == response["trace_id"]
+    assert "PRIVATE_SENTINEL" not in json.dumps(payload)
+
+
+UNHASHABLE_FIELDS = [
+    ("health", "intent"), ("health", "kind"), ("health", "dependency_mode"),
+    ("health", "dependencies"), ("backup", "state"), ("backup", "policy"),
+    ("backup", "target_status"), ("backup", "destination"), ("endpoint", "status"),
+]
+UNHASHABLE_CASES = [(family, field, surface) for family, field in UNHASHABLE_FIELDS
+                   for surface in ("reader", "dry-run")]
+UNHASHABLE_CASES += [(family, field, "standalone") for family, field in UNHASHABLE_FIELDS if family != "health"]
+UNHASHABLE_CASES += [(family, field, surface) for family, field in (("health", "intent"), ("backup", "state"), ("endpoint", "status"))
+                    for surface in ("apply-post", "apply-readback")]
+UNHASHABLE_CASES += [(family, "mode", surface) for family in ("health", "backup", "endpoint") for surface in ("dry-run", "apply-post")]
+
+
+def _unhashable_fixture(family, field, bad, *, observation, apply=False):
+    if family == "health":
+        response = _monitoring_profile(applied=apply) if observation else _monitoring_response("apply" if apply else "dry-run")
+        record = response["profile"]["lanes"][0]["health_monitoring"] if observation else response["result"]
+        if field == "intent":
+            record["monitoring_intent" if observation else "current_monitoring_intent"] = bad
+        elif field == "kind":
+            if observation:
+                record["checks"][0]["kind"] = bad
+            else:
+                record["current_check_kind"] = bad
+        elif field in {"dependency_mode", "dependencies"}:
+            policy = {"mode": bad, "override": None} if field == "dependency_mode" else {
+                "mode": "required", "override": {"dependencies": [bad], "reason": "PRIVATE_SENTINEL"}}
+            record["dependency_health" if observation else "current_dependency_health"] = policy
+            if not observation:
+                record["requested_dependency_health"] = {"mode": "informational", "override": None}
+        else:
+            record["mode"] = bad
+    elif family == "backup":
+        response = _backup_read_response() if observation else _backup_response("apply" if apply else "dry_run", "applied" if apply else "would_apply")
+        record = response["authority" if observation else "result"]
+        if field == "state":
+            record["state" if observation else "status"] = bad
+        elif field == "policy":
+            record["policy"]["status"] = bad
+        elif field in {"target_status", "destination"}:
+            record["targets"][0]["status" if field == "target_status" else "destination_kind"] = bad
+        else:
+            record["mode"] = bad
+    else:
+        response = _private_endpoint_read() if observation else _private_endpoint_response("apply" if apply else "dry-run")
+        record = response["record"] if observation else response["result"]["record"]
+        if field == "mode":
+            response["result"]["mode"] = bad
+        else:
+            record["status"] = bad
+    response["trace_id"] = "launchplane_req_malformed_observation" if observation else "launchplane_req_malformed_post"
+    return write_action._ServiceResponse(response, 202)
+
+
+@pytest.mark.parametrize("family,field,surface", UNHASHABLE_CASES)
+@pytest.mark.parametrize("bad", [{"private": "PRIVATE_SENTINEL"}, ["PRIVATE_SENTINEL"]])
+def test_unhashable_service_values_preserve_bounded_failure_receipts(tmp_path, family, field, surface, bad):
+    observation = surface in {"reader", "standalone", "apply-readback"}
+    malformed = _unhashable_fixture(family, field, bad, observation=observation, apply=surface.startswith("apply"))
+    if family == "health":
+        command, arguments = "health-monitoring", _monitoring_arguments()
+        reader, reader_args = write_action.read_health_monitoring, {"body": {"product": "example-product", "context": "example", "instance": "testing", "check_name": "public-ingress"}}
+        dry_response, applied = _monitoring_response(), _monitoring_response("apply")
+        valid_observation = _monitoring_profile()
+    else:
+        command = "production-backup-authority" if family == "backup" else "private-health-endpoint"
+        path = _write_json(str(tmp_path), "request.json", _backup_payload() if family == "backup" else _private_endpoint_payload())
+        arguments = ["--payload-file", path] + (["--reason", "Register the private health endpoint."] if family == "endpoint" else [])
+        reader = write_action.read_production_backup_authority if family == "backup" else write_action.read_private_health_endpoint
+        reader_args = {"query": {}} if family == "backup" else {"endpoint": _private_endpoint_payload()}
+        dry_response = _backup_response() if family == "backup" else _private_endpoint_response()
+        applied = _backup_response("apply", "applied") if family == "backup" else _private_endpoint_response("apply")
+        valid_observation = _backup_read_response() if family == "backup" else _private_endpoint_read()
+    if surface == "reader":
+        with patch.object(write_action, "request_launchplane_read", return_value=malformed):
+            with pytest.raises(write_action.ServiceResponseError) as caught:
+                reader(settings=SETTINGS, timeout=3, **reader_args)
+        diagnostics = write_action.service_response_diagnostics(caught.value)
+        assert diagnostics == {"http_status": malformed.http_status, "trace_id": malformed["trace_id"]}
+        assert "PRIVATE_SENTINEL" not in json.dumps(diagnostics)
+        return
+    if surface == "standalone":
+        if family == "backup":
+            argv = [command + "-read", "--product", "example-product", "--context", "example", "--instance", "prod", "--promotion-action", "generic_web_prod_promotion.execute"]
+        else:
+            argv = [command + "-read", "--product", "example", "--context", "example", "--instance", "testing"]
+            malformed = write_action._ServiceResponse({"status": "ok", "trace_id": malformed["trace_id"], "records": [malformed["record"]]}, malformed.http_status)
+        code, output, posts, reads = _run_main(argv, read=malformed)
+        assert not posts and len(reads) == 1
+    elif surface == "dry-run":
+        code, output, posts, reads = _run_main([command + "-dry-run", *arguments], post=malformed)
+        assert len(posts) == 1 and not reads
+    else:
+        code, evidence, _, _ = _run_main([command + "-dry-run", *arguments], post=dry_response)
+        assert code == 0
+        saved = _write_json(str(tmp_path), "evidence.json", evidence)
+        digest = evidence["result"]["authority_digest" if family == "backup" else "plan_sha256"]
+        argv = [command + "-apply", *arguments, *_reviewed_apply_argv(digest, saved)]
+        observed = malformed if surface == "apply-readback" else valid_observation
+        observations = iter(([valid_observation] if family == "health" else []) + [observed])
+        code, output, posts, reads = _run_main(argv, post=applied if surface == "apply-readback" else malformed, read=lambda _: next(observations))
+        assert len(posts) == 1
+        assert output["status"] == "accepted_unverified"
+        if surface == "apply-readback":
+            assert output["summary"]["trace_id"] == applied["trace_id"]
+    assert code == 1
+    if not surface.startswith("apply"):
+        assert output["status"] == "invalid"
+    prefix = "read_back_" if surface == "apply-readback" else ""
+    assert output["summary"][prefix + "http_status"] == malformed.http_status
+    assert output["summary"][prefix + "trace_id"] == malformed["trace_id"]
+    assert "PRIVATE_SENTINEL" not in json.dumps(output)
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))
+
+
+@pytest.mark.parametrize("phase,failure", [(phase, failure) for phase in ("preflight", "apply", "readback")
+    for failure in ("decoding", "partial", "projection", "comparison") if not (phase == "preflight" and failure == "comparison")])
+def test_runtime_sync_failure_diagnostics_follow_the_current_exchange(phase, failure):
+    flags = ["--product", "example-site", "--context", "example-context", "--instance", "testing"]
+    _, evidence, _ = _run_runtime_sync(["live-target-runtime-sync-dry-run", *flags], [_runtime_sync_response()])
+    applied = write_action._ServiceResponse(_runtime_sync_response(mode="apply"), 201)
+    applied["trace_id"] = "launchplane_req_apply"
+    response = write_action._ServiceResponse(_runtime_sync_response(mode="apply" if phase == "apply" else "dry-run", changed=phase != "readback"), 202)
+    response["trace_id"] = "launchplane_req_current"
+    fault = response
+    if failure == "decoding":
+        raw = Mock(status=response.http_status)
+        raw.read.return_value = b"null"
+        with pytest.raises(write_action.ServiceResponseError) as error:
+            write_action._read_service_response(raw)
+        fault = error.value
+    elif failure == "partial":
+        raw = Mock(status=response.http_status)
+        raw.read.side_effect = http.client.IncompleteRead(b"PRIVATE_SENTINEL")
+        with pytest.raises(http.client.IncompleteRead) as error:
+            write_action._read_service_response(raw)
+        fault = error.value
+    elif failure == "projection":
+        response["status"] = "invalid"
+    elif phase == "apply":
+        response["result"]["tracked_target"]["target_id"] = "different-target"
+    else:
+        response["result"]["runtime_environment"]["changed_keys"] = ["EXAMPLE_API_TOKEN"]
+    responses = ([fault] if phase == "preflight" else [_runtime_sync_response(), fault] if phase == "apply"
+        else [_runtime_sync_response(), applied, fault])
+    with TemporaryDirectory() as directory:
+        path = _write_json(directory, "review.json", evidence)
+        argv = ["live-target-runtime-sync-apply", *flags, "--idempotency-key", "same-apply", "--reviewed-dry-run",
+            "--expected-plan-digest", evidence["result"]["plan_sha256"], "--dry-run-evidence-file", path]
+        code, output, calls = _run_runtime_sync(argv, responses)
+    assert code == 1
+    expected_status = ("unavailable" if failure == "partial" else "invalid") if phase == "preflight" else "accepted_unverified"
+    assert output["status"] == expected_status
+    assert calls.call_count == {"preflight": 1, "apply": 2, "readback": 3}[phase]
+    assert sum(call.kwargs["body"]["mode"] == "apply" for call in calls.call_args_list) == (phase != "preflight")
+    prefix = "read_back_" if phase == "readback" else ""
+    assert output["summary"][prefix + "http_status"] == response.http_status
+    if failure in {"projection", "comparison"}:
+        assert output["summary"][prefix + "trace_id"] == response["trace_id"]
+    if phase == "readback":
+        assert output["summary"]["trace_id"] == applied["trace_id"]
+    else:
+        assert "read_back_http_status" not in output["summary"]
+    assert "PRIVATE_SENTINEL" not in json.dumps(output)
+
+
+@pytest.mark.parametrize("operation", [
+    "odoo-addon-settings-apply", "integration-allowances-apply", "testing-hold-apply",
+    "product-repository-identity-apply", "generic-web-deploy-recovery-apply",
+    "repository-inventory-apply", "product-expected-config-apply",
+])
+@pytest.mark.parametrize("body", [b"null", b"PRIVATE_SENTINEL"])
+def test_simple_apply_unreadable_receipts_keep_projection_recovery(operation, body):
+    response = Mock(status=202)
+    response.read.return_value = body
+    with pytest.raises(write_action.ServiceResponseError) as failure:
+        write_action._read_service_response(response)
+    receipts = []
+    for source in (write_action._ServiceResponse({"status": "accepted", "trace_id": "launchplane_req_projection"}, response.status), failure.value):
+        output = io.StringIO()
+        with patch.object(write_action, "prepare_operator_settings", return_value=SETTINGS), patch.object(
+            write_action, "request_launchplane", side_effect=source if isinstance(source, Exception) else None,
+            return_value=source,
+        ) as post, redirect_stdout(output):
+            code = write_action.execute_post(args=argparse.Namespace(timeout=3, idempotency_key="same-apply"),
+                operation=operation, path="/fixture", request={"mode": "apply"}, body={})
+        receipt = json.loads(output.getvalue())
+        assert code == (1 if isinstance(source, Exception) else 0)
+        assert receipt["status"] == "accepted_unverified"
+        assert receipt["summary"]["http_status"] == response.status
+        post.assert_called_once()
+        assert "PRIVATE_SENTINEL" not in output.getvalue()
+        receipts.append(receipt)
+    assert receipts[1]["summary"]["recommendation"] == receipts[0]["summary"]["recommendation"]
+    assert receipts[1]["warnings"] == receipts[0]["warnings"]

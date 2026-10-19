@@ -28,19 +28,18 @@ sys.path.insert(0, str(ROOT / "skills/model-review/scripts"))
 from github_api import redact_string
 from github_direction_next import issue_references
 from github_identity import OWN_USER_OPT_IN, automation_login, configured_bot_logins
-from github_plan_claim import exact_released_sources, live_lines, records, without_operation_marker
+from github_plan_claim import exact_released_sources, live_lines, records
 from github_plan_release import effective_comments
 from github_read import (GitHubReader, GitHubReadError, GitHubReadShapeError,
                          automation_only_gh_prefix_args, resolve_repo_from_remote)
-from ready_handoff import review_prose_lines, review_receipt_head, supervisor_review_request
+from ready_handoff import (SUPERVISOR_REPORT_HEADING as REPORT_HEADING, raw_receipt, reported_review,
+                           review_prose_lines, review_receipt_head, supervisor_review_request)
 from review_worktree import is_review_scratch
 from review_notifications import NotSent
 
 REPO = re.compile(r"[\w.-]+/[\w.-]+", re.ASCII)
 COMMENT_LINK = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/(?:issues|pull)/(\d+)#issuecomment-(\d+)")
 HEAD = re.compile(r"\b(?:head(?: SHA)?|commit)\s*[:=]?\s*`?([0-9a-f]{7,40})\b", re.I)
-REPORT_HEADING = "Review of record, run by the Supervisor"
-RECEIPT = re.compile(r"<!-- supervisor-review (.*?) -->")
 
 
 class ReviewError(ValueError):
@@ -164,28 +163,6 @@ def review_entries(path, *, errors=None):
 
 def trusted(comment, logins):
     return (comment.get("user") or {}).get("login", "").casefold() in logins
-
-
-def raw_receipt(body):
-    # gh-pr appends a transport marker. Only the raw report's final marker
-    # is a receipt; source snippets inside the review remain ordinary data.
-    lines = without_operation_marker(body).strip().splitlines()
-    match = RECEIPT.fullmatch(lines[-1]) if lines else None
-    if match:
-        try:
-            value = json.loads(match[1])
-        except json.JSONDecodeError:
-            return None
-        if (isinstance(value, dict) and type(value.get("request")) is int
-                and isinstance(value.get("head"), str) and re.fullmatch(r"[0-9a-f]{40}", value["head"])):
-            return value
-    return None
-
-
-def reported_review(body):
-    first = body.strip().splitlines()[0].replace("**", "") if body.strip() else ""
-    return (re.match(r"(?i)^Review of record[:,].*\brun by the Supervisor\b", first) is not None
-            and not re.search(r"(?i)\b(?:pending|awaiting|waiting|not run)\b", first))
 
 
 def latest_request(comments, logins):

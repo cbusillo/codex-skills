@@ -225,60 +225,52 @@ async def observe_home(home: Path, sessions: set[str], proof_sessions: set[str] 
     return peers, states, coverage
 
 
-def codex_argv_start(argv: list[str]) -> int | None:
-    if argv and Path(argv[0]).name.casefold().startswith("codex"):
-        return 0
-    if (len(argv) > 1 and Path(argv[0]).name in {"node", "nodejs", "python", "python3", "sh", "bash", "zsh", "bun", "deno"}
-            and Path(argv[1]).name.casefold().startswith("codex")):
-        return 1
-    return None
+def process_liveness():
+    native_helpers()
+    import session_liveness
+    return session_liveness
 
 
 def process_sessions(text: str, sessions: set[str]) -> list[dict]:
     peers = []
+    shared = process_liveness()
     for line in text.splitlines():
-        argv = line.split()
-        if argv and argv[0].isdigit():
-            argv = argv[1:]
-        executable = codex_argv_start(argv)
-        if executable is None:
+        fields = line.split(None, 1)
+        pid = int(fields[0]) if fields and fields[0].isdigit() and len(fields) == 2 else None
+        command = fields[1] if pid is not None else line
+        argv, bounded = shared.process_arguments(pid, command)
+        if not argv or shared.harness_family(argv[0]) != "codex":
             continue
-        # Command text inside an exec prompt is not CLI syntax. Ambiguous
-        # interactive invocations remain unknown rather than guessing an ID.
-        index = executable + 1
-        values = {"-c", "--config", "--remote", "-C", "--cd", "-p", "--profile", "-m", "--model",
-                  "-i", "--image", "--add-dir", "-s", "--sandbox", "-a", "--ask-for-approval", "--enable", "--disable"}
-        while index < len(argv) and argv[index].startswith("-") and argv[index] != "--":
-            index += 2 if argv[index] in values else 1
-        if index < len(argv) and argv[index] == "exec":
-            index += 1
-            while index < len(argv) and argv[index].startswith("-") and argv[index] != "--":
-                index += 2 if argv[index] in values else 1
-        resumed = {argv[index + 1].strip("\"'")} if (
-            index + 1 < len(argv) and argv[index] == "resume" and not argv[index + 1].startswith("-")) else set()
-        for session in resumed & sessions:
+        resumed, _kind, _exact = shared.invocation(argv, bounded=bounded)
+        identities = {shared.native_uuid(value) or value for value in resumed}
+        for session in sorted(sessions):
+            if (shared.native_uuid(session) or session) not in identities:
+                continue
             peers.append({"sessionId": session, "source": "codex_process", "state": "live"})
     return peers
 
 
 def process_absence_known(text: str, observed_sockets: set[str] | None = None) -> bool:
+    shared = process_liveness()
     for line in text.splitlines():
-        argv = line.split()
-        pid = int(argv.pop(0)) if argv and argv[0].isdigit() else None
-        executable = codex_argv_start(argv)
-        if executable is not None:
-            if pid is not None and github_plan_closure.managed_launch(pid, argv[executable:], observed_sockets or set()):
+        fields = line.split(None, 1)
+        pid = int(fields[0]) if fields and fields[0].isdigit() else None
+        command = fields[1] if pid is not None and len(fields) == 2 else line
+        argv, bounded = shared.process_arguments(pid, command)
+        if argv and (shared.harness_family(argv[0]) == "codex"
+                     or Path(argv[0]).name in {"codex-session.py", "codex_session_proxy.py"}):
+            if pid is not None and github_plan_closure.managed_launch(pid, argv, observed_sockets or set()):
                 continue
             # A fresh noninteractive exec cannot attach to a pre-existing
             # thread. Interactive clients, pickers and exec-resume remain unknown.
-            if (executable + 1 < len(argv) and argv[executable + 1] == "exec"
-                    and not any(arg in {"resume", "--resume", "-r"} or arg.startswith("--resume=")
-                                for arg in argv[executable + 2:])):
+            if shared.invocation(argv, bounded=bounded)[1] == "exec":
                 continue
+            if not bounded:
+                return False
             # A stdio/extension server or unobserved daemon is unidentified too.
             listeners = [argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "--listen"]
             listeners += [arg.split("=", 1)[1] for arg in argv if arg.startswith("--listen=")]
-            if (executable + 1 >= len(argv) or argv[executable + 1] != "app-server"
+            if (len(argv) < 2 or argv[1] != "app-server"
                     or len(listeners) != 1 or not listeners[0].startswith("unix://")
                     or str(Path(listeners[0][7:]).resolve()) not in (observed_sockets or set())):
                 return False
@@ -293,6 +285,14 @@ def observe(sessions: set[str], proof_sessions: set[str] | None = None):
         try:
             peers, states, coverage = _observe(sessions, proof_sessions)
             for session in sessions:
+                try:
+                    github_plan_closure.require_canonical_identity(session)
+                except ValueError as error:
+                    diagnostic = {"source": "native_identity", "error": str(error),
+                                  "canonical_session_id": process_liveness().native_uuid(session)}
+                    peers.append({"sessionId": session, "cwd": "/", "state": "unknown", **diagnostic})
+                    states[session] = {"state": "live", **diagnostic}
+                    continue
                 try:
                     blocked = (github_plan_closure.action_pending(session)
                                or session not in leased and github_plan_closure.lease_path(session).exists())

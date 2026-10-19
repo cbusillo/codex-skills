@@ -5256,7 +5256,7 @@ def ownership_state(records, harness, *, file_candidates=()):
         if source in no_writes:
             continue
         events.setdefault(index, []).append((source, value))
-    tasks, running = {}, {}
+    tasks, running, scheduled, task_tools = {}, {}, {}, {}
     for index, record in enumerate(records):
         for source, value in events.get(index, []):
             if value.get("_attempt"):
@@ -5274,7 +5274,7 @@ def ownership_state(records, harness, *, file_candidates=()):
             # alone does not establish that a writer actually stopped.
             import session_record
             before = set(running)
-            session_record.track_claude_background_tasks(record, running)
+            session_record.track_claude_background_tasks(record, running, scheduled, task_tools)
             for ended in before - running.keys():
                 finished = tasks.pop(ended, set())
                 for source in finished:

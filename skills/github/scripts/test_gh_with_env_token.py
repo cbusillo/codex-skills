@@ -462,9 +462,6 @@ def test_app_installation_follows_the_target_repository() -> None:
 
 
 def test_api_write_checks_read_arguments_as_gh_does() -> None:
-    sys.path.insert(0, str(SCRIPT.parent))
-    import github_api
-
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
         env_file, _identity, unused = app_fixture(root)
@@ -474,38 +471,19 @@ def test_api_write_checks_read_arguments_as_gh_does() -> None:
         write(fake_gh, "#!/bin/sh\nprintf '%s\\n' \"$GH_TOKEN\"\n")
         repo = "repos/second-owner/site/issues/1"
         query = "-fquery=query { viewer { login } }"
-        # gh uses the last method and the last --input; fields or a nonempty
-        # input without a method send POST; every option takes its value.
+        # The method and field parsing itself is covered in test_github_api.py;
+        # here a write must reach the App helper with --require-installation and a read without it.
         cases = {
             (repo, "-iXGET", "-iXDELETE"): True,
-            ("-XGET", repo, "-XDELETE"): True,
-            ("-X", "GET", repo, "--method", "DELETE"): True,
-            ("--method=GET", "-XPOST", repo): True,
-            (repo, "--input=", "--input", "body.json"): True,
-            ("-i=false", "-XPOST", repo): True,
-            (repo, "-fname=x"): True,
-            ("-iFname=x", repo): True,
-            (repo, "-f", "name=x"): True,
             ("--jq", "graphql", repo, "-fname=x", query): True,
-            ("-q", "graphql", repo, "-fname=x"): True,
             (repo, "-XDELETE", "-XGET"): False,
-            ("-iX", "GET", repo): False,
-            (repo, "-X", "GET", "-f", "per_page=100"): False,
-            ("-f", "per_page=100", repo, "-X", "GET"): False,
             ("--jq", "repos/x/y", repo): False,
-            ("-iq", ".x", repo): False,
-            (repo, "-H", "Accept: application/json"): False,
-            (repo, "-i=false"): False,
-            (repo, "--allow-escape-sequences"): False,
-            (repo, "--input", "body.json", "--input="): False,
-            (repo, "--method=", "-f", "name=x"): False,
         }
         for args, is_write in cases.items():
             result = run_wrapper(env_file, unused, identity, "api", *args, gh_command=fake_gh)
             assert result.returncode == 0, (args, result.stderr)
             installation = " --require-installation" if is_write else ""
             assert result.stdout == f"token:--repo second-owner/site{installation}\n", (args, result.stdout)
-            assert github_api.infer_gh_command_context(["api", *args]).is_write is is_write, args
 
 
 def test_write_to_another_owners_repository_without_installation_runs_as_the_person_on_opt_in() -> None:
@@ -648,17 +626,17 @@ def test_user_scoped_read_runs_as_the_person_on_opt_in() -> None:
         ):
             result = run_wrapper(env_file, classifier, identity, *args, gh_command=fake_gh, extra_env=opt_in)
             assert result.returncode == 0, (args, result.stderr)
+            if args[-1] == "user":
+                assert json.loads(result.stdout)["login"] == "catalog-app[bot]", result.stdout
+            else:
+                assert result.stdout == "ran-with-token:installation-token\n", (args, result.stdout)
             assert "acting as your own GitHub user" not in result.stderr, args
 
         # A write never takes the read route, however gh's short flags are
         # grouped (-fname=x is -f name=x; -iXPOST is -i -X POST).
         for args in (
             ("api", "user/repos", "-fname=example"),
-            ("api", "user/repos", "-Fname=example"),
             ("api", "-iXPOST", "user/repos"),
-            ("api", "user/repos", "-iFname=example"),
-            ("api", "user/repos", "-iXGET", "-iXDELETE"),
-            ("api", "--jq", "graphql", "user/repos", "-fname=example", "-fquery=query { viewer { login } }"),
         ):
             result = run_wrapper(env_file, classifier, identity, *args, gh_command=fake_gh, extra_env=opt_in)
             assert result.returncode == 0, (args, result.stderr)
@@ -668,6 +646,7 @@ def test_user_scoped_read_runs_as_the_person_on_opt_in() -> None:
         # Only the github.com API host names a user-scoped path.
         other_host = run_wrapper(env_file, classifier, identity, "api", "https://api.example.com/user/repos",
                                  gh_command=fake_gh, extra_env=opt_in)
+        assert other_host.stdout == "ran-with-token:installation-token\n", other_host.stderr
         assert "acting as your own GitHub user" not in other_host.stderr
 
         # The declared-login check applies, and required automation auth wins.
@@ -704,6 +683,7 @@ def test_personal_fork_runs_as_the_person_on_opt_in() -> None:
         org_fork = run_wrapper(env_file, classifier, identity,
                                "repo", "fork", "zabuldon/teslajsonpy", "--org", "example-org",
                                gh_command=fake_gh, extra_env=opt_in)
+        assert org_fork.stdout == "ran-with-token:installation-token\n", org_fork.stderr
         assert "acting as your own GitHub user" not in org_fork.stderr
 
         # Without the opt-in the fork never runs as the person.
@@ -1216,11 +1196,6 @@ def test_pr_create_validation_refusal_preserves_unknown_write_controls() -> None
             assert payload["actor"] == "catalog-app[bot]", payload
             if outcome == "unknown":
                 assert payload["recommended_next_action"] == "follow_operation_reconciliation_strategy", payload
-            if outcome == "not_started":
-                message = payload["failure"]["message"]
-                assert "existing authorization" in message, payload
-                assert "read back the label and all-state PRs" in message, payload
-                assert "do not replay automatically" in message, payload
             assert len(calls.read_text(encoding="utf-8").splitlines()) == 1
 
 

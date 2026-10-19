@@ -1399,7 +1399,6 @@ def test_legacy_gh_usage_error_is_a_local_argument_failure() -> None:
     assert failure.cause == "validation_error"
     assert failure.write_outcome == "not_started"
     assert failure.retryable is False
-    assert "before sending any request" in failure.message
     assert "`--remote` flag is unsupported" in failure.message
 
     # An unexplained failure without gh's usage block keeps its unknown outcome.

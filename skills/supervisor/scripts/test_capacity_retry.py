@@ -22,6 +22,8 @@ import session_record
 import status
 
 FIXTURE = Path(__file__).parent / "fixtures" / "codex-capacity-stop.jsonl"
+# The records Codex writes when `codex queue` delivers a message to an idle thread.
+QUEUED_CONTINUE = Path(__file__).parent / "fixtures" / "codex-queued-continue.jsonl"
 
 
 class CapacityTests(unittest.TestCase):
@@ -71,6 +73,11 @@ class CapacityTests(unittest.TestCase):
             stream.write(json.dumps(record) + "\n")
         os.utime(self.transcript, (self.now, self.now))
 
+    def queued_continue(self):
+        with self.transcript.open("a") as stream:
+            stream.write(QUEUED_CONTINUE.read_text())
+        os.utime(self.transcript, (self.now, self.now))
+
     def capacity_again(self):
         payload = copy.deepcopy(self.records[-1]["payload"])
         kind = payload.pop("type")
@@ -79,8 +86,7 @@ class CapacityTests(unittest.TestCase):
     def continue_sent(self, *_):
         reservation = capacity_retry.load_state(self.state_path)[self.native_id]
         self.assertEqual(reservation["phase"], "pending")
-        self.append("user_message", message="continue")
-        self.append("task_started")
+        self.queued_continue()
         self.capacity_again()
 
     def test_recorded_terminal_error_is_visible_without_agent_text(self):
@@ -326,9 +332,18 @@ class CapacityTests(unittest.TestCase):
     def test_readback_requires_new_continue_from_same_native_transcript(self):
         size = self.transcript.stat().st_size
         self.append("agent_message", message="continue")
+        for role, text in (("assistant", "continue"), ("user", "owner work")):
+            with self.transcript.open("a") as stream:
+                stream.write(json.dumps({"type": "response_item", "payload": {
+                    "type": "message", "role": role,
+                    "content": [{"type": "input_text", "text": text}]}}) + "\n")
         self.assertFalse(capacity_retry.readback_continue(self.entry, size, timeout=0))
-        self.append("user_message", message="continue")
+        before_continue = self.transcript.stat().st_size
+        self.queued_continue()
         self.assertTrue(capacity_retry.readback_continue(self.entry, size, timeout=0))
+        self.assertFalse(capacity_retry.readback_continue(
+            self.entry, self.transcript.stat().st_size, timeout=0))
+        self.assertTrue(capacity_retry.readback_continue(self.entry, before_continue, timeout=0))
         self.assertFalse(capacity_retry.readback_continue({**self.entry, "session_id": "other"},
                                                         size, timeout=0))
 

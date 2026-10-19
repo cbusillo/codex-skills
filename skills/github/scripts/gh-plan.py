@@ -16,6 +16,7 @@ import json
 import os
 import pathlib
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -55,6 +56,7 @@ import github_plan_wait
 import github_plan_trigger
 import github_plan_release
 import github_plan_landing
+import github_plan_status
 import github_agent
 from github_direction_next import (
     normalize_labels,
@@ -111,6 +113,7 @@ PLAN_COMMAND_CONTEXT: dict[str, tuple[str, str, bool]] = {
     "next": ("composite", "mixed", False),
     "close": ("composite", "mixed", True),
     "reconcile-landing": ("composite", "mixed", True),
+    "reconcile-status": ("composite", "rest_core", True),
     "project-add": ("gh_cli_graphql", "graphql", True),
     "project-set": ("gh_cli_graphql", "graphql", True),
     "project-list": ("gh_cli_graphql", "graphql", False),
@@ -124,12 +127,7 @@ PLAN_COMMAND_CONTEXT: dict[str, tuple[str, str, bool]] = {
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "labels": {
-        "plan": "plan",
-        "active": "plan:active",
-        "blocked": "plan:blocked",
-        "waiting": "plan:waiting",
-        "stale": "plan:stale",
-        "done": "plan:done",
+        **github_plan_status.DEFAULT_STATUS_LABELS,
         "audit": "audit",
         "own_project": "own-project",
     },
@@ -428,6 +426,7 @@ def run_raw(
     graphql_operation: github_api_core.GraphQLOperation | None = None,
     completed_steps: list[str] | None = None,
     failed_step: str = "gh_invocation",
+    repository: str | None = None,
 ) -> tuple[str, str, str]:
     """Run gh through the configured actor without implicit identity fallback."""
     tried: list[tuple[str, subprocess.CompletedProcess[str]]] = []
@@ -476,6 +475,8 @@ def run_raw(
     resolved_bucket = bucket or inferred.bucket
     resolved_graphql_operation = graphql_operation or inferred.graphql_operation
     resolved_operation = operation or CURRENT_OPERATION
+    request_repository = repository if repository is not None else github_api_core.github_http_cache.repository_from_command(args)
+    request_env = {**os.environ, "GH_REPO": repository} if repository is not None else None
     initial_retry_actor = route_actor if route_actor == "active-gh-user" else EXPECTED_ACTOR
     initial_expected_actor = None if route_actor == "active-gh-user" else EXPECTED_ACTOR
     retry_rule, _ = github_api_core.operation_retry_rule(resolved_operation)
@@ -485,7 +486,7 @@ def run_raw(
                 operation=resolved_operation, is_write=resolved_is_write or inferred.is_write,
                 gh_cmd=command[0], gh_prefix_args=[], actor=initial_retry_actor,
                 expected_actor=initial_expected_actor,
-                repository=github_api_core.github_http_cache.repository_from_command(args),
+                repository=request_repository,
                 preserve_identity=bool(prefer_active and retry_rule and
                                        retry_rule.actor_policy == "automation_required_with_explicit_project_override"),
             )
@@ -511,6 +512,7 @@ def run_raw(
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                env=request_env,
                 timeout=unchecked_timeout,
             )
         except subprocess.TimeoutExpired:
@@ -530,6 +532,7 @@ def run_raw(
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                env=request_env,
                 timeout=timeout_seconds,
             )
         except subprocess.TimeoutExpired as exc:
@@ -646,7 +649,7 @@ def run_raw(
         expected_actor=initial_expected_actor,
         bucket=resolved_bucket,
         attempt_with_timeout=lambda timeout: attempt(timeout),
-        repository=github_api_core.github_http_cache.repository_from_command(args),
+        repository=request_repository,
         retry_runtime=NEXT_READS.retry_runtime if NEXT_READS is not None and not resolved_is_write else None,
     )
     record_retry_fields(retried)
@@ -911,6 +914,7 @@ def api_json_uncached(
     graphql_operation: github_api_core.GraphQLOperation | None = None,
     completed_steps: list[str] | None = None,
     failed_step: str | None = None,
+    repository: str | None = None,
 ) -> tuple[str, Any]:
     resolved_graphql_operation = graphql_operation
     if github_api_core.is_graphql_path(path) and resolved_graphql_operation is None:
@@ -949,7 +953,7 @@ def api_json_uncached(
             # Transport selects the App from the request path, so a wait or
             # blocker in another owner's repository is checked against that
             # owner's App rather than the command repository's.
-            repository=github_api_core.github_http_cache.repository_from_path(path),
+            repository=repository or github_api_core.github_http_cache.repository_from_path(path),
         )
         reader.completed_steps = list(completed_steps or [])
         try:
@@ -980,6 +984,7 @@ def api_json_uncached(
         graphql_operation=resolved_graphql_operation,
         completed_steps=completed_steps,
         failed_step=failed_step or "gh_invocation",
+        repository=repository,
     )
     status, headers, body = github_api_core.parse_gh_include_output(stdout)
     if status == 0:
@@ -1408,6 +1413,38 @@ def compact_relationship_issue(issue: dict[str, Any], relationship: str) -> dict
     }
 
 
+def read_handoff_history_child(event: dict[str, Any], source_repo: str) -> dict[str, Any]:
+    """Resolve a REST timeline's omitted child through that exact event node."""
+    child = event.get("sub_issue")
+    if isinstance(child, dict):
+        return child
+    node_id = event.get("node_id")
+    if child is not None or not isinstance(node_id, str) or not node_id.strip():
+        raise ClassifiedPlanError("claim_child_history_invalid", "Native child history omitted its issue record")
+    _, response = api_json(
+        "POST", "/graphql", is_write=False, bucket="graphql", failed_step="claim_handoff_child_history_node",
+        repository=source_repo,
+        payload={"query": "query($id:ID!){node(id:$id){id __typename ... on SubIssueAddedEvent{subIssue{id number state title url repository{nameWithOwner}}}}}",
+                 "variables": {"id": node_id}})
+    data = response.get("data") if isinstance(response, dict) else None
+    node = data.get("node") if isinstance(data, dict) else None
+    if (not isinstance(node, dict) or response.get("errors") or node.get("id") != node_id
+            or node.get("__typename") != "SubIssueAddedEvent"):
+        raise ClassifiedPlanError("claim_child_history_invalid", "Native child history event could not be resolved")
+    child = node.get("subIssue")
+    repository = child.get("repository") if isinstance(child, dict) else None
+    repo = repository.get("nameWithOwner") if isinstance(repository, dict) else None
+    if (not isinstance(child, dict) or not isinstance(child.get("id"), str) or not child["id"].strip()
+            or not isinstance(repo, str) or not re.fullmatch(r"[^/\s]+/[^/\s]+", repo)):
+        raise ClassifiedPlanError("claim_child_history_invalid", "Native child history omitted its issue record")
+    related = {"node_id": child["id"], "number": child.get("number"), "state": child.get("state"),
+               "title": child.get("title"), "html_url": child.get("url"), "repository": {"full_name": repo}}
+    compact_relationship_issue(related, "handoff history child")
+    if related["html_url"] != f"https://github.com/{repo}/issues/{related['number']}":
+        raise ClassifiedPlanError("claim_child_history_invalid", "Native child history returned an inconsistent issue identity")
+    return related
+
+
 def read_issue_relationships(
     issue_repo: str,
     number: int,
@@ -1725,7 +1762,6 @@ point is captured.
 
 State: Active
 Next action: Decide the first concrete implementation step.
-Blocked by: None.
 Last verified: Not yet verified.
 
 ## Scope
@@ -2003,7 +2039,8 @@ def read_planning_graph(repo: str, **kwargs: Any) -> list[dict[str, Any]] | None
 
 def cmd_show(args: argparse.Namespace) -> None:
     repo = default_repo(args.repo)
-    config = load_config(repo)
+    issue_repo, number = issue_ref(args.issue, repo)
+    config = load_config(issue_repo)
     graph = None
     if getattr(args, "batch_read", False):
         issue_repo, number = issue_ref(args.issue, repo)
@@ -2049,6 +2086,30 @@ def cmd_show(args: argparse.Namespace) -> None:
         }
         for comment in comments
     ]
+    try:
+        wait = current_wait(issue, comments, issue["repo"])
+    except (PlanError, ValueError) as exc:
+        wait = {"version": 1, "state": "review", "evidence": str(exc), "waits": []}
+    try:
+        relationships = issue.get("_graph_relationships")
+        if relationships is None:
+            _, relationships = read_issue_relationships(issue["repo"], issue["number"], include_blocking=False)
+        else:
+            relationships = {key: [compact_relationship_issue(row, key) for row in rows]
+                             for key, rows in relationships.items()}
+        derived = github_plan_status.derive(issue, relationships, wait, label_names=config["labels"])
+        derived["relationships_complete"] = True
+    except (PlanError, ValueError, TypeError, KeyError) as exc:
+        derived = {"status": "review", "blocked_by": [], "waits": wait["waits"],
+                   "structured_wait": wait, "labels": [], "relationships_complete": False,
+                   "error": {"message": str(exc), **getattr(exc, "payload", {})}}
+    result["derived"] = derived
+    result["recorded_labels"] = result["labels"]
+    if derived["relationships_complete"]:
+        result["labels"] = github_plan_status.project_labels(result["labels"], config["labels"], derived)
+    if not args.full and "Current Status" in result["sections"]:
+        result["recorded_current_status"] = result["sections"]["Current Status"]
+        result["sections"]["Current Status"] = github_plan_status.render_status(result["sections"]["Current Status"], derived)
     emit({"ok": True, "actor": actor, "issue": result,
           **({"batch_read": BATCH_READ_CONTEXT} if getattr(args, "batch_read", False) else {})})
 
@@ -2059,10 +2120,7 @@ def wait_authors(repo: str) -> set[str]:
 
 
 def current_wait(issue: dict[str, Any], comments: list[dict[str, Any]], repo: str) -> dict[str, Any]:
-    # Original contributor text is immutable history, like claim history.
-    managed = contributor_plan_body(issue)
-    source = {**issue, "body": managed} if managed is not None else issue
-    return github_plan_wait.current(source, comments, wait_authors(repo))
+    return github_plan_wait.current(issue, comments, wait_authors(repo))
 
 
 def claim_snapshot(ref: str, repo: str, *, allow_closed: bool = False) -> tuple[dict[str, Any], str, list[dict[str, Any]], bool]:
@@ -2454,7 +2512,7 @@ def _claim_once(args: argparse.Namespace) -> None:
     def check_wait(waiting_issue: dict[str, Any], waiting_status: str, *, target: bool = False) -> bool:
         wait = waiting_issue["claim_wait"]
         status_state = next_plan_status(waiting_issue, load_config(target_repo) if target else config)
-        has_wait = bool(wait["state"] != "clear" or status_state in {"waiting", "blocked", "stale", "done"})
+        has_wait = bool(wait["state"] != "clear" or status_state in {"stale", "done"})
         if has_wait and not args.wait_resolved:
             raise ClassifiedPlanError("claim_wait_unresolved",
                 "Review the structured wait with gh-plan.py wait. For a missing legacy record, read the full "
@@ -2580,9 +2638,7 @@ def _claim_once(args: argparse.Namespace) -> None:
         for event in history:
             if event.get("event") != "sub_issue_added":
                 continue
-            if not isinstance(event.get("sub_issue"), dict):
-                raise ClassifiedPlanError("claim_child_history_invalid", "Native child history omitted its issue record")
-            children.append(event["sub_issue"])
+            children.append(read_handoff_history_child(event, source_repo))
         source_ids = ({str(source_claim_id)} if source_claim_id is not None else set()) | {
             str(comment["id"]) for comment in source_comments or []
             if type(comment.get("id")) is int and comment["id"] > 0
@@ -2891,57 +2947,7 @@ def _claim_once(args: argparse.Namespace) -> None:
     def admission_line() -> str:
         if not admission:
             return ""
-        track = None
-        complete = True
-        limitations: list[str] = []
-        read_failures: list[dict[str, Any]] = []
-        if admission == "milestone":
-            def read_parent(parent_repo: str, parent_number: int) -> dict[str, Any] | None:
-                try:
-                    return api_json("GET", f"/repos/{parent_repo}/issues/{parent_number}/parent", is_write=False,
-                                    bucket="rest_core", failed_step="claim_admission_parent")[1]
-                except PlanError as parent_error:
-                    if (parent_error.api_result or {}).get("status") == 404:
-                        return None
-                    raise
-
-            def graph_read(surface: str, node_repo: str, node_number: int) -> Any:
-                # Recover only admission reads; independent claim guards still run.
-                try:
-                    if surface == "issue":
-                        return get_issue(str(node_number), node_repo)[1]
-                    if surface == "parent":
-                        return read_parent(node_repo, node_number)
-                    return collect_paged_rest_items(
-                        f"/repos/{node_repo}/issues/{node_number}/dependencies/blocking",
-                        query={}, bucket="rest_core", step_prefix="claim_admission_blocking")[1]
-                except PlanError as graph_error:
-                    if "graph_read_unavailable" not in limitations:
-                        limitations.append("graph_read_unavailable")
-                    read_failures.append({"repo": node_repo, "number": node_number, "surface": surface,
-                                          "status": (graph_error.api_result or {}).get("status")})
-                    return {} if surface == "issue" else None if surface == "parent" else []
-
-            track, complete = github_plan_claim.admission_track(
-                (issue_repo, number), issue_repo.split("/")[0],
-                read_issue=lambda node_repo, node_number: graph_read("issue", node_repo, node_number),
-                read_parent=lambda node_repo, node_number: graph_read("parent", node_repo, node_number),
-                read_blocking=lambda node_repo, node_number: graph_read("blocking", node_repo, node_number),
-                limitations=limitations,
-            )
-            if not track and not admission_unlinked:
-                raise ClassifiedPlanError(
-                    "claim_admission_unlinked",
-                    "Milestone admission needs this issue linked into its milestone's Track graph (a sub-issue or blocker "
-                    "of the Track or of work already in its graph). Link it with gh-plan.py link, or pass "
-                    "--admission-unlinked REASON" + ("" if complete else "; graph limitations: " + ", ".join(limitations)),
-                    payload={"graph_walk_complete": complete, "graph_limitations": limitations,
-                             "graph_read_failures": read_failures},
-                )
-        record = github_plan_claim.admission_text(admission, admission_links, track=track,
-                                                 unlinked=admission_unlinked, graph_complete=complete)
-        if limitations and not track:
-            record += "; graph verification incomplete: " + ", ".join(limitations)
+        record = github_plan_claim.admission_text(admission, admission_links, unlinked=admission_unlinked)
         return record + "\n\n"
 
     def refuse_or_route(competing_claims: list[dict[str, Any]], route_comments: list[dict[str, Any]]) -> None:
@@ -3092,7 +3098,6 @@ def _claim_once(args: argparse.Namespace) -> None:
         status_text = (
             f"State: Active; owned by {claim['worker']}.\nSession: {claim['session']}\n"
             f"Branch: {claim['branch']}\nNext action: {args.next_action}\n"
-            + "Blocked by: None.\nWaiting for: See the structured wait record below.\n"
             + f"Last verified: {claim['claimed_at']}\n\n"
             + (f"Wait resolution: {args.wait_resolved}\n\n" if handoff_id and not refresh_pr and args.wait_resolved else "")
             + github_plan_claim.marker(claim)
@@ -3187,6 +3192,74 @@ def _claim_once(args: argparse.Namespace) -> None:
           "completed_steps": completed})
 
 
+def automatic_planning_writes_allowed() -> bool:
+    """An exact personal command approval never authorizes discovered targets."""
+    return not (os.environ.get("GH_PLAN_SKIP_BOT") == "1"
+                or os.environ.get("GH_PLAN_ALLOW_ACTIVE_FIRST") == "1"
+                or github_identity.active_auth_fallback_allowed()
+                or github_identity.own_user_opted_in())
+
+
+def refresh_planning_targets(targets: list[tuple[str, int]], *, apply: bool = True,
+                             include_dependents: bool = False, required: bool = True,
+                             config_optional_unless_planning: bool = False,
+                             planning_checkout: str | None = None) -> dict[str, Any]:
+    """A confirmed fact write and its label projection have separate receipts."""
+    tasks = [{"repo": repo, "number": number, "role": "related", "required": required,
+              **({"config_optional_unless_planning": True} if config_optional_unless_planning else {})}
+             for repo, number in dict.fromkeys(targets)]
+    if include_dependents:
+        for repo, number in targets:
+            for target_repo, target_number in github_plan_landing.neighborhood(
+                    argparse.Namespace(**globals()), repo, [(repo, number)]):
+                if (target_repo, target_number) in targets:
+                    continue
+                entry = {"repo": target_repo, "number": target_number, "role": "related", "automatic": True}
+                if target_repo.split("/")[0].casefold() != repo.split("/")[0].casefold():
+                    entry["status"] = "review_cross_repository"
+                if not any(item["repo"] == target_repo and item["number"] == target_number for item in tasks):
+                    tasks.append(entry)
+    if planning_checkout:
+        root_repositories = {repo.casefold() for repo, _ in targets}
+        for entry in tasks:
+            if entry["repo"].casefold() in root_repositories:
+                entry["planning_checkout"] = planning_checkout
+    return github_plan_landing.run_reconciliation_tasks(argparse.Namespace(**globals()), tasks, apply=apply)
+
+
+def status_recovery(repo: str, number: int) -> dict[str, Any]:
+    return {"issue": {"repo": repo, "number": number},
+            "next_action": f"gh-plan.py --repo {repo} reconcile-status {number} --apply",
+            "scope": "Retry only the projection after resolving its reported review or failure; preserve the committed fact"}
+
+
+def cmd_reconcile_status(args: argparse.Namespace) -> None:
+    repo, number = issue_ref(args.issue, default_repo(args.repo))
+    recovery = status_recovery(repo, number)
+    planning_checkout = getattr(args, "planning_checkout", None)
+    if planning_checkout:
+        checkout_path = pathlib.Path(planning_checkout).expanduser()
+        if not checkout_path.is_dir() or (repo_from_git(checkout_path) or "").casefold() != repo.casefold():
+            raise PlanError("--planning-checkout must name a checkout of the resolved target repository")
+    if args.include_dependents:
+        recovery["next_action"] = f"gh-plan.py --repo {repo} reconcile-status {number} --include-dependents --apply"
+    if planning_checkout:
+        recovery["next_action"] += " " + shlex.quote("--planning-checkout=" + planning_checkout)
+    try:
+        result = refresh_planning_targets([(repo, number)], apply=args.apply,
+            include_dependents=args.include_dependents, required=True,
+            **({"planning_checkout": planning_checkout} if planning_checkout else {}))
+    except PlanError as error:
+        error.payload["recovery"] = recovery
+        raise
+    except (ValueError, KeyError, TypeError, OSError) as error:
+        raise PlanError(str(error), payload={"recovery": recovery}) from error
+    result["recovery"] = recovery
+    if not result["ok"]:
+        raise PlanError("Planning label projection is incomplete", payload=result)
+    emit(result)
+
+
 def cmd_wait(args: argparse.Namespace) -> None:
     try:
         wait_once(args)
@@ -3264,8 +3337,14 @@ def wait_once(args: argparse.Namespace) -> None:
         raise PlanError(str(exc), failure=failure, payload={"structured_wait": wait, "comment": result,
                         "completed_steps": ["post_wait"],
                         "recovery": "Read the published comment and latest wait before any retry"}) from exc
-    emit({"ok": True, "actor": actor, "structured_wait": wait, "comment": result,
-          "issue": compact_issue(issue)})
+    projection = refresh_planning_targets([(issue["repo"], issue["number"])]) if kind == "issue" else None
+    published = {"actor": actor, "structured_wait": wait, "comment": result,
+                 "issue": compact_issue(observed), "projection": projection, "completed_steps": ["post_wait", "wait_record_readback"]}
+    if projection is not None and projection["coverage"] != "complete":
+        published["recovery"] = status_recovery(issue["repo"], issue["number"])
+    if projection is not None and not projection["ok"]:
+        raise PlanError("Wait record is published; planning label projection is incomplete", payload=published)
+    emit({"ok": True, **published})
 
 
 def cmd_create(args: argparse.Namespace) -> None:
@@ -3389,7 +3468,7 @@ def cmd_create(args: argparse.Namespace) -> None:
             )
         else:
             completed_steps.append("sync_project")
-    result = {
+    result: dict[str, Any] = {
         "ok": True,
         "actor": actor,
         "expected_actor": issue.get("expected_actor", expected_actor),
@@ -3401,6 +3480,11 @@ def cmd_create(args: argparse.Namespace) -> None:
     for key in ("operation_marker", "reconciled", "reconciliation"):
         if key in issue:
             result[key] = issue[key]
+    result["projection"] = refresh_planning_targets([(repo, int(issue["number"]))])
+    if result["projection"]["coverage"] != "complete":
+        result["recovery"] = status_recovery(repo, int(issue["number"]))
+    if not result["projection"]["ok"]:
+        raise PlanError("Issue is created; planning label projection is incomplete; do not repeat creation", payload=result)
     emit(result)
 
 
@@ -3488,9 +3572,20 @@ def cmd_link(args: argparse.Namespace) -> None:
     else:
         raise PlanError(f"Unsupported relationship: {rel}")
 
+    affected = target if rel == "blocks" else source
+    projection = (refresh_planning_targets([(affected["repo"], int(affected["number"]))])
+                  if rel in {"blocked-by", "blocks", "subissue"} else None)
+    recovery = (status_recovery(affected["repo"], int(affected["number"]))
+                if projection is not None and projection["coverage"] != "complete" else None)
+    if projection is not None and not projection["ok"]:
+        raise PlanError("Native relationship is linked; label projection is incomplete; do not repeat the edge write",
+                        payload={"relationship": rel, "source": compact_issue(source), "target": compact_issue(target),
+                                 "projection": projection, "recovery": recovery, "completed_steps": ["link_relationship"]})
     emit({
         "ok": True,
         "actor": actor,
+        "projection": projection,
+        "recovery": recovery,
         "relationship": rel,
         "source": compact_issue(source),
         "target": compact_issue(target),
@@ -3530,7 +3625,16 @@ def cmd_unlink(args: argparse.Namespace) -> None:
         actor, _ = rest_edit_issue(source_repo, source_number, body=updated)
     else:
         raise PlanError(f"Unlink supports blocked-by, blocks, subissue, and related; got {rel}")
-    emit({"ok": True, "actor": actor, "relationship_removed": rel})
+    affected = target if rel == "blocks" else source
+    projection = (refresh_planning_targets([(affected["repo"], int(affected["number"]))])
+                  if rel in {"blocked-by", "blocks", "subissue"} else None)
+    recovery = (status_recovery(affected["repo"], int(affected["number"]))
+                if projection is not None and projection["coverage"] != "complete" else None)
+    if projection is not None and not projection["ok"]:
+        raise PlanError("Native relationship is unlinked; label projection is incomplete; do not repeat the edge write",
+                        payload={"relationship_removed": rel, "source": compact_issue(source), "target": compact_issue(target),
+                                 "projection": projection, "recovery": recovery, "completed_steps": ["unlink_relationship"]})
+    emit({"ok": True, "actor": actor, "relationship_removed": rel, "projection": projection, "recovery": recovery})
 
 
 def cmd_deps(args: argparse.Namespace) -> None:
@@ -3921,6 +4025,7 @@ def cmd_next(args: argparse.Namespace) -> None:
     candidates: list[dict[str, Any]] = []
     excluded: list[dict[str, Any]] = routing_excluded
     dependency_degraded_count = 0
+    structured_waits: dict[tuple[str, int], dict[str, Any]] = {}
     for issue in issues:
         issue_url = issue.get("html_url") or issue.get("url")
         focus = focus_by_url.get(issue_url) if isinstance(issue_url, str) else None
@@ -3930,6 +4035,7 @@ def cmd_next(args: argparse.Namespace) -> None:
             continue
         relationship_error = None
         relationships = None
+        wait = {"version": 1, "state": "review", "evidence": "", "waits": []}
         truncated_relationships: list[str] = []
         try:
             relation_actor, relationships, truncated_relationships = read_next_issue_relationships(
@@ -3940,19 +4046,40 @@ def cmd_next(args: argparse.Namespace) -> None:
             actor = relation_actor or actor
         except PlanError as exc:
             relationship_error = next_source_error(exc)
+        wait_error = None
+        comment_limit = getattr(args, "comment_limit", None) or 100
+        try:
+            if "_graph_comments" in issue:
+                comments = issue["_graph_comments"]
+            else:
+                _, comments = collect_paged_rest_items(
+                    f"/repos/{repo}/issues/{issue['number']}/comments", query={}, limit=comment_limit + 1,
+                    bucket="rest_core", step_prefix="next_issue_comments")
+            if len(comments) > comment_limit:
+                wait_error = "Discussion exceeded the comment read bound"
+            else:
+                wait = current_wait(issue, comments, repo)
+        except (ValueError, PlanError) as exc:
+            wait_error = next_source_error(exc) if isinstance(exc, PlanError) else str(exc)
+        if wait_error is not None:
+            wait = {"version": 1, "state": "review", "evidence": wait_error, "waits": []}
         if truncated_relationships:
             relationship_error = (
                 f"dependency relationship reads exceeded the per-relationship limit "
                 f"of {NEXT_RELATIONSHIP_LIMIT}"
             )
             relationships = None
+        structured_waits[(repo.casefold(), int(issue["number"]))] = wait
         disposition, evaluated = evaluate_next_plan(
             issue,
             config=config,
             focus=focus,
             relationships=relationships,
             relationship_error=relationship_error,
+            structured_wait=wait,
         )
+        if wait_error is not None:
+            evaluated.update(wait_error=wait_error, wait_evidence_complete=False)
         if relationship_error is not None:
             dependency_degraded_count += 1
             if truncated_relationships:
@@ -3960,7 +4087,8 @@ def cmd_next(args: argparse.Namespace) -> None:
         (candidates if disposition == "candidate" else excluded).append(evaluated)
 
     wait_context = next_wait_context(issues, scan_limit=args.scan_limit,
-                                     inventory_complete=not inventory_truncated and not scan_truncated)
+                                     inventory_complete=not inventory_truncated and not scan_truncated,
+                                     structured_waits=structured_waits)
     exclude_landed_candidates(candidates, excluded, wait_context)
     rank_next_candidates(candidates, direction_milestones=direction_milestones)
     if direction_milestones is not None:
@@ -4067,7 +4195,8 @@ def next_source_delivery(item: dict[str, Any], trusted: set[str], *, repositorie
             def read_edit() -> tuple[str, Any]:
                 return api_json("POST", "/graphql", bucket="graphql", failed_step="next_delivery_body_edit",
                     payload={"query": "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){createdAt lastEditedAt}}}",
-                             "variables": {"owner": owner, "name": name, "number": item["number"]}}, is_write=False)
+                             "variables": {"owner": owner, "name": name, "number": item["number"]}}, is_write=False,
+                    repository=item["repo"])
             try:
                 _, edited = (NEXT_READS.observe(f"graphql:delivery_body_edit:{item['repo']}#{item['number']}", read_edit)
                              if NEXT_READS is not None else read_edit())
@@ -4735,7 +4864,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
         item = node["item"]
         reason = item.get("exclusion")
         wait = github_direction_next.milestone_wait_evidence(item, node.get("status_text") or "", titles)
-        listed_wait = reason == "waiting" and ((item.get("milestone") or {}).get("title") in titles or not wait["valid"])
+        listed_wait = reason in {"waiting", "wait_review_required"} and ((item.get("milestone") or {}).get("title") in titles or not wait["valid"])
         if ((not reason or capacity_evidence or listed_wait)
                 and reason not in {"completed", "pull_request", "unknown_dependencies"}):
             parent_observation(key)
@@ -4934,17 +5063,17 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
             seeds[(raw["repo"].casefold(), raw["number"])] = raw
             node = read_node(raw["repo"], raw["number"])
             evaluated_discoveries.append(raw)
-            item = {**node["item"], "source": "repository_discovery"}
+            item: dict[str, Any] = {**node["item"], "source": "repository_discovery"}
             original_exclusion = item.get("exclusion")
             ordinary_discussion_complete = bool((item.get("discussion") or {}).get("complete"))
             held = github_direction_next.repository_hold(selection_context, item["repo"])
             status_text = node.get("status_text") or ""
             wait_evidence = github_direction_next.milestone_wait_evidence(item, status_text, titles)
-            listed_wait = original_exclusion == "waiting" and ((item.get("milestone") or {}).get("title") in titles or not wait_evidence["valid"])
+            listed_wait = original_exclusion in {"waiting", "wait_review_required"} and ((item.get("milestone") or {}).get("title") in titles or not wait_evidence["valid"])
             if (not original_exclusion or capacity_evidence or listed_wait) and item.get("exclusion") not in {"completed", "pull_request", "unknown_dependencies"}:
                 exclusion = item.get("exclusion")
                 item = with_ancestry(item)
-                preserve_ancestry = exclusion == "waiting" and (
+                preserve_ancestry = exclusion in {"waiting", "wait_review_required"} and (
                     item.get("exclusion") == "parent_waiting"
                     or (item.get("exclusion") == "unknown_ancestry" and not wait_evidence["valid"])
                 )
@@ -4973,7 +5102,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
                     })
                 if item["exclusion"] in {"unknown_dependencies", "unknown_ancestry"}:
                     discovery["capacity_complete"] = False
-                    if not held and (original_exclusion != "waiting" or not ordinary_discussion_complete
+                    if not held and (original_exclusion not in {"waiting", "wait_review_required"} or not ordinary_discussion_complete
                                      or (item.get("milestone") or {}).get("title") in titles):
                         discovery["complete"] = False
             else:
@@ -5460,6 +5589,8 @@ def close_error_with_recovery(
         project_state = "warning"
     else:
         project_state = "synchronized_before_close"
+    authority_denied = exc.failure and exc.failure.cause in {
+        "permission_denied", "not_installed", "repository_access_denied"}
     return PlanError(
         str(exc),
         failure=exc.failure,
@@ -5476,8 +5607,9 @@ def close_error_with_recovery(
                 "issue_closed": issue_closed,
                 "completion_metadata": metadata_state,
                 "project_state": project_state,
-                "retry_safe": True,
-                "next_action": "rerun_same_close_command",
+                "retry_safe": not bool(authority_denied),
+                "next_action": "existing_authorized_target_session" if authority_denied else "rerun_same_close_command",
+                "projection_command": f"gh-plan.py --repo {issue_repo} reconcile-status {number} --include-dependents --apply",
             },
         },
     )
@@ -5710,16 +5842,68 @@ def cmd_close(args: argparse.Namespace) -> None:
             actor = close_result.get("actor") or actor
             completed_steps.append("close_issue")
 
+    source_error: PlanError | None = None
+    denied_repositories: dict[str, Any] = {}
+    stopped_reason: dict[str, Any] | None = None
+    source_projection: dict[str, Any] = {"repo": issue_repo, "number": number}
+
+    def record_source_error(error: PlanError, metadata_state: str, *, writes_started: bool) -> None:
+        nonlocal source_error, stopped_reason
+        wrapped = close_error_with_recovery(error, issue_repo=issue_repo, number=number, close_reason=close_reason,
+            relationship_preflight=relationship_preflight, project_result=project_result, issue_closed=True,
+            metadata_state=metadata_state, planning_config=planning_config)
+        if planning_checkout:
+            wrapped.payload["recovery"]["projection_command"] += " " + shlex.quote("--planning-checkout=" + planning_checkout)
+        if close_comment:
+            resume = ["gh-plan.py", "--repo", issue_repo, "close", str(number),
+                      "--reason", close_reason, "--comment=" + close_comment]
+            for flag, value in (("--project", args.project), ("--owner", args.owner),
+                                ("--planning-checkout", planning_checkout)):
+                if value:
+                    resume.append(flag + "=" + str(value))
+            comment_outcome = "not_attempted"
+            if metadata_state == "comment_incomplete":
+                comment_outcome = (error.failure.write_outcome if error.failure else None) or "unknown"
+            wrapped.payload["recovery"]["pending_comment"] = {
+                "resume_argv": resume,
+                "write_outcome": comment_outcome,
+                "next_action": "An existing authorized owning session reads current state and discussion before resuming these arguments; "
+                               "the confirmed close and exact-body comment are read-reconciled and deduplicated first. "
+                               "Observe an unknown comment outcome before resuming. Metadata-only projection does not post this note. "
+                               "Do not replay a denied write in this session or switch identity."}
+        if source_error is None:
+            source_error = wrapped
+        source_projection["writes_started"] = writes_started
+        denied, stop = github_plan_landing.reconciliation_error(source_projection, wrapped)
+        reason = {"repo": issue_repo, "number": number, "error": source_projection["error"]}
+        if denied:
+            denied_repositories[issue_repo.casefold()] = reason
+        if stop:
+            stopped_reason = reason
+
     label_source = close_result if isinstance(close_result.get("labels"), list) else issue
-    current_labels = {name.casefold() for name in normalize_labels(label_source.get("labels"))}
-    done_label = plan_labels.get("done")
-    add_labels = [done_label] if done_label and done_label.casefold() not in current_labels else None
-    remove_labels = [
-        label
-        for key in ("active", "blocked", "waiting", "stale")
-        if (label := plan_labels.get(key)) and label.casefold() in current_labels
-    ] or None
-    if add_labels or remove_labels:
+    try:
+        _, wait_comments = collect_paged_rest_items(
+            f"/repos/{issue_repo}/issues/{number}/comments", query={}, bucket="rest_core", step_prefix="close_wait_comments")
+        close_wait = current_wait(issue, wait_comments, issue_repo)
+    except (PlanError, ValueError) as error:
+        try:
+            close_wait = github_plan_landing.unread_wait(error)
+        except PlanError as denied_error:
+            record_source_error(denied_error, "wait_read_incomplete", writes_started=False)
+            close_wait = {"version": 1, "state": "review", "evidence": str(denied_error), "waits": []}
+    try:
+        closed_projection = github_plan_status.derive(
+            {**issue, "state": "closed", "labels": label_source.get("labels", [])},
+            {"blocked_by": relationship_preflight.get("blocked_by", [])}, close_wait, label_names=plan_labels)
+        label_diff = github_plan_status.label_changes(normalize_labels(label_source.get("labels")), plan_labels, closed_projection)
+    except (PlanError, ValueError, KeyError, TypeError) as error:
+        error = error if isinstance(error, PlanError) else PlanError(str(error))
+        raise close_error_with_recovery(error, issue_repo=issue_repo, number=number, close_reason=close_reason,
+            relationship_preflight=relationship_preflight, project_result=project_result, issue_closed=True,
+            metadata_state="wait_read_incomplete", planning_config=planning_config) from error
+    add_labels, remove_labels = label_diff["add"] or None, label_diff["remove"] or None
+    if (add_labels or remove_labels) and not denied_repositories and stopped_reason is None:
         try:
             label_result = github_issue_core.edit_issue(
                 number,
@@ -5731,23 +5915,21 @@ def cmd_close(args: argparse.Namespace) -> None:
                 operation=CURRENT_OPERATION,
             )
         except github_issue_core.IssueError as exc:
-            raise close_error_with_recovery(
-                plan_error_from_issue(exc, completed_steps=completed_steps),
-                issue_repo=issue_repo,
-                number=number,
-                close_reason=close_reason,
-                relationship_preflight=relationship_preflight,
-                project_result=project_result,
-                issue_closed=True,
-                metadata_state="labels_incomplete",
-                planning_config=planning_config,
-            ) from exc
-        actor = label_result.get("actor") or route_actor
-        completed_steps.append("update_labels")
-    else:
+            record_source_error(plan_error_from_issue(exc, completed_steps=completed_steps),
+                                "labels_incomplete", writes_started=True)
+        else:
+            actor = label_result.get("actor") or route_actor
+            completed_steps.append("update_labels")
+    elif not add_labels and not remove_labels:
         completed_steps.append("labels_already_complete")
+    source_projection.update(derived=closed_projection, changes=label_diff)
+    if source_error is None:
+        source_projection.update(github_plan_status.projection_outcome(
+            closed_projection, "reconciled" if add_labels or remove_labels else "unchanged"))
+    if closed_projection["wait_review_required"] and source_error is None:
+        source_projection["next_action"] = f"gh-plan.py --repo {issue_repo} wait {number}"
 
-    if close_comment:
+    if close_comment and source_error is None:
         try:
             comment_result = github_comment_core.comment(
                 "issue",
@@ -5767,17 +5949,8 @@ def cmd_close(args: argparse.Namespace) -> None:
                 comment_result.get("completed_steps"),
             )
         except github_comment_core.CommentError as exc:
-            raise close_error_with_recovery(
-                plan_error_from_comment(exc, completed_steps=completed_steps),
-                issue_repo=issue_repo,
-                number=number,
-                close_reason=close_reason,
-                relationship_preflight=relationship_preflight,
-                project_result=project_result,
-                issue_closed=True,
-                metadata_state="comment_incomplete",
-                planning_config=planning_config,
-            ) from exc
+            record_source_error(plan_error_from_comment(exc, completed_steps=completed_steps),
+                                "comment_incomplete", writes_started=True)
 
     public_comment = {key: value for key, value in comment_result.items() if key != "completed_steps"}
     output_expected_actor = (
@@ -5800,11 +5973,35 @@ def cmd_close(args: argparse.Namespace) -> None:
     if owner_decision is not None:
         closed_result["owner_decision"] = owner_decision
 
+    try:
+        dependents = (github_plan_landing.reconcile_dependents(
+                          argparse.Namespace(**globals()), issue_repo, number, apply=True,
+                          denied_repositories=denied_repositories, stopped_reason=stopped_reason,
+                          **({"planning_checkout": planning_checkout} if planning_checkout else {}))
+                      if getattr(args, "reconcile_dependents", True) else {"ok": True, "issues": []})
+    except (PlanError, ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError) as exc:
+        dependents = github_plan_landing.discovery_failure(argparse.Namespace(**globals()),
+            issue_repo, number, exc, planning_checkout=planning_checkout)
+    if source_error is not None:
+        source_error.payload.update(closed=closed_result, source_projection=source_projection,
+                                    dependents=dependents, completed_steps=completed_steps,
+                                    comment=public_comment or None)
+        raise source_error
+    if not dependents["ok"]:
+        raise PlanError("Issue is closed; dependent planning reconciliation is incomplete", payload={
+            "closed": closed_result, "source_projection": source_projection,
+            "dependents": dependents, "completed_steps": completed_steps,
+            "recovery": {"next_action": f"gh-plan.py --repo {issue_repo} reconcile-status {number} --include-dependents --apply" + (" " + shlex.quote("--planning-checkout=" + planning_checkout) if planning_checkout else ""),
+                         "scope": "Repair only metadata after resolving the reported problem; preserve the confirmed close"}})
     emit({
         "ok": True,
         "actor": actor,
         "expected_actor": output_expected_actor,
         "closed": closed_result,
+        "dependents": dependents,
+        "source_projection": source_projection,
+        "coverage": "partial" if closed_projection["wait_review_required"] or dependents.get("coverage") == "partial" else "complete",
+        "review_required": closed_projection["wait_review_required"] or dependents.get("review_required", False),
         "comment": public_comment or None,
         "project": project_result,
         "relationship_preflight": relationship_preflight,
@@ -6088,7 +6285,7 @@ query($id: ID!) {
 """
 
 
-def unedited_owner_decision(comment: dict[str, Any]) -> bool:
+def unedited_owner_decision(comment: dict[str, Any], *, repository: str) -> bool:
     """Require explicit edit-history evidence matching the recorded comment."""
     node_id = comment.get("node_id")
     if not isinstance(node_id, str) or not node_id:
@@ -6096,7 +6293,7 @@ def unedited_owner_decision(comment: dict[str, Any]) -> bool:
     _, data = api_json(
         "POST", "/graphql",
         {"query": OWNER_DECISION_COMMENT_QUERY, "variables": {"id": node_id}},
-        is_write=False, failed_step="read_owner_decision_edit_history",
+        is_write=False, failed_step="read_owner_decision_edit_history", repository=repository,
     )
     node = (data.get("data") or {}).get("node")
     if data.get("errors") or not isinstance(node, dict) or "lastEditedAt" not in node:
@@ -6122,7 +6319,7 @@ def owner_reaction_decision(
     comment_id = comment.get("id")
     if not isinstance(comment_id, int) or isinstance(comment_id, bool):
         return None
-    if not unedited_owner_decision(comment):
+    if not unedited_owner_decision(comment, repository=issue_repo):
         return None
     _, reactions = collect_paged_rest_items(
         f"/repos/{issue_repo}/issues/comments/{comment_id}/reactions",
@@ -6144,7 +6341,7 @@ def owner_reaction_decision(
             and isinstance(login, str) and login.casefold() == issue_repo.split("/", 1)[0].casefold()
             and isinstance(reacted_at, str) and isinstance(created_at, str)
             and times[0] > times[2] and times[0] >= times[1]
-            and unedited_owner_decision(comment)
+            and unedited_owner_decision(comment, repository=issue_repo)
         ):
             return {
                 "approval": "owner_reaction", "comment_url": comment.get("html_url"),
@@ -6180,6 +6377,7 @@ def check_owner_decides_not_planned(issue_repo: str, number: int, issue: dict[st
             },
             is_write=False,
             failed_step="read_issue_last_edited",
+            repository=issue_repo,
         )
         last_edited = data["data"]["repository"]["issue"]["lastEditedAt"]
     except (PlanError, KeyError, TypeError) as exc:
@@ -6309,11 +6507,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--planning-checkout", help="Canonical planning repository checkout for cross-repository ownership inventory")
     p.add_argument("--wait-resolved", help="Existing resolution evidence for a recorded wait/hold; grants no new authority")
     p.add_argument("--admission", choices=github_plan_claim.ADMISSIONS,
-                   help="Which overall Order rule admits this work; milestone requires a native link into a milestone Track graph")
+                   help="Which overall Order rule admits this work; recorded with evidence, without an admission graph check")
     p.add_argument("--admission-link", action="append", default=[], metavar="URL",
                    help="Issue or PR URL, optionally with #issuecomment-ID; preserves the cited comment; repeat-stop needs both occurrences")
     p.add_argument("--admission-unlinked", metavar="REASON",
-                   help="Why milestone work cannot be linked into its Track graph yet")
+                   help="Optional context for milestone admission; recorded without a graph check")
     p.set_defaults(func=cmd_claim)
 
     p = sub.add_parser("wait", help="Report legacy evidence or record a reviewed structured wait; never parses prose")
@@ -6381,7 +6579,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="How many issues to evaluate per scan allowance (default %(default)s); global next has separate graph and discovery allowances, each with an extra allowance for other-agent issues; discovery also reserves a held-repository allowance and evaluates marked incidents separately")
     p.add_argument("--repo-limit", type=positive_limit, help="Global next: bound accessible repository inventory (default 100)")
     p.add_argument("--repository-issue-limit", type=positive_limit, help=f"Global next: open issues per repository (default {NEXT_DEFAULT_SCAN_LIMIT})")
-    p.add_argument("--comment-limit", type=positive_limit, help="Global next: comments per evaluated issue (default 100)")
+    p.add_argument("--comment-limit", type=positive_limit, help="Comments per evaluated issue (default 100)")
     p.add_argument("--read-workers", type=positive_limit, choices=range(1, 17), default=8, help="Global next: concurrent read workers (default %(default)s)")
     p.add_argument("--time-budget", type=positive_limit, default=180, help="Global next: total read budget in seconds (default %(default)s); raise for wider evidence")
     p.add_argument("--selection-context", help="Current owner holds and issue review evidence JSON; never a durable plan")
@@ -6404,6 +6602,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--pr", type=int, required=True)
     p.add_argument("--apply", action="store_true", help="Repair already-closed automation-owned plans; default is read-only")
     p.set_defaults(func=cmd_reconcile_landing)
+
+    p = sub.add_parser("reconcile-status", help="Project an issue's status labels without repeating a fact write")
+    p.add_argument("issue")
+    p.add_argument("--planning-checkout", help="Verified target repository checkout used for root and same-repository configuration")
+    p.add_argument("--include-dependents", action="store_true", help="Also refresh direct native parents and blocking dependents")
+    p.add_argument("--apply", action="store_true", help="Apply the guarded label projection; default is read-only")
+    p.set_defaults(func=cmd_reconcile_status)
 
     p = sub.add_parser("project-add", help="Add issue to a personal/org Project")
     p.add_argument("issue")

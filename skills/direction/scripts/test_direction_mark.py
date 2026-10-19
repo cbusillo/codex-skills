@@ -39,12 +39,12 @@ def test_turn_records_repository_and_audit_preserves_daily_evidence() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "nested" / "direction-last-check.json"
         first = mark.mark_turn(path, "owner/start", NOW)
-        assert first == {"turn": mark.utc_stamp(NOW), "turn_repo": "owner/start", "audits": {}}, first
+        assert first == {"turn": mark.utc_stamp(NOW), "turn_repo": "owner/direction", "audits": {}}, first
         later = mark.mark_audit(path, "owner/repo", NOW + dt.timedelta(days=1))
         stamp = mark.utc_stamp(NOW + dt.timedelta(days=1))
         assert later == {**first, "audits": {"owner/repo": stamp}, "audit_runs": {"owner/repo": {"ran": stamp}}}, later
-        again = mark.mark_turn(path, "owner/next", NOW + dt.timedelta(days=2))
-        assert again["turn_repo"] == "owner/next"
+        again = mark.mark_turn(path, "next", NOW + dt.timedelta(days=2))
+        assert again["turn_repo"] == "next/direction"
         assert again["audits"] == {"owner/repo": "2026-09-23T12:00:30Z"}, "a turn must not touch audit stamps"
         other = mark.mark_audit(path, "owner/other", NOW + dt.timedelta(days=3))
         assert (other["turn"], other["turn_repo"]) == (again["turn"], again["turn_repo"])
@@ -52,24 +52,41 @@ def test_turn_records_repository_and_audit_preserves_daily_evidence() -> None:
         assert json.loads(path.read_text()) == other
 
 
+def test_a_first_held_audit_keeps_its_own_window_start_for_the_reread() -> None:
+    mark = load(SCRIPT, "direction_mark_under_test")
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "direction-last-check.json"
+        since = NOW - dt.timedelta(days=7)
+        first = mark.mark_audit(path, "owner/repo", NOW, "capacity_reads:owner/repo", since)
+        assert first["audits"] == {"owner/repo": mark.utc_stamp(since)}, "a first held run must keep a window start"
+        later = mark.mark_audit(path, "owner/repo", NOW + dt.timedelta(days=8), "capacity_reads:owner/repo",
+                                NOW + dt.timedelta(days=1))
+        assert later["audits"] == first["audits"], "a later held run must not move the start forward"
+
+
 def test_hook_reads_what_the_marker_writes() -> None:
     mark = load(SCRIPT, "direction_mark_under_test2")
     hook = load(HOOK, "direction_check_hook_under_test")
     assert hook.MARKER_NAME == mark.MARKER_NAME
+    assert (hook.TURN_RECORD_TAG, hook.WEEKLY_RECORD_TAG) == (mark.TURN_RECORD_TAG, mark.WEEKLY_RECORD_TAG)
     for env in ({"HOME": "/h"}, {"CODEX_HOME": "/h/.codex", "HOME": "/h"}, {"DIRECTION_MARKER": "/s/m.json"}):
         assert hook.marker_path(env) == mark.marker_path(env), env
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / mark.MARKER_NAME
         mark.mark_audit(path, "owner/repo", NOW)
         read = hook.read_marker(path)
-        assert "no direction turn has been recorded" in hook.reminder(read, NOW + dt.timedelta(hours=1), "owner/repo", path)
+        assert hook.marker_account(read) is None, "a single-repository audit does not name the account"
+        assert hook.reminder_states(read, NOW + dt.timedelta(hours=1), "owner") == {"turn": "due", "audit": "due"}
         assert "turn" not in mark.load(path)
-        mark.mark_turn(path, "owner/start", NOW)
+        mark.mark_turn(path, "owner", NOW)
         read = hook.read_marker(path)
-        assert read["turn_repo"] == "owner/start"
-        assert hook.reminder(read, NOW + dt.timedelta(hours=1), "owner/repo", path) == ""
-        assert "last weekly audit of owner/repo was 8 days ago" in hook.reminder(read, NOW + dt.timedelta(days=8), "owner/repo", path)
-        assert "owner/other has a DIRECTION.md but no recorded weekly audit" in hook.reminder(read, NOW + dt.timedelta(hours=1), "owner/other", path)
+        assert read["turn_repo"] == "owner/direction" and hook.marker_account(read) == "owner"
+        assert hook.reminder_states(read, NOW + dt.timedelta(hours=1), "owner") == {"turn": "current", "audit": "due"}
+        mark.mark_weekly(path, "owner", NOW)
+        read = hook.read_marker(path)
+        assert hook.reminder(read, NOW + dt.timedelta(hours=1), path, "owner") == ""
+        assert hook.reminder_states(read, NOW + dt.timedelta(days=8), "owner") == {"turn": "due", "audit": "due"}
+        assert mark.load(path)["audits"] == {"owner/repo": mark.utc_stamp(NOW)}, "the weekly stamp leaves per-repository windows alone"
 
 
 def test_malformed_marker_is_replaced_not_crashed() -> None:
@@ -77,7 +94,7 @@ def test_malformed_marker_is_replaced_not_crashed() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "m.json"
         path.write_text("[1, 2]")
-        assert mark.mark_turn(path, "owner/start", NOW) == {"turn": mark.utc_stamp(NOW), "turn_repo": "owner/start", "audits": {}}
+        assert mark.mark_turn(path, "owner/start", NOW) == {"turn": mark.utc_stamp(NOW), "turn_repo": "owner/direction", "audits": {}}
 
 
 def test_only_a_turn_can_be_marked_by_hand() -> None:
@@ -94,28 +111,76 @@ def test_turn_cli_requires_coverage_and_reports_written_repository() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "marker.json"
         env = {**os.environ, "DIRECTION_MARKER": str(path)}
-        for args in (["turn"], ["turn", "--repo", "missing-owner"]):
+        for args in (["turn"], ["turn", "--repo", "missing-owner"], ["turn", "--owner", "owner/repo/extra"],
+                     ["turn", "--owner", "owner", "--repo", "owner/start"]):
             result = subprocess.run([sys.executable, str(SCRIPT), *args], env=env, capture_output=True, text=True)
-            assert result.returncode == 2
+            assert result.returncode == 2, args
             assert not path.exists()
         mark = load(SCRIPT, "direction_mark_cli")
         github = FakeGitHub(Path(tmp) / "github")
-        printed = io.StringIO()
-        with patch.dict(os.environ, {"DIRECTION_MARKER": str(path)}), patch.object(mark, "GITHUB_SCRIPTS", github.scripts), redirect_stdout(printed):
-            assert mark.main(["turn", "--repo", "owner/start"]) == 0
-        written = json.loads(path.read_text())
-        output = json.loads(printed.getvalue())
-        assert output["turn_repo"] == written["turn_repo"] == "owner/start"
-        assert output["turn"] == written["turn"]
-        assert output["shared"]["repo"] == "owner/direction"
-        assert written["audits"] == {}
+        receipts = []
+        for args in (["--owner", "owner"], ["--repo", "owner/start"]):
+            printed = io.StringIO()
+            with patch.dict(os.environ, {"DIRECTION_MARKER": str(path)}), patch.object(mark, "GITHUB_SCRIPTS", github.scripts), redirect_stdout(printed):
+                assert mark.main(["turn", *args]) == 0
+            written = json.loads(path.read_text())
+            output = json.loads(printed.getvalue())
+            assert output["turn_repo"] == written["turn_repo"] == "owner/direction", "the --repo alias records OWNER/direction too"
+            assert output["turn"] == written["turn"]
+            assert output["shared"]["repo"] == "owner/direction"
+            assert written["audits"] == {}
+            receipts.append((output["marker"], output["turn_repo"], output["shared"]["repo"]))
+        assert receipts[0] == receipts[1]
+        assert "covering owner/direction" in github.issues()[0]["body"]
         github.fail = True
         printed = io.StringIO()
         with patch.dict(os.environ, {"DIRECTION_MARKER": str(path)}), patch.object(mark, "GITHUB_SCRIPTS", github.scripts), redirect_stdout(printed):
-            assert mark.main(["turn", "--repo", "owner/start"]) == 2, "a failed shared write must not look like success"
+            assert mark.main(["turn", "--owner", "owner"]) == 2, "a failed shared write must not look like success"
         output = json.loads(printed.getvalue())
         assert output["ok"] is False and output["shared"]["ok"] is False
         assert json.loads(path.read_text())["turn"] == output["turn"], "the local turn is still recorded"
+
+
+def test_turn_receipt_is_the_same_from_any_starting_folder() -> None:
+    mark = load(SCRIPT, "direction_mark_folders")
+    import types
+
+    class Clock(dt.datetime):
+        @classmethod
+        def now(cls, tz: Any = None) -> Any:
+            return NOW.astimezone(tz)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        github = FakeGitHub(root / "github")
+        folders = []
+        for name, origin, adopted in (("adopted", "owner/adopted", True), ("product", "owner/product", False),
+                                      ("fork", "someone/fork", False)):
+            folder = root / name
+            subprocess.run(["git", "init", "-q", str(folder)], check=True)
+            subprocess.run(["git", "-C", str(folder), "remote", "add", "origin", f"git@github.com:{origin}.git"], check=True)
+            if adopted:
+                (folder / "DIRECTION.md").write_text("# Direction\n")
+            folders.append(folder)
+        (root / "plain").mkdir()
+        folders.append(root / "plain")
+        with patch.object(mark, "GITHUB_SCRIPTS", github.scripts):
+            assert mark.share_turn("2026-09-01T00:00:00Z", "owner")["ok"], "an earlier turn already created the record"
+        receipts = set()
+        start = Path.cwd()
+        for folder in folders:
+            path = root / "marker.json"
+            path.unlink(missing_ok=True)
+            printed = io.StringIO()
+            os.chdir(folder)
+            try:
+                with (patch.dict(os.environ, {"DIRECTION_MARKER": str(path)}), patch.object(mark, "GITHUB_SCRIPTS", github.scripts),
+                      patch.object(mark, "dt", types.SimpleNamespace(datetime=Clock, timezone=dt.timezone)), redirect_stdout(printed)):
+                    assert mark.main(["turn", "--owner", "owner"]) == 0
+            finally:
+                os.chdir(start)
+            receipts.add(printed.getvalue())
+        assert len(receipts) == 1, receipts
 
 
 def test_turn_cli_reports_local_write_failure_without_sharing() -> None:
@@ -163,7 +228,13 @@ class FakeGitHub:
         self.failure = root / "fail"
         shebang = f"#!{sys.executable}\nimport json, sys\nfrom pathlib import Path\nstate = Path({str(self.state)!r})\n"
         guard = f"if Path({str(self.failure)!r}).exists():\n    sys.exit('gh: HTTP 403 Resource not accessible by integration')\n"
-        (self.scripts / "gh-with-env-token").write_text(shebang + guard + "print(state.read_text())\n")
+        # Serve one page of the issue list, as GitHub does for page=N&per_page=M.
+        (self.scripts / "gh-with-env-token").write_text(shebang + guard + (
+            "import re\n"
+            "query = dict(re.findall(r'[?&](\\w+)=([^&]+)', sys.argv[2]))\n"
+            "size, page = int(query.get('per_page', 30)), int(query.get('page', 1))\n"
+            "print(json.dumps(json.loads(state.read_text())[(page - 1) * size:page * size]))\n"
+        ))
         (self.scripts / "gh-issue").write_text(shebang + guard + (
             "issues = json.loads(state.read_text())\n"
             "body = sys.stdin.read()\n"
@@ -187,6 +258,21 @@ class FakeGitHub:
     def issues(self) -> list[dict[str, Any]]:
         return json.loads(self.state.read_text())
 
+    def seed(self, count: int) -> None:
+        """Open issues the Director filed that are not records."""
+        issues = self.issues()
+        start = len(issues)
+        issues += [{"number": start + n + 1, "body": "Other work", "author_association": "OWNER", "user": {"type": "User"}}
+                   for n in range(count)]
+        self.state.write_text(json.dumps(issues))
+
+    def add_record(self, body: str, **issue: object) -> int:
+        issues = self.issues()
+        number = len(issues) + 1
+        issues.append({"number": number, "body": body, "author_association": "NONE", "user": {"type": "Bot"}, **issue})
+        self.state.write_text(json.dumps(issues))
+        return number
+
 
 def test_two_machines_one_turn() -> None:
     """A turn marked on one machine clears the daily reminder on another the same day."""
@@ -195,24 +281,130 @@ def test_two_machines_one_turn() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         github = FakeGitHub(Path(tmp) / "github")
         first, second = Path(tmp) / "first.json", Path(tmp) / "second.json"
-        mark.mark_turn(second, "owner/start", NOW - dt.timedelta(days=3))
+        mark.mark_turn(second, "owner", NOW - dt.timedelta(days=3))
+        mark.mark_weekly(second, "owner", NOW)
         later = NOW - dt.timedelta(days=1)
         for when in (later, NOW):
-            stamp = mark.mark_turn(first, "owner/start", when)["turn"]
+            stamp = mark.mark_turn(first, "owner", when)["turn"]
             with patch.object(mark, "GITHUB_SCRIPTS", github.scripts):
-                assert mark.share_turn(str(stamp), "owner/start")["ok"]
+                assert mark.share_turn(str(stamp), "owner")["ok"]
         assert len(github.issues()) == 1, "later turns update the one record instead of adding issues"
+        soon = NOW + dt.timedelta(hours=1)
         with patch.object(hook, "GH_READER", github.scripts / "gh-with-env-token"):
-            seen = hook.with_shared_turn(hook.read_marker(second), NOW + dt.timedelta(hours=1), "owner/product")
+            seen = hook.with_shared_records(hook.read_marker(second), soon, "owner")
         assert seen["turn"] == NOW.replace(microsecond=0)
-        assert hook.reminder(seen, NOW + dt.timedelta(hours=1), None, second) == ""
-        assert "3 days ago" in hook.reminder(hook.read_marker(second), NOW + dt.timedelta(hours=1), None, second), "the second machine's own marker is unchanged"
+        assert hook.reminder(seen, soon, second, "owner") == ""
+        assert hook.reminder_states(hook.read_marker(second), soon, "owner")["turn"] == "due", "the second machine's own marker is unchanged"
         github.fail = True
         with patch.object(hook, "GH_READER", github.scripts / "gh-with-env-token"):
-            blind = hook.with_shared_turn(hook.read_marker(second), NOW + dt.timedelta(hours=1), "owner/product")
-        text = hook.reminder(blind, NOW + dt.timedelta(hours=1), None, second)
-        assert "Direction check overdue" not in text, text
-        assert "owner/direction could not be read" in text and "HTTP 403" in text, text
+            blind = hook.with_shared_records(hook.read_marker(second), soon, "owner")
+        assert hook.reminder_states(blind, soon, "owner") == {"turn": "unconfirmed", "audit": "current"}
+        assert "HTTP 403" in hook.reminder(blind, soon, second, "owner")
+
+
+def test_two_machines_one_weekly_audit() -> None:
+    """A weekly audit recorded on one machine clears the audit reminder on another."""
+    mark = load(SCRIPT, "direction_mark_two_machines_weekly")
+    hook = load(HOOK, "direction_check_hook_two_machines_weekly")
+    with tempfile.TemporaryDirectory() as tmp:
+        github = FakeGitHub(Path(tmp) / "github")
+        first, second = Path(tmp) / "first.json", Path(tmp) / "second.json"
+        mark.mark_turn(second, "owner", NOW)
+        mark.mark_weekly(second, "owner", NOW - dt.timedelta(days=9))
+        stamp = mark.mark_weekly(first, "owner", NOW)["weekly_audit"]["ran"]
+        with patch.object(mark, "GITHUB_SCRIPTS", github.scripts):
+            assert mark.share_weekly(str(stamp), "owner")["ok"]
+        soon = NOW + dt.timedelta(hours=1)
+        assert hook.reminder_states(hook.read_marker(second), soon, "owner")["audit"] == "due"
+        with patch.object(hook, "GH_READER", github.scripts / "gh-with-env-token"):
+            seen = hook.with_shared_records(hook.read_marker(second), soon, "owner")
+        assert hook.reminder_states(seen, soon, "owner") == {"turn": "current", "audit": "current"}
+        assert hook.reminder(seen, soon, second, "owner") == ""
+        github.fail = True
+        with patch.object(hook, "GH_READER", github.scripts / "gh-with-env-token"):
+            blind = hook.with_shared_records(hook.read_marker(second), soon, "owner")
+        assert hook.reminder_states(blind, soon, "owner") == {"turn": "current", "audit": "unconfirmed"}
+        assert len(hook.reminder(blind, soon, second, "owner").splitlines()) == 1
+
+
+def test_turn_and_weekly_records_leave_each_other_untouched() -> None:
+    mark = load(SCRIPT, "direction_mark_separate_records")
+    with tempfile.TemporaryDirectory() as tmp:
+        github = FakeGitHub(Path(tmp) / "github")
+        with patch.object(mark, "GITHUB_SCRIPTS", github.scripts):
+            assert mark.share_turn("2026-09-20T00:00:00Z", "owner")["ok"]
+            turn_body = github.issues()[0]["body"]
+            assert mark.share_weekly("2026-09-21T00:00:00Z", "owner")["ok"]
+            issues = github.issues()
+            assert len(issues) == 2 and issues[0]["body"] == turn_body, "a weekly write leaves the turn record alone"
+            weekly_body = issues[1]["body"]
+            assert mark.share_turn("2026-09-22T00:00:00Z", "owner")["ok"]
+            issues = github.issues()
+            assert len(issues) == 2 and issues[1]["body"] == weekly_body, "a turn write leaves the weekly record alone"
+            assert "2026-09-22T00:00:00Z" in issues[0]["body"]
+            assert mark.share_weekly("2026-09-23T00:00:00Z", "owner")["ok"]
+            issues = github.issues()
+            assert len(issues) == 2 and "2026-09-22T00:00:00Z" in issues[0]["body"] and "2026-09-23T00:00:00Z" in issues[1]["body"]
+
+
+def test_a_record_beyond_the_first_page_is_found_and_updated() -> None:
+    mark = load(SCRIPT, "direction_mark_paged_records")
+    hook = load(HOOK, "direction_check_hook_paged_records")
+    with tempfile.TemporaryDirectory() as tmp:
+        github = FakeGitHub(Path(tmp) / "github")
+        github.seed(150)
+        record = github.add_record(mark.weekly_record_body("2026-09-01T00:00:00Z"))
+        github.seed(10)
+        with patch.object(mark, "GITHUB_SCRIPTS", github.scripts):
+            assert mark.share_weekly(mark.utc_stamp(NOW), "owner") == {"ok": True, "repo": "owner/direction", "issue": record}
+        issues = github.issues()
+        assert len(issues) == 161, "the record is updated, not duplicated"
+        assert mark.utc_stamp(NOW) in issues[record - 1]["body"]
+        local = hook.read_marker(Path(tmp) / "fresh-machine.json")
+        soon = NOW + dt.timedelta(hours=1)
+        with patch.object(hook, "GH_READER", github.scripts / "gh-with-env-token"):
+            seen = hook.with_shared_records(local, soon, "owner")
+        assert hook.reminder_states(seen, soon, "owner")["audit"] == "current", "the reader finds it beyond the first page"
+
+
+def test_incomplete_record_discovery_is_unconfirmed_and_creates_nothing() -> None:
+    mark = load(SCRIPT, "direction_mark_bounded_discovery")
+    hook = load(HOOK, "direction_check_hook_bounded_discovery")
+    with tempfile.TemporaryDirectory() as tmp:
+        github = FakeGitHub(Path(tmp) / "github")
+        github.seed(2 * 100)
+        path = Path(tmp) / "marker.json"
+        printed = io.StringIO()
+        with (patch.object(mark, "GITHUB_SCRIPTS", github.scripts), patch.object(mark, "RECORD_PAGES", 2),
+              patch.dict(os.environ, {"DIRECTION_MARKER": str(path)}), redirect_stdout(printed), redirect_stderr(io.StringIO())):
+            assert mark.share_weekly(mark.utc_stamp(NOW), "owner")["ok"] is False
+            assert mark.main(["turn", "--owner", "owner"]) == 2, "an unfinished search is not shared"
+        assert len(github.issues()) == 200, "no record is created when one may exist beyond the pages read"
+        assert json.loads(printed.getvalue())["shared"]["ok"] is False
+        soon = NOW + dt.timedelta(hours=1)
+        with patch.object(hook, "GH_READER", github.scripts / "gh-with-env-token"), patch.object(hook, "RECORD_PAGES", 2):
+            seen = hook.with_shared_records(hook.read_marker(Path(tmp) / "other.json"), soon, "owner")
+        assert hook.reminder_states(seen, soon, "owner") == {"turn": "unconfirmed", "audit": "unconfirmed"}
+
+
+def test_several_records_reader_takes_the_newest_and_writer_updates_the_oldest_trusted() -> None:
+    mark = load(SCRIPT, "direction_mark_duplicate_records")
+    hook = load(HOOK, "direction_check_hook_duplicate_records")
+    with tempfile.TemporaryDirectory() as tmp:
+        github = FakeGitHub(Path(tmp) / "github")
+        forged = github.add_record(mark.weekly_record_body("2026-09-01T00:00:00Z"), author_association="NONE", user={"type": "User"})
+        oldest = github.add_record(mark.weekly_record_body("2026-09-10T00:00:00Z"))
+        newest = github.add_record(mark.weekly_record_body(mark.utc_stamp(NOW)), author_association="MEMBER", user={"type": "User"})
+        with patch.object(hook, "GH_READER", github.scripts / "gh-with-env-token"):
+            shared, error = hook.read_shared_records("owner")
+        assert error is None and shared["weekly"] == NOW.replace(microsecond=0), "the newest stamp across the records"
+        before = github.issues()
+        with patch.object(mark, "GITHUB_SCRIPTS", github.scripts):
+            assert mark.share_weekly("2026-09-23T00:00:00Z", "owner")["issue"] == oldest
+        after = github.issues()
+        assert "2026-09-23T00:00:00Z" in after[oldest - 1]["body"], "the oldest trusted record is the one written"
+        assert after[forged - 1] == before[forged - 1] and after[newest - 1] == before[newest - 1]
+        assert len(after) == 3
 
 
 def test_overlapping_audits_and_turn_preserve_updates() -> None:
@@ -250,7 +442,7 @@ def test_overlapping_audits_and_turn_preserve_updates() -> None:
                 assert writer.returncode == 0, (stdout, stderr)
                 current = json.loads(path.read_text())
                 assert current["turn"] == ("2026-10-04T00:00:00Z" if kind == "turn" else mark.utc_stamp(NOW)), current
-                assert current["turn_repo"] == ("o/daily" if kind == "turn" else "owner/start")
+                assert current["turn_repo"] == ("o/direction" if kind == "turn" else "owner/direction")
                 assert current["audits"]["o/first"] == mark.utc_stamp(NOW)
                 assert set(current["audits"]) == ({"o/first", "o/second"} if kind == "audit" else {"o/first"})
             finally:

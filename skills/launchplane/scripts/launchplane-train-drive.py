@@ -109,6 +109,25 @@ def _uncertain(response: object) -> bool:
     )
 
 
+def _accepted_unreadable(response: object) -> bool:
+    """Launchplane completed the pass, but this helper could not project its reply.
+
+    The saved request exists so an exchange with an unknown outcome is replayed
+    instead of repeated. An accepted reply settles that question; only its
+    meaning is unknown, which a replay of the same stored reply cannot change.
+    """
+    if not isinstance(response, dict):
+        return False
+    summary = response.get("summary")
+    return (
+        response.get("status") == "invalid"
+        and isinstance(summary, dict)
+        and summary.get("launchplane_status") == "accepted"
+        and isinstance(summary.get("projection_error_code"), str)
+        and bool(summary["projection_error_code"])
+    )
+
+
 @dataclass
 class DriveIO:
     """Everything the loop reads or changes, so tests can replace it."""
@@ -416,7 +435,9 @@ def _drive(settings: DriveSettings, io: DriveIO, state: DriveState, emit: Callab
         controller_before = state.cadence.controller_seconds if state.cadence is not None else 0.0
         response = io.controller(settings.repository, settings.base_branch, key)
         if _uncertain(response):
-            _record_pass(state, io, pass_number, "controller_outcome_unknown", controller_before)
+            unreadable = _accepted_unreadable(response)
+            action = "controller_reply_unreadable" if unreadable else "controller_outcome_unknown"
+            _record_pass(state, io, pass_number, action, controller_before)
             state.candidate_active = False
             state.recovery = {"reason": "controller mutation outcome is uncertain; reconcile before retry",
                               "request": {"repository": settings.repository, "base_branch": settings.base_branch,
@@ -425,7 +446,7 @@ def _drive(settings: DriveSettings, io: DriveIO, state: DriveState, emit: Callab
                               "recommendation": "Read the PR and controller state, then use --recover-controller to replay the saved request; do not start a fresh pass."}
             if isinstance(response, dict):
                 state.recovery.update(response.get("recovery") or {})
-            _emit_snapshot(state, emit, _snapshot(settings, state, "controller_outcome_unknown", None))
+            _emit_snapshot(state, emit, _snapshot(settings, state, action, None))
             # A PR may have landed after the reply was lost, but an open PR
             # cannot establish the controller's candidate/admission outcome.
             landing = _record_landings(settings, io, state, emit)
@@ -904,7 +925,28 @@ def live_io(helper_timeout: float, *, deadline_at: float | None = None, reposito
         except json.JSONDecodeError:
             payload = None
         if isinstance(payload, dict):
-            if not _uncertain(payload) and (not recovering or payload.get("status") in {"accepted", "ok"}):
+            if _accepted_unreadable(payload):
+                try:
+                    journal.unlink()
+                except OSError:
+                    return {"status": "outcome_unknown", "recovery": recovery}
+                summary = payload["summary"]
+                released: dict[str, Any] = {
+                    "reason": "Launchplane accepted the controller pass, but this helper could not read its reply",
+                    "request": recovery["request"],
+                    "idempotency_key_sha256": recovery["idempotency_key_sha256"],
+                    "saved_request": "released",
+                    "recommendation": "The pass happened; read the PR and controller state for its effect. "
+                                      "Teach the helper this reply shape before relying on it; the next driver run starts a fresh pass.",
+                }
+                for field_name in ("error_code", "trace_id", "projection_error_code", "unrecognized_key"):
+                    value = summary.get(field_name)
+                    if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.:-]{1,160}", value):
+                        released[field_name] = value
+                payload["recovery"] = released
+                if recovering:
+                    payload["status"] = "outcome_unknown"
+            elif not _uncertain(payload) and (not recovering or payload.get("status") in {"accepted", "ok"}):
                 try:
                     journal.unlink()
                 except OSError:

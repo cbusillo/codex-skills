@@ -5,6 +5,7 @@
 # ///
 """Native rebuild submission keeps one testing request and bounded receipts."""
 
+import http.client
 import io
 import json
 import urllib.error
@@ -165,11 +166,13 @@ def test_dry_run_from_another_service_cannot_authorize_submit():
     ("data_source_mode", "existing"), ("instance", "prod"),
 ])
 def test_dry_run_does_not_claim_a_completed_or_different_copy(field, value):
-    response = plan_receipt()
+    response = helper._ServiceResponse(plan_receipt(), 202)
     response["result"][field] = value
     code, output, post, read, _ = invoke(response, args=arguments(command=rebuild.PLAN_COMMAND))
     assert code != 0
     assert output["status"] != "ok"
+    assert output["summary"]["trace_id"] == response["trace_id"]
+    assert output["summary"]["http_status"] == response.http_status
     post.assert_called_once()
     read.assert_not_called()
     assert "PRIVATE_SENTINEL" not in json.dumps(output)
@@ -306,9 +309,16 @@ def test_uncertain_exchange_preserves_unknown_and_never_repeats(error):
     assert "PRIVATE_SENTINEL" not in json.dumps(output)
 
 
-def test_malformed_accepted_response_preserves_bounded_diagnostics():
-    diagnostics = {"http_status": 202, "trace_id": "launchplane_req_broken"}
-    code, output, post, _, _ = invoke(error=helper.ServiceResponseError(diagnostics))
+@pytest.mark.parametrize("partial_body", [False, True])
+def test_malformed_accepted_response_preserves_bounded_diagnostics(partial_body):
+    diagnostics = {"http_status": 202}
+    if partial_body:
+        error = http.client.IncompleteRead(b"PRIVATE_SENTINEL")
+        setattr(error, "http_status", diagnostics["http_status"])
+    else:
+        diagnostics["trace_id"] = "launchplane_req_broken"
+        error = helper.ServiceResponseError(diagnostics)
+    code, output, post, _, _ = invoke(error=error)
     assert code != 0 and output["status"] == "outcome_unknown"
     assert all(output["summary"].get(key) == value for key, value in diagnostics.items())
     post.assert_called_once()
@@ -356,6 +366,15 @@ def test_interrupted_http_exchange_does_not_claim_a_definitive_outcome(status):
     post.assert_called_once()
     read.assert_not_called()
     assert "PRIVATE_SENTINEL" not in json.dumps(output)
+
+
+def test_plan_redirect_retains_its_safety_classification():
+    error = helper.LaunchplaneSafetyError("unsafe_redirect")
+    code, output, post, read, _ = invoke(args=arguments(command=rebuild.PLAN_COMMAND), error=error)
+    assert code != 0 and output["status"] == "unavailable"
+    assert output["warnings"][0]["code"] == error.code
+    post.assert_called_once()
+    read.assert_not_called()
 
 
 if __name__ == "__main__":

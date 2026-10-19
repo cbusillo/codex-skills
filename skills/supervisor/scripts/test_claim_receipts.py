@@ -4,7 +4,6 @@
 # ///
 """Native receipt fixtures exercise shutdown acceptance on both harnesses."""
 import json
-import asyncio
 import argparse
 import shlex
 import sys
@@ -2374,7 +2373,6 @@ class ReceiptTests(unittest.TestCase):
     def test_ended_session_recovery_preserves_the_original_declaration(self):
         import release_session_claims
         import finished_map
-        import close_ttys
         for harness in ("codex", "claude"):
             with self.subTest(harness=harness), tempfile.TemporaryDirectory() as tmp:
                 transcript = Path(tmp) / "native.jsonl"
@@ -2386,12 +2384,11 @@ class ReceiptTests(unittest.TestCase):
                 ledger = Path(tmp) / "ledger.json"
                 ledger.write_text(json.dumps([entry]))
                 self.assertFalse(finished_map.candidates(ledger)[0]["candidate"])
-                with self.assertRaises(ValueError):
-                    asyncio.run(close_ttys.close(None, entry, False, True, True))
                 with patch.object(release_session_claims, "inventory", return_value=[]):
                     result = release_session_claims.validate_closure(entry, "supervisor-fixture")
                 self.assertTrue(result["declared_safe_verdict"])
                 self.assertFalse(result["safe_verdict"])
+                self.assertIsNone(finished_map.closeout_request(entry, result))
 
     def test_a_claim_write_without_its_source_receipt_is_not_clear(self):
         value = {"operation": receipts.CLAIM_OPERATION, "claim": {"session": SESSION}, "ok": False,

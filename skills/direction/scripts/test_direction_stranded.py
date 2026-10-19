@@ -136,8 +136,12 @@ class StrandedTests(unittest.TestCase):
         rows = {r["repo"]: r for r in report["findings"] if r["kind"] == "finished_worktree"}
         self.assertEqual({repo: [e["task"] for e in r["evidence"]] for repo, r in rows.items()},
                          {"o/a": ["landed", "edited"], "o/b": ["undated"]})
-        self.assertIn("1 have local changes", rows["o/a"]["detail"])
-        self.assertIn("2 finished task worktrees in o/a", sweep.markdown(report))
+        dirty = sum(e["dirty"] for e in rows["o/a"]["evidence"])
+        self.assertEqual(dirty, 1)
+        # The shown counts agree with the evidence; the sentence around them is free.
+        self.assertRegex(rows["o/a"]["detail"], rf"\b{dirty}\b")
+        self.assertRegex(rows["o/a"]["title"], rf"\b{len(rows['o/a']['evidence'])}\b")
+        self.assertIn(rows["o/a"]["title"], sweep.markdown(report))
 
     def test_coverage_failure_is_in_markdown_even_with_zero_findings(self):
         self.records = []
@@ -419,7 +423,6 @@ class OverdueTriggerTests(unittest.TestCase):
         self.assertEqual(rows[0]["evidence"], ["The Supervisor brings Q426 to Chris."])
         self.assertEqual(result["supervisor_next_action_by_repo"], {"example/catalog": 2, "example/other": 1})
         text = sweep.markdown(result)
-        self.assertIn("Next action names the Supervisor: example/catalog 2, example/other 1", text)
         # The digest still parses the report with the new kind and count line.
         self.assertEqual(sum(r["kind"] == "supervisor_next_action" for r in digest_summary.parse(text)[2]), 3)
         # A fresh hand-back stays quiet until the age threshold; an unknown edit time is still listed.

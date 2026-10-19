@@ -2051,7 +2051,7 @@ class WatchLoopTests(unittest.TestCase):
                     result, calls, sleeps, events = self.run_watch(lambda _deadline: fake)
                 self.assertEqual((result, calls, sleeps), (1, 1, []))
                 self.assertEqual(fake.writes, [])
-                self.assertEqual(events[-1]["payload"]["message"], "controller read rejected")
+                self.assertEqual(events[-1]["payload"]["cause"], watch.WatchError.__name__)
 
     def test_transport_error_during_label_dispatch_never_replays(self):
         fake = Fake(count=1)
@@ -2108,28 +2108,24 @@ class WatchLoopTests(unittest.TestCase):
                 self.assertEqual(healthy.writes, [1])
                 self.assertEqual(events[0]["event"], "pass_failed")
 
-    def test_write_and_policy_stops_report_the_specific_message(self):
-        for certainty, message in (
-            ("unknown", "enqueue write uncertain; reconcile before restarting"),
-            ("confirmed", "enqueue label readback failed"),
-        ):
-            with self.subTest(certainty=certainty):
-                fake = Fake(count=1)
-                adapter = object.__new__(watch.Live)
-                adapter.deadline = 10_000
-                adapter.pages = Mock(return_value=[])
-                fake.label = adapter.label
-                with patch.object(watch.github_api, "call_gh_with_retry", return_value=api_result(certainty)) as write:
-                    result, calls, sleeps, events = self.run_watch(lambda _deadline: fake)
-                self.assertEqual((result, calls, sleeps), (1, 1, []))
-                self.assertEqual(write.call_count, 1)
-                self.assertEqual(events[-1]["payload"]["message"], message)
+    def test_missing_label_readback_and_policy_change_stop(self):
+        fake = Fake(count=1)
+        adapter = object.__new__(watch.Live)
+        adapter.deadline = 10_000
+        adapter.pages = Mock(return_value=[])
+        fake.label = adapter.label
+        with patch.object(watch.github_api, "call_gh_with_retry", return_value=api_result("confirmed")) as write:
+            result, calls, sleeps, events = self.run_watch(lambda _deadline: fake)
+        self.assertEqual((result, calls, sleeps), (1, 1, []))
+        self.assertEqual(write.call_count, 1)
+        self.assertEqual(adapter.pages.call_count, 1)
+        self.assertEqual(events[-1]["payload"]["outcome"], "error")
         fake = Fake(count=1)
         fake.policies = Mock(side_effect=[[TARGET], []])
         result, calls, sleeps, events = self.run_watch(lambda _deadline: fake)
         self.assertEqual((result, calls, sleeps), (1, 1, []))
         self.assertEqual(fake.writes, [])
-        self.assertEqual(events[-1]["payload"]["message"], "policy or hold changed")
+        self.assertEqual(events[-1]["payload"]["cause"], watch.WatchError.__name__)
 
     def test_controller_read_recovery_respects_once_and_deadline(self):
         adapter = object.__new__(watch.Live)
@@ -2145,7 +2141,7 @@ class WatchLoopTests(unittest.TestCase):
                 self.assertEqual((result, calls), (int(once), 1))
                 self.assertEqual([call.args[0] for call in sleeps], [] if once else [2])
                 self.assertEqual(fake.writes, [])
-                self.assertEqual(events[0]["payload"]["message"], "controller read unavailable")
+                self.assertEqual(events[0]["payload"]["cause"], watch.LaunchplaneReadError.__name__)
                 if not once:
                     self.assertEqual(events[-1]["payload"]["failed_passes"], 1)
 
@@ -2166,7 +2162,7 @@ class WatchLoopTests(unittest.TestCase):
         self.assertEqual((result, calls, sleeps), (1, 1, []))
         self.assertEqual(fake.writes, [1])
         self.assertEqual(events[-1]["event"], "stop")
-        self.assertEqual(events[-1]["payload"]["message"], "controller read unavailable")
+        self.assertEqual(events[-1]["payload"]["cause"], watch.LaunchplaneReadError.__name__)
 
     def test_uncertain_label_write_or_failed_readback_stops_without_replay(self):
         for certainty in ("unknown", "confirmed"):

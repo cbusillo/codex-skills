@@ -9,11 +9,26 @@ from __future__ import annotations
 
 import copy
 import unittest
+import subprocess
+import sys
+from pathlib import Path
 
 import github_plan_wait as wait_record
+import github_plan_body
+from github_plan_status import waits
 
 
 class WaitRecordTests(unittest.TestCase):
+    def test_catalog_namespace_consumer_can_validate_waits(self):
+        result = subprocess.run([
+            sys.executable, "-I", "-c",
+            "import sys; sys.path.insert(0, sys.argv[1]); "
+            "from skills.github.scripts import github_plan_wait; "
+            "github_plan_wait.reviewed(evidence='Namespace consumer')",
+            str(Path(__file__).resolve().parents[3]),
+        ], capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def setUp(self):
         self.clear = wait_record.reviewed(evidence="Full issue and discussion reviewed; no hold remains")
         self.hold = wait_record.reviewed(evidence="Director requested testing", waiting_for="Director's test",
@@ -66,6 +81,28 @@ class WaitRecordTests(unittest.TestCase):
         wait["waits"].extend(wait_record.reviewed(evidence="Client requested pricing decision",
             waiting_for="Client's pricing decision", ends_when="Client records chosen price")["waits"])
         self.assertEqual(wait_record.records(wait_record.marker(wait)), [wait])
+
+    def test_packaged_resolver_uses_managed_wait_and_preserves_original_request(self):
+        original = {"user": {"login": "owner"}, "body": wait_record.marker(self.clear)}
+        issue = {**original, "body": github_plan_body.wrap_contributor_plan(
+            original, wait_record.marker(self.hold))}
+        before = copy.deepcopy(issue)
+        self.assertEqual(waits.current(issue, [], {"owner"}), self.hold)
+        self.assertEqual(issue, before)
+        malformed = {**issue, "body": issue["body"].replace(github_plan_body.PLAN_MANAGED_END, "")}
+        with self.assertRaises(ValueError):
+            waits.current(malformed, [], {"owner"})
+
+    def test_pure_authority_policy_keeps_historical_and_verified_identities(self):
+        trusted = waits.trusted_authors("Owner", configured_bots=("Historical-App[bot]",),
+                                       automation="Current-App[bot]", expected_actor="Verified-App[bot]")
+        self.assertEqual(trusted, {"owner", "historical-app[bot]", "current-app[bot]", "verified-app[bot]"})
+        self.assertTrue(waits.author_is_trusted({"user": {"login": "HISTORICAL-APP[bot]"}},
+                                              "owner", author_logins=trusted))
+        self.assertTrue(waits.author_is_trusted({"user": {"id": 701, "login": "renamed"}},
+                                              "owner", author_ids=(701,)))
+        self.assertFalse(waits.author_is_trusted({"user": {"id": 702, "login": "decision-reader"}},
+                                               "owner", author_logins=trusted, author_ids=(701,)))
 
 
 if __name__ == "__main__":

@@ -76,6 +76,8 @@ def test_rollback():
         paths = {"skills/references/guide.md"}
         self.assertIn("instruction-text", self.rules(source, paths=paths, catalog=True))
         self.assertEqual(self.rules(source, paths=paths), set())
+        source = 'text = (ROOT / "instructions" / "global.md").read_text()\nself.assertIn("Keep a test only if", text)'
+        self.assertIn("instruction-text", self.rules(source, paths={"instructions/global.md"}, catalog=True))
 
     def test_swift_team_id_and_plist_literal(self) -> None:
         entitlements = '''
@@ -141,6 +143,25 @@ self.assertEqual(result.returncode, 0)
 self.assertIn("The requested operation could not be completed.", result.stderr)
 '''
         self.assertEqual(self.rules(source, paths={".github/workflows/ci.yml"}), set())
+
+    def test_workflow_step_run_by_class_helper_method_is_execution(self) -> None:
+        source = '''
+class Tests(unittest.TestCase):
+    def setUp(self):
+        workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
+        self.shell = workflow["jobs"]["build"]["steps"][0]["run"]
+    def run_step(self):
+        return subprocess.run(["bash", "-c", self.shell])
+    def test_step(self):
+        self.assertEqual(self.run_step().returncode, 0)
+'''
+        paths = {".github/workflows/ci.yml"}
+        self.assertEqual(self.rules(source, paths=paths), set())
+        lint = source.replace('subprocess.run(["bash", "-c", self.shell])', "self.shell.split()")
+        self.assertIn("workflow-no-execution", self.rules(lint, paths=paths))
+        # An unrelated subprocess elsewhere in the class does not cover the fixture.
+        unrelated = lint + '    def test_tool(self):\n        subprocess.run(["bash", "--version"])\n'
+        self.assertIn("workflow-no-execution", self.rules(unrelated, paths=paths))
 
     def test_temp_config_even_with_same_tracked_filename_stays_quiet(self) -> None:
         source = '''

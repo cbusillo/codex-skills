@@ -9,10 +9,10 @@ resources:
     description: The DIRECTION.md shape and the milestone line format the helpers parse.
   - path: scripts/direction_audit.py
     kind: script
-    description: Read-only audit of DIRECTION.md against GitHub milestones, standard rulesets, escalations, and approval-gate text in open issues; for OWNER/direction, also merged pull requests per rank, reopened issues, and reverts.
+    description: Read-only audit of DIRECTION.md against GitHub milestones, standard rulesets, escalations, and gate text; for OWNER/direction, also merged pull requests per rank, reopens, and reverts. --weekly audits every adopted repository.
   - path: scripts/direction_mark.py
     kind: script
-    description: Records the end of a daily turn in the local marker and the shared turn record the session-start reminder reads; audits are stamped by the audit script itself.
+    description: Records the end of an account-wide daily turn in the local marker and the shared turn record the session-start reminder reads; audits are stamped by the audit script itself.
   - path: scripts/director_waits.py
     kind: script
     description: Lists every visible open Director wait independently of labels or posted questions, with age and stale-verification evidence.
@@ -33,11 +33,16 @@ commands:
     resource_path: scripts/direction_audit.py
     example_argv: ["uv", "run", "scripts/direction_audit.py", "--repo", "OWNER/REPO"]
     purpose: Reports direction drift as JSON without writing anything.
+  - name: direction-weekly-audit
+    source: skill
+    resource_path: scripts/direction_audit.py
+    example_argv: ["uv", "run", "scripts/direction_audit.py", "--weekly", "--owner", "OWNER"]
+    purpose: Audits OWNER/direction and every adopted repository, then records the weekly audit once all were read.
   - name: direction-mark
     source: skill
     resource_path: scripts/direction_mark.py
-    example_argv: ["uv", "run", "scripts/direction_mark.py", "turn", "--repo", "OWNER/REPO"]
-    purpose: Records the daily turn and the repository it covered for the shared reminder.
+    example_argv: ["uv", "run", "scripts/direction_mark.py", "turn", "--owner", "OWNER"]
+    purpose: Records the account-wide daily turn for the shared reminder.
   - name: direction-director-waits
     source: skill
     resource_path: scripts/director_waits.py
@@ -168,13 +173,15 @@ Director asks; that is execution.
 4. End with what the executing agent should see on GitHub when it next runs
    `next`, so the handoff needs no copy and paste.
 
-A **daily turn** is steps 1 and 2 for the repository the session is in,
-after reading the Director's overall direction, with the result explained
-under that same reference. If the session has no GitHub repository, use the
-Director's `OWNER/direction` as its daily repository and read it before marking
-that coverage. Also list every open `direction` issue across the
-Director's repositories with one search through the existing planning
-helper (load `github-plan` first):
+A **daily turn** covers the Director's whole account. The folder the session
+started in does not matter. Read the overall `DIRECTION.md` in
+`OWNER/direction` and run global `next` there
+(`gh-plan.py --repo OWNER/direction next`). Then do dead reckoning (step 2)
+and explain it under that same reference. With the Director present, also do
+step 3 for each open escalation: put it to the Director, record the decision,
+and do not leave it for another session. List every open `direction` issue
+across the Director's repositories with one search through the existing
+planning helper (load `github-plan` first):
 
 ```bash
 uv run <skill-dir>/../github/scripts/gh-plan.py search "user:OWNER label:direction" --state open --limit 1000
@@ -192,9 +199,16 @@ by default. Add `--include-archived` to `gh-plan.py search`, `director_waits.py`
 or `direction_audit.py` for historical results. An explicitly named archived
 repository still reports frozen history in the stale-wait audit.
 
-It uses two Director-wide GitHub issue searches for open issue bodies containing
-`Waiting for` or `Parked until`, then applies the shared human-attention classifier locally with
-the optional people index for the Director's names. This reads wait records
+It uses Director-wide GitHub issue searches for open issue bodies containing
+`Waiting for` or `Parked until`, and for comments holding a structured wait
+record. It reads each match's full discussion and resolves the current wait
+with the shared wait resolver. A trusted structured record wins over prose.
+Without one, the prose wait stays listed with `wait_review_required`. An
+unreadable trusted record lists the issue as an `unresolved` wait for review,
+not read from prose. An unread discussion or unreadable record makes coverage
+incomplete. It then applies the
+shared human-attention classifier locally with the optional people index for
+the Director's names. This reads wait records
 across repositories; it does not audit their direction files or milestones.
 Report every wait and its `wait_age_days` (unknown without an explicit start).
 `possibly_stale` flags missing/unparseable verification or verification before
@@ -222,30 +236,32 @@ waiting labels and absence of an open question.
 Exit 1 means coverage is incomplete; retain the returned rows and report the
 gap instead of treating them as an empty inventory.
 
-Use the starting repository's GitHub account for `OWNER`; do not pass `--repo`, which
-would narrow the search. The list covers issues visible to the configured
+`OWNER` is the Director's GitHub account, never the account of the folder the
+session started in. Do not pass `--repo` to the search, which would narrow it. The list covers issues visible to the configured
 reader; successful search does not prove access to every repository. Report an
 unavailable search or a count reaching the limit as incomplete, not an empty
 or complete list. The direction-label search remains one cross-repository list;
 the Director-wait reader supplies the separate indexed wait list without
 copying repository lists into guidance. The daily marker records
-the starting repository covered; one turn clears the daily reminder on every
-machine, without claiming that other repositories were checked.
+`OWNER/direction` as the turn's coverage; one turn clears the daily reminder
+on every machine.
 
-A **weekly audit** is the full session repeated once per
-adopted repository, all from one session and one checkout: for each
-repository, run the audit script with `--repo OWNER/REPO`, read the findings
-first, then do steps 1 to 4 for that repository with `--repo` on every
-helper, using the merged `DIRECTION.md` the audit fetched rather than the
+A **weekly audit** is one command for the whole account, run from one session
+in any folder:
+
+```bash
+uv run <skill-dir>/scripts/direction_audit.py --weekly --owner OWNER
+```
+
+It lists the account's repositories and finds the adopted ones: not archived,
+with a `DIRECTION.md` on the default branch. It audits `OWNER/direction`
+first, then each adopted repository, the same way `--repo` does. Read its
+findings first, then do steps 1 to 4 for each repository with `--repo` on
+every helper, using the merged `DIRECTION.md` the audit fetched rather than a
 local file. The audit of `OWNER/direction` also covers active repositories
-without a file; see `active_unadopted` below. The adopted repositories are the
-ones in the marker's `audits` map plus any the Director names; a repository enters the map only when an
-audit reads its merged `DIRECTION.md` and confirms that it is not archived. An explicitly named archived repository
-can be read as history but is not stamped back into the weekly map. An unadopted audit still reports
-`direction_missing` and leaves the marker untouched. Nobody opens a session
-per repository; the
-per-repository reminder line only fires when a session happens to open inside
-an adopted repository whose audit is stale.
+without a file; see `active_unadopted` below. Nobody opens a session per
+repository. A `--repo` audit of one repository still works, but it never
+counts as the weekly audit.
 
 Also run the daily procedure's account-wide `direction`-label search once during
 the weekly audit, including when this session holds no daily turn. Judge each
@@ -265,30 +281,36 @@ PR that lands the approved fix.
 Each adopted repository's own `DIRECTION.md` and milestones are checked in
 that one weekly audit session. An audit does not count as the Director's daily
 turn. A weekly session records a daily turn only if it also performs the daily
-procedure above with the Director; then explicitly mark the starting repository.
+procedure above with the Director; then mark the turn as below.
 
-End every daily turn by recording the starting repository it covered:
+End every daily turn by recording it for the account:
 
 ```bash
-uv run <skill-dir>/scripts/direction_mark.py turn --repo OWNER/REPO
+uv run <skill-dir>/scripts/direction_mark.py turn --owner OWNER
 ```
 
-It writes the local marker, then keeps the shared turn record current: one
-open issue titled "Daily direction turns" in the covered repository account's
-`OWNER/direction`, written through the automation helpers. Exit 2 with the
+The older `--repo OWNER/REPO` form still works and records the same
+`OWNER/direction` coverage. It writes the local marker, then keeps the shared
+turn record current: one open issue titled "Daily direction turns" in
+`OWNER/direction`, written through the automation helpers. The helper reads
+every open issue to find it. If it cannot finish that search, it does not
+create a new record. Exit 2 with the
 local-turn JSON receipt described below means the local turn was recorded but
 the shared record was not, so other machines keep
 reminding; report its `shared.error` to the Director. Exit 1 reports a local
 write failure with the destination and error; no shared write is attempted.
 Only the direction agent runs that, at the end of a turn the Director took part
 in; an executing agent that runs it clears a reminder the Director never acted
-on. Weekly audits are not marked by hand. The audit script stamps its own
-completion for the repository it audited, so an audit stamp means a real
-read-only audit ran; it never updates the daily turn or its coverage.
+on. Audits are not marked by hand. The audit script stamps each repository it
+audited, and `--weekly` stamps the weekly audit only after it read every
+adopted repository, so a stamp means a real read-only audit ran. Neither
+updates the daily turn or its coverage.
 
 Before calling a daily turn complete, check the command's exit status and JSON
-receipt for its marker path, timestamp, and covered repository. For a weekly
-audit, completion is recorded only when `run_recorded` is non-null. An archived
+receipt for its marker path, timestamp, and covered repository. For a
+`--weekly` audit, the weekly audit is recorded only when `weekly_recorded` is
+non-null; its receipt and exit codes are described below. For one
+repository's audit, completion is recorded only when `run_recorded` is non-null. An archived
 repository instead needs `marked_skipped: "archived"` with a non-null `dropped`
 receipt confirming removal. Any other result means no completion was recorded,
 including a held window with unknown archive state or an unadopted repository.
@@ -304,12 +326,32 @@ Loading this skill for a wording review or a direction-file change alone does
 not perform the daily procedure or weekly audit. Say which was actually done;
 do not stamp a turn just because direction was discussed.
 
+A `--weekly` receipt lists `repos` audited, `unread` (each with its reason),
+`held` and `weekly_recorded`, with every repository's own audit under
+`audits`. A repository counts as audited when its run was recorded. A held
+repository counts as audited too. Its window stays open, so the next audit
+rereads what failed or was capped. `held` lists each held repository and its
+reasons. A repository is unread when its audit failed before its run was
+recorded, when its archive state is unknown, or when its `DIRECTION.md` could
+not be read as present or absent. A repository listing cut at its page
+limit or an App installed on selected repositories only also stops the record;
+`discovery` names the gap. Exit 1 means the weekly audit was not recorded, or
+`marker_error` reports a local write failure, and nothing is shared. Exit 2 means it was recorded on
+this machine but its shared record failed; report `shared.error`. Exit 3 means
+it was recorded and there are findings or held repositories, and 0 means
+recorded and clean. When
+the App sees only selected repositories, run it with `--gh gh` on the
+Director's own login.
+
 The marker is per machine. Its `audits` map holds where each repository's next
 audit window starts, and `audit_runs` holds when an audit last ran. An audit
 whose reads were incomplete records its run with a `held` reason and leaves
 the window start in place so the next audit rereads it; report that as "audit
 ran, window held (reason)", never as an overdue audit. An audit that confirms
-its repository is archived removes it from both maps.
+its repository is archived removes it from both maps. `weekly_audit` holds when
+the last complete weekly audit ran and its `OWNER/direction`. The turn and the
+weekly audit are also shared across machines; the window starts are not, so a
+machine that never audited a repository reads its last seven days.
 
 To clean older markers that included archived or unadopted repositories, preview with
 `uv run <skill-dir>/scripts/direction_audit.py --prune-unadopted`, then repeat
@@ -332,22 +374,23 @@ each approved name. A 404 alone, including under `--gh gh`, never establishes
 that a repository is gone. Exit 3 reports unknown entries even when confirmed removals were
 applied; check `applied` and `backup` rather than treating it as no change.
 When archive metadata is unavailable, an audit leaves the existing stamp unchanged.
-The session-start hook checks archive state only when a weekly reminder is due:
-confirmed archived repositories get no weekly reminder, while unknown reads retain
-the reminder. The daily-turn reminder still applies.
 The documented reader on the Director's own login also works here with
 `--gh gh` for private repositories. To undo cleanup, restore the backup only if no later turn or audit
 ran; otherwise reinsert just the removed audit entries, retaining newer stamps.
 
-The catalog's session-start hook reads that marker on every host and opens a
-session with one line when the last turn is more than a day old, or when the
-repository the session opened in has a `DIRECTION.md` whose last audit is
-more than a week old. While this machine's own turn is more than a day old,
-it reads the shared turn record (in `OWNER/direction` for the account this
-machine last covered, else for the repository the session opened in) and uses
-a newer turn found there. When that record cannot be read, it says the turn is
-unconfirmed rather than overdue. Audits stay per machine. The turn is one
-habit shared across repositories; the audit is per repository, and a fresh audit of one never silences another. A
+The catalog's session-start hook reads that marker on every host. It prints
+at most two lines, the same in every folder: one when the last turn is more
+than a day old, and one when the last weekly audit is more than a week old.
+The audit line shows only for an account with direction set up, and it names
+no repository. The account is the one whose direction repository the marker's
+newest turn or weekly audit names. Only when the marker records no account
+does the hook fall back to the account of the folder's origin, and only when
+that account's `OWNER/direction` has been audited here or is checked out
+beside the folder. A local turn or weekly audit counts only
+when it names that account. While either local stamp is stale, the hook
+reads the open issues in `OWNER/direction` once and uses the newest stamp
+across every record it finds. When it cannot read them all, the line says
+unconfirmed rather than overdue. A
 reminder that will not clear means the marker was not written where the hook
 reads it; the reminder names the path. The marker is one file for every host,
 `~/.code/direction-last-check.json` unless `DIRECTION_MARKER` names another,
@@ -361,7 +404,11 @@ uv run <skill-dir>/scripts/direction_audit.py --repo OWNER/REPO
 
 It reads the merged `DIRECTION.md` from the default branch, never a checkout.
 It writes nothing to GitHub; it only stamps this repository's audit in the
-local marker. Exit 1 with `marker_error` still carries the audit's findings;
+local marker. `--weekly --owner OWNER` runs this audit for `OWNER/direction`
+and each adopted repository. After every read is done, and only then, it
+writes the local weekly stamp and one GitHub record: an open issue titled
+"Weekly direction audits" in `OWNER/direction`, through the same automation
+helpers as the turn record. It never touches the turn record. Exit 1 with `marker_error` still carries the audit's findings;
 report them along with the persistence failure. Exit 1 with only `error` means
 the reads failed before producing an audit result.
 When the Director explicitly selects `--gh gh` or declares
@@ -672,8 +719,8 @@ against it. The direction session drafts those pull requests with the Director.
    retirements and other Director decisions for the Director. Preserve human-authored
    requests under `github-plan`'s ownership rules and record every disposition
    on GitHub. Then run the audit script for this repository and clear its
-   findings. That first run also enters the repository in the marker's `audits`
-   map, which is how later weekly audits know to include it.
+   findings. Once its `DIRECTION.md` is on the default branch, `--weekly`
+   finds and audits it every week.
 
 Repositories adopted before this step existed need one catch-up reconciliation:
 codex-skills and jetbrains-inspection-api (codex-lab is retired). Launchplane's pass is

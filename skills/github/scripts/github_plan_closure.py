@@ -29,18 +29,27 @@ class LeaseBusy(ValueError):
     pass
 
 
+def require_canonical_identity(session: str) -> None:
+    """Native aliases cannot select another freeze or lease; legacy opaque IDs remain readable."""
+    from github_plan_sessions import process_liveness
+    canonical = process_liveness().native_uuid(session)
+    if canonical is not None and canonical != session:
+        raise ValueError("use the canonical native thread UUID")
+
+
 def lease_path(session: str) -> Path:
+    require_canonical_identity(session)
     return closed_log().parent / "session-ownership" / (hashlib.sha256(session.encode()).hexdigest() + ".lock")
 
 
 @contextmanager
 def ownership(session: str, *, create: bool = False):
     """Nonblocking per-thread lease, shared by closure, resume and admission."""
+    path = lease_path(session)
     held = _LEASES.get()
     if held is not None and session in held:
         yield True
         return
-    path = lease_path(session)
     if create:
         path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -343,6 +352,7 @@ def replace_rows(rows: list[dict]) -> None:
 
 def resume_record(session: str, rows: list[dict]) -> dict | None:
     """Check known source refusals without leases, invalidation or publication."""
+    require_canonical_identity(session)
     matches = [r for r in rows if r.get("session_id") == session]
     if len(matches) > 1:
         raise ValueError("duplicate closed generations; preserve the source")
@@ -376,6 +386,8 @@ def resume_guard(session: str):
 
 def admit_sources(sessions: set[str]) -> None:
     """Freeze selected sources before a claim writes, with their leases held."""
+    for session in sessions:
+        require_canonical_identity(session)
     if not sessions or not closed_log().exists():
         return
     with store_lock(closed_log(), create=True):
@@ -508,15 +520,14 @@ def verified_record(session: str, home: Path | None = None) -> dict | None:
         matching = [r for r in rows if r.get("session_id") == session]
         if len(matching) != 1:
             return None
-        entry = {k: v for k, v in matching[0].items() if not k.startswith("_")}
+        from github_plan_sessions import native_helpers
+        entry = native_helpers()[1].normalize_ledger_entry(
+            path, {k: v for k, v in matching[0].items() if not k.startswith("_")})
         proof = entry.get("closure_evidence")
         if (entry.get("harness") != "codex" or not isinstance(proof, dict) or entry.get("resumed_at")
                 or (home is not None and proof.get("codex_home") != str(home.resolve()))):
             return None
-        if isinstance(entry.get("tty"), str):
-            entry["tty"] = entry["tty"].removeprefix("/dev/")
-        from github_plan_sessions import native_helpers
-        native_helpers()
+
         import release_session_claims
         from github_plan_release import stamp
         ended = stamp(entry["ended_at"])
@@ -534,10 +545,10 @@ def verified_record(session: str, home: Path | None = None) -> dict | None:
 
 
 def process_started_at(pid: int) -> datetime:
-    value = subprocess.run(["ps", "-p", str(pid), "-o", "lstart="], check=True,
-                           capture_output=True, text=True, timeout=2,
-                           env={**os.environ, "TZ": "UTC", "LC_ALL": "C"}).stdout.strip()
-    return datetime.strptime(value, "%a %b %d %H:%M:%S %Y").replace(tzinfo=timezone.utc)
+    from github_plan_sessions import native_helpers
+    native_helpers()
+    import session_liveness
+    return session_liveness.process_started_at(pid)
 
 
 def launch_metadata(pid: int, generation: str, home: str) -> dict:
@@ -577,10 +588,12 @@ def idle_eligible(entry: dict) -> bool:
 
 def receipt_current(entry: dict) -> bool:
     try:
+        from github_plan_sessions import native_helpers
+        normalize = native_helpers()[1].normalize_ledger_entry
         cache = LOG_CACHE.get()
         rows = cache[1] if cache and cache[0] == log_identity(closed_log().lstat()) else log_rows()
         rows = [r for r in rows if r.get("session_id") == entry["session_id"]]
-        return len(rows) == 1 and rows[0] == entry
+        return len(rows) == 1 and normalize(closed_log(), rows[0]) == normalize(closed_log(), entry)
     except (OSError, ValueError, KeyError, TypeError):
         return False
 
@@ -594,7 +607,9 @@ def candidate_records(sessions: set[str]) -> dict:
         if before != log_identity(closed_log().lstat()):
             return {}
         LOG_CACHE.set((before, rows))
-        return {session: matches[0] for session in sessions
+        from github_plan_sessions import native_helpers
+        normalize = native_helpers()[1].normalize_ledger_entry
+        return {session: normalize(closed_log(), matches[0]) for session in sessions
                 if len(matches := [r for r in rows if r.get("session_id") == session]) == 1
                 and isinstance(matches[0].get("closure_evidence"), dict)}
     except (OSError, ValueError, KeyError, TypeError):
@@ -607,7 +622,7 @@ def log_identity(info: os.stat_result) -> tuple:
 
 def native_process_check(entry: dict) -> None:
     from github_plan_sessions import native_helpers
-    native_helpers()
+    entry = native_helpers()[1].normalize_ledger_entry(closed_log(), entry)
     import release_session_claims
     from github_plan_release import stamp
     release_session_claims.verify_closed(entry, "claim-observer", ended_at=stamp(entry["ended_at"]))

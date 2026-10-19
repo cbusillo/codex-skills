@@ -8,7 +8,11 @@
 """Read-only audit of a repository's DIRECTION.md against GitHub state.
 
 Reports, as JSON, where milestones, escalations, and issue text have drifted
-from the direction file. It never writes to GitHub or to the checkout.
+from the direction file. `--repo` audits one repository and stamps only its
+own window in the local marker. `--weekly` audits the account named by
+`--owner`: its direction repository first, then every adopted repository. It
+records the weekly audit only when every one of them was read. It never writes to the checkout, and to
+GitHub only the weekly run's one shared weekly-audit record in OWNER/direction.
 """
 
 from __future__ import annotations
@@ -474,7 +478,8 @@ def git_root(start: pathlib.Path) -> pathlib.Path:
     return pathlib.Path(proc.stdout.strip()) if proc.returncode == 0 and proc.stdout.strip() else start
 
 
-def record_audit(repo: str, started_at: dt.datetime, direction_text: str | None, held: str | None = None) -> str | None:
+def record_audit(repo: str, started_at: dt.datetime, direction_text: str | None, held: str | None = None,
+                 since: dt.datetime | None = None) -> str | None:
     """Stamp this repository's audit in the local marker the session-start hook reads.
 
     The stamp is written here, not by hand, so an audit stamp means an audit ran.
@@ -488,7 +493,7 @@ def record_audit(repo: str, started_at: dt.datetime, direction_text: str | None,
         path = direction_mark.marker_path()
         # Retain closures that happen while listings are being fetched for the
         # next audit instead of skipping ahead to the completion time.
-        direction_mark.mark_audit(path, repo, started_at, held)
+        direction_mark.mark_audit(path, repo, started_at, held, since)
         return str(path)
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         raise AuditError(f"Could not record direction audit marker at {path}: {exc}") from exc
@@ -1718,6 +1723,122 @@ def owner_repositories(owner: str, *, fetch: Callable[[list[str]], Any], include
     }, cut
 
 
+def repository_listing_gaps(cut: bool, *, fetch: Callable[[list[str]], Any]) -> list[dict[str, str]]:
+    """Why an account's repository listing may be incomplete: a page cap or a selected-repositories App."""
+    gaps: list[dict[str, str]] = []
+    if cut:
+        gaps.append({"source": "repositories", "reason": "page_limit"})
+    try:
+        installation = fetch(["api", "installation/repositories?per_page=1", "--method", "GET"])
+        if isinstance(installation, dict) and installation.get("repository_selection") == "selected":
+            # An App installed on chosen repositories cannot see the rest of the account.
+            gaps.append({"source": "repositories", "reason": "installation_selected_repositories"})
+    except AuditError:
+        pass  # The Director's own login lists every repository it owns.
+    return gaps
+
+
+def direction_adoption(repo: str, *, fetch: Callable[[list[str]], Any]) -> tuple[str, str | None]:
+    """"adopted", "absent" or "unknown" for a repository's default-branch DIRECTION.md, with the reason.
+
+    Only GitHub's 404 confirms absence; any other failure or an unexpected answer stays unknown.
+    """
+    try:
+        body = fetch(["api", f"repos/{repo}/contents/DIRECTION.md", "--method", "GET"])
+    except AuditError as exc:
+        if NOT_FOUND_RE.search(str(exc)):
+            return "absent", None
+        return "unknown", str(exc)[:300]
+    if isinstance(body, dict) and body.get("type", "file") == "file" and isinstance(body.get("content"), str):
+        return "adopted", None
+    return "unknown", "the DIRECTION.md response is not a readable file"
+
+
+def weekly_audit(
+    owner: str, *, gh: str, automation: str | None = None, include_archived: bool = False,
+) -> tuple[int, dict[str, Any]]:
+    """Audit OWNER/direction, then every adopted repository, and record the weekly audit once.
+
+    The weekly audit is recorded, locally and then in its shared record, only when the
+    repository listing is complete and every adopted repository's audit run was recorded.
+    A held window counts: the run was recorded, the window keeps its start, and the next
+    audit rereads what failed or was capped. The receipt lists held repositories and their
+    reasons. A repository with no recorded run does not count. Exit 1: not recorded or the
+    marker failed; 2: recorded here but not shared; 3: recorded with findings or held
+    repositories; 0: recorded and clean.
+    """
+    started = dt.datetime.now(dt.timezone.utc)
+    fetch = lambda a: gh_json(a, gh=gh)  # noqa: E731
+    direction_repo = f"{owner}/direction"
+    discovery: dict[str, Any] = {"complete": False, "gaps": [], "unknown": {}}
+    adopted: list[str] = []
+    try:
+        listed, cut = owner_repositories(owner, fetch=fetch)
+        discovery["gaps"] = repository_listing_gaps(cut, fetch=fetch)
+        for key in sorted(listed):
+            name = str(listed[key].get("full_name"))
+            if key == direction_repo.casefold():
+                continue
+            state, reason = direction_adoption(name, fetch=fetch)
+            if state == "adopted":
+                adopted.append(name)
+            elif state == "unknown":
+                discovery["unknown"][name] = reason
+    except AuditError as exc:
+        discovery["gaps"].append({"source": "repositories", "reason": "unavailable", "detail": str(exc)[:300]})
+    discovery["complete"] = not discovery["gaps"] and not discovery["unknown"]
+    repos = [direction_repo, *adopted]
+    audits: dict[str, dict[str, Any]] = {}
+    unread: dict[str, str] = {name: f"adoption unknown: {reason}" for name, reason in discovery["unknown"].items()}
+    held: dict[str, str] = {}
+    marker_error = None
+    for repo in repos:
+        _code, result = audit_one(repo, gh=gh, owner=owner, automation=automation, include_archived=include_archived)
+        audits[repo] = result
+        if "error" in result:
+            unread[repo] = f"reads failed: {result['error']}"
+        elif "marker_error" in result:
+            unread[repo] = "marker_error"
+            marker_error = marker_error or result["marker_error"]
+        elif not result.get("run_recorded"):
+            # Archived, unknown archive state or a missing DIRECTION.md: no run was recorded.
+            unread[repo] = str(result.get("marked_skipped") or "direction_missing")
+        elif result.get("marked_skipped") == "window_open":
+            # The run was recorded with its window held open, so it counts as read.
+            # The window keeps its start, and the next audit rereads what failed or was capped.
+            held[repo] = ", ".join(held_reads([item for finding in result.get("findings", [])
+                                               if finding.get("kind") == "coverage_incomplete"
+                                               for item in finding.get("listings", [])])) or "window_open"
+    receipt: dict[str, Any] = {
+        "owner": owner, "weekly": True, "read_only": True, "started": direction_mark.utc_stamp(started),
+        "repos": repos, "discovery": discovery, "unread": unread, "held": held, "audits": audits,
+        "ok": (all(result.get("ok") for result in audits.values()) and discovery["complete"]
+               and not unread and not held),
+        "weekly_recorded": None, "shared": None,
+    }
+    if marker_error:
+        receipt["marker_error"] = marker_error
+    if not discovery["complete"] or unread or marker_error:
+        receipt["weekly_skipped"] = "not every adopted repository was read" if unread or marker_error else "repository listing incomplete"
+        return 1, receipt
+    shown = os.environ.get("DIRECTION_MARKER") or "default direction marker"
+    try:
+        path = direction_mark.marker_path()
+        shown = str(path)
+        written = direction_mark.mark_weekly(path, owner, started)
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        receipt["ok"] = False
+        receipt["marker_error"] = f"Could not record the weekly audit at {shown}: {exc}"
+        print(f"ERROR: {receipt['marker_error']}. The weekly audit was not recorded or shared.", file=sys.stderr)
+        return 1, receipt
+    receipt["weekly_recorded"] = {"marker": shown, **written["weekly_audit"]}  # type: ignore[dict-item]
+    receipt["shared"] = direction_mark.share_weekly(direction_mark.utc_stamp(started), owner)
+    if not receipt["shared"]["ok"]:
+        print(f"ERROR: Weekly audit recorded at {shown}, but the shared record failed: {receipt['shared']['error']}", file=sys.stderr)
+        return 2, receipt
+    return (0 if receipt["ok"] else 3), receipt
+
+
 def active_unadopted_report(
     direction_repo: str, since: dt.datetime, *, fetch: Callable[[list[str]], Any], include_archived: bool = False,
 ) -> dict[str, Any]:
@@ -1728,18 +1849,9 @@ def active_unadopted_report(
     without stamping, adopting, or reporting them as missing a file.
     """
     owner = direction_repo.split("/")[0]
-    unavailable: list[dict[str, str]] = []
     rows: list[dict[str, Any]] = []
     repos, cut = owner_repositories(owner, fetch=fetch, include_archived=include_archived)
-    if cut:
-        unavailable.append({"source": "repositories", "reason": "page_limit"})
-    try:
-        installation = fetch(["api", "installation/repositories?per_page=1", "--method", "GET"])
-        if isinstance(installation, dict) and installation.get("repository_selection") == "selected":
-            # An App installed on chosen repositories cannot see the rest of the account.
-            unavailable.append({"source": "repositories", "reason": "installation_selected_repositories"})
-    except AuditError:
-        pass  # The Director's own login lists every repository it owns.
+    unavailable = repository_listing_gaps(cut, fetch=fetch)
     for key in sorted(repos):
         meta = repos[key]
         name = str(meta.get("full_name"))
@@ -1909,11 +2021,123 @@ def fetch_capacity(
     return summary, truncated + reporting_errors
 
 
+WINDOW_READS = {"recent_closed_audit_issues", "recent_closed_milestone_issues", "milestone_issue_events"}
+
+
+def held_reads(truncated: list[str]) -> list[str]:
+    """The incomplete reads that keep an audit's evidence window open for a rerun."""
+    return sorted(item for item in truncated if item in WINDOW_READS or item.startswith("capacity_"))
+
+
+def audit_one(
+    repo: str, *, gh: str, owner: str | None = None, automation: str | None = None, include_archived: bool = False,
+) -> tuple[int, dict[str, Any]]:
+    """Audit one repository and stamp its own window; never the weekly audit.
+
+    Returns the exit code `--repo` uses and the receipt it prints.
+    """
+    automation_arg = automation
+    owner_reader = pathlib.Path(shutil.which(str(gh)) or gh).resolve() == pathlib.Path(shutil.which("gh") or "gh").resolve()
+    fetch = lambda a: gh_json(a, gh=gh)  # noqa: E731
+    try:
+        # The merged default-branch file is the owner-approved one; a checkout may hold an unapproved edit.
+        direction_text = merged_direction(repo, fetch=fetch)
+        automation = automation_arg
+        if automation is None:
+            me = fetch(["api", "user", "--method", "GET"])
+            login = me.get("login") if isinstance(me, dict) else None
+            automation = login if isinstance(login, str) else None
+        truncated: list[str] = []
+        if owner_reader and automation_arg is None and (not automation or automation.casefold() != (owner or repo.split("/")[0]).casefold()):
+            truncated.append("owner_reader_identity")
+        milestones, cut = fetch_paginated(f"repos/{repo}/milestones?state=all", fetch=fetch)
+        truncated += ["milestones"] if cut else []
+        milestone_lines = parse_direction(direction_text)["milestone_lines"] if direction_text else {}
+        previous = previous_audit_stamp(repo)
+        now = dt.datetime.now(dt.timezone.utc)
+        week_ago = now - dt.timedelta(days=7)
+        audit_since = previous if previous and previous.tzinfo and previous <= now else week_ago
+        since = min(audit_since, week_ago)
+        issues, issue_truncation = fetch_audit_issues(
+            repo, milestones, milestone_lines, since, fetch=fetch, audit_since=audit_since,
+        )
+        truncated.extend(issue_truncation)
+        pulls, cut = fetch_paginated(f"repos/{repo}/pulls?state=open", fetch=fetch)
+        truncated += ["pulls"] if cut else []
+        rulesets, cut = fetch_rulesets(repo, fetch=fetch)
+        truncated += ["rulesets"] if cut else []
+        direction_pulls = direction_pull_requests(repo, pulls, fetch=fetch)
+        capacity = None
+        unadopted = None
+        if repo.split("/")[1].casefold() == "direction":
+            shared = cached_reads(fetch)
+            # The next window starts at the persisted marker, whose formatter
+            # owns timestamp precision. Use that same instant as this end.
+            capacity_until = dt.datetime.fromisoformat(direction_mark.utc_stamp(now))
+            capacity, cut = fetch_capacity(repo, audit_since, capacity_until, fetch=shared, include_archived=include_archived)
+            truncated.extend(cut)
+            capacity["milestone_outcomes"] = milestone_outcomes(repo, direction_text or "", audit_since, now, fetch=shared)
+            unadopted = active_unadopted_report(repo, audit_since, fetch=shared, include_archived=include_archived)
+    except AuditError as exc:
+        error: dict[str, Any] = {"ok": False, "error": str(exc)}
+        if gh == str(WRAPPER):
+            error["owner_reader_hint"] = "For an owner-only audit, pass --gh gh for read-only GitHub reads; no global fallback setting is needed."
+        return 1, error
+
+    configured_bots = github_identity.configured_bot_logins()
+    result = audit(
+        direction_text=direction_text,
+        milestones=milestones,
+        issues=issues,
+        owner=owner or repo.split("/")[0],
+        automation=automation,
+        now=now,
+        audit_since=audit_since,
+        direction_pulls=direction_pulls,
+        truncated=truncated,
+        rulesets=rulesets,
+        rulesets_unavailable=rulesets is None,
+        bot_logins=configured_bots,
+        expected_automation=github_identity.automation_login(),
+        owner_identity_explicit=owner_reader or automation_arg is not None,
+        capacity=capacity,
+        repo=repo,
+    )
+    result["stale_wait_report"] = stale_wait_report(
+        issues, repo, fetch=fetch, inventory_complete="issues" not in truncated,
+    )
+    if unadopted is not None:
+        result["active_unadopted"] = unadopted
+    result.update({"repo": repo, "direction_source": f"{repo}:DIRECTION.md@default-branch", "read_only": True})
+    result["audit_since"] = audit_since.isoformat().replace("+00:00", "Z")
+    # Preserve unseen labeled closures and milestone additions without letting
+    # unrelated listing caps keep stale reminders recurring indefinitely.
+    # Incomplete capacity reads also keep the window open for a rerun.
+    held = held_reads(truncated)
+    archived = result["stale_wait_report"]["repository"]["archived"]
+    result["marked_skipped"] = ("archived" if archived is True else "window_open" if held
+                                else "archive_state_unknown" if archived is not False else None)
+    result["marked"] = result["run_recorded"] = result["dropped"] = None
+    try:
+        result["marked"] = None if result["marked_skipped"] else record_audit(repo, now, direction_text)
+        # A held window still records that this audit ran, so it is not read as missed.
+        result["run_recorded"] = (record_audit(repo, now, direction_text, ", ".join(held), audit_since)
+                                  if held and archived is False else result["marked"])
+        result["dropped"] = drop_archived(repo) if archived is True else None
+    except AuditError as exc:
+        result["ok"] = False
+        result["marker_error"] = str(exc)
+        print(f"ERROR: {exc}. The reminder still has the previous audit state.", file=sys.stderr)
+    return (1 if "marker_error" in result else 0 if result["ok"] else 3), result
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     repository_scope.add_include_archived_argument(parser)
     parser.add_argument("--repo", help="OWNER/REPO; defaults to the origin remote of the current checkout")
-    parser.add_argument("--owner", help="login treated as the owner; defaults to the repo owner")
+    parser.add_argument("--owner", help="login treated as the owner; defaults to the repo owner; with --weekly, the account audited")
+    parser.add_argument("--weekly", action="store_true",
+                        help="audit OWNER/direction and every adopted repository of --owner, and record the weekly audit once all were read")
     parser.add_argument("--automation", help="automation login allowed to create milestones; defaults to the wrapper's account")
     parser.add_argument("--gh", default=str(WRAPPER), help="gh-compatible command used for reads")
     parser.add_argument("--stale-waits-only", action="store_true", help="read parked waits without running or stamping a direction audit")
@@ -1935,6 +2159,11 @@ def main(argv: list[str] | None = None) -> int:
                         help="owner-approved marker removal when this exact repository returns HTTP 404; repeat per repository")
     args = parser.parse_args(argv)
 
+    if args.weekly:
+        if args.repo or args.stale_waits_only or args.stranded_work_only or args.prune_unadopted or args.apply_prune or args.remove_missing_repo:
+            parser.error("--weekly audits every adopted repository of --owner and cannot run another audit mode")
+        if not args.owner or not re.fullmatch(r"[\w.-]+", args.owner):
+            parser.error("--weekly requires --owner OWNER")
     if (args.stranded_owner or args.stranded_repo or args.question_queue or args.worktree_root) and not args.stranded_work_only:
         parser.error("stranded inventory scope requires --stranded-work-only")
     if args.stranded_work_only:
@@ -1999,14 +2228,17 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0 if result["ok"] else 3
 
+    if args.weekly:
+        code, result = weekly_audit(args.owner, gh=args.gh, automation=args.automation, include_archived=args.include_archived)
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return code
     repo = args.repo or default_repo(git_root(pathlib.Path.cwd()))
     if not repo:
         print(json.dumps({"ok": False, "error": "could not resolve a repository; pass --repo OWNER/REPO"}))
         return 2
 
-    owner_reader = pathlib.Path(shutil.which(str(args.gh)) or args.gh).resolve() == pathlib.Path(shutil.which("gh") or "gh").resolve()
-    fetch = lambda a: gh_json(a, gh=args.gh)  # noqa: E731
     if args.stale_waits_only:
+        fetch = lambda a: gh_json(a, gh=args.gh)  # noqa: E731
         try:
             issues, cut = fetch_paginated(f"repos/{repo}/issues?state=open", fetch=fetch)
             report = stale_wait_report(issues, repo, fetch=fetch, inventory_complete=not cut)
@@ -2016,99 +2248,10 @@ def main(argv: list[str] | None = None) -> int:
                       "checked": 0, "items": [], "unavailable": [{"source": "issues", "reason": "unavailable"}]}
         print(json.dumps({"repo": repo, "read_only": True, "stale_wait_report": report}, indent=2, sort_keys=True))
         return 0
-    try:
-        # The merged default-branch file is the owner-approved one; a checkout may hold an unapproved edit.
-        direction_text = merged_direction(repo, fetch=fetch)
-        automation = args.automation
-        if automation is None:
-            me = fetch(["api", "user", "--method", "GET"])
-            login = me.get("login") if isinstance(me, dict) else None
-            automation = login if isinstance(login, str) else None
-        truncated: list[str] = []
-        if owner_reader and args.automation is None and (not automation or automation.casefold() != (args.owner or repo.split("/")[0]).casefold()):
-            truncated.append("owner_reader_identity")
-        milestones, cut = fetch_paginated(f"repos/{repo}/milestones?state=all", fetch=fetch)
-        truncated += ["milestones"] if cut else []
-        milestone_lines = parse_direction(direction_text)["milestone_lines"] if direction_text else {}
-        previous = previous_audit_stamp(repo)
-        now = dt.datetime.now(dt.timezone.utc)
-        week_ago = now - dt.timedelta(days=7)
-        audit_since = previous if previous and previous.tzinfo and previous <= now else week_ago
-        since = min(audit_since, week_ago)
-        issues, issue_truncation = fetch_audit_issues(
-            repo, milestones, milestone_lines, since, fetch=fetch, audit_since=audit_since,
-        )
-        truncated.extend(issue_truncation)
-        pulls, cut = fetch_paginated(f"repos/{repo}/pulls?state=open", fetch=fetch)
-        truncated += ["pulls"] if cut else []
-        rulesets, cut = fetch_rulesets(repo, fetch=fetch)
-        truncated += ["rulesets"] if cut else []
-        direction_pulls = direction_pull_requests(repo, pulls, fetch=fetch)
-        capacity = None
-        unadopted = None
-        if repo.split("/")[1].casefold() == "direction":
-            shared = cached_reads(fetch)
-            # The next window starts at the persisted marker, whose formatter
-            # owns timestamp precision. Use that same instant as this end.
-            capacity_until = dt.datetime.fromisoformat(direction_mark.utc_stamp(now))
-            capacity, cut = fetch_capacity(repo, audit_since, capacity_until, fetch=shared, include_archived=args.include_archived)
-            truncated.extend(cut)
-            capacity["milestone_outcomes"] = milestone_outcomes(repo, direction_text or "", audit_since, now, fetch=shared)
-            unadopted = active_unadopted_report(repo, audit_since, fetch=shared, include_archived=args.include_archived)
-    except AuditError as exc:
-        error: dict[str, Any] = {"ok": False, "error": str(exc)}
-        if args.gh == str(WRAPPER):
-            error["owner_reader_hint"] = "For an owner-only audit, pass --gh gh for read-only GitHub reads; no global fallback setting is needed."
-        print(json.dumps(error))
-        return 1
-
-    configured_bots = github_identity.configured_bot_logins()
-    result = audit(
-        direction_text=direction_text,
-        milestones=milestones,
-        issues=issues,
-        owner=args.owner or repo.split("/")[0],
-        automation=automation,
-        now=now,
-        audit_since=audit_since,
-        direction_pulls=direction_pulls,
-        truncated=truncated,
-        rulesets=rulesets,
-        rulesets_unavailable=rulesets is None,
-        bot_logins=configured_bots,
-        expected_automation=github_identity.automation_login(),
-        owner_identity_explicit=owner_reader or args.automation is not None,
-        capacity=capacity,
-        repo=repo,
-    )
-    result["stale_wait_report"] = stale_wait_report(
-        issues, repo, fetch=fetch, inventory_complete="issues" not in truncated,
-    )
-    if unadopted is not None:
-        result["active_unadopted"] = unadopted
-    result.update({"repo": repo, "direction_source": f"{repo}:DIRECTION.md@default-branch", "read_only": True})
-    result["audit_since"] = audit_since.isoformat().replace("+00:00", "Z")
-    # Preserve unseen labeled closures and milestone additions without letting
-    # unrelated listing caps keep stale reminders recurring indefinitely.
-    # Incomplete capacity reads also keep the window open for a rerun.
-    window_reads = {"recent_closed_audit_issues", "recent_closed_milestone_issues", "milestone_issue_events"}
-    held = sorted(item for item in truncated if item in window_reads or item.startswith("capacity_"))
-    archived = result["stale_wait_report"]["repository"]["archived"]
-    result["marked_skipped"] = ("archived" if archived is True else "window_open" if held
-                                else "archive_state_unknown" if archived is not False else None)
-    result["marked"] = result["run_recorded"] = result["dropped"] = None
-    try:
-        result["marked"] = None if result["marked_skipped"] else record_audit(repo, now, direction_text)
-        # A held window still records that this audit ran, so it is not read as missed.
-        result["run_recorded"] = (record_audit(repo, now, direction_text, ", ".join(held))
-                                  if held and archived is False else result["marked"])
-        result["dropped"] = drop_archived(repo) if archived is True else None
-    except AuditError as exc:
-        result["ok"] = False
-        result["marker_error"] = str(exc)
-        print(f"ERROR: {exc}. The reminder still has the previous audit state.", file=sys.stderr)
+    code, result = audit_one(repo, gh=args.gh, owner=args.owner, automation=args.automation,
+                             include_archived=args.include_archived)
     print(json.dumps(result, indent=2, sort_keys=True))
-    return 1 if "marker_error" in result else 0 if result["ok"] else 3
+    return code
 
 
 if __name__ == "__main__":

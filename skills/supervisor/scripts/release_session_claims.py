@@ -23,9 +23,10 @@ import tempfile
 import time
 
 import session_record
+import session_liveness
 import account_choice
 import backfill_inventory
-from close_ttys import idle_terminal_command, inventory
+from session_liveness import idle_terminal_command, inventory
 
 GITHUB = Path(__file__).resolve().parents[2] / "github/scripts"
 sys.path.insert(0, str(GITHUB))
@@ -33,7 +34,6 @@ import github_identity
 import github_plan_claim as claim
 import github_plan_release as release
 import github_plan_closure as closure
-from github_plan_sessions import process_absence_known
 from github_read import GitHubReader, GitHubReadError, GitHubReadShapeError, automation_only_gh_prefix_args
 from github_comment import OPERATION_MARKER_LINE_RE, CommentError, comment
 
@@ -54,56 +54,31 @@ class ConfirmedIssueRefusal(ValueError):
 
 
 def verify_process_exit(entry, *, ended_at=None):
-    """Check recorded execution independently of optional receipt transcripts."""
-    historical = entry.get("_inventory") is True
-    pid, tty = entry.get("pid"), entry.get("tty")
-    if not historical and (type(pid) is not int or pid <= 0 or not isinstance(tty, str) or not tty):
+    if not entry.get("_inventory") and (
+        type(entry.get("pid")) is not int or entry["pid"] <= 0
+        or not isinstance(entry.get("tty"), str) or not entry["tty"]
+    ):
         raise ValueError("closure requires the matched process PID and TTY")
-    tty = tty.removeprefix("/dev/") if isinstance(tty, str) else tty
-    rows = inventory()
-    for process_pid, process_tty, command in rows:
-        if process_pid in {pid, entry.get("launch_pid")}:
-            raise ValueError("source PID (possibly reused) or work on its TTY remains; preserve claims and verify native identity before the documented manual release-claim route")
-        if not entry.get("_backfill") and process_tty == tty and not idle_terminal_command(command):
-            born = closure.process_started_at(process_pid) if ended_at is not None else None
-            if ended_at is None or not ended_at < born <= datetime.now(timezone.utc):
-                raise ValueError("source PID (possibly reused) or work on its TTY remains; preserve claims and verify native identity before the documented manual release-claim route")
-    for process_pid, process_tty, command in rows:
-        # ps does not preserve shell quoting. Inspect only native resume
-        # operands; arbitrary quoted prompt text is neither syntax nor identity.
-        argv = command.split()
-        resumed_ids = [argv[index + 1].strip("\"'") for index, arg in enumerate(argv)
-                       if arg in {"resume", "--resume", "-r"} and index + 1 < len(argv)]
-        resumed_ids.extend(arg.split("=", 1)[1] for arg in argv if arg.startswith("--resume="))
-        if entry["session_id"] in resumed_ids:
-            raise ValueError("source native session is visible in a resumed harness process")
-        executable = next((index for index, arg in enumerate(argv[:2])
-                           if Path(arg).name in {"codex", "claude", "claude.js"}), None)
-        source_executables = {"codex": {"codex"}, "claude": {"claude", "claude.js"}}[entry["harness"]]
-        if process_tty == tty and executable is not None and Path(argv[executable]).name in source_executables and not (
-            len(resumed_ids) == 1 and resumed_ids[0] and not resumed_ids[0].startswith("-")
-        ):
-            # A guarded client cannot silently attach to the source: every
-            # action takes its ownership lease and invalidates the closure.
-            # Reuse that existing exact PID/birth/argv/ingress proof, rather
-            # than treating an ID-less client as unrelated by age alone.
-            unrelated = (Path(argv[executable]).name == "codex"
-                         and process_absence_known(" ".join(argv[executable:])))
-            if not unrelated and Path(argv[executable]).name == "codex" and closure.remote_endpoints(argv[executable:]):
-                try:
-                    records = closure.log_rows()
-                    source = next((row for row in records if row.get("session_id") == entry["session_id"]), {})
-                    # Discovery may enrich the handoff URL after closure. It
-                    # does not change the native generation's exit evidence.
-                    identity = {k: v for k, v in entry.items() if not k.startswith("_") and k != "handoff_url"}
-                    unrelated = (identity == {k: v for k, v in source.items() if k != "handoff_url"}
-                                 and closure.receipt_current(source)
-                                 and not closure.action_pending(entry["session_id"])
-                                 and closure.guarded_launch_endpoint(process_pid, argv[executable:]) is not None)
-                except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
-                    pass
-            if not unrelated:
-                raise ValueError("unidentified harness on the recorded TTY; preserve claims and verify native identity before the documented manual release-claim route")
+    cutoff = release.stamp(entry["tty_exited_at"]) if entry.get("tty_exited_at") else ended_at
+    if cutoff is not None and ended_at is not None and cutoff > ended_at:
+        raise ValueError("native TTY exit cutoff is newer than closure")
+
+    def independent(pid, argv):
+        if closure.guarded_launch_endpoint(pid, argv) is None:
+            return False
+        # Retain the existing saved-generation identity check. A first or
+        # resumed generation instead gets its cutoff from the native pane.
+        records = closure.log_rows() if closure.closed_log().exists() else []
+        source = next((row for row in records if row.get("session_id") == entry["session_id"]), None)
+        if source is not None and not source.get("resumed_at") and source.get("process_exit_verified"):
+            identity = lambda row: {key: value for key, value in session_record.normalize_ledger_entry(
+                closure.closed_log(), row).items() if not key.startswith("_") and key != "handoff_url"}
+            return identity(source) == identity(entry)
+        return True
+
+    return session_liveness.verify_process_exit(
+        entry, rows=inventory(), ended_at=cutoff, started_at=closure.process_started_at,
+        independent_harness=independent)
 
 
 def verify_closed(entry, supervisor_session, *, ended_at):
@@ -114,13 +89,13 @@ def verify_closed(entry, supervisor_session, *, ended_at):
         raise ValueError("requires another explicitly Supervisor-owned session")
     if historical and (entry.get("safe_exit_yes") is not True or entry.get("still_running") is not False):
         raise ValueError("inventory closure requires the Supervisor's verified safe exit and inactivity")
-    verify_process_exit(entry, ended_at=ended_at)
+    cutoff = release.stamp(entry["tty_exited_at"]) if entry.get("tty_exited_at") else ended_at
+    if cutoff is not None and ended_at is not None and cutoff > ended_at:
+        raise ValueError("native TTY exit cutoff is newer than closure")
+    verify_process_exit(entry, ended_at=cutoff)
+    closure.require_fresh_action_verdict(entry)
     status = session_record.session_status(entry)
-    # Recovery runs after independently verified process exit. Older sessions
-    # may have declared safe exit before the pre-exit check existed; preserve
-    # their guarded attestation/release route without accepting them for shutdown.
-    if not status.get("declared_safe_verdict", status["safe_verdict"]):
-        raise ValueError("latest transcript lacks an unqualified Safe to exit: yes")
+    session_liveness.require_safe_status(status)
     return status
 
 
@@ -175,8 +150,6 @@ def record_closure(path, entry, supervisor_session, *, persist=True):
     shared = path.resolve() == closure.closed_log().resolve()
     coordination = closure.ownership(entry["session_id"], create=persist) if shared else nullcontext()
     with coordination:
-        if shared:
-            closure.require_fresh_action_verdict(entry)
         closed = _record_closure(path, entry, supervisor_session, persist=persist)
         if shared and persist:
             closure.set_action_pending(entry["session_id"], False)
@@ -210,7 +183,13 @@ def _record_closure(path, entry, supervisor_session, *, persist=True):
             if [r for r in current if r.get("session_id") == entry["session_id"]] != original:
                 raise ValueError("source closure changed during verification; preserve the current generation")
         return closed
-    status = verify_closed(entry, supervisor_session, ended_at=None)
+    # Only the native dead-pane observation can excuse a new TTY occupant on
+    # first finish. Caller-provided closure/cutoff fields are not observations.
+    entry = {k: v for k, v in entry.items() if k != "tty_exited_at"}
+    cutoff = session_liveness.native_exit_cutoff(entry)
+    if cutoff is not None:
+        entry = {**entry, "tty_exited_at": cutoff.isoformat()}
+    status = verify_closed(entry, supervisor_session, ended_at=cutoff)
     closed = {**entry, "ended_at": datetime.now(timezone.utc).isoformat(),
               "verdict_at": status["timestamp"], "process_exit_verified": True}
     if entry.get("harness") == "codex" and entry.get("codex_home"):

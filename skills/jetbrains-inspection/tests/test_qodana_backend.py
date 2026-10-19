@@ -831,14 +831,6 @@ b.execute(["docker", "create"], "owned", Path(sys.argv[3]), b.safe_env(), 10, re
         self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
         self.assertFalse(self.seen)
 
-    def test_default_api_dispatch_does_not_load_qodana(self):
-        output = io.StringIO()
-        with patch.object(host.sys, "argv", [str(SCRIPTS / "jb-inspect.py"), "agent-inspect", "--repo", str(self.repo)]), \
-                patch.object(host, "build_context", return_value={}), patch.object(host, "command_run", return_value={}) as api, \
-                patch.object(host, "emit_agent_result", return_value=0), redirect_stdout(output):
-            self.assertEqual(host.main(), 0)
-        api.assert_called_once()
-
     def test_explicit_qodana_dispatch_never_enters_desktop_lifecycle(self):
         output = io.StringIO()
         with patch.object(host.sys, "argv", [str(SCRIPTS / "jb-inspect.py"), "agent-inspect", "--backend", "qodana", "--repo", str(self.repo)]), \

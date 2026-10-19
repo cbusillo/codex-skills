@@ -598,13 +598,12 @@ checks below as relevant.
 - Mark completed checklist items, record blockers, and remove or rewrite stale
   assumptions in the GitHub plan issue.
 - Before declaring safe to exit after closing or merging implementation work,
-  inspect the remaining open GitHub issues labeled `plan` and verify their
-  labels match their `Current Status`: `plan:active`, `plan:blocked`,
-  `plan:waiting`, `plan:stale`, or `plan:done`. Verify automatic Project Status
-  reflects closure. Re-read the issue after updating; leave manual Project fields
-  untouched. The main LLM owns the final label/status decision and any mutations. For large issue sets, a read-only agent may
-  summarize likely mismatches, but the main LLM must make and verify the final
-  updates.
+  inspect remaining open plan issues through `gh-plan.py show`'s derived status.
+  Reconcile native dependencies with `link`/`unlink` and person/event waits with
+  `wait`, using existing evidence. Preserve deliberate scope holds and unresolved
+  wait entries. Verify automatic Project Status reflects closure, re-read after
+  supported updates, and leave manual Project fields untouched. The main LLM
+  owns evidence review and verification; read-only agents may summarize mismatches.
 - If workflow metadata changes are deferred, record the exact `.github/github.json`
   follow-up in the GitHub plan or closeout remaining items.
 

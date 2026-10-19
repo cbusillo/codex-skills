@@ -28,6 +28,70 @@ when their path spellings differ. A repository-local link to an external payload
 and an external link to repository-local data are both refused; an external payload,
 including an external link to another external file, is accepted.
 
+## Application testing private ingress
+
+`testing-private-ingress-dry-run`, `testing-private-ingress-apply` and
+`testing-private-ingress-readback` call the vendored
+`prepare_testing_private_ingress` service API. The producer advertises a
+`service_api` surface, and this installed caller retains that surface and its
+existing Director-agent identity dependency. It adds no permission or provider
+fallback. Source contract agreement does not prove deployed compatibility;
+confirm normal service delivery before operational use.
+`SERVICE_API_HELPER_COMMANDS` validates these explicit bindings against that
+producer surface and its modes without rewriting the vendored advertisement.
+
+Each command requires `--payload-file /absolute/private/request.json`. Its
+exact fields are `product`, `context`, `instance` (only `testing`),
+`endpoint_key`, `edge_endpoint_key`, `access_list_id`, `certificate_id`,
+`operation` (`create` or `disable`) and `reason`. Both numeric IDs must be
+positive integers naming existing resources. Obtain real scope and IDs from
+service records or scoped admin input. Mode, digest, URL, domain, target and
+provider configuration fields are not accepted in this file. The service
+derives the hostname from the lane's active private HTTPS health endpoint and
+checks application ownership, placement, certificate coverage, access list and
+receipt ownership itself. This operation neither deploys nor changes DNS,
+access lists, certificates, credentials or production.
+
+Save the dry-run's JSON output in a private file outside the repository. Apply
+and readback additionally require `--dry-run-evidence-file`,
+`--expected-plan-digest` (the returned `plan_sha256`) and `--reviewed-dry-run`.
+Evidence binds the full normalized request including its reason and resource
+IDs, the configured service, operation and returned plan. Receipts show the
+same product/context/testing instance, endpoint and edge keys, operation and
+digests; they omit the reason, numeric resource IDs, URLs and provider topology.
+The edge key in the receipt comes from the submitted request, not an echoed
+service field. Its verification rests on the service-owned plan digest and
+provider readback; the helper does not independently inspect the edge provider.
+The helper's binding checks are local review consistency checks; the service
+remains authorization and plan authority.
+
+Apply also requires `--idempotency-key`. Retain the exact private request,
+saved evidence and original key on an interrupted exchange. The helper never
+retries automatically or replans before recovery: a fresh plan would describe
+already changed provider state. Explicitly run readback first, then, if still
+unverified, resubmit the exact original apply and key for the service's durable
+recovery. A denied call stays denied; neither another identity nor a raw
+provider route is supported. A successful apply or replay is followed by a
+separate `mode=readback` POST with the same reviewed digest and request, without
+an idempotency header. Only aligned readback yields `read_back_matches=true`.
+Disable requires a fresh review of `operation=disable`; it leaves the
+application hostname and bot state intact.
+
+Transport loss or malformed evidence after apply begins returns
+`outcome_unknown`; failed readback after an aligned applied response returns
+`accepted_unverified` and retains that response's result and trace. Both exit
+nonzero. A service result with `applied=false`, `replan_required=true` and
+`previous_effects_absent=true` is a terminal original-key recovery outcome,
+returned as `replan_required` with nonzero exit and no success/readback claim.
+Only that explicit absence proof permits obtaining a fresh reviewed plan and
+new key. Other ambiguous outcomes preserve the original request and key.
+
+Neither plan nor provider readback verifies actual TLS, WSS, public denial,
+remote tailnet reachability or runtime health. The returned
+`deployment_performed=false` and `transport_verified=false` preserve those
+limits. Actual qualification belongs to the operational issue after supported
+source and caller delivery.
+
 ## Read budgets and timeout diagnostics
 
 `dokploy-inventory-read` and `product-promotion-status-read` default to a bounded 30-second HTTP socket
@@ -683,8 +747,32 @@ never-deployed target Launchplane created empty, named exactly in
 - Apply reads the target back through inspect and checks the provider-target
   record, that every record names the created application, no domains and the
   reviewed health-check path. Creation deploys nothing; image delivery follows
-  the ordinary testing deploy. Storage readback and custody retention are not
-  helper commands.
+  the ordinary testing deploy.
+- `dokploy-target-create-application-readback --payload-file P
+  --idempotency-key K --expected-plan-digest D --dry-run-evidence-file E` reads
+  back an uncertain storage allocation. Use the unchanged payload, the saved
+  dry run and its `plan_sha256`, and the original apply's key; the helper sends
+  the saved plan id and digest with `mode: readback` and no confirmation.
+  Readback never creates or adopts. Output shows `operation_state`,
+  `allocation_state`, `configuration_matches`, `configuration_evidence`
+  (`matches`, `differs` or `unavailable`), `custody_sha256`, and the durable
+  `provider_effect_phase` as step names only (`created`, `pending`,
+  `mount_verified`); generated names and provider ids drop. A wrong key is
+  refused by the service. Save this output as readback evidence.
+- When the allocation cannot resume, `dokploy-target-create-application-retain`
+  takes the apply arguments under the original key plus
+  `--readback-evidence-file` (that readback's output) and
+  `--expected-custody-digest` (its `custody_sha256`). Before sending, the helper
+  requires that the readback used the same payload, plan, review digest and key,
+  and that its custody matches. It sends `retain_state_volume_allocation: true`
+  and `expected_state_volume_custody_sha256` with the setup confirmation.
+  Success is a `retained_uncertain`, `applied: false` receipt naming this plan,
+  key and custody. The retained allocation never resumes; keep its resources
+  and start new work from a fresh dry run with a new key.
+- For an `application_state_volume_*` refusal, the helper's recommendation is
+  chosen by the code, never from the message: wait out an active lease, retry
+  a busy lane, read back again after custody changed, apply the original key
+  when already adopted, resolve changed ownership, or fix an unqualified request.
 
 ### Inert domain and ingress planning
 
@@ -1792,6 +1880,115 @@ For event-driven generic-web recovery, use the service-owned reference read
 described under [Generic-Web Deploy Recovery](#generic-web-deploy-recovery).
 `deploy_key_sha256` identifies a key but cannot reconstruct it. If the service
 cannot supply exact evidence, leave recovery held.
+
+## Workflow-rule retirement inspection
+
+`workflow-rule-retirement-inspect --payload-file <private-file>` and
+`workflow-rule-retirement-plan --payload-file <private-file>` are bounded local
+extensions of `POST /v1/authz-policies/workflow-rule-retirement-plan`. They are
+reads. The service writes nothing, and the helper sends no idempotency key.
+There is no apply mode. Retiring a rule needs a separate reviewed policy change.
+
+The private JSON file holds exactly `policy_record_id`, `policy_revision`,
+`policy_sha256` and `selection`. Take them from the active policy. `selection`
+lists 1 to 50 unique rules. Each has `rule_sha256` and both `managed_set_id`
+and `managed_rule_id`: both `null` for an unmanaged rule, both set for a
+managed one. Do not put `mode` in the file; the subcommand sets it. Keep the
+file outside the repository. The helper refuses a bad file before any call.
+The echoed request shows only the mode, `payload_source` and the selection
+count, never the path or a digest.
+
+Each selected rule returns its fingerprint, management, managed ids,
+`broad_or_shared_scope` and `scope`. Scope keeps the repository, its numeric
+ids, and the workflow ref, job workflow ref, event, ref, environment, product,
+context, instance and action selectors. Selectors may hold glob characters.
+A value the helper cannot verify is dropped, its path is listed in
+`dropped_field_paths`, and that rule's `scope_complete` is `false`. Unlisted
+fields are dropped the same way. A token-like value anywhere in scope makes
+the whole read `invalid`. The result also keeps `blockers` (for example
+`last_administrator_protection`) and `apply_supported`, which is always
+`false`. The plan adds `candidate_policy_sha256`,
+`surviving_workflow_rule_count`, `survivor_rules_sha256`,
+`other_principal_collections_preserved` and `plan_sha256`.
+
+`dependency_verification: unknown_requires_source_review` means Launchplane
+does not know which workflows use these rules. Read the workflow sources
+before you propose a retirement.
+
+The helper checks the response against the request. A different policy
+record, revision or digest, a missing or extra rule, a wrong management value,
+`apply_supported` other than `false`, plan fields on the wrong mode, a missing
+or mistyped repository or selector field in a scope (only null managed ids may
+be absent), or any `dependency_verification` other than
+`unknown_requires_source_review` return `invalid`. A 409
+`workflow_rule_selection_changed` or `active_authz_policy_ambiguous` returns
+`stale`: re-read the active policy and the rules, then rerun. A 400 returns
+`invalid_request`, and a 403 returns `denied` with its trace. A client timeout
+returns `unavailable` with the error code `client_timeout`. The service
+needs service-wide policy read authority to show full scopes.
+
+## Runtime-setting removal review
+
+`runtime-setting-removal-dry-run` and `runtime-setting-removal-readback` are
+bounded local extensions of `POST /v1/admin/runtime-settings/removal`. They
+let the Director agent review removing stored plain runtime settings and read
+back the result. There is no apply command. Apply belongs to the signed-in
+admin in Launchplane, and a dry-run digest does not authorize it.
+
+Inputs are flags, not a file: `--product`, `--scope` (`global`, `context` or
+`instance`), `--context`, `--instance`, one `--key` per stored setting name,
+and `--reason`. Readback also needs `--review-id` and `--plan-sha256`. Global
+scope needs product `launchplane` and no context or instance. Context scope
+needs a context and no instance. Instance scope needs both. Keys must be
+unique printable setting names, not token-shaped, at most 256. The reason is
+required, at most 1,000 characters, and sent to the service but never printed.
+The helper refuses a bad request before any call. Neither mode sends an
+idempotency key.
+
+The echoed request shows the mode, product, scope, context, instance, keys,
+`payload_source: operator_argument`, and on readback the review id. It never
+shows the reason or the digest.
+
+A dry run saves a private service-owned review, including the original record
+for rollback, and returns a fresh `review_id` and `plan_sha256` on every call.
+The result keeps the scope fields, `removed_keys`, `surviving_keys` (capped at
+500, with `surviving_keys_truncated`), `unprintable_survivor_count`,
+`surviving_value_count`, `retirement_intent_count`, `record_deleted`,
+`requires_compatible_readers_and_rollback`, `record_sha256`,
+`authority_sha256`, `plan_sha256`, `review_id`, `updated_at`, `applied`
+(always `false`) and `apply_supported` (always `false`). Readback adds
+`readback_matches` and `current_record_present`. An odd surviving name or a
+malformed `updated_at` is dropped and listed in `dropped_field_paths`, as are
+unlisted fields.
+
+The helper checks the response against the request. A different product,
+scope, context or instance, removed keys that differ from the requested keys,
+`applied` other than `false`, any apply-only field (`applied_at`,
+`audit_review_id`, `replayed`), a malformed digest, a `review_id` other than
+`runtime-removal-` plus `plan_sha256`, a mistyped flag or count, a
+`surviving_value_count` below the number of surviving names, readback fields
+on a dry run or missing ones on readback, or a token-shaped surviving name
+returns `invalid`. On readback the review id and digest must also equal the
+ones sent.
+
+Readback must reuse the dry run's exact keys, reason, review id and digest;
+the service compares the saved review's intent with the request.
+`readback_matches: false` means drift or the removal is not applied yet. It
+is not success.
+
+`requires_compatible_readers_and_rollback: true` means the removal takes the
+last stored value from a record that keeps provider-retirement intent, so the
+record survives with no values. Before any admin apply, deploy readers that
+accept such records everywhere and keep a rollback build with that support.
+The flag reports the requirement; it does not attest deployment or approve it.
+
+A 409 `runtime_setting_removal_unverified` returns `stale`: refresh the
+names-only runtime-settings read and run a fresh dry run, or for readback
+reuse the dry run's exact keys, reason, review id and digest. A 403
+`authorization_denied` returns `denied`, a 401 `unauthorized`, a 503
+`database_storage_required` `unavailable`, and a 400 `invalid_request`, each
+with its trace. A client timeout is `unavailable` with the error code
+`client_timeout`.
 
 ## Policy Proposals
 

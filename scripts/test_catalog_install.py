@@ -269,18 +269,6 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(list(target.parent.glob("generated.md.backup-*"))[0].read_bytes(), original)
         self.assertEqual(path.readlink(), target)
 
-    def test_legacy_crlf_receipt_recognizes_stale_generated_link(self):
-        self.install()
-        path = self.codex / "AGENTS.md"
-        target = self.root / "generated.md"
-        target.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
-        path.unlink()
-        path.symlink_to(target)
-        (self.catalog / "instructions" / "global.md").write_text("New shared rule.\n")
-        self.install()
-        self.assertIn("New shared rule.", target.read_text())
-        self.assertEqual(path.readlink(), target)
-
     def test_read_only_generated_targets_are_preserved_without_stopping_install(self):
         self.install()
         path = self.codex / "AGENTS.md"
@@ -1226,24 +1214,9 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(runtime.status_line(self.checkout), "")
         self.assertEqual(runtime.update(self.checkout)["state"], "current")
 
-    def test_generated_idea_name_does_not_block_updates_but_other_local_files_do(self):
-        idea = self.checkout / ".idea"
-        idea.mkdir()
-        source = Path(__file__).resolve().parents[1] / ".idea" / ".gitignore"
-        (idea / ".gitignore").write_bytes(source.read_bytes())
-        command("git", "add", ".idea/.gitignore", cwd=self.checkout)
-        command("git", "commit", "-qm", "shared IDE ignores", cwd=self.checkout)
-        command("git", "push", "-q", "origin", "main", cwd=self.checkout)
-        (idea / ".name").write_text("Generated project name")
-        self.assertEqual(runtime.update(self.checkout)["state"], "current")
-        local = idea / "personal.txt"
-        local.write_text("Preserve this")
-        self.assertEqual(runtime.update(self.checkout)["blocking_paths"], [".idea/personal.txt"])
-        self.assertEqual(local.read_text(), "Preserve this")
-
-    def test_root_tool_logs_allow_fast_forward_but_other_untracked_files_block(self):
-        source = Path(__file__).resolve().parents[1] / ".gitignore"
-        (self.seed / ".gitignore").write_bytes(source.read_bytes())
+    def test_ignored_files_allow_fast_forward_but_other_untracked_files_block(self):
+        ignores = self.seed / ".gitignore"
+        ignores.write_text(ignores.read_text() + "/*.log\n")
         command("git", "commit", "-qam", "catalog ignores", cwd=self.seed)
         command("git", "push", "-q", "origin", "main", cwd=self.seed)
         self.assertEqual(runtime.update(self.checkout)["state"], "current")

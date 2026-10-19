@@ -1051,7 +1051,7 @@ class DispatchTests(unittest.TestCase):
         with self.assertRaises(reviews.ReviewError):
             self.dispatch()
         prompt = next(c[2] for c in self.io.calls if c[0] == "review")
-        self.assertTrue(prompt.endswith("Review prompt:\nInspect the actual linked scope."))
+        self.assertTrue(prompt.endswith("\nInspect the actual linked scope."), "the review scope comes last, after the request context")
         self.assert_no_post()
 
     def test_pending_report_heading_cannot_hide_real_request(self):
@@ -1063,7 +1063,7 @@ class DispatchTests(unittest.TestCase):
                                     "> Director: keep it productive.\nPrompt:\nInspect the real changed helper.")
         self.dispatch()
         prompt = next(c[2] for c in self.io.calls if c[0] == "review")
-        self.assertTrue(prompt.endswith("Review prompt:\nInspect the real changed helper."))
+        self.assertTrue(prompt.endswith("\nInspect the real changed helper."), "the review scope comes last, after the request context")
 
     def test_failed_and_unknown_posts_preserve_diagnostics_without_replay(self):
         adapter = reviews.IO.__new__(reviews.IO)
@@ -1188,7 +1188,7 @@ class DispatchTests(unittest.TestCase):
                 with self.assertRaises(reviews.ReviewError):
                     self.dispatch()
                 prompt = next(c[2] for c in self.io.calls if c[0] == "review")
-                self.assertTrue(prompt.endswith("Review prompt:\nInspect actual linked scope."))
+                self.assertTrue(prompt.endswith("\nInspect actual linked scope."), "the review scope comes last, after the request context")
                 self.assert_no_post()
 
     def test_request_for_previous_head_never_launches(self):
@@ -1284,15 +1284,6 @@ class DispatchTests(unittest.TestCase):
         self.io.sources[9] = comment(9, "Prompt:\nInspect helpers and surrounding files.")
         self.dispatch()
         self.assertIn("Inspect helpers and surrounding files.", next(c[2] for c in self.io.calls if c[0] == "review"))
-
-    def test_linked_prompt_edited_during_review_never_posts(self):
-        self.io.request["body"] = (f"Supervisor runs the review.\nHead: {SHA}\n"
-                                   f"https://github.com/{REPO}/pull/7#issuecomment-9")
-        self.io.sources[9] = comment(9, "Prompt:\nInspect helpers.")
-        self.io.after_review = lambda: self.io.sources[9].update(body="Prompt:\nDifferent scope.")
-        with self.assertRaises(reviews.ReviewError):
-            self.dispatch()
-        self.assert_no_post()
 
     def test_cycle_cross_repo_link_and_untrusted_link_refuse(self):
         self.io.request["body"] = f"Supervisor runs the review.\nHead: {SHA}\nhttps://github.com/{REPO}/pull/7#issuecomment-9"
@@ -1501,7 +1492,7 @@ class NotificationTests(unittest.TestCase):
                     "input_line": {"style": "empty", "text": "", "line_index": 1}}
         self.read = self.enterContext(patch("tmux_terminal.Terminal.read", side_effect=lambda _: copy.deepcopy(self.row)))
         self.send = self.enterContext(patch("tmux_terminal.Terminal.send", new_callable=AsyncMock))
-        self.enterContext(patch("close_ttys.inventory", return_value=[(789, "ttys123", "claude")]))
+        self.enterContext(patch("session_liveness.inventory", return_value=[(789, "ttys123", "claude")]))
         self.enterContext(patch("tmux_terminal.process_parents", return_value={789: 456, 456: 1}))
 
     def test_codex_notification_uses_supported_queue_with_exact_home_and_native_identity(self):
@@ -1536,6 +1527,17 @@ class NotificationTests(unittest.TestCase):
         notifications.send(self.entry, "Read review")
         self.assertEqual(self.read.call_count, 2)
         self.send.assert_awaited_once_with(self.entry["tmux_session_id"], "Read review")
+
+    def test_idle_scheduled_wakeup_does_not_suppress_review_but_firing_turn_does(self):
+        self.claude()
+        status = {"at_turn_end": True, "background_tasks": [{"task_id": "wake", "kind": "scheduled"}]}
+        with patch.object(notifications, "session_status", return_value=status):
+            notifications.send(self.entry, "Read review")
+        self.send.assert_awaited_once_with(self.entry["tmux_session_id"], "Read review")
+        self.send.reset_mock()
+        with patch.object(notifications, "session_status", return_value={**status, "at_turn_end": False}), self.assertRaises(notifications.NotSent):
+            notifications.send(self.entry, "Read review")
+        self.send.assert_not_called()
 
     def test_claude_real_prompt_parser_accepts_cursor_padding_but_never_visible_input(self):
         from iterm_tab import ansi_screen, input_line

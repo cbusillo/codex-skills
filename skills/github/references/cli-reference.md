@@ -742,6 +742,13 @@ selection is unchanged.
   selected body sections. An empty discussion returns `comments: []`; an
   unreadable comment page fails the command instead of returning a partial
   thread as success.
+  `derived` reports status, open `blocked_by`, structured waits and semantic
+  status labels from the current native graph and authoritative wait record.
+  Selected Current Status fields display that projection; `--full` preserves
+  the original body as evidence alongside it. Hand-written status and labels
+  cannot override the projection. Missing or malformed wait evidence needs review.
+  `labels` is the projected view; `recorded_labels` preserves the observed labels
+  for diagnosis without making them status authority.
 - `deps <issue>`: Page and show validated native `blocked_by`, `blocking`, and
   sub-issue relationships, preserving cross-repository issue references.
 
@@ -911,18 +918,14 @@ the work record without copying that history into the claim comment.
 
 When the overall direction's Order admits the work, name the rule with
 `--admission live-breakage|milestone|repeat-stop|spare-capacity`; the claim
-comment records it as an `Admission:` line. `milestone` walks the issue's
-native parent and `blocks` links up to a `Track:` issue with an open milestone
-in `OWNER/direction`, records the Track it reaches, and refuses before writing
-(`claim_admission_unlinked`) when none is reached. Link the issue into that
-graph with `gh-plan.py link`, or pass `--admission-unlinked "<why not yet>"`.
-The walk verifies Tracks in the claimed repository account's `OWNER/direction`.
-A Track in another account's direction repository is a reported graph
-limitation; use the explicit explanation when that is the Director's graph.
-Completeness is bounded by the configured reader's link visibility.
-Unreadable admission graph nodes or relationships also accept that explanation
-and record incomplete verification. Ownership, actor authentication, waits and
-native blockers retain their independent refusals.
+comment records it as an `Admission:` line. Admission does not read or certify
+a milestone graph. Link milestone work into
+its Track during planning and cite that evidence with `--admission-link`.
+`--admission-unlinked REASON` remains available as optional milestone context
+for existing callers; it records the explanation without checking a graph.
+Ownership, actor authentication, waits and native blockers keep their independent
+checks. A plain `Admission:` line explains why the work was selected and grants
+no authority.
 `repeat-stop` needs both occurrences as `--admission-link URL`; any kind may
 add links. Links accept `https://github.com/OWNER/REPO/issues/N` or
 `https://github.com/OWNER/REPO/pull/N`, optionally followed by
@@ -1275,7 +1278,10 @@ The child's own waits and blockers and the retained PRs' holds still apply.
 Without `--handoff-comment`, resume stays on the claimed record.
 Both same-record and child successors also read the source issue's current
 native children and native child history from its timeline. A detached or
-reparented child remains visible through that history. The parent's structured
+reparented child remains visible through that history. When REST omits a
+historical child, the helper reads that exact event's GraphQL node through the
+same configured identity. Unresolved events or children still refuse the claim.
+The parent's structured
 claim history and every handoff naming that exact parent identify one ownership
 family. Resuming a different claim in the parent's own chain does not hide an
 earlier child holder. These checks follow recorded source lineage upward and
@@ -1477,20 +1483,31 @@ competitor's record.
   `wait` command to record existing evidence, never a hand-applied status label.
   Single-issue `wait` can review and record waits on closed issues without
   reopening or claiming them; a real wait is never automatically cleared.
-  For open automation-owned native parents/dependents in the same repository
+  Eligible already-closed managed sources with held/unread waits receive only
+  canonical lifecycle label repair and a review receipt. Their body, completion
+  note and Project state remain for the owning agent's completion review.
+  For open native planning parents/dependents in the same repository
   owner's account, apply derives `blocked`, `waiting` or `active` labels from
   all current native blockers and the authoritative structured wait. It preserves
-  their body, finish line, wait records and relationship edges, and reports that
-  any prose naming an old blocker needs review against the new observation.
+  their body, finish line, wait records and relationship edges. Readers project
+  the current blockers instead of treating old status prose as another source.
   Concurrent structured waits and open native blockers retain both label views.
-  A waiting label beside a clear record is an ambiguous legacy hold; reconciliation
-  preserves it for review. Record real waits through `wait`; after verifying a
-  resolution, an authorized execution uses `claim --wait-resolved` with its evidence.
-  Deliberately unstatused plans and closed related issues stay unchanged.
-  Unverified target planning configuration refuses writes. Stale/done labels
-  on open records require scope review before that same explicit claim recovery.
+  A clear reviewed wait record supersedes an old waiting label. Record real waits
+  through `wait`; missing or malformed records still require review.
+  Closed related plans get `done` labels and retain `waiting` for an actual
+  structured wait, without changing their state or body. Deliberate `stale`,
+  `done` and unstatused open planning scopes require finish-line review and are
+  preserved. Scope holds have a separate derived `hold` status and do not count
+  as unread waits. `next` excludes an unstatused planning scope with
+  `scope_review_required`; deliberate stale/done exclusions remain intact.
+  Reviewed `active`, `blocked` and `waiting` views are recomputed. The canonical
+  package prohibits label changes for open scope holds or open unread waits
+  itself. On a closed issue, unread waits permit `done` and removal of actionable
+  labels while preserving any recorded `waiting` label; wait coverage remains
+  partial. A closed lifecycle label does not certify acceptance.
+  Unverified target planning configuration refuses writes.
   Cross-repository source closures, another account's
-  records and reporter acceptance remain owning-agent review work. Each outcome
+  records and source reporter acceptance remain owning-agent review work. Each outcome
   identifies its source/related role and whether it was a closing reference;
   Informational reference-only open sources and timeline-only mentions set `review_required: true` without
   failing an otherwise successful receipt; closing-reference or related metadata
@@ -1498,10 +1515,51 @@ competitor's record.
   Related review work that is preserved without writes is also informational;
   it is never reported as reconciled. Explicit source references retain their
   finish-line review even when they are also native parents or dependents.
-  Unavailable reads and partial reconciliation remain failures.
+  Unavailable reads and uncertain writes remain failures. Receipts list every
+  discovered target, including `not_attempted` targets after a stopped write
+  sequence. Unread configuration/graph/wait evidence, a failed write, a posting
+  denial or an unattempted target makes coverage partial; a verified deliberate
+  scope hold is preserved without a write. A posting denial preserves its exact classified
+  failure and leaves that repository to an existing authorized owning session;
+  independent authorized repositories can still be reconciled. Never repeat a
+  denied write through another identity or a new grant. Classified read denials
+  have the same repository-local authority receipt; unclassified read failures
+  remain failures. Unknown write outcomes and identity failures stop all writes.
+  The pure `github_plan_status` package in `skills/github/scripts` supplies the
+  same derivation, trusted wait resolver, label diff and pure outcome/failure
+  classification to native consumers. Provider requests, snapshot comparisons
+  and authority remain adapter work. The workstation comment radar is an
+  additional catalog landing-adapter check; generic close and native service
+  adapters retain their own closure evidence and complete structured wait reads.
+  Adapters supply their own existing trust and repository-scoped posting
+  authority; the package contains no identity or credential discovery. Consumers
+  pin an immutable catalog source revision and validate compatibility before
+  upgrading it; the package version alone does not select a live source revision.
   The train driver includes separate planning receipts for every confirmed
   landed batch member. A failed planning receipt does not undo a landing;
   rerun this command after resolving its reported blocker.
+- `reconcile-status <issue> [--include-dependents] [--planning-checkout PATH] [--apply]`: Preview or apply the same guarded status
+  label projection to one issue without posting a wait, changing an edge,
+  creating an issue or closing it. Use the recovery command in a partial receipt
+  after resolving its reported review or failure. Confirmed wait, create and
+  native relationship writes refresh the affected issue's labels immediately;
+  their fact-write evidence remains separate from the projection receipt.
+  Explicit targets are required work: a denied or failed projection returns
+  unsuccessful while preserving the committed fact and its recovery. Successful
+  closed lifecycle labels can return success with partial wait coverage; that
+  does not certify full completion metadata or acceptance.
+  `--include-dependents` also refreshes direct native parents and blocking
+  dependents, with automatic neighbors limited to the source account. An
+  explicit target remains subject to its existing posting authority; a local
+  checkout proves configuration, never permission. When running elsewhere,
+  `--planning-checkout` names an existing checkout of the target repository;
+  its repository identity is verified before projection. The override applies
+  to root and same-repository snapshots, while foreign neighbors retain their
+  own configuration discovery. Recovery retains a supplied checkout.
+  Personal or active-identity
+  opt-ins authorize only the explicit target. Automatic neighbors, including
+  all issues discovered by `reconcile-landing`, return review receipts for
+  existing authorized target sessions; preview remains available.
 - `create <title>`: Create a new plan issue. Exact-title dedupe uses REST issue
   search, labels are ensured through REST, and the shared issue helper creates
   the issue with reconciliation evidence for unknown write outcomes. Supports
@@ -1509,6 +1567,12 @@ competitor's record.
   only). Configured Projects still enroll new issues. Manual fields are not
   synchronized by default; `--focus` and `--manager` are explicit edits, and
   configured Manager defaults are ignored.
+  Actionable create-time labels are immediately projected: for example,
+  `--plan-status blocked --wait-clear` becomes active until a native blocker is
+  linked. Deliberate stale/done/unstatused scope holds retain their review state.
+  Without reviewed wait evidence, creation can succeed while its open-issue
+  projection remains unsuccessful. Preserve the created issue; review it with
+  `wait`, then use its `reconcile-status` recovery instead of repeating creation.
 - `update-section <issue> <section>`: Patch a single markdown section on an
   issue. A target returned as a pull request is refused before body preparation
   or any write, with `validation_error` and `write_outcome=not_started`.
@@ -1559,11 +1623,30 @@ competitor's record.
   the Project item can still be found; manual fields remain untouched. If closure
   then fails, the result reports
   that split Project state explicitly. Confirmed or read-reconciled issue
-  closure is the commit point for `plan:done`, `plan:active` removal, and an
+  closure is the commit point for the canonical closed status label projection and an
   optional close comment. Exact same-body comments by the acting identity are
   reused on retry, and failures return deterministic `recovery` state so
   rerunning the same command reconciles missing metadata without duplicating
-  evidence.
+  evidence. A real structured wait retains `waiting` alongside `done`.
+  Unread wait evidence preserves recorded `waiting`, projects the known closed
+  lifecycle, and reports partial source wait coverage. A recoverable wait read
+  does not prevent the requested close comment or dependent refresh. A source
+  metadata failure defers its remaining comment; a known authority denial skips
+  further writes in that repository while independent repositories continue.
+  Unknown write outcomes stop all later writes and list unattempted targets.
+  A requested note without confirmed publication is retained in
+  `recovery.pending_comment`, including its write outcome and structured resume
+  arguments. Only an existing authorized owning session resumes after reading
+  current state and discussion; metadata-only repair cannot discharge the note.
+  Metadata recovery uses the
+  reported `reconcile-status` targets without replaying closure or comments.
+- Every successful `close`, including an idempotent repair of a confirmed close,
+  refreshes direct native parents and `blocking` dependents through that same
+  derivation and label readback. Related issues remain open; their own finish
+  lines are not inferred. Cross-repository targets in the same GitHub account
+  require verified planning configuration and the existing posting identity. A failure preserves
+  the confirmed source close and returns recovery evidence for the remaining
+  dependents; it never retries the issue-state write.
 - `ensure-labels`: Page through repository labels and create documented missing
   planning labels through REST. Concurrent-create conflicts are reconciled by
   reading the requested label instead of blindly retrying the write.
@@ -1611,16 +1694,18 @@ of evidence; all unread references and incomplete coverage remain explicit.
 - `next [--milestone <number-or-title>] [--limit <n>] [--scan-limit <n>]`:
   Rank actionable open plans without mutating labels, relationships, milestones,
   Projects, or workflows. Native `blocked-by` relationships are authoritative.
-- The command excludes done, stale, waiting, inconsistently
-  `plan:blocked`, dependency-unknown, and parent plans with open sub-issues. Each
+- The command excludes done, stale, actual structured waits, current native
+  blockers, dependency-unknown, and parent plans with open sub-issues. Missing
+  or malformed wait evidence is `wait_review_required`; an unstatused planning
+  scope is `scope_review_required`. Each
   exclusion includes a normalized reason and dependency evidence when present.
 - Global traversal still evaluates native blockers and children of waiting or
   inconsistently blocked nodes under the same scan allowance. A whole-plan wait
   follows its ordinary descendants; independent blocker links or a child named
   as independently selectable in structured wait evidence retain their own
   eligibility. A later independent route can expose a previously held leaf
-  without rereading it. Stale blocked labels produce issue findings and do not
-  degrade coverage; genuinely unread relationships are named in
+  without rereading it. Recorded labels do not override reviewed native status;
+  genuinely unread relationships are named in
   `dependency_context.unavailable_relationships`.
   Within each milestone, held subtrees use the remaining allowance after the
   unheld frontier; milestone order still comes first. Read-ahead follows that
@@ -1982,6 +2067,21 @@ before sending an explicit REST state/state-reason PATCH. The final envelope
 reports `post_close_comment` in `completed_steps` when the comment succeeded but
 the close failed, and comment failure stops before close. Successful state
 changes append `close_issue` or `reopen_issue` to `completed_steps`.
+After a confirmed CLI close, including a non-planning issue, the same in-process
+planning adapter refreshes its lifecycle view and direct native parents and
+blocking dependents. Provider reads and label writes retain the original close
+transport and automation actor. Partial receipts preserve the confirmed close
+and offer `reconcile-status --include-dependents --apply` recovery, without
+repeating the close comment. Exact personal-identity approval authorizes only
+that close; the adapter previews only its explicit target and returns automatic
+planning work for existing authorized target sessions. A required planning source
+that cannot receive its lifecycle labels returns unsuccessful with the confirmed
+close and recovery retained. An ordinary close outside a matching checkout can
+succeed with partial planning-configuration coverage when no canonical planning
+label identifies the source; custom label configuration remains unverified,
+and the receipt retains that review rather than claiming complete projection.
+Provider failures remain unsuccessful. The shared `set_issue_state` primitive keeps its existing contract;
+`gh-plan close` owns its own post-close orchestration.
 `--duplicate-of` accepts the same issue-reference forms, resolves the target's
 REST database id, and sends `state_reason=duplicate` plus `duplicate_issue_id`
 in the close PATCH. It is mutually exclusive with `--reason`. For completed durable
