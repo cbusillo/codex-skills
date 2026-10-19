@@ -7719,7 +7719,7 @@ def file_source_context(effect, previous):
             "erasure_exact": erasure_exact}, exact
 
 
-def apply_file_effect(effect, cwd, candidates, sources=None, *, python_checks=None):
+def apply_file_effect(effect, cwd, candidates, sources=None, *, python_checks=None, source_ready=None):
     if effect["kind"] != "write":
         return
     path = native_path(effect["path"], native_cwd(effect.get("cwd"), cwd)) if effect["path"] else None
@@ -7756,11 +7756,12 @@ def apply_file_effect(effect, cwd, candidates, sources=None, *, python_checks=No
                     prior = previous_sources.get(original)
                     contents = prior.get("contents", ()) if prior else ()
                     certain = bool(prior and prior.get("definite")) or original in previous_candidates
+                    ready = source_ready is None or source_ready(original)
                     for root, speculative in roots:
                         destination = posixpath.normpath(root if relative == "." else posixpath.join(root, relative))
                         transferred = {"kind": "write", "path": destination, "contents": contents,
-                                       "replaces": effect["replaces"] and certain and not speculative, "partial": False,
-                                       "erasure_exact": bool(prior and prior.get("erasure_exact", prior.get("definite", False)))}
+                                       "replaces": effect["replaces"] and certain and ready and not speculative, "partial": False,
+                                       "erasure_exact": bool(prior and prior.get("erasure_exact", prior.get("definite", False))) and ready}
                         result = apply_file_effect(transferred, None, candidates, sources, python_checks=python_checks)
                         if not certain:
                             result |= destination in previous_candidates
@@ -7825,24 +7826,28 @@ def native_write_outcomes(records, harness, identifiers):
                 for identifier, name, value in calls_and_results(record, harness)[0] if identifier in identifiers}
     native_names = {identifier: name for record in records
                     for identifier, name, _ in calls_and_results(record, harness)[0] if identifier in identifiers}
-    ends, successful, failed = {}, set(), set()
+    ends, successful, failed, native_results = {}, set(), set(), {}
     for index, identifier, result in bound_outputs(records, harness, lambda name, value: (name, id(value)) in selected):
         if result.get("_result") and not result.get("_pending"):
             ends[identifier] = index
+            native_results[identifier] = result.get("_tool_call_id")
+        payload = records[index].get("payload") or {}
+        outer_text = payload.get("output") if payload.get("call_id") == result.get("_tool_call_id") else None
+        native_status = isinstance(outer_text, str) and outer_text.startswith("Exit code:")
+        if harness == "codex" and (native_status or native_names.get(identifier) in {"apply_patch", "functions.apply_patch"}):
+            continue  # Printed JSON cannot certify or veto the outer native status.
+        if harness == "claude" and native_names.get(identifier) in {"Write", "Edit", "Bash", "apply_patch", "functions.apply_patch"}:
+            continue  # Native is_error owns status; content is only stdout.
         if result.get("_tool_error"):
             failed.add(identifier)
-        elif harness == "codex" and native_names.get(identifier) in {"apply_patch", "functions.apply_patch"}:
-            continue  # Only the native outer status below can certify a patch.
         elif type(result.get("exit_code")) is int and result["exit_code"] != 0:
             failed.add(identifier)
         elif not result.get("operation") and type(result.get("exit_code")) is int and result["exit_code"] == 0:
             successful.add(identifier)
     if harness == "codex":
         for identifier, index in ends.items():
-            if native_names.get(identifier) not in {"apply_patch", "functions.apply_patch"}:
-                continue
             payload = records[index].get("payload") or {}
-            if payload.get("call_id") != identifier:
+            if payload.get("call_id") != native_results.get(identifier):
                 continue
             native = payload.get("output")
             match = re.match(r"\AExit code: (-?\d+)\nWall time: [^\n]+\nOutput:\n", native) if isinstance(native, str) else None
@@ -7853,11 +7858,11 @@ def native_write_outcomes(records, harness, identifiers):
                 failed.add(identifier)
     if harness == "claude":
         for identifier, index in ends.items():
-            if native_names.get(identifier) not in {"Write", "Edit", "apply_patch", "functions.apply_patch"}:
+            if native_names.get(identifier) not in {"Write", "Edit", "Bash", "apply_patch", "functions.apply_patch"}:
                 continue
             for block in (records[index].get("message") or {}).get("content", ()):
                 if (isinstance(block, dict) and block.get("type") == "tool_result"
-                        and block.get("tool_use_id") == identifier):
+                        and block.get("tool_use_id") == native_results.get(identifier)):
                     if block.get("is_error", False) is False and isinstance(block.get("content"), (str, list)):
                         successful.add(identifier)
                     else:
@@ -8012,16 +8017,23 @@ def file_ownership_executions(records, harness, *, file_candidates=(), python_ch
         previous = entries.get(writer[:2], (writer, ()))
         entries[writer[:2]] = (writer, (*previous[1], *context) if append else tuple(context))
 
-    def apply_context(context, target_candidates, target_sources, *, possible=False):
+    def source_ready(path, current=None):
+        # A copy can observe the bytes present at any point in its interval.
+        # A settled source first written after its launch is not that proof.
+        return all(current is not None and key == current[:2]
+                   or settled.get(key, False) and (current is None or not newer_than(entry[0], current, overlap=True))
+                   for key, entry in contributions.get(path, {}).items())
+
+    def apply_context(context, target_candidates, target_sources, *, possible=False, current=None):
         for effect in context:
             if possible and effect.get("_native_update"):
-                apply_file_effect(effect, None, target_candidates, dict(target_sources), python_checks=python_checks)
+                apply_file_effect(effect, None, target_candidates, dict(target_sources), python_checks=python_checks, source_ready=lambda path: source_ready(path, current))
                 continue
             if possible and effect["replaces"]:
                 effect = dict(effect, replaces=False, partial=False)
             elif possible and "updates" in effect:
                 effect = dict(effect, partial=True)
-            apply_file_effect(effect, None, target_candidates, target_sources, python_checks=python_checks)
+            apply_file_effect(effect, None, target_candidates, target_sources, python_checks=python_checks, source_ready=lambda path: source_ready(path, current))
 
     def replay(events, target_candidates, target_sources):
         nonlocal generation
@@ -8029,6 +8041,9 @@ def file_ownership_executions(records, harness, *, file_candidates=(), python_ch
             generation += 1
         final = {}
         for path, owning, replaces, source, context, writer, finished in events:
+            if finished and not all(effect.get("_native_success") is True for effect in context):
+                replaces = False
+                context = tuple(dict(effect, replaces=False, partial=False) if effect["replaces"] else effect for effect in context)
             newer = [entry for entry in contributions.get(path, {}).values()
                      if finished and replaces and newer_than(entry[0], writer)]
             snapshot = None
@@ -8037,7 +8052,7 @@ def file_ownership_executions(records, harness, *, file_candidates=(), python_ch
                 safe_base = all(settled.get(key, False) for key in contributions.get(path, {}) if key != writer[:2])
                 projected = dict(target_sources)
                 projected_candidates = set(target_candidates)
-                apply_context(context, projected_candidates, projected)
+                apply_context(context, projected_candidates, projected, current=writer)
                 snapshot = (completed_python_update(native_update, path, context, projected.get(path, {}), python_checks=python_checks)
                             if safe_base and all(effect.get("_native_success") is True for effect in context) else None)
                 if snapshot is not None:
@@ -8052,7 +8067,7 @@ def file_ownership_executions(records, harness, *, file_candidates=(), python_ch
                 # Replay them only when an intervening replacement removed
                 # its contribution while the native writer was still alive.
                 if not (finished and not replaces and not native_update and writer[:2] in contributions.get(path, {})):
-                    apply_context(context, target_candidates, target_sources, possible=not finished)
+                    apply_context(context, target_candidates, target_sources, possible=not finished, current=writer)
                 owning = path in target_candidates
             if finished:
                 settled[writer[:2]] = snapshot is not None or all(effect.get("_native_success") is True for effect in context)
@@ -8064,8 +8079,8 @@ def file_ownership_executions(records, harness, *, file_candidates=(), python_ch
                                            if key == writer[:2] or newer_than(entry[0], writer, overlap=bool(native_update))}
                 # Replay only later writes' own effects. Their cumulative
                 # pre-replacement state can contain bytes this writer erased.
-                for _, later in newer:
-                    apply_context(later, target_candidates, target_sources, possible=True)
+                for later_writer, later in newer:
+                    apply_context(later, target_candidates, target_sources, possible=True, current=later_writer)
                 owning = path in target_candidates if context or newer else owning
             else:
                 remember(path, writer, context)
@@ -8112,8 +8127,9 @@ def file_ownership_executions(records, harness, *, file_candidates=(), python_ch
                 speculative = dict(sources)
                 speculative_candidates = set(candidates)
                 previous_candidates = set(candidates)
-                for path, owning, _, _, context, _, _ in events:
-                    apply_context(context, speculative_candidates, speculative, possible=True)
+                for path, owning, _, _, context, writer, _ in events:
+                    remember(path, writer, context)
+                    apply_context(context, speculative_candidates, speculative, possible=True, current=writer)
                     owning |= path in speculative_candidates
                     if owning:
                         candidates.add(path)
@@ -8132,10 +8148,12 @@ def file_ownership_executions(records, harness, *, file_candidates=(), python_ch
                     effect = dict(effect, _native_update=name)
                 generation += 1
                 path = native_path(effect["path"], native_cwd(effect.get("cwd"), cwd)) if effect["path"] else None
-                owning = apply_file_effect(effect, cwd, local_candidates, local_sources, python_checks=python_checks)
+                owning = apply_file_effect(effect, cwd, local_candidates, local_sources, python_checks=python_checks,
+                                           source_ready=lambda path: source_ready(path, (origin, identifier, timestamp, read_at)))
                 possible = (dict(effect, replaces=False, partial=False) if effect["replaces"] else
                             dict(effect, partial=True) if "updates" in effect else effect)
-                apply_file_effect(possible, cwd, candidates, dict(sources) if effect.get("_native_update") else sources, python_checks=python_checks)
+                apply_file_effect(possible, cwd, candidates, dict(sources) if effect.get("_native_update") else sources,
+                                  python_checks=python_checks, source_ready=lambda path: source_ready(path, (origin, identifier, timestamp, read_at)))
                 if path:
                     if effect["replaces"]:
                         replacements[path] = []
@@ -8801,7 +8819,7 @@ def bound_outputs(records, harness, predicate, *, receipts=None, isolated_polls=
             active.update(handles)
             native_task = record.get("toolUseResult")
             task = (native_task.get("backgroundTaskId") or native_task.get("taskId")) if harness == "claude" and isinstance(native_task, dict) else None
-            yield index, source, {"_result": True, "_pending": bool(active) or bool(task) or source in background or source in opaque,
+            yield index, source, {"_result": True, "_tool_call_id": result, "_pending": bool(active) or bool(task) or source in background or source in opaque,
                                   "_background_task": task, "_native_output": raw}
             for value in values:
                 yield index, source, value

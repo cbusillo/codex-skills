@@ -108,6 +108,12 @@ def output(value, harness, call_id="tool"):
         {"type": "tool_result", "tool_use_id": call_id, "content": encoded}]}}
 
 
+def native_result(identifier):
+    # Representative transport, not evidence of a direct patch producer.
+    return {'type': 'response_item', 'payload': {'type': 'function_call_output',
+            'call_id': identifier, 'output': 'Exit code: 0\nWall time: 0.01 seconds\nOutput:\n'}}
+
+
 def history(harness, *values):
     start = {"type": "session_meta", "payload": {"id": SESSION, "cwd": "/repo"}} if harness == "codex" else {"type": "user", "sessionId": SESSION, "cwd": "/repo"}
     end = ([{"type": "event_msg", "payload": {"type": "agent_message", "message": "Safe to exit: yes"}},
@@ -2510,16 +2516,6 @@ os.system(get())
                 rows[1 + 2 * index]['message']['content'][0].update(name=name, input=value)
             rows[2 + 2 * index] = (native_result('tool-' + str(index)) if harness == 'codex' and name in {'apply_patch', 'functions.apply_patch'}
                                     else output({'exit_code': 0, 'output': ''}, harness, 'tool-' + str(index)))
-        native_fixture = Path(receipts.__file__).parents[2] / 'rollout-friction/scripts/fixtures/codex-rollout.jsonl'
-        fixture_rows = [json.loads(line) for line in native_fixture.read_text().splitlines()]
-        # This tracked shell result records the transport status protocol, not
-        # an apply_patch success message or a helper's printed business JSON.
-        fixture_success = next(row for row in fixture_rows if (row.get('payload') or {}).get('type') == 'function_call_output'
-                               and row['payload']['output'].startswith('Exit code: 0\n'))
-        def native_result(identifier):
-            row = json.loads(json.dumps(fixture_success))
-            row['payload']['call_id'] = identifier
-            return row
         for harness in ('codex', 'claude'):
             write = ('apply_patch', initial) if harness == 'codex' else ('Write', {'file_path': '/repo/run.py', 'content': program})
             edit = ('apply_patch', removal) if harness == 'codex' else ('Edit', {'file_path': '/repo/run.py', 'old_string': old, 'new_string': 'print("safe")'})
@@ -2548,7 +2544,12 @@ os.system(get())
                     elif variant == 'native_unbound':
                         rows[4]['payload']['call_id'] = 'unrelated'
                     elif variant == 'native_cached':
-                        rows[3]['payload'].update(name='exec_command', arguments=json.dumps({'cmd': 'cat saved-native-output.txt'}))
+                        cached = history(harness, {})[1:3]
+                        cached[0]['payload'].update(call_id='cached-read', name='exec_command',
+                                                  arguments=json.dumps({'cmd': 'cat saved-native-output.txt'}))
+                        cached[1] = native_result('cached-read')
+                        cached[1]['payload']['output'] += native_result('tool-1')['payload']['output']
+                        rows[4:5] = cached
                     elif variant == 'native_nested_status':
                         rows[4]['payload']['output'] = {'output': json.dumps({'exit_code': 0, 'output': ''})}
                     elif variant == 'native_business':
@@ -2690,6 +2691,267 @@ os.system(get())
                         own_nodes = [{'harness': harness, 'records': rows} for rows in (owner_reader, *[rows for rows in order if rows is not owner])]
                         own_candidates = receipts.ownership_file_candidates(own_nodes)
                         self.assertEqual(receipts.ownership_state(owner_reader, harness, file_candidates=own_candidates)['pending'], pending)
+
+
+            if harness == 'claude':
+                for failure in (False, True):
+                    rows = history(harness, {}, {}, {})
+                    invoke(rows, harness, 0, *write)
+                    invoke(rows, harness, 1, *edit)
+                    invoke(rows, harness, 2, *read)
+                    for index in (0, 1):
+                        block = rows[2 + 2 * index]['message']['content'][0]
+                        block['is_error'] = failure if index == 1 else False
+                        block['content'] = json.dumps({'exit_code': 0 if failure and index == 1 else 1})
+                    with self.subTest(harness=harness, native_write_edit_quoted_status=failure):
+                        self.assertEqual(receipts.ownership_state(rows, harness)['pending'], failure)
+
+            if harness == 'codex':
+                for mode in ('success', 'failed', 'unknown', 'unbound', 'pending'):
+                    rows = history(harness, {}, {}, {})
+                    invoke(rows, harness, 0, 'exec_command', {'cmd': "cat > /repo/run.py <<'PY'\n" + program + 'PY'})
+                    rows[2]['payload']['output'] = 'Process running with session ID 444'
+                    invoke(rows, harness, 1, *edit)
+                    invoke(rows, harness, 2, *read)
+                    poll = {'type': 'response_item', 'payload': {'type': 'function_call', 'call_id': 'poll',
+                            'name': 'write_stdin', 'arguments': json.dumps({'session_id': 444, 'chars': ''})}}
+                    terminal = native_result('unrelated' if mode == 'unbound' else 'poll')
+                    if mode == 'failed':
+                        terminal['payload']['output'] = terminal['payload']['output'].replace('Exit code: 0', 'Exit code: 1') + json.dumps({'exit_code': 0})
+                    elif mode == 'unknown':
+                        terminal['payload']['output'] = terminal['payload']['output'].replace('Exit code: 0', 'Exit code: unknown')
+                    elif mode == 'pending':
+                        terminal['payload']['output'] = 'Process running with session ID 444'
+                    else:
+                        terminal['payload']['output'] += json.dumps({'exit_code': 1})
+                    rows[3:3] = [poll, terminal]
+                    with self.subTest(harness=harness, native_polled_shell=mode):
+                        self.assertEqual(receipts.ownership_state(rows, harness)['pending'], mode != 'success')
+
+            def transport(rows, index, mode='success'):
+                identifier = 'tool-' + str(index)
+                if harness == 'codex':
+                    rows[2 + 2 * index] = native_result(identifier)
+                    if mode != 'success':
+                        rows[2 + 2 * index]['payload']['output'] = rows[2 + 2 * index]['payload']['output'].replace(
+                            'Exit code: 0', 'Exit code: 1' if mode == 'failed' else 'Exit code: unknown')
+                else:
+                    rows[2 + 2 * index] = {'type': 'user', 'sessionId': SESSION, 'message': {'content': [
+                        {'type': 'tool_result', 'tool_use_id': identifier, 'content': '',
+                         'is_error': False if mode == 'success' else True if mode == 'failed' else 'unknown'}]}}
+
+            def timing(rows, index, began, ended):
+                for offset, at in ((1, began), (2, ended)):
+                    rows[offset + 2 * index]['timestamp'] = '2026-01-01T00:00:0' + str(at) + 'Z'
+
+            def shell(command):
+                return ('exec_command', {'cmd': command}) if harness == 'codex' else ('Bash', {'command': command})
+
+            def update(path, before, after):
+                return (('apply_patch', '*** Begin Patch\n*** Update File: ' + path + '\n@@\n-'
+                         + before + '\n+' + after + '\n*** End Patch') if harness == 'codex' else
+                        ('Edit', {'file_path': path, 'old_string': before, 'new_string': after}))
+
+            # A native shell write is settled by its outer transport, including
+            # a peer's write. Failure/unknown results cannot certify erasure.
+            for mode in ('success', 'failed', 'unknown', 'success_quoted_failure', 'failed_quoted_success'):
+                for peer_base in (False, True):
+                    base = history(harness, {})
+                    invoke(base, harness, 0, *shell("cat > /repo/run.py <<'PY'\n" + program + 'PY'))
+                    transport(base, 0, mode.split('_', 1)[0])
+                    if 'quoted' in mode:
+                        quoted = json.dumps({'exit_code': 1 if mode.startswith('success') else 0, 'output': ''})
+                        if harness == 'codex':
+                            base[2]['payload']['output'] += quoted
+                        else:
+                            base[2]['message']['content'][0]['content'] = quoted
+                    timing(base, 0, 1, 1)
+                    owner = history(harness, {}, {}, {})
+                    invoke(owner, harness, 0, *write)
+                    timing(owner, 0, 0.5, 0.5)
+                    if not peer_base:
+                        owner[1:3] = base[1:3]
+                    invoke(owner, harness, 1, *edit)
+                    timing(owner, 1, 2, 3)
+                    invoke(owner, harness, 2, *read)
+                    timing(owner, 2, 5, 5)
+                    nodes = [{'harness': harness, 'records': rows} for rows in ((base, owner) if peer_base else (owner,))]
+                    with self.subTest(harness=harness, native_shell_base=mode, peer_base=peer_base):
+                        candidates = receipts.ownership_file_candidates(nodes)
+                        self.assertEqual(receipts.ownership_state(owner, harness, file_candidates=candidates)['pending'], not mode.startswith('success'))
+
+            # Failed and unknown full replacements are possible alternatives;
+            # they cannot retire old bytes or make a later copy safe to erase.
+            for mode in ('success', 'failed', 'unknown'):
+                for peer_replace in (False, True):
+                    for copied in (False, True):
+                        owner = history(harness, {}, {}, {})
+                        invoke(owner, harness, 0, *write)
+                        timing(owner, 0, 1, 1)
+                        safe = history(harness, {})
+                        safe_write = (('apply_patch', initial.replace(program.strip().replace('\n', '\n+'), "print('safe')"))
+                                      if harness == 'codex' else ('Write', {'file_path': '/repo/run.py', 'content': "print('safe')\n"}))
+                        invoke(safe, harness, 0, *safe_write)
+                        transport(safe, 0, mode)
+                        timing(safe, 0, 2, 2)
+                        if not peer_replace:
+                            owner[3:5] = safe[1:3]
+                            if harness == 'codex':
+                                owner[3]['payload']['call_id'] = owner[4]['payload']['call_id'] = 'tool-1'
+                            else:
+                                owner[3]['message']['content'][0]['id'] = owner[4]['message']['content'][0]['tool_use_id'] = 'tool-1'
+                        else:
+                            owner[3:5] = []
+                        if copied:
+                            copy_rows = history(harness, {})
+                            invoke(copy_rows, harness, 0, *shell('cp run.py copied.py'))
+                            transport(copy_rows, 0)
+                            timing(copy_rows, 0, 3, 3)
+                            if harness == 'codex':
+                                copy_rows[1]['payload']['call_id'] = copy_rows[2]['payload']['call_id'] = 'copy'
+                            else:
+                                copy_rows[1]['message']['content'][0]['id'] = copy_rows[2]['message']['content'][0]['tool_use_id'] = 'copy'
+                            owner[-(4 if harness == 'codex' else 3):-(4 if harness == 'codex' else 3)] = copy_rows[1:3]
+                        read_index = next(i for i, row in enumerate(owner) if i and (row.get('payload', {}).get('call_id') == 'tool-2' or
+                                          any(block.get('id') == 'tool-2' for block in (row.get('message') or {}).get('content', ()) if isinstance(block, dict))))
+                        command = 'python3 /repo/' + ('copied.py' if copied else 'run.py')
+                        if harness == 'codex':
+                            owner[read_index]['payload']['arguments'] = json.dumps({'cmd': command})
+                        else:
+                            owner[read_index]['message']['content'][0]['input'] = {'command': command}
+                        owner[read_index]['timestamp'] = owner[read_index + 1]['timestamp'] = '2026-01-01T00:00:05Z'
+                        nodes = [{'harness': harness, 'records': rows} for rows in ((owner, safe) if peer_replace else (owner,))]
+                        with self.subTest(harness=harness, native_full_replacement=mode, peer=peer_replace, copied=copied):
+                            candidates = receipts.ownership_file_candidates(nodes)
+                            self.assertEqual(receipts.ownership_state(owner, harness, file_candidates=candidates)['pending'], mode != 'success')
+
+            # Copy authority follows source readiness, including descendants and
+            # transitive transfers. A settled harmless source remains erasable.
+            for copy_command in ('cp template.py run.py', 'mv template.py run.py',
+                                 'cp -r /repo/templates/. /repo/', 'cp template.py middle.py; cp middle.py run.py'):
+                template_path = '/repo/templates/run.py' if 'templates/' in copy_command else '/repo/template.py'
+                for mode in ('pending', 'late', 'tied', 'untimed', 'settled_safe', 'settled_writer', 'unknown', 'failed'):
+                    for activation in (False, True):
+                        template = ('import os\ndef f(): ' + old + "\nprint('a')\nprint('x')\n" if activation else
+                                    "import os\nprint('a')\nprint('x')\n")
+                        owner = history(harness, {}, {}, {})
+                        first = (('apply_patch', '*** Begin Patch\n*** Add File: ' + template_path + '\n+' + '\n+'.join(template.splitlines()) + '\n*** End Patch')
+                                 if harness == 'codex' else ('Write', {'file_path': template_path, 'content': template}))
+                        invoke(owner, harness, 0, *first)
+                        timing(owner, 0, 1, 1)
+                        invoke(owner, harness, 1, *shell(copy_command))
+                        transport(owner, 1)
+                        timing(owner, 1, 2, 2.2)
+                        invoke(owner, harness, 2, *update('/repo/run.py', "print('x')", "print('y')"))
+                        timing(owner, 2, 3, 4)
+                        peer = history(harness, {})
+                        new = "print('safe')" if mode == 'settled_safe' else 'f()' if activation else old
+                        invoke(peer, harness, 0, *update(template_path, "print('a')", new))
+                        timing(peer, 0, 2 if mode == 'tied' else 1.5, 1.6 if mode in {'settled_safe', 'settled_writer', 'failed', 'unknown'} else 4.5)
+                        if mode == 'pending':
+                            peer.pop(2)
+                        elif mode == 'untimed':
+                            peer[1].pop('timestamp')
+                            peer[2].pop('timestamp')
+                        elif mode in {'unknown', 'failed'}:
+                            transport(peer, 0, mode)
+                            peer[2]['timestamp'] = '2026-01-01T00:00:01.6Z'
+                        reader = history(harness, {})
+                        invoke(reader, harness, 0, *read)
+                        timing(reader, 0, 5, 5)
+                        own_read = json.loads(json.dumps(reader[1:3]))
+                        end_count = 2 if harness == 'codex' else 1
+                        if harness == 'codex':
+                            own_read[0]['payload']['call_id'] = own_read[1]['payload']['call_id'] = 'owner-read'
+                        else:
+                            own_read[0]['message']['content'][0]['id'] = 'owner-read'
+                            own_read[1]['message']['content'][0]['tool_use_id'] = 'owner-read'
+                        for reverse in (False, True):
+                            peers = (peer, owner) if reverse else (owner, peer)
+                            nodes = [{'harness': harness, 'records': rows} for rows in (*peers, reader)]
+                            with self.subTest(harness=harness, native_copy=copy_command, mode=mode, activation=activation, reverse=reverse):
+                                candidates = receipts.ownership_file_candidates(nodes)
+                                self.assertEqual(receipts.ownership_state(reader, harness, file_candidates=candidates)['pending'], mode != 'settled_safe')
+                                own_reader = json.loads(json.dumps(owner))
+                                own_reader[-end_count:-end_count] = own_read
+                                own_nodes = [{'harness': harness, 'records': rows} for rows in (own_reader, peer)]
+                                own_candidates = receipts.ownership_file_candidates(own_nodes)
+                                self.assertEqual(receipts.ownership_state(own_reader, harness, file_candidates=own_candidates)['pending'], mode != 'settled_safe')
+                        if copy_command == 'cp template.py run.py' and mode in {'pending', 'late'}:
+                            # Same native history with another call's update
+                            # launched before cp and completing after it.
+                            local = json.loads(json.dumps(owner))
+                            launch = json.loads(json.dumps(peer[1]))
+                            if harness == 'codex':
+                                launch['payload']['call_id'] = 'parallel-update'
+                            else:
+                                launch['message']['content'][0]['id'] = 'parallel-update'
+                            local[3:3] = [launch]
+                            if mode == 'late':
+                                terminal = json.loads(json.dumps(peer[2]))
+                                if harness == 'codex':
+                                    terminal['payload']['call_id'] = 'parallel-update'
+                                else:
+                                    terminal['message']['content'][0]['tool_use_id'] = 'parallel-update'
+                                local[-end_count:-end_count] = [terminal]
+                            local[-end_count:-end_count] = json.loads(json.dumps(own_read))
+                            with self.subTest(harness=harness, native_copy_parallel=mode, activation=activation):
+                                self.assertTrue(receipts.ownership_state(local, harness)['pending'])
+
+            # Copy settlement cannot forget a failed/unknown destination
+            # writer when the source itself is still unsettled.
+            for destination_mode in ('failed', 'unknown'):
+                owner, peer = history(harness, {}, {}, {}, {}, {}), history(harness, {})
+                invoke(owner, harness, 0, *write)
+                transport(owner, 0, destination_mode)
+                timing(owner, 0, 0.5, 0.5)
+                template = "import os\nprint('a')\nprint('x')\n"
+                template_write = (('apply_patch', '*** Begin Patch\n*** Add File: /repo/template.py\n+' + '\n+'.join(template.splitlines()) + '\n*** End Patch')
+                                  if harness == 'codex' else ('Write', {'file_path': '/repo/template.py', 'content': template}))
+                invoke(owner, harness, 1, *template_write)
+                timing(owner, 1, 1, 1)
+                invoke(owner, harness, 2, *shell('cp template.py run.py'))
+                transport(owner, 2)
+                timing(owner, 2, 2, 2.2)
+                invoke(owner, harness, 3, *update('/repo/run.py', "print('x')", "print('y')"))
+                timing(owner, 3, 3, 4)
+                invoke(owner, harness, 4, *read)
+                timing(owner, 4, 5, 5)
+                invoke(peer, harness, 0, *update('/repo/template.py', "print('a')", "print('safe')"))
+                timing(peer, 0, 1.5, 4.5)
+                peer.pop(2)
+                with self.subTest(harness=harness, native_copy_uncertain_destination=destination_mode):
+                    candidates = receipts.ownership_file_candidates([{'harness': harness, 'records': rows} for rows in (owner, peer)])
+                    self.assertTrue(receipts.ownership_state(owner, harness, file_candidates=candidates)['pending'])
+
+            # A copy completion cannot use bytes first written to its source
+            # while that copy was in flight to erase the earlier copied bytes.
+            owner, peer, reader = history(harness, {}, {}), history(harness, {}), history(harness, {})
+            template_write = ((write[0], initial.replace('/repo/run.py', '/repo/template.py')) if harness == 'codex' else
+                              ('Write', {'file_path': '/repo/template.py', 'content': program}))
+            invoke(owner, harness, 0, *template_write)
+            timing(owner, 0, 1, 1)
+            invoke(owner, harness, 1, *shell('cp template.py run.py'))
+            transport(owner, 1)
+            timing(owner, 1, 2, 4)
+            invoke(peer, harness, 0, *update('/repo/template.py', old, "print('safe')"))
+            timing(peer, 0, 3, 3)
+            invoke(reader, harness, 0, *read)
+            timing(reader, 0, 5, 5)
+            for order in ((owner, peer), (peer, owner)):
+                nodes = [{'harness': harness, 'records': rows} for rows in (*order, reader)]
+                with self.subTest(harness=harness, native_copy_source_changed_inflight=True, reverse=order[0] is peer):
+                    candidates = receipts.ownership_file_candidates(nodes)
+                    self.assertTrue(receipts.ownership_state(reader, harness, file_candidates=candidates)['pending'])
+
+            # Within one shell call, visible writes and copies are sequential.
+            rows = history(harness, {}, {}, {})
+            invoke(rows, harness, 0, *shell("cat > /repo/template.py <<'PY'\n" + program + 'PY\ncp template.py run.py'))
+            transport(rows, 0)
+            invoke(rows, harness, 1, *edit)
+            invoke(rows, harness, 2, *read)
+            with self.subTest(harness=harness, native_copy_same_shell=True):
+                self.assertFalse(receipts.ownership_state(rows, harness)['pending'])
 
     def test_wrapped_and_computed_reads_of_claim_text_are_not_writers(self):
         commands = ("python3 - <<'PY'\nline='gh-plan.py claim'\nif 'gh-plan.py' in line and 'claim' in line: print(line)\nPY",
@@ -5253,6 +5515,7 @@ os.system(get())
                         if harness == "codex":
                             command = "bash run.sh" if content is None else "cat > run.sh <<'EOF'\n" + content + "\nEOF"
                             rows[index]["payload"]["arguments"] = json.dumps({"cmd": command})
+                            rows[index + 1] = output({"exit_code": 0, "output": ""}, harness, "tool-" + str(position))
                         elif content is None:
                             rows[index]["message"]["content"][0]["input"] = {"command": "bash run.sh"}
                         else:
@@ -5364,6 +5627,9 @@ os.system(get())
                     author[index]["payload"]["arguments"] = json.dumps({"cmd": "cat > run.sh <<'EOF'\n" + content + "\nEOF"})
                 else:
                     author[index]["message"]["content"][0].update(name="Write", input={"file_path": "/repo/run.sh", "content": content})
+            if harness == "codex":
+                author[2] = output({"exit_code": 0, "output": ""}, harness, "tool-0")
+                author[4] = output({"exit_code": 0, "output": ""}, harness, "tool-1")
             if harness == "codex": reader[1]["payload"]["arguments"] = json.dumps({"cmd": "bash run.sh"})
             else: reader[1]["message"]["content"][0]["input"] = {"command": "bash run.sh"}
             histories = [{"harness": harness, "records": rows} for rows in (author, reader)]
@@ -5417,6 +5683,9 @@ os.system(get())
                                                         (None, 11, 12, True)):
                 with self.subTest(harness=harness, owner_finish=finish, replace_at=replace_at, read_at=read_at):
                     owner, cleanup, reader = (history(harness, {}) for _ in range(3))
+                    if harness == "codex":
+                        owner[2] = output({"exit_code": 0, "output": ""}, harness, "tool-0")
+                        cleanup[2] = output({"exit_code": 0, "output": ""}, harness, "tool-0")
                     for rows, content in ((owner, writer), (cleanup, "echo done")):
                         if harness == "codex":
                             rows[1]["payload"]["arguments"] = json.dumps({"cmd": "cat > run.sh <<'EOF'\n" + content + "\nEOF"})
@@ -6466,6 +6735,7 @@ os.system(get())
             index = 1 + 2 * position
             if harness == "codex":
                 rows[index]["payload"].update(name=method, arguments=json.dumps(value) if isinstance(value, dict) else value)
+                rows[index + 1] = native_result("tool-" + str(position))
             else:
                 rows[index]["message"]["content"][0].update(name=method, input=value)
 
