@@ -187,7 +187,12 @@ def execute(h: Any, args: argparse.Namespace) -> int:
         diagnostics = failure["summary"]
     except h.ServiceResponseError as error:
         diagnostics = h.service_response_diagnostics(error)
-    except (h.LaunchplaneSafetyError, ValueError):
+    except h.LaunchplaneSafetyError as error:
+        if mode != "apply":
+            h.emit_safety_error_payload(operation=args.command, request=request, exc=error, provider_payload=response)
+            return 1
+        diagnostics = h.service_response_diagnostics(readback if applied else response)
+    except ValueError:
         diagnostics = h.service_response_diagnostics(readback if applied else response)
     except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException) as error:
         if mode != "apply":

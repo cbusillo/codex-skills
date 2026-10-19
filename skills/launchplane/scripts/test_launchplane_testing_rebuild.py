@@ -368,5 +368,14 @@ def test_interrupted_http_exchange_does_not_claim_a_definitive_outcome(status):
     assert "PRIVATE_SENTINEL" not in json.dumps(output)
 
 
+def test_plan_redirect_retains_its_safety_classification():
+    error = helper.LaunchplaneSafetyError("unsafe_redirect")
+    code, output, post, read, _ = invoke(args=arguments(command=rebuild.PLAN_COMMAND), error=error)
+    assert code != 0 and output["status"] == "unavailable"
+    assert output["warnings"][0]["code"] == error.code
+    post.assert_called_once()
+    read.assert_not_called()
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))

@@ -262,5 +262,14 @@ def test_http_errors_preserve_trace_and_never_switch_route_or_retry(status, phas
     assert "PRIVATE_SENTINEL" not in json.dumps(output)
 
 
+@pytest.mark.parametrize("mode", ["dry-run", "readback"])
+def test_observation_redirect_retains_its_safety_classification(mode):
+    error = h.LaunchplaneSafetyError("unsafe_redirect")
+    code, output, calls, _ = invoke(mode, responses=[error])
+    assert code != 0 and len(calls) == 1
+    assert output["status"] == "unavailable"
+    assert output["warnings"][0]["code"] == error.code
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))

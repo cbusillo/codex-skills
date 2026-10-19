@@ -134,7 +134,9 @@ def execute_plan(h: Any, args: argparse.Namespace, request: dict[str, object], b
         output = h.unavailable_payload(operation=PLAN_COMMAND, request=request, status="unavailable", code="invalid_response", message="The native preflight response was unavailable.")
         output["summary"] = h.service_response_diagnostics(error)
         h.emit(output)
-    except (h.LaunchplaneSafetyError, ValueError):
+    except h.LaunchplaneSafetyError as error:
+        h.emit_safety_error_payload(operation=PLAN_COMMAND, request=request, exc=error, provider_payload=response)
+    except ValueError:
         h.emit_invalid_response(operation=PLAN_COMMAND, request=request,
             diagnostics=h.service_response_diagnostics(response))
     except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException) as error:

@@ -7178,16 +7178,16 @@ def execute_merge_train_policy_import(
     if not isinstance(record, dict):
         raise AssertionError("validated merge-train policy record is missing")
     post_attempted = False
-    policy_targets_payload = None
+    provider_payload = None
     try:
-        policy_targets_payload = request_launchplane_read(
+        provider_payload = request_launchplane_read(
             service_url=settings["service_url"],
             path=internal_helper_path("merge-train-policy-targets-read"),
             settings=settings,
             query={},
             timeout=args.timeout,
         )
-        current_policy = _project_merge_train_policy_targets(policy_targets_payload)
+        current_policy = _project_merge_train_policy_targets(provider_payload)
         if current_policy["policy_sha256"] != expected_current_policy_digest:
             payload = base_payload(
                 status="stale", operation=operation, request=request
@@ -7204,6 +7204,7 @@ def execute_merge_train_policy_import(
             emit(payload)
             return 1
         post_attempted = True
+        provider_payload = None
         provider_payload = request_launchplane(
             service_url=settings["service_url"],
             path=helper_command_path(operation),
@@ -7226,16 +7227,12 @@ def execute_merge_train_policy_import(
         except LaunchplaneSafetyError:
             if operation != "merge-train-policy-import-apply":
                 raise
-            try:
-                trace_id = public_trace_id(provider_payload.get("trace_id"))
-            except LaunchplaneSafetyError:
-                trace_id = ""
             payload = base_payload(
                 status="accepted_unverified", operation=operation, request=request
             )
             payload["result"] = {"current_policy": current_policy}
             payload["summary"] = {
-                "trace_id": trace_id,
+                **service_response_diagnostics(provider_payload),
                 "recommendation": "Launchplane accepted the import apply, but its response could not be verified locally. Read back the active merge-train policy before retrying.",
             }
             payload["warnings"] = [
@@ -7269,7 +7266,7 @@ def execute_merge_train_policy_import(
             ]
             emit(payload)
             return 1
-        emit_safety_error_payload(operation=operation, request=request, exc=exc, provider_payload=policy_targets_payload)
+        emit_safety_error_payload(operation=operation, request=request, exc=exc, provider_payload=provider_payload)
         return 1
     except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException) as exc:
         if operation == "merge-train-policy-import-apply" and post_attempted:
@@ -7304,9 +7301,12 @@ def execute_merge_train_policy_import(
                     "Do not retry this merge-train policy import until active-policy read-back resolves the outcome.",
                 )
             ]
+            cast(dict[str, object], payload["summary"]).update(service_response_diagnostics(
+                exc if isinstance(exc, ServiceResponseError) else provider_payload))
             emit(payload)
             return 0
-        emit_invalid_response(operation=operation, request=request, diagnostics=service_response_diagnostics(exc))
+        emit_invalid_response(operation=operation, request=request, diagnostics=service_response_diagnostics(
+            exc if isinstance(exc, ServiceResponseError) else provider_payload))
         return 1
 
 
@@ -8380,6 +8380,9 @@ def read_dokploy_target(
         tracked = _require_dict(inspect.get("tracked_target") or {})
         provider_target = _require_dict(inspect.get("provider_target_record") or {})
         live_provider = _require_dict(inspect.get("provider") or {})
+        live_target_id = live_provider.get("id")
+        if live_target_id is not None and not isinstance(live_target_id, str):
+            raise LaunchplaneSafetyError("invalid_response")
         private = {
             "target_ids": {
                 str(source.get("target_id") or "").strip()
@@ -8388,7 +8391,7 @@ def read_dokploy_target(
             "domains": _domain_set(tracked.get("domains")),
             "healthcheck_path": str(tracked.get("healthcheck_path") or ""),
             "live_domains": live_provider.get("domains", []),
-            "live_target_id": live_provider.get("id"),
+            "live_target_id": live_target_id,
             "live_target_type": live_provider.get("target_type"),
             "tracked_source": {field: tracked.get(field) for field in (
                 "source_type", "custom_git_url", "custom_git_branch", "compose_path",
@@ -8531,7 +8534,9 @@ def execute_verified_apply(
             emit(_apply_outcome_unknown(operation=operation, request=request, label=label))
             return 1
         if post_attempted:
-            emit(_apply_response_unverified(operation=operation, request=request, label=label))
+            payload = _apply_response_unverified(operation=operation, request=request, label=label)
+            cast(dict[str, object], payload["summary"]).update(service_response_diagnostics(provider_payload))
+            emit(payload)
             return 1
         emit_safety_error_payload(operation=operation, request=request, exc=exc, provider_payload=exc)
         return 1

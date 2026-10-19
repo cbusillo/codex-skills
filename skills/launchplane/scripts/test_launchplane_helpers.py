@@ -8337,6 +8337,20 @@ def test_compose_domain_review_apply_and_read_back() -> None:
             assert posts[0]["body"]["confirmation"] == write_action.DOKPLOY_TARGET_SETUP_CONFIRMATION
             for hidden in ("public.example.invalid", "private.example.invalid", "compose-private-9", "private-route-id"):
                 assert hidden not in json.dumps(evidence) and hidden not in json.dumps(result)
+            for invalid_id in ({"private": "PRIVATE_SENTINEL"}, ["PRIVATE_SENTINEL"]):
+                changed = write_action._ServiceResponse(_domain_inspect(operation, True), 202)
+                changed["trace_id"] = "launchplane_req_invalid_target"
+                changed["inspect"]["provider"]["id"] = invalid_id
+                status, result, posts, reads = run(changed)
+                assert status == 1 and result["status"] == "accepted_unverified"
+                assert len(posts) == 1 and len(reads) == 2
+                assert result["summary"]["read_back_http_status"] == changed.http_status
+                assert result["summary"]["read_back_trace_id"] == changed["trace_id"]
+                assert result["summary"]["trace_id"] == _domain_setup_response(operation, "apply")["trace_id"]
+                status, result, posts, reads = _run_main(argv, read=changed)
+                assert status == 1 and result["status"] == "invalid" and not posts
+                assert len(reads) == 1 and result["summary"]["trace_id"] == changed["trace_id"]
+                assert "PRIVATE_SENTINEL" not in json.dumps(result)
             # A provider route failure cannot be hidden by the tracked record.
             changed = _domain_inspect(operation, True)
             changed["inspect"]["provider"] = _domain_inspect(operation)["inspect"]["provider"]
@@ -9974,7 +9988,7 @@ def test_interrupted_http_policy_import_preserves_failure_phase(kind: str, phase
     assert post.call_count == (0 if phase == "preflight" else 1)
     assert "private-provider" not in output.getvalue()
 
-    assert payload["summary"]["read_back_http_status" if phase == "readback" else "http_status"] == 202
+    assert payload["summary"]["http_status"] == 202
 
     if kind == "projection":
         assert payload["summary"]["trace_id"] == fault["trace_id"]
@@ -10075,14 +10089,16 @@ def test_legacy_read_failure_keeps_safe_exchange_diagnostics(argv, decoding_fail
 
 
 
-@pytest.mark.parametrize("reader,kwargs", [
+RECORD_READ_CASES = [
     (write_action.read_product_owner, {"product": "example-product"}),
     (write_action.read_product_image_repository, {"product": "example-product"}),
     (write_action.read_production_backup_authority, {"query": {}}),
     (write_action.read_dokploy_target, {"context": "example", "instance": "testing"}),
     (write_action.read_health_monitoring, {"body": {"product": "example-product"}}),
     (write_action.read_private_health_endpoint, {"endpoint": {"endpoint_key": "health", "product": "example-product", "context": "example", "instance": "testing"}}),
-])
+]
+
+@pytest.mark.parametrize("reader,kwargs", RECORD_READ_CASES)
 @pytest.mark.parametrize("safe_trace", [False, True])
 def test_record_projection_failures_carry_only_their_safe_exchange_diagnostics(reader, kwargs, safe_trace):
     response = write_action._ServiceResponse({"trace_id": "launchplane_req_preflight" if safe_trace else {"private": "PRIVATE_SENTINEL"}}, 202)
@@ -10096,11 +10112,84 @@ def test_record_projection_failures_carry_only_their_safe_exchange_diagnostics(r
 
 
 @pytest.mark.parametrize("error", [write_action.LaunchplaneSafetyError("unsafe_redirect"), _interrupted_http("incomplete")])
-def test_record_reader_preserves_request_failure_type(error):
+@pytest.mark.parametrize("reader,kwargs", RECORD_READ_CASES)
+def test_record_reader_preserves_request_failure_type(error, reader, kwargs):
     with patch.object(write_action, "request_launchplane_read", side_effect=error):
         with pytest.raises(type(error)) as caught:
-            write_action.read_product_owner(settings=SETTINGS, product="example-product", timeout=3)
+            reader(settings=SETTINGS, timeout=3, **kwargs)
     assert caught.value is error
+
+
+@pytest.mark.parametrize("mode", ["dry-run", "apply"])
+@pytest.mark.parametrize("phase", ["preflight", "post"])
+@pytest.mark.parametrize("failure", ["projection", "decoding", "redirect", "transport"])
+def test_policy_import_failure_diagnostics_belong_to_the_failing_exchange(mode, phase, failure):
+    preflight = write_action._ServiceResponse(_merge_train_policy_targets_payload(), 201)
+    preflight["trace_id"] = "launchplane_req_preflight"
+    response = write_action._ServiceResponse(_merge_train_policy_import_response(mode="apply" if mode == "dry-run" else "dry_run"), 202)
+    response["trace_id"] = "launchplane_req_post"
+    current = preflight if phase == "preflight" else response
+    if failure == "projection":
+        fault = write_action._ServiceResponse({"trace_id": current["trace_id"]}, current.http_status) if phase == "preflight" else response
+    elif failure == "decoding":
+        fault = write_action.ServiceResponseError({"http_status": current.http_status})
+    elif failure == "redirect":
+        fault = write_action.LaunchplaneSafetyError("unsafe_redirect")
+    else:
+        fault = http.client.IncompleteRead(b"PRIVATE_SENTINEL")
+        setattr(fault, "http_status", current.http_status)
+    output = io.StringIO()
+    with (
+        patch.object(write_action, "prepare_operator_settings", return_value=SETTINGS),
+        patch.object(write_action, "request_launchplane_read", side_effect=fault if phase == "preflight" and isinstance(fault, BaseException) else None,
+                     return_value=fault if phase == "preflight" else preflight) as get,
+        patch.object(write_action, "request_launchplane", side_effect=fault if isinstance(fault, BaseException) else None, return_value=fault) as post,
+        redirect_stdout(output),
+    ):
+        code = write_action.execute_merge_train_policy_import(
+            args=argparse.Namespace(timeout=3, idempotency_key="policy-import-example"),
+            operation="merge-train-policy-import-" + mode, request={"mode": mode},
+            body=_merge_train_policy_import_payload(mode="apply" if mode == "apply" else "dry_run", reason="Approved policy import."),
+            expected_current_policy_digest="a" * 64, expected_candidate_policy_digest="c" * 64,
+        )
+    payload = json.loads(output.getvalue())
+    assert get.call_count == 1 and post.call_count == (phase == "post")
+    mutating = mode == "apply" and phase == "post"
+    if mutating:
+        assert payload["status"] == ("accepted_unverified" if failure in {"projection", "decoding"} else "outcome_unknown")
+        assert code == (0 if failure in {"projection", "decoding"} else 1)
+    else:
+        assert code == 1
+        assert payload["status"] == ("unavailable" if failure in {"redirect", "transport"} else "invalid")
+    if failure == "redirect":
+        assert "trace_id" not in payload["summary"] and "http_status" not in payload["summary"]
+        if not mutating:
+            assert payload["warnings"][0]["code"] == fault.code
+    else:
+        assert payload["summary"]["http_status"] == current.http_status
+        if failure == "projection":
+            assert payload["summary"]["trace_id"] == current["trace_id"]
+    if phase == "post":
+        assert preflight["trace_id"] not in json.dumps(payload["summary"])
+    assert "PRIVATE_SENTINEL" not in json.dumps(payload)
+
+
+@pytest.mark.parametrize("decoding", [False, True])
+def test_verified_apply_malformed_receipt_keeps_the_apply_diagnostics(decoding):
+    response = write_action._ServiceResponse(_owner_response(_owner_plan(mode="apply", applied=True)), 202)
+    response["unexpected"] = "PRIVATE_SENTINEL"
+    fault = write_action.ServiceResponseError({"http_status": response.http_status}) if decoding else response
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        evidence = _saved_dry_run_output("product-owner-dry-run", _owner_response(_owner_plan()))
+        path = _write_json(directory, "owner-review.json", evidence)
+        argv = ["product-owner-apply", *OWNER_DRY_RUN_ARGV[1:], *_reviewed_apply_argv(evidence["result"]["plan_sha256"], path)]
+        code, payload, posts, reads = _run_main(argv, post=fault, read=_profile_response())
+    assert code == 1 and payload["status"] == "accepted_unverified"
+    assert len(posts) == 1 and len(reads) == 1
+    assert payload["summary"]["http_status"] == response.http_status
+    if not decoding:
+        assert payload["summary"]["trace_id"] == response["trace_id"]
+    assert "PRIVATE_SENTINEL" not in json.dumps(payload)
 
 
 if __name__ == "__main__":
