@@ -316,6 +316,11 @@ def summarize(records: list[dict], harness: str) -> dict:
         "at_turn_end": False,
         "safe_verdict": False,
         "capacity_stop": None,
+        "turn_id": None,
+        "turn_started_at": None,
+        "turn_completed_at": None,
+        "message_at": None,
+        "actual_turn_ids": [],
     }
     running_tasks: dict = {}
     scheduled_jobs: dict = {}
@@ -360,6 +365,17 @@ def summarize(records: list[dict], harness: str) -> dict:
                     at_turn_end=message.get("stop_reason") == "end_turn" and not tool_use,
                 )
         else:
+            if kind in {"task_started", "task_complete", "turn_aborted"}:
+                turn_id = payload.get("turn_id")
+                if isinstance(turn_id, str) and turn_id:
+                    result["turn_id"] = turn_id
+                    if turn_id not in result["actual_turn_ids"]:
+                        result["actual_turn_ids"].append(turn_id)
+                if kind == "task_started":
+                    result.update(turn_id=turn_id if isinstance(turn_id, str) and turn_id else None,
+                                  turn_started_at=record.get("timestamp"), turn_completed_at=None)
+                elif kind == "task_complete":
+                    result["turn_completed_at"] = record.get("timestamp")
             if kind == "token_count":
                 info = payload.get("info") or {}
                 result["context_tokens"] = (info.get("last_token_usage") or {}).get(
@@ -374,16 +390,18 @@ def summarize(records: list[dict], harness: str) -> dict:
                 "function_call",
                 "custom_tool_call",
             }:
-                result.update(at_turn_end=False, last_text="", turn_end=None, capacity_stop=None)
+                result.update(at_turn_end=False, last_text="", turn_end=None, capacity_stop=None, message_at=None)
             if kind == "agent_message":
                 result.update(
                     last_text=payload.get("message", ""),
                     timestamp=record.get("timestamp"),
+                    message_at=record.get("timestamp"),
                 )
             if kind == "message" and payload.get("role") == "assistant":
                 result.update(
                     last_text=text_content(payload.get("content")),
                     timestamp=record.get("timestamp"),
+                    message_at=record.get("timestamp"),
                 )
             if kind in {"task_complete", "turn_aborted"}:
                 result.update(

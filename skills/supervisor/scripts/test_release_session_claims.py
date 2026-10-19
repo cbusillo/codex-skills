@@ -914,6 +914,10 @@ else:
         with self.transcript.open("a") as stream:
             for payload in ({"type": "agent_message", "message": "Safe to exit: yes"}, {"type": "task_complete"}):
                 stream.write(json.dumps({"timestamp": datetime.now(timezone.utc).isoformat(), "payload": payload}) + "\n")
+        # This test isolates generation matching after independent native
+        # recovery. Full pending resolution is exercised with a real daemon fixture.
+        with helper.closure.ownership(SOURCE["session"]):
+            helper.closure.set_action_pending(SOURCE["session"], False)
         with self.assertRaises(ValueError):
             helper.record_closure(log, self.entry, "supervisor")
         replacement = {**self.entry, **metadata, "pid": metadata["launch_pid"]}

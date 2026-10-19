@@ -839,13 +839,13 @@ class ClaimTests(unittest.TestCase):
         self.inventory["worktrees"] = [{"branch": OTHER["branch"], "path": "/retained/other-42"}]
         self.inventory["local_branches"] = self.inventory["remote_branches"] = [OTHER["branch"]]
 
-    def test_native_finished_handoff_needs_no_release_write(self):
+    def test_native_finished_handoff_still_requires_an_exact_release(self):
         self.ended_holder_fixture(released=False)
         self.inventory["session_states"] = {OTHER["session"]: {"state": "ended", "ended_at": "2026-10-01T02:00:00Z"}}
-        self.run_claim()
-        self.assertEqual(self.emitted.call_args.args[0]["retained_artifacts"][0]["evidence"], "native_session_ended")
-        self.assertEqual(len(self.comments), 2)  # Only the successor claim was written.
-        self.assertIsNone(CLAIM.released_claim_id(self.comments[-1]["body"]))
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_claim()
+        self.assertEqual(caught.exception.code, "claim_conflict")
+        self.assert_no_writes()
 
     def test_idle_loaded_released_source_can_be_claimed_and_cannot_resume_after_handoff(self):
         from test_github_plan_sessions import ReceiptFixture
@@ -1389,7 +1389,7 @@ class ClaimTests(unittest.TestCase):
                     self.observe_inventory = lambda inv, observed_comments: ({**inv, "session_coverage": {
                         "codex_claims": {"observed_source_incomplete": True}}}
                         if any(c.get("id") == 92 for c in observed_comments) else inv)
-                if state in {"released", "native_ended"}:
+                if state == "released":
                     self.run_claim()
                     self.assertTrue(self.emitted.call_args.args[0]["ok"])
                 else:
@@ -1664,7 +1664,7 @@ class ClaimTests(unittest.TestCase):
                         self.inventory["sessions"] = [{"sessionId": resumed["session"], "cwd": "/another-host"}]
                 if phase == "preflight": successor()
                 else: setattr(self, phase, successor)
-                if state in {"released", "native_ended"}:
+                if state == "released":
                     self.run_claim()
                     self.assertTrue(self.emitted.call_args.args[0]["ok"])
                 else:
@@ -2067,7 +2067,7 @@ class ClaimTests(unittest.TestCase):
                     self.observe_inventory = lambda inv, observed_comments: ({**inv, "session_coverage": {
                         "codex_claims": {"observed_source_incomplete": True}}}
                         if any(c.get("id") == 88 for c in observed_comments) else inv)
-                if state in {"released", "native_ended", "unrelated", "closed_released"}:
+                if state in {"released", "unrelated", "closed_released"}:
                     self.run_claim()
                     self.assertTrue(self.emitted.call_args.args[0]["ok"])
                 else:
@@ -2075,7 +2075,7 @@ class ClaimTests(unittest.TestCase):
                         self.run_claim()
                     self.assertEqual(caught.exception.code, "claim_conflict")
                     expected = ("native_session_inventory" if state == "incomplete" else
-                                "current_status" if state == "closed_unreleased" else "native_child_session")
+                                "current_status" if state in {"closed_unreleased", "native_ended"} else "native_child_session")
                     self.assertIn(expected, [entry["source"] for entry in caught.exception.payload["competing_evidence"]])
                     self.assert_no_writes()
 
@@ -2121,8 +2121,14 @@ class ClaimTests(unittest.TestCase):
                 self.inventory["remote_branches"].append(earlier["branch"])
                 self.inventory["worktrees"].append({"branch": earlier["branch"], "path": "/old-source"})
                 before = copy.deepcopy(self.inventory)
-                self.run_claim()
-                self.assertTrue(self.emitted.call_args.args[0]["ok"])
+                if proof == "release":
+                    self.run_claim()
+                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
+                else:
+                    with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                        self.run_claim()
+                    self.assertEqual(caught.exception.code, "claim_conflict")
+                    self.assert_no_writes()
                 self.assertEqual(self.inventory, before)
 
     def test_native_parent_resume_does_not_expand_conflict_only_refresh(self):
