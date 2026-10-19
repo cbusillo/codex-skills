@@ -1335,10 +1335,16 @@ def test_include_handled_lists_closed_thread_comments_apart_from_attention(monke
     assert "handled" not in payload()
 
 
-def test_director_login_keeps_another_accounts_own_comment_outside(monkeypatch) -> None:
+@pytest.mark.parametrize("config,authenticated", [
+    ({}, "fixture-automation"),
+    ({"subjects": ["example"]}, "fixture-automation"),
+    ({"comment_self_logins": ["example"]}, "fixture-automation"),
+    ({}, "example"),
+], ids=["repository owner", "subjects", "comment_self_logins", "authenticated login"])
+def test_director_login_keeps_another_accounts_own_comment_outside(monkeypatch, config, authenticated) -> None:
     by_thread_owner = comment(comment_id=1, author="example", body="Corrected sheet attached.",
                               created_at="2026-07-25T10:00:00Z")
-    monkeypatch.setattr(github_unanswered_comments, "authenticated_login", lambda: "fixture-automation")
+    monkeypatch.setattr(github_unanswered_comments, "authenticated_login", lambda: authenticated)
     monkeypatch.setattr(github_unanswered_comments, "collect_thread",
                         lambda repo, number: (thread(), [by_thread_owner], []))
     monkeypatch.setattr(github_unanswered_comments, "collect_candidate_reactions",
@@ -1346,7 +1352,7 @@ def test_director_login_keeps_another_accounts_own_comment_outside(monkeypatch) 
 
     def attention(**overrides: object) -> list[object]:
         settings = github_unanswered_comments.resolve_settings(
-            args(thread=["example/repo#42"], until="2026-07-26T20:00:00Z", **overrides), {},
+            args(thread=["example/repo#42"], until="2026-07-26T20:00:00Z", **overrides), config,
             now=datetime(2026, 7, 26, 20, 0, tzinfo=timezone.utc))
         return [row["comment_url"] for row in github_unanswered_comments.collect_payload(settings)["attention"]]
 

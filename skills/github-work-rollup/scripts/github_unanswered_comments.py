@@ -138,8 +138,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--self-login", action="append", default=[], help="Human owner login whose reactions and replies count.")
     parser.add_argument(
         "--director-login",
-        help="The Director's login. Scanned repositories' owners are then not treated as the Director, "
-        "so another account's own comments on its threads count as outside comments.",
+        help="The Director's login. Configured, authenticated and repository-owner logins are then not "
+        "treated as the Director, so another account's own comments on its threads count as outside comments.",
     )
     parser.add_argument(
         "--mention-approval",
@@ -179,10 +179,12 @@ def resolve_settings(
     explicit_scope = bool(args.repo or args.repo_owner or threads or outbound)
     repositories = rollup.unique(args.repo if explicit_scope else rollup.as_str_list(config.get("repositories")))
     repo_owners = rollup.unique(args.repo_owner if explicit_scope else rollup.as_str_list(config.get("repo_owners")))
+    director_login = getattr(args, "director_login", None)
     configured_self = rollup.as_str_list(config.get("comment_self_logins"))
     if not configured_self:
         configured_self = rollup.as_str_list(config.get("subjects"))
-    self_logins = rollup.unique([*configured_self, *args.self_login])
+    # A named Director replaces every inferred or configured identity.
+    self_logins = rollup.unique([*([] if director_login else configured_self), *args.self_login])
     outbound_self_logins = list(self_logins)
     configured_login = github_identity.automation_login()
     bot_logins = rollup.unique(
@@ -194,7 +196,6 @@ def resolve_settings(
             *args.bot_login,
         ]
     )
-    director_login = getattr(args, "director_login", None)
     inferred_self = ([director_login] if director_login
                      else [*repo_owners, *(repo.split("/", 1)[0] for repo in repositories if "/" in repo)])
     self_logins = rollup.unique([*self_logins, *inferred_self])
@@ -218,7 +219,7 @@ def resolve_settings(
         "mention_approval": getattr(args, "mention_approval", None) or config.get("mention_approval"),
         "explicit_scope": explicit_scope,
         "self_logins": self_logins,
-        "infer_owner_logins": not director_login,
+        "director_login": director_login,
         "bot_logins": bot_logins,
         "since": since.astimezone(timezone.utc),
         "until": until.astimezone(timezone.utc),
@@ -1331,12 +1332,12 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
     if normalized_auth:
         if normalized_auth in bot_logins or is_github_bot(auth_login, ""):
             bot_logins.add(normalized_auth)
-        else:
+        elif not settings.get("director_login"):
             self_logins.add(normalized_auth)
             outbound_self.add(normalized_auth)
 
     repositories = resolve_repositories(settings)
-    if settings.get("infer_owner_logins", True):
+    if not settings.get("director_login"):
         self_logins.update(normalize_login(repo.split("/", 1)[0]) for repo in repositories if "/" in repo)
     candidate_ids: dict[tuple[str, int], set[tuple[str, int]]] = {}
     coverage_errors: list[dict[str, str]] = []
