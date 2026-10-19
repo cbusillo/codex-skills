@@ -2888,6 +2888,7 @@ def python_ownership(content, *, partial=False):
     class Instance:
         def __init__(self, kind):
             self.kind, self.attributes = kind, {}
+            self.json_payload = ()
 
     class Super:
         def __init__(self, kind, receiver):
@@ -2925,9 +2926,21 @@ def python_ownership(content, *, partial=False):
         def __init__(self, left, right):
             self.left, self.right = tuple(left), tuple(right)
 
+    def process_salted(item):
+        return isinstance(item, (str, bytes)) or isinstance(item, (tuple, list, dict)) and any(process_salted(child) for child in item)
+
     class Sequence:
         def __init__(self, rows, unique=False):
-            self.state = {"rows": choices(list(choices(row)) if unique else row if isinstance(row, RowConcat) else list(row) for row in rows)}
+            if unique:
+                unique_rows = []
+                for row in rows:
+                    try:
+                        row = list(dict.fromkeys(row))
+                    except TypeError:
+                        row = list(choices(row))
+                    unique_rows.append(row)
+                rows = unique_rows
+            self.state = {"rows": choices(row if isinstance(row, RowConcat) else list(row) for row in rows)}
             self.unique = unique
 
     class Keywords:
@@ -2977,10 +2990,16 @@ def python_ownership(content, *, partial=False):
                 for row in rows:
                     distinct.setdefault(id(row), row)
             return choices(distinct.values(), row_cache=row_cache)
-        return alternatives(row_dag_values(
+        rows = alternatives(row_dag_values(
             item.state["rows"],
             lambda row: (row if isinstance(row, (list, tuple)) else [row],),
             concatenate, alternatives))
+        if item.unique:
+            # A different interpreter may place any member at any position.
+            # Keep shape and a writer witness without enumerating permutations.
+            return choices((*rows, *([widen(row)] * len(row) for row in rows
+                           if len(row) > 1 and any(process_salted(child) for child in row))))
+        return rows
 
     def sequence_members(item):
         seen = set()
@@ -3254,6 +3273,24 @@ def python_ownership(content, *, partial=False):
             return set()
         return set(class_bindings.get(id(kind), {})).union(*(class_names(base, (*seen, id(kind)))
                                                           for base in class_bases.get(id(kind), ())))
+
+    def json_native_kind(kind, seen=()):
+        if id(kind) in seen:
+            return None
+        if isinstance(kind, ast.alias) and kind.name.removeprefix("builtins.") in {"str", "int", "float", "list", "tuple", "dict"}:
+            return kind.name.removeprefix("builtins.")
+        return next((name for base in class_bases.get(id(kind), ())
+                     if (name := json_native_kind(base, (*seen, id(kind))))), None)
+
+    def json_native_protocols(item, scope, *, skip_empty=False):
+        native = json_native_kind(item.kind)
+        if native not in {"list", "tuple", "dict"}:
+            return ()
+        if (native == "dict" or skip_empty) and item.json_payload and all(
+                isinstance(child, Keywords) and not child.items or isinstance(child, Sequence) and all(not row for row in sequence_rows(child))
+                for child in item.json_payload):
+            return ()
+        return member(item, "items" if native == "dict" else "__iter__", scope, special=native != "dict")
 
     def wrapped_functions(callback):
         if isinstance(callback, Function):
@@ -3786,7 +3823,7 @@ def python_ownership(content, *, partial=False):
         scope.state = merge(*states)
         return choices(rendered)
 
-    def uncertain_protocol_effects(operands, scope, callbacks=()):
+    def uncertain_protocol_effects(operands, scope, callbacks=(), *, zero_result=None):
         """Unknown protocol order/count keeps zero calls and reachable states."""
         def havoc():
             nonlocal attribute_mutations
@@ -3829,7 +3866,7 @@ def python_ownership(content, *, partial=False):
             attribute_mutations += 1
             expression_values.clear()
         havoc()
-        actions = (lambda local: (unknown,), *(lambda local, callback=callback, args=args:
+        actions = (lambda local: (unknown,) if zero_result is None else zero_result, *(lambda local, callback=callback, args=args:
                    invoke(callback, local, args, evaluated=True) for callback, args in callbacks))
         result = evaluation_alternatives(actions, scope, lambda action: action(scope))
         havoc()
@@ -3870,34 +3907,81 @@ def python_ownership(content, *, partial=False):
                     pending.extend(item)
             return callbacks
 
-        outputs = uncertain_protocol_effects(operands, scope, callbacks_for(operands))
-        returned, representatives, analyzed, captured, kind_keys = list(outputs), {}, {}, {}, {}
+        returned = protocol_return_effects(operands, scope, callbacks_for)
+        return (overflow if any(conversion_witness(item) for item in (template, *operands, *returned)) else unknown,)
+
+    def protocol_return_effects(operands, scope, callbacks_for, outputs=None, receivers_for=None):
+        """Follow returned protocol receivers using the existing source-kind join."""
+        if outputs is None:
+            outputs = uncertain_protocol_effects(operands, scope, callbacks_for(operands), zero_result=())
+        returned, representatives, analyzed, captured, kind_keys, opaque_values = list(outputs), {}, {}, {}, {}, {}
         def kind_key(kind):
+            if isinstance(kind, (Function, Generator)):
+                return kind_key(kind.node)
+            if isinstance(kind, Bound):
+                return kind_key(kind.function)
             key = id(kind)
             if key not in kind_keys:
                 kind_keys[key] = ast.dump(kind) if isinstance(kind, ast.AST) else repr(kind)
             return kind_keys[key]
 
+        def receiver_key(item):
+            if isinstance(item, Instance):
+                return "instance", kind_key(item.kind)
+            if isinstance(item, (Function, Bound, Generator, ast.AST)):
+                return type(item).__name__, kind_key(item)
+            if isinstance(item, Partial):
+                return "partial", tuple(receiver_key(callback) for callback in item.functions)
+            return "opaque", type(item).__name__
+
         def capture_fields(receivers):
             pending, seen = [callback for callback, _ in callbacks_for(receivers)], set()
+            pending.extend(child for item in receivers if isinstance(item, (Instance, ast.ClassDef))
+                           for kind in (item.kind if isinstance(item, Instance) else item,)
+                           for name in class_names(kind) for child in class_member(kind, name))
+            pending.extend(item for item in receivers if isinstance(item, (Function, Bound, Partial, Generator)))
+            def capture(source, bindings):
+                for name, assigned in bindings.items():
+                    pending.extend(assigned)
+                    values = tuple(kind_key(item) if isinstance(item, ast.ClassDef)
+                                   else ("instance", kind_key(item.kind)) if isinstance(item, Instance)
+                                   else ast.dump(item.node) if isinstance(item, Function)
+                                   else receiver_key(item) if isinstance(item, (Generator, Bound, Partial)) else item for item in assigned)
+                    key = source, name
+                    captured[key] = choices((*captured.get(key, ()), *values), source_values=False)
             while pending:
                 callback = pending.pop()
                 if id(callback) in seen:
                     continue
                 seen.add(id(callback))
                 if isinstance(callback, Bound):
-                    pending.append(callback.function)
+                    pending.extend((callback.function, callback.receiver))
+                elif isinstance(callback, Partial):
+                    pending.extend(callback.functions)
+                    capture(str(receiver_key(callback)), {**{str(index):assigned for index,assigned in enumerate(callback.arguments)}, **callback.keywords})
+                elif isinstance(callback, Generator):
+                    if isinstance(callback.node, Function):
+                        pending.append(callback.node)
+                    elif isinstance(callback.node, ast.AST):
+                        def loaded(node):
+                            return {child.id for child in ast.walk(node) if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load)}
+                        names = loaded(callback.node)
+                        if isinstance(callback.node, ast.GeneratorExp):
+                            names, bound = set(), set()
+                            for generator in callback.node.generators:
+                                names.update(loaded(generator.iter) - bound)
+                                bound.update(child.id for child in ast.walk(generator.target) if isinstance(child, ast.Name))
+                                for condition in generator.ifs:
+                                    names.update(loaded(condition) - bound)
+                            names.update(loaded(callback.node.elt) - bound)
+                        capture(kind_key(callback.node), {name:callback.scope.get(name, ()) for name in names})
+                elif isinstance(callback, Instance):
+                    capture("instance:" + str(kind_key(callback.kind)), callback.attributes)
                 elif isinstance(callback, Function):
                     source = ast.dump(callback.node)
                     captured.setdefault((source, ""), (None,))
-                    bindings = {**{"=" + name: assigned for name, assigned in callback.defaults.items()},
-                                **{name: callback.scope.get(name, ()) for name in callback.free}}
-                    for name, assigned in bindings.items():
-                        pending.extend(assigned)
-                        values = tuple(kind_key(item) if isinstance(item, ast.ClassDef)
-                                       else ast.dump(item.node) if isinstance(item, Function) else item for item in assigned)
-                        key = source, name
-                        captured[key] = choices((*captured.get(key, ()), *values), source_values=False)
+                    capture(source, {**{"=" + name: assigned for name, assigned in callback.defaults.items()},
+                                     **{name: callback.scope.get(name, ()) for name in callback.free}})
             return tuple(sorted((key, binding_key(assigned)) for key, assigned in captured.items()))
         # Attribute paths can continue through objects returned by getters.
         # Join their receiver fields by kind before another callback pass;
@@ -3905,7 +3989,7 @@ def python_ownership(content, *, partial=False):
         def join_instance(item):
             if not isinstance(item, Instance):
                 return item
-            key = kind_key(item.kind)
+            key = receiver_key(item)
             representative = representatives.setdefault(key, Instance(item.kind))
             if representative is item or id(item) in joining:
                 return representative
@@ -3917,11 +4001,17 @@ def python_ownership(content, *, partial=False):
             return representative
 
         def fields(item):
-            return tuple(sorted((binding_key(name), binding_key(assigned)) for name, assigned in item.attributes.items()))
+            if isinstance(item, Instance):
+                return tuple(sorted((binding_key(name), binding_key(assigned)) for name, assigned in item.attributes.items()))
+            if isinstance(item, Sequence):
+                return binding_key(item.state["rows"])
+            if isinstance(item, Generator):
+                return binding_key(tuple(sorted(item.state.items())))
+            return binding_key(opaque_values.get(receiver_key(item), ()))
 
         while outputs:
             joining = set()
-            pending, new_receivers, seen = list(outputs), [], set()
+            pending, new_receivers, seen = list(receivers_for(outputs) if receivers_for else outputs), [], set()
             while pending:
                 item = pending.pop()
                 if id(item) in seen:
@@ -3930,6 +4020,14 @@ def python_ownership(content, *, partial=False):
                 if isinstance(item, Instance):
                     new_receivers.append(item)
                     join_instance(item)
+                elif receivers_for:
+                    new_receivers.append(item)
+                    key = receiver_key(item)
+                    representative = representatives.setdefault(key, Sequence((), unique=item.unique) if isinstance(item, Sequence) else item)
+                    if isinstance(item, Sequence):
+                        representative.state["rows"] = choices((*representative.state["rows"], *item.state["rows"]))
+                    elif type(item) in (bytes, complex):
+                        opaque_values[key] = choices((*opaque_values.get(key, ()), item), source_values=False)
                 elif isinstance(item, Sequence):
                     pending.extend(sequence_members(item))
                 elif isinstance(item, Keywords):
@@ -3945,10 +4043,10 @@ def python_ownership(content, *, partial=False):
                 analyzed[key] = fields(item), captures
             kinds = {key for key, _ in dirty}
             receivers = (*tuple(item for _, item in dirty),
-                         *(item for item in new_receivers if kind_key(item.kind) in kinds))
-            outputs = uncertain_protocol_effects((*operands, *receivers), scope, callbacks_for(receivers))
+                         *(item for item in new_receivers if receiver_key(item) in kinds))
+            outputs = uncertain_protocol_effects((*operands, *receivers), scope, callbacks_for(receivers), zero_result=())
             returned.extend(outputs)
-        return (overflow if any(conversion_witness(item) for item in (template, *operands, *returned)) else unknown,)
+        return choices(returned)
 
     def format_failure(template, operands, percent=False):
         """Retain known command scaffolding when an operand is unresolved."""
@@ -4137,9 +4235,7 @@ def python_ownership(content, *, partial=False):
                     return special(item, protocols[operation], local)
                 try:
                     literal = data_literal(item)
-                    def salted(value):
-                        return isinstance(value, (str, bytes)) or isinstance(value, (tuple, list, dict)) and any(salted(child) for child in value)
-                    if operation == 'hash' and salted(literal):
+                    if operation == 'hash' and process_salted(literal):
                         return (unknown,)
                     return (int.__index__(literal) if operation == "index" else getattr(builtins, operation)(literal),)
                 except (InexactDataLoop, TypeError, ValueError, OverflowError):
@@ -4253,24 +4349,40 @@ def python_ownership(content, *, partial=False):
                     return display(computed, local) if operation == "pprint.pprint" else (computed,)
                 return alternatives(lambda target, tree=tree: display(tree, target) for tree in concrete)
             return alternatives(lambda local, item=item: render(item, local) for item in arguments[0]) or (unknown,)
-        def protocol_leaves(operands):
+        def protocol_leaves(operands, *, json_native=False, skip_empty=False):
             pending, visited = list(operands), set()
             while pending:
                 item = pending.pop()
                 if id(item) in visited:
                     continue
                 visited.add(id(item))
-                if isinstance(item, Instance):
+                if json_native and isinstance(item, Instance) and json_native_kind(item.kind):
+                    native = json_native_kind(item.kind)
+                    protocols = json_native_protocols(item, scope, skip_empty=skip_empty)
+                    if protocols:
+                        yield item
+                    else:
+                        pending.extend(item.json_payload)
+                elif isinstance(item, Instance):
                     yield item
                 elif isinstance(item, Keywords):
                     pending.extend(child for assigned in item.items.values() for child in assigned)
-                    pending.extend(item.items)
+                    if not json_native:
+                        pending.extend(item.items)
                 elif isinstance(item, Sequence):
-                    pending.extend(sequence_members(item))
+                    if json_native and item.unique:
+                        yield item
+                    else:
+                        pending.extend(sequence_members(item))
                 elif isinstance(item, (list, tuple)):
                     pending.extend(item)
-                elif item is unknown or isinstance(item, (Generator, Function, Bound, Partial, ast.alias, ast.ClassDef)):
+                elif item is unknown or isinstance(item, (Generator, Function, Bound, Partial, ast.alias, ast.ClassDef)) or json_native and type(item) in (bytes, complex):
                     yield item
+
+        def json_leaves(operands):
+            indents = keywords.get('indent', ())
+            skip_empty = operation == 'json.dump' or bool(indents) and all(type(indent) in (int, str, bool) for indent in indents)
+            return protocol_leaves(operands, json_native=True, skip_empty=skip_empty)
 
         if operation in {'json.dumps', 'json.dump', 'json.loads'}:
             parameters = ('obj','fp') if operation == 'json.dump' else ('s',) if operation == 'json.loads' else ('obj',)
@@ -4285,6 +4397,13 @@ def python_ownership(content, *, partial=False):
                     arguments.append(keywords.pop(parameter))
                 else:
                     return (unknown,)
+            if keywords.get('cls') == (None,):
+                keywords.pop('cls')
+            allowed = ({'object_hook','object_pairs_hook','parse_float','parse_int','parse_constant','strict'}
+                       if operation == 'json.loads' else
+                       {'skipkeys','ensure_ascii','check_circular','allow_nan','indent','separators','default','sort_keys'})
+            if 'cls' not in keywords and set(keywords) - allowed:
+                return (unknown,)
             operands = tuple(item for assigned in arguments for item in assigned)
             callbacks = []
             if operation == 'json.loads':
@@ -4302,7 +4421,7 @@ def python_ownership(content, *, partial=False):
                         if name in keywords and keywords[name] != (None,):
                             def handler(item, assigned=keywords[name]):
                                 values = alternatives(lambda target, callback=callback: invoke(callback, target, [(adapt(item),)], evaluated=True) for callback in assigned)
-                                return values[0] if len(values) == 1 else unknown
+                                return values[0] if len(values) == 1 else overflow if any(conversion_witness(value) for value in values) else unknown
                             handlers[name] = handler
                     try:
                         return (adapt(json.loads(source[0], **handlers)),)
@@ -4313,21 +4432,36 @@ def python_ownership(content, *, partial=False):
                 # Primitive JSON without callbacks is inert. In particular, do
                 # not expand a factored source DAG just to learn its layout.
                 defaults = tuple(callback for callback in keywords.get('default', ()) if callback is not None)
-                leaves = tuple(protocol_leaves(arguments[0])) if defaults else ()
-                callbacks.extend((callback, [(item,)]) for item in leaves for callback in defaults)
                 if operation == 'json.dump' and len(arguments) > 1:
                     callbacks.extend((callback, [(computed,)]) for stream in arguments[1] for callback in member(stream, 'write', scope))
             for encoder in keywords.get('cls', ()):
                 for instance in invoke(encoder, scope, evaluated=True):
-                    callbacks.extend((callback, [(unknown,)]) for method in ('encode','iterencode','default','decode','raw_decode') for callback in member(instance, method, scope))
+                    callbacks.extend((callback, [arguments[0]]) for method in ('decode','raw_decode') if operation == 'json.loads'
+                                     for callback in member(instance, method, scope))
+                    if operation != 'json.loads':
+                        callbacks.extend((callback, [arguments[0]]) for method in ('encode','iterencode')
+                                         for callback in member(instance, method, scope))
+                        defaults = (*defaults, *member(instance, 'default', scope))
             if callbacks:
-                # One exact object/default call is determinate; aggregate shapes
-                # and custom encoder/decoder behavior have unknown visit counts.
-                if operation == 'json.dumps' and len(arguments[0]) == 1 and isinstance(arguments[0][0], Instance) and len(callbacks) == 1 and 'cls' not in keywords:
-                    callback, args = callbacks[0]
-                    invoke(callback, scope, args, evaluated=True)
-                else:
-                    uncertain_protocol_effects(operands, scope, callbacks)
+                uncertain_protocol_effects(operands, scope, callbacks)
+            if operation != 'json.loads':
+                def default_callbacks(values):
+                    callbacks = []
+                    for item in json_leaves(values):
+                        native = json_native_kind(item.kind) if isinstance(item, Instance) else None
+                        if native in {"list", "tuple", "dict"}:
+                            callbacks.extend((Bound(ast.alias(name="json.iterate"), callback), ())
+                                             for callback in json_native_protocols(item, scope, skip_empty=operation == "json.dump" or bool(keywords.get("indent")) and all(type(indent) in (int, str, bool) for indent in keywords["indent"])))
+                        else:
+                            callbacks.extend((callback, [(item,)]) for callback in defaults)
+                    return tuple(callbacks)
+                initial = default_callbacks(arguments[0])
+                if len(arguments[0]) == 1 and isinstance(arguments[0][0], Instance) and len(initial) == 1:
+                    callback, args = initial[0]
+                    outputs = invoke(callback, scope, args, evaluated=True)
+                    protocol_return_effects(operands, scope, default_callbacks, outputs, json_leaves)
+                elif initial:
+                    protocol_return_effects(operands, scope, default_callbacks, receivers_for=json_leaves)
             return (unknown,)
         if operation in {'any','all','sum','bytes','range','set','frozenset','dict'}:
             if operation == 'bytes' and 'source' in keywords:
@@ -4392,7 +4526,9 @@ def python_ownership(content, *, partial=False):
                     update_mapping(mapping, keywords)
                     return (Keywords(mapping),)
                 if operation in {'set','frozenset'} and arguments:
-                    return (Sequence(iterable_rows(arguments[0], scope), unique=True),)
+                    rows = tuple(row for source in arguments[0] for row in
+                                 (source.state["rows"] if isinstance(source, Sequence) and source.unique else iterable_rows((source,), scope)))
+                    return (Sequence(rows, unique=True),)
                 return (unknown,)
         if operation in {"sorted", "min", "max"}:
             if not arguments:
@@ -5005,7 +5141,7 @@ def python_ownership(content, *, partial=False):
             elif isinstance(item, Bound):
                 key = ("bound", child(item.function), child(item.receiver))
             elif isinstance(item, Instance):
-                key = ("instance", identity, child(item.kind), tuple(sorted((child(name), child(assigned)) for name, assigned in item.attributes.items())))
+                key = ("instance", identity, child(item.kind), child(item.json_payload), tuple(sorted((child(name), child(assigned)) for name, assigned in item.attributes.items())))
             elif isinstance(item, Registry):
                 key = ("registry", identity, child(item.handlers))
             elif isinstance(item, Partial):
@@ -5193,12 +5329,23 @@ def python_ownership(content, *, partial=False):
                 instance.attributes[name] = supplied.get(name, class_bindings.get(id(kind), {}).get(name, (unknown,)))
             for hook in member(instance, "__post_init__"):
                 invoke(hook, scope)
+        native = json_native_kind(kind)
+        if native in {"list", "tuple", "dict"}:
+            if initializers:
+                instance.json_payload = (unknown,)
+            elif native == "dict":
+                instance.json_payload = data_call_protocol("dict", arguments, keywords, scope)
+            else:
+                instance.json_payload = (Sequence((list(iterate_values(arguments[0], scope)) if arguments else [],)),)
         return instance
 
     def invoke(wrapper, caller, arguments=(), keywords=(), *, evaluated=False, consumed=False, yielded=None, unknown_effect=True, created_active=None):
         nonlocal found, recursion_skips, expression_values
         argument_values = list(arguments) if evaluated else expanded_arguments(arguments, caller)
         keyword_values = dict(keywords) if evaluated else call_keywords(keywords, caller)
+        if isinstance(wrapper, Bound) and isinstance(wrapper.function, ast.alias) and wrapper.function.name == "json.iterate":
+            returned = invoke(wrapper.receiver, caller, argument_values, keyword_values, evaluated=True)
+            return iterate_values(returned, caller)
         if isinstance(wrapper, ast.alias) and wrapper.name in async_consumers:
             return async_result(wrapper.name, argument_values, keyword_values, caller)
         if isinstance(wrapper, ast.alias) and wrapper.name in mock_types:
@@ -5610,7 +5757,7 @@ def python_ownership(content, *, partial=False):
         results = []
         for owner in owners:
             if name == "copy":
-                results.append(Sequence(sequence_rows(owner), unique=owner.unique) if isinstance(owner, Sequence) else Keywords(dict(owner.items)))
+                results.append(Sequence(owner.state["rows"] if owner.unique else sequence_rows(owner), unique=owner.unique) if isinstance(owner, Sequence) else Keywords(dict(owner.items)))
                 continue
             attribute_mutations += 1
             observe(owner.state)
@@ -5679,7 +5826,7 @@ def python_ownership(content, *, partial=False):
                 owner.state["rows"] = (RowConcat(owner.state["rows"], suffixes),)
                 continue
             rows = []
-            for previous in sequence_rows(owner):
+            for previous in owner.state["rows"] if owner.unique else sequence_rows(owner):
                 operands = combinations(arguments) if arguments else [()]
                 for operands_row in operands:
                     row = list(previous)
@@ -5691,12 +5838,19 @@ def python_ownership(content, *, partial=False):
                     elif name == "insert" and len(operands_row) > 1:
                         row.insert(operands_row[0] if isinstance(operands_row[0], int) else len(row), operands_row[1])
                     elif name in {"extend", "update"} and operands_row:
-                        extensions = sequence_rows(operands_row[0])
+                        extension = operands_row[0]
+                        extensions = extension.state["rows"] if isinstance(extension, Sequence) and extension.unique else sequence_rows(extension)
                         if all(isinstance(extension, (list, tuple)) for extension in extensions):
                             rows.extend(row + list(extension) for extension in extensions)
                             continue
                         row.extend(iterate_values((operands_row[0],), scope))
                     elif name == "pop" and row:
+                        if owner.unique and not operands_row:
+                            results.extend(row)
+                            rows.append(row[:-1])
+                            if len(row) > 1:
+                                rows.append([row[-1], *row[:-2]])
+                            continue
                         if operands_row and not isinstance(operands_row[0], int):
                             results.extend(row)
                             rows.extend(row[:index] + row[index + 1:] for index in range(len(row)))
@@ -5716,9 +5870,7 @@ def python_ownership(content, *, partial=False):
                         except TypeError:
                             pass
                     rows.append(row)
-            if owner.unique:
-                rows = [list(choices(row)) for row in rows]
-            owner.state["rows"] = choices(rows)
+            owner.state["rows"] = Sequence(rows, unique=True).state["rows"] if owner.unique else choices(rows)
         return choices(results) or (None,)
 
     def scan(node, scope):
@@ -6426,7 +6578,7 @@ def python_ownership(content, *, partial=False):
                     for callback in assigned:
                         for function in wrapped_functions(callback):
                             method_classes[id(function.node)] = statement
-                class_bases[id(statement)] = choices(base for expression in statement.bases for base in value(expression, scope) if isinstance(base, ast.ClassDef))
+                class_bases[id(statement)] = choices(base for expression in statement.bases for base in value(expression, scope) if isinstance(base, (ast.ClassDef, ast.alias)))
                 scope[statement.name] = apply_decorators((statement,), statement.decorator_list, decorators, scope)
             elif isinstance(statement, ast.Match):
                 scope.state = merge(scope.state, *(branch(case.body, scope) for case in statement.cases))

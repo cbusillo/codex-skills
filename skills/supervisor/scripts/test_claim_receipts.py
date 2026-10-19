@@ -1417,6 +1417,196 @@ class ReceiptTests(unittest.TestCase):
             with self.subTest(invalid_arguments=expression):
                 self.assert_python_patch_ownership(program, False)
 
+    def test_python_unique_collections_keep_process_independent_positions(self):
+        writer = 'uv run /catalog/gh-plan.py --repo o/r claim 12'
+        for constructor in ('set(["echo safe",W,"echo other"])', 'frozenset(["echo safe",W,"echo other"])',
+                            '{"echo safe",W,"echo other"}', '{word for word in ["echo safe",W,"echo other"]}'):
+            for index in range(3):
+                for consumer in ('list(VALUE)[INDEX]', 'tuple(VALUE)[INDEX]'):
+                    program = 'import os\nW=' + repr(writer) + '\nos.system(' + consumer.replace('VALUE', constructor).replace('INDEX', str(index)) + ')'
+                    with self.subTest(constructor=constructor, index=index, consumer=consumer):
+                        self.assert_python_patch_ownership(program, True)
+                        self.assert_python_patch_ownership(program.replace(writer, 'echo third'), False)
+            program = 'import os\nW=' + repr(writer) + '\nos.system(next(iter(' + constructor + ')))'
+            with self.subTest(constructor=constructor, consumer='next'):
+                self.assert_python_patch_ownership(program, True)
+                self.assert_python_patch_ownership(program.replace(writer, 'echo third'), False)
+        for index in range(2):
+            program = 'import os\nW=' + repr(writer) + '\nos.system(list({("echo safe",0),(W,0)})[' + str(index) + '][0])'
+            with self.subTest(salted_tuple=index):
+                self.assert_python_patch_ownership(program, True)
+                self.assert_python_patch_ownership(program.replace(writer, 'echo third'), False)
+
+    def test_python_unique_collection_mutation_keeps_members_and_uncertain_order(self):
+        writer = 'uv run /catalog/gh-plan.py --repo o/r claim 12'
+        setup = 'import os\nW=' + repr(writer) + '\n'
+        cases = (
+            ('values={"echo safe"}\nvalues.add(W)\nos.system(list(values)[0])',True),
+            ('values={"echo safe"}\nvalues.update([W])\nos.system(tuple(values)[0])',True),
+            ('values={"echo safe",W}\nvalues=values.copy()\nos.system(list(values)[0])',True),
+            ('values={"echo safe",W}\nvalues=set(values)\nos.system(list(values)[0])',True),
+            ('values={"echo safe",W}\nvalues=frozenset(values)\nos.system(list(values)[0])',True),
+            ('values={"echo safe",W}\nvalues.remove(W)\nos.system(list(values)[0])',False),
+            ('values={"echo safe",W}\nvalues.discard(W)\nos.system(next(iter(values)))',False),
+            ('values={"echo safe",W}\nvalues.update(set(["echo other"]))\nvalues.remove(W)\nos.system(list(values)[0])',False),
+            ('values={W}\nvalues.pop()\nfor command in values: os.system(command)',False),
+            ('values={"echo safe",W}\nvalues.pop()\nos.system(list(values)[0])',True),
+        )
+        for body,expected in cases:
+            with self.subTest(mutation=body):
+                self.assert_python_patch_ownership(setup+body,expected)
+                self.assert_python_patch_ownership((setup+body).replace(writer,'echo third'),False)
+
+    def test_python_unique_collection_order_does_not_enumerate_permutations(self):
+        def measured(size, consumer, limit=None):
+            # Executable-looking fixture strings stay concrete in choices().
+            # They must remain cheap data while a unique order is unknown.
+            items = ['import math\nvalue=' + str(index) for index in range(size)]
+            program = 'import os\nitems=' + repr(items) + '\nos.system(' + consumer + ')'
+            calls = 0
+            def profile(frame, event, argument):
+                nonlocal calls
+                if event == 'call':
+                    calls += 1
+                    if limit is not None and calls > limit:
+                        raise AssertionError('unique collection enumerated process-dependent orders')
+            sys.setprofile(profile)
+            try:
+                self.assertFalse(receipts.python_ownership(program))
+            finally:
+                sys.setprofile(None)
+            return calls
+        calls = measured(640, 'list(set(items))[0]')
+        measured(1280, 'list(set(items))[0]', calls * 3)
+        for consumer in ('tuple(frozenset(items))[600]', 'next(iter(set(items)))', '"".join(set(items))'):
+            measured(1280, consumer)
+        writer = 'uv run /catalog/gh-plan.py --repo o/r claim 12'
+        items = ['echo safe ' + str(index) for index in range(1280)] + [writer]
+        for consumer in ('list(set(items))[600]', 'tuple(frozenset(items))[600]', 'next(iter(set(items)))'):
+            program = 'import os\nitems=' + repr(items) + '\nos.system(' + consumer + ')'
+            with self.subTest(large_writer=consumer):
+                self.assertTrue(receipts.python_ownership(program))
+                self.assertFalse(receipts.python_ownership(program.replace(writer, 'echo third')))
+
+    def test_python_json_default_follows_returned_receivers(self):
+        writer = 'uv run /catalog/gh-plan.py --repo o/r claim 12'
+        setup = 'import os,json,io\nW=' + repr(writer) + '\nclass A: pass\nclass B: pass\n'
+        cases = (
+            ('direct', 'def encode(v):\n if isinstance(v,B):\n  os.system(W)\n  return None\n return B()\n'),
+            ('container', 'def encode(v):\n if isinstance(v,B):\n  os.system(W)\n  return None\n return {"child":[B()]}\n'),
+            ('captured', 'def make(command):\n class V:\n  def run(self): os.system(command)\n  def done(self): return command==W\n return V()\ndef encode(v):\n if isinstance(v,A): return make("echo safe")\n v.run()\n return None if v.done() else make(W)\n'),
+            ('defaults', 'def make(command):\n class V:\n  def run(self, command=command): os.system(command)\n  def done(self, command=command): return command==W\n return V()\ndef encode(v):\n if isinstance(v,A): return make("echo safe")\n v.run()\n return None if v.done() else make(W)\n'),
+            ('repeated', 'commands=["echo safe","echo other",W]\ndef encode(v):\n os.system(commands.pop(0))\n return A()\n'),
+        )
+        for name, callback in cases:
+            for call in ('json.dumps(A(),default=encode)', 'json.dump(A(),io.StringIO(),default=encode)',
+                         'json.dumps(obj=A(),default=encode)', 'json.dump(obj=A(),fp=io.StringIO(),default=encode)'):
+                program = setup + callback + 'try: ' + call + '\nexcept (RecursionError,IndexError): pass'
+                with self.subTest(returned=name, call=call):
+                    self.assert_python_patch_ownership(program, True)
+                    self.assert_python_patch_ownership(program.replace(writer, 'echo safe'), False)
+        for returned in ("b'payload'", '1j', '{1}', '(item for item in [1])', 'lambda:None', 'functools.partial(lambda:None)'):
+            callback = 'import functools\nsteps=[lambda:(' + returned + '),lambda:os.system(W)]\ndef encode(value): return steps.pop(0)()\n'
+            for call in ('json.dumps(A(),default=encode)','json.dump(A(),io.StringIO(),default=encode)'):
+                program = setup+callback+call
+                with self.subTest(unsupported_return=returned,call=call):
+                    self.assert_python_patch_ownership(program,True)
+                    self.assert_python_patch_ownership(program.replace(writer,'echo safe'),False)
+            control = setup+'import functools\ndef encode(value):return ('+returned+')\ntry: json.dumps(A(),default=encode)\nexcept (RecursionError,ValueError): pass'
+            with self.subTest(recursive_unsupported=returned):
+                self.assert_python_patch_ownership(control,False)
+        for call in ('json.dumps(A(),cls=Encoder)', 'json.dump(A(),io.StringIO(),cls=Encoder)'):
+            program = setup + 'class Encoder(json.JSONEncoder):\n def default(self,v):\n  if isinstance(v,B):\n   os.system(W)\n   return None\n  return [B()]\n' + call
+            with self.subTest(encoder=call):
+                self.assert_python_patch_ownership(program, True)
+                self.assert_python_patch_ownership(program.replace(writer, 'echo safe'), False)
+        controls = (
+            'def encode(v): return W\njson.dumps(A(),default=encode)',
+            'def encode(v): return v\ntry: json.dumps(A(),default=encode)\nexcept ValueError: pass',
+            'def encode(v):\n class V: pass\n return V()\ntry: json.dumps(A(),default=encode)\nexcept RecursionError: pass',
+            'def encode(v): os.system(W); return None\njson.dumps([1,2],default=encode)',
+            'def encode(v): os.system(W); return None\ntry: json.dumps(A(),default=encode,unsupported=True)\nexcept TypeError: pass',
+            'def encode(v): os.system(W); return None\ntry: json.dump(A(),io.StringIO(),default=encode,unsupported=True)\nexcept TypeError: pass',
+        )
+        for control in controls:
+            with self.subTest(control=control):
+                self.assert_python_patch_ownership(setup + control, False)
+
+    def test_python_json_default_does_not_revisit_serializable_subclasses(self):
+        writer = 'uv run /catalog/gh-plan.py --repo o/r claim 12'
+        setup = 'import os,json,io\nW=' + repr(writer) + '\n'
+        for native, argument in (('int','1'),('float','1.5'),('str','"value"'),('list','[]'),('tuple','()'),('dict','{}')):
+            body = ('class A:\n def convert(self): return B(' + argument + ')\nclass B(' + native
+                    + '):\n def convert(self): os.system(W); return None\n')
+            for call in ('json.dumps(A(),default=lambda value:value.convert())',
+                         'json.dump(A(),io.StringIO(),default=lambda value:value.convert())'):
+                with self.subTest(native=native, call=call):
+                    self.assert_python_patch_ownership(setup + body + call, False)
+        for native, argument in (('list','[C()]'),('tuple','(C(),)'),('dict','{"child":C()}')):
+            body = ('class A:\n def convert(self): return B(' + argument + ')\nclass B(' + native
+                    + '):\n def convert(self): return None\nclass C:\n def convert(self): os.system(W); return None\n')
+            for call in ('json.dumps(A(),default=lambda value:value.convert())',
+                         'json.dump(A(),io.StringIO(),default=lambda value:value.convert())'):
+                program = setup + body + call
+                with self.subTest(native_child=native, call=call):
+                    self.assert_python_patch_ownership(program, True)
+                    self.assert_python_patch_ownership(program.replace(writer,'echo safe'), False)
+        for native, method, returned in (('list','__iter__','iter([C()])'),('tuple','__iter__','iter([C()])'),
+                                          ('dict','items','[("child",C())]')):
+            body = ('class A:\n def convert(self): return B([0])\nclass B(' + native + '):\n def ' + method
+                    + '(self): return ' + returned + '\nclass C:\n def convert(self): os.system(W); return None\n')
+            # A nonempty dict reaches its items() override in CPython.
+            if native == 'dict':
+                body = body.replace('B([0])','B({"present":0})')
+            for call in ('json.dumps(A(),default=lambda value:value.convert())',
+                         'json.dump(A(),io.StringIO(),default=lambda value:value.convert())'):
+                program = setup + body + call
+                with self.subTest(native_protocol=native, call=call):
+                    self.assert_python_patch_ownership(program, True)
+                    self.assert_python_patch_ownership(program.replace(writer,'echo safe'), False)
+        for native in ('list','tuple'):
+            body = ('class A:\n def convert(self): return B()\nclass B(' + native
+                    + '):\n def __iter__(self): os.system(W);return iter([])\n')
+            for call,expected in (('json.dumps(A(),default=lambda value:value.convert())',True),
+                                  ('json.dumps(A(),default=lambda value:value.convert(),indent=1)',False),
+                                  ('json.dump(A(),io.StringIO(),default=lambda value:value.convert())',False)):
+                with self.subTest(empty_native=native, call=call):
+                    self.assert_python_patch_ownership(setup+body+call,expected)
+                    self.assert_python_patch_ownership((setup+body+call).replace(writer,'echo safe'),False)
+        program = (setup + 'class A:\n def convert(self): return B()\nclass B(dict):\n def items(self): os.system(W);return []\n'
+                   'json.dumps(A(),default=lambda value:value.convert())')
+        self.assert_python_patch_ownership(program, False)
+        for native,method,returned,argument in (('list','__iter__','iter([1])','[1]'),
+                                                ('tuple','__iter__','iter([1])','[1]'),
+                                                ('dict','items','[("child",1)]','{"present":0}')):
+            body = ('class B(' + native + '):\n def ' + method + '(self): os.system(W); return ' + returned + '\n')
+            for operand in ('B(' + argument + ')', '[B(' + argument + ')]', '{"child":B(' + argument + ')}'):
+                for call in ('json.dumps(' + operand + ')','json.dump(' + operand + ',io.StringIO())'):
+                    with self.subTest(no_default=native, operand=operand, call=call):
+                        self.assert_python_patch_ownership(setup+body+call,True)
+                        self.assert_python_patch_ownership((setup+body+call).replace(writer,'echo safe'),False)
+        body = 'class B(dict):\n def items(self): os.system(W);return []\n'
+        self.assert_python_patch_ownership(setup+body+'json.dumps(B())',False)
+        program = (setup + 'def make():\n class B(list):\n  def __iter__(self): return iter([make()])\n return B()\n'
+                   'class A:\n def convert(self): return make()\ntry: json.dumps(A(),default=lambda value:value.convert())\nexcept RecursionError: pass')
+        self.assert_python_patch_ownership(program, False)
+
+    def test_python_json_load_hooks_preserve_alternative_writer_values(self):
+        writer = 'uv run /catalog/gh-plan.py --repo o/r claim 12'
+        for hook, source in (('object_hook','{}'), ('object_pairs_hook','{}'), ('parse_float','1.25'),
+                             ('parse_int','1'), ('parse_constant','NaN')):
+            program = ('import os,json,sys\nW=' + repr(writer) + '\nos.system(json.loads('
+                       + repr(source) + ',' + hook + '=lambda value: W if sys.argv[1:] else "echo safe"))')
+            with self.subTest(hook=hook):
+                self.assert_python_patch_ownership(program, True)
+                self.assert_python_patch_ownership(program.replace(writer, 'echo safe'), False)
+        program = ('import os,json,sys\nW=' + repr(writer) + '\nos.system(json.loads("{}",'
+                   'object_hook=lambda value: W if sys.argv[1:] else "echo safe",object_pairs_hook=lambda value:"echo safe"))')
+        self.assert_python_patch_ownership(program, False)
+        program = ('import os,json,sys\nW=' + repr(writer) + '\ntry: os.system(json.loads("{}",'
+                   'object_hook=lambda value: W,unsupported=True))\nexcept TypeError: pass')
+        self.assert_python_patch_ownership(program, False)
+
     def test_python_process_salted_hash_keeps_both_possible_branches(self):
         writer = 'uv run /catalog/gh-plan.py --repo o/r claim 12'
         # The source may run in another Python process with a different seed.
