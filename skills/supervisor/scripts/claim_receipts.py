@@ -2291,7 +2291,7 @@ def python_ownership(content, *, partial=False):
     recursion_skips = 0
     class_bindings, expression_values = {}, {}
     exit_callbacks = []
-    patched_attributes, executing_sources = {}, []
+    patched_attributes, executing_sources, parsed_sources = {}, [], {}
     return_values, yield_values = [], []
     fingerprints = {}
     branch_changes = []
@@ -2382,8 +2382,9 @@ def python_ownership(content, *, partial=False):
             self.free = (loaded - self.locals) | nested_loaded
 
     class Descriptor:
-        def __init__(self, function, kind):
+        def __init__(self, function, kind, setter=(), deleter=()):
             self.function, self.kind = function, kind
+            self.setter, self.deleter = setter, deleter
 
     class Bound:
         def __init__(self, function, receiver):
@@ -2410,8 +2411,9 @@ def python_ownership(content, *, partial=False):
             self.source = source
 
     class PatchContext:
-        def __init__(self, target, replacement):
+        def __init__(self, target, replacement, inject=False):
             self.target, self.replacement, self.previous = target, replacement, []
+            self.inject = inject
 
     class Deferred:
         def __init__(self, callback):
@@ -2505,6 +2507,18 @@ def python_ownership(content, *, partial=False):
                 unique.append(item)
         if len(unique) <= 8 or any(isinstance(item, (ast.AST, Function, Descriptor, Bound, Instance, Partial, Registry, Deferred, Keywords, Sequence, Generator, CompiledCode, PatchContext)) for item in unique):
             return tuple(unique)
+        # Executable Python fixtures must reach exec/eval as concrete sources;
+        # the shell-argv widening marker would bypass their dynamic patches.
+        def python_source(item):
+            if isinstance(item, (list, tuple)):
+                return any(python_source(child) for child in item)
+            if not isinstance(item, str):
+                return False
+            embedded = parsed_source(item, "exec")
+            return embedded is not None and any(isinstance(node, (ast.Call, ast.Import, ast.ImportFrom)) for node in ast.walk(embedded))
+        sources = [item for item in unique if python_source(item)]
+        if sources:
+            return (*sources, *choices(item for item in unique if not any(same(item, source) for source in sources)))
         # Keep canonical helper/action witnesses concrete. Widening known
         # read-only actions would invent a dynamic action and a false refusal.
         witnesses, remaining = {}, []
@@ -2522,6 +2536,15 @@ def python_ownership(content, *, partial=False):
             result.append(widen(remaining))
         return tuple(result)
 
+    def parsed_source(source, mode):
+        key = source, mode
+        if key not in parsed_sources:
+            try:
+                parsed_sources[key] = ast.parse(source, mode=mode)
+            except (SyntaxError, ValueError):
+                parsed_sources[key] = None
+        return parsed_sources[key]
+
     def combinations(parts):
         rows = [()]
         for part in parts:
@@ -2535,7 +2558,9 @@ def python_ownership(content, *, partial=False):
                     | {item.kind.name for item in bound if isinstance(item, Instance) and isinstance(item.kind, ast.alias)}) if bound else {node.id}
         if isinstance(node, ast.Attribute):
             names = {parent + "." + node.attr for parent in function_names(node.value, scope)}
-            return {alias.name for name in names for alias in patched_attributes.get(name, (ast.alias(name=name),)) if isinstance(alias, ast.alias)}
+            return {alias.name if isinstance(alias, ast.alias) else name
+                    for name in names for alias in patched_attributes.get(name, (ast.alias(name=name),))
+                    if isinstance(alias, ast.alias) or alias is unknown}
         if isinstance(node, ast.Call):
             return function_names(node.func, scope)
         if isinstance(node, ast.Constant):
@@ -2555,14 +2580,25 @@ def python_ownership(content, *, partial=False):
         return ()
 
     def member(owner, name, scope=None):
-        if isinstance(owner, Instance) and name in owner.attributes:
-            return owner.attributes[name]
+        nonlocal attribute_mutations
+        if isinstance(owner, Descriptor) and owner.kind == "property" and name in {"getter", "setter", "deleter"}:
+            return (Descriptor(owner, name),)
+        if isinstance(owner, Descriptor) and owner.kind == "property" and name in {"fget", "fset", "fdel"}:
+            return (owner.function,) if name == "fget" else owner.setter if name == "fset" else owner.deleter
         receiver = owner.receiver if isinstance(owner, Super) else owner
         kind = receiver.kind if isinstance(receiver, Instance) else receiver
         assigned = class_member(kind, name)
         if isinstance(owner, Super):
             assigned = next((matched for base in class_bases.get(id(owner.kind), ()) if (matched := class_member(base, name))), ())
-        result = []
+        properties = tuple(item for item in assigned if isinstance(item, Descriptor) and item.kind == "property")
+        shadowed = ()
+        if isinstance(owner, Instance) and name in owner.attributes and not properties:
+            return owner.attributes[name]
+        if properties and isinstance(owner, Instance) and name in owner.attributes:
+            if len(properties) != len(assigned):
+                shadowed = owner.attributes[name]
+            assigned = properties
+        result = list(shadowed)
         for item in assigned:
             if isinstance(item, Descriptor):
                 if item.kind == "classmethod":
@@ -2570,7 +2606,12 @@ def python_ownership(content, *, partial=False):
                 elif item.kind == "staticmethod":
                     item = item.function
                 elif isinstance(receiver, Instance) and scope is not None:
-                    result.extend(invoke(Bound(item.function, receiver), scope, evaluated=True))
+                    returned = invoke(Bound(item.function, receiver), scope, evaluated=True)
+                    result.extend(returned)
+                    if item.kind == "cached_property":
+                        attribute_mutations += 1
+                        observe(receiver.attributes)
+                        receiver.attributes[name] = returned
                     continue
             elif isinstance(item, Function) and isinstance(receiver, Instance):
                 item = Bound(item, receiver)
@@ -2745,9 +2786,19 @@ def python_ownership(content, *, partial=False):
     def executable_operand(text):
         return overflow in text or executable_content(text) or opaque_ownership("exec_command", {"cmd": text})
 
+    def put_mapping(items, key, assigned):
+        if key is unknown:
+            items[key] = choices((*items.get(key, ()), *assigned))
+        else:
+            items[key] = assigned
+
+    def update_mapping(items, mapping):
+        for key, assigned in mapping.items():
+            put_mapping(items, key, assigned)
+
     def value(node, scope):
         if isinstance(node, ast.Name):
-            return scope.get(node.id, (ast.alias(name=node.id),) if node.id in pure_data_calls else (unknown,))
+            return scope.get(node.id, (ast.alias(name=node.id),) if node.id in pure_data_calls | descriptor_names else (unknown,))
         if isinstance(node, ast.Constant):
             return (node.value,)
         if isinstance(node, ast.Dict):
@@ -2756,11 +2807,11 @@ def python_ownership(content, *, partial=False):
                 if key is None:
                     for mapping in value(expression, scope):
                         if isinstance(mapping, Keywords):
-                            items.update(mapping.items)
+                            update_mapping(items, mapping.items)
                 else:
                     for literal in value(key, scope):
-                        if isinstance(literal, (str, int)):
-                            items[literal] = value(expression, scope)
+                        put_mapping(items, literal if isinstance(literal, (str, int)) else unknown,
+                                    value(expression, scope))
             return (Keywords(items),)
         if isinstance(node, ast.Subscript):
             resolved = []
@@ -2779,12 +2830,16 @@ def python_ownership(content, *, partial=False):
                 return cached
             targets = {parent + "." + node.attr for parent in function_names(node.value, scope)}
             replaced = [item for target in targets if target in patched_attributes for item in patched_attributes[target]]
-            resolved = [*replaced, *(ast.alias(name=name) for name in function_names(node, scope) if name in launches | external_mutations | pure_data_calls)]
+            resolved = [*replaced, *(ast.alias(name=name) for name in function_names(node, scope) if name in launches | external_mutations | pure_data_calls | descriptor_names | {"unittest.mock.DEFAULT"})]
             for owner in value(node.value, scope):
                 if isinstance(owner, Deferred) and node.attr == "start":
                     resolved.append(owner.callback)
                 if isinstance(owner, Registry) and node.attr == "func":
                     resolved.extend(owner.handlers)
+                if isinstance(owner, (Sequence, Keywords)) and node.attr in mutation_methods:
+                    resolved.append(Bound(ast.alias(name="methodcaller." + node.attr), owner))
+                if isinstance(owner, PatchContext) and node.attr in {"start", "stop"}:
+                    resolved.append(Bound(ast.alias(name="patch." + node.attr), owner))
                 resolved.extend(member(owner, node.attr, scope))
             result = choices(resolved) or (unknown,)
             expression_values[id(scope), id(node)] = result
@@ -2805,7 +2860,7 @@ def python_ownership(content, *, partial=False):
                 items = {}
                 if local is not None:
                     for key in value(node.key, local):
-                        items[key if isinstance(key, (str, int)) else unknown] = value(node.value, local)
+                        put_mapping(items, key if isinstance(key, (str, int)) else unknown, value(node.value, local))
                 return (Keywords(items),)
             return (Sequence((list(value(node.elt, local)) if local is not None else [],), unique=isinstance(node, ast.SetComp)),)
         if isinstance(node, ast.JoinedStr):
@@ -2861,15 +2916,29 @@ def python_ownership(content, *, partial=False):
                     return choices(result) or (unknown,)
             if names & {"unittest.mock.patch", "unittest.mock.patch.object"}:
                 arguments = expanded_arguments(node.args, scope)
+                keywords = call_keywords(node.keywords, scope)
                 object_patch = "unittest.mock.patch.object" in names
-                targets = (choices(parent.name + "." + attr for parent in arguments[0] if isinstance(parent, ast.alias)
-                                   for attr in arguments[1] if isinstance(attr, str)) if object_patch and len(arguments) >= 2
-                           else arguments[0] if arguments and not object_patch else ())
+                target = arguments[0] if arguments else keywords.get("target", ())
+                attribute = arguments[1] if len(arguments) > 1 else keywords.get("attribute", ())
+                targets = (choices(parent.name + "." + attr for parent in target if isinstance(parent, ast.alias)
+                                   for attr in attribute if isinstance(attr, str)) if object_patch
+                           else target)
                 offset = 2 if object_patch else 1
-                replacement = arguments[offset] if len(arguments) > offset else call_keywords(node.keywords, scope).get("new", ())
+                replacement = arguments[offset] if len(arguments) > offset else keywords.get("new", ())
+                inject = not replacement or any(isinstance(item, ast.alias) and item.name == "unittest.mock.DEFAULT" for item in replacement)
+                if inject:
+                    mock = Instance(ast.alias(name="unittest.mock.MagicMock"))
+                    mock.attributes.update({"_mock_wraps" if name == "wraps" else name: assigned
+                                            for name, assigned in keywords.items() if name in {"side_effect", "return_value", "wraps"}})
+                    replacement = (mock,)
+                    if "new_callable" in keywords or any(item is unknown or isinstance(item, ast.alias) and item.name not in launches | pure_data_calls
+                                                         for name in ("side_effect", "wraps") for item in keywords.get(name, ())):
+                        replacement = (*replacement, unknown)
                 # An unresolved replacement can still retain the original sink.
                 if replacement:
-                    return choices(PatchContext(target, replacement) for target in targets if target in launches)
+                    result = choices(PatchContext(target, replacement, inject) for target in targets if target in launches)
+                    expression_values[id(scope), id(node)] = result
+                    return result
             if "compile" in names and node.args:
                 return choices(CompiledCode(source) for source in value(node.args[0], scope) if isinstance(source, str)) or (unknown,)
             if names & {"contextlib.ExitStack", "contextlib.AsyncExitStack"}:
@@ -2901,8 +2970,13 @@ def python_ownership(content, *, partial=False):
                     expression_values[id(scope), id(node)] = result
                     return result
             descriptors = names & descriptor_names
-            if descriptors and node.args:
-                return tuple(Descriptor(function, name.rsplit(".", 1)[-1]) for name in descriptors for function in value(node.args[0], scope))
+            if descriptors:
+                arguments = expanded_arguments(node.args, scope)
+                keywords = call_keywords(node.keywords, scope)
+                callbacks = [arguments[index] if len(arguments) > index else keywords.get(parameter, (None,))
+                             for index, parameter in enumerate(("fget", "fset", "fdel"))]
+                return tuple(Descriptor(function, name.rsplit(".", 1)[-1], callbacks[1], callbacks[2])
+                             for name in descriptors for function in callbacks[0])
             if not node.args and names & {"list", "set", "frozenset", "dict", "tuple"}:
                 return (Keywords({}) if "dict" in names else () if "tuple" in names else Sequence(([],), unique=bool(names & {"set", "frozenset"})),)
             if "super" in names:
@@ -3083,7 +3157,7 @@ def python_ownership(content, *, partial=False):
                      child(item.scope.get(name, (unknown,))))
                     for name in item.free for owner in (item.scope.owner(name),))))
             elif isinstance(item, Descriptor):
-                key = ("descriptor", item.kind, child(item.function))
+                key = ("descriptor", item.kind, child(item.function), child(item.setter), child(item.deleter))
             elif isinstance(item, Bound):
                 key = ("bound", child(item.function), child(item.receiver))
             elif isinstance(item, Instance):
@@ -3092,6 +3166,10 @@ def python_ownership(content, *, partial=False):
                 key = ("registry", identity, child(item.handlers))
             elif isinstance(item, Partial):
                 key = ("partial", child(item.functions), child(item.arguments), tuple(sorted((name, child(assigned)) for name, assigned in item.keywords.items())))
+            elif isinstance(item, CompiledCode):
+                key = ("code", item.source)
+            elif isinstance(item, PatchContext):
+                key = ("patch", item.target, child(item.replacement), item.inject)
             elif isinstance(item, Sequence):
                 key = ("mutable-sequence", child(sequence_rows(item)))
             elif isinstance(item, Keywords):
@@ -3166,8 +3244,10 @@ def python_ownership(content, *, partial=False):
                          for node in ast.walk(item.node))
             result |= any(effectful(assigned, descendants, memo) for name in item.free for assigned in item.scope.get(name, ()))
         elif isinstance(item, Descriptor):
-            result = effectful(item.function, descendants, memo)
+            result = any(effectful(callback, descendants, memo) for callback in (item.function, *item.setter, *item.deleter))
         elif isinstance(item, Bound):
+            if isinstance(item.function, ast.alias) and item.function.name.startswith(("methodcaller.", "patch.")):
+                return True
             result = effectful(item.function, descendants, memo)
             if not isinstance(item.function, Function):
                 return result
@@ -3178,7 +3258,7 @@ def python_ownership(content, *, partial=False):
                           if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
                           and isinstance(node.func.value, ast.Name) and node.func.value.id == receiver_name
                           for method in member(item.receiver, node.func.attr))
-        elif isinstance(item, (Instance, Registry, Deferred)):
+        elif isinstance(item, (Instance, Registry, Deferred, PatchContext)):
             result = True
         elif isinstance(item, ast.ClassDef):
             result = any(effectful(assigned, descendants, memo) for assigned in class_bindings.get(identity, {}).get("__init__", ()))
@@ -3202,9 +3282,11 @@ def python_ownership(content, *, partial=False):
         if isinstance(item, Function):
             children = [*item.defaults.values(), *(item.scope.get(name, ()) for name in item.free)]
         elif isinstance(item, Descriptor):
-            children = [item.function]
+            children = [item.function, *item.setter, *item.deleter]
         elif isinstance(item, Bound):
             children = [item.function, item.receiver]
+        elif isinstance(item, PatchContext):
+            children = [item.replacement]
         elif isinstance(item, Instance):
             children = [item.kind, *item.attributes.values()]
         elif isinstance(item, ast.ClassDef):
@@ -3230,7 +3312,7 @@ def python_ownership(content, *, partial=False):
         if isinstance(item, Function):
             return not effectful(item) and all(reusable_result(assigned, descendants) for assigned in [*item.defaults.values(), *(item.scope.get(name, ()) for name in item.free)])
         if isinstance(item, Descriptor):
-            return reusable_result(item.function, descendants)
+            return all(reusable_result(callback, descendants) for callback in (item.function, *item.setter, *item.deleter))
         if isinstance(item, Bound):
             return reusable_result(item.function, descendants) and reusable_result(item.receiver, descendants)
         if isinstance(item, Partial):
@@ -3262,17 +3344,78 @@ def python_ownership(content, *, partial=False):
         nonlocal found, recursion_skips, expression_values
         argument_values = list(arguments) if evaluated else expanded_arguments(arguments, caller)
         keyword_values = dict(keywords) if evaluated else call_keywords(keywords, caller)
+        if isinstance(wrapper, Bound) and isinstance(wrapper.function, PatchContext):
+            def patched_call(callback, patches):
+                if isinstance(callback, Bound) and isinstance(callback.function, PatchContext):
+                    return choices(item for function in callback.receiver for item in patched_call(function, [callback.function, *patches]))
+                supplied, exits = list(argument_values), []
+                try:
+                    for patch in patches:
+                        entered, callbacks = enter_context((patch,), caller)
+                        exits.extend(callbacks)
+                        if patch.inject:
+                            supplied.append(entered)
+                    return invoke(callback, caller, supplied, keyword_values, evaluated=True,
+                                  consumed=consumed, yielded=yielded, unknown_effect=unknown_effect, created_active=created_active)
+                finally:
+                    for context in reversed(exits):
+                        close_context(context, caller)
+            return patched_call(wrapper, [])
+        if isinstance(wrapper, Bound) and isinstance(wrapper.function, ast.alias):
+            if wrapper.function.name.startswith("patch.") and isinstance(wrapper.receiver, PatchContext):
+                if wrapper.function.name == "patch.start":
+                    return enter_context((wrapper.receiver,), caller)[0]
+                if wrapper.receiver.previous:
+                    close_context(wrapper.receiver, caller)
+                return (None,)
+            if wrapper.function.name.startswith("methodcaller.") and isinstance(wrapper.receiver, (Sequence, Keywords)):
+                return mutate_values([wrapper.receiver], wrapper.function.name.removeprefix("methodcaller."), argument_values, keyword_values, caller)
         if isinstance(wrapper, Bound) and not isinstance(wrapper.function, Function):
             return invoke(wrapper.function, caller, [(wrapper.receiver,), *argument_values], keyword_values, evaluated=True,
                           consumed=consumed, yielded=yielded, unknown_effect=unknown_effect, created_active=created_active)
         if isinstance(wrapper, Descriptor) and wrapper.kind == "staticmethod":
             return invoke(wrapper.function, caller, argument_values, keyword_values, evaluated=True,
                           consumed=consumed, yielded=yielded, unknown_effect=unknown_effect, created_active=created_active)
+        if isinstance(wrapper, Descriptor) and wrapper.kind in {"getter", "setter", "deleter"}:
+            original = wrapper.function
+            callbacks = argument_values[0] if argument_values else keyword_values.get("f" + wrapper.kind[:3], (None,))
+            if wrapper.kind == "getter":
+                return tuple(Descriptor(callback, "property", original.setter, original.deleter) for callback in callbacks)
+            return (Descriptor(original.function, "property", callbacks if wrapper.kind == "setter" else original.setter,
+                               callbacks if wrapper.kind == "deleter" else original.deleter),)
         if isinstance(wrapper, Partial):
             return choices(item for function in wrapper.functions for item in invoke(function, caller, [*wrapper.arguments, *argument_values], dict(wrapper.keywords, **keyword_values), evaluated=True, consumed=consumed, yielded=yielded, created_active=created_active))
         if isinstance(wrapper, ast.ClassDef):
             return (construct(wrapper, caller, argument_values, keyword_values),)
         if isinstance(wrapper, Instance):
+            if isinstance(wrapper.kind, ast.alias) and wrapper.kind.name == "unittest.mock.MagicMock":
+                def unresolved_callback(callback):
+                    if (isinstance(callback, Bound) and isinstance(callback.function, ast.alias)
+                            and callback.function.name.startswith("methodcaller.") and isinstance(callback.receiver, (Sequence, Keywords))):
+                        return False
+                    return (callback is unknown or isinstance(callback, ast.alias) and callback.name not in launches | pure_data_calls
+                            or isinstance(callback, Bound) and unresolved_callback(callback.function))
+                def call_mock_callback(callback):
+                    nonlocal found
+                    # Mock behavior may be assigned after the patch is entered.
+                    # Such an opaque callback can still invoke the replaced sink.
+                    if unresolved_callback(callback):
+                        found |= any(executable_value(command) for assigned in [*argument_values, *keyword_values.values()] for command in assigned)
+                    return invoke(callback, caller, argument_values, keyword_values, evaluated=True, unknown_effect=unknown_effect)
+                side_effects = wrapper.attributes.get("side_effect", ())
+                results, fallback = [], not side_effects or any(item is None for item in side_effects)
+                for callback in side_effects:
+                    if callback is None:
+                        continue
+                    returned = (iterate_values((callback,), caller) if isinstance(callback, (Sequence, Generator, list, tuple)) else call_mock_callback(callback))
+                    results.extend(item for item in returned if not (isinstance(item, ast.alias) and item.name == "unittest.mock.DEFAULT"))
+                    fallback |= any(isinstance(item, ast.alias) and item.name == "unittest.mock.DEFAULT" for item in returned)
+                if fallback:
+                    returns = wrapper.attributes.get("return_value", ())
+                    results.extend(item for item in returns if not (isinstance(item, ast.alias) and item.name == "unittest.mock.DEFAULT"))
+                    if not returns or any(isinstance(item, ast.alias) and item.name == "unittest.mock.DEFAULT" for item in returns):
+                        results.extend(item for callback in wrapper.attributes.get("_mock_wraps", ()) for item in call_mock_callback(callback))
+                return choices(results) or (None,)
             return choices(item for callback in member(wrapper, "__call__")
                            for item in invoke(callback, caller, argument_values, keyword_values, evaluated=True,
                                               consumed=consumed, yielded=yielded, unknown_effect=unknown_effect, created_active=created_active))
@@ -3325,11 +3468,12 @@ def python_ownership(content, *, partial=False):
         if node.args.kwarg is not None:
             names = {parameter.arg for parameter in (*parameters, *node.args.kwonlyargs)}
             local[node.args.kwarg.arg] = (Keywords({name: assigned for name, assigned in keyword_values.items() if name not in names}),)
-        cache_key = (binding_key(wrapper), tuple(sorted((name, binding_key(assigned)) for name, assigned in local.state.items())))
+        cache_key = (binding_key(wrapper), tuple(sorted((name, binding_key(assigned)) for name, assigned in local.state.items())),
+                     tuple(sorted((name, binding_key(assigned)) for name, assigned in patched_attributes.items())))
         # A pure method depends on its receiver attributes just like lexical
         # inputs. Mutating bodies still execute on every actual invocation.
         invoked = Bound(wrapper, receiver) if receiver is not None else wrapper
-        cacheable = not patched_attributes and not captures_generator([invoked, *local.state.values()]) and not effectful(invoked) and not any(
+        cacheable = not captures_generator([invoked, *local.state.values()]) and not effectful(invoked) and not any(
             effectful(assigned) for assigned in local.state.values()
             if not (receiver is not None and len(assigned) == 1 and assigned[0] is receiver))
         if cacheable and cache_key in invocation_cache:
@@ -3484,7 +3628,7 @@ def python_ownership(content, *, partial=False):
                         for update in updates:
                             items = owner.items if len(updates) == 1 else dict(owner.items)
                             if isinstance(update, Keywords):
-                                items.update(update.items)
+                                update_mapping(items, update.items)
                             else:
                                 for entry in update:
                                     pairs = iterable_rows((entry,), scope)
@@ -3493,7 +3637,7 @@ def python_ownership(content, *, partial=False):
                                         alternative = items if len(pairs) == 1 else dict(items)
                                         if len(pair) == 2:
                                             key = pair[0] if isinstance(pair[0], (str, int)) else unknown
-                                            alternative[key] = (pair[1],)
+                                            put_mapping(alternative, key, (pair[1],))
                                         else:
                                             alternative[unknown] = choices((*alternative.get(unknown, ()), unknown))
                                         possible.append(alternative)
@@ -3566,9 +3710,11 @@ def python_ownership(content, *, partial=False):
 
     def scan(node, scope):
         nonlocal found
-        if isinstance(node, ast.Attribute):
+        if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load):
             # Attribute reads execute instance property getters even in data calls.
             value(node, scope)
+        if isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Attribute):
+            value(node.target, scope)
         if isinstance(node, ast.Lambda):
             return
         if isinstance(node, ast.GeneratorExp):
@@ -3606,12 +3752,11 @@ def python_ownership(content, *, partial=False):
                         if isinstance(command, CompiledCode) and function in {"exec", "eval"}:
                             command = command.source
                         if function in {"exec", "eval"} and isinstance(command, str) and overflow not in command:
-                            try:
-                                embedded = ast.parse(command, mode="eval" if function == "eval" else "exec")
-                            except (SyntaxError, ValueError):
+                            embedded = parsed_source(command, "eval" if function == "eval" else "exec")
+                            if embedded is None:
                                 found |= executable_value(command)
                                 continue
-                            if executing_sources.count(command) >= 2:
+                            if executing_sources.count(command) >= 2 or len(executing_sources) >= 64:
                                 found |= executable_value(command)
                                 continue
                             executing_sources.append(command)
@@ -3710,6 +3855,14 @@ def python_ownership(content, *, partial=False):
         elif isinstance(target, ast.Attribute):
             for owner in value(target.value, scope):
                 if isinstance(owner, Instance):
+                    members = class_member(owner.kind, target.attr)
+                    properties = [item for item in members if isinstance(item, Descriptor) and item.kind == "property"]
+                    if properties:
+                        for descriptor in properties:
+                            for setter in descriptor.setter:
+                                invoke(Bound(setter, owner), scope, [assigned], evaluated=True)
+                        if len(properties) == len(members):
+                            continue
                     attribute_mutations += 1
                     observe(owner.attributes)
                     owner.attributes[target.attr] = assigned
@@ -3772,7 +3925,7 @@ def python_ownership(content, *, partial=False):
                 target.clear()
                 target.update(previous_state)
 
-    descriptor_names = {"classmethod", "staticmethod", "property", "builtins.classmethod", "builtins.staticmethod", "builtins.property"}
+    descriptor_names = {"classmethod", "staticmethod", "property", "builtins.classmethod", "builtins.staticmethod", "builtins.property", "functools.cached_property"}
 
     def apply_decorators(decorated, expressions, decorators, scope):
         for expression, assigned in reversed(list(zip(expressions, decorators))):
@@ -3794,8 +3947,10 @@ def python_ownership(content, *, partial=False):
                 decorated = (registry,)
             elif "atexit.register" in names:
                 exit_callbacks.append(Partial(decorated, [], {}))
+            elif any(isinstance(wrapper, PatchContext) for wrapper in assigned):
+                decorated = choices(Bound(wrapper, decorated) for wrapper in assigned if isinstance(wrapper, PatchContext))
             else:
-                replacements = choices(item for wrapper in assigned if isinstance(wrapper, (Function, Bound, Partial, Instance, ast.ClassDef))
+                replacements = choices(item for wrapper in assigned if isinstance(wrapper, (Function, Bound, Partial, Descriptor, Instance, ast.ClassDef))
                                        for item in invoke(wrapper, scope, [decorated], evaluated=True))
                 # An unmodeled wrapper can still call its input later. Preserve
                 # that possibility without eagerly invoking the original body.
@@ -3831,7 +3986,24 @@ def python_ownership(content, *, partial=False):
                             else:
                                 combined.extend(add((owner,), assigned))
                         assigned = choices(combined)
+                    if isinstance(statement, ast.AugAssign) and isinstance(statement.op, ast.Add) and isinstance(target, ast.Attribute):
+                        assigned = add(value(target, scope), assigned)
                     bind(target, assigned, scope)
+            elif isinstance(statement, ast.Delete):
+                for target in statement.targets:
+                    if isinstance(target, ast.Attribute):
+                        for owner in value(target.value, scope):
+                            if isinstance(owner, Instance):
+                                members = class_member(owner.kind, target.attr)
+                                properties = [item for item in members if isinstance(item, Descriptor) and item.kind == "property"]
+                                if properties:
+                                    for descriptor in properties:
+                                        for deleter in descriptor.deleter:
+                                            invoke(Bound(deleter, owner), scope, evaluated=True)
+                                if len(properties) != len(members) or not properties:
+                                    attribute_mutations += 1
+                                    observe(owner.attributes)
+                                    owner.attributes.pop(target.attr, None)
             elif isinstance(statement, ast.Import):
                 for imported in statement.names:
                     scope[imported.asname or imported.name.split(".")[0]] = (ast.alias(name=imported.name if imported.asname else imported.name.split(".")[0]),)
