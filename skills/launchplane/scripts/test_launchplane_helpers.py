@@ -10475,3 +10475,34 @@ def test_runtime_sync_failure_diagnostics_follow_the_current_exchange(phase, fai
     else:
         assert "read_back_http_status" not in output["summary"]
     assert "PRIVATE_SENTINEL" not in json.dumps(output)
+
+
+@pytest.mark.parametrize("operation", [
+    "odoo-addon-settings-apply", "integration-allowances-apply", "testing-hold-apply",
+    "product-repository-identity-apply", "generic-web-deploy-recovery-apply",
+    "repository-inventory-apply", "product-expected-config-apply",
+])
+@pytest.mark.parametrize("body", [b"null", b"PRIVATE_SENTINEL"])
+def test_simple_apply_unreadable_receipts_keep_projection_recovery(operation, body):
+    response = Mock(status=202)
+    response.read.return_value = body
+    with pytest.raises(write_action.ServiceResponseError) as failure:
+        write_action._read_service_response(response)
+    receipts = []
+    for source in (write_action._ServiceResponse({"status": "accepted", "trace_id": "launchplane_req_projection"}, response.status), failure.value):
+        output = io.StringIO()
+        with patch.object(write_action, "prepare_operator_settings", return_value=SETTINGS), patch.object(
+            write_action, "request_launchplane", side_effect=source if isinstance(source, Exception) else None,
+            return_value=source,
+        ) as post, redirect_stdout(output):
+            code = write_action.execute_post(args=argparse.Namespace(timeout=3, idempotency_key="same-apply"),
+                operation=operation, path="/fixture", request={"mode": "apply"}, body={})
+        receipt = json.loads(output.getvalue())
+        assert code == (1 if isinstance(source, Exception) else 0)
+        assert receipt["status"] == "accepted_unverified"
+        assert receipt["summary"]["http_status"] == response.status
+        post.assert_called_once()
+        assert "PRIVATE_SENTINEL" not in output.getvalue()
+        receipts.append(receipt)
+    assert receipts[1]["summary"]["recommendation"] == receipts[0]["summary"]["recommendation"]
+    assert receipts[1]["warnings"] == receipts[0]["warnings"]

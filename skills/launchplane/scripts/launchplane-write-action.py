@@ -6973,6 +6973,54 @@ SIMPLE_APPLY_OPERATIONS = frozenset({
 })
 
 
+def _simple_apply_response_unverified(
+    *, operation: str, request: dict[str, object], source: object,
+) -> dict[str, object]:
+    payload = base_payload(
+        status="accepted_unverified", operation=operation, request=request
+    )
+    recovery_apply = operation == "generic-web-deploy-recovery-apply"
+    inventory_apply = operation == "repository-inventory-apply"
+    payload["summary"] = {
+        **service_response_diagnostics(source),
+        "recommendation": (
+            "Launchplane accepted the recovery apply, but the response could not be "
+            "verified locally. Inspect the original deploy reservation and normal deploy "
+            "evidence before retrying."
+            if recovery_apply
+            else (
+                "Launchplane accepted the inventory apply, but the response could not be "
+                "verified locally. Read back the current inventory record before retrying."
+                if inventory_apply
+                else (
+                    "Launchplane accepted the apply request, but the response could not be "
+                    "verified locally. Read back the affected record before retrying."
+                )
+            )
+        ),
+    }
+    payload["warnings"] = [
+        warning(
+            "apply_response_unverified",
+            (
+                "The recovery apply response was not safe to project; do not retry before "
+                "reservation verification."
+                if recovery_apply
+                else (
+                    "The inventory apply response was not safe to project; do not retry "
+                    "before read-back."
+                    if inventory_apply
+                    else (
+                        "The apply response was not safe to project; do not retry before "
+                        "read-back."
+                    )
+                )
+            ),
+        )
+    ]
+    return payload
+
+
 def execute_post(
     *,
     args: argparse.Namespace,
@@ -7045,48 +7093,7 @@ def execute_post(
                 return 1
             if operation not in SIMPLE_APPLY_OPERATIONS:
                 raise
-            payload = base_payload(
-                status="accepted_unverified", operation=operation, request=request
-            )
-            recovery_apply = operation == "generic-web-deploy-recovery-apply"
-            inventory_apply = operation == "repository-inventory-apply"
-            payload["summary"] = {
-                **service_response_diagnostics(provider_payload),
-                "recommendation": (
-                    "Launchplane accepted the recovery apply, but the response could not be "
-                    "verified locally. Inspect the original deploy reservation and normal deploy "
-                    "evidence before retrying."
-                    if recovery_apply
-                    else (
-                        "Launchplane accepted the inventory apply, but the response could not be "
-                        "verified locally. Read back the current inventory record before retrying."
-                        if inventory_apply
-                        else (
-                            "Launchplane accepted the apply request, but the response could not be "
-                            "verified locally. Read back the affected record before retrying."
-                        )
-                    )
-                ),
-            }
-            payload["warnings"] = [
-                warning(
-                    "apply_response_unverified",
-                    (
-                        "The recovery apply response was not safe to project; do not retry before "
-                        "reservation verification."
-                        if recovery_apply
-                        else (
-                            "The inventory apply response was not safe to project; do not retry "
-                            "before read-back."
-                            if inventory_apply
-                            else (
-                                "The apply response was not safe to project; do not retry before "
-                                "read-back."
-                            )
-                        )
-                    ),
-                )
-            ]
+            payload = _simple_apply_response_unverified(operation=operation, request=request, source=provider_payload)
             emit(payload)
         return 0
     except urllib.error.HTTPError as exc:
@@ -7159,8 +7166,7 @@ def execute_post(
             emit(payload)
             return 1
         if operation in SIMPLE_APPLY_OPERATIONS and isinstance(exc, ServiceResponseError):
-            payload = _apply_response_unverified(operation=operation, request=request, label="affected record and operation state")
-            _require_dict(payload["summary"]).update(service_response_diagnostics(exc))
+            payload = _simple_apply_response_unverified(operation=operation, request=request, source=exc)
             emit(payload)
             return 1
         emit_safety_error_payload(operation=operation, request=request,
