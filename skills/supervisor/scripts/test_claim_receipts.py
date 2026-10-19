@@ -3444,6 +3444,24 @@ os.system(get())
                 'await Function(' + json.dumps('return this["to"+"ols"]["apply_"+"patch"](' + json.dumps(patch) + ')') + ')();',
                 'await globalThis.eval(' + json.dumps('"use strict";this["to"+"ols"]["apply_"+"patch"](' + json.dumps(patch) + ')') + ');',
             )
+            split_header, split_body = patch.split('\n', 2)[:2], patch.split('\n', 2)[2]
+            header = '\n'.join(split_header) + '\n'
+            split_cells = (
+                'const h=' + json.dumps(header) + ';const b=' + json.dumps(split_body)
+                + ';await tools.apply_patch([h,b].join(""));',
+                'const path="/repo/run.py";const lines=' + json.dumps(program.splitlines())
+                + ';await tools.apply_patch("*** Begin Patch\\n*** Add File: "+path+"\\n"'
+                + '+lines.map(l=>"+"+l).join("\\n")+"\\n*** End Patch");',
+            )
+            for source in split_cells:
+                cells += (source, 'await eval(' + json.dumps('(async()=>{' + source + '})()') + ');',
+                          'await Function(' + json.dumps('return (async()=>{' + source + '})()') + ')();')
+                # A write alone is not execution, even when its contents own.
+                rows = history('codex', {})
+                rows[1]['payload'].update(name='functions.exec', arguments=source)
+                rows[2] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-0')
+                with self.subTest(split_without_execution=source):
+                    self.assertFalse(receipts.ownership_state(rows, 'codex')['pending'])
             for cell in cells:
                 for command, executes in (('python3 /repo/run.py', True), ('cat /repo/run.py', False)):
                     rows = history('codex', {}, {})
@@ -3579,23 +3597,30 @@ os.system(get())
         # Extra tiny call operands must not each re-project the large data RHS.
         self.assertLess(totals[1] - totals[0], len(data))
 
+        decoded = []
+        for count in (16, 64):
+            source = data + 'const h="*** Begin Patch\\n*** Add File: /repo/run.py\\n";tools.apply_patch(h);'
+            source += ''.join('consume(data.k' + str(index) + ');' for index in range(count))
+            with patch.object(receipts, 'javascript_string', wraps=receipts.javascript_string) as strings:
+                list(receipts.javascript_possible_patches(source))
+            decoded.append(strings.call_count)
+        # A reached header must not make distinct read operands repeatedly
+        # decode the same large aggregate. Count the actual atom work.
+        self.assertLess(decoded[1] - decoded[0], len(data))
+
         writer_counts = []
         original_content = receipts.executable_content
-        original_unparsed = receipts._unparsed_command_text
         for count in (16, 64):
             source = 'let c="safe";' + ''.join('eval(' + json.dumps('const k="safe' + str(index)
                 + '";tools.exec_command({cmd:c});') + ');' for index in range(count))
-            traversed = []
-            def command_text(*args, **kwargs):
-                traversed.append(len(kwargs.get('possible_writers', ())))
-                return original_unparsed(*args, **kwargs)
             with patch.object(receipts, 'executable_content', wraps=original_content) as classify:
-                with patch.object(receipts, '_unparsed_command_text', side_effect=command_text):
-                    list(receipts.javascript_generated_sources(source))
-            writer_counts.append(classify.call_count + sum(traversed))
-        # Include passed writer operands so memoized parses cannot hide repeated
-        # all-source traversals. Each new literal contributes bounded work.
-        self.assertLessEqual(writer_counts[1] - writer_counts[0], 3 * (64 - 16))
+                generated = list(receipts.javascript_generated_sources(source))
+            writer_counts.append((classify.call_count, sum(map(len, generated))))
+            self.assertEqual(len(generated), len(set(generated)))
+        # Bound actual parser work and emitted discovery bytes. A cache alone
+        # cannot hide a repeated all-source traversal or duplicate carriers.
+        self.assertLessEqual(writer_counts[1][0] - writer_counts[0][0], 3 * (64 - 16))
+        self.assertLessEqual(writer_counts[1][1], 6 * writer_counts[0][1])
         totals = []
         for count in (16, 64):
             source = data + ''.join('globalThis.a' + str(index) + '=data;' for index in range(count))
@@ -3746,6 +3771,13 @@ os.system(get())
                 ('const cmd="echo safe";function run(){eval(' + json.dumps('var cmd=' + assigned)
                     + ');return tools.exec_command({cmd});}await run();', False),
             ))
+            cells.append(('let c="echo safe";(eval)(' + json.dumps('c=' + assigned)
+                          + ');await tools.exec_command({cmd:c});', owning))
+            for setter in ('function set(v){globalThis.C=v}set(CMD);',
+                           'for(const w of [CMD])globalThis.C=w;',
+                           '[CMD].forEach(w=>{globalThis.C=w});'):
+                cells.append((setter.replace('CMD', assigned)
+                    + 'await Function("return tools.exec_command({cmd:C})")();', owning))
             for invoke in ('const e=eval;await e(SOURCE);', 'await globalThis.eval(SOURCE);',
                            'await (0,eval)(SOURCE);'):
                 indirect_sloppy = sloppy.replace('return run();', 'run();')
@@ -3856,6 +3888,8 @@ os.system(get())
             'const metadata=eval;const fixture=' + json.dumps(fake) + ';text(fixture);',
             'const metadata=Function;const fixture=' + json.dumps(fake) + ';text(fixture);',
             'const metadata=[eval];const fixture=' + json.dumps(fake) + ';text(fixture);',
+            'const o={e:eval,read:text};const fixture=' + json.dumps(fake) + ';o.read(fixture);',
+
         )
         for cell in cells:
             rows = history('codex', {})
@@ -3864,6 +3898,15 @@ os.system(get())
             with self.subTest(cell=cell):
                 self.assertFalse(receipts.ownership_state(rows, 'codex')['pending'])
                 self.assertEqual(list(receipts.shell_texts('functions.exec', cell)), [])
+        for handle in ('eval', 'Function', '[eval]', '{e:eval}'):
+            cell = ('const metadata=' + handle + ';const fixture=' + json.dumps(fake)
+                    + ';await tools.exec_command({cmd:"cat notes.txt"});text(fixture);')
+            rows = history('codex', {})
+            rows[1]['payload'].update(name='functions.exec', arguments=cell)
+            rows[2] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-0')
+            with self.subTest(unused_handle=cell):
+                self.assertFalse(receipts.ownership_state(rows, 'codex')['pending'])
+                self.assertEqual(list(receipts.shell_texts('functions.exec', cell)), ['cat notes.txt'])
         for command, owning in ((writer, True), (writer + ' &', True),
                                 ('echo safe', False), ('echo ' + shlex.quote(writer), False)):
             source = '(async()=>{text(await tools.exec_command({cmd:' + json.dumps(command) + '}));})()'
@@ -3885,6 +3928,13 @@ os.system(get())
             call = 'text(await tools.exec_command({cmd:' + json.dumps(command) + '}));'
             source = '(async()=>{' + call + '})()'
             for cell in (
+                'await(0,eval)(' + json.dumps(source) + ');',
+                'const run=(f,s)=>f(s);await run(eval,' + json.dumps(source) + ');',
+                'const run=(f,...args)=>f(...args);await run(Function,"c",'
+                + json.dumps('return tools.exec_command({cmd:c})') + ')(' + json.dumps(command) + ');',
+                'let e;e=eval;await e(' + json.dumps(source) + ');',
+                'const o={e:eval};await o.e(' + json.dumps(source) + ');',
+                'await Reflect.construct(Function,[' + json.dumps('return ' + source) + '])();',
                 'await (0,eval)(' + json.dumps(source) + ');',
                 'await eval?.(' + json.dumps(source) + ');',
                 'await globalThis["eval"](' + json.dumps(source) + ');',

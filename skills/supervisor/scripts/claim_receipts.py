@@ -343,24 +343,43 @@ def javascript_projection(native):
 def javascript_source_calls(native, code):
     """Select source operands from invoked callee values, not saved handles."""
     names = {"eval": "eval", "Function": "constructor", "AsyncFunction": "constructor"}
+    handles = {}
     def source_kind(expression, raw=None):
+        selected = re.sub(r"\s+", "", expression)
+        if selected in handles:
+            return handles[selected]
         kind = next((names[word] for word in re.findall(r"[A-Za-z_$][\w$]*", expression) if word in names), None)
         if kind is None:
             member = re.fullmatch(r"(?:globalThis|global|window|self)\s*\[([\s\S]*)\]", (raw if raw is not None else expression).strip())
             if member:
                 kind = names.get(javascript_literal(member[1], member[1], {}, {}))
         return kind
-    declarations = list(re.finditer(r"\b(?:const|let|var)\s+(\w+)\s*=\s*([^;\n]+)", code))
-    for _ in declarations:
-        added = {match[1]: source_kind(match[2], native[slice(*match.span(2))]) or "constructor"
-                 for match in declarations
-                 if match[2].strip() in names
-                 or re.fullmatch(r"(?:globalThis|global|window|self)\s*(?:\.\s*\w+|\[[^]\n]*\])\s*", native[slice(*match.span(2))])
-                    and source_kind(match[2], native[slice(*match.span(2))])
-                 or re.search(r"\.\s*constructor\s*$", match[2])}
-        if all(names.get(name) == kind for name, kind in added.items()):
+    assignments = list(re.finditer(r"(?<![\w.$])([A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*)\s*=(?!=|>)\s*([^;\n]+)", code))
+    for _ in assignments:
+        added = {}
+        for match in assignments:
+            target = re.sub(r"\s+", "", match[1])
+            raw = native[slice(*match.span(2))]
+            expression = match[2].strip()
+            # An aggregate retains its member identity; calling an unrelated
+            # member is not evidence that the saved source handle was used.
+            if expression.startswith("{"):
+                for member in re.finditer(r"([A-Za-z_$][\w$]*)\s*:\s*([^,}]+)", expression):
+                    kind = source_kind(member[2])
+                    if kind:
+                        added[target + "." + member[1]] = kind
+            elif (re.fullmatch(r"[\w.$\s]+", expression)
+                  or re.fullmatch(r"(?:globalThis|global|window|self)\s*\[[^]\n]*\]\s*", raw)
+                  or re.search(r"\.\s*constructor\s*$", expression)):
+                kind = source_kind(expression, raw)
+                if kind is None and re.search(r"\.\s*constructor\s*$", expression):
+                    kind = "constructor"
+                if kind:
+                    added[target] = kind
+        if all(handles.get(name) == kind for name, kind in added.items()):
             break
-        names.update(added)
+        handles.update(added)
+        names.update((name, kind) for name, kind in added.items() if "." not in name)
     pairs, stack = {}, []
     for position, char in enumerate(code):
         if char in "([{":
@@ -386,6 +405,9 @@ def javascript_source_calls(native, code):
                 while begin and (code[begin - 1].isalnum() or code[begin - 1] in "_$"):
                     begin -= 1
                 if begin == finish:
+                    break
+                if code[begin:finish] in {"await", "return", "typeof", "void", "new", "delete", "yield", "throw", "case", "in", "of"}:
+                    begin = finish
                     break
             before = begin
             while before and code[before - 1].isspace():
@@ -415,16 +437,23 @@ def javascript_source_calls(native, code):
         kind = source_kind(expression, native[start:finish])
         if kind is None and re.search(r"\.\s*constructor\s*$", expression):
             kind = "constructor"
-        reflective = re.fullmatch(r"Reflect\s*\.\s*apply", expression)
+        reflective = re.fullmatch(r"Reflect\s*\.\s*(apply|construct)", expression)
+        parts = node_expression_parts(code, opening + 1, end)
+        passed_handles = [part for part in parts if source_kind(code[slice(*part)], native[slice(*part)])]
         if kind is None and not reflective and expression != "import":
-            continue
+            if not passed_handles or expression == "text":
+                continue
+            # A source handle actually passed to a wrapper may consume that
+            # same invocation's other inputs. Saved metadata elsewhere cannot.
+            handle = passed_handles[0]
+            kind = source_kind(code[slice(*handle)], native[slice(*handle)])
+            parts = [part for part in parts if part not in passed_handles]
         # A source constructor's returned function is handled with that
         # constructor's actuals, not mistaken for another source constructor.
         if finish and code[finish - 1] == ")" and finish - 1 in pairs:
             prefix = code[start:pairs[finish - 1]].strip()
             if prefix and not re.search(r"\.\s*bind$", prefix):
                 continue
-        parts = node_expression_parts(code, opening + 1, end)
         if reflective and parts:
             kind = source_kind(code[slice(*parts[0])], native[slice(*parts[0])])
         if kind is None and expression == "import":
@@ -441,7 +470,7 @@ def javascript_source_calls(native, code):
         direct = (kind == "eval" and "?." not in code[finish:opening]
                   and re.fullmatch(r"[ (]*eval[ )]*", expression) is not None)
         if reflective or re.search(r"\.\s*apply$", expression):
-            index = 2 if reflective else 1
+            index = (1 if reflective[1] == "construct" else 2) if reflective else 1
             parts = parts[index:index + 1]
             if parts:
                 begin, finish = parts[0]
@@ -539,7 +568,7 @@ def javascript_bindings(code, *, sloppy=False):
             bind(opening + 1, finish)
     # A direct eval can assign an enclosing mutable binding. Its masked source
     # is never proof that a let/var initializer remains the command value.
-    if re.search(r"(?<![\w.$])eval\s*\(", code):
+    if any(direct for _, _, _, direct, _ in javascript_source_calls(code, code)):
         for name in sites if sloppy else mutable:
             sites[name].add(len(code))
     # Method parameters share the same lexical rule as named functions.
@@ -730,34 +759,75 @@ def javascript_inputs(native, atoms, code, declarations, bindings=None):
         end = node_expression_parts(code, opening + 1, len(code), "")[0][1]
         sources.setdefault(("local", declaration[1]), []).append((opening + 1, end))
 
-    def reached(inputs):
+    nodes = {}
+    def node(begin, end):
+        if (begin, end) in nodes:
+            return nodes[begin, end]
+        values, children, unknown = [], [], []
+        value = literal(begin, end)
+        if value is not None:
+            values.append((begin, value))
+        for atom in atoms[bisect_left(starts, begin):bisect_left(starts, end)]:
+            try:
+                values.append((atom.start(), javascript_string(atom[0])))
+            except ValueError:
+                pass
+        for reference in references.finditer(code, begin, end):
+            selected = key(reference.start(1), reference.end(1))
+            children.extend(sources.get(selected, ()))
+            if (selected and selected[0] == "local" and selected not in sources
+                    and selected[1] not in bindings and selected[1] not in declarations
+                    and selected[1] not in {"globalThis", "global", "window", "self", "undefined", "null", "true", "false"}):
+                unknown.append(selected[1])
+            if selected and selected[0] == "local" and selected[1] in bindings:
+                values.append((reference.start(1), bindings[selected[1]]))
+            # A member can come from its receiver's aggregate initializer;
+            # its property name is never a bare local reference.
+            receiver = re.match(r"[A-Za-z_$][\w$]*", reference[1])
+            if receiver and reference[1].strip() != receiver[0]:
+                children.extend(sources.get(("local", receiver[0]), ()))
+        nodes[begin, end] = tuple(values), tuple(dict.fromkeys(children)), tuple(unknown)
+        return nodes[begin, end]
+
+    def reached(inputs, *, unresolved=None):
         pending, visited = list(inputs), set()
         while pending:
-            begin, end = pending.pop()
-            if (begin, end) in visited:
+            selected = pending.pop()
+            if selected in visited:
                 continue
-            visited.add((begin, end))
-            value = literal(begin, end)
-            if value is not None:
-                yield begin, value
-            for atom in atoms[bisect_left(starts, begin):bisect_left(starts, end)]:
-                try:
-                    yield atom.start(), javascript_string(atom[0])
-                except ValueError:
-                    pass
-            for reference in references.finditer(code, begin, end):
-                selected = key(reference.start(1), reference.end(1))
-                pending.extend(sources.get(selected, ()))
-                if selected and selected[0] == "local" and selected[1] in bindings:
-                    yield reference.start(1), bindings[selected[1]]
-                # A member can come from its receiver's aggregate initializer;
-                # its property name is never a bare local reference.
-                receiver = re.match(r"[A-Za-z_$][\w$]*", reference[1])
-                if receiver and reference[1].strip() != receiver[0]:
-                    pending.extend(sources.get(("local", receiver[0]), ()))
-        return
+            visited.add(selected)
+            values, children, unknown = node(*selected)
+            yield from values
+            pending.extend(children)
+            if unresolved is not None:
+                unresolved.extend(unknown)
 
-    return reached, globals_, literal
+    def patch_inputs(inputs):
+        # Identify header-reaching roots in one graph walk. Do not copy or
+        # enumerate a shared aggregate closure for each unrelated call input.
+        roots = list(inputs)
+        pending, visited, parents, headers = list(roots), set(), {}, set()
+        while pending:
+            selected = pending.pop()
+            if selected in visited:
+                continue
+            visited.add(selected)
+            values, children, _ = node(*selected)
+            if any(javascript_patch_input(text) for _, text in values):
+                headers.add(selected)
+            for child in children:
+                parents.setdefault(child, set()).add(selected)
+            pending.extend(children)
+        pending = list(headers)
+        while pending:
+            for parent in parents.get(pending.pop(), ()):
+                if parent not in headers:
+                    headers.add(parent)
+                    pending.append(parent)
+        return [root for root in roots if root in headers]
+
+    return reached, globals_, patch_inputs
+
 
 
 def javascript_patch_input(value):
@@ -776,11 +846,36 @@ def javascript_possible_patches(native, *, capabilities=False):
             seen.add(composed_string(raw, native))
         except (SyntaxError, ValueError):
             pass
-    reached, _, _ = javascript_inputs(native, atoms, code, declarations)
-    for begin, value in reached(javascript_call_inputs(code, regions)):
-        if javascript_patch_input(value) and value not in seen:
-            seen.add(value)
-            yield begin, value
+    reached, _, patch_inputs = javascript_inputs(native, atoms, code, declarations)
+    operands = patch_inputs(javascript_call_inputs(code, regions))
+    input_cache = {}
+    for operand in operands:
+        expression = native[slice(*operand)].strip()
+        if expression not in input_cache:
+            input_cache[expression] = tuple(dict.fromkeys(reached([operand])))
+        inputs = input_cache[expression]
+        for begin, value in inputs:
+            if javascript_patch_input(value) and value not in seen:
+                seen.add(value)
+                yield begin, value
+            if not javascript_patch_input(value) or list(native_file_effects("apply_patch", value)):
+                continue
+            # A consumed header may be split from both path and +lines. Keep
+            # only the same input's reached fragments as partial file writes.
+            for header in re.finditer(r"(?m)^\*\*\* (Add|Update) File: ([^\n]*)", value):
+                paths = [header[2].strip()] if header[2].strip() else [text for _, text in inputs
+                    if re.fullmatch(r"[/\w.\-]+", text) and text not in {"", ".", "/"}]
+                for path in paths:
+                    for _, fragment in inputs:
+                        if fragment == value or fragment == path:
+                            continue
+                        lines = [line if line.startswith("+") else "+" + line for line in fragment.splitlines()
+                                 if not line.startswith(("*** ", "@@"))]
+                        patch = "*** " + header[1] + " File: " + path + "\n" + "\n".join(lines)
+                        if lines and patch not in seen:
+                            seen.add(patch)
+                            yield begin, patch
+
 
 
 def javascript_generated_sources(value):
@@ -802,7 +897,8 @@ def javascript_generated_sources(value):
         local_capabilities = javascript_capabilities(current_code, current) or global_this and bool(re.search(r"\bthis\b", current_code))
         root_capabilities |= local_capabilities
         declarations, bound = javascript_bindings(current_code, sloppy=sloppy)
-        direct_eval = bool(re.search(r"(?<![\w.$])eval\s*\(", current_code))
+        source_calls = list(javascript_source_calls(current, current_code))
+        direct_eval = any(direct for _, _, _, direct, _ in source_calls)
         bindings = {name: text for name, text in inherited.items() if name not in bound and not direct_eval}
 
         def literal(expression, active=()):
@@ -812,9 +908,14 @@ def javascript_generated_sources(value):
             text = literal(name)
             if text is not None:
                 bindings[name] = text
-        reached_inputs, global_ranges, input_literal = javascript_inputs(current, current_atoms, current_code, declarations, bindings)
-        global_values = tuple(dict.fromkeys((*inherited_globals,
-            *(text for _, text in reached_inputs(global_ranges)))))
+        reached_inputs, global_ranges, _ = javascript_inputs(current, current_atoms, current_code, declarations, bindings)
+        unknown_globals = []
+        global_values = [text for _, text in reached_inputs(global_ranges, unresolved=unknown_globals)]
+        if unknown_globals:
+            # A reached global mutation can consume a loop/callback parameter.
+            # No global write means module literals remain local and inert.
+            global_values.extend(javascript_source_literals(current_atoms))
+        global_values = tuple(dict.fromkeys((*inherited_globals, *global_values)))
         global_context = global_values
         context = tuple(sorted(bindings.items()))
         key = current, context, global_context, fallback, sloppy, global_this
@@ -874,7 +975,7 @@ def javascript_generated_sources(value):
                              for begin, finish in javascript_call_inputs(current_code, regions, receivers=False))
         deferred.append((text if generated else current, current_code, bound, unknown_patch, unknown_inputs, fallback, sloppy, global_this))
         selected, visited, sources = [], set(), []
-        for start, end, name, direct, parts in javascript_source_calls(current, current_code):
+        for start, end, name, direct, parts in source_calls:
             constructor = name == "constructor"
             child_bindings = dict(bindings) if direct else {}
             child_fallback = list(dict.fromkeys((*fallback, *javascript_source_literals(current_atoms)))) if direct else list(global_values)
@@ -2759,7 +2860,7 @@ def executable_content_cached(value, cache):
     return cache[value]
 
 
-def _unparsed_command_text(value, *, generated_sources=True, capabilities=False, sloppy=False, possible_writers=(), writer_cache=None):
+def _unparsed_command_text(value, *, generated_sources=True, capabilities=False, sloppy=False, writer_cache=None):
     """Keep command expressions and referenced declarations, excluding JS prose.
 
     This is conservative command discovery, not evaluation or completion proof.
@@ -2786,11 +2887,10 @@ def _unparsed_command_text(value, *, generated_sources=True, capabilities=False,
     projected = [code, *(projection[1] for projection in projections)]
     capabilities |= javascript_capabilities(code, value) or any(javascript_capabilities(projection[1], text)
                         for text, projection in zip(generated, projections))
-    # possible_writers is already filtered by the caller. Each reached source
-    # contributes its literal writers once, before any nested command walk.
-    generated_writers = tuple(dict.fromkeys((*possible_writers,
-        *(text for projection in projections for text in javascript_source_literals(projection[0])
-          if executable_content_cached(text, writer_cache)))))
+    # Each reached source contributes literal writers once.
+    generated_writers = tuple(dict.fromkeys(text for projection in projections
+        for text in javascript_source_literals(projection[0])
+        if executable_content_cached(text, writer_cache)))
     output_only = javascript_output_only(code, bound, capabilities)
     pending = [] if output_only else [region(m.end(), r"[,};\n]") for m in re.finditer(r"\b(?:cmd|command)\s*:", code)]
     if not output_only:
