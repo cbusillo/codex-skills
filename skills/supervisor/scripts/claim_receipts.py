@@ -2440,9 +2440,13 @@ def python_ownership(content, *, partial=False):
         def __init__(self, callback):
             self.callback = callback
 
+    class RowConcat:
+        def __init__(self, left, right):
+            self.left, self.right = tuple(left), tuple(right)
+
     class Sequence:
         def __init__(self, rows, unique=False):
-            self.state = {"rows": choices(list(choices(row)) if unique else list(row) for row in rows)}
+            self.state = {"rows": choices(list(choices(row)) if unique else row if isinstance(row, RowConcat) else list(row) for row in rows)}
             self.unique = unique
 
     class Keywords:
@@ -2454,7 +2458,33 @@ def python_ownership(content, *, partial=False):
             return self.state
 
     def sequence_rows(item):
-        return tuple(row if isinstance(row, (list, tuple)) else [row] for row in item.state["rows"]) if isinstance(item, Sequence) else (item,)
+        def expand(rows):
+            for row in rows:
+                if isinstance(row, RowConcat):
+                    left, right = tuple(expand(row.left)), tuple(expand(row.right))
+                    if right and all(len(suffix) == 1 for suffix in right):
+                        yield from combinations((tuple(suffix[0] for suffix in right),), initial=left)
+                    else:
+                        yield from choices([*first, *second] for first in left for second in right)
+                else:
+                    yield row if isinstance(row, (list, tuple)) else [row]
+        return tuple(expand(item.state["rows"])) if isinstance(item, Sequence) else (item,)
+
+    def sequence_members(item):
+        seen = set()
+        def members(rows):
+            for row in rows:
+                if id(row) in seen:
+                    continue
+                seen.add(id(row))
+                if isinstance(row, RowConcat):
+                    yield from members(row.left)
+                    yield from members(row.right)
+                elif isinstance(row, (list, tuple)):
+                    yield from row
+                else:
+                    yield row
+        return members(item.state["rows"])
 
     class Generator:
         def __init__(self, node, scope, arguments=(), keywords=(), operands=None):
@@ -2462,6 +2492,13 @@ def python_ownership(content, *, partial=False):
             self.arguments, self.keywords, self.operands = arguments, keywords, operands
             self.positions = None
             self.created_active = tuple(active)
+            self.state = {"exhausted": (False,), "partial": (False,)}
+
+    def exhaust_generators(assigned):
+        for item in assigned:
+            if isinstance(item, Generator):
+                observe(item.state)
+                item.state["exhausted"] = (True,)
 
     def same(left, right):
         if isinstance(left, ast.alias) and isinstance(right, ast.alias):
@@ -2475,7 +2512,11 @@ def python_ownership(content, *, partial=False):
             argv = [word if isinstance(word, str) else computed for word in item]
             text = shlex.join(argv)
             return ownership_command(unwrapped_command(argv)) or opaque_ownership("exec_command", {"cmd": text}) or overflow_execution(text)
-        return isinstance(item, str) and (executable_content(item) or opaque_ownership("exec_command", {"cmd": item}) or overflow_execution(item))
+        return isinstance(item, str) and executable_text_value(item)
+
+    @lru_cache(maxsize=512)
+    def executable_text_value(text):
+        return executable_content(text) or opaque_ownership("exec_command", {"cmd": text}) or overflow_execution(text)
 
     def helper_witness(item):
         if isinstance(item, Sequence):
@@ -2548,7 +2589,7 @@ def python_ownership(content, *, partial=False):
                         unique.append(item)
                 elif not any(same(item, prior) for prior in unique):
                     unique.append(item)
-        if len(unique) <= 8 or any(isinstance(item, (ast.AST, Function, Descriptor, Bound, Instance, Partial, Registry, Deferred, Keywords, Sequence, Generator, CompiledCode, PatchContext)) for item in unique):
+        if len(unique) <= 8 or any(isinstance(item, (ast.AST, Function, Descriptor, Bound, Instance, Partial, Registry, Deferred, Keywords, Sequence, Generator, CompiledCode, PatchContext, RowConcat)) for item in unique):
             return tuple(unique)
         if source_values:
             groups, other = {}, []
@@ -2634,8 +2675,8 @@ def python_ownership(content, *, partial=False):
         factored_sources.add(rendered)
         return rendered
 
-    def combinations(parts):
-        rows = [()]
+    def combinations(parts, initial=None):
+        rows = [()] if initial is None else list(initial)
         for part in parts:
             compact = None
             combined = []
@@ -2662,6 +2703,8 @@ def python_ownership(content, *, partial=False):
     def function_names(node, scope):
         if isinstance(node, ast.Name):
             bound = scope.get(node.id)
+            if bound is None:
+                bound = patched_attributes.get("builtins." + node.id)
             return ({item.name for item in bound if isinstance(item, ast.alias)}
                     | {item.kind.name for item in bound if isinstance(item, Instance) and isinstance(item.kind, ast.alias)}) if bound else {node.id}
         if isinstance(node, ast.Attribute):
@@ -2764,6 +2807,8 @@ def python_ownership(content, *, partial=False):
         return local
 
     def generator_values(sequence, scope):
+        if sequence.state["exhausted"] == (True,):
+            return ()
         if sequence.operands is not None:
             items = choices(item for operand in sequence.operands for item in iterate_values((operand,), sequence.scope))
             return choices((unknown, item) for item in items) if sequence.arguments == ("enumerate",) else items
@@ -2843,6 +2888,10 @@ def python_ownership(content, *, partial=False):
                     for item in source for row in (sequence_rows(item) if isinstance(item, (Sequence, list, tuple)) else (item,))]
         if "materialized" not in iterator.attributes:
             rows = iterable_rows(source, scope)
+            for item in source:
+                if isinstance(item, Generator):
+                    observe(item.state)
+                    item.state["partial"] = (True,)
             observe(iterator.attributes)
             iterator.attributes["materialized"] = (Sequence(rows),)
         return [list(row) for sequence in iterator.attributes["materialized"] for row in sequence_rows(sequence)]
@@ -2925,7 +2974,7 @@ def python_ownership(content, *, partial=False):
                 finally:
                     active_iterators.remove(identity)
             elif isinstance(sequence, Sequence):
-                result.extend(item for row in sequence_rows(sequence) for item in row)
+                result.extend(sequence_members(sequence))
             elif isinstance(sequence, (list, tuple)):
                 result.extend(sequence)
             elif isinstance(sequence, Keywords):
@@ -2945,12 +2994,25 @@ def python_ownership(content, *, partial=False):
                 return ()
             scan(node.elt, local)
             return value(node.elt, local)
-        return iterate_values(value(node, scope), scope)
+        assigned = value(node, scope)
+        for item in assigned:
+            if isinstance(item, Generator):
+                observe(item.state)
+                item.state["partial"] = (True,)
+        return iterate_values(assigned, scope)
+
+    def generator_suffixes(sequence, rows):
+        if True in sequence.state["partial"]:
+            return [row[index:] for row in rows for index in range(len(row) + 1)]
+        return rows
 
     def iterable_rows(assigned, scope):
         """Retain ordered argv rows when a consumer copies or renders them."""
         rows = []
         for sequence in assigned:
+            if isinstance(sequence, Generator) and sequence.state["exhausted"] == (True,):
+                rows.append([])
+                continue
             if is_value_iterator(sequence):
                 rows.extend(remaining_iterator_rows(sequence, scope))
                 continue
@@ -2960,6 +3022,7 @@ def python_ownership(content, *, partial=False):
             if isinstance(sequence, Generator) and isinstance(sequence.node, ast.GeneratorExp) and len(sequence.node.generators) == 1:
                 captures = sequence.arguments[0]
                 if all(isinstance(source, (Sequence, list, tuple)) for source in captures):
+                    generated = []
                     generator = sequence.node.generators[0]
                     for source in captures:
                         for source_row in sequence_rows(source):
@@ -2973,11 +3036,13 @@ def python_ownership(content, *, partial=False):
                                     scan(condition, local)
                                 scan(sequence.node.elt, local)
                                 words.append(value(sequence.node.elt, local))
-                            rows.extend(combinations(words))
+                            generated.extend(combinations(words))
+                    rows.extend(generator_suffixes(sequence, generated))
                     continue
             if isinstance(sequence, Generator) and isinstance(sequence.node, ast.Call):
                 functions, names, inputs = sequence.arguments
                 if all(isinstance(source, (Sequence, list, tuple)) for assigned in inputs for source in assigned):
+                    generated = []
                     alternatives = [tuple(row for source in assigned for row in sequence_rows(source)) for assigned in inputs]
                     for source_rows in combinations(alternatives):
                         words = []
@@ -2989,10 +3054,14 @@ def python_ownership(content, *, partial=False):
                                 item = items[0]
                                 mapped = (operation(item if isinstance(item, (str, int, float, bool)) else computed),)
                             words.append(mapped or (unknown,))
-                        rows.extend(combinations(words))
+                        generated.extend(combinations(words))
+                    rows.extend(generator_suffixes(sequence, generated))
                     continue
             rows.append(list(iterate_values((sequence,), scope)))
         return rows
+
+    def unresolved_text(item):
+        return isinstance(item, str) and (computed in item or overflow in item)
 
     @lru_cache(maxsize=512)
     def executable_operand(text):
@@ -3065,8 +3134,7 @@ def python_ownership(content, *, partial=False):
                 for child in operand.items.values():
                     yield from deferred_operands(child, seen)
             elif isinstance(operand, Sequence):
-                for row in sequence_rows(operand):
-                    yield from deferred_operands(row, seen)
+                yield from deferred_operands(sequence_members(operand), seen)
             elif isinstance(operand, (list, tuple)):
                 yield from deferred_operands(operand, seen)
 
@@ -3128,12 +3196,14 @@ def python_ownership(content, *, partial=False):
         if not dedent and any(not isinstance(item, str) and item is not unknown for item in receivers):
             return None
         operands = [receivers, *arguments, *keywords.values()]
-        known = [tuple(item for item in assigned if type(item) in (str, int, float, bool, type(None)))
+        known = [tuple(item for item in assigned if type(item) in (str, int, float, bool, type(None))
+                       and not unresolved_text(item))
                  for assigned in operands]
         uncertain = [index for index, (literals, assigned) in enumerate(zip(known, operands))
                      if len(literals) != len(assigned)]
         results = []
         if uncertain:
+            results.extend(item for assigned in operands for item in assigned if unresolved_text(item))
             # Keep code from another operand when the unresolved operation
             # could return it; finite unary source tables remain concrete.
             results.append(overflow if any(isinstance(item, str) and executable_operand(item)
@@ -3167,6 +3237,8 @@ def python_ownership(content, *, partial=False):
 
     def value(node, scope):
         if isinstance(node, ast.Name):
+            if scope.owner(node.id) is None and "builtins." + node.id in patched_attributes:
+                return patched_attributes["builtins." + node.id]
             if scope.owner(node.id) is None and "builtins." + node.id in exception_types:
                 return (ExceptionValue("builtins." + node.id),)
             return tuple(ExceptionValue(item.name) if isinstance(item, ast.alias) and item.name in exception_types else item
@@ -3258,22 +3330,33 @@ def python_ownership(content, *, partial=False):
             specs = value(node.format_spec, scope) if node.format_spec else ("",)
             for literal in value(node.value, scope):
                 for spec in specs:
-                    if not isinstance(literal, (str, int, float, bool)) or not isinstance(spec, str):
+                    try:
+                        literal = data_literal(literal)
+                    except InexactDataLoop:
                         rendered.append(computed)
                         continue
-                    converted = {ord("r"): repr, ord("s"): str, ord("a"): ascii}.get(node.conversion, lambda item: item)(literal)
+                    if not isinstance(spec, str):
+                        rendered.append(computed)
+                        continue
                     try:
+                        converted = {ord("r"): repr, ord("s"): str, ord("a"): ascii}.get(node.conversion, lambda item: item)(literal)
                         rendered.append(format(converted, spec))
-                    except (ValueError, TypeError):
+                    except (ValueError, TypeError, OverflowError):
                         rendered.append(computed)
             return choices(rendered)
         if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
-            rows = combinations(expanded_arguments(node.elts, scope))
+            parts = expanded_arguments(node.elts, scope)
+            if isinstance(node, ast.List) and any(len(part) > 1 for part in parts):
+                rows = ([],)
+                for part in parts:
+                    rows = (RowConcat(rows, ([item] for item in part)),)
+                return (Sequence(rows),)
+            rows = combinations(parts)
             return choices(tuple(row) for row in rows) if isinstance(node, ast.Tuple) else (Sequence(rows, unique=isinstance(node, ast.Set)),)
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
             assigned = add(value(node.left, scope), value(node.right, scope))
-            rows = [row for row in assigned if isinstance(row, list)]
-            return choices((*([Sequence(rows)] if rows else []), *(row for row in assigned if not isinstance(row, list))))
+            rows = [row for row in assigned if isinstance(row, (list, RowConcat))]
+            return choices((*([Sequence(rows)] if rows else []), *(row for row in assigned if not isinstance(row, (list, RowConcat)))))
         if isinstance(node, ast.IfExp):
             return choices((*value(node.body, scope), *value(node.orelse, scope)))
         if isinstance(node, ast.Call):
@@ -3444,7 +3527,17 @@ def python_ownership(content, *, partial=False):
                 arguments = value(node.args[0], scope)
                 if names & {"shlex.quote", "str", "repr", "ascii"}:
                     operation = shlex.quote if "shlex.quote" in names else repr if "repr" in names else ascii if "ascii" in names else str
-                    return choices(operation(item if isinstance(item, (str, int, float, bool)) else computed) for item in arguments)
+                    rendered = []
+                    for item in arguments:
+                        try:
+                            literal = data_literal(item)
+                        except InexactDataLoop:
+                            literal = computed
+                        try:
+                            rendered.append(operation(literal))
+                        except (ValueError, TypeError, OverflowError):
+                            rendered.append(computed)
+                    return choices(rendered)
                 if "shlex.split" in names:
                     split = []
                     for item in arguments:
@@ -3457,6 +3550,10 @@ def python_ownership(content, *, partial=False):
                     rendered = []
                     for separator in value(node.func.value, scope):
                         for argument in arguments:
+                            compact = data_join_dag(argument, separator, scope)
+                            if compact is not None:
+                                rendered.extend(compact)
+                                continue
                             rows = iterable_rows((argument,), scope)
                             for sequence in rows:
                                 items = iterate_values((sequence,), scope)
@@ -3464,7 +3561,10 @@ def python_ownership(content, *, partial=False):
                                     rendered.append(separator.join(item if isinstance(item, str) else computed for item in sequence))
                                 else:
                                     rendered.append(overflow if executable_value(list(items)) or any(executable_value(item) for item in items) else computed)
-                    return choices(rendered)
+                    result = choices(rendered)
+                    exhaust_generators(arguments)
+                    expression_values[id(scope), id(node)] = result
+                    return result
                 if names & {"min", "max"}:
                     return iterated(node.args[0], scope) or (unknown,)
                 if names & {"list", "tuple", "set", "frozenset", "next", "sorted"}:
@@ -3473,7 +3573,11 @@ def python_ownership(content, *, partial=False):
                     rows = iterable_rows(arguments, scope)
                     if "sorted" in names:
                         rows = [sorted(row) if all(isinstance(item, str) for item in row) else row for row in rows]
-                    return choices(tuple(row) for row in rows) if "tuple" in names else (Sequence(rows, unique=bool(names & {"set", "frozenset"})),)
+                    result = choices(tuple(row) for row in rows) if "tuple" in names else (Sequence(rows, unique=bool(names & {"set", "frozenset"})),)
+                    if names & {"list", "tuple", "sorted"}:
+                        exhaust_generators(arguments)
+                    expression_values[id(scope), id(node)] = result
+                    return result
             if names & {"functools.partial"} and node.args and not isinstance(node.func, ast.Call):
                 result = (Partial(value(node.args[0], scope), expanded_arguments(node.args[1:], scope), call_keywords(node.keywords, scope)),)
                 expression_values[id(scope), id(node)] = result
@@ -3517,7 +3621,7 @@ def python_ownership(content, *, partial=False):
                 if id(item) in seen:
                     return False
                 descendants = (*seen, id(item))
-                children = item.items.values() if isinstance(item, Keywords) else sequence_rows(item) if isinstance(item, Sequence) else item
+                children = item.items.values() if isinstance(item, Keywords) else sequence_members(item) if isinstance(item, Sequence) else item
                 return any(possible_code(child, descendants) for child in children)
             return isinstance(item, str) and executable_operand(item)
         if node is not None:
@@ -3558,6 +3662,13 @@ def python_ownership(content, *, partial=False):
         for assigned_first in left:
             seconds = remaining_right if factored is not None and isinstance(assigned_first, str) and assigned_first in source_left_set else right
             for assigned_second in seconds:
+                if isinstance(assigned_first, Sequence) and not assigned_first.unique:
+                    if isinstance(assigned_second, Sequence) and not assigned_second.unique:
+                        result.append(RowConcat(assigned_first.state["rows"], assigned_second.state["rows"]))
+                        continue
+                    if type(assigned_second) is list:
+                        result.append(RowConcat(assigned_first.state["rows"], (assigned_second,)))
+                        continue
                 for first in sequence_rows(assigned_first):
                     for second in sequence_rows(assigned_second):
                         if isinstance(first, str) and second is unknown:
@@ -3621,7 +3732,9 @@ def python_ownership(content, *, partial=False):
             elif isinstance(item, ExceptionValue):
                 key = ("exception", item.name)
             elif isinstance(item, Sequence):
-                key = ("mutable-sequence", child(sequence_rows(item)))
+                key = ("mutable-sequence", child(item.state["rows"]))
+            elif isinstance(item, RowConcat):
+                key = ("row-concat", child(item.left), child(item.right))
             elif isinstance(item, Keywords):
                 key = ("mapping", tuple(sorted((str(name), child(assigned)) for name, assigned in item.items.items())))
             elif isinstance(item, ast.alias):
@@ -3744,7 +3857,7 @@ def python_ownership(content, *, partial=False):
         elif isinstance(item, Partial):
             children = [item.functions, item.arguments, *item.keywords.values()]
         elif isinstance(item, Sequence):
-            children = sequence_rows(item)
+            children = sequence_members(item)
         elif isinstance(item, Keywords):
             children = item.items.values()
         elif isinstance(item, (list, tuple)):
@@ -3798,6 +3911,77 @@ def python_ownership(content, *, partial=False):
             return async_result(wrapper.name, argument_values, keyword_values, caller)
         if isinstance(wrapper, ast.alias) and wrapper.name in mock_types:
             return (make_mock(wrapper.name, keyword_values),)
+        if isinstance(wrapper, ast.alias) and wrapper.name in {"print", "builtins.print"}:
+            flush_flags = []
+            for flag in keyword_values.get("flush", (False,)):
+                if isinstance(flag, Instance):
+                    boolean = member(flag, "__bool__", caller)
+                    callbacks = boolean or member(flag, "__len__", caller)
+                    returned = choices(item for callback in callbacks for item in invoke(callback, caller))
+                    if boolean:
+                        flush_flags.extend(item for item in returned if type(item) is bool)
+                    else:
+                        flush_flags.extend(bool(item) for item in returned if type(item) in (int, bool) and item >= 0)
+                    if not callbacks or any(item is unknown for item in returned):
+                        flush_flags.append(True)
+                else:
+                    try:
+                        flush_flags.append(bool(data_literal(flag)))
+                    except InexactDataLoop:
+                        flush_flags.append(True)
+            if not flush_flags:
+                return (None,)
+            separators = keyword_values.get("sep", (" ",))
+            endings = keyword_values.get("end", ("\n",))
+            if (not any(item is None or isinstance(item, str) or item is unknown for item in separators)
+                    or not any(item is None or isinstance(item, str) or item is unknown for item in endings)):
+                return (None,)
+            destinations = choices(destination for item in keyword_values.get("file", (None,))
+                for destination in (patched_attributes.get("sys.stdout", (ast.alias(name="sys.stdout"),)) if item is None else (item,)))
+            def rendered(items):
+                result = []
+                for item in items:
+                    if isinstance(item, Instance):
+                        callbacks = member(item, "__str__", caller) or member(item, "__repr__", caller)
+                        converted = choices(output for callback in callbacks for output in invoke(callback, caller))
+                        result.extend(output if isinstance(output, str) else computed for output in converted if isinstance(output, str) or output is unknown)
+                        if not callbacks:
+                            result.append(computed)
+                    else:
+                        try:
+                            literal = data_literal(item)
+                        except InexactDataLoop:
+                            result.append(computed)
+                            continue
+                        try:
+                            result.append(str(literal))
+                        except (ValueError, TypeError, OverflowError):
+                            pass
+                return choices(result)
+            for destination in destinations:
+                if destination is None:
+                    continue
+                def write(items, convert=False):
+                    callbacks = patched_attributes.get(destination.name + ".write", (ast.alias(name=destination.name + ".write"),)) if isinstance(destination, ast.alias) else member(destination, "write", caller)
+                    if not callbacks:
+                        return False
+                    chunks = rendered(items) if convert else choices(" " if item is None else item for item in items)
+                    if not chunks:
+                        return False
+                    for callback in callbacks:
+                        invoke(callback, caller, [chunks], evaluated=True)
+                    return True
+                for index, items in enumerate(argument_values):
+                    if index and not write(separators):
+                        break
+                    if not write(items, convert=True):
+                        break
+                else:
+                    if write(tuple("\n" if item is None else item for item in endings)) and any(flush_flags):
+                        callbacks = patched_attributes.get(destination.name + ".flush", (ast.alias(name=destination.name + ".flush"),)) if isinstance(destination, ast.alias) else member(destination, "flush", caller)
+                        for callback in callbacks:
+                            invoke(callback, caller)
+            return (None,)
         if isinstance(wrapper, Bound) and isinstance(wrapper.function, PatchContext):
             def patched_call(callback, patches):
                 if isinstance(callback, Bound) and isinstance(callback.function, PatchContext):
@@ -4201,6 +4385,21 @@ def python_ownership(content, *, partial=False):
                         elif name == "pop":
                             results.extend(owner.items.pop(key, arguments[1] if len(arguments) > 1 else (unknown,)))
                 continue
+            if not owner.unique and name in {"append", "extend"} and arguments:
+                suffixes = []
+                for operands_row in combinations(arguments):
+                    if name == "append":
+                        suffixes.append([operands_row[0]])
+                    else:
+                        operand = operands_row[0]
+                        if isinstance(operand, Sequence) and not operand.unique:
+                            suffixes.extend(operand.state["rows"])
+                        elif type(operand) in (list, tuple):
+                            suffixes.append(list(operand))
+                        else:
+                            suffixes.append(list(iterate_values((operand,), scope)))
+                owner.state["rows"] = (RowConcat(owner.state["rows"], suffixes),)
+                continue
             rows = []
             for previous in sequence_rows(owner):
                 operands = combinations(arguments) if arguments else [()]
@@ -4271,7 +4470,10 @@ def python_ownership(content, *, partial=False):
             names = function_names(node.func, scope)
             functions = value(node.func, scope)
             iterator_next = bool(names & {"next", "builtins.next"} and node.args and any(is_value_iterator(item) for item in value(node.args[0], scope)))
-            if iterator_next:
+            display_call = bool(names & {"print", "builtins.print"})
+            ordered_consumer = bool(len(node.args) == 1 and not node.keywords and (
+                names & {"list", "tuple", "sorted"} or any(name.endswith(".join") for name in names)))
+            if iterator_next or display_call or ordered_consumer:
                 value(node, scope)
             if (names & (external_mutations | async_names) or isinstance(node.func, ast.Attribute) and (node.func.attr in mutation_methods
                     or any(is_exit_stack(owner) for owner in value(node.func.value, scope)))):
@@ -4279,7 +4481,7 @@ def python_ownership(content, *, partial=False):
             # Unknown data callees still expand starred operands. Known launch
             # and wrapper paths expand them in their own actual invocation.
             if (any(isinstance(argument, ast.Starred) for argument in node.args)
-                    and not names & launches
+                    and not names & launches and not display_call
                     and not any(isinstance(function, (Function, Bound, Partial, ast.ClassDef)) for function in functions)):
                 expanded_arguments(node.args, scope)
             for function in names & launches:
@@ -4342,7 +4544,7 @@ def python_ownership(content, *, partial=False):
                 for callback, arguments, keywords in callbacks:
                     for function in value(callback, scope):
                         invoke(function, scope, arguments, keywords, evaluated=True)
-                if node.args and not iterator_next and (names & {"list", "tuple", "set", "frozenset", "next", "sum", "any", "all", "sorted", "dict", "min", "max", "collections.deque", "contextlib.ExitStack.enter_context", "contextlib.AsyncExitStack.enter_context", "contextlib.AsyncExitStack.enter_async_context"} or any(name.endswith(".join") for name in names)):
+                if node.args and not iterator_next and not ordered_consumer and (names & {"list", "tuple", "set", "frozenset", "next", "sum", "any", "all", "sorted", "dict", "min", "max", "collections.deque", "contextlib.ExitStack.enter_context", "contextlib.AsyncExitStack.enter_context", "contextlib.AsyncExitStack.enter_async_context"} or any(name.endswith(".join") for name in names)):
                     iterated(node.args[0], scope)
                 if isinstance(node.func, ast.Attribute) and node.func.attr in {"set_defaults", "add_command"}:
                     for registry in value(node.func.value, scope):
@@ -4576,6 +4778,8 @@ def python_ownership(content, *, partial=False):
             raise InexactDataLoop() from None
 
     def data_literal(item, seen=()):
+        if unresolved_text(item):
+            raise InexactDataLoop()
         if type(item) in (str, bytes, int, float, complex, bool, type(None)):
             return item
         if id(item) in seen:
@@ -4583,8 +4787,16 @@ def python_ownership(content, *, partial=False):
         descendants = (*seen, id(item))
         if isinstance(item, Sequence) and not item.unique:
             rows = item.state["rows"]
-            if len(rows) == 1 and isinstance(rows[0], (list, tuple)):
-                return [data_literal(child, descendants) for child in rows[0]]
+            def exact_row(row):
+                if isinstance(row, RowConcat):
+                    if len(row.left) != 1 or len(row.right) != 1:
+                        raise InexactDataLoop()
+                    return [*exact_row(row.left[0]), *exact_row(row.right[0])]
+                if type(row) in (list, tuple):
+                    return row
+                raise InexactDataLoop()
+            if len(rows) == 1:
+                return [data_literal(child, descendants) for child in exact_row(rows[0])]
         elif type(item) in (list, tuple):
             return type(item)(data_literal(child, descendants) for child in item)
         elif isinstance(item, Keywords):
@@ -4682,6 +4894,58 @@ def python_ownership(content, *, partial=False):
                     data_target(child, value)
                 return
         raise InexactDataLoop()
+
+    def data_join_dag(argument, separator, scope):
+        if type(separator) is not str:
+            return None
+        try:
+            data_literal(separator)
+            mapper = None
+            if isinstance(argument, Generator) and isinstance(argument.node, ast.GeneratorExp) and len(argument.node.generators) == 1:
+                if argument.state["exhausted"] == (True,):
+                    return ("",)
+                if True in argument.state["partial"]:
+                    return None
+                generator = argument.node.generators[0]
+                if generator.ifs or len(argument.arguments[0]) != 1:
+                    return None
+                source = argument.arguments[0][0]
+                def mapper(item):
+                    data_target(generator.target, item)
+                    local = Scope(argument.scope)
+                    bind(generator.target, (item,), local)
+                    return data_literal(data_expression(argument.node.elt, local))
+            else:
+                source = argument
+                mapper = data_literal
+            if not isinstance(source, Sequence) or not any(isinstance(row, RowConcat) for row in source.state["rows"]):
+                return None
+            memo = {}
+            def render_rows(rows):
+                outputs = {False: [], True: []}
+                for row in rows:
+                    if isinstance(row, RowConcat):
+                        if id(row) not in memo:
+                            left, right = render_rows(row.left), render_rows(row.right)
+                            merged = {False: [], True: []}
+                            for first_empty, first in left.items():
+                                for second_empty, second in right.items():
+                                    if not first or not second:
+                                        continue
+                                    prefix = add(first, (separator,)) if not first_empty and not second_empty else first
+                                    merged[first_empty and second_empty].extend(add(prefix, second))
+                            memo[id(row)] = {empty: choices(values) for empty, values in merged.items()}
+                        for empty, values in memo[id(row)].items():
+                            outputs[empty].extend(values)
+                    else:
+                        values = [mapper(item) for item in row]
+                        if any(type(item) is not str for item in values):
+                            raise InexactDataLoop()
+                        outputs[not values].append(separator.join(values))
+                return {empty: choices(values) for empty, values in outputs.items()}
+            return choices(item for values in render_rows(source.state["rows"]).values() for item in values)
+        except InexactDataLoop:
+            return None
 
     def data_statement(statement, scope, source):
         if isinstance(statement, ast.Assign) and all(isinstance(target, ast.Name) for target in statement.targets):
@@ -4813,7 +5077,18 @@ def python_ownership(content, *, partial=False):
                     bind(statement.target, items, scope)
                     iteration, scope.state = scope.state, previous
                 repeated = merge(scope.state, branch(statement.body, scope, iteration))
-                repeated = merge(repeated, branch(statement.body, scope, repeated))
+                if isinstance(statement, (ast.For, ast.AsyncFor)):
+                    captured = assigned if isinstance(statement, ast.For) else ()
+                    def repeat_body(local):
+                        known = [item for item in captured if isinstance(item, (Sequence, list, tuple))]
+                        opaque = not captured or len(known) != len(captured)
+                        current = choices((*iterate_values(known, local), *(items if opaque else ())))
+                        if current:
+                            bind(statement.target, current, local)
+                            walk(statement.body, local)
+                    repeated = merge(repeated, branch((), scope, repeated, executor=repeat_body))
+                else:
+                    repeated = merge(repeated, branch(statement.body, scope, repeated))
                 scope.state = repeated
                 walk(statement.orelse, scope)
             elif isinstance(statement, (ast.Try, ast.TryStar)):

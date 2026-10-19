@@ -1084,12 +1084,61 @@ class ReceiptTests(unittest.TestCase):
                 with self.subTest(action=action, arguments=arguments):
                     self.assertEqual(receipts.python_ownership(program), owning)
 
+    def test_python_display_consumers_follow_actual_callbacks(self):
+        writer = 'uv run /catalog/gh-plan.py --repo o/r claim 12'
+        setup = 'import os\nfrom unittest.mock import patch\nWRITER=' + repr(writer) + '\n'
+        programs = (
+            ('single', "rows=[]\nfor cmd in [WRITER,'echo safe']:\n print(cmd)\n rows.append(cmd)\nfor cmd in rows: os.system(cmd)", True),
+            ('multiple', "rows=[]\nfor cmd in [WRITER,'echo safe']:\n print(cmd,'value',sep=':',end='end',flush=True,file=None)\n rows.append(cmd)\nfor cmd in rows: os.system(cmd)", True),
+            ('invalidsep', "cmd=WRITER\ntry:\n for item in [1]:\n  print(item,sep=[])\n  cmd='echo safe'\nexcept TypeError: pass\nos.system(cmd)", True),
+            ('invalidend', "cmd=WRITER\ntry:\n for item in [1]:\n  print(item,end=[])\n  cmd='echo safe'\nexcept TypeError: pass\nos.system(cmd)", True),
+            ('invalidfile', "cmd=WRITER\ntry:\n for item in [1]:\n  print(item,file='bad')\n  cmd='echo safe'\nexcept AttributeError: pass\nos.system(cmd)", True),
+            ('shadow', "def print(*args): os.system(WRITER)\nfor item in [1]: print('echo safe')", True),
+            ('patch', "def record(*args): os.system(WRITER)\nwith patch('builtins.print',record):\n for item in [1]: print('echo safe')", True),
+            ('alias', "from builtins import print as display\nfor item in [1]: display('echo safe')", False),
+            ('savedalias', "from builtins import print as display\ndef record(*args): os.system(WRITER)\nwith patch('builtins.print',record):\n for item in [1]: display('echo safe')", False),
+            ('customstr', "class Value:\n def __str__(self):\n  os.system(WRITER)\n  return 'safe'\nfor item in [1]: print(Value())", True),
+            ('customfile', "class Destination:\n def write(self,chunk): os.system(WRITER)\nfor item in [1]: print('safe',file=Destination())", True),
+            ('customflush', "class Destination:\n def write(self,chunk): return None\n def flush(self): os.system(WRITER)\nprint('safe',file=Destination(),flush=True)", True),
+            ('noflush', "class Destination:\n def write(self,chunk): return None\n def flush(self): os.system(WRITER)\nprint('safe',file=Destination(),flush=False)", False),
+            ('flushbool', "seen=[]\nclass Flag:\n def __bool__(self):\n  if not seen: os.system(WRITER)\n  return False\nclass Destination:\n def write(self,chunk): seen.append(chunk)\nprint('safe',file=Destination(),flush=Flag())", True),
+            ('flushlen', "class Flag:\n def __len__(self):\n  os.system(WRITER)\n  return 0\nprint('safe',flush=Flag())", True),
+            ('invalidflush', "class Flag:\n def __bool__(self): return 'invalid'\nclass Destination:\n def write(self,chunk): os.system(WRITER)\ntry: print('safe',file=Destination(),flush=Flag())\nexcept TypeError: pass", False),
+            ('invalidfile_str', "class Value:\n def __str__(self):\n  os.system(WRITER)\n  return 'safe'\ntry: print(Value(),file='bad')\nexcept AttributeError: pass", False),
+            ('closed_stdout', "import sys,io\ncmd=WRITER\ntry:\n sys.stdout=io.StringIO()\n sys.stdout.close()\n for item in [1]:\n  print('safe')\n  cmd='echo safe'\nexcept ValueError: pass\nos.system(cmd)", True),
+        )
+        for name, body, expected in programs:
+            with self.subTest(consumer=name):
+                self.assert_python_patch_ownership(setup + body, expected)
+                if expected:
+                    self.assert_python_patch_ownership((setup + body).replace(writer, 'echo safe'), False)
+
+    def test_unknown_python_text_stays_uncertain_through_data_consumers(self):
+        writer = 'uv run /catalog/gh-plan.py --repo o/r claim 12'
+        setup = 'import os,sys\nWRITER=' + repr(writer) + '\n'
+        programs = (
+            ('equal', "mode=f'{sys.argv[1]}'\nprograms=[]\nfor cmd in [WRITER]:\n if mode=='run': programs.append(cmd)\nfor cmd in programs: os.system(cmd)", True),
+            ('conditional', "mode=f'{sys.argv[1]}'\nprograms=[]\nfor cmd in [WRITER]: programs.append(cmd if mode=='run' else 'echo safe')\nfor cmd in programs: os.system(cmd)", True),
+            ('not_equal', "mode=f'{sys.argv[1]}'\nprograms=[]\nfor cmd in [WRITER]:\n if mode!='run': programs.append('echo safe')\n else: programs.append(cmd)\nfor cmd in programs: os.system(cmd)", True),
+            ('truth', "flag=f'{sys.argv[1]}'\nprograms=[]\nfor cmd in [WRITER]:\n if flag: programs.append('echo safe')\n else: programs.append(cmd)\nfor cmd in programs: os.system(cmd)", True),
+            ('loop_item', "programs=[]\nfor mode in [f'{sys.argv[1]}']:\n if mode=='run': programs.append(WRITER)\nfor cmd in programs: os.system(cmd)", True),
+            ("(f'{sys.argv[1]}').replace('$','')", "mode=(f'{sys.argv[1]}').replace('$','')\nprograms=[]\nfor cmd in [WRITER]:\n if mode=='run': programs.append(cmd)\nfor cmd in programs: os.system(cmd)", True),
+            ("(f'{sys.argv[1]}').lstrip('$')", "mode=(f'{sys.argv[1]}').lstrip('$')\nprograms=[]\nfor cmd in [WRITER]:\n if mode=='run': programs.append(cmd)\nfor cmd in programs: os.system(cmd)", True),
+            ("' '.join(sys.argv[1:])", "mode=' '.join(sys.argv[1:])\nprograms=[]\nfor cmd in [WRITER]:\n if mode=='run': programs.append(cmd)\nfor cmd in programs: os.system(cmd)", True),
+            ('literal_control', "mode='dry'\nprograms=[]\nfor cmd in [WRITER]:\n if mode=='run': programs.append(cmd)\nfor cmd in programs: os.system(cmd)", False),
+        )
+        for name, body, expected in programs:
+            with self.subTest(consumer=name):
+                self.assert_python_patch_ownership(setup + body, expected)
+                if expected:
+                    self.assert_python_patch_ownership((setup + body).replace(writer, 'echo safe'), False)
+
     def test_python_mutable_source_carriers_bound_comparison_work(self):
         writer = 'uv run /catalog/gh-plan.py --repo o/r claim 12'
         for operation in ('programs.append(source)', 'programs.extend([source])',
-                          'programs.append((1,source))', 'programs += [(1,source)]', 'paired sources'):
+                          'programs.append((1,source))', 'programs += [(1,source)]', 'paired sources', 'paired sources with display', 'paired sources rendered with display'):
             counts = []
-            for size in ((1, 2) if operation == 'paired sources' else (4, 8)):
+            for size in (4, 8):
                 sources = ['import os\nos.system(' + repr(writer) + ')\nmarker=' + repr(index) for index in range(size)]
                 body = 'for source in S: ' + operation + '\n'
                 body += ('for label,source in programs: exec(source,{})' if '(1,source)' in operation
@@ -1097,12 +1146,16 @@ class ReceiptTests(unittest.TestCase):
                 program = ('from unittest.mock import patch\nS=' + repr(sources)
                            + '\nprograms=[]\ndef record(*a): return 0\nwith patch("os.system",record):\n'
                            + '\n'.join('    ' + line for line in body.splitlines()))
-                if operation == 'paired sources':
-                    pairs = [(writer if index == 0 else 'echo safe', index == 0) for index in range(size)]
+                if operation.startswith('paired sources'):
+                    pairs = [(writer if index == 0 else f'echo safe {index}', index == 0) for index in range(size)]
                     body = ("for command,expected in S:\n"
                             "    programs += [(f'import os\\nos.system({command!r})\\nmarker=0',expected),"
                             "(f'import os\\nos.system({command!r})\\nmarker=1',expected)]\n"
                             "for source,expected in programs: exec(source,{})")
+                    if operation.endswith('with display'):
+                        body = body.replace('    programs +=', '    print(command)\n    programs +=')
+                    if 'rendered' in operation:
+                        body = body.replace('for source,expected in programs: exec(source,{})', "exec('\\n'.join(source for source,expected in programs),{})")
                     program = ('from unittest.mock import patch\nS=' + repr(pairs)
                                + '\nprograms=[]\ndef record(*a): return 0\nwith patch("os.system",record):\n'
                                + '\n'.join('    ' + line for line in body.splitlines()))
@@ -1120,10 +1173,15 @@ class ReceiptTests(unittest.TestCase):
                 self.assertTrue(receipts.python_ownership(program.replace('with patch("os.system",record):', 'if True:')))
             with self.subTest(operation=operation):
                 self.assertGreater(counts[0], 0)
-                self.assertLessEqual(counts[1], counts[0] * 4)
+                self.assertLessEqual(counts[1], counts[0] * 3)
 
         setup = "import os\nWRITER='uv run /catalog/gh-plan.py --repo o/r claim 12'\n"
         programs = (
+            ('target_rebind', 'cmd=WRITER\nfor cmd in ["echo safe"]: os.system(cmd)', False),
+            ('target_writer', 'cmd="echo safe"\nfor cmd in [WRITER]: os.system(cmd)', True),
+            ('source_append', 'source=["echo first"]\nfor cmd in source:\n os.system(cmd)\n if cmd=="echo first": source.append(WRITER)', True),
+            ('source_name_rebind', 'source=["echo first"]\nfor cmd in source:\n source=[WRITER]\n os.system(cmd)', False),
+            ('empty_loop_target', 'cmd=WRITER\nfor cmd in []: pass\nos.system(cmd)', True),
             ('break', "for cmd in [WRITER,'echo safe']:\n break\nos.system(cmd)", True),
             ('continue', "cmd=WRITER\nfor item in [1]:\n continue\n cmd='echo safe'\nos.system(cmd)", True),
             ('raise', "try:\n for cmd in [WRITER,'echo safe']:\n  raise RuntimeError('stop')\nexcept RuntimeError: pass\nos.system(cmd)", True),
@@ -1160,14 +1218,42 @@ class ReceiptTests(unittest.TestCase):
             sys.set_int_max_str_digits(sys.int_info.default_max_str_digits)
             huge = '0x' + 'f' * sys.int_info.default_max_str_digits
             for expression in ('str(' + huge + ')', 'repr([' + huge + '])',
-                               'ascii([' + huge + '])', "f'{[" + huge + "]}'"):
-                program = (setup + "cmd='echo safe'\ntry:\n cmd=WRITER\n for item in [1]:\n  "
-                           + expression + "\n  cmd='echo safe'\nexcept Exception: pass\nos.system(cmd)")
-                with self.subTest(control='conversion raises', operation=expression.split('(')[0]):
-                    self.assert_python_patch_ownership(program, True)
-                    self.assert_python_patch_ownership(program.replace(writer, 'echo safe'), False)
+                               'ascii([' + huge + '])', "f'{[" + huge + "]}'",
+                               *("f'{[" + huge + "]!" + conversion + "}'" for conversion in 'rsa')):
+                for context in ('direct', 'loop'):
+                    body = 'rendered=' + expression if context == 'direct' else 'for item in [1]:\n rendered=' + expression
+                    body += "\ncmd='echo safe'" if context == 'direct' else "\n cmd='echo safe'"
+                    program = (setup + "cmd=WRITER\ntry:\n " + body.replace('\n', '\n ')
+                               + "\nexcept Exception: pass\nos.system(cmd)")
+                    with self.subTest(control='conversion raises', operation=expression.split('(')[0], context=context):
+                        self.assertTrue(receipts.python_ownership(program))
+                        self.assertFalse(receipts.python_ownership(program.replace(writer, 'echo safe')))
+                        self.assert_python_patch_ownership(program, True)
+                        self.assert_python_patch_ownership(program.replace(writer, 'echo safe'), False)
         finally:
             sys.set_int_max_str_digits(previous_limit)
+
+    def test_python_generators_preserve_full_and_partial_consumption(self):
+        writer = 'uv run /catalog/gh-plan.py --repo o/r claim 12'
+        setup = 'import os, sys\nWRITER=' + repr(writer) + '\n'
+        builder = 'rows=[]\nfor item in [WRITER]: rows.append(item)\ng=(str(row) for row in rows)\n'
+        forms = [
+            ('first_result', builder + 'os.system("".join(g))', True),
+            ('fresh_generator', builder + 'first="".join(g)\ng=(str(row) for row in rows)\nos.system("".join(g))', True),
+            ('partial_for', 'g=(x for x in ["echo safe",WRITER])\nfor x in g: break\nos.system("".join(g))', True),
+            ('partial_next', 'g=(x for x in ["echo safe",WRITER])\nnext(g)\nos.system("".join(g))', True),
+            ('partial_wrapped_next', 'g=(x for x in ["echo safe",WRITER])\nit=iter(g)\nnext(it)\nos.system("".join(g))', True),
+            ('conditional_consumption', builder + 'if "--dry-run" in sys.argv: first="".join(g)\nos.system("".join(g))', True),
+            ('mapper_callback', 'def mapper(item):\n os.system(WRITER)\n return item\ng=(mapper(x) for x in ["echo safe"])\nfirst="".join(g)\nsecond="".join(g)', True),
+            ('map_exhausted', 'g=map(str,[WRITER])\nfirst="".join(g)\nos.system("".join(g))', False),
+            ('exhausted_late_binding', 'command="echo safe"\ng=(command for x in [1])\nfirst="".join(g)\ncommand=WRITER\nos.system("".join(g))', False),
+        ]
+        for consumer in ('"".join(g)', 'list(g)', 'tuple(g)', 'sorted(g)'):
+            forms.append((consumer, builder + 'first=' + consumer + '\nos.system("".join(g))', False))
+        for name, body, expected in forms:
+            with self.subTest(control=name):
+                self.assert_python_patch_ownership(setup + body, expected)
+                self.assert_python_patch_ownership((setup + body).replace(writer, 'echo safe'), False)
 
     def test_python_object_patches_and_iterated_mock_values(self):
         writer = "uv run /catalog/gh-plan.py --repo o/r claim 12"
