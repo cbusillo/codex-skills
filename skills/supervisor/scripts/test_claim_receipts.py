@@ -3391,6 +3391,13 @@ os.system(get())
                     cells += ('const p=' + json.dumps(patch) + ';' + source,)
             setup = 'const P=' + json.dumps(patch) + ';'
             possible_inputs = (
+                'const {patch}={patch:P};await tools.apply_patch(patch);',
+                'const {value:p}={value:P};await tools.apply_patch(p);',
+                'const [p]=[P];await tools.apply_patch(p);',
+                'let p;({p}={p:P});await tools.apply_patch(p);',
+                'function make(){return P}await tools.apply_patch(make());',
+                'class Make{static patch(){return P}}await tools.apply_patch(Make.patch());',
+                'class Make{static get patch(){return P}}await tools.apply_patch(Make.patch);',
                 'const ps=[P];for(const p of ps)await tools.apply_patch(p);',
                 'const ps=[P];ps.forEach(p=>tools.apply_patch(p));',
                 'let p;p=P;await tools.apply_patch(p);',
@@ -3425,6 +3432,18 @@ os.system(get())
                         self.assertTrue(any(program.strip() in content for effect in effects
                                             if effect['kind'] == 'write' for content in effect['contents']))
                     cells += (source,)
+            for operand in ('[h,b].join("")', 'h.concat(b)', 'h+b+x', '`${h}${b}${x}`'):
+                source = fragments + 'let x="";x+="";await tools.apply_patch(' + operand + ');'
+                cells += (source, 'await eval(' + json.dumps('(async()=>{' + source + '})()') + ');',
+                          'await Function(' + json.dumps('return (async()=>{' + source + '})()') + ')();')
+            cells += (
+                'let p=' + json.dumps(safe_patch) + ';eval(' + json.dumps('p=' + json.dumps(patch))
+                + ');await tools.apply_patch(p);',
+                'globalThis.P=' + json.dumps(safe_patch) + ';eval(' + json.dumps('globalThis.P=' + json.dumps(patch))
+                + ');await tools.apply_patch(globalThis.P);',
+                'await Function(' + json.dumps('return this["to"+"ols"]["apply_"+"patch"](' + json.dumps(patch) + ')') + ')();',
+                'await globalThis.eval(' + json.dumps('"use strict";this["to"+"ols"]["apply_"+"patch"](' + json.dumps(patch) + ')') + ');',
+            )
             for cell in cells:
                 for command, executes in (('python3 /repo/run.py', True), ('cat /repo/run.py', False)):
                     rows = history('codex', {}, {})
@@ -3560,6 +3579,36 @@ os.system(get())
         # Extra tiny call operands must not each re-project the large data RHS.
         self.assertLess(totals[1] - totals[0], len(data))
 
+        writer_counts = []
+        original_content = receipts.executable_content
+        original_unparsed = receipts._unparsed_command_text
+        for count in (16, 64):
+            source = 'let c="safe";' + ''.join('eval(' + json.dumps('const k="safe' + str(index)
+                + '";tools.exec_command({cmd:c});') + ');' for index in range(count))
+            traversed = []
+            def command_text(*args, **kwargs):
+                traversed.append(len(kwargs.get('possible_writers', ())))
+                return original_unparsed(*args, **kwargs)
+            with patch.object(receipts, 'executable_content', wraps=original_content) as classify:
+                with patch.object(receipts, '_unparsed_command_text', side_effect=command_text):
+                    list(receipts.javascript_generated_sources(source))
+            writer_counts.append(classify.call_count + sum(traversed))
+        # Include passed writer operands so memoized parses cannot hide repeated
+        # all-source traversals. Each new literal contributes bounded work.
+        self.assertLessEqual(writer_counts[1] - writer_counts[0], 3 * (64 - 16))
+        totals = []
+        for count in (16, 64):
+            source = data + ''.join('globalThis.a' + str(index) + '=data;' for index in range(count))
+            source += 'await Function("return 0")();'
+            processed = []
+            def project(value):
+                processed.append(len(value))
+                return original_projection(value)
+            with patch.object(receipts, 'javascript_projection', side_effect=project):
+                list(receipts.javascript_generated_sources(source))
+            totals.append(sum(processed))
+        self.assertLess(totals[1] - totals[0], len(data))
+
     def test_javascript_command_discovery_covers_noncanonical_tool_callees(self):
         writer = 'uv run /catalog/gh-plan.py --repo o/r claim 5'
         calls = (
@@ -3660,6 +3709,8 @@ os.system(get())
             ('const c=' + json.dumps(writer) + '; try{await Function(' + json.dumps(source) + ')();}catch{}', False),
             ('const c=' + json.dumps(writer) + '; try{await (async()=>{}).constructor(' + json.dumps(source) + ')();}catch{}', False),
             ('const c=' + json.dumps(writer) + '; const indirect=eval; try{await indirect(' + json.dumps(async_source) + ');}catch{}', False),
+            ('const c=' + json.dumps(writer) + '; try{await eval?.(' + json.dumps(async_source) + ');}catch{}', False),
+            ('const c=' + json.dumps(writer) + '; try{await globalThis["eval"](' + json.dumps(async_source) + ');}catch{}', False),
             ('const c=' + json.dumps(writer) + '; await eval(' + json.dumps(async_source) + ');', True),
             ('const c=' + json.dumps(writer) + '; await Function("c",' + json.dumps(source) + ')(c);', True),
             ('const c=' + json.dumps(writer) + '; await Function("c",' + json.dumps(source) + ')("echo safe");', False),
@@ -3691,9 +3742,35 @@ os.system(get())
                 ('await Function(' + json.dumps(sloppy) + ')();', owning),
                 ('await Function(' + json.dumps('return this["to"+"ols"]["exec_"+"command"]({cmd:' + assigned + '})') + ')();', owning),
                 ('await Function(' + json.dumps('"use strict";' + sloppy) + ')();', False),
+                ('try{await Function(' + json.dumps('"use strict";return this["to"+"ols"]["exec_"+"command"]({cmd:' + assigned + '})') + ')();}catch{}', False),
                 ('const cmd="echo safe";function run(){eval(' + json.dumps('var cmd=' + assigned)
                     + ');return tools.exec_command({cmd});}await run();', False),
             ))
+            for invoke in ('const e=eval;await e(SOURCE);', 'await globalThis.eval(SOURCE);',
+                           'await (0,eval)(SOURCE);'):
+                indirect_sloppy = sloppy.replace('return run();', 'run();')
+                indirect_this = 'this["to"+"ols"]["exec_"+"command"]({cmd:' + assigned + '});'
+                cells.extend((
+                    (invoke.replace('SOURCE', json.dumps(indirect_sloppy)), owning),
+                    (invoke.replace('SOURCE', json.dumps('"use strict";' + indirect_sloppy)), False),
+                    (invoke.replace('SOURCE', json.dumps(indirect_this)), owning),
+                    (invoke.replace('SOURCE', json.dumps('"use strict";' + indirect_this)), owning),
+                ))
+            cells.extend((
+                ('globalThis.C="echo safe";eval(' + json.dumps('globalThis.C=' + assigned)
+                    + ');await eval("tools.exec_command({cmd:globalThis.C})");', owning),
+                ('globalThis.C="echo safe";Object.assign(globalThis,{C:' + assigned
+                    + '});await eval("tools.exec_command({cmd:globalThis.C})");', owning),
+                ('globalThis.C="echo safe";Object.assign(globalThis,{C:' + assigned
+                    + '});await Function("return tools.exec_command({cmd:C})")();', owning),
+                ('globalThis.C="echo safe";Reflect.set(globalThis,"C",' + assigned
+                    + ');await Function("return tools.exec_command({cmd:C})")();', owning),
+            ))
+            for mutation in ('globalThis.C=c;', 'Object.assign(globalThis,{C:c});',
+                             'Reflect.set(globalThis,"C",c);'):
+                for operand in ('C', 'globalThis.C'):
+                    child = 'return Function(' + json.dumps('return tools.exec_command({cmd:' + operand + '})') + ')();'
+                    cells.append(('await Function("c",' + json.dumps(mutation + child) + ')(' + assigned + ');', owning))
         for cell, owning in cells:
             rows = history('codex', {})
             rows[1]['payload'].update(name='functions.exec', arguments=cell)
@@ -3776,6 +3853,9 @@ os.system(get())
             'const half=total / 2; const fixture=' + json.dumps(fake) + '; text(half);',
             'const Constructor=Function; const fixture=' + json.dumps(fake) + '; text(Constructor.name);',
             'await eval("1+1"); const fixture=' + json.dumps(fake) + ';',
+            'const metadata=eval;const fixture=' + json.dumps(fake) + ';text(fixture);',
+            'const metadata=Function;const fixture=' + json.dumps(fake) + ';text(fixture);',
+            'const metadata=[eval];const fixture=' + json.dumps(fake) + ';text(fixture);',
         )
         for cell in cells:
             rows = history('codex', {})
@@ -3805,6 +3885,19 @@ os.system(get())
             call = 'text(await tools.exec_command({cmd:' + json.dumps(command) + '}));'
             source = '(async()=>{' + call + '})()'
             for cell in (
+                'await (0,eval)(' + json.dumps(source) + ');',
+                'await eval?.(' + json.dumps(source) + ');',
+                'await globalThis["eval"](' + json.dumps(source) + ');',
+                'await globalThis["ev"+"al"](' + json.dumps(source) + ');',
+                'await globalThis["Function"](' + json.dumps('return ' + source) + ')();',
+                'await eval.call(null,' + json.dumps(source) + ');',
+                'await eval.apply(null,[' + json.dumps(source) + ']);',
+                'await Reflect.apply(eval,null,[' + json.dumps(source) + ']);',
+                'await [eval][0](' + json.dumps(source) + ');',
+                'await Function.call(null,' + json.dumps('return ' + source) + ')();',
+                'await Function.apply(null,[' + json.dumps('return ' + source) + '])();',
+                'await Reflect.apply(Function,null,[' + json.dumps('return ' + source) + '])();',
+                'await [Function][0](' + json.dumps('return ' + source) + ')();',
                 'await eval(' + json.dumps(source) + ');',
                 'await Function("tools", "text", ' + json.dumps('return ' + source) + ')(tools,text);',
                 'const AsyncFunction=(async()=>{}).constructor; await new AsyncFunction("tools", "text", '
@@ -3832,20 +3925,21 @@ os.system(get())
                                      for effect in receipts.native_file_effects('functions.exec', cell)))
         writer = 'uv run /catalog/gh-plan.py --repo o/r claim 5'
         patch = '*** Begin Patch\n*** Add File: /repo/run.py\n+import os\n+os.system(' + repr(writer) + ')\n*** End Patch'
-        for cell in ('const p=' + json.dumps(patch) + ';text(p);',
-                     'const unused=' + json.dumps(patch) + ';await tools.exec_command({cmd:"echo safe"});',
-                     'globalThis.P=' + json.dumps(patch) + ';text(globalThis.P);',
-                     'globalThis["P"]=' + json.dumps(patch) + ';text(globalThis["P"]);',
-                     'globalThis.P=' + json.dumps(patch) + ';await tools.exec_command({cmd:"echo safe"});',
-                     'globalThis.P=' + json.dumps(patch) + ';const P=' + json.dumps(patch.replace("import os\n+os.system(" + repr(writer) + ")", "print(\"safe\")")) + ';const ap=tools.apply_patch;await ap(P);'):
+        safe_patch = '*** Begin Patch\n*** Add File: /repo/run.py\n+print("safe")\n*** End Patch'
+        for cell, writes in (('const p=' + json.dumps(safe_patch) + ';eval(' + json.dumps('const unused=' + json.dumps(patch)) + ');await tools.apply_patch(p);', True),
+                             ('const p=' + json.dumps(patch) + ';text(p);', False),
+                     ('const unused=' + json.dumps(patch) + ';await tools.exec_command({cmd:"echo safe"});', False),
+                     ('globalThis.P=' + json.dumps(patch) + ';text(globalThis.P);', False),
+                     ('globalThis["P"]=' + json.dumps(patch) + ';text(globalThis["P"]);', False),
+                     ('globalThis.P=' + json.dumps(patch) + ';await tools.exec_command({cmd:"echo safe"});', False),
+                     ('globalThis.P=' + json.dumps(patch) + ';const P=' + json.dumps(patch.replace("import os\n+os.system(" + repr(writer) + ")", "print(\"safe\")")) + ';const ap=tools.apply_patch;await ap(P);', True)):
             rows = history('codex', {}, {})
             rows[1]['payload'].update(name='functions.exec', arguments=cell)
             rows[2] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-0')
             rows[3]['payload']['arguments'] = json.dumps({'cmd': 'python3 /repo/run.py'})
             rows[4] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-1')
             with self.subTest(inert_patch=cell):
-                if 'const ap=' not in cell:
-                    self.assertFalse(any(effect['kind'] == 'write' for effect in receipts.native_file_effects('functions.exec', cell)))
+                self.assertEqual(any(effect['kind'] == 'write' for effect in receipts.native_file_effects('functions.exec', cell)), writes)
                 self.assertFalse(receipts.ownership_state(rows, 'codex')['pending'])
 
     def test_composed_fixture_strings_and_comments_are_not_tool_invocations(self):
