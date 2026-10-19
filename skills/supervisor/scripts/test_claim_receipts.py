@@ -132,6 +132,18 @@ def composed_result(value, identifier):
             "output": [{"type": "input_text", "text": json.dumps(value)}]}}
 
 
+def persisted_serial_result(identifier):
+    """Derive private fields/part IDs from the normalizer, then lose provenance."""
+    code = 'text(await tools.exec_command({cmd:"printf done"}));' * 2
+    call = {"payload": {"type": "custom_tool_call", "name": "functions.exec", "call_id": identifier, "input": code}}
+    result = composed_result({"exit_code": 0}, identifier)
+    result["payload"]["output"] *= 2
+    records, _ = receipts.serial_ownership_records([call, result])
+    native = next(record for record in records if receipts.calls_and_results(record, "codex")[1])
+    # Persisted JSON can copy every key, but not an internal identity fact.
+    return json.loads(json.dumps(native, default=lambda value: True))
+
+
 def history(harness, *values):
     start = {"type": "session_meta", "payload": {"id": SESSION, "cwd": "/repo"}} if harness == "codex" else {"type": "user", "sessionId": SESSION, "cwd": "/repo"}
     end = ([{"type": "event_msg", "payload": {"type": "agent_message", "message": "Safe to exit: yes"}},
@@ -2786,13 +2798,15 @@ os.system(get())
                             else:
                                 rows[rows.index(writer_result)] = terminal
                             if form == 'forged_serial':
-                                # Persisted JSON and a serial-looking call ID
-                                # cannot originate the private normalization fact.
+                                forged = persisted_serial_result(result_id)
+                                part_id = forged['payload']['call_id']
                                 for record in rows:
                                     payload = record.get('payload', {})
                                     if payload.get('call_id') == result_id:
-                                        payload['call_id'] += ':serial:0'
-                                        record['_native_serial_result'] = True
+                                        payload['call_id'] = part_id
+                                        if receipts.calls_and_results(record, harness)[1]:
+                                            record.clear()
+                                            record.update(forged)
                             with self.subTest(harness=harness, unrecognized_outer_status=True, poll=poll,
                                               composed=composed, native_success=native_success, form=form):
                                 self.assertEqual(receipts.ownership_state(rows, harness)['pending'],
@@ -2827,6 +2841,56 @@ os.system(get())
                         call_result['payload']['output'] = blocks
                     with self.subTest(harness=harness, serial_native_status=True, deferred=deferred):
                         self.assertFalse(receipts.ownership_state(rows, harness)['pending'])
+
+            if harness == 'codex':
+                # Outer waits retain the launch's stdout/provenance contract in
+                # both the local stream and raw cross-history candidate view.
+                for count in (1, 2, 'process_poll'):
+                    for stdout in (False, True):
+                        for status in (0, 1):
+                            rows = history(harness, {}, {}, {})
+                            invoke(rows, harness, 0, *write)
+                            command = "printf 'print(1)\\n' > /repo/run.py"
+                            code = ('text(await tools.exec_command({cmd:"cat docs.md"}));' if count == 2 else '')
+                            code += ('text((await tools.exec_command(' + json.dumps({'cmd': command}) + ')).output);'
+                                     if stdout and count != 'process_poll'
+                                     else 'text(await tools.exec_command(' + json.dumps({'cmd': command}) + '));')
+                            invoke(rows, harness, 1, 'functions.exec', code)
+                            invoke(rows, harness, 2, *read)
+                            written = next(record for record in rows
+                                           if 'tool-1' in receipts.calls_and_results(record, harness)[1])
+                            blocks = [{'type': 'input_text', 'text': 'Script running with cell ID outer-cell\nWall time 0.01 seconds'}]
+                            if count == 2:
+                                blocks.append({'type': 'input_text', 'text': json.dumps({'exit_code': 0, 'output': ''})})
+                            written['payload']['output'] = blocks
+                            poll = []
+                            if count == 'process_poll':
+                                # The waited cell is the poll, whose stdout
+                                # projection can differ from the writer's.
+                                written['payload']['output'] = composed_result({'session_id': 444}, 'tool-1')['payload']['output']
+                                poll_code = ('text((await tools.write_stdin({session_id:444,chars:""})).output);'
+                                             if stdout else 'text(await tools.write_stdin({session_id:444,chars:""}));')
+                                poll = [{'payload': {'type': 'function_call', 'name': 'functions.exec', 'call_id': 'poll-cell',
+                                                     'arguments': poll_code}},
+                                        {'payload': {'type': 'function_call_output', 'call_id': 'poll-cell', 'output': blocks}}]
+                            wait = {'payload': {'type': 'function_call', 'name': 'functions.wait', 'call_id': 'outer-wait',
+                                    'arguments': json.dumps({'cell_id': 'outer-cell'})}}
+                            terminal = composed_result({'exit_code': 0} if stdout else {'exit_code': status, 'output': ''}, 'outer-wait')
+                            terminal['payload']['output'].insert(0, {'type': 'input_text', 'text': 'Script completed\nWall time 0.01 seconds'})
+                            position = rows.index(written) + 1
+                            rows[position:position] = [*poll, wait, terminal]
+                            for index, record in enumerate(rows[1:], 1):
+                                record['timestamp'] = f'2026-01-01T00:00:{index:02d}Z'
+                            reader = [record for record in rows if any(identifier == 'tool-2'
+                                      for identifier, _, _ in receipts.calls_and_results(record, harness)[0])
+                                      or 'tool-2' in receipts.calls_and_results(record, harness)[1]]
+                            writer_rows = [record for record in rows if all(record is not target for target in reader)]
+                            peer_rows = [dict(rows[0]), *reader]
+                            peers = [{'harness': harness, 'records': records} for records in (writer_rows, peer_rows)]
+                            candidates = receipts.ownership_file_candidates(peers)
+                            for scope, records, options in (('local', rows, {}), ('peer', peer_rows, {'file_candidates': candidates})):
+                                with self.subTest(outer_cell=count, stdout=stdout, status=status, scope=scope):
+                                    self.assertEqual(receipts.ownership_state(records, harness, **options)['pending'], stdout or status != 0)
 
             def transport(rows, index, mode='success'):
                 identifier = 'tool-' + str(index)
@@ -3344,7 +3408,7 @@ os.system(get())
         self.check_visible_serial_poll_results(stdout=True)
         rows = history("codex", claim())
         # A serial-looking unbound output cannot remove the real launch.
-        rows[2] = composed_result({"exit_code": 0}, "tool-0:serial:0")
+        rows[2] = persisted_serial_result("tool-0")
         self.assertTrue(receipts.ownership_state(rows, "codex")["pending"])
 
     def check_visible_serial_poll_results(self, *, stdout):
@@ -5126,6 +5190,20 @@ os.system(get())
                 'text(await tools.write_stdin({session_id:123}));'}}
         records[-2:-2] = [call, started, poll, output(proof(("example/a", 1, 10)), "codex", "poll")]
         self.assertTrue(session_record.summarize(records, "codex")["safe_verdict"])
+        for deferred in (False, True):
+            records = history("codex", claim())
+            checked = composed_result({'exit_code': 0, 'output': json.dumps(proof(("example/a", 1, 10)))}, 'launch')
+            additions = [call, checked]
+            if deferred:
+                checked['payload']['call_id'] = 'outer-wait'
+                checked['payload']['output'].insert(0, {'type': 'input_text', 'text': 'Script completed\nWall time 0.01 seconds'})
+                additions = [call, {'payload': {'type': 'function_call_output', 'call_id': 'launch', 'output': [
+                    {'type': 'input_text', 'text': 'Script running with cell ID checker-cell\nWall time 0.01 seconds'}]}},
+                    {'payload': {'type': 'function_call', 'name': 'functions.wait', 'call_id': 'outer-wait',
+                                 'arguments': json.dumps({'cell_id': 'checker-cell'})}}, checked]
+            records[-2:-2] = additions
+            with self.subTest(single_checker_outer_wait=deferred):
+                self.assertTrue(session_record.summarize(records, 'codex')['safe_verdict'])
 
     def test_plain_codex_process_handle_binds_a_long_running_check(self):
         records = history("codex", claim(), proof(("example/a", 1, 10)))
@@ -5784,6 +5862,30 @@ os.system(get())
         safe_write = "printf 'echo done\\n' > run.sh"
         owner = "echo " + shlex.quote(writer) + " > run.sh"
         termination_cases = (
+            ("eval_exit", "[ -f run.sh ] && eval exit; " + safe_write, True, True),
+            ("eval_quoted_exit", '[ -f run.sh ] && eval "exit 0"; ' + safe_write, True, True),
+            ("exec_process", "[ -f run.sh ] && exec true; " + safe_write, True, True),
+            ("exec_options", "[ -f run.sh ] && exec -a sample true; " + safe_write, True, True),
+            ("source_exit", 'printf "exit 0\\n" > early.sh; . ./early.sh; ' + safe_write, True, True),
+            ("source_named_exit", 'printf "exit 0\\n" > early.sh; source ./early.sh; ' + safe_write, True, True),
+            ("conditional_exit_shadow", 'if [ -n "$X" ]; then exit() { :; }; fi; [ -f run.sh ] && exit 0; ' + safe_write, True, True),
+            ("conditional_owning_shadow", 'if [ -n "$X" ]; then exit() { bash run.sh; }; fi; exit 0; ' + safe_write, True, True),
+            ("conditional_previous_shadow", 'gen() { bash run.sh; }; if [ -n "$X" ]; then gen() { :; }; fi; gen; ' + safe_write, True, True),
+            ("pipeline_exit_shadow", "printf x | exit() { :; }; [ -f run.sh ] && exit 0; " + safe_write, True, True),
+            ("subshell_exit_shadow", "( exit() { :; } ); [ -f run.sh ] && exit 0; " + safe_write, True, True),
+            ("unused_subshell_function", "gen() ( " + safe_write + " )", True, True),
+            ("called_subshell_function", "gen() ( " + safe_write + " ); gen && bash run.sh", False, False),
+            ("called_compound_owning_function", "gen() if true; then bash run.sh; fi; gen; " + safe_write, True, True),
+            ("conditional_nested_redefinition", 'gen() { bash run.sh; }; change() { gen() { :; }; }; if [ -n "$X" ]; then change; fi; gen; ' + safe_write, True, True),
+            ("unused_compound_function", "gen() if true; then " + safe_write + "; fi", True, True),
+            ("unused_simple_function", "gen() " + safe_write, True, True),
+            ("called_simple_function", "gen() " + safe_write + "; gen && bash run.sh", False, False),
+            ("logout", "[ -f run.sh ] && logout 0; " + safe_write, True, True),
+            ("bye", "[ -f run.sh ] && bye; " + safe_write, True, True),
+            ("top_level_return", "[ -f run.sh ] && return 0; " + safe_write, True, True),
+            ("exec_redirection", "exec >log; " + safe_write, True, False),
+            ("shadowed_copy", "cp() { :; }; printf 'echo safe\\n' > safe.sh; cp safe.sh run.sh && bash run.sh", False, True),
+            ("aliased_copy", "alias cp=':'\nprintf 'echo safe\\n' > safe.sh; cp safe.sh run.sh && bash run.sh", False, True),
             ("early_exit", "[ -f run.sh ] && exit 0; " + safe_write, True, True),
             ("early_exit_implicit", "[ -f run.sh ] && exit; " + safe_write, True, True),
             ("early_exit_final_exit", "[ -f run.sh ] && exit 0; " + safe_write + " && exit 0", True, True),
@@ -5822,6 +5924,13 @@ os.system(get())
             (hook, hook + "() { exit 0; }; " + safe_write, True, True)
             for hook in ("TRAPEXIT", "TRAPERR", "TRAPZERR", "TRAPDEBUG")]
         handler_cases += [
+            ("inherited_debug_subshell", "trap 'if [[ $BASH_SUBSHELL == 1 ]]; then exit 0; fi' DEBUG; set -T; ( " + safe_write + " ) && bash run.sh", False, True),
+            ("zsh_inherited_debug_subshell", "TRAPDEBUG() { if [[ $ZSH_SUBSHELL == 1 ]]; then exit 0; fi; }; ( " + safe_write + " ) && bash run.sh", False, True),
+            ("zsh_short_debug", "TRAPDEBUG() exit 0; " + safe_write, True, True),
+            ("debug_skip", "shopt -s extdebug; trap '[[ $BASH_COMMAND != printf* ]]' DEBUG; " + safe_write + " && bash run.sh", False, True),
+            ("guarded_before_hook", "( " + safe_write + " ) && bash run.sh; trap 'exit 0' DEBUG", False, False),
+            ("inherited_err_suppressed", "trap 'exit 0' ERR; set -E; ( " + safe_write + " ) && bash run.sh", False, False),
+            ("inherited_function_err_suppressed", "trap 'return 0' ERR; set -E; gen() { " + safe_write + "; }; gen && bash run.sh", False, False),
             ("trap_explicit_action", "trap -- '-x; exit 0' ERR; " + safe_write, True, True),
             ("command_options_trap", "command -p -- trap 'exit 0' ERR; " + safe_write, True, True),
             ("query_print", "trap -p EXIT; " + safe_write, True, False),

@@ -2178,6 +2178,28 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
         if start >= 0:
             cursor = start + len(token)
     bounds = compound_bounds(tokens)
+    definitions = {}
+    for index, token in enumerate(tokens):
+        if not re.fullmatch(r"[A-Za-z_]\w*", token):
+            continue
+        if tokens[index + 1:index + 3] == ["(", ")"]:
+            name, body = token, index + 3
+        elif token == "function" and index + 1 < len(tokens) and re.fullmatch(r"[A-Za-z_]\w*", tokens[index + 1]):
+            name, body = tokens[index + 1], index + 2
+            if tokens[body:body + 2] == ["(", ")"]:
+                body += 2
+        else:
+            continue
+        while body < len(tokens) and tokens[body] in {";", "\n"}:
+            body += 1
+        if body in bounds:
+            stop = bounds[body] + 1
+        else:
+            stop = body
+            while stop < len(tokens) and not all(c in ";&|\n" for c in tokens[stop]):
+                stop = bounds.get(stop, stop) + 1
+        if body < stop:
+            definitions[index] = (name, body, stop)
     stream_sources = {} if stream_sources is None else stream_sources
     languages = {}
 
@@ -2185,6 +2207,11 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
         segments, current, index = [], [], begin
         while index < end:
             token = tokens[index]
+            if index in definitions and definitions[index][2] <= end:
+                stop = definitions[index][2]
+                current.extend(range(index, stop))
+                index = stop
+                continue
             if token in {"(", "{"} and index in bounds and bounds[index] < end:
                 close = bounds[index]
                 current.extend(range(index, close + 1))
@@ -2262,6 +2289,11 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                 argv.extend(shlex.split(token, comments=False))
                 last_word = index
                 cursor += 1
+            definition = definitions.get(segment[0])
+            if definition is not None:
+                name, body, stop = definition
+                argv, children, child_scope = [name], parse(body, stop), None
+                descriptors = {0: "pipe-in", 1: "pipe-out", 2: None}
             if any(tokens[opening] == "case" and opening <= segment[0] < closing for opening, closing in bounds.items()):
                 pattern_end = next((at for at in segment if tokens[at] == ")"), None)
                 if pattern_end is not None:
@@ -2277,7 +2309,7 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
             language = stdin_language(argv)
             if children is None and tokens[segment[0]] in {"}", ")", "done", "fi", "esac"}:
                 language = compound_stdin_language(tokens, source, segment[0], spans, heredocs) or language
-            nodes.append({"argv": argv, "children": children, "child_scope": child_scope,
+            nodes.append({"argv": argv, "children": children, "child_scope": child_scope, "definition": definition,
                           "language": language, "index": segment[0], "stop": segment[-1] + 1,
                           "descriptors": descriptors, "heredocs": heredocs,
                           "substitutions": substitutions,
@@ -2464,8 +2496,11 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                             action = [] if set(option[1:]) & {"v", "V"} else action[1:]
                         else:
                             break
-                terminates = action[0] if action[:1] in (["exit"], ["return"]) else None
-                if terminates and len(action) > 1 and re.fullmatch(r"[+-]?\d+", action[1]) and int(action[1]) % 256:
+                terminates = ("exit" if action[:1] in (["exit"], ["logout"], ["bye"]) else
+                              "return" if action[:1] == ["return"] else None)
+                if action[:1] == ["exec"] and unwrapped_command(action):
+                    terminates = "exit"
+                if terminates and action[0] != "exec" and len(action) > 1 and re.fullmatch(r"[+-]?\d+", action[1]) and int(action[1]) % 256:
                     terminates = None  # This early result cannot be success.
                 trap = action[1:] if action[:1] == ["trap"] else []
                 explicit_action = trap[:1] == ["--"]
@@ -2473,6 +2508,10 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                     trap = trap[1:]
                 installation = (len(trap) >= 2 and trap[0] not in {"-", ""}
                                 and (explicit_action or not trap[0].startswith("-")))
+                opaque_context = bool(action[:1] in (["eval"], ["source"], ["."]) and len(action) > 1)
+                alias_installation = bool(action[:1] == ["alias"] and any("=" in word for word in action[1:]))
+                installation |= opaque_context or alias_installation
+                may_skip = opaque_context or alias_installation or installation and "DEBUG" in trap[1:]
                 result = shell_literal_status(node["argv"])
                 if previous == "||":
                     if list_status is False:
@@ -2491,7 +2530,9 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                 success_facts[node["index"]] = {"entry": entry, "success": set(list_success),
                                                 "children": child_success, "parent": parent, "stop": node["stop"],
                                                 "subshell": node["child_scope"] == "(",
-                                                "terminates": terminates, "overrides": installation, "builtin_action": builtin_action}
+                                                "terminates": terminates, "overrides": installation, "builtin_action": builtin_action,
+                                                "definition": node["definition"], "pipeline": previous in {"|", "|&"}, "command": action[0] if action else None, "may_skip": may_skip,
+                                                "inherit_override": opaque_context or alias_installation or any(signal not in {"ERR", "ZERR"} for signal in trap[1:])}
                 previous = node["separator"]
                 implied = set(list_success) if previous == "&&" else set(inherited)
             list_start = 0
@@ -3017,13 +3058,8 @@ def shell_effect_order(tokens, events, *, success_facts=None):
             if other is not None:
                 inverse = not condition if condition is not None and tokens[other] == "else" else None
                 guard(other, stop, inverse)
-    for index, token in enumerate(tokens):
-        if token != "{" or index not in bounds:
-            continue
-        if index >= 3 and tokens[index - 2:index] == ["(", ")"] and re.fullmatch(r"[A-Za-z_]\w*", tokens[index - 3]):
-            definitions[index - 3] = (tokens[index - 3], index + 1, bounds[index])
-        elif index >= 2 and tokens[index - 2] == "function" and re.fullmatch(r"[A-Za-z_]\w*", tokens[index - 1]):
-            definitions[index - 2] = (tokens[index - 1], index + 1, bounds[index])
+    definitions = {position: facts["definition"] for position, facts in success_facts.items()
+                   if isinstance(position, int) and facts.get("definition") is not None}
     for event in events:
         condition = guards[event["position"]]
         if condition is not False:
@@ -3034,7 +3070,8 @@ def shell_effect_order(tokens, events, *, success_facts=None):
     success_links = {position: facts["children"] for position, facts in success_facts.items()
                      if isinstance(position, int) and facts.get("children")}
     success_links["end"] = end_success
-    alternatives, function_calls = {}, set()
+    alternatives, function_calls, hooked, entered = {}, set(), set(), set()
+    uncertain_commands = {}
     automatic_traps = {"TRAPEXIT", "TRAPERR", "TRAPZERR", "TRAPDEBUG"}
 
     def expanded_success(positions, active=frozenset()):
@@ -3074,19 +3111,22 @@ def shell_effect_order(tokens, events, *, success_facts=None):
             scopes.append(owner)
         return tuple(scopes)
 
-    def alternate_endpoint(scopes, implied, *, termination=None):
+    def alternate_endpoint(scopes, implied, *, termination=None, inherit=True):
         process = next(index for index in range(len(scopes) - 1, -1, -1)
                        if scopes[index] == "end" or success_facts.get(scopes[index], {}).get("subshell"))
         if termination == "exit":
             targets = [scopes[process]]
         elif termination == "return":
             target = next((scope for scope in reversed(scopes[process:])
-                           if scope in function_calls or success_facts.get(scope, {}).get("subshell")), None)
-            targets = [] if target is None else [target]
+                           if scope in function_calls or scope != "end" and success_facts.get(scope, {}).get("subshell")), None)
+            # Zsh also returns from the noninteractive top-level script.
+            targets = [scopes[process]] if target is None else [target]
         else:
             # A reached handler may successfully end its surrounding context.
             # A subshell installation cannot affect its parent's endpoint.
             targets = scopes[process:]
+            if inherit:
+                hooked.add(scopes[process])
         for target in targets:
             alternatives.setdefault(target, []).append(frozenset(implied))
 
@@ -3096,13 +3136,27 @@ def shell_effect_order(tokens, events, *, success_facts=None):
         while index < end:
             implied = inherited | (success_facts.get(index, {}).get("entry", set()) - scope_entry)
             scopes = live_scopes(index, scope_prefix, boundary)
+            for at, scope in enumerate(scopes):
+                if scope not in entered:
+                    entered.add(scope)
+                    if any(parent in hooked for parent in scopes[:at]):
+                        alternatives.setdefault(scope, []).append(frozenset(implied))
+            process = next(scope for scope in reversed(scopes)
+                           if scope == "end" or success_facts.get(scope, {}).get("subshell"))
+            certain_scope = not any(scope != "end" and success_facts.get(scope, {}).get("pipeline") for scope in scopes)
+            certain_scope &= not success_facts.get(index, {}).get("pipeline", False)
             if index in definitions:
                 name, start, stop = definitions[index]
                 if guards[index] is not False:
-                    functions[name] = (parsed_owner(index), start, stop)
+                    binding = (parsed_owner(index), start, stop)
+                    old, certain = functions.get((name, process), ([], False))
+                    functions[name, process] = (([binding], True) if definite is True and guards[index] is True and certain_scope else
+                                                ([*old, binding], certain))
                     if name in automatic_traps:
-                        alternate_endpoint(scopes, implied)
-                index = stop + 1
+                        alternate_endpoint(scopes, implied, inherit=name not in {"TRAPERR", "TRAPZERR"})
+                        if name == "TRAPDEBUG":
+                            uncertain_commands.setdefault(process, []).append(frozenset(implied))
+                index = stop
                 continue
             token = tokens[index]
             if token in {"for", "select", "while", "until"} and index in bounds:
@@ -3143,28 +3197,43 @@ def shell_effect_order(tokens, events, *, success_facts=None):
                 index += 1
                 continue
             facts = success_facts.get(index, {})
-            called = (None if facts.get("builtin_action") else
-                      next((path for event in current if event["kind"] == "read"
-                            for path in event["paths"] if path in functions), None))
+            called = facts.get("command") if not facts.get("builtin_action") else None
+            possible, certain = [], False
             if called is not None:
-                if active.count(called) < 2:
-                    definition, start, stop = functions[called]
-                    facts = success_facts.get(definition, {})
-                    body_success = facts.get("children", set()) - facts.get("entry", set())
-                    success_links[index] = body_success
-                    function_calls.add(index)
+                for scope in reversed(scopes):
+                    if scope != "end" and not success_facts.get(scope, {}).get("subshell"):
+                        continue
+                    bindings, definite_binding = functions.get((called, scope), ([], False))
+                    possible.extend(bindings)
+                    if definite_binding:
+                        certain = True
+                        break
+            if possible and active.count(called) < 2:
+                body_guarantees = []
+                function_calls.add(index)
+                if process in hooked:
+                    alternatives.setdefault(index, []).append(frozenset(implied))
+                for definition, start, stop in possible:
+                    definition_facts = success_facts.get(definition, {})
+                    body_guarantees.append(definition_facts.get("children", set()) - definition_facts.get("entry", set()))
                     yield from walk(start, stop, (*active, called),
-                                    definite=True if definite is True and guards[index] is True else None,
-                                    inherited=implied, scope_entry=facts.get("entry", set()),
+                                    definite=True if definite is True and guards[index] is True and certain_scope and certain and len(possible) == 1 else None,
+                                    inherited=implied, scope_entry=definition_facts.get("entry", set()),
                                     scope_prefix=(*scopes, index), boundary=definition)
-            else:
-                facts = success_facts.get(index, {})
+                success_links[index] = set.intersection(*body_guarantees) if certain else set()
+            if not certain:
                 if current and facts.get("terminates"):
                     alternate_endpoint(scopes, implied, termination=facts["terminates"])
                 if current and facts.get("overrides"):
-                    alternate_endpoint(scopes, implied)
+                    alternate_endpoint(scopes, implied, inherit=facts.get("inherit_override", False))
+                    if facts.get("may_skip"):
+                        uncertain_commands.setdefault(process, []).append(frozenset(implied))
+                observed = set(implied)
+                for scope in scopes:
+                    for before in uncertain_commands.get(scope, ()):
+                        observed.intersection_update(before)
                 for event in current:
-                    yield dict(event, _implied_success=tuple(implied)) if event["kind"] == "read" else event
+                    yield dict(event, _implied_success=tuple(observed)) if event["kind"] == "read" else event
             index += 1
     ordered = list(walk(0, len(tokens)))
     native_success = expanded_success({"end"})
@@ -8003,6 +8072,7 @@ def native_write_outcomes(records, harness, identifiers):
     native_invocations = {identifier: (name, value) for record in records
                           for identifier, name, value in calls_and_results(record, harness)[0]}
     native_names = {identifier: name for identifier, (name, _) in native_invocations.items()}
+    composed_results = serial_native_bindings(records) if harness == "codex" else {}
     ends, successful, failed, native_results = {}, set(), set(), {}
     for index, identifier, result in bound_outputs(records, harness, lambda name, value: (name, id(value)) in selected):
         if result.get("_result") and not result.get("_pending"):
@@ -8016,15 +8086,20 @@ def native_write_outcomes(records, harness, identifiers):
                 continue
             output_name, output_value = output_call
             composed = output_name in {"exec", "functions.exec"}
-            serial = composed_calls(output_value) if composed else [(output_name, arguments(output_value), False)]
-            blocks, _ = serial_native_chunk(records[index])
             normalized = records[index].get("_native_serial_result") is _SERIAL_NATIVE_RESULT
-            wrappers = (serial_native_results(blocks, serial) if serial and (composed or normalized)
-                        and output_name not in {"apply_patch", "functions.apply_patch"} else None)
+            binding = composed_results.get((index, result.get("_tool_call_id")))
+            serial, wrappers = [], None
+            if binding is not None:
+                _, serial, wrappers = binding
+            elif normalized and output_name not in {"apply_patch", "functions.apply_patch"}:
+                serial = [(output_name, arguments(output_value), False)]
+                blocks, _ = serial_native_chunk(records[index])
+                wrappers = serial_native_results(blocks, serial)
             if wrappers is not None:
-                statuses = [wrapper.get("exit_code") for (method, args, stdout), wrapper in zip(serial, wrappers)
-                            if wrapper is not None and (not composed or method in {"write_stdin", "wait"}
-                                or any(effect["kind"] == "write" for effect in native_file_effects(method, args)))]
+                statuses = [wrapper.get("exit_code") if wrapper is not None else None
+                            for (method, args, stdout), wrapper in zip(serial, wrappers)
+                            if normalized or method in {"write_stdin", "wait"}
+                            or any(effect["kind"] == "write" for effect in native_file_effects(method, args))]
                 if statuses and all(type(status) is int for status in statuses):
                     (successful if all(status == 0 for status in statuses) else failed).add(identifier)
             elif not composed:
@@ -8087,15 +8162,17 @@ def ownership_file_candidates(histories, *, python_checks=None):
     python_checks = python_checks or python_source_checks()
     for node in histories:
         origin = id(node["records"][0]) if node["records"] else None
-        launches = {identifier: index for index, record in enumerate(node["records"])
+        records, positions = (serial_ownership_records(node["records"]) if node["harness"] == "codex"
+                              else (node["records"], list(range(len(node["records"])))))
+        launches = {identifier: positions[index] for index, record in enumerate(records)
                     for identifier, _, _ in calls_and_results(record, node["harness"])[0]}
         writes = []
-        for identifier, name, value, cwd, stamp in native_calls(node["records"], node["harness"], with_timestamp=True):
+        for identifier, name, value, cwd, stamp in native_calls(records, node["harness"], with_timestamp=True):
             for effect in native_file_effects(name, value):
                 if effect["kind"] == "write":
                     writes.append((identifier, name, cwd, native_timestamp(stamp), effect))
         selected = {identifier for identifier, _, _, _, _ in writes}
-        ends, successful = native_write_outcomes(node["records"], node["harness"], selected) if selected else ({}, set())
+        ends, successful = native_write_outcomes(records, node["harness"], selected) if selected else ({}, set())
         by_call, sources, local_candidates = {}, {}, set()
         for identifier, name, cwd, timestamp, effect in writes:
             path = native_path(effect["path"], native_cwd(effect.get("cwd"), cwd)) if effect["path"] else None
@@ -8107,7 +8184,7 @@ def ownership_file_candidates(histories, *, python_checks=None):
                 entry["owns"] |= owning
                 if owning or effect["replaces"]:
                     entry["final"] = owning
-        completions = {identifier: native_timestamp(node["records"][index].get("timestamp"))
+        completions = {identifier: native_timestamp(records[index].get("timestamp"))
                        for identifier, index in ends.items()}
         for (identifier, path), entry in by_call.items():
             completion = completions.get(identifier) if entry["at"] is not None else None
@@ -8575,27 +8652,24 @@ def serial_native_results(blocks, serial):
     return wrappers
 
 
-def serial_ownership_records(records):
-    """Bind visible serial calls, collecting only fresh prints across outer waits.
+def serial_native_bindings(records):
+    """Bind fresh prints to their actual composed launch, including outer waits.
 
-    Never split a computed/hidden call or borrow nested stdout as a native result.
-    Checker receipts still use their separate isolated-invocation contract.
+    A waited cell may itself be a process poll; its own stdout projection owns
+    the result contract. Single-call launches retain their original receipt IDs.
     """
-    expanded, positions, launches, cells, polls, printed = [], [], {}, {}, {}, {}
-    contexts, split_ids = {}, set()
+    launches, cells, polls, printed, bindings = {}, {}, {}, {}, {}
     for index, record in enumerate(records):
         calls, results = calls_and_results(record, "codex")
         for identifier, name, value in calls:
             serial = composed_calls(value) if name in {"exec", "functions.exec"} else []
-            if len(serial) > 1:
+            if serial:
                 launches[identifier] = serial
-                contexts[identifier] = {key: record[key] for key in ("timestamp", "cwd") if key in record}
             args = arguments(value)
             if name in {"wait", "functions.wait"} and isinstance(args, dict):
                 source = cells.get(str(args.get("cell_id")))
                 if source is not None:
                     polls[identifier] = source
-        split = None
         for identifier in results:
             source = identifier if identifier in launches else polls.get(identifier)
             if source is None:
@@ -8609,9 +8683,26 @@ def serial_ownership_records(records):
                 continue
             wrappers = serial_native_results(printed[source], launches[source])
             if wrappers is not None:
+                bindings[index, identifier] = source, launches[source], wrappers
+    return bindings
+
+
+def serial_ownership_records(records):
+    """Split only verified multi-call completions, preserving receipt contracts."""
+    expanded, positions, contexts, split_ids = [], [], {}, set()
+    bindings = serial_native_bindings(records)
+    for index, record in enumerate(records):
+        calls, results = calls_and_results(record, "codex")
+        for identifier, _, _ in calls:
+            contexts[identifier] = {key: record[key] for key in ("timestamp", "cwd") if key in record}
+        split = None
+        for identifier in results:
+            binding = bindings.get((index, identifier))
+            if binding is not None and len(binding[1]) > 1:
+                source, serial, wrappers = binding
                 split_ids.add(source)
                 split = []
-                for part, ((method, args, _), wrapper) in enumerate(zip(launches[source], wrappers)):
+                for part, ((method, args, _), wrapper) in enumerate(zip(serial, wrappers)):
                     part_id = f"{source}:serial:{part}"
                     split.append({**contexts[source], "payload": {"type": "function_call", "name": method, "call_id": part_id, "arguments": json.dumps(args)}})
                     # A stdout-only writer/poll has no native terminal wrapper.

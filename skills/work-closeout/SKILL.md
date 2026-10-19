@@ -382,6 +382,10 @@ failed rewrite, leaving the previous script executable. Whole-shell success and
 JSON printed by the script cannot prove that rewrite succeeded. For a heredoc,
 place `&& run` on the opening command line, before its body. This is guidance for
 future execution; never repeat an earlier ownership write to manufacture proof.
+An early successful exit, an installed command hook, or opaque in-shell
+`eval`/`source` code can prevent a later rewrite from running despite a successful
+shell result. Keep shell initialization separate from the plain foreground
+rewrite so its own native completion can establish the replacement.
 Ownership commands before or after inert bodies still count. Substitutions in
 unquoted heredocs may execute and remain unparsed.
 Potential ownership in unparsed shell or computed code-mode commands stays
