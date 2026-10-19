@@ -2382,6 +2382,31 @@ class ReceiptTests(unittest.TestCase):
                 "await tools.apply_patch(" + json.dumps(other_patch) + "); "
                 + "text(await tools.exec_command(" + json.dumps({"cmd": "bash run.sh", field: "/wt/repo"}) + "))")
             self.assertTrue(receipts.ownership_state(rows, "codex")["pending"])
+        for field in ("workdir", "cwd"):
+            for directory, pending in (("child", True), ("other", False)):
+                with self.subTest(relative_mixed_directory=directory, field=field):
+                    rows = history("codex", {})
+                    relative_patch = patch_body.replace("/repo/run.sh", "/repo/child/run.sh")
+                    rows[1]["payload"].update(name="exec", arguments=
+                        "await tools.apply_patch(" + json.dumps(relative_patch) + "); "
+                        + "text(await tools.exec_command(" + json.dumps({"cmd": "bash run.sh", field: directory}) + "))")
+                    self.assertEqual(receipts.ownership_state(rows, "codex")["pending"], pending)
+        for harness in ("codex", "claude"):
+            for field in ("workdir", "cwd", "working_directory"):
+                for serialized in (False, True) if harness == "codex" else (False,):
+                    with self.subTest(harness=harness, relative_directory=field, serialized=serialized):
+                        rows = history(harness, {}, {})
+                        write = {"cmd": "cat > run.sh <<'EOF'\n" + writer + "\nEOF", field: "child"}
+                        read = {"cmd": "bash child/run.sh"}
+                        if harness == "codex":
+                            for index, args in ((1, write), (3, read)):
+                                rows[index]["payload"].update(
+                                    name="exec" if serialized else "exec_command",
+                                    arguments="text(await tools.exec_command(" + json.dumps(args) + "))" if serialized else json.dumps(args))
+                        else:
+                            for index, args in ((1, write), (3, read)):
+                                rows[index]["message"]["content"][0]["input"] = {"command": args["cmd"], **({field: "child"} if index == 1 else {})}
+                        self.assertTrue(receipts.ownership_state(rows, harness)["pending"])
         rows = history("codex", {})
         rows[1]["payload"].update(name="exec", arguments=
             'text(await tools.exec_command({"cmd":"bash run.sh"})); '
@@ -2583,6 +2608,51 @@ class ReceiptTests(unittest.TestCase):
                     candidates = receipts.ownership_file_candidates(histories)
                     self.assertEqual(receipts.ownership_state(reader, harness, file_candidates=candidates)["pending"], pending)
 
+        for harness in ("codex", "claude"):
+            for timed in (False, True):
+                modes = (("missing", True), ("running", True), ("overlap", True),
+                         ("terminal", False), ("future", False), ("detached", True))
+                if harness == "codex":
+                    modes += (("polled", False), ("late_poll", True))
+                for mode, pending in modes:
+                    with self.subTest(harness=harness, own_writer=mode, timed=timed):
+                        rows = history(harness, {}, {})[:5]
+                        command = "cat > run.sh <<'EOF'\n" + writer + "\nEOF"
+                        if mode == "detached":
+                            command = '{ sleep "$DELAY"; ' + command + "\n} &"
+                        read = "printf 'echo done\\n' > run.sh; sleep 1; bash run.sh"
+                        if harness == "codex":
+                            rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                            rows[3]["payload"]["arguments"] = json.dumps({"cmd": read})
+                        else:
+                            rows[1]["message"]["content"][0]["input"] = {"command": command}
+                            rows[3]["message"]["content"][0]["input"] = {"command": read}
+                        rows[2] = output({"session_id": 123} if mode in {"running", "polled", "late_poll"} else {"exit_code": 0}, harness, "tool-0")
+                        rows[4] = output({"exit_code": 0}, harness, "tool-1")
+                        if mode == "missing":
+                            rows.pop(2)
+                        elif mode == "overlap":
+                            rows.append(rows.pop(2))
+                        elif mode == "future":
+                            rows = [rows[0], *rows[3:5], *rows[1:3]]
+                        elif mode in {"polled", "late_poll"}:
+                            poll = [{"type": "response_item", "payload": {"type": "function_call", "name": "write_stdin",
+                                     "call_id": "writer-poll", "arguments": json.dumps({"session_id": 123})}},
+                                    output({"exit_code": 0}, harness, "writer-poll")]
+                            if mode == "polled":
+                                rows[3:3] = poll
+                            else:
+                                rows.extend(poll)
+                        if timed:
+                            for index, row in enumerate(rows[1:], 1):
+                                row["timestamp"] = f"2026-01-01T00:00:{index:02d}Z"
+                        histories = [{"harness": harness, "records": rows}]
+                        candidates = receipts.ownership_file_candidates(histories)
+                        self.assertEqual(receipts.ownership_state(rows, harness, file_candidates=candidates)["pending"], pending)
+                        # Native binding must also work when the caller has no
+                        # cross-history candidates to contribute.
+                        self.assertEqual(receipts.ownership_state(rows, harness)["pending"], pending)
+
     def test_within_call_file_execution_obeys_write_order_and_replacement(self):
         writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 12'
         scripts = (
@@ -2644,6 +2714,20 @@ class ReceiptTests(unittest.TestCase):
                     self.assertEqual(receipts.ownership_state(rows, harness)["pending"], pending)
 
 
+    def test_python_repeated_clear_helpers_do_not_expand_with_call_paths(self):
+        counts = []
+        for depth in (3, 6):
+            program = "import subprocess\ndef leaf(): subprocess.run(['echo', 'done'])\n"
+            for index in range(depth):
+                child = 'leaf' if index == 0 else f'step{index - 1}'
+                program += f'def step{index}(): {child}(); {child}()\n'
+            program += f'step{depth - 1}()'
+            with patch.object(receipts, 'ownership_command', wraps=receipts.ownership_command) as classify:
+                self.assertFalse(receipts.python_ownership(program))
+                counts.append(classify.call_count)
+        self.assertLessEqual(counts[1], counts[0] * 3)
+
+
     def test_python_process_launches_resolve_only_literal_concatenation(self):
         writer = "uv run /catalog/gh-plan.py --repo client/repo claim 12"
         programs = (
@@ -2678,6 +2762,36 @@ class ReceiptTests(unittest.TestCase):
             ("import os\nfor cmd in []:\n    os.system(" + repr(writer) + ")", False),
             ("import os, subprocess\nargv=['uv','run','/catalog/gh-plan.py','--repo','client/repo','claim','12']\nif os.environ.get('DRY'):\n    argv=['echo','skip']\nsubprocess.run(argv)", True),
             ("import os, subprocess\nargv=['echo'," + repr(writer) + "]\nif os.environ.get('DRY'):\n    argv=['rg'," + repr(writer) + "]\nsubprocess.run(argv)", False),
+            ("import os\nfor c in ['git fetch', " + repr(writer) + "]:\n    os.system(f'cd /wt/repo && {c}')", True),
+            ("import subprocess\nfor c in ['git fetch', " + repr(writer) + "]:\n    subprocess.run(['bash', '-lc', c])", True),
+            ("import subprocess, shlex; text=" + repr(writer) + "; subprocess.run('gh issue comment 5 --body ' + shlex.quote(text), shell=True)", False),
+            ("import subprocess, shlex\nfor text in ['git fetch', " + repr(writer) + "]:\n    subprocess.run('gh issue comment 5 --body ' + shlex.quote(text), shell=True)", False),
+            ("import subprocess\ndef sh(c): subprocess.run(c, shell=True)\ndef main(): sh(" + repr(writer) + ")\nmain()", True),
+            ("import subprocess\nclass Job:\n    def run(self): subprocess.run(" + repr(writer) + ", shell=True)\nJob().run()", True),
+            ("import subprocess\nclass Job:\n    def run(self, cmd): subprocess.run(cmd, shell=True)\njob = Job()\njob.run(" + repr(writer) + ")", True),
+            ("import subprocess\nclass Job:\n    def run(self, cmd): subprocess.run(cmd, shell=True)\njob = Job()\njob.run('echo done')", False),
+            ("import subprocess\nclass Job:\n    def run(self): subprocess.run(" + repr(writer) + ", shell=True)", False),
+            ("import subprocess, threading\ndef claim(): subprocess.run(" + repr(writer) + ", shell=True)\nthreading.Thread(target=claim).start()", True),
+            ("import subprocess\nfrom concurrent.futures import ThreadPoolExecutor\ndef claim(): subprocess.run(" + repr(writer) + ", shell=True)\nThreadPoolExecutor().submit(claim)", True),
+            ("import subprocess\ndef claim(): subprocess.run(" + repr(writer) + ", shell=True)\ndef push(): print('done')\nfor step in (claim, push): step()", True),
+            ("import subprocess\ndef claim(): subprocess.run(" + repr(writer) + ", shell=True)\nprint(claim)", False),
+            ("try:\n    import subprocess\nexcept ImportError:\n    raise SystemExit(1)\nsubprocess.run(" + repr(writer) + ", shell=True)", True),
+            ("if condition:\n    import subprocess as sp\nelse:\n    import subprocess as sp\nsp.run(" + repr(writer) + ", shell=True)", True),
+            ("if condition:\n    from subprocess import run as launch\nelse:\n    launch=print\nlaunch(" + repr(writer) + ", shell=True)", True),
+            ("import os\nfor action in " + repr([f'safe{i}' for i in range(12)] + ['claim']) + ":\n    os.system(f'uv run /catalog/gh-plan.py --repo client/repo {action} 12')", True),
+            ("import subprocess\nfor text in " + repr([f'safe{i}' for i in range(12)] + [writer]) + ":\n    subprocess.run(['echo', text])", False),
+            ("import os\nfor command in " + repr([f'echo safe{i}' for i in range(12)] + [writer]) + ":\n    os.system(command)", True),
+            ("import subprocess\nfor command in " + repr([f'echo safe{i}' for i in range(12)] + [writer]) + ":\n    subprocess.run(['bash', '-c', command])", True),
+            ("import inspect, subprocess\ndef claim(): subprocess.run(" + repr(writer) + ", shell=True)\ninspect.signature(claim)", False),
+            ("import subprocess\ndef claim(): subprocess.run(" + repr(writer) + ", shell=True)\ncallbacks=dict(callback=claim)", False),
+            ("import subprocess, threading\ndef sh(command): subprocess.run(command, shell=True)\nthreading.Thread(target=sh, args=(" + repr(writer) + ",)).start()", True),
+            ("import subprocess\nfrom concurrent.futures import ThreadPoolExecutor\ndef sh(command): subprocess.run(command, shell=True)\nThreadPoolExecutor().submit(sh, " + repr(writer) + ")", True),
+            ("import subprocess\nclass Job:\n    @staticmethod\n    def run(command): subprocess.run(command, shell=True)\nJob().run(" + repr(writer) + ")", True),
+            ("import subprocess\n" + "\n".join(f'def step{i}(): print({i})' for i in range(12)) + "\ndef claim(): subprocess.run(" + repr(writer) + ", shell=True)\nfor step in (" + ','.join(f'step{i}' for i in range(12)) + ",claim): step()", True),
+            ("import subprocess; text=" + repr(writer) + "; subprocess.run(transform(text), shell=True)", True),
+            ("import subprocess; text=" + repr(writer) + "; subprocess.run('gh issue comment 5 --body ' + transform(text), shell=True)", False),
+            ("import subprocess; text=" + repr(writer) + "; subprocess.run(['echo', transform(text)])", False),
+            ("import subprocess; text=" + repr(writer) + "; subprocess.run(['python3', 'notify.py', '--message', transform(text)])", False),
             ("def emit(c): print(c)\nemit(" + repr(writer) + ")", False),
             ("import subprocess\ndef unused(): subprocess.run(" + repr(writer) + ", shell=True)", False),
             ('import os; n=12; os.system(f"gh issue comment 5 --body \'next: uv run /catalog/gh-plan.py --repo r claim {n}\'")', False),
@@ -2694,6 +2808,122 @@ class ReceiptTests(unittest.TestCase):
                     else: rows[1]["message"]["content"][0]["input"] = {"command": command}
                     self.assertEqual(receipts.ownership_state(rows, harness)["pending"], pending)
                     self.assertEqual(receipts.executable_file_content("run.py", program), pending)
+
+
+    def test_generated_python_edits_compose_recorded_source_before_execution(self):
+        writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 12'
+        base = 'import subprocess\ndef main():\n    subprocess.run(' + repr(writer) + ', shell=True)\n    return None\n'
+        caller = 'if __name__ == "__main__":\n    main()\n'
+        harmless = 'print("done")\n'
+
+        def invocation(harness, rows, position, method, value):
+            index = 1 + 2 * position
+            if harness == "codex":
+                rows[index]["payload"].update(name=method, arguments=json.dumps(value) if isinstance(value, dict) else value)
+            else:
+                rows[index]["message"]["content"][0].update(name=method, input=value)
+
+        def write(harness, content):
+            if harness == "codex":
+                return "apply_patch", "*** Begin Patch\n*** Add File: /repo/run.py\n" + "\n".join("+" + line for line in content.splitlines()) + "\n*** End Patch"
+            return "Write", {"file_path": "/repo/run.py", "content": content}
+
+        def edit(mode, addition):
+            if mode == "Edit":
+                return mode, {"file_path": "/repo/run.py", "old_string": "    return None\n", "new_string": "    return None\n" + addition}
+            if mode == "apply_patch":
+                return mode, "*** Begin Patch\n*** Update File: /repo/run.py\n@@\n     return None\n" + "\n".join("+" + line for line in addition.splitlines()) + "\n*** End Patch"
+            return "exec_command", {"cmd": "cat >> run.py <<'EOF'\n" + addition + "EOF"}
+
+        for harness in ("codex", "claude"):
+            shell = "exec_command" if harness == "codex" else "Bash"
+            run = {"cmd" if harness == "codex" else "command": "python3 run.py"}
+            for mode in ("Edit", "apply_patch", "append"):
+                for addition, replaced, expected in ((caller, False, True), ('message = "main()"\n', False, False),
+                                                      (caller, True, False)):
+                    with self.subTest(harness=harness, mode=mode, addition=addition, replaced=replaced):
+                        rows = history(harness, *({} for _ in range(4 if replaced else 3)))
+                        invocation(harness, rows, 0, *write(harness, base))
+                        method, value = edit(mode, addition)
+                        if harness == "claude" and method == "exec_command":
+                            method, value = "Bash", {"command": value["cmd"]}
+                        invocation(harness, rows, 1, method, value)
+                        if replaced:
+                            invocation(harness, rows, 2, *write(harness, harmless))
+                        invocation(harness, rows, 3 if replaced else 2, shell, run)
+                        self.assertEqual(receipts.ownership_state(rows, harness)["pending"], expected)
+
+                # A peer's dormant definition must survive until a second
+                # peer's partial edit and a third history's real script read.
+                with self.subTest(harness=harness, mode=mode, peers=True):
+                    author, editor, reader = (history(harness, {}) for _ in range(3))
+                    invocation(harness, author, 0, *write(harness, base))
+                    method, value = edit(mode, caller)
+                    if harness == "claude" and method == "exec_command":
+                        method, value = "Bash", {"command": value["cmd"]}
+                    invocation(harness, editor, 0, method, value)
+                    invocation(harness, reader, 0, shell, run)
+                    for number, rows in enumerate((author, editor, reader), 1):
+                        rows[1]["timestamp"] = rows[2]["timestamp"] = f"2026-01-01T00:00:0{number}Z"
+                    nodes = [{"harness": harness, "records": rows} for rows in (author, editor, reader)]
+                    candidates = receipts.ownership_file_candidates(nodes)
+                    self.assertTrue(receipts.ownership_state(reader, harness, file_candidates=candidates)["pending"])
+
+            for mode in ("Edit", "apply_patch"):
+                with self.subTest(harness=harness, mode=mode, documentation_only=True):
+                    rows = history(harness, {}, {}, {})
+                    invocation(harness, rows, 0, *write(harness, base))
+                    if mode == "Edit":
+                        value = {"file_path": "/repo/run.py", "old_string": base, "new_string": base + "# documentation\n"}
+                    else:
+                        value = "*** Begin Patch\n*** Update File: /repo/run.py\n@@\n" + "\n".join(" " + line for line in base.splitlines()) + "\n+# documentation\n*** End Patch"
+                    invocation(harness, rows, 1, mode, value)
+                    invocation(harness, rows, 2, shell, run)
+                    self.assertFalse(receipts.ownership_state(rows, harness)["pending"])
+
+            for count in (10, 64):
+                for addition, pending in ((caller, True), ("print('done')\n", False),
+                                          ("import inspect\ninspect.signature(main)\n", False)):
+                    with self.subTest(harness=harness, alternative_definitions=count, addition=addition):
+                        rows = history(harness, *({} for _ in range(count + 2)))
+                        for position in range(count):
+                            content = base if position == 7 else "def main():\n    print(" + repr(str(position)) + ")\n"
+                            command = "if test -f choice" + str(position) + "; then cat > run.py <<'EOF'\n" + content + "EOF\nfi"
+                            invocation(harness, rows, position, shell, {"cmd" if harness == "codex" else "command": command})
+                        command = "cat >> run.py <<'EOF'\n" + addition + "EOF"
+                        invocation(harness, rows, count, shell, {"cmd" if harness == "codex" else "command": command})
+                        invocation(harness, rows, count + 1, shell, run)
+                        self.assertEqual(receipts.ownership_state(rows, harness)["pending"], pending)
+
+            for completion, pending in ((2, False), (5, True), (None, True)):
+                with self.subTest(harness=harness, replacement_completion=completion):
+                    author, cleanup, reader = history(harness, {}), history(harness, {}), history(harness, {}, {})
+                    invocation(harness, author, 0, *write(harness, base))
+                    invocation(harness, cleanup, 0, *write(harness, harmless))
+                    command = "cat >> run.py <<'EOF'\n" + caller + "EOF"
+                    invocation(harness, reader, 0, shell, {"cmd" if harness == "codex" else "command": command})
+                    invocation(harness, reader, 1, shell, run)
+                    author[1]["timestamp"] = author[2]["timestamp"] = "2026-01-01T00:00:01Z"
+                    cleanup[1]["timestamp"] = "2026-01-01T00:00:02Z"
+                    if completion is None:
+                        cleanup.pop(2)
+                    else:
+                        cleanup[2]["timestamp"] = f"2026-01-01T00:00:0{completion}Z"
+                    reader[1]["timestamp"] = reader[2]["timestamp"] = "2026-01-01T00:00:03Z"
+                    reader[3]["timestamp"] = reader[4]["timestamp"] = "2026-01-01T00:00:04Z"
+                    nodes = [{"harness": harness, "records": rows} for rows in (author, cleanup, reader)]
+                    candidates = receipts.ownership_file_candidates(nodes)
+                    self.assertEqual(receipts.ownership_state(reader, harness, file_candidates=candidates)["pending"], pending)
+
+            with self.subTest(harness=harness, uncertain_invalid_base=True):
+                rows = history(harness, {}, {}, {})
+                command = "test -f choice && printf 'x = (' > run.py"
+                invocation(harness, rows, 0, shell, {"cmd" if harness == "codex" else "command": command})
+                addition = "import os; os.system(" + repr(writer) + ")\n"
+                command = "cat >> run.py <<'EOF'\n" + addition + "EOF"
+                invocation(harness, rows, 1, shell, {"cmd" if harness == "codex" else "command": command})
+                invocation(harness, rows, 2, shell, run)
+                self.assertTrue(receipts.ownership_state(rows, harness)["pending"])
 
 
 if __name__ == "__main__":
