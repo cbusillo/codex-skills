@@ -650,6 +650,42 @@ helper reports `outcome_unknown`, retains the safe trace/code and sends no
 automatic retry. Require admin reconciliation before retrying under **any**
 key; never recreate, replace or silently adopt the target as recovery.
 
+`dokploy-target-create-application-dry-run` and
+`dokploy-target-create-application-apply` use the same setup route with
+`operation: "create-application"`: a new project, environment and empty
+application for the `testing` lane, with no domain route. Authorization is
+the same as compose setup; first testing setup also admits the Director agent
+on a lane with exclusive context ownership. It may replace only a
+never-deployed target Launchplane created empty, named exactly in
+`expected_current_provider_target`.
+
+- The private payload requires `context`, `instance` (exactly `testing`),
+  `target_name`, `server_id`, `project_name`, `environment_name` and `reason`.
+  Optional: `schema_version`, `project_description`, `environment_description`,
+  `description`, `source_git_ref`, `healthcheck_path` (starting `/`),
+  `deploy_timeout_seconds`, `state_volume_path` (the product's absolute
+  container state directory) and `expected_current_provider_target`. Ids,
+  domains, ports, git source and `app_name` are refused before a request.
+- Without `state_volume_path`, output shows the plan actions for project,
+  environment and application. With it, the dry run saves a service storage
+  plan; output shows its `plan_id` and `service_plan_sha256` and drops the
+  generated project, environment, application and volume names. `plan_sha256`
+  covers the payload digest and that plan.
+- Apply sends the saved `state_volume_plan_id` and `expected_plan_sha256` from
+  the reviewed evidence, never a new dry run, which would allocate new names.
+  Keep the first apply's `--idempotency-key` with the evidence: the service
+  binds the allocation to it, and a retry or recovery uses that key only.
+- HTTP 202 is a receipt. Success needs `applied: true`, a created target, and
+  with storage `allocation_state: adopted` and `configuration_evidence:
+  matches`. A `retained_uncertain` receipt or unverified mount is reported as
+  `accepted_unverified` with a warning. Refusals carry the service's
+  `application_state_volume_*` codes; act on the code, not the message.
+- Apply reads the target back through inspect and checks the provider-target
+  record, that every record names the created application, no domains and the
+  reviewed health-check path. Creation deploys nothing; image delivery follows
+  the ordinary testing deploy. Storage readback and custody retention are not
+  helper commands.
+
 ### Inert domain and ingress planning
 
 These commands are bounded local extensions, not projected operations in the
