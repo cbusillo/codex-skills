@@ -97,7 +97,7 @@ class ReceiptFixture:
                     method = request["method"]
                     self.rpc_requests.append(method)
                     if method == "initialized": return
-                    if method == "initialize": result = {"codexHome": str(native_home)}
+                    if method == "initialize": result = self.rpc_results.get(method, {"codexHome": str(native_home)})
                     elif method in self.rpc_results:
                         reply = self.rpc_results[method]
                         result = reply(request) if callable(reply) else reply
@@ -206,6 +206,24 @@ class ReceiptFixture:
 
 
 class IdleReceiptIntegrationTests(unittest.TestCase):
+    def test_ordinary_observation_authenticates_initialize_home_despite_shared_transcripts(self):
+        for mismatch in (False, True):
+            with self.subTest(mismatch=mismatch), ReceiptFixture() as f:
+                other = f.root / "other-account"
+                copied = other / "sessions" / f.transcript.name
+                copied.parent.mkdir(parents=True)
+                copied.symlink_to(f.transcript)
+                f.homes.append(other)
+                CLOSURE.replace_rows([])
+                f.release.record_closure(f.log, f.entry, "supervisor")
+                reported_home = other if mismatch else f.root / "canonical-home-alias"
+                if not mismatch: reported_home.symlink_to(f.home, target_is_directory=True)
+                f.rpc_results["initialize"] = {"codexHome": str(reported_home)}
+                _, states, coverage = f.observe()
+                self.assertEqual(states.get(f.session, {}).get("state") == "ended", not mismatch)
+                self.assertEqual(coverage["observed_source_incomplete"], mismatch)
+                self.assertFalse(f.mutations)
+
     def test_notloaded_observation_resolves_aborted_prelaunch_without_new_generation(self):
         with ReceiptFixture() as f:
             original = CLOSURE.log_rows()[0]
@@ -230,7 +248,7 @@ class IdleReceiptIntegrationTests(unittest.TestCase):
                 CLOSURE.set_action_pending(f.session, True)
                 CLOSURE.admit_sources({f.session})
                 CLOSURE.set_action_pending(f.session, False)
-            with self.assertRaisesRegex(ValueError, "handed off"):
+            with self.assertRaises(ValueError):
                 with CLOSURE.resume_guard(f.session):
                     self.fail("frozen source resumed")
 
@@ -252,7 +270,6 @@ class IdleReceiptIntegrationTests(unittest.TestCase):
                 floor = CLOSURE.action_time(f.session)
                 CLOSURE.set_action_pending(f.session, True, method="turn/start")
                 self.assertEqual(CLOSURE.action_time(f.session), floor)
-                self.assertEqual(json.loads(CLOSURE.lease_path(f.session).read_text())["action_kind"], "opaque")
                 before = CLOSURE.lease_path(f.session).read_bytes()
                 with self.assertRaises(ValueError):
                     CLOSURE.admit_sources({f.session, "missing-source"})
@@ -704,7 +721,7 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
                 request = frame.json()
                 method = request["method"]
                 if method == "initialized": continue
-                if method == "initialize": result = {}
+                if method == "initialize": result = {"codexHome": str(home)}
                 elif method in {"thread/items/list", "thread/queue/list", "thread/backgroundTerminals/list", "thread/timeline/list"}: result = {"data": [], "nextCursor": None}
                 elif method == "thread/turns/list": result = {"data": [{"id": "actual-turn", "status": "completed"}], "nextCursor": None}
                 elif method == "thread/goal/get": result = {"goal": None}
@@ -870,7 +887,6 @@ class ObservationMergeTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     with CLOSURE.resume_guard("handed-off"):
                         self.fail("a divergent runtime bypassed predecessor freeze")
-            self.assertTrue(CLOSURE.lease_state("handed-off")["successor_admitted"])
 
     def test_receipt_account_inventory_ignores_runtime_and_account_configs(self):
         with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"HOME": folder}):

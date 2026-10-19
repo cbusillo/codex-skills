@@ -365,6 +365,37 @@ class ReleaseTests(unittest.TestCase):
                     helper.record_closure(self.root / "must-not-publish.json", entry, "supervisor")
                 self.assertFalse((self.root / "must-not-publish.json").exists())
 
+    def test_private_closure_uses_its_own_verified_source_instead_of_shared_same_id(self):
+        import tmux_terminal
+        ended = helper.release.stamp(self.entry["ended_at"])
+        entry = {**self.entry, "tmux_socket": "fixture", "tmux_session_id": "tmux:fixture:" + "a" * 32,
+                 "window_id": "$1", "tab_id": "@1"}
+        pane = {"session_id": entry["tmux_session_id"], "pane_id": "%1", "pid": 789,
+                "tmux_socket": "fixture", "window_id": "$1", "tab_id": "@1", "tty": entry["tty"],
+                "dead": True, "exited_at": ended.isoformat()}
+        log = self.root / "private-closure.json"
+        shared = self.root / "shared-closure.json"
+        shared.write_text(json.dumps([{**self.entry, "pid": 999, "tty": "other-tty"}]))
+        shared.chmod(0o600)
+        with patch.object(helper.closure, "closed_log", return_value=shared), \
+                patch.object(tmux_terminal.Terminal, "list", return_value=[pane]):
+            closed = helper.record_closure(log, entry, "supervisor")
+            with patch.object(helper, "inventory", return_value=[(456, entry["tty"], "codex --remote unix:///guarded")]), \
+                    patch.object(helper.closure, "guarded_launch_endpoint", return_value="/guarded"), \
+                    patch.object(helper.closure, "process_started_at", return_value=ended + timedelta(seconds=22)), \
+                    patch.object(tmux_terminal.Terminal, "list", side_effect=AssertionError("pane removed")):
+                retried = helper.record_closure(log, entry, "supervisor")
+            self.assertEqual(retried["ended_at"], closed["ended_at"])
+            self.assertEqual(retried["tty_exited_at"], closed["tty_exited_at"])
+
+    def test_ordinary_offline_finish_and_validation_do_not_need_an_unrelated_shared_store(self):
+        shared = self.root / "unrelated-shared.json"
+        shared.write_text("fixture unavailable store")
+        shared.chmod(0o600)
+        with patch.object(helper.closure, "closed_log", return_value=shared):
+            closed = helper.record_closure(self.root / "private-closure.json", self.entry, "supervisor")
+            self.assertTrue(helper.validate_closure(closed, "supervisor")["safe_verdict"])
+
     def test_scheduled_jobs_do_not_change_post_exit_finish_policy(self):
         entry = {**self.entry, "harness": "claude"}
         records = [

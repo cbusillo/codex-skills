@@ -13,6 +13,8 @@ import os
 from pathlib import Path
 import stat
 import uuid
+from typing import NamedTuple
+from datetime import datetime
 
 import github_plan_closure as closure
 
@@ -48,6 +50,8 @@ async def connection(home: Path, *, max_msg_size: int = 64 * 1024 * 1024):
                                                                "capabilities": {"experimentalApi": True}})
                     native_home = initialized.get("codexHome") if isinstance(initialized, dict) else None
                     request.codex_home = str(Path(native_home).resolve()) if isinstance(native_home, str) and Path(native_home).is_absolute() else None
+                    if request.codex_home != str(home.resolve()):
+                        raise ValueError("native daemon home identity disagrees with the source")
                     await ws.send_json({"method": "initialized"})
                     yield request
     except aiohttp.ClientError as error:
@@ -255,8 +259,6 @@ async def queue_input(home: Path, session: str, text: str, *, transcript: Path |
     allowance = max(1024 * 1024, len(json.dumps(params, ensure_ascii=True).encode()) + 65536)
     with closure.resume_guard(session, method="thread/queue/add", home=home):
         async with connection(home, max_msg_size=allowance) as request:
-            if request.codex_home != str(home.resolve()):
-                raise ValueError("native queue daemon home identity disagrees with the source")
             result = await request("thread/queue/add", params)
             entry = result.get("queuedSubmission") if isinstance(result, dict) else None
             if (not isinstance(entry, dict) or not isinstance(entry.get("id"), str) or not entry["id"]
@@ -265,14 +267,17 @@ async def queue_input(home: Path, session: str, text: str, *, transcript: Path |
             return {"queuedSubmissionId": entry["id"], "clientUserMessageId": client_id}
 
 
-def verify_source_process(entry):
-    """Cheap shared process proof; caller timestamps never supply an exit cutoff."""
-    from github_plan_sessions import native_helpers, process_liveness
+class _SourceProcess(NamedTuple):
+    source: dict
+    saved: dict | None
+    effective: dict
+    cutoff: datetime | None
+
+
+def _source_process(entry, saved):
+    """Select one trusted generation/cutoff; the owning route supplies its saved row."""
+    from github_plan_sessions import process_liveness
     from github_plan_release import stamp
-    native_helpers()
-    import release_session_claims
-    session = entry["session_id"]
-    saved = closure.source_records({session}).get(session)
     source = {**entry, **(saved or {})}
     generation = source.get("resumed_generation")
     if generation is not None and (not isinstance(generation, dict) or not generation):
@@ -281,10 +286,13 @@ def verify_source_process(entry):
     effective.pop("tty_exited_at", None)
     if generation:
         launch_keys = ("launch_pid", "launch_generation", "launch_started_at", "pid", "tty", "codex_home")
+        terminal_keys = ("tmux_session_id", "tmux_socket", "window_id", "tab_id", "iterm_session_id")
+        for key in terminal_keys:
+            effective.pop(key, None)
         if all(entry.get(key) == generation.get(key) for key in launch_keys):
             # Fresh terminal coordinates belong only to an owned matching
             # recovery ledger; an IDs-only observer cannot guess them.
-            for key in ("tmux_session_id", "tmux_socket", "window_id", "tab_id", "iterm_session_id"):
+            for key in terminal_keys:
                 if key in entry:
                     effective[key] = entry[key]
     if not generation and saved and saved.get("process_exit_verified") is True and saved.get("ended_at"):
@@ -292,16 +300,42 @@ def verify_source_process(entry):
         cutoff = stamp(saved["tty_exited_at"]) if saved.get("tty_exited_at") else ended
         if cutoff > ended:
             raise ValueError("native TTY exit cutoff is newer than closure")
+        if "tty_exited_at" in saved:
+            # The full saved-row identity check must see the exact trusted
+            # representation, not a caller hint or a normalized replacement.
+            effective["tty_exited_at"] = saved["tty_exited_at"]
     else:
         cutoff = process_liveness().native_exit_cutoff(effective)
-    release_session_claims.verify_process_exit(effective, ended_at=cutoff)
-    return source, saved, effective
+        if cutoff is not None:
+            effective["tty_exited_at"] = cutoff.isoformat()
+    return _SourceProcess(source, saved, effective, cutoff)
 
 
-def source_snapshot(entry):
+def recheck_source_process(process):
+    """Fresh process absence, using the same generation and observed cutoff."""
+    from github_plan_sessions import native_helpers
+    native_helpers()
+    import release_session_claims
+    release_session_claims._verify_process_exit(process.effective, process.cutoff, lambda: process.saved)
+
+
+def verify_source_process(entry):
+    """Cheap shared process proof; caller timestamps never supply an exit cutoff."""
+    process = _source_process(entry, closure.source_records({entry["session_id"]}).get(entry["session_id"]))
+    recheck_source_process(process)
+    return process
+
+
+def source_snapshot(entry, process=None):
     """Only file/process reads; safe to await in a cancellable worker thread."""
     from github_plan_sessions import codex_homes
-    source, saved, effective = verify_source_process(entry)
+    if process is None:
+        process = verify_source_process(entry)
+    else:
+        if closure.source_records({entry["session_id"]}).get(entry["session_id"]) != process.saved:
+            raise ValueError("source generation changed during native proof")
+        recheck_source_process(process)
+    source, saved, effective, _cutoff = process
     session = entry["session_id"]
     # A minimal resume row is identity metadata, not ownership. An explicitly
     # owned caller may supply its original launch provenance; observation cannot.
@@ -330,7 +364,7 @@ def source_snapshot(entry):
     homes.update(Path(value) for value in paths)
     if any(snapshot["status"]["background_tasks"] for snapshot in snapshots.values()):
         raise ValueError("source background work remains")
-    return {"source": saved, "entry": source, "home": str(home), "path": str(primary),
+    return {"source": saved, "entry": source, "process": process, "home": str(home), "path": str(primary),
             "homes": sorted(str(value.resolve()) for value in homes), "home_paths": paths, "transcripts": snapshots}
 
 
@@ -402,8 +436,6 @@ async def prove_end(entry, request=None):
         readers = {}
         for home in before["homes"]:
             native = request if request is not None and getattr(request, "codex_home", None) == home else await connections.enter_async_context(connection(Path(home)))
-            if getattr(native, "codex_home", None) != home:
-                raise ValueError("native daemon home identity disagrees with the source")
             readers[home] = native
         first = {}
         for home, native in readers.items():
@@ -418,7 +450,7 @@ async def prove_end(entry, request=None):
             final[home] = facts
         # The last native persistence read can commit buffered events. Read the
         # canonical source after that fence, never accept an earlier snapshot.
-        after = await asyncio.to_thread(source_snapshot, entry)
+        after = await asyncio.to_thread(source_snapshot, entry, before["process"])
         for home, facts in final.items():
             require_quiet(facts, local_snapshot(after, facts, home), home_action(action, home))
         if before != after:

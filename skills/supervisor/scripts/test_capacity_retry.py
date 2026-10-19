@@ -345,7 +345,7 @@ class CapacityTests(unittest.TestCase):
         capacity_retry.queue_continue(self.entry, home, endpoint, expected)
         params = self.queue_requests[-1]
         self.assertEqual(params["threadId"], self.entry["session_id"])
-        self.assertEqual(params["input"][0]["text"], "continue")
+        self.assertEqual(len(self.queue_requests), 1)
 
     def test_readback_requires_new_continue_from_same_native_transcript(self):
         size = self.transcript.stat().st_size

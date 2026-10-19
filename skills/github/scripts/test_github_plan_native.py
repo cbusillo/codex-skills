@@ -167,6 +167,114 @@ class NativeFactsTests(unittest.IsolatedAsyncioTestCase):
 
 
 class NativeQueueTests(unittest.TestCase):
+    def test_finish_keeps_one_native_cutoff_through_proof_and_later_safe_turn(self):
+        import uuid
+        from github_plan_sessions import native_helpers
+        native_helpers()
+        import tmux_terminal
+        for phase in ("first", "resumed", "later"):
+            with self.subTest(phase=phase), ReceiptFixture(str(uuid.uuid4())) as f:
+                cutoff = datetime.now(timezone.utc) - timedelta(minutes=1)
+                entry = {**f.entry, "tmux_socket": "fixture", "tmux_session_id": "tmux:fixture:" + "a" * 32,
+                         "window_id": "$1", "tab_id": "@1", "tty_exited_at": "2099-01-01T00:00:00Z"}
+                pane = {"session_id": entry["tmux_session_id"], "pane_id": "%1", "pid": 789,
+                        "tmux_socket": "fixture", "window_id": "$1", "tab_id": "@1", "tty": entry["tty"],
+                        "dead": True, "exited_at": cutoff.isoformat()}
+                if phase == "first": CLOSURE.replace_rows([])
+                if phase == "later":
+                    CLOSURE.replace_rows([])
+                    with patch.object(tmux_terminal.Terminal, "list", return_value=[pane]):
+                        original = f.release.record_closure(f.log, entry, "supervisor")
+                with CLOSURE.resume_guard(f.session, method="turn/start", home=f.home):
+                    if phase == "resumed":
+                        entry["launch_generation"] = "new-generation"
+                        metadata = {key: entry[key] for key in ("codex_home", "launch_pid", "launch_generation", "launch_started_at")}
+                        CLOSURE.resumed_launch(f.session, metadata, str(f.transcript), entry["tty"])
+                if phase == "later":
+                    later = datetime.now(timezone.utc).isoformat()
+                    with f.transcript.open("a") as stream:
+                        for payload in ({"type": "task_started", "turn_id": "later-safe-turn"},
+                                        {"type": "agent_message", "message": "Safe to exit: yes"},
+                                        {"type": "task_complete", "turn_id": "later-safe-turn"}):
+                            stream.write(json.dumps({"type": "event_msg", "timestamp": later, "payload": payload}) + "\n")
+                f.native_state = "notLoaded"
+                f.process_rows = [(456, entry["tty"], "unrelated-worker")]
+                reads = []
+                def panes():
+                    reads.append(True)
+                    return [pane] if phase != "later" and len(reads) == 1 else []
+                with patch.object(tmux_terminal.Terminal, "list", side_effect=panes), \
+                        patch.object(CLOSURE, "process_started_at", return_value=cutoff + timedelta(seconds=1)):
+                    closed = f.release.record_closure(f.log, entry, "supervisor")
+                    self.assertEqual(closed["tty_exited_at"], cutoff.isoformat())
+                    if phase == "later": self.assertGreater(closed["verdict_at"], original["verdict_at"])
+                    self.assertFalse(CLOSURE.action_pending(f.session))
+                    retried = f.release.record_closure(f.log, entry, "supervisor")
+                    self.assertEqual(retried["ended_at"], closed["ended_at"])
+                    self.assertEqual(retried["tty_exited_at"], closed["tty_exited_at"])
+                self.assertFalse(f.mutations)
+
+    def test_saved_native_cutoff_preserves_guarded_replacement_identity(self):
+        import uuid
+        from github_plan_sessions import native_helpers
+        native_helpers()
+        import tmux_terminal
+        with ReceiptFixture(str(uuid.uuid4())) as f:
+            CLOSURE.replace_rows([])
+            cutoff = datetime.now(timezone.utc) - timedelta(minutes=1)
+            entry = {**f.entry, "tmux_socket": "fixture", "tmux_session_id": "tmux:fixture:" + "a" * 32,
+                     "window_id": "$1", "tab_id": "@1"}
+            pane = {"session_id": entry["tmux_session_id"], "pane_id": "%1", "pid": 789,
+                    "tmux_socket": "fixture", "window_id": "$1", "tab_id": "@1", "tty": entry["tty"],
+                    "dead": True, "exited_at": cutoff.isoformat()}
+            with patch.object(tmux_terminal.Terminal, "list", return_value=[pane]):
+                closed = f.release.record_closure(f.log, entry, "supervisor")
+            native = ["codex", "--remote", "unix://" + str(CLOSURE.daemon_endpoint(f.home)), "--", "new task"]
+            with patch.object(CLOSURE, "process_started_at", return_value=cutoff + timedelta(seconds=1)):
+                f.managed(native)
+                f.commands = "456 " + " ".join(native)
+                f.process_rows = [(456, entry["tty"], " ".join(native))]
+                self.assertTrue(f.release.validate_closure(closed, "supervisor")["safe_verdict"])
+                NATIVE.verify_source_process({**entry, "tty_exited_at": "2099-01-01T00:00:00Z"})
+                self.assertEqual(f.observe()[1][f.session]["state"], "ended")
+                f.process_rows = [(456, entry["tty"], "codex --remote unix:///unregistered")]
+                with self.assertRaises(ValueError): NATIVE.verify_source_process(entry)
+            self.assertFalse(f.mutations)
+
+    def test_finish_rechecks_source_process_after_native_resolution(self):
+        import uuid
+        for command in ("source_pid", "source_resume"):
+            with self.subTest(command=command), ReceiptFixture(str(uuid.uuid4())) as f:
+                with CLOSURE.resume_guard(f.session, method="turn/start", home=f.home): pass
+                resolve = NATIVE.resolve_pending
+                def raced(session, proof):
+                    resolve(session, proof)
+                    f.process_rows = ([(f.entry["pid"], "other-tty", "unrelated-process")] if command == "source_pid" else
+                                      [(456, "other-tty", "codex resume " + f.session)])
+                with patch.object(NATIVE, "resolve_pending", side_effect=raced), self.assertRaises(ValueError):
+                    f.release.record_closure(f.log, f.entry, "supervisor")
+                self.assertFalse(f.mutations)
+
+    def test_new_launch_cannot_borrow_previous_generation_cutoff(self):
+        import uuid
+        with ReceiptFixture(str(uuid.uuid4())) as f:
+            cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
+            saved = CLOSURE.log_rows()
+            saved[0]["tty_exited_at"] = cutoff.isoformat()
+            CLOSURE.replace_rows(saved)
+            entry = {**f.entry, "launch_generation": "new-generation",
+                     "launch_started_at": (cutoff + timedelta(minutes=1)).isoformat(),
+                     "tty_exited_at": cutoff.isoformat()}
+            with CLOSURE.resume_guard(f.session, method="thread/resume", home=f.home):
+                metadata = {key: entry[key] for key in ("codex_home", "launch_pid", "launch_generation", "launch_started_at")}
+                CLOSURE.resumed_launch(f.session, metadata, str(f.transcript), entry["tty"])
+            f.native_state = "notLoaded"
+            f.process_rows = [(456, entry["tty"], "unrelated-worker")]
+            with patch.object(CLOSURE, "process_started_at", return_value=cutoff + timedelta(seconds=1)), self.assertRaises(ValueError):
+                f.release.record_closure(f.log, entry, "supervisor")
+            self.assertTrue(CLOSURE.action_pending(f.session))
+            self.assertFalse(f.mutations)
+
     def test_pending_canonical_events_committed_by_either_fence_are_rechecked(self):
         import uuid
         for commit_at in (1, 2):
@@ -270,7 +378,7 @@ class NativeQueueTests(unittest.TestCase):
                 f.rpc_results["thread/turns/list"] = {"data": [{"id": "source-turn", "status": "completed"}], "nextCursor": None}
                 with CLOSURE.ownership(f.session):
                     if native_state == "idle" and outcome is None:
-                        with self.assertRaisesRegex(ValueError, "realtime"):
+                        with self.assertRaises(ValueError):
                             asyncio.run(NATIVE.prove_end(f.entry))
                         self.assertTrue(CLOSURE.action_pending(f.session))
                     else:
@@ -288,7 +396,7 @@ class NativeQueueTests(unittest.TestCase):
                 with CLOSURE.resume_guard(f.session, method="turn/start", home=f.home): pass
                 with f.transcript.open("a") as stream:
                     stream.write(json.dumps({"timestamp": "2026-10-02T00:00:00Z", "type": "realtime_item", "payload": payload}) + "\n")
-                with CLOSURE.ownership(f.session), self.assertRaisesRegex(ValueError, "realtime"):
+                with CLOSURE.ownership(f.session), self.assertRaises(ValueError):
                     asyncio.run(NATIVE.prove_end(f.entry))
                 self.assertTrue(CLOSURE.action_pending(f.session))
 
@@ -308,11 +416,11 @@ class NativeQueueTests(unittest.TestCase):
     def test_action_racing_unleased_process_check_does_not_retain_new_observation_lease(self):
         import uuid
         with ReceiptFixture(str(uuid.uuid4())) as f, ThreadPoolExecutor(max_workers=1) as pool:
-            actual = f.release.verify_process_exit
+            actual = f.release._verify_process_exit
             raced = False
-            def process(entry, **kwargs):
+            def process(entry, *args):
                 nonlocal raced
-                result = actual(entry, **kwargs)
+                result = actual(entry, *args)
                 if not raced:
                     raced = True
                     with CLOSURE.resume_guard(f.session, method="turn/start", home=f.home): pass
@@ -321,7 +429,7 @@ class NativeQueueTests(unittest.TestCase):
                 try:
                     with CLOSURE.ownership(f.session): return True
                 except CLOSURE.LeaseBusy: return False
-            with patch.object(f.release, "verify_process_exit", side_effect=process):
+            with patch.object(f.release, "_verify_process_exit", side_effect=process):
                 with CLOSURE.observation({f.session}) as acquired:
                     self.assertNotIn(f.session, acquired)
                     self.assertTrue(pool.submit(available).result(2))

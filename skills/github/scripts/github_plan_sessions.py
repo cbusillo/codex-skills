@@ -122,6 +122,13 @@ async def observe_home(home: Path, sessions: set[str], proof_sessions: set[str] 
                 states.pop(session, None)
             else:
                 states[session] = previous
+            if session not in proof_sessions:
+                # The exact authored release owns the handoff. This positive
+                # native observation supplies only physical quiescence and its
+                # lease; it needs neither a second verdict nor an idle receipt.
+                states[session] = {"state": "ended", "source": "codex_app_server",
+                                   "native_state": state, "cwd": thread["cwd"], "leased_closure": False}
+                return
         receipt = github_plan_closure.RECEIPTS.get().get(session)
         if receipt and not isinstance(receipt.get("closure_evidence"), dict):
             receipt = None
@@ -299,7 +306,9 @@ def observe(sessions: set[str], proof_sessions: set[str] | None = None):
                 if blocked:
                     peers.append({"sessionId": session, "cwd": "/", "state": "active", "source": "native_action"})
                     states[session] = {"state": "live", "source": "native_action"}
-            retained.update(session for session, state in states.items() if state.get("state") == "ended")
+            unreleased = sessions if proof_sessions is None else proof_sessions
+            retained.update(session for session, state in states.items()
+                            if state.get("state") == "ended" and session not in unreleased)
             return peers, states, coverage
         finally:
             github_plan_closure.RECEIPTS.reset(token)
