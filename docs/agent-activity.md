@@ -96,6 +96,37 @@ workstream proposal: these are content rather than counts or lifecycle state.
 Private hook bindings hold only the producer and account IDs. A hook ignores
 the storage location in a binding written before the inbox existed.
 
+## Renewal check
+
+`renewal-check` shows whether live leases were renewed before they lapsed. It
+reads the inbox only. It does not write, prune or start anything.
+
+```sh
+uv run scripts/observe_agent_activity.py renewal-check --window 600 --harness both
+```
+
+It groups records by harness, account, session and run, ordered by
+`observedAt`, then `eventID`. A lapse is any record that arrives at or after
+the end of the lease of the live record before it. A record after a quiet or
+terminal record is never a lapse. A lease mismatch is any record whose lease is
+not the 90-second v1 lease. A qualifying run has an unbroken live chain longer
+than one lease. A run whose last live lease has already expired counts as
+`expiredOpen`, not as a failure.
+
+Each harness fails on any lapse or lease mismatch. It passes with at least one
+qualifying run, and is otherwise inconclusive. No runs or only short runs never
+pass. With `--harness both`, both harnesses must pass.
+
+`--window` is in seconds, above one lease and at most 24 hours, because older
+files are pruned. `--state-root` selects an isolated inbox. Exit codes: 0 pass,
+1 inbox unavailable, 2 usage error, 3 fail, 4 inconclusive.
+
+The JSON output holds counts only: runs, live records, qualifying runs, lapses,
+lease mismatches, the longest gap after a live record, the longest live span,
+expired open runs and each verdict. It also counts ignored, malformed and
+out-of-window files. It prints no session, run, account or event ID, and never
+echoes file content.
+
 ## Source semantics and coverage
 
 Codex: one passive Unix-websocket observer per configured `CODEX_HOME`. It lists
@@ -158,6 +189,6 @@ trusted command/session-start definitions but no lifecycle alert declarations;
 new Codex hook trust requires the native review step after installation.
 
 Run `uv run scripts/test_agent_activity.py` for payload privacy, inbox-only
-output, throttled pruning, hook-process identity, lease/outcome and real
+output, throttled pruning, hook-process identity, lease/outcome, renewal check and real
 Unix-websocket lifecycle fixtures. The existing
 installer and hook tests cover catalog registration and native trust preservation.
