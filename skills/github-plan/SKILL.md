@@ -295,6 +295,8 @@ active issue labels and continuing background jobs do not lift a hold.
    proof and supported route before using these flags. For PR-only work, use
    [Planning: Claim](../github/references/cli-reference.md#planning-claim).
    Active ownership still refuses.
+   For verified pushed WIP without a PR on this same issue, follow
+   [Planning: Claim's existing resume-only procedure](../github/references/cli-reference.md#planning-claim).
    For ordinary successor work before a retained PR can be refreshed, use
    `--resume-from` with `--handoff-comment` and omit `--refresh-pr`. Read
    Planning: Claim for the exact released multi-branch handoff proof; all
