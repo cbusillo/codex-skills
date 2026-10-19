@@ -2779,7 +2779,7 @@ def _claim_once(args: argparse.Namespace) -> None:
         permitted = github_plan_claim.retained_handoff(
             source_comments, args.resume_from, handoff_id, target_pulls, target_number if refresh_pr else None,
             issue_repo=issue_repo, issue_number=source_number, target_repo=target_repo,
-            allow_resume_only=source_number == number and issue_repo.casefold() == target_repo.casefold(),
+            allow_resume_only=source_number == number and not completed,
         )
         for ended in ended_owners:
             ended["pull_requests"] = [f"https://github.com/{target_repo}/pull/{p['number']}" for p in target_pulls
@@ -3173,7 +3173,7 @@ def _claim_once(args: argparse.Namespace) -> None:
                    "previous_current_status": previous_status, "claim_recovery": claim_recovery(),
                    "claim_comment": claim_comment, "session_coverage": inventory.get("session_coverage", {})}
         if isinstance(exc, github_plan_claim.ClaimProofError):
-            raise ClassifiedPlanError(exc.code, str(exc), payload={**payload, **exc.payload}) from exc
+            raise ClassifiedPlanError(exc.code, str(exc), payload={**exc.payload, **payload}) from exc
         raise PlanError(str(exc), payload=payload) from exc
     except PlanError as exc:
         exc.payload.update({"completed_steps": completed, "claim": claim, "claim_comment": claim_comment,

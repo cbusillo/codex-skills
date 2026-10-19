@@ -1122,24 +1122,32 @@ class ClaimTests(unittest.TestCase):
                 self.assertNotIn("successor_route", caught.exception.payload)
                 self.assert_no_writes()
 
-    def test_no_pr_hint_cannot_redirect_a_native_child_or_cross_repository_refresh(self):
-        for scope in ("native_child", "cross_repository_refresh"):
-            with self.subTest(scope=scope):
+    def test_no_pr_handoff_edit_after_publication_offers_only_claim_recovery(self):
+        for phase in ("after_post", "after_status"):
+            with self.subTest(phase=phase):
                 self.setUp()
-                self.no_pr_resume_fixture()
-                if scope == "native_child":
-                    self.parent_handoff_fixture()
-                    self.target_comments["/repos/owner/repo/issues/41/comments"][-1]["body"] = "Released claim 1\n\nPushed WIP, no PR."
-                    self.pulls, self.closed_pulls = [], {}
-                else:
-                    self.args.issue = "other/plans#42"
-                    self.args.planning_checkout = "/verified/plans"
-                    self.planning_inventory = {"worktrees": [], "local_branches": [], "remote_branches": [], "sessions": []}
-                    self.args.refresh_pr = "https://github.com/owner/repo/pull/99"
+                self.ordinary_handoff_fixture()
+                def edit_handoff():
+                    next(c for c in self.comments if c["id"] == self.args.handoff_comment)["body"] = (
+                        f"Released claim {self.args.resume_from}\n\nPreserved pushed WIP. No PR opened.")
+                setattr(self, phase, edit_handoff)
                 with self.assertRaises(PLAN.PlanError) as caught:
                     self.run_claim()
-                self.assertNotIn("successor_route", caught.exception.payload)
-                self.assert_no_writes()
+                payload = caught.exception.payload
+                self.assertIn("post", self.events)
+                if phase == "after_status": self.assertIn("status", self.events)
+                self.assertNotIn("successor_route", payload)
+                self.assertEqual(payload["claim_recovery"]["release_own_claim"]["comment_id"],
+                                 payload["claim_comment"]["comment"]["id"])
+
+    def test_no_pr_hint_cannot_redirect_a_native_child(self):
+        self.parent_handoff_fixture()
+        self.target_comments["/repos/owner/repo/issues/41/comments"][-1]["body"] = "Released claim 1\n\nPushed WIP, no PR."
+        self.pulls, self.closed_pulls = [], {}
+        with self.assertRaises(PLAN.PlanError) as caught:
+            self.run_claim()
+        self.assertNotIn("successor_route", caught.exception.payload)
+        self.assert_no_writes()
 
     def test_no_pr_resume_rechecks_rivals_holds_and_other_artifacts(self):
         for phase, change in product(("preflight", "after_post", "after_status"),

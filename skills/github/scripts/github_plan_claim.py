@@ -827,7 +827,8 @@ def retained_handoff(
         if allow_resume_only and not retained_pr:
             options = shlex.join(["--resume-from", str(source_id), "--branch", source_branch])
             raise ClaimProofError("claim_handoff_pr_required",
-                message + ". For WIP without a PR, verify the source session has finished and the preserved branch is pushed, "
+                message + ". For WIP without a PR, verify the source session has finished, "
+                "the handoff retains no PR at all, and the preserved branch is pushed, "
                 f"then use the existing same-record resume-only options `{options}` "
                 "without --handoff-comment or --refresh-pr. Ownership, waits, blockers and other artifact checks still apply.",
                 payload={"successor_route": {"resume_from": source_id, "branch": source_branch}})
