@@ -9,6 +9,13 @@ import json
 import re
 import shlex
 import ast
+import argparse
+import io
+import textwrap
+import tokenize
+import importlib.util
+import sys
+from functools import lru_cache
 import posixpath
 from pathlib import Path
 
@@ -84,8 +91,15 @@ def outputs(records, harness):
         return (opaque_ownership(name, value)
                 or any(ownership_command(argv) or script(argv) == "check_claims.py"
                        for argv in shell_commands(name, value)))
-    for index, _, value in bound_outputs(records, harness, relevant, isolated_polls=True,
+    isolated = {identifier: helper for record in records
+                for identifier, name, value in calls_and_results(record, harness)[0]
+                for helper in ("gh-plan.py", "gh-pr.py") if isolated_command(name, value, helper)}
+    for index, source, value in bound_outputs(records, harness, relevant, isolated_polls=True,
                                          opaque_calls=file_ownership_executions(records, harness)):
+        operation = value.get("operation")
+        if (operation == CLAIM_OPERATION and isolated.get(source) != "gh-plan.py"
+                or operation == "github.pr.create" and isolated.get(source) != "gh-pr.py"):
+            continue
         if "_attempt" not in value and "_result" not in value:
             yield positions[index], value
 
@@ -368,25 +382,32 @@ def unwrapped_command(argv):
     argv = list(argv)
     while argv:
         name = Path(argv[0]).name
-        if re.match(r"[A-Za-z_]\w*=", argv[0]) or name in {"do", "then", "else", "builtin"}:
+        if re.match(r"[A-Za-z_]\w*=", argv[0]) or name in {"if", "elif", "while", "until", "!", "{", "(", "do", "then", "else", "builtin"}:
             argv = argv[1:]
-        elif name in {"command", "exec", "nohup", "time", "env", "timeout", "nice"}:
+        elif name in {"command", "exec", "nohup", "time", "env", "timeout", "nice", "stdbuf"}:
             argv = argv[1:]
             while argv and (argv[0].startswith("-") or re.match(r"[A-Za-z_]\w*=", argv[0])):
                 flag = argv.pop(0)
-                if flag in {"-u", "--unset", "-C", "--chdir", "-k", "--kill-after", "-s", "--signal", "-n", "--adjustment", "-o", "--output"} and argv:
+                if flag in {"-u", "--unset", "-C", "--chdir", "-k", "--kill-after", "-s", "--signal", "-n", "--adjustment", "-o", "--output", "-i", "--input", "-e", "--error"} and argv:
                     argv.pop(0)
             if name == "timeout" and argv:
                 argv = argv[1:]
-        elif name == "uv" and argv[1:2] == ["run"]:
-            argv = argv[2:]
-            while argv and argv[0].startswith("-"):
-                flag = argv.pop(0)
-                if flag in {"--directory", "--project", "--python", "-p", "--with", "-w", "--group",
-                            "--env-file", "--package", "--with-requirements", "--with-editable", "--extra",
-                            "--cache-dir", "--index-url", "--default-index", "--config-file", "--no-group",
-                            "--only-group", "--python-preference", "--refresh-package"} and argv:
-                    argv.pop(0)
+        elif name == "uv":
+            child = argv[1:]
+            value_options = {"--directory", "--project", "--python", "-p", "--with", "-w", "--group",
+                             "--env-file", "--package", "--with-requirements", "--with-editable", "--extra",
+                             "--cache-dir", "--index-url", "--default-index", "--config-file", "--no-group",
+                             "--only-group", "--python-preference", "--refresh-package"}
+            def options(words):
+                while words and words[0].startswith("-"):
+                    flag = words.pop(0)
+                    if flag in value_options and words:
+                        words.pop(0)
+                return words
+            child = options(child)
+            if child[:1] != ["run"]:
+                break
+            argv = options(child[1:])
         elif ((name in {"bash", "sh", "zsh", "dash", "ksh"} and len(argv) == 3
                and argv[1] in {"-c", "-lc"} and (child := foreground_shell_argv(argv[2])))
               or (re.fullmatch(r"python[0-9.]*", name) and len(argv) == 3 and argv[1] == "-c"
@@ -398,7 +419,7 @@ def unwrapped_command(argv):
 
 
 def foreground_shell_argv(content):
-    """A single literal shell command waits for its child; compound code is opaque."""
+    """Literal foreground commands wait; cd and output redirection do not detach."""
     if "$(" in content or "`" in content:
         return None
     try:
@@ -408,7 +429,9 @@ def foreground_shell_argv(content):
         argv = list(lexer)
     except ValueError:
         return None
-    return argv if argv and not any(all(c in ";&|<>\n" for c in token) for token in argv) else None
+    if len(argv) >= 3 and argv[0] == "cd" and argv[2] == "&&":
+        argv = argv[3:]
+    return argv if argv and not any(all(c in ";&|\n" for c in token) for token in argv) else None
 
 
 def foreground_python_argv(content):
@@ -440,7 +463,7 @@ def foreground_python_argv(content):
 def python_ownership(content):
     """Python fixture strings are data; process-launch arguments are executable."""
     try:
-        tree = ast.parse(content)
+        tree = ast.parse(textwrap.dedent(content))
     except SyntaxError:
         return False
     definitions = {node.targets[0].id: node.value for node in ast.walk(tree)
@@ -465,6 +488,75 @@ def python_ownership(content):
         elif isinstance(command, str) and executable_content(command):
             return True
     return False
+
+
+def python_fragment_ownership(content):
+    """Partial Python edits retain Python string boundaries, never shell syntax."""
+    try:
+        ast.parse(textwrap.dedent(content))
+    except SyntaxError:
+        pass
+    else:
+        return python_ownership(content)
+    # A patch hunk need not be a complete Python module. Tokenization preserves
+    # quoted fixture data even without its surrounding block's indentation.
+    tokens = []
+    try:
+        for token in tokenize.generate_tokens(io.StringIO("\n".join(line.lstrip() for line in content.splitlines())).readline):
+            if token.type not in {tokenize.INDENT, tokenize.DEDENT, tokenize.NL, tokenize.NEWLINE, tokenize.COMMENT}:
+                tokens.append((token.type, token.string))
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        pass  # Retain complete tokens before an unfinished call or quote.
+    for start, (kind, word) in enumerate(tokens):
+        if kind != tokenize.NAME:
+            continue
+        cursor, function = start + 1, word
+        while cursor + 1 < len(tokens) and tokens[cursor][1] == "." and tokens[cursor + 1][0] == tokenize.NAME:
+            function += "." + tokens[cursor + 1][1]
+            cursor += 2
+        if (function not in {"os.system", "os.popen", "subprocess.run", "subprocess.Popen", "subprocess.call",
+                             "subprocess.check_call", "subprocess.check_output", "exec", "eval"}
+                or cursor == len(tokens) or tokens[cursor][1] != "("):
+            continue
+        depth, end = 0, cursor
+        while end < len(tokens):
+            spelling = tokens[end][1]
+            if spelling in {"(", "[", "{"}:
+                depth += 1
+            elif spelling in {")", "]", "}"}:
+                depth -= 1
+            end += 1
+            if depth == 0:
+                break
+        expression = tokenize.untokenize(tokens[start:end])
+        if depth == 0:
+            if python_ownership(expression):
+                return True
+            try:
+                call = ast.parse(expression).body[0].value
+                ast.literal_eval(call.args[0])
+            except (ValueError, SyntaxError, AttributeError, IndexError):
+                pass  # A partial block may hold the argument's definition.
+            else:
+                continue  # A complete literal read is known, even in a hunk.
+        # An unfinished/indirect actual launch with ownership text remains
+        # unknown. Quoted fixture text alone has no launch tokens to reach here.
+        literals = []
+        for token_kind, literal in tokens if depth == 0 else tokens[cursor:end]:
+            if token_kind == tokenize.STRING:
+                try:
+                    value = ast.literal_eval(literal)
+                except (ValueError, SyntaxError):
+                    continue
+                if isinstance(value, str):
+                    literals.append(value)
+        if OWNERSHIP_TEXT.search(" ".join(literals)):
+            return True
+    return False
+
+
+def executable_file_content(path, content):
+    return python_fragment_ownership(content) if Path(path).suffix == ".py" else executable_content(content)
 
 
 def executable_content(content):
@@ -504,7 +596,10 @@ def file_writes(name, value):
                 pass
     for patch in patches:
         for match in re.finditer(r"(?m)^\*\*\* (?:Add|Update) File: (.+)\n([\s\S]*?)(?=^\*\*\* |\Z)", patch):
-            yield match[1], "\n".join(line[1:] for line in match[2].splitlines() if line.startswith(("+", " ")))
+            for hunk in re.split(r"(?m)^@@[^\n]*\n", match[2]):
+                content = "\n".join(line[1:] for line in hunk.splitlines() if line.startswith(("+", " ")))
+                if content:
+                    yield match[1], content
     for text in shell_texts(name, value):
         if not OWNERSHIP_TEXT.search(text):
             continue
@@ -547,7 +642,7 @@ def ownership_file_candidates(histories):
     return {native_path(path, cwd) for node in histories
             for _, name, value, cwd in native_calls(node["records"], node["harness"])
             for path, content in file_writes(name, value)
-            if path and native_path(path, cwd) and executable_content(content)}
+            if path and native_path(path, cwd) and executable_file_content(path, content)}
 
 
 def execution_targets(argv):
@@ -570,7 +665,7 @@ def file_ownership_executions(records, harness, *, file_candidates=()):
     candidates, invocations = set(file_candidates), set()
     for identifier, name, value, cwd in native_calls(records, harness):
         for path, content in file_writes(name, value):
-            if path and native_path(path, cwd) and executable_content(content):
+            if path and native_path(path, cwd) and executable_file_content(path, content):
                 candidates.add(native_path(path, cwd))
         if not candidates:
             continue
@@ -584,7 +679,7 @@ def file_ownership_executions(records, harness, *, file_candidates=()):
     return invocations
 
 
-def shell_lexer(text, *, posix=True, punctuation_chars=";&|<>\n"):
+def shell_lexer(text, *, posix=True, punctuation_chars=";&|<>()\n"):
     """Preserve word-internal hashes; only unquoted word-start # is a comment."""
     cleaned, quote, escaped, boundary, comment = [], None, False, True, False
     for char in text:
@@ -838,9 +933,51 @@ def ownership_state(records, harness, *, file_candidates=()):
     return {"indices": [positions[i] for i in indices], "pending": bool(pending)}
 
 
-def repository_option(token):
-    """The helpers accept unambiguous argparse prefixes for their global repo."""
-    return token.partition("=")[0] in {"--r", "--re", "--rep", "--repo"}
+@lru_cache(maxsize=2)
+def helper_parser(name):
+    """Use the helpers' real argparse definitions without invoking any command."""
+    path = Path(__file__).resolve().parents[2] / "github/scripts" / name
+    module_name = "claim_receipts_" + name.replace("-", "_").removesuffix(".py")
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(path.parent))
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.pop(0)
+    return module.build_parser()
+
+
+def parser_option(parser, token):
+    try:
+        parsed = parser._parse_optional(token)
+    except Exception:
+        return None
+    # Python 3.14 returns candidate tuples; older argparse returns one tuple.
+    if isinstance(parsed, list):
+        parsed = parsed[0] if len(parsed) == 1 else None
+    return (parsed[0], parsed[1], parsed[-1]) if parsed and parsed[0] is not None else None
+
+
+def repository_option(token, helper="gh-plan.py"):
+    parsed = parser_option(helper_parser(helper), token)
+    return parsed is not None and parsed[0].dest == "repo"
+
+
+def option_end(parser, words, index):
+    """Consume one option with the authoritative argparse arity and prefixes."""
+    parsed = parser_option(parser, words[index])
+    if parsed is None:
+        return None
+    action, _, explicit = parsed
+    if explicit is not None or action.nargs == 0:
+        return index + 1
+    if action.nargs is None:
+        return index + 2 if index + 1 < len(words) else None
+    if isinstance(action.nargs, int):
+        end = index + 1 + action.nargs
+        return end if end <= len(words) else None
+    return None  # Variable-arity options require contextual parsing, not guesses.
 
 
 def helper_action(argv):
@@ -849,13 +986,12 @@ def helper_action(argv):
     if not helper:
         return "", []
     name, action = Path(helper[0]).name, helper[1:]
-    while action:
-        if repository_option(action[0]) and "=" not in action[0] and len(action) > 1:
-            action = action[2:]
-        elif repository_option(action[0]) and "=" in action[0]:
-            action = action[1:]
-        else:
+    parser = helper_parser(name if name in {"gh-plan.py", "gh-pr.py"} else "gh-plan.py")
+    while action and action[0].startswith("-"):
+        end = option_end(parser, action, 0)
+        if end is None:
             break
+        action = action[end:]
     return name, action
 
 
@@ -864,7 +1000,7 @@ def ownership_command(argv):
     verb = "claim" if name == "gh-plan.py" else "create"
     owning = (name == "gh-plan.py" and action[:1] == ["claim"]
               or name == "gh-pr.py" and action[:1] == ["create"]
-              or helper_argv(argv)[:3] == ["gh", "pr", "create"])
+              or name == "gh" and action[:1] == ["pr"] and action[1:2] in (["create"], ["new"]))
     # Only the observed bare action help form is exempt. Elsewhere a flag-like
     # word may be an option value rather than a help request.
     help_only = action[-2:] in ([verb, "--help"], [verb, "-h"]) and action.count(verb) == 1
@@ -905,32 +1041,23 @@ def no_write_claims(records, harness):
 
 
 def claim_operand(argv):
-    """Read claim's positional after its known scalar argparse options.
-
-    Unrecognized syntax stays unresolved rather than treating an option value
-    or a redirect destination as the issue. New CLI options are conservative
-    until their arity is supported here.
-    """
+    """Read claim's positional using its maintained CLI option definitions."""
     name, action = helper_action(argv)
     if name != "gh-plan.py" or action[:1] != ["claim"]:
         return None
-    options = {"--agent", "--agent-override", "--worker", "--session", "--branch",
-               "--next-action", "--resume-from", "--refresh-pr", "--handoff-comment",
-               "--planning-checkout", "--wait-resolved", "--admission", "--admission-link",
-               "--admission-unlinked"}
-    tokens = iter(action[1:])
-    for token in tokens:
+    parser = next(item for item in helper_parser(name)._actions
+                  if isinstance(item, argparse._SubParsersAction)).choices["claim"]
+    words, index = action[1:], 0
+    while index < len(words):
+        token = words[index]
         if token == "--":
-            return next(tokens, None)
-        option, equal, _ = token.partition("=")
-        if option.startswith("--") and option not in options:
-            matches = {known for known in options | {"--help"} if known.startswith(option)}
-            if len(matches) == 1:
-                option = matches.pop()
-        if option in options:
-            if not equal and next(tokens, None) is None:
+            return words[index + 1] if index + 1 < len(words) else None
+        if token.startswith("-"):
+            end = option_end(parser, words, index)
+            if end is None:
                 return None
-        elif token.startswith("-") or token in {">", ">>", "<", "<<", "2>", "2>>"}:
+            index = end
+        elif token in {">", ">>", "<", "<<", "2>", "2>>"}:
             return None
         else:
             return token
@@ -1083,7 +1210,7 @@ def bound_outputs(records, harness, predicate, *, receipts=None, isolated_polls=
             native_task = record.get("toolUseResult")
             task = (native_task.get("backgroundTaskId") or native_task.get("taskId")) if harness == "claude" and isinstance(native_task, dict) else None
             yield index, source, {"_result": True, "_pending": bool(active) or bool(task) or source in background or source in opaque,
-                                  "_background_task": task}
+                                  "_background_task": task, "_native_output": raw}
             for value in values:
                 yield index, source, value
 
@@ -1152,16 +1279,29 @@ def sources(records, harness, session, *, parsed=None):
 
 
 def created_prs(records, harness):
-    found = {value["url"] for _, value in outputs(records, harness)
-            if value.get("operation") == "github.pr.create" and value.get("ok") is True
-            and isinstance(value.get("url"), str)
-            and re.fullmatch(r"https://github\.com/[^/\s]+/[^/\s]+/pull/[1-9]\d*", value["url"])}
+    """Only isolated create commands and their own polls can supply PR URLs."""
+    if harness == "codex":
+        records, _ = serial_ownership_records(records)
     def creating(name, value):
-        return any(helper_argv(argv)[:3] == ["gh", "pr", "create"] and ownership_command(argv)
+        return any(ownership_command(argv) and script(argv) in {"gh", "gh-pr.py"}
                    for argv in shell_commands(name, value))
-    for index, _, value in bound_outputs(records, harness, creating):
-        if value.get("_result"):
-            found.update(re.findall(r"https://github\.com/[^/\s\"\\]+/[^/\s\"\\]+/pull/[1-9]\d*", json.dumps(records[index])))
+    isolated = {identifier: helper for record in records
+                for identifier, name, value in calls_and_results(record, harness)[0]
+                for helper in ("gh", "gh-pr.py") if creating(name, value) and isolated_command(name, value, helper)}
+    found = set()
+    for _, source, value in bound_outputs(records, harness, creating, isolated_polls=True):
+        if source not in isolated or value.get("_attempt"):
+            continue
+        operation = value.get("operation")
+        if operation:
+            if operation == "github.pr.create" and value.get("ok") is True and isinstance(value.get("url"), str):
+                if re.fullmatch(r"https://github\.com/[^/\s]+/[^/\s]+/pull/[1-9]\d*", value["url"]):
+                    found.add(value["url"])
+            continue
+        if isolated[source] != "gh":
+            continue
+        text = value.get("_native_output", "") if value.get("_result") else json.dumps(value)
+        found.update(re.findall(r"https://github\.com/[^/\s\"\\]+/[^/\s\"\\]+/pull/[1-9]\d*", text))
     return found
 
 

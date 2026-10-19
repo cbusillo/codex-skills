@@ -3,6 +3,7 @@
 # dependencies = []
 # ///
 """Exercise native child indexes and local no-GitHub shutdown acceptance."""
+import copy
 import json
 from pathlib import Path
 import sqlite3
@@ -172,6 +173,114 @@ class NativeHistoryTests(unittest.TestCase):
         self.assertTrue(result["at_turn_end"])
         self.assertTrue(result["declared_safe_verdict"])
         self.assertTrue(result["claim_disposition"]["clear"])
+
+
+    def fork_rows(self, parent_rows, *child_values, parent='root', child='child'):
+        local = records('codex', child, *child_values, parent=parent)
+        inherited = copy.deepcopy(parent_rows)
+        inherited[0]['payload']['source'] = 'vscode'
+        boundary = len(inherited) + 1
+        local[0]['payload'].update(forked_from_id=parent, subagent_history_start_ordinal=boundary)
+        marker = {'type': 'event_msg', 'payload': {'type': 'thread_settings_applied', 'thread_id': child}}
+        result = [local[0], *inherited, marker, *local[1:]]
+        for index, row in enumerate(result):
+            row['ordinal'] = index
+        return result
+
+    def nodes(self):
+        return claim_history.collect(self.root, 'codex', 'root', session_record.read_jsonl(self.root),
+                                     lambda path, *_: session_record.read_jsonl(path))
+
+    def passing_proof(self, nodes, *sources):
+        return {**proof(*sources), 'session_id': 'root',
+                'coverage': {'complete': True, 'session_ids': ['root', 'child'],
+                             'histories': [{key: node[key] for key in ('session_id', 'transcript', 'digest')}
+                                           for node in nodes[1:]]}}
+
+    def test_valid_fork_with_inherited_native_metadata_has_local_exit_path(self):
+        parent = records('codex', 'root', delegate=True)
+        self.write(self.root, parent)
+        self.write(self.child, self.fork_rows(parent))
+        self.assertTrue(self.status()['safe_verdict'])
+        nodes = self.nodes()
+        child = next(node for node in nodes if node['session_id'] == 'child')
+        self.assertEqual([r['payload']['id'] for r in child['records'] if r.get('type') == 'session_meta'], ['child'])
+        self.assertFalse(claim_history.delegated(child['records'], 'codex'))
+
+    def test_parent_and_child_claims_require_exact_disposition_after_fork(self):
+        parent_claim, child_claim = claim(), claim('example/b', 2, 20)
+        parent_claim['claim']['session'] = 'root'
+        child_claim['claim']['session'] = 'child'
+        parent = records('codex', 'root', parent_claim, delegate=True)
+        self.write(self.root, parent)
+        self.write(self.child, self.fork_rows(parent, child_claim))
+        self.assertFalse(self.status()['safe_verdict'])
+        nodes = self.nodes()
+        child = next(node for node in nodes if node['session_id'] == 'child')
+        # Copied parent writer is not evaluated as a child writer/process.
+        import claim_receipts
+        self.assertFalse(claim_receipts.sources(child['records'], 'codex', 'root')[0])
+        self.assertEqual(len(claim_receipts.sources(child['records'], 'codex', 'child')[0]), 1)
+        for released in ((('example/a', 1, 10),), (('example/b', 2, 20),)):
+            self.write(self.root, records('codex', 'root', parent_claim,
+                                         self.passing_proof(nodes, *released), delegate=True))
+            self.assertFalse(self.status()['safe_verdict'])
+        self.write(self.root, records('codex', 'root', parent_claim,
+                                     self.passing_proof(nodes, ('example/a', 1, 10), ('example/b', 2, 20)), delegate=True))
+        self.assertTrue(self.status()['safe_verdict'])
+
+    def test_inherited_prefix_change_invalidates_previous_coverage_digest(self):
+        parent_claim = claim()
+        parent_claim['claim']['session'] = 'root'
+        parent = records('codex', 'root', parent_claim, delegate=True)
+        child = self.fork_rows(parent)
+        self.write(self.root, parent)
+        self.write(self.child, child)
+        nodes = self.nodes()
+        self.write(self.root, records('codex', 'root', parent_claim,
+                                     self.passing_proof(nodes, ('example/a', 1, 10)), delegate=True))
+        self.assertTrue(self.status()['safe_verdict'])
+        child[1]['payload']['cwd'] = '/different-parent-snapshot'
+        self.write(self.child, child)
+        self.assertFalse(self.status()['safe_verdict'])
+
+    def test_transitive_fork_uses_only_verified_native_ancestors(self):
+        parent = records('codex', 'root', delegate=True)
+        child = self.fork_rows(parent)
+        grand = self.home / 'sessions' / 'grand.jsonl'
+        self.write(self.root, parent)
+        self.write(self.child, child)
+        self.write(grand, self.fork_rows(child, parent='child', child='grand'))
+        with sqlite3.connect(self.database) as db:
+            self.edge(db, 'child', 'grand', grand)
+        self.assertTrue(self.status()['safe_verdict'])
+        self.assertEqual({node['session_id'] for node in self.nodes()}, {'root', 'child', 'grand'})
+
+    def test_malformed_fork_boundary_or_identity_cannot_hide_local_claims(self):
+        parent = records('codex', 'root', delegate=True)
+        source = claim()
+        source['claim']['session'] = 'child'
+        original = self.fork_rows(parent, source)
+        self.write(self.root, parent)
+        mutations = (
+            lambda rows: rows[0]['payload'].update(forked_from_id='other-parent'),
+            lambda rows: rows[0]['payload'].update(parent_thread_id='other-parent'),
+            lambda rows: rows[0]['payload']['source']['subagent']['thread_spawn'].update(parent_thread_id='other-parent'),
+            lambda rows: rows[0]['payload'].update(subagent_history_start_ordinal=True),
+            lambda rows: rows[0]['payload'].pop('subagent_history_start_ordinal'),
+            lambda rows: rows[0]['payload'].update(subagent_history_start_ordinal=len(rows) - 1),
+            lambda rows: rows[1]['payload'].update(id='unrelated-session'),
+            lambda rows: rows[-1].pop('ordinal'),
+            lambda rows: rows.append({'type': 'session_meta', 'ordinal': len(rows), 'payload': {'id': 'unrelated-session'}}),
+        )
+        for index, mutate in enumerate(mutations):
+            with self.subTest(mutation=index):
+                rows = copy.deepcopy(original)
+                mutate(rows)
+                self.write(self.child, rows)
+                result = self.status()
+                self.assertFalse(result['safe_verdict'])
+                self.assertNotEqual(result['claim_disposition'].get('reason'), 'no_claim_receipts')
 
 
 if __name__ == "__main__":

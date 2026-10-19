@@ -31,7 +31,7 @@ import claim_receipts
 import claim_history
 
 
-def transcript_snapshot(path, harness, session):
+def transcript_snapshot(path, harness, session, context=None):
     # Read one immutable prefix. A running harness may append a partial final
     # record; never weaken the strict ended-session reader used for shutdown.
     lines = path.read_bytes().splitlines(keepends=True)
@@ -40,10 +40,7 @@ def transcript_snapshot(path, harness, session):
     records = [json.loads(line) for line in lines if line.strip()]
     for record in records:
         session_record.validate_record(record)
-    identities = ({r.get("sessionId") for r in records if r.get("sessionId")} if harness == "claude" else
-                  {r.get("payload", {}).get("id") for r in records if r.get("type") == "session_meta"})
-    if identities != {session}:
-        raise ValueError("native transcript identity is unavailable or differs")
+    claim_history.child_records(records, harness, session, context)
     return records
 
 
@@ -169,16 +166,8 @@ def check(reader, owner, entry, actor, *, reader_for_repo=None):
     native_repos = {r["repository"] for r in expected}
     native_issues = {(r["repository"], r["record"]) for r in expected}
     for node in histories:
-        # Native process handles are local to their transcript, even when two
-        # delegated histories happen to reuse the same numeric ID.
-        for _, value in claim_receipts.outputs(node["records"], node["harness"]):
-            if value.get("operation") == claim_receipts.CLAIM_OPERATION:
-                repo = (value.get("issue") or {}).get("repo")
-                if isinstance(repo, str) and sessions.REPO.fullmatch(repo):
-                    native_repos.add(repo)
-                    number = (value.get("issue") or {}).get("number")
-                    if type(number) is int and number > 0:
-                        native_issues.add((repo, number))
+        # Canonical source receipts and actual claim targets own scope; raw
+        # output may also contain saved receipts from unrelated commands.
         native_repos.update(claim_receipts.target_repositories(node["records"], node["harness"], allowed_sessions=native_sessions))
     native_repos.update(entry.get("_extra_repositories", []))
     targets = [t for node in histories for t in claim_receipts.claim_targets(node["records"], node["harness"], allowed_sessions=native_sessions)]

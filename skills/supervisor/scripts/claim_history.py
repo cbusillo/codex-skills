@@ -38,6 +38,47 @@ def source_parent(source):
     return spawn.get("parent_thread_id")
 
 
+def child_records(records, harness, session, context=None):
+    """Separate a verified native fork's local rows from inherited history.
+
+    Only the native edge traversal supplies ancestry. Root reads keep their
+    strict identity check, and raw rows remain available for the coverage hash.
+    """
+    identities = ({r.get("sessionId") for r in records if r.get("sessionId")} if harness == "claude" else
+                  {r.get("payload", {}).get("id") for r in records if r.get("type") == "session_meta"})
+    if harness != "codex" or context is None:
+        if identities != {session}:
+            raise ValueError("native transcript identity is unavailable or differs")
+        return records
+    if not records or records[0].get("type") != "session_meta" or records[0]["payload"].get("id") != session:
+        raise ValueError("child rollout lacks its own initial native metadata")
+    meta = records[0]["payload"]
+    if "forked_from_id" not in meta and "subagent_history_start_ordinal" not in meta:
+        if identities != {session}:
+            raise ValueError("native transcript identity is unavailable or differs")
+        return records
+    parent, ancestors = context["parent"], context["ancestors"]
+    if (meta.get("forked_from_id") != parent or meta.get("parent_thread_id") != parent
+            or source_parent(meta.get("source", {})) != parent):
+        raise ValueError("native fork parent differs from its verified edge")
+    boundary = meta.get("subagent_history_start_ordinal")
+    if (type(boundary) is not int or not 1 < boundary < len(records)
+            or any(type(row.get("ordinal")) is not int or row["ordinal"] != index
+                   for index, row in enumerate(records))):
+        raise ValueError("native fork history boundary is unavailable or malformed")
+    marker = records[boundary]
+    payload = marker.get("payload", {})
+    if (marker.get("type") != "event_msg" or payload.get("type") != "thread_settings_applied"
+            or payload.get("thread_id") != session):
+        raise ValueError("native fork history boundary does not identify its child")
+    inherited = {r["payload"]["id"] for r in records[1:boundary] if r.get("type") == "session_meta"}
+    local = [records[0], *records[boundary:]]
+    if (parent not in inherited or not inherited <= set(ancestors)
+            or any(r["payload"]["id"] != session for r in local if r.get("type") == "session_meta")):
+        raise ValueError("native fork metadata differs from its verified ancestry")
+    return local
+
+
 def codex_homes(path):
     homes = {Path.home() / ".codex", Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))}
     homes.update(p.parent for p in path.parents if p.name in {"sessions", "archived_sessions"})
@@ -79,6 +120,7 @@ def collect(path, harness, session, records, read, *, homes=None):
                     stack.callback(connection.close)
                     databases.append(connection)
             pending, visited, seen_paths = [session], set(), set()
+            ancestry = {session: ()}
             while pending:
                 parent = pending.pop()
                 if parent in visited:
@@ -104,17 +146,23 @@ def collect(path, harness, session, records, read, *, homes=None):
                         native_source = json.loads(source)
                         if source_parent(native_source) != parent:
                             raise ValueError("native child index parent differs")
+                        ancestors = (*ancestry[parent], parent)
+                        if child_id in ancestors or (child_id in ancestry and ancestry[child_id] != ancestors):
+                            raise ValueError("native child index ancestry differs")
+                        ancestry[child_id] = ancestors
                         child = Path(rollout).expanduser().resolve()
                         if (child_id, child) not in seen_paths:
-                            paths.append((child_id, child, parent))
+                            paths.append((child_id, child, {"parent": parent, "ancestors": ancestors}))
                             seen_paths.add((child_id, child))
                         pending.append(child_id)
                 if not found_parent and (parent != session or delegated(records, harness)):
                     raise ValueError("native parent is absent from configured child indexes")
-    for child_id, child, parent in paths:
-        child_records = read(child, harness, child_id)
+    for child_id, child, context in paths:
+        raw_records = read(child, harness, child_id, context)
+        logical_records = child_records(raw_records, harness, child_id, context)
+        parent = context["parent"] if context is not None else None
         if parent is not None:
-            metadata = [r["payload"] for r in child_records if r.get("type") == "session_meta"]
+            metadata = [r["payload"] for r in logical_records if r.get("type") == "session_meta"]
             if not metadata:
                 raise ValueError("child rollout lacks native metadata")
             for meta in metadata:
@@ -123,9 +171,9 @@ def collect(path, harness, session, records, read, *, homes=None):
                 if not parents or any(value != parent for value in parents):
                     raise ValueError("child rollout parent differs from its native edge")
         import session_record
-        activity = session_record.summarize(child_records, harness, inspect_claims=False)
+        activity = session_record.summarize(logical_records, harness, inspect_claims=False)
         if not activity["at_turn_end"] or activity["background_tasks"]:
             raise ValueError(f"native child {child_id} still has unfinished work")
         nodes.append({"session_id": child_id, "harness": harness, "transcript": str(child),
-                      "records": child_records, "digest": fingerprint(child_records)})
+                      "records": logical_records, "digest": fingerprint(raw_records)})
     return nodes

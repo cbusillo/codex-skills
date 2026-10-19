@@ -179,6 +179,8 @@ class ReceiptTests(unittest.TestCase):
         url = "https://github.com/example/a/pull/2"
         for harness in ("codex", "claude"):
             for command, result in (("timeout 300 gh pr create --repo example/a", url),
+                                    ("/opt/homebrew/bin/gh pr create --repo example/a", url),
+                                    ("/opt/homebrew/bin/gh pr new --repo example/a", url),
                                     ("timeout 300 uv run gh-pr.py --repo example/a create",
                                      json.dumps({"operation": "github.pr.create", "ok": True, "url": url}))):
                 with self.subTest(harness=harness, command=command):
@@ -188,9 +190,70 @@ class ReceiptTests(unittest.TestCase):
                     else:
                         rows[1]["message"]["content"][0]["input"] = {"command": command}
                     rows[2] = output({"exit_code": 0, "output": result}, harness, "tool-0")
+                    self.assertTrue(receipts.ownership_state(rows, harness)["indices"])
                     self.assertFalse(receipts.ownership_state(rows, harness)["pending"])
                     self.assertFalse(receipts.target_repositories(rows, harness))
                     self.assertEqual(receipts.created_prs(rows, harness), {url})
+
+    def test_created_pr_urls_require_isolated_invocations_and_poll_results(self):
+        own = "https://github.com/example/a/pull/2"
+        unrelated = "https://github.com/example/a/pull/3"
+        for harness in ("codex", "claude"):
+            for creator in ("gh pr create --repo example/a", "uv run gh-pr.py --repo example/a create"):
+                with self.subTest(harness=harness, creator=creator):
+                    rows = history(harness, {})
+                    command = creator + " && gh pr list --repo example/a"
+                    if harness == "codex":
+                        rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                    else:
+                        rows[1]["message"]["content"][0]["input"] = {"command": command}
+                    response = {"operation": "github.pr.create", "ok": True, "url": unrelated} if "gh-pr.py" in creator else own + "\n" + unrelated
+                    rows[2] = output({"exit_code": 0, "output": json.dumps(response)}, harness, "tool-0")
+                    self.assertEqual(receipts.created_prs(rows, harness), set())
+                    self.assertTrue(receipts.ownership_state(rows, harness)["indices"])
+                    self.assertFalse(receipts.ownership_state(rows, harness)["pending"])
+        rows = history("codex", {})
+        rows[1]["payload"]["arguments"] = json.dumps({"cmd": "gh pr create --repo example/a"})
+        rows[2] = output({"session_id": 123, "output": ""}, "codex", "tool-0")
+        poll = {"payload": {"type": "function_call", "name": "functions.exec", "call_id": "poll", "arguments":
+            'text(await tools.write_stdin({session_id:123}));text(await tools.exec_command({cmd:"gh pr list"}));'}}
+        response = {"payload": {"type": "function_call_output", "call_id": "poll", "output": [
+            {"type": "text", "text": json.dumps({"exit_code": 0, "output": own})},
+            {"type": "text", "text": json.dumps({"exit_code": 0, "output": unrelated})}]}}
+        rows[-2:-2] = [poll, response]
+        # Complete serial native wrappers bind each printed result position.
+        self.assertEqual(receipts.created_prs(rows, "codex"), {own})
+        poll["payload"]["arguments"] = ('const pending=tools.write_stdin({session_id:123});'
+            'text(await pending);text(await tools.exec_command({cmd:"gh pr list"}));')
+        self.assertEqual(receipts.created_prs(rows, "codex"), set())
+        # The same isolated poll can supply its own process output.
+        poll["payload"]["arguments"] = json.dumps({"session_id": 123})
+        poll["payload"]["name"] = "write_stdin"
+        response["payload"]["output"] = json.dumps({"exit_code": 0, "output": own})
+        self.assertEqual(receipts.created_prs(rows, "codex"), {own})
+
+    def test_option_discovery_uses_the_authoritative_helper_parsers(self):
+        import argparse
+        for helper in ("gh-plan.py", "gh-pr.py"):
+            parser = receipts.helper_parser(helper)
+            repository = next(action for action in parser._actions if action.dest == "repo")
+            with self.subTest(helper=helper):
+                self.assertTrue(receipts.repository_option(repository.option_strings[0], helper))
+                # A real added option changes abbreviation ambiguity immediately.
+                parser.add_argument("--rate-limit", action="store_true")
+                try:
+                    self.assertFalse(receipts.repository_option("--r", helper))
+                    self.assertTrue(receipts.repository_option(repository.option_strings[0], helper))
+                finally:
+                    receipts.helper_parser.cache_clear()
+        parser = receipts.helper_parser("gh-plan.py")
+        claim_parser = next(action for action in parser._actions
+                            if isinstance(action, argparse._SubParsersAction)).choices["claim"]
+        claim_parser.add_argument("--dry-run", action="store_true")
+        try:
+            self.assertEqual(receipts.claim_operand(["gh-plan.py", "claim", "--dry-run", "7"]), "7")
+        finally:
+            receipts.helper_parser.cache_clear()
 
     def test_unexpanded_helper_executable_requires_ownership_disposition(self):
         for harness in ("codex", "claude"):
@@ -220,6 +283,17 @@ class ReceiptTests(unittest.TestCase):
         helper = "/catalog/gh-plan.py --repo example/a claim 1"
         for harness in ("codex", "claude"):
             for command in ("builtin command uv run " + helper,
+                            "if uv run " + helper + "; then :; fi",
+                            "if false; then :; elif uv run " + helper + "; then :; fi",
+                            "while uv run " + helper + "; do break; done",
+                            "until uv run " + helper + "; do :; done",
+                            "! uv run " + helper,
+                            "{ uv run " + helper + "; }",
+                            "(uv run " + helper + ")",
+                            "uv --directory /repo run " + helper,
+                            "stdbuf -oL uv run " + helper,
+                            "bash -lc 'cd /repo && uv run " + helper + "'",
+                            "bash -c 'uv run " + helper + " > claim.json'",
                             "for n in 1 2; do uv run " + helper + "; done",
                             "if true; then uv run " + helper + "; fi",
                             "/usr/bin/time -o timing.log uv run " + helper,
@@ -405,6 +479,49 @@ class ReceiptTests(unittest.TestCase):
                 rows[3:3] = call
                 with self.subTest(harness=harness, content=text):
                     self.assertFalse(receipts.ownership_state(rows, harness)["indices"])
+
+    def test_partial_python_fixture_edits_do_not_become_shell_writer_files(self):
+        # Native apply_patch can contain several independent, indented hunks.
+        # Concatenating these fragments is invalid Python, even when each edit
+        # inserts only fixture text consumed by the test's own command reader.
+        fixture = ('        rows = history("claude", {})\n'
+                   '        rows[1]["message"]["content"][0]["input"] = {"command":\n'
+                   '            \'echo "$(cat <<\\\'EOF\\\'; uv run gh-plan.py claim 1 &\\nbody\\nEOF\\n)"\'}\n'
+                   '        self.assertTrue(receipts.ownership_state(rows, "claude")["pending"])\n'
+                   '        subprocess.run(["rg", "gh-plan.py", "claim"])')
+        patch = ('*** Begin Patch\n*** Update File: /repo/test_sample.py\n@@\n'
+                 '     def test_fixture(self):\n@@\n'
+                 '                 self.assertTrue(True)\n' +
+                 "\n".join("+" + line for line in fixture.splitlines()) + '\n*** End Patch')
+        for harness in ("codex", "claude"):
+            rows = history(harness, {})
+            if harness == "codex":
+                rows[1]["payload"].update(name="apply_patch", arguments=patch)
+            else:
+                rows[1]["message"]["content"][0].update(name="Edit", input={
+                    "file_path": "/repo/test_sample.py", "new_string": fixture})
+            execute = history(harness, {})[1:3]
+            if harness == "codex":
+                execute[0]["payload"].update(call_id="execute", arguments=json.dumps({"cmd": "uv run /repo/test_sample.py"}))
+            else:
+                execute[0]["message"]["content"][0].update(id="execute", input={"command": "uv run /repo/test_sample.py"})
+            execute[1] = output({"exit_code": 0, "output": ""}, harness, "execute")
+            rows[3:3] = execute
+            with self.subTest(harness=harness, fixture=True):
+                self.assertFalse(receipts.ownership_state(rows, harness)["indices"])
+            # Invalid surrounding indentation still cannot hide an actual
+            # process launch in a partial Python edit, including a split call.
+            for launch in ('        subprocess.run(["uv", "run", "gh-plan.py", "claim", "1"])',
+                           '        subprocess.run(["uv", "run", "gh-plan.py", "claim", "1",',
+                           '                marker = True\n        command = "uv run gh-plan.py claim 1"\n        subprocess.run(command)'):
+                fragment = '    def run_claim():\n' + launch
+                if harness == "codex":
+                    rows[1]["payload"]["arguments"] = ('*** Begin Patch\n*** Update File: /repo/test_sample.py\n@@\n'
+                        '     def run_claim():\n@@\n' + '\n'.join('+' + line for line in launch.splitlines()) + '\n*** End Patch')
+                else:
+                    rows[1]["message"]["content"][0]["input"]["new_string"] = fragment
+                with self.subTest(harness=harness, launch=launch):
+                    self.assertTrue(receipts.ownership_state(rows, harness)["pending"])
 
     def test_wrapped_and_computed_reads_of_claim_text_are_not_writers(self):
         commands = ("python3 - <<'PY'\nline='gh-plan.py claim'\nif 'gh-plan.py' in line and 'claim' in line: print(line)\nPY",
@@ -639,7 +756,6 @@ class ReceiptTests(unittest.TestCase):
                             "sh -s <<'EOF'\n" + writer + "\nEOF",
                             "cat <<'EOF' | bash\n" + writer + "\nEOF",
                             "cat > run-claim.sh <<'EOF'\n" + writer + "\nEOF\nbash run-claim.sh",
-                            "bash -c '" + writer + "'",
                             "python3 - <<'PY'\nimport os\nos.system(" + repr(writer) + ")\nPY"):
                 rows = history(harness, claim(), {**proof(), "harness": harness})
                 if harness == "codex": rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})

@@ -258,6 +258,9 @@ tools may inherit the parent's session ID. Codex's native read-only parent/child
 index supplies child thread IDs and rollouts, including descendants and closed
 edges. Child-owned claims and claims using the inherited root session ID are
 both included. Missing native graph/schema/rollout evidence refuses coverage.
+Full-history forks use their native child boundary after ancestry validation;
+copied parent activity is evaluated in its parent, and coverage binds the raw
+child artifact.
 Missing native identity or a different running harness refuses an all-clear.
 Preserve its coverage
 and released-claim links as closeout evidence; it proves claim disposition only,
@@ -305,6 +308,9 @@ need explicit repository operands because their shared native output cannot
 bind receipts to individual shell commands. Unknown operands without that
 evidence keep coverage incomplete, even when an older claim was released.
 Another invocation's receipt cannot fill a missing scope gap.
+Canonical receipts and raw created-PR URLs require the helper's own isolated
+output. A completed compound command with known claim scope uses complete
+session inventory to reconcile missing receipts.
 A saved report read with `cat`, an earlier proof before another claim or PR was
 created, and final-answer prose do not satisfy shutdown acceptance. Run the
 checker as its own native shell invocation, optionally piped to `tee`, with

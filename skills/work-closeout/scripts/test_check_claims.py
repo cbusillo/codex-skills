@@ -749,6 +749,38 @@ class ClaimCloseoutTests(unittest.TestCase):
                 self.assertNotEqual(code, 0)
                 reader.assert_not_called()
 
+    def test_live_fork_snapshot_keeps_raw_coverage_but_requires_native_ancestry_context(self):
+        from test_claim_history import records
+        from test_claim_receipts import claim
+        parent, child = 'parent-session', 'child-session'
+        source = claim()
+        source['claim']['session'] = child
+        inherited = records('codex', parent)
+        inherited[0]['payload']['source'] = 'vscode'
+        local = records('codex', child, source, parent=parent)
+        boundary = len(inherited) + 1
+        local[0]['payload'].update(forked_from_id=parent, subagent_history_start_ordinal=boundary)
+        marker = {'type': 'event_msg', 'payload': {'type': 'thread_settings_applied', 'thread_id': child}}
+        raw = [local[0], *inherited, marker, *local[1:]]
+        for index, row in enumerate(raw):
+            row['ordinal'] = index
+        context = {'parent': parent, 'ancestors': (parent,)}
+        with tempfile.TemporaryDirectory() as tmp:
+            transcript = Path(tmp) / 'fork.jsonl'
+            transcript.write_text(''.join(json.dumps(row) + '\n' for row in raw))
+            for wrong_session in (parent, child, 'unrelated-session'):
+                with self.subTest(root_identity=wrong_session), self.assertRaises(ValueError):
+                    helper.transcript_snapshot(transcript, 'codex', wrong_session)
+            snapshot = helper.transcript_snapshot(transcript, 'codex', child, context)
+            self.assertEqual(snapshot, raw)
+            owned = helper.claim_history.child_records(snapshot, 'codex', child, context)
+            self.assertFalse(helper.claim_receipts.sources(owned, 'codex', parent)[0])
+            self.assertEqual(len(helper.claim_receipts.sources(owned, 'codex', child)[0]), 1)
+            for invalid in ({'parent': 'unrelated-session', 'ancestors': (parent,)},
+                            {'parent': parent, 'ancestors': ()}):
+                with self.subTest(context=invalid), self.assertRaises(ValueError):
+                    helper.transcript_snapshot(transcript, 'codex', child, invalid)
+
     def test_live_transcript_snapshot_ignores_only_an_unfinished_tail(self):
         with tempfile.TemporaryDirectory() as tmp:
             transcript = Path(tmp) / "native.jsonl"
@@ -777,21 +809,28 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.comments = [comment(10, helper.claim.marker({**SOURCE, "session": native_session})),
                          comment(11, "Released claim 10\nSession: " + native_session, at="2026-01-01T00:02:00Z")]
         for harness in ("codex", "claude"):
-            for command in (
+            cases = [(command, "") for command in (
                 "gh issue view -R upstream/x 5",
                 "gh pr view https://github.com/upstream/x/pull/9",
                 "uv run gh-plan.py --repo upstream/x show 1",
                 "gh pr create --repo upstream/x",
                 "uv run gh-pr.py --repo upstream/x create",
                 "uv run gh-plan.py --repo test/a claim 1 --admission-link https://github.com/upstream/x/issues/9",
-            ):
+            )]
+            for receipt_session in (native_session, "another-native-session"):
+                saved = native_claim("upstream/x", 9)
+                saved["claim"]["session"] = receipt_session
+                saved["issue"] = {"repo": "upstream/x", "number": 9}
+                cases.append(("uv run gh-plan.py --repo test/a claim 1; cat old-claim.json",
+                              json.dumps([native_claim(REPO), saved])))
+            for command, stdout in cases:
                 with self.subTest(harness=harness, command=command):
                     rows = history(harness, native_claim(REPO), {})
                     if harness == "codex":
                         rows[3]["payload"]["arguments"] = json.dumps({"cmd": command})
                     else:
                         rows[3]["message"]["content"][0]["input"] = {"command": command}
-                    rows[4] = output({"exit_code": 0, "output": ""}, harness, "tool-1")
+                    rows[4] = output({"exit_code": 0, "output": stdout}, harness, "tool-1")
                     for row in rows:
                         row["timestamp"] = SOURCE["claimed_at"]
                     entry = {"session_id": native_session, "harness": harness, "_transcript_records": rows}

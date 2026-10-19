@@ -384,13 +384,12 @@ def session_status(entry: dict) -> dict:
         }
     if identities != {entry["session_id"]}:
         raise ValueError("transcript identity does not match the ledger session")
-    def child_read(child, harness, session):
+    def child_read(child, harness, session, context=None):
         initial = child.stat()
         data = read_jsonl(child)
-        ids = ({r.get("sessionId") for r in data if r.get("sessionId")} if harness == "claude" else
-               {r.get("payload", {}).get("id") for r in data if r.get("type") == "session_meta"})
+        claim_history.child_records(data, harness, session, context)
         final = child.stat()
-        if ids != {session} or (initial.st_mtime_ns, initial.st_size) != (final.st_mtime_ns, final.st_size):
+        if (initial.st_mtime_ns, initial.st_size) != (final.st_mtime_ns, final.st_size):
             raise ValueError("child transcript identity or activity changed")
         return data
     histories, error = None, None
