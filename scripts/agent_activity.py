@@ -27,6 +27,8 @@ STATE = "agent-activity"  # Private producer state under CODE_HOME.
 INBOX = "inbox"  # Producer outbox; Context Panel imports it. The App Group is never written here.
 PRUNE_STAMP = "prune.stamp"
 PRUNE_SECONDS = 3600
+RETENTION_SECONDS = 86400  # Owned files older than this are pruned.
+LIVE = {"working", "attention"}
 # The v1 record keys, in order. The writer emits exactly these.
 FIELDS = ("schemaVersion", "eventID", "producerID", "harness", "accountID", "sessionID", "runID",
           "parentSessionID", "agentID", "state", "attentionKind", "outcomeSource", "observedAt",
@@ -215,7 +217,7 @@ class ActivityStore:
             try:
                 record = read_json(path)
                 observed = dt.datetime.fromisoformat(record["observedAt"].replace("Z", "+00:00"))
-                if record.get("producerID") == PRODUCER and now - observed >= dt.timedelta(days=1):
+                if record.get("producerID") == PRODUCER and now - observed >= dt.timedelta(seconds=RETENTION_SECONDS):
                     path.unlink()
             except (OSError, ValueError, KeyError, TypeError):
                 continue
@@ -228,13 +230,128 @@ class ActivityStore:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 record = read_json(path)
                 observed = dt.datetime.fromisoformat(record["observedAt"].replace("Z", "+00:00"))
-                if record.get("producerID") == PRODUCER and now - observed >= dt.timedelta(days=1):
+                if record.get("producerID") == PRODUCER and now - observed >= dt.timedelta(seconds=RETENTION_SECONDS):
                     path.unlink()
             except (OSError, ValueError, KeyError, TypeError):
                 continue
             finally:
                 if fd is not None:
                     os.close(fd)
+
+
+def moment(value: object) -> dt.datetime | None:
+    """A UTC writer timestamp, or None for anything else."""
+    if not isinstance(value, str) or not value.endswith("Z"):
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(value[:-1] + "+00:00")
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else None
+
+
+def inbox_records(inbox: Path) -> tuple[list[dict], dict[str, int]]:
+    """Valid v1 records plus file counts. File content never leaves this function."""
+    records, counts = [], {"ignored": 0, "malformed": 0}
+    for path in inbox.iterdir():
+        if not OWN_FILE.fullmatch(path.name) or path.is_symlink():
+            counts["ignored"] += 1
+            continue
+        try:
+            record = read_json(path)
+        except (OSError, ValueError):
+            counts["malformed"] += 1
+            continue
+        producer = record.get("producerID")
+        if isinstance(producer, str) and producer != PRODUCER:
+            counts["ignored"] += 1  # Another producer's record; a wrongly typed one is malformed below.
+        elif valid_record(record):
+            records.append(record)
+        else:
+            counts["malformed"] += 1
+    return records, counts
+
+
+def valid_record(record: dict) -> bool:
+    """Type-check every v1 field before any membership test, so wrong types are malformed, never a crash."""
+    def text(name: str, allowed: set[str] | tuple[str, ...]) -> bool:
+        return isinstance(record[name], str) and record[name] in allowed
+
+    def optional_id(name: str) -> bool:
+        return record[name] is None or native_id(record[name]) is not None
+
+    return (tuple(record) == FIELDS and type(record["schemaVersion"]) is int and record["schemaVersion"] == 1
+            and text("producerID", (PRODUCER,)) and text("harness", ("codex", "claude"))
+            and account_id(record["accountID"], record["harness"]) and text("state", STATES)
+            and all(native_id(record[name]) for name in ("eventID", "sessionID", "runID"))
+            and optional_id("parentSessionID") and optional_id("agentID")
+            and (record["attentionKind"] is None or text("attentionKind", ("approval", "input")))
+            and text("outcomeSource", SOURCES)
+            and moment(record["observedAt"]) is not None and moment(record["leaseExpiresAt"]) is not None)
+
+
+def renewal_verdict(counts: dict) -> str:
+    if counts["lapses"] or counts["leaseMismatches"]:
+        return "fail"
+    return "pass" if counts["qualifyingRuns"] else "inconclusive"
+
+
+def renewal_report(records: list[dict], now: dt.datetime, window: int, harnesses: tuple[str, ...]) -> dict:
+    """Count-only proof that live leases were renewed before they lapsed. No IDs leave it."""
+    start, lease = now - dt.timedelta(seconds=window), dt.timedelta(seconds=LEASE_SECONDS)
+    runs: dict[tuple, list] = {}
+    # The last record before the window, per run: compared at the boundary only, never counted.
+    boundary: dict[tuple, tuple] = {}
+    seen, out_of_window = set(), 0
+    for record in records:
+        observed = moment(record["observedAt"])
+        inside = start <= observed <= now
+        out_of_window += not inside
+        if observed > now or record["harness"] not in harnesses or record["eventID"] in seen:
+            continue
+        seen.add(record["eventID"])
+        key = (record["harness"], record["accountID"], record["sessionID"], record["runID"])
+        event = (observed, record["eventID"], moment(record["leaseExpiresAt"]), record["state"] in LIVE)
+        if inside:
+            runs.setdefault(key, []).append(event)
+        elif key not in boundary or event[:2] > boundary[key][:2]:
+            boundary[key] = event
+    report = {harness: {"runs": 0, "liveRecords": 0, "qualifyingRuns": 0, "lapses": 0, "leaseMismatches": 0,
+                        "maxGapSeconds": 0.0, "maxLiveSpanSeconds": 0.0, "expiredOpen": 0}
+              for harness in harnesses}
+    for key, events in runs.items():
+        counts = report[key[0]]
+        counts["runs"] += 1
+        events.sort(key=lambda event: event[:2])
+        previous, chain_start = boundary.get(key), None
+        qualifying = False
+        for observed, event, expires, live in events:
+            if expires - observed != lease:
+                counts["leaseMismatches"] += 1
+            if previous and previous[3]:
+                gap = (observed - previous[0]).total_seconds()
+                counts["maxGapSeconds"] = max(counts["maxGapSeconds"], round(gap, 3))
+                if observed >= previous[2]:
+                    counts["lapses"] += 1
+                    chain_start = None
+            if live:
+                counts["liveRecords"] += 1
+                chain_start = chain_start or observed
+                span = (observed - chain_start).total_seconds()
+                counts["maxLiveSpanSeconds"] = max(counts["maxLiveSpanSeconds"], round(span, 3))
+                qualifying = qualifying or span > LEASE_SECONDS
+            else:
+                chain_start = None
+            previous = (observed, event, expires, live)
+        counts["qualifyingRuns"] += qualifying
+        if previous[3] and previous[2] <= now:
+            counts["expiredOpen"] += 1  # Still open at check time; lapse is not provable yet.
+    for counts in report.values():
+        counts["verdict"] = renewal_verdict(counts)
+    verdicts = {counts["verdict"] for counts in report.values()}
+    overall = "fail" if "fail" in verdicts else "pass" if verdicts == {"pass"} else "inconclusive"
+    return {"verdict": overall, "leaseSeconds": LEASE_SECONDS, "windowSeconds": window,
+            "harnesses": report, "files": {"outOfWindow": out_of_window}}
 
 
 def home_key(harness: str, env: dict) -> str:

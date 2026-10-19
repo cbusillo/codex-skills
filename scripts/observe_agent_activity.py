@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import datetime as dt
 import json
 import os
 import plistlib
@@ -21,8 +22,8 @@ from pathlib import Path
 
 import aiohttp
 
-from agent_activity import (ActivityStore, account_id, atomic_json, directory, home_key, native_id, private_root,
-                            read_json)
+from agent_activity import (INBOX, LEASE_SECONDS, RETENTION_SECONDS, STATE, ActivityStore, account_id, atomic_json,
+                            directory, home_key, inbox_records, native_id, private_root, read_json, renewal_report)
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -395,14 +396,45 @@ def install(config: Path | None, *, write: bool = False, claude_cli: Path | None
     return {"written": write, "launchAgent": str(destination), "job": job}
 
 
-def main() -> int:
+RENEWAL_EXIT = {"pass": 0, "fail": 3, "inconclusive": 4}
+
+
+def renewal_check(state_root: Path | None, window: int, harness: str) -> dict:
+    """Read the inbox only; never create, prune or write anything."""
+    inbox = (state_root or private_root(os.environ)).expanduser() / STATE / INBOX
+    if not inbox.is_absolute():
+        raise ValueError("activity directory must be absolute")
+    if any(path.is_symlink() for path in (*inbox.parents, inbox)):
+        raise ValueError("activity directory contains a symlink")
+    records, files = inbox_records(inbox)
+    harnesses = ("codex", "claude") if harness == "both" else (harness,)
+    report = renewal_report(records, dt.datetime.now(dt.timezone.utc), window, harnesses)
+    report["files"].update(files)
+    return report
+
+
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("run", "once", "install"))
+    parser.add_argument("mode", choices=("run", "once", "install", "renewal-check"))
     parser.add_argument("--config", type=Path)
     parser.add_argument("--state-root", type=Path, help="isolated private state and inbox for qualification/tests")
     parser.add_argument("--claude-cli", type=Path, help="absolute durable Claude CLI, including for LaunchAgent installation")
     parser.add_argument("--write", action="store_true", help="write the previewed LaunchAgent; does not load it")
-    args = parser.parse_args()
+    parser.add_argument("--window", type=int, default=600, metavar="SECONDS",
+                        help="renewal-check: inbox seconds to examine, above the lease and at most 24 hours")
+    parser.add_argument("--harness", choices=("codex", "claude", "both"), default="both",
+                        help="renewal-check: harness to judge")
+    args = parser.parse_args(argv)
+    if args.mode == "renewal-check":
+        if not LEASE_SECONDS < args.window <= RETENTION_SECONDS:
+            parser.error(f"--window must be above {LEASE_SECONDS} and at most {RETENTION_SECONDS} seconds")
+        try:
+            report = renewal_check(args.state_root, args.window, args.harness)
+        except (OSError, ValueError):
+            print("Agent activity inbox unavailable.", file=sys.stderr)
+            return 1
+        print(json.dumps(report))
+        return RENEWAL_EXIT[report["verdict"]]
     try:
         if args.mode == "install":
             print(json.dumps(install(args.config, write=args.write, claude_cli=args.claude_cli)))
