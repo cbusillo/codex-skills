@@ -683,8 +683,32 @@ never-deployed target Launchplane created empty, named exactly in
 - Apply reads the target back through inspect and checks the provider-target
   record, that every record names the created application, no domains and the
   reviewed health-check path. Creation deploys nothing; image delivery follows
-  the ordinary testing deploy. Storage readback and custody retention are not
-  helper commands.
+  the ordinary testing deploy.
+- `dokploy-target-create-application-readback --payload-file P
+  --idempotency-key K --expected-plan-digest D --dry-run-evidence-file E` reads
+  back an uncertain storage allocation. Use the unchanged payload, the saved
+  dry run and its `plan_sha256`, and the original apply's key; the helper sends
+  the saved plan id and digest with `mode: readback` and no confirmation.
+  Readback never creates or adopts. Output shows `operation_state`,
+  `allocation_state`, `configuration_matches`, `configuration_evidence`
+  (`matches`, `differs` or `unavailable`), `custody_sha256`, and the durable
+  `provider_effect_phase` as step names only (`created`, `pending`,
+  `mount_verified`); generated names and provider ids drop. A wrong key is
+  refused by the service. Save this output as readback evidence.
+- When the allocation cannot resume, `dokploy-target-create-application-retain`
+  takes the apply arguments under the original key plus
+  `--readback-evidence-file` (that readback's output) and
+  `--expected-custody-digest` (its `custody_sha256`). Before sending, the helper
+  requires that the readback used the same payload, plan, review digest and key,
+  and that its custody matches. It sends `retain_state_volume_allocation: true`
+  and `expected_state_volume_custody_sha256` with the setup confirmation.
+  Success is a `retained_uncertain`, `applied: false` receipt naming this plan,
+  key and custody. The retained allocation never resumes; keep its resources
+  and start new work from a fresh dry run with a new key.
+- For an `application_state_volume_*` refusal, the helper's recommendation is
+  chosen by the code, never from the message: wait out an active lease, retry
+  a busy lane, read back again after custody changed, apply the original key
+  when already adopted, resolve changed ownership, or fix an unqualified request.
 
 ### Inert domain and ingress planning
 
