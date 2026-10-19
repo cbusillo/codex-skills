@@ -83,7 +83,7 @@ def detail_query(numbers):
 
 
 def login(author):
-    return github_plan_status.normalize_author({"author": author})["login"]
+    return github_plan_status.normalize_author({"author": author})["login"].casefold()
 
 
 def truncated(connection):

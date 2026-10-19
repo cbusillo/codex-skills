@@ -3204,10 +3204,22 @@ def _claim_once(args: argparse.Namespace) -> None:
           "completed_steps": completed})
 
 
-def refresh_planning_targets(targets: list[tuple[str, int]], *, apply: bool = True) -> dict[str, Any]:
+def refresh_planning_targets(targets: list[tuple[str, int]], *, apply: bool = True,
+                             include_dependents: bool = False, required: bool = False) -> dict[str, Any]:
     """A confirmed fact write and its label projection have separate receipts."""
-    tasks = [{"repo": repo, "number": number, "role": "related"}
+    tasks = [{"repo": repo, "number": number, "role": "related", "required": required}
              for repo, number in dict.fromkeys(targets)]
+    if include_dependents:
+        for repo, number in targets:
+            for target_repo, target_number in github_plan_landing.neighborhood(
+                    argparse.Namespace(**globals()), repo, [(repo, number)]):
+                if (target_repo, target_number) in targets:
+                    continue
+                entry = {"repo": target_repo, "number": target_number, "role": "related"}
+                if target_repo.split("/")[0].casefold() != repo.split("/")[0].casefold():
+                    entry["status"] = "review_cross_repository"
+                if not any(item["repo"] == target_repo and item["number"] == target_number for item in tasks):
+                    tasks.append(entry)
     return github_plan_landing.run_reconciliation_tasks(argparse.Namespace(**globals()), tasks, apply=apply)
 
 
@@ -3219,8 +3231,18 @@ def status_recovery(repo: str, number: int) -> dict[str, Any]:
 
 def cmd_reconcile_status(args: argparse.Namespace) -> None:
     repo, number = issue_ref(args.issue, default_repo(args.repo))
-    result = refresh_planning_targets([(repo, number)], apply=args.apply)
-    result["recovery"] = status_recovery(repo, number)
+    recovery = status_recovery(repo, number)
+    if args.include_dependents:
+        recovery["next_action"] = f"gh-plan.py --repo {repo} reconcile-status {number} --include-dependents --apply"
+    try:
+        result = refresh_planning_targets([(repo, number)], apply=args.apply,
+                                         include_dependents=args.include_dependents, required=True)
+    except PlanError as error:
+        error.payload["recovery"] = recovery
+        raise
+    except (ValueError, KeyError, TypeError, OSError) as error:
+        raise PlanError(str(error), payload={"recovery": recovery}) from error
+    result["recovery"] = recovery
     if not result["ok"]:
         raise PlanError("Planning label projection is incomplete", payload=result)
     emit(result)
@@ -5554,6 +5576,8 @@ def close_error_with_recovery(
         project_state = "warning"
     else:
         project_state = "synchronized_before_close"
+    authority_denied = exc.failure and exc.failure.cause in {
+        "permission_denied", "not_installed", "repository_access_denied"}
     return PlanError(
         str(exc),
         failure=exc.failure,
@@ -5570,8 +5594,9 @@ def close_error_with_recovery(
                 "issue_closed": issue_closed,
                 "completion_metadata": metadata_state,
                 "project_state": project_state,
-                "retry_safe": True,
-                "next_action": "rerun_same_close_command",
+                "retry_safe": not bool(authority_denied),
+                "next_action": "existing_authorized_target_session" if authority_denied else "rerun_same_close_command",
+                "projection_command": f"gh-plan.py --repo {issue_repo} reconcile-status {number} --include-dependents --apply",
             },
         },
     )
@@ -5815,18 +5840,9 @@ def cmd_close(args: argparse.Namespace) -> None:
         closed_projection = github_plan_status.derive(
             {**issue, "state": "closed", "labels": label_source.get("labels", [])},
             {"blocked_by": relationship_preflight.get("blocked_by", [])}, close_wait, label_names=plan_labels)
-        if not closed_projection["labels_writable"]:
-            raise close_error_with_recovery(
-                PlanError("Issue is closed; review the structured wait before completing metadata", payload={
-                    "derived": closed_projection, "completed_steps": completed_steps,
-                    "wait_review": f"gh-plan.py --repo {issue_repo} wait {number}"}),
-                issue_repo=issue_repo, number=number, close_reason=close_reason,
-                relationship_preflight=relationship_preflight, project_result=project_result, issue_closed=True,
-                metadata_state="wait_review_required", planning_config=planning_config)
         label_diff = github_plan_status.label_changes(normalize_labels(label_source.get("labels")), plan_labels, closed_projection)
-    except PlanError as error:
-        if error.payload.get("recovery"):
-            raise
+    except (PlanError, ValueError, KeyError, TypeError) as error:
+        error = error if isinstance(error, PlanError) else PlanError(str(error))
         raise close_error_with_recovery(error, issue_repo=issue_repo, number=number, close_reason=close_reason,
             relationship_preflight=relationship_preflight, project_result=project_result, issue_closed=True,
             metadata_state="wait_read_incomplete", planning_config=planning_config) from error
@@ -5858,6 +5874,11 @@ def cmd_close(args: argparse.Namespace) -> None:
         completed_steps.append("update_labels")
     else:
         completed_steps.append("labels_already_complete")
+    source_projection = {"derived": closed_projection, "changes": label_diff,
+                         **github_plan_status.projection_outcome(
+                             closed_projection, "reconciled" if add_labels or remove_labels else "unchanged")}
+    if closed_projection["wait_review_required"]:
+        source_projection["next_action"] = f"gh-plan.py --repo {issue_repo} wait {number}"
 
     if close_comment:
         try:
@@ -5919,14 +5940,19 @@ def cmd_close(args: argparse.Namespace) -> None:
         dependents = {"ok": False, "error": {"message": str(exc), **getattr(exc, "payload", {})}, "issues": []}
     if not dependents["ok"]:
         raise PlanError("Issue is closed; dependent planning reconciliation is incomplete", payload={
-            "closed": closed_result, "dependents": dependents, "completed_steps": completed_steps,
-            "recovery": "Rerun close to reconcile the confirmed closure and remaining dependent metadata"})
+            "closed": closed_result, "source_projection": source_projection,
+            "dependents": dependents, "completed_steps": completed_steps,
+            "recovery": {"next_action": f"gh-plan.py --repo {issue_repo} reconcile-status {number} --include-dependents --apply",
+                         "scope": "Repair only metadata after resolving the reported problem; preserve the confirmed close"}})
     emit({
         "ok": True,
         "actor": actor,
         "expected_actor": output_expected_actor,
         "closed": closed_result,
         "dependents": dependents,
+        "source_projection": source_projection,
+        "coverage": "partial" if closed_projection["wait_review_required"] or dependents.get("coverage") == "partial" else "complete",
+        "review_required": closed_projection["wait_review_required"] or dependents.get("review_required", False),
         "comment": public_comment or None,
         "project": project_result,
         "relationship_preflight": relationship_preflight,
@@ -6529,6 +6555,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("reconcile-status", help="Project an issue's status labels without repeating a fact write")
     p.add_argument("issue")
+    p.add_argument("--include-dependents", action="store_true", help="Also refresh direct native parents and blocking dependents")
     p.add_argument("--apply", action="store_true", help="Apply the guarded label projection; default is read-only")
     p.set_defaults(func=cmd_reconcile_status)
 

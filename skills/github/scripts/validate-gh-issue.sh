@@ -1361,6 +1361,13 @@ case "$*" in
 	*'/user'*) printf '{"login":"fixture-automation"}\n' ;;
 	*'--method GET'*'/repos/owner/repo/issues/41'*) printf '{"id":9041,"number":41,"html_url":"https://github.com/owner/repo/issues/41"}\n' ;;
 	*'--method GET'*'/comments?'*) printf '[]\n' ;;
+	*'--method GET'*'/dependencies/blocked_by?'*|*'--method GET'*'/dependencies/blocking?'*|*'--method GET'*'/sub_issues?'*)
+		printf '[]\n'
+		;;
+	*'--method GET'*'/parent'*)
+		printf 'HTTP/2.0 404 Not Found\r\ncontent-type: application/json\r\n\r\n{"message":"Not Found"}\n'
+		exit 1
+		;;
 	*'--method GET'*'/repos/owner/repo/issues/'*)
 		number=''
 		for arg in "$@"; do

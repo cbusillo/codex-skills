@@ -96,7 +96,6 @@ class DerivedStatusTests(unittest.TestCase):
             ("open", [names["plan"], names["stale"], names["active"]], self.clear),
             ("open", [names["plan"], names["done"], names["active"]], self.clear),
             ("open", [names["plan"]], self.clear),
-            ("closed", [names["waiting"], names["plan"]], review),
         ]
         for state, statuses, record in cases:
             with self.subTest(state=state, labels=statuses):
@@ -109,6 +108,20 @@ class DerivedStatusTests(unittest.TestCase):
                 self.assertEqual(changes["result"], recorded)
                 self.assertEqual(github_plan_status.project_labels(recorded, names, derived), recorded)
                 self.assertFalse(derived["labels_writable"])
+
+    def test_closed_unread_wait_repairs_lifecycle_without_erasing_waiting(self) -> None:
+        names = github_plan_status.DEFAULT_STATUS_LABELS
+        review = waits.current({}, [], set())
+        recorded = [names[key] for key in ("plan", "active", "blocked", "waiting", "stale")] + ["bug"]
+        derived = github_plan_status.derive({**self.issue, "state": "closed", "labels": recorded},
+            {"blocked_by": []}, review)
+        changes = github_plan_status.label_changes(recorded, names, derived)
+        self.assertTrue(derived["labels_writable"])
+        self.assertTrue(derived["wait_review_required"])
+        self.assertEqual(set(changes["result"]), {names[key] for key in ("plan", "done", "waiting")} | {"bug"})
+        outcome = github_plan_status.projection_outcome(derived, "reconciled")
+        self.assertFalse(outcome["verified"])
+        self.assertEqual(outcome["projection_status"], "reconciled")
 
     def test_closed_issue_keeps_its_actual_person_wait_view(self) -> None:
         self.issue["state"] = "closed"

@@ -279,6 +279,7 @@ class AgentTests(unittest.TestCase):
                                 load_config=lambda _: {**module.DEFAULT_CONFIG, "projects": {"enabled": False}},
                                 find_existing_plan_issues=lambda *_a, **_k: ("bot", []),
                                 ensure_labels=lambda *_a, **_k: ("bot", []),
+                                refresh_planning_targets=lambda *_a, **_k: {"ok": True, "coverage": "complete", "issues": []},
                                 comment_route=lambda: ("bot", "fake-gh", "bot"), emit=lambda _: None), \
                     patch.object(module.github_issue_core, "create_issue", side_effect=create):
                 module.cmd_create(args)

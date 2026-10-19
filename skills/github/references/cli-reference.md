@@ -1484,6 +1484,9 @@ competitor's record.
   `wait` command to record existing evidence, never a hand-applied status label.
   Single-issue `wait` can review and record waits on closed issues without
   reopening or claiming them; a real wait is never automatically cleared.
+  Eligible already-closed managed sources with held/unread waits receive only
+  canonical lifecycle label repair and a review receipt. Their body, completion
+  note and Project state remain for the owning agent's completion review.
   For open native planning parents/dependents in the same repository
   owner's account, apply derives `blocked`, `waiting` or `active` labels from
   all current native blockers and the authoritative structured wait. It preserves
@@ -1499,7 +1502,10 @@ competitor's record.
   as unread waits. `next` excludes an unstatused planning scope with
   `scope_review_required`; deliberate stale/done exclusions remain intact.
   Reviewed `active`, `blocked` and `waiting` views are recomputed. The canonical
-  package prohibits label changes for scope holds or unread waits itself.
+  package prohibits label changes for open scope holds or open unread waits
+  itself. On a closed issue, unread waits permit `done` and removal of actionable
+  labels while preserving any recorded `waiting` label; wait coverage remains
+  partial. A closed lifecycle label does not certify acceptance.
   Unverified target planning configuration refuses writes.
   Cross-repository source closures, another account's
   records and source reporter acceptance remain owning-agent review work. Each outcome
@@ -1517,9 +1523,15 @@ competitor's record.
   scope hold is preserved without a write. A posting denial preserves its exact classified
   failure and leaves that repository to an existing authorized owning session;
   independent authorized repositories can still be reconciled. Never repeat a
-  denied write through another identity or a new grant.
+  denied write through another identity or a new grant. Classified read denials
+  have the same repository-local authority receipt; unclassified read failures
+  remain failures. Unknown write outcomes and identity failures stop all writes.
   The pure `github_plan_status` package in `skills/github/scripts` supplies the
-  same derivation, trusted wait resolver and label diff to native consumers.
+  same derivation, trusted wait resolver, label diff and pure outcome/failure
+  classification to native consumers. Provider requests, snapshot comparisons
+  and authority remain adapter work. The workstation comment radar is an
+  additional catalog landing-adapter check; generic close and native service
+  adapters retain their own closure evidence and complete structured wait reads.
   Adapters supply their own existing trust and repository-scoped posting
   authority; the package contains no identity or credential discovery. Consumers
   pin an immutable catalog source revision and validate compatibility before
@@ -1527,12 +1539,16 @@ competitor's record.
   The train driver includes separate planning receipts for every confirmed
   landed batch member. A failed planning receipt does not undo a landing;
   rerun this command after resolving its reported blocker.
-- `reconcile-status <issue> [--apply]`: Preview or apply the same guarded status
+- `reconcile-status <issue> [--include-dependents] [--apply]`: Preview or apply the same guarded status
   label projection to one issue without posting a wait, changing an edge,
   creating an issue or closing it. Use the recovery command in a partial receipt
   after resolving its reported review or failure. Confirmed wait, create and
   native relationship writes refresh the affected issue's labels immediately;
   their fact-write evidence remains separate from the projection receipt.
+  `--include-dependents` also refreshes direct native parents and blocking
+  dependents, with automatic neighbors limited to the source account. An
+  explicit target remains subject to its existing posting authority; a local
+  checkout proves configuration, never permission.
 - `create <title>`: Create a new plan issue. Exact-title dedupe uses REST issue
   search, labels are ensured through REST, and the shared issue helper creates
   the issue with reconciliation evidence for unknown write outcomes. Supports
@@ -1540,6 +1556,9 @@ competitor's record.
   only). Configured Projects still enroll new issues. Manual fields are not
   synchronized by default; `--focus` and `--manager` are explicit edits, and
   configured Manager defaults are ignored.
+  Actionable create-time labels are immediately projected: for example,
+  `--plan-status blocked --wait-clear` becomes active until a native blocker is
+  linked. Deliberate stale/done/unstatused scope holds retain their review state.
 - `update-section <issue> <section>`: Patch a single markdown section on an
   issue. A target returned as a pull request is refused before body preparation
   or any write, with `validation_error` and `write_outcome=not_started`.
@@ -1595,9 +1614,10 @@ competitor's record.
   reused on retry, and failures return deterministic `recovery` state so
   rerunning the same command reconciles missing metadata without duplicating
   evidence. A real structured wait retains `waiting` alongside `done`.
-  Unread wait evidence preserves labels and returns `wait_review_required` with
-  the confirmed closure; review/record the wait, then rerun close to finish its
-  remaining metadata, comment and dependent steps.
+  Unread wait evidence preserves recorded `waiting`, projects the known closed
+  lifecycle, and reports partial source wait coverage. It does not prevent the
+  requested close comment or dependent refresh. Metadata recovery uses the
+  reported `reconcile-status` targets without replaying closure or comments.
 - Every successful `close`, including an idempotent repair of a confirmed close,
   refreshes direct native parents and `blocking` dependents through that same
   derivation and label readback. Related issues remain open; their own finish
@@ -2025,6 +2045,15 @@ before sending an explicit REST state/state-reason PATCH. The final envelope
 reports `post_close_comment` in `completed_steps` when the comment succeeded but
 the close failed, and comment failure stops before close. Successful state
 changes append `close_issue` or `reopen_issue` to `completed_steps`.
+After a confirmed CLI close, including a non-planning issue, the same in-process
+planning adapter refreshes its lifecycle view and direct native parents and
+blocking dependents. Provider reads and label writes retain the original close
+transport and automation actor. Partial receipts preserve the confirmed close
+and offer `reconcile-status --include-dependents --apply` recovery, without
+repeating the close comment. Exact personal-identity approval authorizes only
+that close; automatic planning work is returned for existing authorized target
+sessions. The shared `set_issue_state` primitive keeps its existing contract;
+`gh-plan close` owns its own post-close orchestration.
 `--duplicate-of` accepts the same issue-reference forms, resolves the target's
 REST database id, and sends `state_reason=duplicate` plus `duplicate_issue_id`
 in the close PATCH. It is mutually exclusive with `--reason`. For completed durable

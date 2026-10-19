@@ -188,9 +188,10 @@ class LandingTests(unittest.TestCase):
         self.assertEqual(result["issues"], outcome["issues"])
 
     def test_waits_missing_records_and_later_foreign_clear_never_complete(self) -> None:
-        original = self.issue["body"]
+        original = copy.deepcopy(self.issue)
         for record in (None, github_plan_wait.reviewed(evidence="Still requires acceptance",
                                                        waiting_for="Client", ends_when="Client accepts")):
+            self.issue.update(copy.deepcopy(original))
             self.issue["body"] = PLAN.PLAN_MANAGED_PROVENANCE_MARKER + (
                 "\n" + github_plan_wait.marker(record) if record else "")
             foreign_clear = {"user": {"login": "outside"}, "body": github_plan_wait.marker(
@@ -198,9 +199,13 @@ class LandingTests(unittest.TestCase):
             PLAN.collect_paged_rest_items.return_value = ("fixture-bot", [foreign_clear])
             result = self.run_landing()
             self.assertEqual(result["issues"][0]["status"], "review_wait_record")
-        self.issue["body"] = original
-        self.labels.assert_not_called()
+            self.assertEqual(set(PLAN.normalize_labels(self.issue["labels"])),
+                             {self.config["labels"][key] for key in ("plan", "done", "waiting")})
+            self.assertEqual(self.issue["state"], "closed")
+            self.assertNotIn("section", result["issues"][0])
         self.body.assert_not_called()
+        self.comments.assert_not_called()
+        self.state.assert_not_called()
 
     def test_reference_only_open_source_is_reported_without_closing(self) -> None:
         self.issue["state"] = "open"
@@ -410,7 +415,7 @@ class LandingTests(unittest.TestCase):
                 self.assertFalse(receipt["ok"])
                 self.assertEqual(receipt["coverage"], "partial")
 
-    def test_single_read_denial_fails_but_write_denial_is_a_partial_authority_review(self) -> None:
+    def test_single_read_and_write_denial_are_partial_authority_reviews(self) -> None:
         targets = [("fixture/restricted", 8)]
         failure = PLAN.github_api_core.FailureDetail(cause="permission_denied",
             message="Fixture endpoint denies the current request", retryable=False,
@@ -429,11 +434,10 @@ class LandingTests(unittest.TestCase):
                     rows = [row for row in receipt["issues"] if row["role"] == "related"]
                     self.assertEqual(attempted, targets)
                     self.assertEqual(len(rows), 1)
-                    self.assertEqual(rows[0]["status"], "review_posting_authority" if phase == "write"
-                                     else "reconciliation_failed")
+                    self.assertEqual(rows[0]["status"], "review_posting_authority")
                     self.assertEqual(rows[0]["error"]["failure"], failure.as_dict())
                     self.assertEqual(rows[0]["error"]["trace_id"], "single-target-denial")
-                    self.assertEqual(receipt["ok"], phase == "write")
+                    self.assertTrue(receipt["ok"])
                     self.assertEqual(receipt["coverage"], "partial")
 
     def test_readback_conflict_is_local_to_its_target(self) -> None:
@@ -524,7 +528,9 @@ class LandingTests(unittest.TestCase):
         entry = {}
         landing.reconcile_related(PLAN, REPO, 7, apply=True, entry=entry)
         self.assertEqual(entry["status"], "review_wait_record")
-        self.assertEqual(self.issue["labels"], original["labels"])
+        self.assertEqual(set(PLAN.normalize_labels(self.issue["labels"])),
+                         {self.config["labels"][key] for key in ("plan", "done", "waiting")})
+        self.assertEqual(entry["projection_status"], "reconciled")
         self.assertEqual(self.issue["body"], closed_body)
         self.issue.update(original)
         self.issue["state"] = "open"
@@ -945,17 +951,44 @@ class MutationProjectionTests(unittest.TestCase):
         self.assertEqual((self.records[7]["body"], self.discussion), before)
         self.assertEqual(self.records[7]["state"], "open")
 
-    def test_direct_close_with_unreviewed_wait_preserves_labels_and_reports_closed_recovery(self):
+    def test_direct_close_with_unreviewed_wait_repairs_labels_and_refreshes_dependents(self):
+        self.add_issue(7, label_keys=("plan", "active", "waiting"))
         self.records[7]["body"] = github_plan_wait.without_records(self.records[7]["body"])
+        self.add_issue(8, label_keys=("plan", "blocked"))
+        self.blockers[8].add(7)
+        before = copy.deepcopy((self.records[7]["body"], self.records[8]["body"], self.blockers))
+        evidence = "Completion evidence retained while legacy wait needs review."
+        result = self.command("close", "7", "--comment", evidence)
+        self.assertEqual(self.records[7]["state"], "closed")
+        self.assert_labels(7, "plan", "done", "waiting")
+        self.assert_labels(8, "plan", "active")
+        self.assertEqual(self.records[8]["state"], "open")
+        self.assertEqual((self.records[7]["body"], self.records[8]["body"], self.blockers), before)
+        self.assertEqual(self.discussion[7][0]["body"], evidence)
+        self.assertEqual(self.discussion[8], [])
+        self.assertEqual(result["source_projection"]["status"], "review_wait_record")
+        self.assertEqual(result["source_projection"]["projection_status"], "reconciled")
+        self.assertEqual(result["coverage"], "partial")
+        self.assertTrue(result["review_required"])
+
+    def test_confirmed_close_with_label_permission_denial_requires_existing_authority(self):
         before = copy.deepcopy((self.records[7]["labels"], self.records[7]["body"], self.discussion))
-        with self.assertRaises(PLAN.PlanError) as caught:
+        failure = PLAN.github_api_core.FailureDetail(cause="permission_denied",
+            message="Fixture source label endpoint denied", retryable=False, fallback_eligible=False,
+            disposition="stop", write_outcome="rejected", request_id="fixture-source-denial")
+        with patch.object(PLAN.github_issue_core, "edit_issue", side_effect=PLAN.github_issue_core.IssueError(
+                failure.message, failure=failure)), self.assertRaises(PLAN.PlanError) as caught:
             self.command("close", "7")
         self.assertEqual(self.records[7]["state"], "closed")
         self.assertEqual((self.records[7]["labels"], self.records[7]["body"], self.discussion), before)
+        self.assertIs(caught.exception.failure, failure)
         recovery = caught.exception.payload["recovery"]
         self.assertTrue(recovery["issue_closed"])
-        self.assertEqual(recovery["completion_metadata"], "wait_review_required")
-        self.assertNotIn("labels_already_complete", caught.exception.payload["completed_steps"])
+        self.assertFalse(recovery["retry_safe"])
+        self.assertEqual(recovery["next_action"], "existing_authorized_target_session")
+        command = PLAN.build_parser().parse_args(shlex.split(recovery["projection_command"])[1:])
+        self.assertEqual(command.command, "reconcile-status")
+        self.assertTrue(command.include_dependents and command.apply)
 
 
 if __name__ == "__main__":

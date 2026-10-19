@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import io
 import json
 import os
@@ -15,6 +16,8 @@ import sys
 import tempfile
 import threading
 import time
+import subprocess
+import urllib.parse
 from typing import Any
 from unittest.mock import patch
 
@@ -25,6 +28,7 @@ os.environ["GH_WITH_ENV_TOKEN_EXPECTED_LOGIN"] = "fixture-automation"
 
 import github_api
 import github_issue
+import github_plan_status
 from github_fixture_support import api_failure, api_success, with_call_stub
 
 
@@ -1275,13 +1279,17 @@ def _state_and_label_callback(method: str, path: str, body: Any, **_kwargs: Any)
     return success(issue_body())
 
 
-def _run_cli(argv: list[str], stdin: Any, *, timeout: float) -> tuple[int, dict[str, Any]]:
+def _run_cli(argv: list[str], stdin: Any, *, timeout: float, planning: bool = False) -> tuple[int, dict[str, Any]]:
     result: dict[str, Any] = {}
     original_argv, original_stdin = sys.argv, sys.stdin
 
     def target() -> None:
         output = io.StringIO()
-        with contextlib.redirect_stdout(output):
+        # Existing stdin tests isolate input selection; stateful projection tests
+        # opt into the real CLI adapter and original API transport below.
+        projection = contextlib.nullcontext() if planning else patch.object(github_issue, "refresh_after_close",
+            return_value={"ok": True, "coverage": "complete", "issues": []})
+        with contextlib.redirect_stdout(output), projection:
             result["exit_code"] = github_issue.main()
         result["payload"] = json.loads(output.getvalue())
 
@@ -1391,6 +1399,132 @@ def test_close_rejects_comment_with_comment_file() -> None:
         raise AssertionError(f"{command} accepted both --comment and --comment-file")
 
 
+@contextlib.contextmanager
+def generic_close_fixture(*, reject_labels: bool = False):
+    """Use the original API mock across the CLI and fresh planning adapter."""
+    names = github_plan_status.DEFAULT_STATUS_LABELS
+    clear = github_plan_status.wait_records.reviewed(evidence="Dependent discussion fully reviewed")
+    records = {number: issue_body(number, body="Original request.") for number in (42, 43)}
+    records[42]["labels"] = [{"name": "bug"}]
+    records[43].update(body="Dependent request.\n" + github_plan_status.wait_records.marker(clear),
+                       user={"login": "owner"}, labels=[{"name": names[key]} for key in ("plan", "blocked")])
+    comments = {42: [], 43: []}
+    state_writes, comment_writes = [], []
+    def callback(method, path, body, **kwargs):
+        if path == "/user":
+            return success({"login": "fixture-automation"})
+        route = urllib.parse.urlsplit(path).path
+        prefix, separator, suffix = route.partition("/issues/")
+        assert separator and prefix == "/repos/owner/repo", (method, path)
+        parts = suffix.split("/")
+        number = int(parts[0])
+        issue = records[number]
+        if method == "GET":
+            if len(parts) == 1:
+                return success(copy.deepcopy(issue))
+            if parts[1] == "comments":
+                return success(copy.deepcopy(comments[number]))
+            if parts[1] == "parent":
+                return failure(404, {"message": "Not Found"}, is_write=False)
+            if parts[1] == "sub_issues":
+                return success([])
+            if parts[1:] == ["dependencies", "blocking"]:
+                return success([copy.deepcopy(records[43])] if number == 42 else [])
+            if parts[1:] == ["dependencies", "blocked_by"]:
+                return success([copy.deepcopy(records[42])] if number == 43 else [])
+        if method == "PATCH" and len(parts) == 1:
+            assert number == 42 and set(body) == {"state", "state_reason"}, (number, body)
+            issue.update(body)
+            state_writes.append((number, body["state"]))
+            return success(copy.deepcopy(issue))
+        if method == "POST" and parts[1:] == ["comments"]:
+            item = {"id": 1, "html_url": f"https://github.com/owner/repo/issues/{number}#issuecomment-1",
+                    "body": body["body"], "user": {"login": "fixture-automation"}}
+            comments[number].append(item)
+            comment_writes.append(number)
+            return success(copy.deepcopy(item), status=201)
+        if number == 43 and parts[1] == "labels":
+            if reject_labels:
+                return failure(422, {"message": "Fixture label operation rejected"}, is_write=True)
+            labels = {item["name"] for item in issue["labels"]}
+            if method == "DELETE":
+                labels.remove(urllib.parse.unquote(parts[2]))
+            else:
+                assert method == "POST", (method, path)
+                labels.update(body["labels"])
+            issue["labels"] = [{"name": value} for value in sorted(labels)]
+            return success(copy.deepcopy(issue["labels"]))
+        raise AssertionError((method, path, body))
+    with tempfile.TemporaryDirectory() as directory:
+        checkout = pathlib.Path(directory)
+        metadata = checkout / ".github/github.json"
+        metadata.parent.mkdir()
+        metadata.write_text(json.dumps({"planning": {"labels": dict(names), "projects": {"enabled": False}}}))
+        def git(command, **kwargs):
+            if command == ["git", "rev-parse", "--show-toplevel"]:
+                return subprocess.CompletedProcess(command, 0, str(checkout), "")
+            if command == ["git", "remote", "get-url", "origin"]:
+                return subprocess.CompletedProcess(command, 0, "https://github.com/owner/repo.git", "")
+            raise AssertionError((command, kwargs))
+        with patch.object(subprocess, "run", git), \
+                patch.object(github_issue.github_identity, "acts_as_own_user", return_value=False), \
+                patch.object(github_issue.github_identity, "active_auth_fallback_allowed", return_value=False):
+            yield callback, records, comments, state_writes, comment_writes
+
+
+def test_generic_cli_close_refreshes_a_nonplan_blockers_dependent_without_fact_edits() -> None:
+    with generic_close_fixture() as (callback, records, comments, states, posts):
+        dependent = copy.deepcopy(records[43])
+        def run(calls):
+            code, payload = _run_cli(["close", "owner/repo#42", "--comment", "Source delivered."], io.StringIO(""), timeout=10, planning=True)
+            assert code == 0, payload
+            assert payload["projection"]["coverage"] == "complete", payload
+            # Diagnostics describe actual transport work across close, reads,
+            # label changes and their readback, without losing close certainty.
+            assert payload["attempts"] == len(calls), (payload, calls)
+            assert payload["diagnostics"]["projection"], payload
+            assert payload["attempts"] > payload["diagnostics"]["close"]["attempts"], payload
+            assert payload["outcome_certainty"] == payload["diagnostics"]["close"]["outcome_certainty"] == "confirmed"
+        with_call_stub(callback, run)
+        assert states == [(42, "closed")], states
+        assert posts == [42], posts
+        assert comments[43] == []
+        names = github_plan_status.DEFAULT_STATUS_LABELS
+        assert {item["name"] for item in records[43]["labels"]} == {names[key] for key in ("plan", "active")}
+        assert {key: value for key, value in records[43].items() if key != "labels"} == {
+            key: value for key, value in dependent.items() if key != "labels"}
+
+
+def test_generic_cli_projection_failure_preserves_confirmed_close_and_metadata_recovery() -> None:
+    with generic_close_fixture(reject_labels=True) as (callback, records, comments, states, posts):
+        def run(calls):
+            code, payload = _run_cli(["close", "owner/repo#42", "--comment", "Source delivered."], io.StringIO(""), timeout=10, planning=True)
+            assert code != 0 and not payload["ok"], payload
+            assert payload["state"] == "closed", payload
+            assert payload["recovery"]["issue_closed"] is True, payload
+            recovery = payload["recovery"]["next_action"]
+            assert "reconcile-status" in recovery and "--include-dependents" in recovery and "--apply" in recovery
+            assert payload["projection"]["coverage"] == "partial", payload
+        with_call_stub(callback, run)
+        assert records[42]["state"] == "closed"
+        assert records[43]["state"] == "open"
+        assert states == [(42, "closed")] and posts == [42], (states, posts)
+
+
+def test_exact_personal_close_optin_never_fans_out_when_later_identity_lookup_disagrees() -> None:
+    with generic_close_fixture() as (callback, records, comments, states, posts):
+        before = copy.deepcopy(records[43])
+        def run(calls):
+            with patch.object(github_issue.github_identity, "own_user_opted_in", return_value=True):
+                code, payload = _run_cli(["close", "owner/repo#42"], io.StringIO(""), timeout=10, planning=True)
+            assert code == 0, payload
+            assert payload["projection"]["status"] == "review_posting_authority", payload
+            assert not [call for call in calls if "/issues/43" in call["path"]], calls
+        with_call_stub(callback, run)
+        assert records[43] == before
+        assert states == [(42, "closed")] and posts == [], (states, posts)
+
+
 TESTS = [
     test_create_preserves_fields_and_emits_operation_marker,
     test_own_user_create_reports_success_without_duplicate_retry,
@@ -1430,6 +1564,9 @@ TESTS = [
     test_explicit_comment_file_waits_for_slow_stdin_and_reads_paths,
     test_edit_body_file_can_clear_the_body,
     test_close_rejects_comment_with_comment_file,
+    test_generic_cli_close_refreshes_a_nonplan_blockers_dependent_without_fact_edits,
+    test_generic_cli_projection_failure_preserves_confirmed_close_and_metadata_recovery,
+    test_exact_personal_close_optin_never_fans_out_when_later_identity_lookup_disagrees,
 ]
 
 

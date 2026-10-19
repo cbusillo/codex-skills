@@ -136,10 +136,6 @@ def local_next_fixture(
             return collect_plans(path, **kwargs)
         return "automation-gh", plans
 
-    for raw in plans:
-        if "_graph_comments" in raw:
-            _, raw["_graph_comments"] = collect(f"/repos/owner/repo/issues/{raw['number']}/comments")
-
     with patch.multiple(
         module,
         collect_paged_rest_items=collect,

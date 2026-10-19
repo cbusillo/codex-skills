@@ -6,18 +6,19 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
+from types import MappingProxyType
 from typing import Any
 
 from . import waits as wait_records
 from .waits import validate as validate_wait
 
-DEFAULT_STATUS_LABELS = {key: f"plan:{key}" for key in
-                         ("active", "blocked", "waiting", "stale", "done")}
-DEFAULT_STATUS_LABELS["plan"] = "plan"
+DEFAULT_STATUS_LABELS = MappingProxyType({"plan": "plan", **{key: f"plan:{key}" for key in
+                                         ("active", "blocked", "waiting", "stale", "done")}})
 
 
 def derive(issue: dict[str, Any], relationships: dict[str, Any], wait: dict[str, Any], *,
-           label_names: dict[str, str] = DEFAULT_STATUS_LABELS) -> dict[str, Any]:
+           label_names: Mapping[str, str] = DEFAULT_STATUS_LABELS) -> dict[str, Any]:
     validate_wait(wait)
     state = str(issue.get("state", "")).casefold()
     if state not in {"open", "closed"} or any(
@@ -36,7 +37,8 @@ def derive(issue: dict[str, Any], relationships: dict[str, Any], wait: dict[str,
     wait_review = wait["state"] == "review"
     scope_status = (held[0] if held else "unstatused") if scope_hold else None
     if state == "closed":
-        status, labels = "done", ["done", *(["waiting"] if waits else [])]
+        status, labels = "done", ["done", *(["waiting"] if waits or (
+            wait_review and label_names["waiting"].casefold() in names) else [])]
     elif wait_review:
         status, labels = "review", ["blocked"] if blockers else []
     elif scope_hold:
@@ -48,7 +50,9 @@ def derive(issue: dict[str, Any], relationships: dict[str, Any], wait: dict[str,
             labels.append("waiting")
     return {"status": status, "blocked_by": blockers, "waits": waits, "labels": labels,
             "structured_wait": wait, "scope_hold": scope_hold, "scope_status": scope_status,
-            "wait_review_required": wait_review, "labels_writable": not (scope_hold or wait_review)}
+            "wait_review_required": wait_review,
+            "preserve_recorded_waiting": state == "closed" and wait_review,
+            "labels_writable": not scope_hold and (state == "closed" or not wait_review)}
 
 
 def render_status(text: str, derived: dict[str, Any]) -> str:
@@ -79,7 +83,7 @@ def render_status(text: str, derived: dict[str, Any]) -> str:
     return f"State: {derived['status']}.\nBlocked by: {blockers}\nWaiting for: {waits}\n" + prose
 
 
-def label_changes(recorded: list[str], names: dict[str, str], derived: dict[str, Any]) -> dict[str, list[str]]:
+def label_changes(recorded: list[str], names: Mapping[str, str], derived: dict[str, Any]) -> dict[str, list[str]]:
     """One status-label diff for catalog and native train consumers."""
     if not derived.get("labels_writable", False):
         return {"add": [], "remove": [], "result": list(recorded)}
@@ -87,12 +91,14 @@ def label_changes(recorded: list[str], names: dict[str, str], derived: dict[str,
     wanted = {names[key] for key in derived["labels"] if key in names}
     remove = {name for name in recorded if name.casefold() in statuses
               and name.casefold() not in {value.casefold() for value in wanted}}
+    if derived.get("preserve_recorded_waiting"):
+        remove = {name for name in remove if name.casefold() != names["waiting"].casefold()}
     add = {name for name in wanted if name.casefold() not in {value.casefold() for value in recorded}}
     return {"add": sorted(add), "remove": sorted(remove),
             "result": sorted((set(recorded) - remove) | add)}
 
 
-def project_labels(recorded: list[str], names: dict[str, str], derived: dict[str, Any]) -> list[str]:
+def project_labels(recorded: list[str], names: Mapping[str, str], derived: dict[str, Any]) -> list[str]:
     return label_changes(recorded, names, derived)["result"]
 
 
@@ -109,7 +115,7 @@ def normalize_author(source: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def is_planning_issue(issue: dict[str, Any], names: dict[str, str]) -> bool:
+def is_planning_issue(issue: dict[str, Any], names: Mapping[str, str]) -> bool:
     observed = {str(item.get("name", "") if isinstance(item, dict) else item).casefold()
                 for item in issue.get("labels", [])}
     return "pull_request" not in issue and bool(observed & {
@@ -118,6 +124,33 @@ def is_planning_issue(issue: dict[str, Any], names: dict[str, str]) -> bool:
 
 def receipt_summary(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
     verified = {"reconciled", "unchanged", "would_reconcile", "not_planning_issue"}
-    return {"ok": all(item.get("informational") or item["status"] in verified for item in outcomes),
+    return {"ok": all(item.get("informational") or item.get("verified") or item["status"] in verified for item in outcomes),
             "coverage": "complete" if all(item.get("verified") or item["status"] in verified for item in outcomes) else "partial",
             "review_required": any(item["status"].startswith(("review_", "not_attempted", "reconciliation_")) for item in outcomes)}
+
+
+def projection_outcome(derived: dict[str, Any], label_status: str) -> dict[str, Any]:
+    """Distinguish a proved label write from complete planning evidence."""
+    if derived["wait_review_required"]:
+        return {"status": "review_wait_record", "verified": False,
+                "projection_status": label_status if derived["labels_writable"] else "preserved"}
+    if not derived["labels_writable"]:
+        return {"status": "review_related_finish_line", "verified": True, "projection_status": "preserved"}
+    return {"status": label_status, "verified": True, "projection_status": label_status}
+
+
+def classify_outcome(status: str, *, verified: bool = False, required: bool = False) -> dict[str, Any]:
+    verified = verified or status in {"reconciled", "unchanged", "would_reconcile", "not_planning_issue"}
+    return {"status": status, "verified": verified,
+            "informational": not required and status.startswith(("review_", "not_attempted"))}
+
+
+def failure_disposition(cause: str | None, write_outcome: str | None, *,
+                        writes_started: bool, validation_error: bool = False) -> dict[str, Any]:
+    """Adapters supply classified transport evidence; this function grants nothing."""
+    stop = (write_outcome == "unknown"
+            or cause in {"identity_refused", "unconfigured_identity", "invalid_credentials", "actor_mismatch"}
+            or (cause is None and writes_started and not validation_error))
+    denied = not stop and cause in {"permission_denied", "not_installed", "repository_access_denied"}
+    return {"status": "review_posting_authority" if denied else "reconciliation_failed",
+            "repository_denied": denied, "stop_writes": stop}

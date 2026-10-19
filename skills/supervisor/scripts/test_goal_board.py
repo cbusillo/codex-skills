@@ -72,6 +72,17 @@ def details(**tracks):
 
 
 class GoalBoardTests(unittest.TestCase):
+    def test_mixed_case_trusted_people_and_bots_keep_decisions_and_handoffs(self):
+        for typename, name in (("User", "MixedCaseOwner"), ("Bot", "MixedCaseApp")):
+            with self.subTest(typename=typename):
+                author = {"__typename": typename, "login": name}
+                trusted = {(name + ("[bot]" if typename == "Bot" else "")).casefold()}
+                decision = comment("Director decision (Q1): approve", author=author)
+                ready = comment(f"Ready for the merge train\n\nHead: {HEAD}", author=author)
+                self.assertEqual(goal_board.latest_decision({"nodes": [decision], "totalCount": 1}, trusted, []),
+                                 decision["url"])
+                self.assertEqual(goal_board.handoff(pr(1, comments=[ready]), trusted, []), "ready")
+
     def __init__(self, *args, **kwargs):
         # unittest builds one instance per test method, so each test gets its own reader.
         super().__init__(*args, **kwargs)

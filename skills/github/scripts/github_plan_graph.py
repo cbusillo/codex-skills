@@ -196,7 +196,7 @@ def rest_issue(node: dict[str, Any]) -> dict[str, Any]:
                 ("sub_issues", "subIssues"),
             ]
         },
-        "_graph_comments": [
+        **({"_graph_comments": [
             {
                 "id": n["databaseId"],
                 "body": n["body"],
@@ -206,7 +206,7 @@ def rest_issue(node: dict[str, Any]) -> dict[str, Any]:
                 "user": rest_author(n["author"]),
             }
             for n in node.get("comments", [])
-        ],
+        ]} if "comments" in node else {}),
     }
 
 
