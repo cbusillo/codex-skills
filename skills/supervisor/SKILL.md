@@ -408,19 +408,22 @@ including non-dim text, establishes neither its author nor approval.
    deploys or recovery, and whether a stuck condition underneath keeps
    producing symptoms.
    Never widen a brief after launch. Write it from the decision record,
-   quoting the Director's words, never from a PR's wording. When a request
+   quoting the Director's words, never from a PR's wording. Before issuing
+   either a worker or milestone-lead brief, compare every restrictive line
+   with current overall and repository direction and recorded decisions.
+   Attribute actual Director holds to their source. A Supervisor's read
+   minimization or implementation preference is not a Director hold or a
+   reason to request a new grant; apply [task scope](../references/execution-scope.md)
+   and the shared [question rules](../references/talking-with-the-director.md#decisions-holds-and-work-state).
+   When a request
    names a visual thing, check which one before writing the brief. A session
    that needs more scope gets a Director question. If the Director says yes,
    the wider scope goes in a new brief for a fresh session; the running
-   session's brief stays as it was. Every brief carries
-   two [approved rules](https://github.com/cbusillo/codex-skills/issues/1043#issuecomment-6091977127):
+   session's brief stays as it was. Every brief carries the
+   [approved scope rule](https://github.com/cbusillo/codex-skills/issues/1043#issuecomment-6091977127):
    small fixes in the same file or area that share the change's reason go in
    the same PR, while different behavior, its own risk, security, access or
-   authority, Client-visible, or large work gets its own issue (search first);
-   and a PR that needs the Client's acceptance hands off as "Engineering ready;
-   waiting for the Client's acceptance" until the Client accepts its current
-   head, and "Ready for the merge train" only after
-   ([codex-skills#1535](https://github.com/cbusillo/codex-skills/issues/1535)).
+   authority, Client-visible, or large work gets its own issue (search first).
    Every brief also carries the refusal rule from
    [task scope](../references/execution-scope.md): stop a refused action,
    report its exact text, and never redo it another way.
@@ -429,9 +432,18 @@ including non-dim text, establishes neither its author nor approval.
    when the task authorizes a Supervisor handoff,
    instead of writing the handoff comment, adding `--waiting-for-client` until
    required Client acceptance covers the current head. Link the
-   [ready handoff contract](../github/references/cli-reference.md#ready-handoffs);
-   a renewed wait follows that contract's withdrawal route, and a push needs
+   [ready handoff contract](../github/references/cli-reference.md#ready-handoffs)
+   in both worker and milestone-lead briefs; it classifies acceptance from
+   the PR's own Client test notes, including engineering work that merges to
+   testing with Client checks at release. Do not ask for a new pre-merge
+   decision when those notes already settle it. A renewed wait follows that
+   contract's withdrawal route, and a push needs
    a fresh `ready` call.
+   For inspection instructions in either brief, link
+   [jetbrains-inspection](../jetbrains-inspection/SKILL.md) for its supported
+   headless routes and [repo-readiness](../repo-readiness/SKILL.md#gate-selection)
+   for UNKNOWN disposition. Do not open the Director's desktop IDE; desktop
+   closure alone does not establish that headless inspection is unavailable.
    When the Supervisor runs the review, every brief points the author to the
    [worker review request](references/helpers.md#worker-review-request) format
    and follow-through. Keep the template there rather than copying it into briefs.
@@ -548,12 +560,11 @@ These are the Director's
 [October 9 rules](https://github.com/cbusillo/codex-skills/issues/1043#issuecomment-6091977127)
 for products a Client runs business on.
 
-- A release always needs the Client's acceptance (Q124 on
-  [launchplane#3192](https://github.com/cbusillo/launchplane/issues/3192)).
-  Never propose a scheduled, quiet, admin or engineering-only release path.
-  The overall `DIRECTION.md` owns release authority, including its one
-  exception: a temporary hotfix in an outage, which only the Director starts
-  and the Client still reviews afterward.
+- Use the overall `DIRECTION.md` for release authority. Before briefing a
+  release, establish the product's recorded Client and existing acceptance,
+  including `director_standing` when the Director is the Client. Preserve
+  release timing and Launchplane's gated release path; use
+  [launchplane](../launchplane/SKILL.md) for that routing.
 - Open a Client-visible PR as soon as its work is ready; it gets one preview
   request whenever it opens, so holding it only delays the Client.
 - Land each Client-accepted PR first, or in the same train batch as other
@@ -574,12 +585,7 @@ for products a Client runs business on.
   invitation and disables Accept.
 - Classify each PR from its own notes under [Q537](https://github.com/cbusillo/codex-skills/issues/2332#issuecomment-6271199870)
   and the [ready handoff notes contract](../github/references/cli-reference.md#ready-handoffs).
-  A no-test reason or explicit engineering marker with release test steps routes
-  to ordinary checked `ready`; unmarked steps or anything the Client must approve
-  before merge routes to `--waiting-for-client`. Lead briefs link that contract.
-  Bring the Director only real judgment calls; never ask the Director to repeat
-  an engineering classification the notes already settle. Every release still
-  needs the Client's acceptance.
+  Bring the Director only real judgment calls.
 - On a Client's repositories, Discussions are drafts and issues are requests
   (Q122): read Discussions, act only on issues.
 

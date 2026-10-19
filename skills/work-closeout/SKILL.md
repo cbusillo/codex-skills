@@ -109,9 +109,10 @@ preserved, or intentionally left in place.
    with common triggers: docs routing, validation gates, primary commands,
    important workflows, health endpoints, repo relationships, JetBrains
    expectations, cleanup policy, and ownership boundaries. If metadata should
-   change, update it only with approval, including approval already given for
-   that metadata change and scope; otherwise record a concrete remaining item
-   before saying it is safe to exit.
+   change, maintain in-scope metadata under existing task or standing authority,
+   following [task scope](../references/execution-scope.md) for stop boundaries
+   or expanded scope. A read-only audit stays read-only; record any remaining
+   metadata work before saying it is safe to exit.
 
    Also read `cleanup`. During closeout, run or report repo-configured commands
    with `when: "routine"` as closeout evidence. Commands marked `explicit`,
@@ -213,8 +214,12 @@ preserved, or intentionally left in place.
    stash, or overwrite unrelated IDE changes. Whole-worktree retirement requires
    the shared cleanup policy's protected-file, preservation, ownership, and
    authorization evidence.
-7. Do not remove user artifacts, broad system caches, unrelated untracked files,
-   or remote resources without explicit approval.
+7. Do not remove user artifacts, broad system caches or unrelated untracked files
+   without explicit approval. Route remote lifecycle cleanup through
+   [launchplane](../launchplane/SKILL.md) or [infra-ops](../infra-ops/SKILL.md)
+   under current overall and repository direction and existing task authority.
+   Preserve direction's in-use, only-copy, production-isolation and live-data
+   safeguards through those supported paths.
 8. Report final state concisely.
 
 ## Consuming Readiness Evidence
