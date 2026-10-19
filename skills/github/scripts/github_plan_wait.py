@@ -8,11 +8,11 @@ from __future__ import annotations
 try:
     import github_identity
     from github_plan_status.waits import (PREFIX, current, current_record, live_lines, marker,
-                                          records, reviewed, validate, without_records, trusted_authors, author_is_trusted)
+                                          records, resolve, reviewed, validate, without_records, trusted_authors, author_is_trusted)
 except ModuleNotFoundError:
     from skills.github.scripts import github_identity
     from skills.github.scripts.github_plan_status.waits import (PREFIX, current, current_record,
-        live_lines, marker, records, reviewed, validate, without_records, trusted_authors, author_is_trusted)
+        live_lines, marker, records, resolve, reviewed, validate, without_records, trusted_authors, author_is_trusted)
 
 
 def authors(repo: str, *, expected_actor: str | None = None) -> set[str]:

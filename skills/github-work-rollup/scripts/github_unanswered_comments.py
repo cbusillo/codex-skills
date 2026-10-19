@@ -1217,7 +1217,9 @@ def unasked_director_waits(
             continue
         unresolved = False
         try:
-            record = github_plan_wait.current(issue, items, github_plan_wait.authors(repo))
+            record, recorded = github_plan_wait.resolve(issue, items, github_plan_wait.authors(repo))
+            # A trusted record that asks for review is an unknown wait, not prose.
+            unresolved = recorded and record["state"] == "review"
         except (ValueError, TypeError, KeyError, AttributeError) as exc:
             # An unreadable record may hide or release a hold. Keep the issue as
             # an unknown wait for review, never resolved from prose.

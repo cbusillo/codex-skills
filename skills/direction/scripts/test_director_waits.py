@@ -309,5 +309,25 @@ class StructuredWaitTests(unittest.TestCase):
                 self.assertEqual([error["scope"] for error in result["errors"]], ["structured wait"])
 
 
+    def test_trusted_review_record_after_a_hold_is_an_unresolved_wait(self):
+        # No prose records a wait; only the comments do.
+        quiet = {**issue(), "body": "## Current Status\nState: Active.\nNext action: Ship it."}
+        hold = wait_comment("owner", waiting_for="Director to approve the release", ends_when="The Director answers")
+        review = '<!-- github-plan:wait {"evidence": "", "state": "review", "version": 1, "waits": []} -->'
+        for reviewer, expected in (("owner", (1, "unresolved", "unresolved_structured_wait", True, "structured_wait_review")),
+                                   ("mallory", (1, "decision", "structured_wait", False, None))):
+            with self.subTest(reviewer=reviewer):
+                result = self.collect_one(quiet, [hold, wait_comment(reviewer, marker=review)])
+                self.assertTrue(result["complete"])
+                self.assertEqual([(row["number"], row["wait_kind"], row["wait_source"], row["wait_review_required"],
+                                   row["wait_review_reason"]) for row in result["waits"]], [expected])
+
+    def test_issue_with_no_wait_record_or_prose_is_not_a_wait(self):
+        quiet = {**issue(), "body": "## Current Status\nState: Active.\nNext action: Ship it."}
+        result = self.collect_one(quiet, [])
+        self.assertTrue(result["complete"])
+        self.assertEqual(result["waits"], [])
+
+
 if __name__ == "__main__":
     unittest.main()
