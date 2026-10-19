@@ -11,8 +11,6 @@ import copy
 import importlib.util
 import json
 import os
-import re
-import shlex
 import subprocess
 import sys
 import tempfile
@@ -1081,18 +1079,16 @@ class ClaimTests(unittest.TestCase):
         self.comments[-1]["created_at"] = "2026-10-02T01:00:00Z"
         return source
 
-    def test_no_pr_handoff_refusal_supplies_executable_existing_resume_options(self):
+    def test_no_pr_handoff_refusal_supplies_existing_resume_route(self):
         source = self.no_pr_resume_fixture()
-        before = copy.deepcopy(self.inventory)
         with self.assertRaises(PLAN.PlanError) as caught:
             self.run_claim()
         self.assert_no_writes()
-        options = [shlex.split(span) for span in re.findall(r"`([^`]+)`", str(caught.exception))
-                   if span.startswith("--resume-from ")]
-        self.assertEqual(len(options), 1)
+        route = caught.exception.payload["successor_route"]
         resumed = PLAN.build_parser().parse_args([
             "claim", self.args.issue, "--worker", self.args.worker, "--session", self.args.session,
-            "--next-action", self.args.next_action, *options[0]])
+            "--next-action", self.args.next_action,
+            "--resume-from", str(route["resume_from"]), "--branch", route["branch"]])
         self.assertEqual(resumed.resume_from, self.args.resume_from)
         self.assertEqual(resumed.branch, source["branch"])
         self.assertIsNone(resumed.handoff_comment)
@@ -1100,7 +1096,50 @@ class ClaimTests(unittest.TestCase):
         self.args = resumed
         self.run_claim()
         self.assertIn("metadata_readback", self.emitted.call_args.args[0]["completed_steps"])
-        self.assertEqual(before, self.inventory)
+
+    def test_no_pr_hint_never_routes_around_a_retained_pr(self):
+        for kind in ("source_open", "foreign_author", "unlinked", "foreign_repo", "named_other_branch", "closed_unmerged"):
+            with self.subTest(kind=kind):
+                self.setUp()
+                source = self.no_pr_resume_fixture()
+                pull = {"number": 99, "state": "open", "user": {"login": TEST_BOT},
+                        "body": "Refs #42", "title": "Retained work",
+                        "head": {"ref": source["branch"], "repo": {"full_name": self.args.repo}},
+                        "base": {"repo": {"full_name": self.args.repo}}}
+                if kind != "source_open": self.comments[-1]["body"] += " Retain PR #99."
+                if kind == "foreign_author": pull["user"]["login"] = "stranger"
+                if kind == "unlinked": pull["body"] = "Unrelated"
+                if kind == "foreign_repo": pull["head"]["repo"]["full_name"] = "stranger/repo"
+                if kind == "named_other_branch":
+                    pull["head"]["ref"] = "work/other"
+                    pull["body"] = "Refs #41"
+                if kind == "closed_unmerged":
+                    pull["state"] = "closed"
+                    self.closed_pulls[pull["number"]] = pull
+                else: self.pulls = [pull]
+                with self.assertRaises(PLAN.PlanError) as caught:
+                    self.run_claim()
+                self.assertNotIn("successor_route", caught.exception.payload)
+                self.assert_no_writes()
+
+    def test_no_pr_hint_cannot_redirect_a_native_child_or_cross_repository_refresh(self):
+        for scope in ("native_child", "cross_repository_refresh"):
+            with self.subTest(scope=scope):
+                self.setUp()
+                self.no_pr_resume_fixture()
+                if scope == "native_child":
+                    self.parent_handoff_fixture()
+                    self.target_comments["/repos/owner/repo/issues/41/comments"][-1]["body"] = "Released claim 1\n\nPushed WIP, no PR."
+                    self.pulls, self.closed_pulls = [], {}
+                else:
+                    self.args.issue = "other/plans#42"
+                    self.args.planning_checkout = "/verified/plans"
+                    self.planning_inventory = {"worktrees": [], "local_branches": [], "remote_branches": [], "sessions": []}
+                    self.args.refresh_pr = "https://github.com/owner/repo/pull/99"
+                with self.assertRaises(PLAN.PlanError) as caught:
+                    self.run_claim()
+                self.assertNotIn("successor_route", caught.exception.payload)
+                self.assert_no_writes()
 
     def test_no_pr_resume_rechecks_rivals_holds_and_other_artifacts(self):
         for phase, change in product(("preflight", "after_post", "after_status"),

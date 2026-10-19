@@ -24,9 +24,10 @@ EMPTY_HOLDERS = {"none", "unassigned", "unclaimed", "not assigned", "n/a", "-", 
 class ClaimProofError(ValueError):
     """A source-proof refusal with a stable machine-readable reason."""
 
-    def __init__(self, code: str, message: str):
+    def __init__(self, code: str, message: str, *, payload: dict[str, Any] | None = None):
         super().__init__(message)
         self.code = code
+        self.payload = payload or {}
 
 
 def word_pattern(*words: str) -> str:
@@ -749,6 +750,7 @@ def retained_handoff(
     comments: list[dict[str, Any]], source_id: int, handoff_id: int,
     pulls: list[dict[str, Any]], target_number: int | None, *, issue_repo: str,
     issue_number: int, target_repo: str,
+    allow_resume_only: bool = False,
 ) -> set[str]:
     """Bind retained PR identities to the exact author-released handoff."""
     source_branch = retained_branch(comments, source_id)
@@ -819,13 +821,17 @@ def retained_handoff(
     if target_number is not None and not target_found:
         raise ValueError("Refresh target must be an open same-repository PR linked to the issue and attested in the released handoff")
     if target_number is None and not attested:
-        options = shlex.join(["--resume-from", str(source_id), "--branch", source_branch])
-        raise ValueError(
-            "Retained handoff must attest a same-repository open or merged PR linked to the issue. "
-            "For WIP without a PR, verify the source session has finished and the preserved branch is pushed, "
-            f"then use the existing resume-only route on https://github.com/{issue_repo}/issues/{issue_number} "
-            f"with `{options}` "
-            "without --handoff-comment or --refresh-pr. Ownership, waits, blockers and other artifact checks still apply.")
+        message = "Retained handoff must attest a same-repository open or merged PR linked to the issue"
+        retained_pr = any((pull.get("head") or {}).get("ref") == source_branch or pull["number"] in named
+                          for pull in pulls)
+        if allow_resume_only and not retained_pr:
+            options = shlex.join(["--resume-from", str(source_id), "--branch", source_branch])
+            raise ClaimProofError("claim_handoff_pr_required",
+                message + ". For WIP without a PR, verify the source session has finished and the preserved branch is pushed, "
+                f"then use the existing same-record resume-only options `{options}` "
+                "without --handoff-comment or --refresh-pr. Ownership, waits, blockers and other artifact checks still apply.",
+                payload={"successor_route": {"resume_from": source_id, "branch": source_branch}})
+        raise ValueError(message)
     return permitted
 
 

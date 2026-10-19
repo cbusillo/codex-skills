@@ -1229,7 +1229,8 @@ This flag supplies no cleanup or takeover authority: apply Choose Work's
 verified-handoff and preservation rules before passing it.
 
 For pushed WIP **without a PR**, use that existing same-record resume-only
-route. Verify the source session has finished, its exact authored release,
+route; native-parent and cross-repository handoffs keep the retained-PR route.
+Verify the source session has finished, its exact authored release,
 and the preserved branch's live remote head and local state before claiming.
 Keep unpublished changes intact. Pass the source claim's exact branch as
 `--branch` and its released claim ID as `--resume-from`; omit both
@@ -1239,6 +1240,9 @@ fresh task branch or fabricate a PR to meet the retained-PR contract.
 This uses the existing source-recovery exception, not a second adoption path.
 Ownership, live peers, issue waits, native blockers and other retained artifacts
 keep their checks; a refusal stops the action for reconciliation.
+The no-PR refusal includes `successor_route` with the source's `resume_from`
+and exact `branch` only for this same-record case with no source-branch or
+named retained PR. This is guidance, not an automatic retry or verified closure.
 
 For an authorized **ordinary successor** whose next step precedes PR refresh,
 use the canonical open planning issue in the PRs' repository:
