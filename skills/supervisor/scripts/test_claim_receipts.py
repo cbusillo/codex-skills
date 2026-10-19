@@ -3033,6 +3033,23 @@ class ReceiptTests(unittest.TestCase):
     def test_python_process_launches_resolve_only_literal_concatenation(self):
         writer = "uv run /catalog/gh-plan.py --repo client/repo claim 12"
         programs = (
+            *[("import os\ndef decorate(fn):\n    def wrapped(): os.system(" + repr(writer) + ")\n    return wrapped\ndef factory(): return decorate\n@factory()\ndef command(): pass\n" + consumer, owning)
+              for consumer, owning in (("print(command)", False), ("command()", True))],
+            ("import os\ndef decorate(fn):\n    def wrapped(): return " + repr(writer) + "\n    return wrapped\ndef safe(fn): return lambda: 'echo safe'\n@safe\n@decorate\ndef command(): pass\nos.system(command())", False),
+            *[(program.replace(writer,replacement), owning)
+              for program in (
+                  "import os\ncmd='echo safe'\ng=(cmd for _ in [1,2])\ndef consume():\n    def inner(): yield from g\n    yield from inner()\nfirst=consume(); print(next(first))\ncmd=" + repr(writer) + '\nos.system(next(consume()))',
+                  "import os\ncmd='echo safe'\ng=(cmd for _ in [1,2])\ndef consume(): yield from (lambda: g)()\nfirst=consume(); print(next(first))\ncmd=" + repr(writer) + '\nos.system(next(consume()))',
+                  "import os\ncmd='echo safe'\ng=(cmd for _ in [1,2])\ndef consume():\n    def inner(x=g): yield from x\n    yield from inner()\nfirst=consume(); print(next(first))\ncmd=" + repr(writer) + '\nos.system(next(consume()))',
+                  "import os\ncmd='echo safe'\ndef run():\n    def inner(): return cmd\n    return inner()\nprint(run())\ncmd=" + repr(writer) + '\nos.system(run())',
+                  "import os\ncmd='echo safe'\ndef run():\n    cmd='echo local'\n    def inner():\n        global cmd\n        return cmd\n    return inner()\nprint(run())\ncmd=" + repr(writer) + '\nos.system(run())',
+                  "import os\ncmd='echo safe'\nclass Base:\n    g=(cmd for _ in [1,2])\nclass C(Base):\n    @classmethod\n    def consume(cls): yield from cls.g\nfirst=C.consume(); print(next(first))\ncmd=" + repr(writer) + '\nos.system(next(C.consume()))',
+                  "import os\ncmd='echo safe'\nclass Base:\n    g=(cmd for _ in [1,2])\nclass C(Base):\n    def consume(self): yield from self.g\nobj=C()\nfirst=obj.consume(); print(next(first))\ncmd=" + repr(writer) + '\nos.system(next(obj.consume()))',
+                  "import os\nclass Base: cmd='echo safe'\nclass C(Base):\n    @classmethod\n    def run(cls): return cls.cmd\nprint(C.run())\nBase.cmd=" + repr(writer) + '\nos.system(C.run())',
+                  "import os\ncmd='echo safe'\ndef run():\n    class Local:\n        @staticmethod\n        def read(): return cmd\n    return Local.read()\nprint(run())\ncmd=" + repr(writer) + '\nos.system(run())',
+                  "import os\ncmd='echo safe'\ndef decorate(fn):\n    def read(): return cmd\n    return read\ndef run():\n    @decorate\n    def inner(): return 'echo unused'\n    return inner()\nprint(run())\ncmd=" + repr(writer) + '\nos.system(run())',
+              )
+              for replacement, owning in ((writer, True), ("echo safe", False))],
             *[("import os,subprocess,shlex\nargv=" + ("['echo','dry'] if dry else " if conditional else "") + repr(["uv", "run", "--with", "requests", "/catalog/gh-plan.py", "--repo", "client/repo", verb, "12"]) + "\n" + consumer,
                verb == "claim")
               for conditional in (False, True) for verb in ("claim", "show")

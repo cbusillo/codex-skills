@@ -2333,7 +2333,7 @@ def python_ownership(content, *, partial=False):
             parameters = [*node.args.posonlyargs, *node.args.args]
             self.defaults = {parameter.arg: value(default, scope) for parameter, default in zip(parameters[-len(node.args.defaults):], node.args.defaults)} if node.args.defaults else {}
             self.defaults.update({parameter.arg: value(default, scope) for parameter, default in zip(node.args.kwonlyargs, node.args.kw_defaults) if default is not None})
-            loaded, local = set(), {parameter.arg for parameter in (*parameters, *node.args.kwonlyargs)}
+            loaded, nested_loaded, local = set(), set(), {parameter.arg for parameter in (*parameters, *node.args.kwonlyargs)}
             local.update(parameter.arg for parameter in (node.args.vararg, node.args.kwarg) if parameter is not None)
             self.globals, self.nonlocals = set(), set()
             self.generator = False
@@ -2354,8 +2354,10 @@ def python_ownership(content, *, partial=False):
                     return
                 if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and item is not node:
                     local.add(item.name)
+                    nested_loaded.update(child.id for child in ast.walk(item) if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load))
                     return
                 if isinstance(item, ast.Lambda) and item is not node:
+                    nested_loaded.update(child.id for child in ast.walk(item) if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load))
                     return
                 if isinstance(item, (ast.Yield, ast.YieldFrom)):
                     self.generator = True
@@ -2367,7 +2369,9 @@ def python_ownership(content, *, partial=False):
                     names(child)
             names(node)
             self.locals = local - self.globals - self.nonlocals
-            self.free = loaded - self.locals
+            # Nested bodies/defaults/decorators can read late bindings even when
+            # this function binds a same-named local. Keep a safe cache footprint.
+            self.free = (loaded - self.locals) | nested_loaded
 
     class Bound:
         def __init__(self, function, receiver):
@@ -3035,7 +3039,7 @@ def python_ownership(content, *, partial=False):
             elif isinstance(item, ast.alias):
                 key = ("alias", item.name)
             elif isinstance(item, ast.ClassDef):
-                key = ("class", identity, tuple(sorted((name, child(assigned)) for name, assigned in class_bindings.get(identity, {}).items())))
+                key = ("class", identity, child(class_bases.get(identity, ())), tuple(sorted((name, child(assigned)) for name, assigned in class_bindings.get(identity, {}).items())))
             elif isinstance(item, ast.AST):
                 key = ("node", identity)
             elif isinstance(item, (list, tuple)):
@@ -3138,7 +3142,7 @@ def python_ownership(content, *, partial=False):
         elif isinstance(item, Instance):
             children = [item.kind, *item.attributes.values()]
         elif isinstance(item, ast.ClassDef):
-            children = class_bindings.get(id(item), {}).values()
+            children = [*class_bases.get(id(item), ()), *class_bindings.get(id(item), {}).values()]
         elif isinstance(item, Partial):
             children = [item.functions, item.arguments, *item.keywords.values()]
         elif isinstance(item, Sequence):
@@ -3691,6 +3695,7 @@ def python_ownership(content, *, partial=False):
                     else:
                         invoke(callback, scope, evaluated=True)
             elif isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                decorators = [value(decorator, scope) for decorator in statement.decorator_list]
                 function = Function(statement, scope.parent if methods else scope)
                 scope[statement.name] = (function,)
                 for decorator in statement.decorator_list:
@@ -3705,6 +3710,13 @@ def python_ownership(content, *, partial=False):
                         scope[statement.name] = (registry,)
                     if function_names(call, scope) & {"atexit.register"}:
                         exit_callbacks.append(Partial((function,), [], {}))
+                decorated = (function,)
+                for assigned in reversed(decorators):
+                    replacements = choices(item for wrapper in assigned if isinstance(wrapper, (Function, Bound, Partial))
+                                           for item in invoke(wrapper, scope, [decorated], evaluated=True))
+                    decorated = replacements or decorated
+                if decorated != (function,):
+                    scope[statement.name] = decorated
                 if partial:
                     invoke(function, scope)
             elif isinstance(statement, ast.ClassDef):
