@@ -1079,22 +1079,11 @@ class ClaimTests(unittest.TestCase):
             f"Released claim {self.args.resume_from}\n\n"
             f"Preserved WIP: remote `{source['branch']}` at "
             f"[{self.pushed_head}](https://github.com/owner/repo/commit/{self.pushed_head}). No PR opened.")
-        self.branch_reads = []
-        def read_branch(argv, **_):
-            self.branch_reads.append(argv)
-            if argv[1:4] == ["remote", "get-url", "origin"]:
-                return "https://github.com/owner/repo.git\n"
-            if argv[1] == "ls-remote":
-                return f"{self.remote_head}\trefs/heads/{source['branch']}\n" if self.remote_head else ""
-            if argv[1] == "for-each-ref":
-                return f"refs/heads/{source['branch']} {self.local_head}\n" if self.local_head else ""
-            if argv[1:3] == ["worktree", "list"]:
-                return (f"worktree /retained\0HEAD {self.local_head}\0branch refs/heads/{source['branch']}\0\0"
-                        if self.local_head else "")
-            if argv[1] == "status":
-                return " M source.py\n" if self.dirty else ""
-            self.fail(f"Unexpected branch verification read: {argv}")
-        self.enterContext(patch.object(CLAIM, "run_read", side_effect=read_branch))
+        def verify_branch(branch, head, repo):
+            if (branch != source["branch"] or head != self.pushed_head or repo != self.args.repo
+                    or self.remote_head != head or self.local_head not in (None, head) or self.dirty):
+                raise CLAIM.ClaimProofError("claim_handoff_branch_unverified", "Retained source changed")
+        self.enterContext(patch.object(CLAIM, "verify_pushed_handoff", side_effect=verify_branch))
 
     def test_pushed_branch_handoff_without_pr_completes_claim(self):
         self.pushed_handoff_fixture()
@@ -1102,7 +1091,20 @@ class ClaimTests(unittest.TestCase):
         self.run_claim()
         self.assertIn("metadata_readback", self.emitted.call_args.args[0]["completed_steps"])
         self.assertEqual(before, self.inventory)
-        self.assertGreaterEqual(sum(argv[1] == "ls-remote" for argv in self.branch_reads), 3)
+
+    def test_pushed_handoff_accepts_normal_prose_and_markdown_links(self):
+        for style in ("bare", "origin", "autolink", "code"):
+            with self.subTest(style=style):
+                self.setUp()
+                self.pushed_handoff_fixture()
+                source = CLAIM.records(self.comments[0]["body"])[0]
+                url = f"https://github.com/{self.args.repo}/commit/{self.pushed_head}"
+                branch = "origin/" + source["branch"] if style == "origin" else source["branch"]
+                if style == "autolink": url = f"<{url}>"
+                if style == "code": url = f"`{url}`"
+                self.comments[-1]["body"] = f"Released claim {self.args.resume_from}\n\nWIP at {url}, on {branch}."
+                self.run_claim()
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
     def test_pushed_handoff_rechecks_remote_and_unpublished_local_state(self):
         for phase, change in product(("preflight", "after_post", "after_status"),
@@ -4854,12 +4856,16 @@ class ClaimTests(unittest.TestCase):
 
 class PushedHandoffGitTests(unittest.TestCase):
     def test_live_git_readback_preserves_unpublished_or_changed_source(self):
-        for state in ("pushed", "remote_only", "missing", "moved", "ahead", "behind", "dirty", "untracked"):
+        for state in ("pushed", "remote_only", "missing", "moved", "ahead", "behind", "dirty", "untracked", "rebasing"):
             with self.subTest(state=state), tempfile.TemporaryDirectory() as folder:
                 root = Path(folder)
                 checkout, remote = root / "source with space é", root / "remote.git"
-                def git(*args, cwd=checkout):
-                    return subprocess.run(["git", *args], cwd=cwd, check=True,
+                env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+                env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1",
+                           GIT_TEMPLATE_DIR=str(root / "empty-template"))
+                (root / "empty-template").mkdir()
+                def git(*args, cwd=checkout, check=True):
+                    return subprocess.run(["git", *args], cwd=cwd, env=env, check=check,
                                           capture_output=True, text=True).stdout.strip()
                 git("init", "--bare", str(remote), cwd=root)
                 git("init", str(checkout), cwd=root)
@@ -4886,11 +4892,13 @@ class PushedHandoffGitTests(unittest.TestCase):
                 if state == "behind": git("checkout", "-B", "work/source", first)
                 if state == "dirty": path.write_text("uncommitted\n")
                 if state == "untracked": (checkout / "only-copy.txt").write_text("unpublished\n")
+                if state == "rebasing": git("rebase", "--exec", "exit 1", first, check=False)
                 original_read = CLAIM.run_read
                 def fixture_origin(argv, **kwargs):
                     if argv[1:4] == ["remote", "get-url", "origin"]:
                         return "https://github.com/owner/repo.git\n"
-                    return original_read(argv, **kwargs)
+                    with patch.dict(os.environ, env, clear=True):
+                        return original_read(argv, **kwargs)
                 before = git("status", "--porcelain")
                 with patch.object(CLAIM, "run_read", side_effect=fixture_origin):
                     if state in {"pushed", "remote_only"}:

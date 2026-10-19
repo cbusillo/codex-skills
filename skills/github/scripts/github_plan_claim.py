@@ -747,14 +747,14 @@ def handoff_pr_numbers(text: str, *, issue_repo: str, target_repo: str) -> set[i
 def handoff_pushed_head(text: str, branch: str, repo: str) -> str | None:
     """Read one full commit link beside the exact released source branch."""
     text = re.sub(r"(?ms)^```[^\n]*\n.*?^```[^\n]*$", "", text)
-    branch_pattern = rf"(?<![\w./-]){re.escape(branch)}(?![\w./-])"
-    commit_pattern = rf"https://github\.com/{re.escape(repo)}/commit/([0-9a-f]{{40}})(?=[\s).,]|$)"
+    branch_pattern = rf"(?<![\w./-])(?:origin/)?{re.escape(branch)}(?![\w/-]|\.[\w./-])"
+    commit_pattern = rf"https://github\.com/{re.escape(repo)}/commit/([0-9a-f]{{40}})(?=[\s).,>`]|$)"
     heads = set()
     for paragraph in re.split(r"\n\s*\n", text):
         if any(line.lstrip().startswith((">", "<!--")) for line in paragraph.splitlines()):
             continue
         if re.search(branch_pattern, paragraph):
-            heads.update(re.findall(commit_pattern, paragraph, re.IGNORECASE))
+            heads.update(sha.lower() for sha in re.findall(commit_pattern, paragraph, re.IGNORECASE))
     if len(heads) > 1:
         raise ClaimProofError("claim_handoff_branch_unverified", "Retained branch handoff names conflicting commit heads")
     return next(iter(heads)).lower() if heads else None
@@ -781,6 +781,13 @@ def verify_pushed_handoff(branch: str, head: str, repo: str, *, cwd: pathlib.Pat
         worktrees = run_read(["git", "worktree", "list", "--porcelain", "-z"], cwd=cwd)
         for block in worktrees.split("\0\0"):
             fields = dict(line.split(" ", 1) for line in block.split("\0") if " " in line)
+            if "detached" in block.split("\0"):
+                path = pathlib.Path(fields["worktree"])
+                for state in ("rebase-merge/head-name", "rebase-apply/head-name", "BISECT_START"):
+                    git_path = pathlib.Path(run_read(["git", "rev-parse", "--git-path", state], cwd=path).strip())
+                    git_path = git_path if git_path.is_absolute() else path / git_path
+                    if git_path.is_file() and git_path.read_text().strip() in {branch, ref}:
+                        refuse("Retained source has an unfinished rebase or bisect; preserve its worktree")
             if fields.get("branch") != ref:
                 continue
             if fields.get("HEAD") != head:

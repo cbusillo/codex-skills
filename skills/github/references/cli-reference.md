@@ -1269,13 +1269,19 @@ branch beside a full same-repository commit link in one paragraph, for example:
 `Preserved WIP: remote work/task at https://github.com/OWNER/REPO/commit/FULL_SHA`.
 Use the full 40-character head SHA. The helper reads that exact branch on
 `origin` and requires its live head to match. An existing local source branch
-and every checkout of it must match too, with no unpublished changes. Missing,
+and registered worktrees of this clone on that branch must match too, with no
+unpublished changes. A detached rebase or bisect identifying the source branch
+also refuses. Separate clones and stashes are outside this check and remain
+preserved; this route adopts only the pushed branch. Missing,
 unreadable, moved, unpushed or diverged state refuses, including on both claim
 readbacks. The source author, exact release, ownership, waits, native blockers,
 peer and other artifact checks remain the same. Open PRs on the source branch
 still need their own attestation. The successor uses a new task branch and
 preserves the source checkout. This branch route cannot authorize a
 conflict-only PR refresh or cross-repository handoff.
+If an earlier handoff gives only a short SHA or no commit link, its original
+author posts a fresh handoff identifying the released claim and session under
+the existing `Handoff from WORKER` format, with this full branch/head evidence.
 
 When actionable source work is split from a waiting parent, use its native child
 as `<canonical-issue>` with the parent's original `--resume-from` and
