@@ -744,12 +744,62 @@ def handoff_pr_numbers(text: str, *, issue_repo: str, target_repo: str) -> set[i
     return numbers
 
 
+def handoff_pushed_head(text: str, branch: str, repo: str) -> str | None:
+    """Read one full commit link beside the exact released source branch."""
+    text = re.sub(r"(?ms)^```[^\n]*\n.*?^```[^\n]*$", "", text)
+    branch_pattern = rf"(?<![\w./-]){re.escape(branch)}(?![\w./-])"
+    commit_pattern = rf"https://github\.com/{re.escape(repo)}/commit/([0-9a-f]{{40}})(?=[\s).,]|$)"
+    heads = set()
+    for paragraph in re.split(r"\n\s*\n", text):
+        if any(line.lstrip().startswith((">", "<!--")) for line in paragraph.splitlines()):
+            continue
+        if re.search(branch_pattern, paragraph):
+            heads.update(re.findall(commit_pattern, paragraph, re.IGNORECASE))
+    if len(heads) > 1:
+        raise ClaimProofError("claim_handoff_branch_unverified", "Retained branch handoff names conflicting commit heads")
+    return next(iter(heads)).lower() if heads else None
+
+
+def verify_pushed_handoff(branch: str, head: str, repo: str, *, cwd: pathlib.Path | None = None) -> None:
+    """Read live remote and local Git state; adoption cannot discard unpublished work."""
+    def refuse(message: str) -> None:
+        raise ClaimProofError("claim_handoff_branch_unverified", message)
+
+    try:
+        remote = run_read(["git", "remote", "get-url", "origin"], cwd=cwd).strip()
+        if not re.search(rf"[:/]{re.escape(repo)}(?:\.git)?$", remote, re.IGNORECASE):
+            refuse("Retained branch must belong to the claimed repository's origin")
+        ref = f"refs/heads/{branch}"
+        observed = run_read(["git", "ls-remote", "--heads", "origin", ref], cwd=cwd).splitlines()
+        if observed != [f"{head}\t{ref}"]:
+            refuse("Retained branch is missing on origin or its head differs from the handoff")
+        local = run_read(["git", "for-each-ref", "--format=%(refname) %(objectname)", ref], cwd=cwd)
+        for line in local.splitlines():
+            name, _, sha = line.partition(" ")
+            if name == ref and sha != head:
+                refuse("Retained local branch has unpushed or diverged work; preserve it")
+        worktrees = run_read(["git", "worktree", "list", "--porcelain", "-z"], cwd=cwd)
+        for block in worktrees.split("\0\0"):
+            fields = dict(line.split(" ", 1) for line in block.split("\0") if " " in line)
+            if fields.get("branch") != ref:
+                continue
+            if fields.get("HEAD") != head:
+                refuse("Retained worktree head differs from the handoff; preserve it")
+            if run_read(["git", "status", "--porcelain", "--untracked-files=normal"],
+                        cwd=pathlib.Path(fields["worktree"])).strip():
+                refuse("Retained worktree has unpublished changes; preserve it")
+    except ClaimProofError:
+        raise
+    except (ValueError, OSError, subprocess.SubprocessError) as exc:
+        raise ClaimProofError("claim_handoff_branch_unverified", "Retained branch readback failed; preserve its artifacts") from exc
+
+
 def retained_handoff(
     comments: list[dict[str, Any]], source_id: int, handoff_id: int,
     pulls: list[dict[str, Any]], target_number: int | None, *, issue_repo: str,
     issue_number: int, target_repo: str,
 ) -> set[str]:
-    """Bind retained PR identities to the exact author-released handoff."""
+    """Bind retained PRs or a verified pushed source to its author-released handoff."""
     source_branch = retained_branch(comments, source_id)
     source = next(c for c in comments if c.get("id") == source_id)
     author = source["user"]["login"]
@@ -818,7 +868,14 @@ def retained_handoff(
     if target_number is not None and not target_found:
         raise ValueError("Refresh target must be an open same-repository PR linked to the issue and attested in the released handoff")
     if target_number is None and not attested:
-        raise ValueError("Retained handoff must attest a same-repository open or merged PR linked to the issue")
+        if any(pull.get("state") == "open" and (pull.get("head") or {}).get("ref") == source_branch
+               for pull in pulls):
+            raise ValueError("An open PR on the retained source branch still requires the existing PR handoff proof")
+        head = handoff_pushed_head(handoff_text, source_branch, target_repo) if issue_repo.casefold() == target_repo.casefold() else None
+        if head is None:
+            raise ValueError("Retained handoff must attest a same-repository open or merged PR linked to the issue, "
+                             "or name its released source branch beside a full same-repository commit link")
+        verify_pushed_handoff(source_branch, head, target_repo)
     return permitted
 
 

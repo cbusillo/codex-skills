@@ -1066,6 +1066,101 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(before, (self.inventory, self.pulls, self.closed_pulls))
         self.assertEqual(output["session_coverage"]["codex"]["status"], "unavailable")
 
+    def pushed_handoff_fixture(self):
+        self.ordinary_handoff_fixture()
+        source = CLAIM.records(self.comments[0]["body"])[0]
+        self.pulls, self.closed_pulls = [], {}
+        self.inventory.update(local_branches=[source["branch"]], remote_branches=[source["branch"]],
+                              worktrees=[{"branch": source["branch"], "path": "/retained"}])
+        self.pushed_head = "a" * 40
+        self.local_head = self.remote_head = self.pushed_head
+        self.dirty = False
+        self.comments[-1]["body"] = (
+            f"Released claim {self.args.resume_from}\n\n"
+            f"Preserved WIP: remote `{source['branch']}` at "
+            f"[{self.pushed_head}](https://github.com/owner/repo/commit/{self.pushed_head}). No PR opened.")
+        self.branch_reads = []
+        def read_branch(argv, **_):
+            self.branch_reads.append(argv)
+            if argv[1:4] == ["remote", "get-url", "origin"]:
+                return "https://github.com/owner/repo.git\n"
+            if argv[1] == "ls-remote":
+                return f"{self.remote_head}\trefs/heads/{source['branch']}\n" if self.remote_head else ""
+            if argv[1] == "for-each-ref":
+                return f"refs/heads/{source['branch']} {self.local_head}\n" if self.local_head else ""
+            if argv[1:3] == ["worktree", "list"]:
+                return (f"worktree /retained\0HEAD {self.local_head}\0branch refs/heads/{source['branch']}\0\0"
+                        if self.local_head else "")
+            if argv[1] == "status":
+                return " M source.py\n" if self.dirty else ""
+            self.fail(f"Unexpected branch verification read: {argv}")
+        self.enterContext(patch.object(CLAIM, "run_read", side_effect=read_branch))
+
+    def test_pushed_branch_handoff_without_pr_completes_claim(self):
+        self.pushed_handoff_fixture()
+        before = copy.deepcopy(self.inventory)
+        self.run_claim()
+        self.assertIn("metadata_readback", self.emitted.call_args.args[0]["completed_steps"])
+        self.assertEqual(before, self.inventory)
+        self.assertGreaterEqual(sum(argv[1] == "ls-remote" for argv in self.branch_reads), 3)
+
+    def test_pushed_handoff_rechecks_remote_and_unpublished_local_state(self):
+        for phase, change in product(("preflight", "after_post", "after_status"),
+                                     ("missing", "moved", "local", "dirty")):
+            with self.subTest(phase=phase, change=change):
+                self.setUp()
+                self.pushed_handoff_fixture()
+                def invalidate():
+                    if change == "missing": self.remote_head = None
+                    if change == "moved": self.remote_head = "b" * 40
+                    if change == "local": self.local_head = "b" * 40
+                    if change == "dirty": self.dirty = True
+                if phase == "preflight": invalidate()
+                else: setattr(self, phase, invalidate)
+                with self.assertRaises(PLAN.PlanError) as caught: self.run_claim()
+                self.assertEqual(caught.exception.code, "claim_handoff_branch_unverified")
+                if phase == "preflight": self.assert_no_writes()
+                else: self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
+
+    def test_pushed_handoff_keeps_source_identity_and_competing_work_checks(self):
+        for change in ("foreign", "unreleased", "no_branch", "foreign_commit", "short_sha",
+                       "live_source", "live_tree", "other_claim", "extra_branch", "open_pr", "open_pr_named_unlinked", "blocker", "wait"):
+            with self.subTest(change=change):
+                self.setUp()
+                self.pushed_handoff_fixture()
+                source = CLAIM.records(self.comments[0]["body"])[0]
+                if change == "foreign": self.comments[-1]["user"]["login"] = "stranger"
+                if change == "unreleased": self.comments[-1]["body"] = self.comments[-1]["body"].replace("Released claim", "Old claim")
+                if change == "no_branch": self.comments[-1]["body"] = self.comments[-1]["body"].replace(source["branch"], "work/different")
+                if change == "foreign_commit": self.comments[-1]["body"] = self.comments[-1]["body"].replace("owner/repo/commit", "other/repo/commit")
+                if change == "short_sha": self.comments[-1]["body"] = self.comments[-1]["body"].replace(self.pushed_head, self.pushed_head[:8])
+                if change == "live_source": self.inventory["sessions"] = [{"sessionId": source["session"], "cwd": "/elsewhere"}]
+                if change == "live_tree": self.inventory["sessions"] = [{"sessionId": "peer", "cwd": "/retained/subdir"}]
+                if change == "other_claim": self.comments.append({"id": 90, "body": CLAIM.marker({**OTHER, "session": "third"}), "user": {"login": TEST_BOT}})
+                if change == "extra_branch": self.inventory["remote_branches"].append("work/issue-42-other")
+                if change == "open_pr": self.pulls = [{"number": 99, "state": "open", "head": {"ref": source["branch"]}, "user": {"login": TEST_BOT}}]
+                if change == "open_pr_named_unlinked":
+                    self.pulls = [{"number": 99, "state": "open", "title": "Unrelated", "body": "Unrelated",
+                                   "head": {"ref": source["branch"], "repo": {"full_name": "owner/repo"}},
+                                   "base": {"repo": {"full_name": "owner/repo"}}, "user": {"login": TEST_BOT}}]
+                    self.comments[-1]["body"] += " Retained PR #99."
+                if change == "blocker": self.blockers = [{"state": "open"}]
+                if change == "wait": self.wait = wait_record.reviewed(evidence="Acceptance requested", waiting_for="Client", ends_when="Client accepts")
+                with self.assertRaises(PLAN.PlanError): self.run_claim()
+                self.assert_no_writes()
+
+    def test_pushed_handoff_can_resume_remote_only_work_and_preserves_pr_refresh_contract(self):
+        self.pushed_handoff_fixture()
+        self.inventory.update(local_branches=[], worktrees=[])
+        self.local_head = None
+        self.run_claim()
+        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+        self.setUp()
+        self.pushed_handoff_fixture()
+        self.args.refresh_pr = "https://github.com/owner/repo/pull/99"
+        with self.assertRaises(PLAN.PlanError): self.run_claim()
+        self.assert_no_writes()
+
     def parent_handoff_fixture(self):
         self.ordinary_handoff_fixture()
         self.parent = {"number": 41, "state": "open", "html_url": "https://github.com/owner/repo/issues/41"}
@@ -4755,6 +4850,55 @@ class ClaimTests(unittest.TestCase):
                     self.admit("milestone", (link,))
                 self.assertEqual(caught.exception.code, code)
                 self.assert_no_writes()
+
+
+class PushedHandoffGitTests(unittest.TestCase):
+    def test_live_git_readback_preserves_unpublished_or_changed_source(self):
+        for state in ("pushed", "remote_only", "missing", "moved", "ahead", "behind", "dirty", "untracked"):
+            with self.subTest(state=state), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                checkout, remote = root / "source with space é", root / "remote.git"
+                def git(*args, cwd=checkout):
+                    return subprocess.run(["git", *args], cwd=cwd, check=True,
+                                          capture_output=True, text=True).stdout.strip()
+                git("init", "--bare", str(remote), cwd=root)
+                git("init", str(checkout), cwd=root)
+                git("config", "user.name", "Fixture")
+                git("config", "user.email", "fixture@example.invalid")
+                git("checkout", "-b", "work/source")
+                path = checkout / "source.txt"
+                path.write_text("initial\n")
+                git("add", ".")
+                git("commit", "-m", "initial")
+                first = git("rev-parse", "HEAD")
+                path.write_text("checkpoint\n")
+                git("commit", "-am", "checkpoint")
+                head = git("rev-parse", "HEAD")
+                git("remote", "add", "origin", str(remote))
+                if state != "missing": git("push", "origin", "work/source")
+                if state == "remote_only":
+                    git("checkout", "-b", "independent")
+                    git("branch", "-d", "work/source")
+                if state in {"ahead", "moved"}:
+                    path.write_text("later\n")
+                    git("commit", "-am", "later")
+                    if state == "moved": git("push", "origin", "work/source")
+                if state == "behind": git("checkout", "-B", "work/source", first)
+                if state == "dirty": path.write_text("uncommitted\n")
+                if state == "untracked": (checkout / "only-copy.txt").write_text("unpublished\n")
+                original_read = CLAIM.run_read
+                def fixture_origin(argv, **kwargs):
+                    if argv[1:4] == ["remote", "get-url", "origin"]:
+                        return "https://github.com/owner/repo.git\n"
+                    return original_read(argv, **kwargs)
+                before = git("status", "--porcelain")
+                with patch.object(CLAIM, "run_read", side_effect=fixture_origin):
+                    if state in {"pushed", "remote_only"}:
+                        CLAIM.verify_pushed_handoff("work/source", head, "owner/repo", cwd=checkout)
+                    else:
+                        with self.assertRaises(CLAIM.ClaimProofError):
+                            CLAIM.verify_pushed_handoff("work/source", head, "owner/repo", cwd=checkout)
+                self.assertEqual(git("status", "--porcelain"), before)
 
 
 class GraphQLRepositoryIdentityTests(unittest.TestCase):

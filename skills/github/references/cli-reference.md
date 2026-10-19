@@ -1264,6 +1264,19 @@ become conflict-only refresh. Create a new linked worktree only after confirmed
 success; preserve the original checkouts. This route grants no live-operation,
 PR-change, cleanup, access, or takeover authority.
 
+A handoff without a PR may instead name the released claim's exact source
+branch beside a full same-repository commit link in one paragraph, for example:
+`Preserved WIP: remote work/task at https://github.com/OWNER/REPO/commit/FULL_SHA`.
+Use the full 40-character head SHA. The helper reads that exact branch on
+`origin` and requires its live head to match. An existing local source branch
+and every checkout of it must match too, with no unpublished changes. Missing,
+unreadable, moved, unpushed or diverged state refuses, including on both claim
+readbacks. The source author, exact release, ownership, waits, native blockers,
+peer and other artifact checks remain the same. Open PRs on the source branch
+still need their own attestation. The successor uses a new task branch and
+preserves the source checkout. This branch route cannot authorize a
+conflict-only PR refresh or cross-repository handoff.
+
 When actionable source work is split from a waiting parent, use its native child
 as `<canonical-issue>` with the parent's original `--resume-from` and
 `--handoff-comment` IDs. If the source claim is absent on the child, the helper
