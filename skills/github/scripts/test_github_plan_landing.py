@@ -1271,25 +1271,45 @@ class MutationProjectionTests(unittest.TestCase):
             retryable=False, fallback_eligible=False, disposition="stop", request_id="fixture-close-neighborhood")
         errors = [PLAN.PlanError(failure.message, failure=failure), KeyError("state")]
         for error in errors:
-            with self.subTest(error=type(error).__name__):
+            with self.subTest(error=type(error).__name__), tempfile.TemporaryDirectory() as checkout, \
+                    patch.object(PLAN, "repo_from_git", return_value=REPO):
                 self.add_issue(7)
+                self.add_issue(8, label_keys=("plan", "blocked"))
+                self.blockers[8] = {7}
+                state_events = []
+                def state(number, **kwargs):
+                    state_events.append((number, kwargs["state"]))
+                    return self.set_state(number, **kwargs)
                 note = "Source completion evidence"
-                with patch.object(landing, "neighborhood", side_effect=error), self.assertRaises(PLAN.PlanError) as caught:
-                    self.command("close", "7", "--comment", note)
-                payload = caught.exception.payload
-                self.assertEqual(payload["closed"]["number"], 7)
-                self.assertEqual(self.records[7]["state"], "closed")
+                with patch.object(PLAN.github_issue_core, "set_issue_state", side_effect=state):
+                    with patch.object(landing, "neighborhood", side_effect=error), self.assertRaises(PLAN.PlanError) as caught:
+                        self.command("close", "7", "--comment", note, "--planning-checkout=" + checkout)
+                    payload = caught.exception.payload
+                    self.assertEqual(payload["closed"]["number"], 7)
+                    self.assertEqual(self.records[7]["state"], "closed")
+                    row = payload["dependents"]["issues"][0]
+                    self.assertEqual((row["repo"], row["number"]), (REPO, 7))
+                    self.assertTrue(row["required"])
+                    self.assertFalse(row["ok"])
+                    detail = getattr(error, "failure", None)
+                    expected = PLAN.github_plan_status.failure_disposition(
+                        detail.cause if detail else None, detail.write_outcome if detail else None,
+                        writes_started=False, validation_error=isinstance(error, ValueError))
+                    self.assertEqual(row["status"], expected["status"])
+                    if detail is not None:
+                        self.assertEqual(row["error"]["failure"], detail.as_dict())
+                        self.assertTrue(expected["repository_denied"])
+                        self.assertTrue(row["next_action"])
+                    recovery = PLAN.build_parser().parse_args(row["recovery"]["argv"][1:])
+                    self.assertTrue(recovery.include_dependents)
+                    self.assertEqual(recovery.planning_checkout, checkout)
+                    # A later authorized invocation acts after the mocked failure
+                    # has resolved; the denied close invocation never retries.
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        recovery.func(recovery)
+                self.assertEqual(state_events, [(7, "closed")])
                 self.assertEqual([comment["body"] for comment in self.discussion[7]], [note])
-                row = payload["dependents"]["issues"][0]
-                self.assertEqual((row["repo"], row["number"]), (REPO, 7))
-                self.assertTrue(row["required"])
-                self.assertFalse(row["ok"])
-                if isinstance(error, PLAN.PlanError):
-                    self.assertEqual(row["error"]["failure"], failure.as_dict())
-                    self.assertEqual(row["status"], "review_posting_authority")
-                    self.assertTrue(row["next_action"])
-                else:
-                    self.assertEqual(row["status"], "reconciliation_failed")
+                self.assert_labels(8, "plan", "active")
 
     def test_pending_close_comment_option_shaped_body_can_resume(self):
         note = "-capture"

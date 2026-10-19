@@ -316,6 +316,8 @@ def run_reconciliation_tasks(plan: Any, tasks: list[dict[str, Any]], *, apply: b
             required=bool(entry.get("required")) or (entry["role"] == "source" and not optional_source)))
         if entry["status"].startswith(("review_", "reconciliation_", "not_attempted")):
             recovery_argv = ["gh-plan.py", "--repo", repo, "reconcile-status", str(number), "--apply"]
+            if entry.get("phase") == "neighborhood_discovery":
+                recovery_argv.append("--include-dependents")
             if entry.get("planning_checkout"):
                 recovery_argv.append("--planning-checkout=" + entry["planning_checkout"])
             entry["recovery"] = {
