@@ -214,12 +214,14 @@ preserved, or intentionally left in place.
    stash, or overwrite unrelated IDE changes. Whole-worktree retirement requires
    the shared cleanup policy's protected-file, preservation, ownership, and
    authorization evidence.
-7. Do not remove user artifacts, broad system caches or unrelated untracked files
-   without explicit approval. Route remote lifecycle cleanup through
-   [launchplane](../launchplane/SKILL.md) or [infra-ops](../infra-ops/SKILL.md)
-   under current overall and repository direction and existing task authority.
-   Preserve direction's in-use, only-copy, production-isolation and live-data
-   safeguards through those supported paths.
+7. Do not remove user artifacts, broad system caches, unrelated untracked files
+   or unrelated remote resources without explicit approval. Use `github` for
+   task-owned branch cleanup. For task-owned disposable testing or preview
+   resources, use [launchplane](../launchplane/SKILL.md) when managed there or
+   [infra-ops](../infra-ops/SKILL.md#workflow) for documented provider lifecycle
+   operations, under current overall and repository direction and existing task
+   authority. Those paths retain direction's in-use, only-copy,
+   production-isolation and live-data safeguards.
 8. Report final state concisely.
 
 ## Consuming Readiness Evidence

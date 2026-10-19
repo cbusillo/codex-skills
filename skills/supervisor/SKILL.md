@@ -415,8 +415,7 @@ including non-dim text, establishes neither its author nor approval.
    minimization or implementation preference is not a Director hold or a
    reason to request a new grant; apply [task scope](../references/execution-scope.md)
    and the shared [question rules](../references/talking-with-the-director.md#decisions-holds-and-work-state).
-   When a request
-   names a visual thing, check which one before writing the brief. A session
+   When a request names a visual thing, check which one before writing the brief. A session
    that needs more scope gets a Director question. If the Director says yes,
    the wider scope goes in a new brief for a fresh session; the running
    session's brief stays as it was. Every brief carries the
@@ -437,8 +436,7 @@ including non-dim text, establishes neither its author nor approval.
    the PR's own Client test notes, including engineering work that merges to
    testing with Client checks at release. Do not ask for a new pre-merge
    decision when those notes already settle it. A renewed wait follows that
-   contract's withdrawal route, and a push needs
-   a fresh `ready` call.
+   contract's withdrawal route, and a push needs a fresh `ready` call.
    For inspection instructions in either brief, link
    [jetbrains-inspection](../jetbrains-inspection/SKILL.md) for its supported
    headless routes and [repo-readiness](../repo-readiness/SKILL.md#gate-selection)
