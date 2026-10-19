@@ -885,7 +885,7 @@ def source_mutation_paths(argv):
         return {"path": path, "invalidates": True, "recursive": True, **extra}
     if name in {"cp", "mv", "install"}:
         operands, target, cursor = [], None, 0
-        recursive = name == "mv" or any(word == "--recursive" or word.startswith('-') and not word.startswith('--')
+        recursive = name == "mv" or any(word in {"--recursive", "--archive"} or word.startswith('-') and not word.startswith('--')
                                         and any(letter in word[1:] for letter in "rRa") for word in words)
         def transfer(source, destination, **extra):
             return invalidation(destination, copy_from=source, replaces=True, copy_recursive=recursive,
@@ -2293,7 +2293,7 @@ def python_ownership(content, *, partial=False):
     exit_callbacks = []
     return_values = []
     fingerprints = {}
-    instances = []
+    instances, containers = [], []
     class_bases = {}
     method_classes = {}
     attribute_mutations = 0
@@ -2394,9 +2394,23 @@ def python_ownership(content, *, partial=False):
         def __init__(self, callback):
             self.callback = callback
 
+    class Sequence:
+        def __init__(self, rows, unique=False):
+            self.state = {"rows": choices(list(choices(row)) if unique else list(row) for row in rows)}
+            self.unique = unique
+            containers.append(self)
+
     class Keywords:
         def __init__(self, items):
-            self.items = items
+            self.state = items
+            containers.append(self)
+
+        @property
+        def items(self):
+            return self.state
+
+    def sequence_rows(item):
+        return tuple(row if isinstance(row, (list, tuple)) else [row] for row in item.state["rows"]) if isinstance(item, Sequence) else (item,)
 
     class Generator:
         def __init__(self, node, scope, arguments=(), keywords=(), operands=None):
@@ -2409,6 +2423,8 @@ def python_ownership(content, *, partial=False):
         return left == right
 
     def executable_value(item):
+        if isinstance(item, Sequence):
+            return any(executable_value(row) for row in sequence_rows(item))
         if isinstance(item, (list, tuple)):
             argv = [word if isinstance(word, str) else computed for word in item]
             text = shlex.join(argv)
@@ -2416,6 +2432,8 @@ def python_ownership(content, *, partial=False):
         return isinstance(item, str) and (executable_content(item) or opaque_ownership("exec_command", {"cmd": item}) or overflow_execution(item))
 
     def helper_witness(item):
+        if isinstance(item, Sequence):
+            return None
         if isinstance(item, str):
             commands = list(shell_commands("exec_command", {"cmd": item}))
             if len(commands) != 1:
@@ -2462,7 +2480,7 @@ def python_ownership(content, *, partial=False):
         for item in items:
             if not any(same(item, prior) for prior in unique):
                 unique.append(item)
-        if len(unique) <= 8 or any(isinstance(item, (ast.AST, Function, Bound, Instance, Partial, Registry, Deferred, Keywords, Generator)) for item in unique):
+        if len(unique) <= 8 or any(isinstance(item, (ast.AST, Function, Bound, Instance, Partial, Registry, Deferred, Keywords, Sequence, Generator)) for item in unique):
             return tuple(unique)
         # Keep canonical helper/action witnesses concrete. Widening known
         # read-only actions would invent a dynamic action and a false refusal.
@@ -2558,6 +2576,8 @@ def python_ownership(content, *, partial=False):
                     result.extend(iterated(sequence.node, sequence.scope))
                 else:
                     result.extend(invoke(sequence.node, sequence.scope, sequence.arguments, sequence.keywords, evaluated=True, consumed=True))
+            elif isinstance(sequence, Sequence):
+                result.extend(item for row in sequence_rows(sequence) for item in row)
             elif isinstance(sequence, (list, tuple)):
                 result.extend(sequence)
             elif isinstance(sequence, Keywords):
@@ -2600,12 +2620,14 @@ def python_ownership(content, *, partial=False):
             return (Keywords(items),)
         if isinstance(node, ast.Subscript):
             resolved = []
-            for container in value(node.value, scope):
-                for key in value(node.slice, scope):
-                    if isinstance(container, Keywords) and isinstance(key, (str, int)):
-                        resolved.extend(container.items.get(key, (unknown,)))
-                    elif isinstance(container, (list, tuple)) and isinstance(key, int) and -len(container) <= key < len(container):
-                        resolved.append(container[key])
+            for assigned in value(node.value, scope):
+                for container in sequence_rows(assigned):
+                    for key in value(node.slice, scope):
+                        if isinstance(container, Keywords):
+                            resolved.extend(container.items.get(key, (unknown,)) if isinstance(key, (str, int)) else choices(item for assigned in container.items.values() for item in assigned))
+                            resolved.extend(container.items.get(unknown, ()))
+                        elif isinstance(container, (list, tuple)) and isinstance(key, int) and -len(container) <= key < len(container):
+                            resolved.append(container[key])
             return choices(resolved) or (unknown,)
         if isinstance(node, ast.Attribute):
             resolved = [ast.alias(name=name) for name in function_names(node, scope) if name in launches]
@@ -2623,8 +2645,8 @@ def python_ownership(content, *, partial=False):
         if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp)):
             local = comprehension(node, scope)
             if local is None:
-                return ([],)
-            return (list(value(node.key if isinstance(node, ast.DictComp) else node.elt, local)),)
+                return (Sequence(([],)),)
+            return (Sequence((list(value(node.key if isinstance(node, ast.DictComp) else node.elt, local)),)),)
         if isinstance(node, ast.JoinedStr):
             rendered = ("",)
             for part in node.values:
@@ -2645,9 +2667,12 @@ def python_ownership(content, *, partial=False):
                         rendered.append(computed)
             return choices(rendered)
         if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
-            return choices(combinations(expanded_arguments(node.elts, scope)))
+            rows = combinations(expanded_arguments(node.elts, scope))
+            return choices(tuple(row) for row in rows) if isinstance(node, ast.Tuple) else (Sequence(rows, unique=isinstance(node, ast.Set)),)
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-            return add(value(node.left, scope), value(node.right, scope))
+            assigned = add(value(node.left, scope), value(node.right, scope))
+            rows = [row for row in assigned if isinstance(row, list)]
+            return choices((*([Sequence(rows)] if rows else []), *(row for row in assigned if not isinstance(row, list))))
         if isinstance(node, ast.IfExp):
             return choices((*value(node.body, scope), *value(node.orelse, scope)))
         if isinstance(node, ast.Call):
@@ -2655,6 +2680,16 @@ def python_ownership(content, *, partial=False):
             if cached is not None:
                 return cached
             names = function_names(node.func, scope)
+            mutated = mutate(node, scope)
+            if mutated is not None:
+                expression_values[id(scope), id(node)] = mutated
+                return mutated
+            if names & {"contextlib.ExitStack", "contextlib.AsyncExitStack"}:
+                return choices(ast.alias(name=name) for name in names)
+            if names & {"contextlib.ExitStack.enter_context", "contextlib.AsyncExitStack.enter_context", "contextlib.AsyncExitStack.enter_async_context"} and node.args:
+                return iterate_values(value(node.args[0], scope), scope)
+            if not node.args and names & {"list", "set", "dict", "tuple"}:
+                return (Keywords({}) if "dict" in names else () if "tuple" in names else Sequence(([],), unique="set" in names),)
             if "super" in names:
                 parameters = [*active[-1].args.posonlyargs, *active[-1].args.args] if active else []
                 kinds = value(node.args[0], scope) if node.args else (method_classes.get(id(active[-1])) if active else None,)
@@ -2692,16 +2727,17 @@ def python_ownership(content, *, partial=False):
                             split.append(shlex.split(item) if isinstance(item, str) else unknown)
                         except ValueError:
                             split.append(unknown)
-                    return choices(split)
+                    return (Sequence(row for row in split if isinstance(row, list)),) if all(isinstance(row, list) for row in split) else choices(split)
                 if any(name.endswith(".join") for name in names) and isinstance(node.func, ast.Attribute):
                     rendered = []
                     for separator in value(node.func.value, scope):
-                        for sequence in arguments:
-                            items = iterate_values((sequence,), scope)
-                            if isinstance(separator, str) and isinstance(sequence, (list, tuple)) and all(isinstance(item, str) for item in sequence):
-                                rendered.append(separator.join(sequence))
-                            else:
-                                rendered.append(overflow if any(executable_value(item) for item in items) else computed)
+                        for argument in arguments:
+                            for sequence in sequence_rows(argument):
+                                items = iterate_values((sequence,), scope)
+                                if isinstance(separator, str) and isinstance(sequence, (list, tuple)):
+                                    rendered.append(separator.join(item if isinstance(item, str) else computed for item in sequence))
+                                else:
+                                    rendered.append(overflow if executable_value(list(items)) or any(executable_value(item) for item in items) else computed)
                     return choices(rendered)
                 if names & {"min", "max"}:
                     return iterated(node.args[0], scope) or (unknown,)
@@ -2715,7 +2751,7 @@ def python_ownership(content, *, partial=False):
                         return (Keywords(mapping),)
                 if names & {"list", "tuple", "set", "next", "sorted"}:
                     items = iterated(node.args[0], scope)
-                    return items if "next" in names else (list(items),)
+                    return items if "next" in names else (tuple(items) if "tuple" in names else Sequence((list(items),), unique="set" in names),)
             if names & {"functools.partial"} and node.args:
                 result = (Partial(value(node.args[0], scope), expanded_arguments(node.args[1:], scope), call_keywords(node.keywords, scope)),)
                 expression_values[id(scope), id(node)] = result
@@ -2751,12 +2787,16 @@ def python_ownership(content, *, partial=False):
         def possible_code(item):
             if isinstance(item, Keywords):
                 return any(possible_code(assigned) for assigned in item.items.values())
+            if isinstance(item, Sequence):
+                return any(possible_code(row) for row in sequence_rows(item))
             return any(possible_code(child) for child in item) if isinstance(item, (list, tuple)) else isinstance(item, str) and (overflow in item or executable_content(item) or opaque_ownership("exec_command", {"cmd": item}))
         if node is not None:
             operands = [item for child in ast.iter_child_nodes(node) for item in value(child, scope)]
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                operands.extend(value(node.func.value, scope))
             generators = [item for item in operands if isinstance(item, Generator)]
             if generators:
-                return (Generator(None, scope, operands=generators),)
+                return (Generator(None, scope, operands=generators), *((overflow,) if any(possible_code(item) for item in operands) else ()))
             if any(possible_code(item) for item in operands):
                 return (overflow,)
         return (unknown,)
@@ -2765,13 +2805,15 @@ def python_ownership(content, *, partial=False):
         result = []
         # Apply the operation before bounding its results. Bounding pairs first
         # loses the executable identity of a later helper argv prefix.
-        for first in left:
-            for second in right:
-                if isinstance(first, str) and second is unknown:
-                    second = computed
-                if isinstance(second, str) and first is unknown:
-                    first = computed
-                result.append(first + second if isinstance(first, (str, list, tuple)) and type(first) is type(second) else unknown)
+        for assigned_first in left:
+            for assigned_second in right:
+                for first in sequence_rows(assigned_first):
+                    for second in sequence_rows(assigned_second):
+                        if isinstance(first, str) and second is unknown:
+                            second = computed
+                        if isinstance(second, str) and first is unknown:
+                            first = computed
+                        result.append(first + second if isinstance(first, (str, list, tuple)) and type(first) is type(second) else unknown)
         return choices(result)
 
     def overflow_execution(command):
@@ -2813,8 +2855,10 @@ def python_ownership(content, *, partial=False):
                 key = ("registry", identity, child(item.handlers))
             elif isinstance(item, Partial):
                 key = ("partial", child(item.functions), child(item.arguments), tuple(sorted((name, child(assigned)) for name, assigned in item.keywords.items())))
+            elif isinstance(item, Sequence):
+                key = ("mutable-sequence", identity, child(sequence_rows(item)))
             elif isinstance(item, Keywords):
-                key = ("mapping", tuple(sorted((str(name), child(assigned)) for name, assigned in item.items.items())))
+                key = ("mapping", identity, tuple(sorted((str(name), child(assigned)) for name, assigned in item.items.items())))
             elif isinstance(item, ast.alias):
                 key = ("alias", item.name)
             elif isinstance(item, ast.ClassDef):
@@ -2854,8 +2898,25 @@ def python_ownership(content, *, partial=False):
             if isinstance(argument, ast.Starred):
                 sequences = value(argument.value, scope)
                 if any(isinstance(sequence, Generator) for sequence in sequences):
-                    result.extend((item,) for item in iterate_values(sequences, scope))
+                    # A single yield has alternative values, not one argument
+                    # per alternative. Multiple yields retain their positions.
+                    def single_yield(sequence):
+                        wrapper = sequence.node.function if isinstance(sequence.node, Bound) else sequence.node
+                        if not isinstance(wrapper, Function):
+                            return False
+                        nodes = []
+                        def visit(node):
+                            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)) and node is not wrapper.node:
+                                return
+                            nodes.append(node)
+                            for child in ast.iter_child_nodes(node):
+                                visit(child)
+                        visit(wrapper.node)
+                        return sum(isinstance(node, ast.Yield) for node in nodes) == 1 and not any(isinstance(node, (ast.YieldFrom, ast.For, ast.AsyncFor, ast.While)) for node in nodes)
+                    items = iterate_values(sequences, scope)
+                    result.extend([items] if all(single_yield(sequence) for sequence in sequences) else [(item,) for item in items])
                     continue
+                sequences = tuple(row for sequence in sequences for row in sequence_rows(sequence))
                 length = max((len(sequence) for sequence in sequences if isinstance(sequence, (list, tuple))), default=0)
                 for index in range(length):
                     result.append(choices(sequence[index] if isinstance(sequence, (list, tuple)) and index < len(sequence) else unknown for sequence in sequences))
@@ -2874,7 +2935,8 @@ def python_ownership(content, *, partial=False):
         descendants = (*seen, identity)
         if isinstance(item, Function):
             result = any(isinstance(node, (ast.Global, ast.Nonlocal))
-                         or isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Store)
+                         or isinstance(node, (ast.Attribute, ast.Subscript)) and isinstance(node.ctx, ast.Store)
+                         or isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in mutation_methods
                          or isinstance(node, ast.Call) and function_names(node.func, item.scope) & {"atexit.register", "atexit.unregister"}
                          for node in ast.walk(item.node))
             result |= any(effectful(assigned, descendants, memo) for name in item.free for assigned in item.scope.get(name, ()))
@@ -2887,7 +2949,7 @@ def python_ownership(content, *, partial=False):
                           if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
                           and isinstance(node.func.value, ast.Name) and node.func.value.id == receiver_name
                           for method in member(item.receiver, node.func.attr))
-        elif isinstance(item, (Instance, Registry, Deferred)):
+        elif isinstance(item, (Instance, Registry, Deferred, Sequence, Keywords)):
             result = True
         elif isinstance(item, ast.ClassDef):
             result = any(effectful(assigned, descendants, memo) for assigned in class_bindings.get(identity, {}).get("__init__", ()))
@@ -2901,10 +2963,10 @@ def python_ownership(content, *, partial=False):
         return result
 
     def reusable_result(item):
-        if isinstance(item, (Instance, Registry)):
+        if isinstance(item, (Instance, Registry, Sequence, Keywords)):
             return False
-        if isinstance(item, Keywords):
-            return all(reusable_result(assigned) for assigned in item.items.values())
+        if isinstance(item, (Function, Bound, Partial, Deferred)):
+            return not effectful(item)
         return all(reusable_result(child) for child in item) if isinstance(item, (list, tuple)) else True
 
     def construct(kind, scope, arguments, keywords):
@@ -2999,6 +3061,79 @@ def python_ownership(content, *, partial=False):
             invocation_cache[cache_key] = owning, result
         return result
 
+    mutation_methods = {"append", "extend", "insert", "add", "update", "setdefault", "clear", "pop", "remove", "discard", "reverse", "sort", "copy"}
+
+    def mutate(node, scope):
+        nonlocal attribute_mutations
+        if not isinstance(node.func, ast.Attribute) or node.func.attr not in mutation_methods:
+            return None
+        owners = [owner for owner in value(node.func.value, scope) if isinstance(owner, (Sequence, Keywords))]
+        if not owners:
+            return None
+        arguments = expanded_arguments(node.args, scope)
+        name, results = node.func.attr, []
+        for owner in owners:
+            if name == "copy":
+                results.append(Sequence(sequence_rows(owner), unique=owner.unique) if isinstance(owner, Sequence) else Keywords(dict(owner.items)))
+                continue
+            attribute_mutations += 1
+            if isinstance(owner, Keywords):
+                if name == "clear":
+                    owner.items.clear()
+                elif name == "update":
+                    for assigned in arguments[:1]:
+                        for mapping in assigned:
+                            if isinstance(mapping, Keywords):
+                                owner.items.update(mapping.items)
+                    owner.items.update(call_keywords(node.keywords, scope))
+                elif arguments:
+                    for key in arguments[0]:
+                        if not isinstance(key, (str, int)):
+                            continue
+                        if name == "setdefault":
+                            results.extend(owner.items.setdefault(key, arguments[1] if len(arguments) > 1 else (None,)))
+                        elif name == "pop":
+                            results.extend(owner.items.pop(key, arguments[1] if len(arguments) > 1 else (unknown,)))
+                continue
+            rows = []
+            for previous in sequence_rows(owner):
+                operands = combinations(arguments) if arguments else [()]
+                for operands_row in operands:
+                    row = list(previous)
+                    if name == "clear":
+                        row.clear()
+                    elif name in {"append", "add"} and operands_row:
+                        if not owner.unique or not any(same(item, operands_row[0]) for item in row):
+                            row.append(operands_row[0])
+                    elif name == "insert" and len(operands_row) > 1:
+                        row.insert(operands_row[0] if isinstance(operands_row[0], int) else len(row), operands_row[1])
+                    elif name in {"extend", "update"} and operands_row:
+                        extensions = sequence_rows(operands_row[0])
+                        if all(isinstance(extension, (list, tuple)) for extension in extensions):
+                            rows.extend(row + list(extension) for extension in extensions)
+                            continue
+                        row.extend(iterate_values((operands_row[0],), scope))
+                    elif name == "pop" and row:
+                        index = operands_row[0] if operands_row and isinstance(operands_row[0], int) else -1
+                        if -len(row) <= index < len(row):
+                            results.append(row.pop(index))
+                    elif name in {"remove", "discard"} and operands_row:
+                        index = next((index for index, item in enumerate(row) if same(item, operands_row[0])), None)
+                        if index is not None:
+                            row.pop(index)
+                    elif name == "reverse":
+                        row.reverse()
+                    elif name == "sort":
+                        try:
+                            row.sort()
+                        except TypeError:
+                            pass
+                    rows.append(row)
+            if owner.unique:
+                rows = [list(choices(row)) for row in rows]
+            owner.state["rows"] = choices(rows)
+        return choices(results) or (None,)
+
     def scan(node, scope):
         nonlocal found
         if isinstance(node, (ast.Lambda, ast.GeneratorExp)):
@@ -3015,6 +3150,8 @@ def python_ownership(content, *, partial=False):
         if isinstance(node, ast.Call):
             names = function_names(node.func, scope)
             functions = value(node.func, scope)
+            if isinstance(node.func, ast.Attribute) and node.func.attr in mutation_methods:
+                value(node, scope)
             # Unknown data callees still expand starred operands. Known launch
             # and wrapper paths expand them in their own actual invocation.
             if (any(isinstance(argument, ast.Starred) for argument in node.args)
@@ -3055,7 +3192,7 @@ def python_ownership(content, *, partial=False):
                 for callback, arguments, keywords in callbacks:
                     for function in value(callback, scope):
                         invoke(function, scope, arguments, keywords, evaluated=True)
-                if len(node.args) == 1 and (names & {"list", "tuple", "set", "next", "sum", "any", "all", "sorted", "dict", "min", "max"} or any(name.endswith(".join") for name in names)):
+                if node.args and (names & {"list", "tuple", "set", "next", "sum", "any", "all", "sorted", "dict", "min", "max", "collections.deque", "contextlib.ExitStack.enter_context", "contextlib.AsyncExitStack.enter_context", "contextlib.AsyncExitStack.enter_async_context"} or any(name.endswith(".join") for name in names)):
                     iterated(node.args[0], scope)
                 if isinstance(node.func, ast.Attribute) and node.func.attr in {"set_defaults", "add_command"}:
                     for registry in value(node.func.value, scope):
@@ -3081,7 +3218,8 @@ def python_ownership(content, *, partial=False):
             owner.state = merged([getattr(state, "parents", {}).get(owner, owner.state) for state in states])
         attributes = set().union(*(getattr(state, "attributes", {}).keys() for state in states))
         for identity in attributes:
-            target = instances[identity[1]].attributes if identity[0] == "instance" else class_bindings.setdefault(identity[1], {})
+            target = (instances[identity[1]].attributes if identity[0] == "instance" else containers[identity[1]].state
+                      if identity[0] == "container" else class_bindings.setdefault(identity[1], {}))
             updates = merged([getattr(state, "attributes", {}).get(identity, target) for state in states])
             target.clear()
             target.update(updates)
@@ -3099,9 +3237,31 @@ def python_ownership(content, *, partial=False):
                 elif isinstance(owner, ast.ClassDef):
                     attribute_mutations += 1
                     class_bindings.setdefault(id(owner), {})[target.attr] = assigned
+        elif isinstance(target, ast.Subscript):
+            for owner in value(target.value, scope):
+                for key in value(target.slice, scope):
+                    if isinstance(owner, Keywords):
+                        attribute_mutations += 1
+                        if isinstance(key, (str, int)):
+                            owner.items[key] = assigned
+                        else:
+                            owner.items[unknown] = choices((*owner.items.get(unknown, ()), *assigned))
+                    elif isinstance(owner, Sequence):
+                        attribute_mutations += 1
+                        rows = []
+                        for row in sequence_rows(owner):
+                            for item in assigned:
+                                updated = list(row)
+                                if isinstance(key, int) and -len(updated) <= key < len(updated):
+                                    updated[key] = item
+                                else:
+                                    updated.append(item)
+                                rows.append(updated)
+                        owner.state["rows"] = choices(rows)
         elif isinstance(target, (ast.Tuple, ast.List)):
             for index, child in enumerate(target.elts):
-                bind(child, choices(item[index] if isinstance(item, (list, tuple)) and len(item) == len(target.elts) else unknown for item in assigned), scope)
+                bind(child, choices(item[index] if isinstance(item, (list, tuple)) and len(item) == len(target.elts) else unknown
+                                    for entry in assigned for item in sequence_rows(entry)), scope)
 
     def branch(statements, scope, initial=None):
         previous = scope.state
@@ -3113,6 +3273,7 @@ def python_ownership(content, *, partial=False):
             owner = owner.parent
         maps = {("instance", index): instance.attributes for index, instance in enumerate(instances)}
         maps.update({("class", identity): assigned for identity, assigned in class_bindings.items()})
+        maps.update({("container", index): container.state for index, container in enumerate(containers)})
         snapshots = {identity: dict(assigned) for identity, assigned in maps.items()}
         for identity, assigned in maps.items():
             assigned.clear()
@@ -3129,6 +3290,7 @@ def python_ownership(content, *, partial=False):
                 assigned.update(snapshots[identity])
 
     def walk(statements, scope, *, methods=False):
+        nonlocal attribute_mutations
         for statement in statements:
             expression_values.clear()
             scan(statement, scope)
@@ -3141,7 +3303,16 @@ def python_ownership(content, *, partial=False):
                 targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
                 for target in targets:
                     if isinstance(statement, ast.AugAssign) and isinstance(statement.op, ast.Add) and isinstance(target, ast.Name):
-                        assigned = add(scope.get(target.id, (unknown,)), assigned)
+                        previous = scope.get(target.id, (unknown,))
+                        combined = []
+                        for owner in previous:
+                            if isinstance(owner, Sequence):
+                                attribute_mutations += 1
+                                owner.state["rows"] = add((owner,), assigned)
+                                combined.append(owner)
+                            else:
+                                combined.extend(add((owner,), assigned))
+                        assigned = choices(combined)
                     bind(target, assigned, scope)
             elif isinstance(statement, ast.Import):
                 for imported in statement.names:
@@ -3181,6 +3352,7 @@ def python_ownership(content, *, partial=False):
                     assigned = value(item.context_expr, scope)
                     iterate_values(tuple(value for value in assigned if isinstance(value, Generator)), scope)
                     if item.optional_vars is not None:
+                        assigned = choices(value for entry in assigned for value in (iterate_values((entry,), scope) if isinstance(entry, Generator) else (entry,)))
                         bind(item.optional_vars, assigned, scope)
                 walk(statement.body, scope)
             elif isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -3521,7 +3693,8 @@ def apply_file_effect(effect, cwd, candidates, sources=None):
                     source_paths = [source]
                 directories = effect.get("destination_is_directory") or effect.get("destination_may_be_directory") and (
                     effect["path"].endswith('/') or effect["path"] in {".", ".."}
-                    or any(item.startswith(path.rstrip('/') + '/') for item in known))
+                    or any(item.startswith(path.rstrip('/') + '/') and previous_sources.get(item, {}).get("definite")
+                           for item in known))
                 roots = [(posixpath.join(path, posixpath.basename(source)) if directories and not effect.get("copy_contents") else path, False)]
                 if effect.get("destination_may_be_directory") and not directories and not effect.get("copy_contents"):
                     roots.append((posixpath.join(path, posixpath.basename(source)), True))
@@ -3629,12 +3802,13 @@ def ownership_file_candidates(histories):
         for (identifier, path), entry in by_call.items():
             completion = completions.get(identifier, float("inf")) if entry["at"] is not None else None
             context = tuple(entry["context"])
-            completed_context = context if any(effect["replaces"] for effect in context) else ()
+            completed_context = context if entry["final"] is True or any(effect["replaces"] for effect in context) else ()
             if entry["owns"] or entry["context"]:
                 candidates.setdefault(path, []).append((origin, entry["at"], entry["owns"], False, completion, identifier, context,
                                                        entry["at"], launches.get(identifier), False))
                 if entry["final"] is True and completed_context and completion is not None and completion != float("inf"):
-                    candidates[path].append((origin, completion, True, False, completion, identifier, completed_context,
+                    candidates[path].append((origin, completion, True, any(effect["replaces"] for effect in completed_context),
+                                             completion, identifier, completed_context,
                                              entry["at"], launches.get(identifier), True))
             if entry["final"] is False:
                 candidates.setdefault(path, []).append((origin, completion, False, True, completion, identifier, completed_context,
@@ -3681,6 +3855,7 @@ def file_ownership_executions(records, harness, *, file_candidates=()):
 
     own_intervals, completed = {}, []
     candidates, peer_writes, intervals, sources, contributions = set(), [], [], {}, {}
+    generation, active_projection = 0, None
     if isinstance(file_candidates, dict):
         for path, events in file_candidates.items():
             for event in events:
@@ -3724,6 +3899,9 @@ def file_ownership_executions(records, harness, *, file_candidates=()):
             apply_file_effect(effect, None, target_candidates, target_sources)
 
     def replay(events, target_candidates, target_sources):
+        nonlocal generation
+        if events:
+            generation += 1
         final = {}
         for path, owning, replaces, source, context, writer, finished in events:
             newer = [entry for entry in contributions.get(path, {}).values()
@@ -3733,8 +3911,9 @@ def file_ownership_executions(records, harness, *, file_candidates=()):
                 owning = path in target_candidates
             if finished:
                 remember(path, writer, context)
-                contributions[path] = {key: entry for key, entry in contributions[path].items()
-                                       if key == writer[:2] or newer_than(entry[0], writer)}
+                if replaces:
+                    contributions[path] = {key: entry for key, entry in contributions[path].items()
+                                           if key == writer[:2] or newer_than(entry[0], writer)}
                 # Replay only later writes' own effects. Their cumulative
                 # pre-replacement state can contain bytes this writer erased.
                 for _, later in newer:
@@ -3784,11 +3963,14 @@ def file_ownership_executions(records, harness, *, file_candidates=()):
                     continue
                 speculative = dict(sources)
                 speculative_candidates = set(candidates)
+                previous_candidates = set(candidates)
                 for path, owning, _, _, context, _, _ in events:
                     apply_context(context, speculative_candidates, speculative, possible=True)
                     owning |= path in speculative_candidates
                     if owning:
                         candidates.add(path)
+                if candidates != previous_candidates:
+                    generation += 1
                 break
             replay(events, candidates, sources)
             next_peer += 1
@@ -3798,6 +3980,7 @@ def file_ownership_executions(records, harness, *, file_candidates=()):
         local_candidates, local_sources, replacements, written_by_path = set(candidates), dict(sources), {}, {}
         for effect in effects:
             if effect["kind"] == "write":
+                generation += 1
                 path = native_path(effect["path"], native_cwd(effect.get("cwd"), cwd)) if effect["path"] else None
                 owning = apply_file_effect(effect, cwd, local_candidates, local_sources)
                 possible = dict(effect, replaces=False, partial=False) if effect["replaces"] else effect
@@ -3824,20 +4007,29 @@ def file_ownership_executions(records, harness, *, file_candidates=()):
                     active_contexts.extend(context for (_, source), (began, context) in own_intervals.items()
                                            if source != identifier and began is not None and read_at is not None
                                            and began < read_at <= finished.get(source, float("inf")))
-                active = set()
-                for context in active_contexts:
-                    speculative_candidates, speculative_sources = set(), dict(local_sources)
-                    apply_context(context, speculative_candidates, speculative_sources, possible=True)
-                    active.update(speculative_candidates)
+                key = generation, tuple(id(context) for context in active_contexts)
+                # Pure reads do not change a writer's possible bytes. Reuse
+                # their projection until a write, completion, or interval
+                # membership change affects the source/candidate state.
+                if active_projection is None or active_projection[0] != key:
+                    active = set()
+                    for context in active_contexts:
+                        speculative_candidates, speculative_sources = set(local_candidates), dict(local_sources)
+                        apply_context(context, speculative_candidates, speculative_sources, possible=True)
+                        active.update(speculative_candidates)
+                    active_projection = key, active
+                else:
+                    active = active_projection[1]
                 if {native_path(path, native_cwd(effect.get("cwd"), cwd)) for path in effect["paths"]} & (local_candidates | active):
                     invocations.add(identifier)
-        for path, context in replacements.items():
+        for path, written in written_by_path.items():
+            context = replacements.get(path, written)
             if path not in candidates and path not in local_candidates and Path(path).suffix != ".py":
                 continue
             end = completion_ends().get(identifier)
             if end is not None:
                 at = native_timestamp(records[end].get("timestamp"))
-                event = (path, path in local_candidates, True, origin, tuple(context),
+                event = (path, path in local_candidates, path in replacements, origin, tuple(context),
                          (origin, identifier, timestamp, read_at), True)
                 completed.append((end, at, event))
     return invocations
