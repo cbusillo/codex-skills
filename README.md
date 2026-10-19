@@ -685,8 +685,8 @@ on both harnesses load the owning skill.
 
 ### Session alerts
 
-For count-only run lifecycle events in Context Panel's App Group, see the
-[agent activity producer](docs/agent-activity.md). It shares this hook but keeps
+For count-only run lifecycle events written to a private inbox for Context
+Panel, see the [agent activity producer](docs/agent-activity.md). It shares this hook but keeps
 its activity contract separate from the advisory alerts below.
 
 Claude's plugin retains the advisory Stop hook and the other lifecycle events
