@@ -859,6 +859,11 @@ class ReceiptTests(unittest.TestCase):
                             "git grep " + shlex.quote(helper),
                             "uv run gh-plan.py search " + shlex.quote(helper),
                             "gh issue comment 1 --body " + shlex.quote(handoff),
+                            "uv run /catalog/gh-plan.py --repo example/a update-section 1 Status --body-file - <<'EOF'\n" + handoff + "\nEOF",
+                            "GH_PAGER=cat gh issue comment 1 --body-file - <<'EOF'\n" + handoff + "\nEOF",
+                            "timeout 60 gh issue comment 1 --body-file - <<'EOF'\n" + handoff + "\nEOF",
+                            "command gh issue comment 1 --body-file - <<'EOF'\n" + handoff + "\nEOF",
+                            "cat > note.md <<'EOF' && uv run gh-plan.py update-section 1 S --body-file note.md\n" + handoff + "\nEOF",
                             "git commit -m " + shlex.quote(handoff),
                             "gh pr edit 1 --body " + shlex.quote(handoff),
                             "jq --arg command " + shlex.quote(handoff) + " .",
@@ -1075,6 +1080,124 @@ class ReceiptTests(unittest.TestCase):
             else: rows[1]["message"]["content"][0]["input"] = {"command": command}
             rows[2] = output({}, harness, "tool-0")
             self.assertTrue(session_record.summarize(rows, harness)["safe_verdict"])
+
+    def test_heredoc_ownership_follows_stdin_consumers_not_header_words(self):
+        writer = 'uv run /catalog/gh-plan.py --repo example/a claim 1'
+        python_writer = 'import os\nos.system(' + repr(writer) + ')'
+        node_writer = 'require("child_process").execSync(' + json.dumps(writer) + ')'
+        executing = (
+            ("env FLAG=value timeout 60 bash -s -- arg <<'EOF'", writer),
+            ("cat <<'EOF' | env FLAG=value bash -s", writer),
+            ("cat <<'EOF' | cat | sh", writer),
+            ("cat 2> errors.log <<'EOF' | sh", writer),
+            ("bash -s 0<<'EOF'", writer),
+            ("source /dev/stdin <<'EOF'", writer),
+            (". /dev/stdin <<'EOF'", writer),
+            ("bash /dev/stdin <<'EOF'", writer),
+            ("bash 2>&1 <<'EOF'", writer),
+            ("bash <<'EOF' <&0", writer),
+            ("bash 3<<'EOF' <&3", writer),
+            ("cat <<'EOF' | bash 2>&1", writer),
+            ("python3 <<'EOF'", python_writer),
+            ("python3 /dev/stdin <<'EOF'", python_writer),
+            ("python3 2>&1 <<'EOF'", python_writer),
+            ("uv run python3 -I -W ignore - <<'EOF'", python_writer),
+            ("node --input-type=commonjs <<'EOF'", node_writer),
+            ("node - <<'EOF'", node_writer),
+            ("node >&2 <<'EOF'", node_writer),
+            ("node <<'EOF'", "const cp = require('node:child_process'); cp.execSync(" + json.dumps(writer) + ")"),
+            ("node --input-type=module <<'EOF'", "import {execSync as run} from 'node:child_process'; run(" + json.dumps(writer) + ")"),
+            ("\"$INTERPRETER\" <<'EOF'", writer),
+        )
+        data = (
+            ("bash script.sh <<'EOF'", writer),
+            ("bash -c 'printf done' <<'EOF'", writer),
+            ("bash -o errexit script.sh <<'EOF'", writer),
+            ("python3 script.py <<'EOF'", python_writer),
+            ("python3 -c 'print(1)' <<'EOF'", python_writer),
+            ("python3 -m json <<'EOF'", python_writer),
+            ("node script.js <<'EOF'", node_writer),
+            ("node -e 'console.log(1)' <<'EOF'", node_writer),
+            ("node <<'EOF'", "const fixture = " + json.dumps(writer) + "; console.log(fixture)"),
+            ("node <<'EOF'", "// " + node_writer + "\nconsole.log('done')"),
+            ("node <<'EOF'", "const pattern = /claim/; pattern.exec(" + json.dumps(writer) + ")"),
+            ("node <<'EOF'", "const fixture = \"const pattern = require('child_process')\"; const pattern = /claim/; pattern.exec(" + json.dumps(writer) + ")"),
+            ("cat <<'EOF' && printf ok | bash", writer),
+            ("cat <<'EOF'; printf ok | python3", python_writer),
+            ("cat <<'EOF' | bash script.sh", writer),
+            ("cat <<'EOF' | bash -c 'printf done'", writer),
+            ("cat > note.md <<'EOF' | bash", writer),
+            ("cat >2<<'EOF' | bash", writer),
+            ("bash -s 3<<'EOF'", writer),
+            ("eval <<'EOF'", writer),
+            ("source setup.sh <<'EOF'", writer),
+            ("printf x <<'EOF' | bash", writer),
+            ("echo done <<'EOF' | bash", writer),
+            ("cat input.txt <<'EOF' | bash", writer),
+        )
+        for harness in ("codex", "claude"):
+            for expected, cases in ((True, executing), (False, data)):
+                for header, body in cases:
+                    command = header + "\n" + body + "\nEOF"
+                    rows = history(harness, {})
+                    if harness == "codex": rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                    else: rows[1]["message"]["content"][0]["input"] = {"command": command}
+                    rows[2] = output({"exit_code": 0, "output": ""}, harness, "tool-0")
+                    with self.subTest(harness=harness, command=command):
+                        self.assertEqual(bool(receipts.ownership_state(rows, harness)["indices"]), expected)
+                        self.assertEqual(receipts.ownership_state(rows, harness)["pending"], expected)
+
+    def test_multiple_heredocs_keep_their_own_command_and_final_stdin(self):
+        writer = 'uv run /catalog/gh-plan.py --repo example/a claim 1'
+        for command, expected in (
+            ("cat <<'DATA' && bash <<'CODE'\n" + writer + "\nDATA\nprintf done\nCODE", False),
+            ("cat <<'DATA' && bash <<'CODE'\nprintf done\nDATA\n" + writer + "\nCODE", True),
+            ("bash <<'FIRST' <<'LAST'\n" + writer + "\nFIRST\nprintf done\nLAST", False),
+            ("bash <<'FIRST' <<'LAST'\nprintf done\nFIRST\n" + writer + "\nLAST", True),
+            ("bash <<'DATA' < input.txt\n" + writer + "\nDATA", False),
+            ("python3 - <<'CODE'; cat <<'DATA'\nprint('done')\nCODE\nimport os\nos.system(" + repr(writer) + ")\nDATA", False),
+            ("cat <<'DATA' | bash <<'CODE'\n" + writer + "\nDATA\nprintf done\nCODE", False),
+        ):
+            for harness in ("codex", "claude"):
+                rows = history(harness, {})
+                if harness == "codex": rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                else: rows[1]["message"]["content"][0]["input"] = {"command": command}
+                rows[2] = output({"exit_code": 0, "output": ""}, harness, "tool-0")
+                with self.subTest(harness=harness, command=command):
+                    self.assertEqual(receipts.ownership_state(rows, harness)["pending"], expected)
+
+    def test_unquoted_heredoc_escape_removal_precedes_interpreter_execution(self):
+        helper = 'uv run /catalog/gh-plan.py --repo example/a claim 1'
+        command = "bash <<EOF\n\\$(" + helper + ")\nEOF"
+        for harness in ("codex", "claude"):
+            rows = history(harness, {})
+            if harness == "codex": rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+            else: rows[1]["message"]["content"][0]["input"] = {"command": command}
+            rows[2] = output({"exit_code": 0, "output": ""}, harness, "tool-0")
+            self.assertTrue(receipts.ownership_state(rows, harness)["pending"])
+
+    def test_unquoted_heredoc_expansion_respects_backslash_not_body_quotes(self):
+        helper = 'uv run /catalog/gh-plan.py --repo example/a claim 1'
+        for body, expected in (
+            ("\\$(" + helper + ")", False),
+            ("\\`" + helper + "\\`", False),
+            ("'$(" + helper + ")'", True),
+            ('"$(' + helper + ')"', True),
+            ("'`" + helper + "`'", True),
+            ("\\\\$(" + helper + ")", True),
+            ("\\\\`" + helper + "`", True),
+            ("Updated $(date)\n" + helper, False),
+            ("Updated `date`\n" + helper, False),
+            ("$(printf '%s' " + shlex.quote(helper) + ")", False),
+        ):
+            command = "env FORMAT=template cat <<EOF\n" + body + "\nEOF"
+            for harness in ("codex", "claude"):
+                rows = history(harness, {})
+                if harness == "codex": rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                else: rows[1]["message"]["content"][0]["input"] = {"command": command}
+                rows[2] = output({"exit_code": 0, "output": ""}, harness, "tool-0")
+                with self.subTest(harness=harness, body=body):
+                    self.assertEqual(receipts.ownership_state(rows, harness)["pending"], expected)
 
     def test_unparsed_composed_ownership_cannot_become_no_ownership(self):
         for cell in ('text(await tools.exec_command({cmd:`uv run /catalog/gh-plan.py --repo client/repo claim 5 > claim.json`}));',

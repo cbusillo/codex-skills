@@ -181,6 +181,201 @@ def shell_commands(name, value, *, depth=0):
             continue
 
 
+def stdin_language(argv):
+    """Identify interpreters that read code from stdin, rather than a script argv."""
+    argv = unwrapped_command(argv)
+    if not argv:
+        return None
+    name, words = Path(argv[0]).name, argv[1:]
+    stdin_paths = {"/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"}
+    if name.startswith("$"):
+        return "shell"
+    if name == "source" or argv[0] == ".":
+        return "shell" if words[:1] and words[0] in stdin_paths else None
+    shell = name in {"bash", "sh", "zsh", "dash", "ksh"}
+    python = re.fullmatch(r"python[0-9.]*", name) is not None
+    if not (shell or python or name == "node"):
+        return "argv" if name == "xargs" else None
+    cursor, force_stdin = 0, False
+    while cursor < len(words):
+        word = words[cursor]
+        if word == "-":
+            return "shell" if shell else "python" if python else "node"
+        if word == "--":
+            cursor += 1
+            break
+        if not word.startswith(("-", "+")):
+            break
+        option = word.partition("=")[0]
+        if shell:
+            if not word.startswith("--") and "c" in word[1:]:
+                return None
+            force_stdin |= not word.startswith("--") and "s" in word[1:]
+            takes_value = (option in {"--rcfile", "--init-file", "--emulate"}
+                           or not word.startswith("--") and word.endswith(("o", "O")))
+        elif python:
+            if word.startswith(("-c", "-m")):
+                return None
+            takes_value = option in {"-W", "-X", "--check-hash-based-pycs"}
+        else:
+            if option in {"-e", "--eval", "-p", "--print"} or word.startswith(("-e", "-p")) and not word.startswith("--"):
+                return None
+            takes_value = option in {"--input-type", "--require", "-r", "--import", "--loader", "--experimental-loader"}
+        cursor += 1 + (takes_value and "=" not in word)
+    if cursor < len(words) and not force_stdin:
+        if words[cursor] not in stdin_paths:
+            return None
+    return "shell" if shell else "python" if python else "node"
+
+
+def forwards_stdin(argv):
+    """Whether a pipeline command can carry its input stream to the next reader."""
+    argv = unwrapped_command(argv)
+    if not argv:
+        return False
+    name = Path(argv[0]).name
+    if name in {"printf", "echo", "true", "false", ":", "gh", "gh-plan.py", "gh-pr.py"}:
+        return False
+    if name == "cat":
+        if any(word in {"--help", "--version"} for word in argv[1:]):
+            return False
+        operands = []
+        options = True
+        for word in argv[1:]:
+            if options and word == "--":
+                options = False
+            elif not options or not word.startswith("-") or word == "-":
+                operands.append(word)
+        return not operands or "-" in operands
+    # Filters and unresolved programs may forward their input. This preserves
+    # uncertainty rather than claiming an unknown transformation is inert.
+    return True
+
+
+def node_ownership(content):
+    """Read literal child_process launches, excluding unrelated methods and data."""
+    atoms = list(re.finditer(r'''//[^\n]*|/\*[\s\S]*?\*/|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`''', content))
+    code, literals = list(content), {}
+    for atom in atoms:
+        if not atom[0].startswith(("//", "/*")):
+            literals[atom.start()] = atom
+        code[atom.start():atom.end()] = " " * len(atom[0])
+    code = "".join(code)
+    module = r"['\"](?:node:)?child_process['\"]"
+    require = rf"\brequire\s*\(\s*{module}\s*\)"
+    namespaces, functions = set(), {}
+    # Bind actual imports, not declarations quoted inside a fixture/comment.
+    for binding in re.finditer(rf"\b(?:const|let|var)\s+(\w+)\s*=\s*{require}|\bimport\s+(?:\*\s+as\s+)?(\w+)\s+from\s+{module}", content):
+        if code[binding.start():binding.start() + 5].strip():
+            namespaces.add(binding[1] or binding[2])
+    for binding in re.finditer(rf"\b(?:const|let|var)\s*\{{([^{{}}]+)\}}\s*=\s*{require}|\bimport\s*\{{([^{{}}]+)\}}\s+from\s+{module}", content):
+        if not code[binding.start():binding.start() + 5].strip():
+            continue
+        for member in (binding[1] or binding[2]).split(","):
+            names = re.split(r"\s*(?::|\bas\b)\s*", member.strip())
+            if names and names[0] in {"exec", "execSync", "spawn", "spawnSync", "execFile", "execFileSync"}:
+                functions[names[-1]] = names[0]
+    names = {"exec", "execSync", "spawn", "spawnSync", "execFile", "execFileSync", *functions}
+    for call in re.finditer(r"\b(" + "|".join(re.escape(name) for name in sorted(names)) + r")\s*\(", code):
+        prefix = content[:call.start()]
+        owner = re.search(r"\b(\w+)\s*\.\s*$", prefix)
+        direct = re.search(require + r"\s*\.\s*$", prefix)
+        if not (direct or owner and owner[1] in namespaces
+                or not owner and not prefix.rstrip().endswith(".") and call[1] in functions):
+            continue
+        kind = call[1] if direct or owner else functions[call[1]]
+        start = call.end() + len(re.match(r"\s*", content[call.end():])[0])
+        literal = literals.get(start)
+        if literal is None:
+            continue
+        try:
+            command = ast.literal_eval(literal[0])
+        except (ValueError, SyntaxError):
+            continue
+        if kind in {"exec", "execSync"}:
+            if executable_content(command) or opaque_ownership("exec_command", {"cmd": command}):
+                return True
+        else:
+            # Node's execFile/spawn take the program and a literal argv array.
+            tail = content[literal.end():]
+            arguments = re.match(r"\s*,\s*(\[[\s\S]*?\])", tail)
+            try:
+                argv = ast.literal_eval(arguments[1]) if arguments else []
+            except (ValueError, SyntaxError):
+                continue
+            if isinstance(argv, list) and all(isinstance(word, str) for word in argv) and ownership_command([command, *argv]):
+                return True
+    return False
+
+
+def heredoc_languages(tokens, source):
+    """Bind each heredoc to its owning command and the pipeline's stdin readers.
+
+    Redirections belong to one simple command. Later sequential commands cannot
+    consume their bodies, and only the last stdin redirection supplies that
+    command. A pipeline can pass the stream on to an interpreter unless that
+    interpreter replaces its stdin with another redirection.
+    """
+    # posix=False retains the source spelling of words. Adjacency distinguishes
+    # an fd prefix (2>log) from an ordinary numeric argument (2 >log).
+    spans, cursor = [], 0
+    for token in tokens:
+        start = source.find(token, cursor)
+        spans.append((start, start + len(token)) if start >= 0 else (None, None))
+        if start >= 0:
+            cursor = start + len(token)
+    segments, current = [], []
+    for index, token in enumerate(tokens):
+        if token and all(c in ";&|\n" for c in token):
+            segments.append((current, token))
+            current = []
+        else:
+            current.append((index, token))
+    segments.append((current, ""))
+    commands = []
+    for segment, separator in segments:
+        argv, heredocs, cursor, last_word = [], [], 0, None
+        descriptors = {0: "pipe-in", 1: "pipe-out", 2: None}
+        while cursor < len(segment):
+            index, token = segment[cursor]
+            if token in {"<", ">", "<<", ">>", "<<<", "<>", "<&", ">&", ">|", "&>", "&>>"}:
+                fd = 0 if token.startswith("<") else 1
+                if (cursor and last_word == segment[cursor - 1][0] and segment[cursor - 1][1].isdigit()
+                        and spans[segment[cursor - 1][0]][1] == spans[index][0]):
+                    fd = int(segment[cursor - 1][1])
+                    argv.pop()
+                operand = segment[cursor + 1][1] if cursor + 1 < len(segment) else ""
+                if token == "<<":
+                    heredocs.append(index)
+                    descriptors[fd] = index
+                elif token in {"<&", ">&"} and operand.isdigit():
+                    descriptors[fd] = descriptors.get(int(operand))
+                else:
+                    descriptors[fd] = None
+                    if token.startswith("&>"):
+                        descriptors[2] = None
+                cursor += 2
+                continue
+            argv.extend(shlex.split(token, comments=False))
+            last_word = index
+            cursor += 1
+        commands.append((stdin_language(argv), heredocs, descriptors[0], separator,
+                         descriptors[1] == "pipe-out" and forwards_stdin(argv)))
+    languages = {}
+    for position, (language, heredocs, input_source, separator, piped_output) in enumerate(commands):
+        for index in heredocs:
+            consumer = language if index == input_source else None
+            downstream, pipe = position + 1, separator
+            while consumer is None and index == input_source and piped_output and pipe in {"|", "|&"} and downstream < len(commands):
+                next_language, _, next_input, pipe, piped_output = commands[downstream]
+                if next_input != "pipe-in":
+                    break
+                consumer = next_language
+                downstream += 1
+            languages[index] = consumer
+    return languages
+
+
 def shell_code(text, *, bodies=None):
     """Exclude heredoc bodies, retaining commands on both sides of them."""
     # Quoted cat substitutions are a common CLI body argument. Their literal
@@ -190,15 +385,29 @@ def shell_code(text, *, bodies=None):
     code, pending, header = [], [], ""
     for line in text.splitlines(keepends=True):
         if pending:
-            delimiter, tabs, expands, executes, body = pending[0]
+            delimiter, tabs, expands, language, body = pending[0]
             if (line.lstrip("\t") if tabs else line).rstrip("\r\n") == delimiter:
-                if executes and executable_content("".join(body)):
+                content = "".join(body)
+                if expands:
+                    if any(executable_content(expansion) or opaque_ownership("exec_command", {"cmd": expansion})
+                           for expansion in shell_expansions(content, heredoc=True)):
+                        raise ValueError("unparsed expanding heredoc")
+                    # Backslashes protect $, `, \\ and newline during the outer
+                    # shell's expansion, then disappear before the stdin reader.
+                    content = re.sub(r"\\([\\$`\n])", lambda match: "" if match[1] == "\n" else match[1], content)
+                if language == "shell":
+                    writes = executable_content(content) or opaque_ownership("exec_command", {"cmd": content})
+                elif language == "python":
+                    writes = python_ownership(content)
+                elif language == "node":
+                    writes = node_ownership(content)
+                else:
+                    writes = language is not None and OWNERSHIP_TEXT.search(content)
+                if writes:
                     raise ValueError("unparsed executable heredoc")
                 if bodies is not None:
                     bodies.append("".join(body))
                 pending.pop(0)
-            elif expands and ("$(" in line or "`" in line):
-                raise ValueError("unparsed expanding heredoc")
             else:
                 body.append(line)
             continue
@@ -211,6 +420,7 @@ def shell_code(text, *, bodies=None):
             continue  # A quoted word may span several physical lines.
         if len(line.rstrip("\r\n")) - len(line.rstrip("\r\n").rstrip("\\")) & 1:
             continue  # Complete an escaped newline before reading delimiters.
+        languages = heredoc_languages(tokens, lexer.instream.getvalue()) if "<<" in tokens else {}
         for index, token in enumerate(tokens):
             if token != "<<":
                 continue
@@ -221,10 +431,7 @@ def shell_code(text, *, bodies=None):
             delimiter = shlex.split(raw[1:] if tabs else raw, comments=False)
             if len(delimiter) != 1:
                 raise ValueError("unparsed heredoc delimiter")
-            consumers = shell_lexer(header)
-            consumers.whitespace_split = True
-            executes = any(executable_wrapper([word]) for word in consumers)
-            pending.append((delimiter[0], tabs, not any(c in raw for c in "'\"\\"), executes, []))
+            pending.append((delimiter[0], tabs, not any(c in raw for c in "'\"\\"), languages.get(index), []))
         code.append(header)
         header = ""
     if pending or header:
@@ -309,9 +516,8 @@ def opaque_ownership(name, value):
     """Unparsed potentially writing code is uncertainty, never proof of no write."""
     value = arguments(value)
     for text in shell_texts(name, value):
-        bodies = []
         try:
-            code = shell_code(text, bodies=bodies)
+            code = shell_code(text)
         except ValueError:
             if OWNERSHIP_TEXT.search(text):
                 return True
@@ -338,7 +544,7 @@ def opaque_ownership(name, value):
                 if body is not None and (executable_content(body) or opaque_ownership("exec_command", {"cmd": body})):
                     return True
             if child and re.fullmatch(r"python[0-9.]*", Path(child[0]).name):
-                code = child[child.index("-c") + 1:] if "-c" in child else bodies if "-" in child else []
+                code = child[child.index("-c") + 1:] if "-c" in child else []
                 if any(python_ownership(body) for body in code):
                     return True
             if child and Path(child[0]).name in {"eval", "xargs", "node"} and OWNERSHIP_TEXT.search(" ".join(child[1:])):
@@ -425,8 +631,8 @@ def executor_commands(argv):
             yield " ".join(remaining) if name == "ssh" else shlex.join(remaining)
 
 
-def shell_expansions(text):
-    """Read executing substitutions, preserving single-quoted literal examples."""
+def shell_expansions(text, *, heredoc=False):
+    """Read substitutions; unquoted heredoc body quotes do not suppress them."""
     quote, escaped, cursor = None, False, 0
     while cursor < len(text):
         char = text[cursor]
@@ -454,10 +660,23 @@ def shell_expansions(text):
             yield text[start:end - 1] if depth == 0 else text[start:]
             cursor = end
             continue
+        elif heredoc and char == "`":
+            start, end, inner_escape = cursor + 1, cursor + 1, False
+            while end < len(text):
+                if inner_escape:
+                    inner_escape = False
+                elif text[end] == "\\":
+                    inner_escape = True
+                elif text[end] == "`":
+                    break
+                end += 1
+            yield text[start:end]
+            cursor = end + 1
+            continue
         elif quote:
             if char == quote:
                 quote = None
-        elif char in "'\"":
+        elif not heredoc and char in "'\"":
             quote = char
         cursor += 1
 
