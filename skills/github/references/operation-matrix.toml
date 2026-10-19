@@ -25,7 +25,7 @@ entrypoint = "github/scripts/gh-attachment.py"
 intent = "Save a private comment attachment into private task evidence without exposing credentials or content."
 current_transport = "composite"
 selected_transport = "composite"
-endpoint_or_command = "Automation GET repository/comment, Q467 approval and later decision comments; verified personal GET /user and https://github.com/user-attachments/files/{id}/{name}; credential-free HTTPS asset redirects"
+endpoint_or_command = "Automation GET repository/comment, Q467 approval and later decision comments; verified personal GET /user and https://github.com/user-attachments/files/{id}/{name} or https://github.com/user-attachments/assets/{uuid}; credential-free HTTPS asset redirects"
 quota_bucket = "mixed"
 actor_policy = "split_identity_required"
 mutation_class = "read"
@@ -34,7 +34,7 @@ retry_eligibility = "manual"
 reconciliation_strategy = "fresh_read"
 retained_graphql_rationale = "No GraphQL. Metadata uses the shared reader; a bounded non-retrying binary GET transport never forwards personal credentials to asset hosts."
 source_refs = ["github/scripts/gh-attachment.py:main", "github/scripts/gh-attachment.py:download"]
-test_refs = ["github/scripts/test_github_attachment.py:AttachmentTests"]
+test_refs = ["github/scripts/test_github_attachment.py:AttachmentTests", "github/scripts/test_github_attachment.py:EmbeddedImageTests"]
 
 [[operations]]
 id = "github.app.setup"

@@ -140,7 +140,7 @@ def personal_token(login: str) -> str:
     result = subprocess.run(
         ["gh", "auth", "token", "--hostname", "github.com", "--user", login],
         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        env=env, timeout=30, check=False,
+        env=env, timeout=30,
     )
     token = result.stdout.decode().strip()
     if result.returncode or not token or any(c.isspace() for c in token):

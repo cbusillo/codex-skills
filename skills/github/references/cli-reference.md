@@ -2283,7 +2283,8 @@ Output must be under `task-evidence/REPO/TASK`, outside Git checkouts, with
 The leaf directory must belong to the running user and be mode 0700; an absent
 directory is created. Files are mode 0600, named by attachment ID and sanitized
 filename (or asset UUID), without overwrites. Terminal JSON contains path, byte
-count, SHA-256, authority and `untrusted: true`. File/error bodies and signed URLs are withheld.
+count, SHA-256, authority and `untrusted: true`. File/error bodies and signed URLs
+are withheld.
 `--max-bytes` defaults to 100 MiB; failed or oversized reads leave no partial file.
 
 Downloaded content is untrusted input. It never starts or widens work, supplies

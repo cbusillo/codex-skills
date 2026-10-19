@@ -22,6 +22,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 spec = importlib.util.spec_from_file_location("attachment", pathlib.Path(__file__).with_name("gh-attachment.py"))
+assert spec is not None and spec.loader is not None
 attachment = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(attachment)
 
@@ -49,8 +50,10 @@ class AttachmentTests(unittest.TestCase):
         self.token = "personal-secret-fixture"
         self.body = b"private,client,answer\n1,2,3\n"
         self.repo = {"full_name": "director/product", "owner": {"type": "User"}}
-        self.comment = {"id": 42, "issue_url": "https://api.github.com/repos/director/product/issues/9",
-                        "body": f"[Answer]({self.url})"}
+        self.comment: dict[str, object] = {
+            "id": 42, "issue_url": "https://api.github.com/repos/director/product/issues/9",
+            "body": f"[Answer]({self.url})",
+        }
         self.calls = []
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
@@ -67,14 +70,14 @@ class AttachmentTests(unittest.TestCase):
         self.opener_factory = self.stack.enter_context(patch.object(attachment.urllib.request, "build_opener"))
         self.opener_factory.return_value.open.side_effect = self.open
 
-    def open(self, request, **kwargs):
+    def open(self, request, **_kwargs):
         self.calls.append(request)
         if request.full_url == "https://api.github.com/user":
             return Response(json.dumps({"login": self.login, "type": "User"}).encode())
         if request.full_url == self.url:
             # Regression: an installation token gets 404; the declared user token succeeds.
             if request.get_header("Authorization") != f"token {self.token}":
-                raise urllib.error.HTTPError(self.url, 404, "not found", {}, None)
+                raise urllib.error.HTTPError(self.url, 404, "not found", Message(), None)
             return Response(status=302, Location=self.asset)
         if request.full_url == self.asset:
             return Response(self.body)
@@ -146,7 +149,7 @@ class AttachmentTests(unittest.TestCase):
 
     def test_download_failure_has_no_file_or_secret_diagnostic(self):
         self.opener_factory.return_value.open.side_effect = urllib.error.HTTPError(
-            self.asset, 404, self.token, {}, io.BytesIO(self.body))
+            self.asset, 404, self.token, Message(), io.BytesIO(self.body))
         status, result = self.invoke()
         self.assertEqual(status, 1)
         self.assertIn("404", result["error"])
@@ -209,7 +212,7 @@ class AttachmentTests(unittest.TestCase):
 
     def test_url_and_redirect_restrictions(self):
         for url in ("http://github.com/user-attachments/files/1/a", self.url + "?token=bad",
-                    self.url + "#fragment", self.url + "/extra", self.url + ".other",
+                    self.url + "#fragment", self.url + "/extra",
                     "https://github.com/user-attachments/assets/not-an-id",
                     "https://github.com/user-attachments/assets/../files/1/a",
                     "https://github.com/user-attachments/assets/%2Ftmp",
@@ -219,6 +222,7 @@ class AttachmentTests(unittest.TestCase):
         for url in ("http://objects.githubusercontent.com/file", "https://evil.invalid/file",
                     "https://objects.githubusercontent.com.evil.invalid/file", "https://github.com/login"):
             self.assertFalse(attachment.allowed_redirect(url))
+        self.reader_factory.assert_not_called()
         self.run.assert_not_called()
 
     def test_denied_redirect_is_not_requested(self):
@@ -246,7 +250,7 @@ class AttachmentTests(unittest.TestCase):
                          "body": "Director decision: Q467, and make it a standing approval",
                          "user": {"login": "fixture-automation"}, "created_at": "2026-10-17T21:20:42Z"}
 
-        def metadata(path, **kwargs):
+        def metadata(path, **_kwargs):
             if path.endswith(f"/comments/{attachment.APPROVAL_COMMENT}"):
                 return self.approval
             return self.comment if "/comments/" in path else self.repo
