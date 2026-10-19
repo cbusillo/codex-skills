@@ -10192,5 +10192,119 @@ def test_verified_apply_malformed_receipt_keeps_the_apply_diagnostics(decoding):
     assert "PRIVATE_SENTINEL" not in json.dumps(payload)
 
 
+UNHASHABLE_FIELDS = [
+    ("health", "intent"), ("health", "kind"), ("health", "dependency_mode"),
+    ("health", "dependencies"), ("backup", "state"), ("backup", "policy"),
+    ("backup", "target_status"), ("backup", "destination"), ("endpoint", "status"),
+]
+UNHASHABLE_CASES = [(family, field, surface) for family, field in UNHASHABLE_FIELDS
+                   for surface in ("reader", "dry-run")]
+UNHASHABLE_CASES += [(family, field, "standalone") for family, field in UNHASHABLE_FIELDS if family != "health"]
+UNHASHABLE_CASES += [(family, field, surface) for family, field in (("health", "intent"), ("backup", "state"), ("endpoint", "status"))
+                    for surface in ("apply-post", "apply-readback")]
+UNHASHABLE_CASES += [(family, "mode", surface) for family in ("health", "backup", "endpoint") for surface in ("dry-run", "apply-post")]
+
+
+def _unhashable_fixture(family, field, bad, *, observation, apply=False):
+    if family == "health":
+        response = _monitoring_profile(applied=apply) if observation else _monitoring_response("apply" if apply else "dry-run")
+        record = response["profile"]["lanes"][0]["health_monitoring"] if observation else response["result"]
+        if field == "intent":
+            record["monitoring_intent" if observation else "current_monitoring_intent"] = bad
+        elif field == "kind":
+            if observation:
+                record["checks"][0]["kind"] = bad
+            else:
+                record["current_check_kind"] = bad
+        elif field in {"dependency_mode", "dependencies"}:
+            policy = {"mode": bad, "override": None} if field == "dependency_mode" else {
+                "mode": "required", "override": {"dependencies": [bad], "reason": "PRIVATE_SENTINEL"}}
+            record["dependency_health" if observation else "current_dependency_health"] = policy
+            if not observation:
+                record["requested_dependency_health"] = {"mode": "informational", "override": None}
+        else:
+            record["mode"] = bad
+    elif family == "backup":
+        response = _backup_read_response() if observation else _backup_response("apply" if apply else "dry_run", "applied" if apply else "would_apply")
+        record = response["authority" if observation else "result"]
+        if field == "state":
+            record["state" if observation else "status"] = bad
+        elif field == "policy":
+            record["policy"]["status"] = bad
+        elif field in {"target_status", "destination"}:
+            record["targets"][0]["status" if field == "target_status" else "destination_kind"] = bad
+        else:
+            record["mode"] = bad
+    else:
+        response = _private_endpoint_read() if observation else _private_endpoint_response("apply" if apply else "dry-run")
+        record = response["record"] if observation else response["result"]["record"]
+        if field == "mode":
+            response["result"]["mode"] = bad
+        else:
+            record["status"] = bad
+    response["trace_id"] = "launchplane_req_malformed_observation" if observation else "launchplane_req_malformed_post"
+    return write_action._ServiceResponse(response, 202)
+
+
+@pytest.mark.parametrize("family,field,surface", UNHASHABLE_CASES)
+@pytest.mark.parametrize("bad", [{"private": "PRIVATE_SENTINEL"}, ["PRIVATE_SENTINEL"]])
+def test_unhashable_service_values_preserve_bounded_failure_receipts(tmp_path, family, field, surface, bad):
+    observation = surface in {"reader", "standalone", "apply-readback"}
+    malformed = _unhashable_fixture(family, field, bad, observation=observation, apply=surface.startswith("apply"))
+    if family == "health":
+        command, arguments = "health-monitoring", _monitoring_arguments()
+        reader, reader_args = write_action.read_health_monitoring, {"body": {"product": "example-product", "context": "example", "instance": "testing", "check_name": "public-ingress"}}
+        dry_response, applied = _monitoring_response(), _monitoring_response("apply")
+        valid_observation = _monitoring_profile()
+    else:
+        command = "production-backup-authority" if family == "backup" else "private-health-endpoint"
+        path = _write_json(str(tmp_path), "request.json", _backup_payload() if family == "backup" else _private_endpoint_payload())
+        arguments = ["--payload-file", path] + (["--reason", "Register the private health endpoint."] if family == "endpoint" else [])
+        reader = write_action.read_production_backup_authority if family == "backup" else write_action.read_private_health_endpoint
+        reader_args = {"query": {}} if family == "backup" else {"endpoint": _private_endpoint_payload()}
+        dry_response = _backup_response() if family == "backup" else _private_endpoint_response()
+        applied = _backup_response("apply", "applied") if family == "backup" else _private_endpoint_response("apply")
+        valid_observation = _backup_read_response() if family == "backup" else _private_endpoint_read()
+    if surface == "reader":
+        with patch.object(write_action, "request_launchplane_read", return_value=malformed):
+            with pytest.raises(write_action.ServiceResponseError) as caught:
+                reader(settings=SETTINGS, timeout=3, **reader_args)
+        diagnostics = write_action.service_response_diagnostics(caught.value)
+        assert diagnostics == {"http_status": malformed.http_status, "trace_id": malformed["trace_id"]}
+        assert "PRIVATE_SENTINEL" not in json.dumps(diagnostics)
+        return
+    if surface == "standalone":
+        if family == "backup":
+            argv = [command + "-read", "--product", "example-product", "--context", "example", "--instance", "prod", "--promotion-action", "generic_web_prod_promotion.execute"]
+        else:
+            argv = [command + "-read", "--product", "example", "--context", "example", "--instance", "testing"]
+            malformed = write_action._ServiceResponse({"status": "ok", "trace_id": malformed["trace_id"], "records": [malformed["record"]]}, malformed.http_status)
+        code, output, posts, reads = _run_main(argv, read=malformed)
+        assert not posts and len(reads) == 1
+    elif surface == "dry-run":
+        code, output, posts, reads = _run_main([command + "-dry-run", *arguments], post=malformed)
+        assert len(posts) == 1 and not reads
+    else:
+        code, evidence, _, _ = _run_main([command + "-dry-run", *arguments], post=dry_response)
+        assert code == 0
+        saved = _write_json(str(tmp_path), "evidence.json", evidence)
+        digest = evidence["result"]["authority_digest" if family == "backup" else "plan_sha256"]
+        argv = [command + "-apply", *arguments, *_reviewed_apply_argv(digest, saved)]
+        observed = malformed if surface == "apply-readback" else valid_observation
+        observations = iter(([valid_observation] if family == "health" else []) + [observed])
+        code, output, posts, reads = _run_main(argv, post=applied if surface == "apply-readback" else malformed, read=lambda _: next(observations))
+        assert len(posts) == 1
+        assert output["status"] == "accepted_unverified"
+        if surface == "apply-readback":
+            assert output["summary"]["trace_id"] == applied["trace_id"]
+    assert code == 1
+    if not surface.startswith("apply"):
+        assert output["status"] == "invalid"
+    prefix = "read_back_" if surface == "apply-readback" else ""
+    assert output["summary"][prefix + "http_status"] == malformed.http_status
+    assert output["summary"][prefix + "trace_id"] == malformed["trace_id"]
+    assert "PRIVATE_SENTINEL" not in json.dumps(output)
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))

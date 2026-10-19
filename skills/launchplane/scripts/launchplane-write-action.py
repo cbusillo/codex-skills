@@ -4290,7 +4290,10 @@ def http_error_recommendation(status: str) -> str:
 def summarize_success(
     *, operation: str, request: dict[str, object], provider_payload: dict[str, Any]
 ) -> dict[str, object]:
-    records, result = _project_success_output(operation, provider_payload, request=request)
+    try:
+        records, result = _project_success_output(operation, provider_payload, request=request)
+    except TypeError as exc:
+        raise LaunchplaneSafetyError("invalid_response") from exc
     status = public_code(provider_payload.get("status"), default="accepted")
     payload = base_payload(status=status, operation=operation, request=request)
     payload["records"] = records
@@ -5932,7 +5935,7 @@ def read_health_monitoring(
         public["dependency_health"] = _public_dependency_health(dependency_health)
         assert_public_safe_shape(public)
         return public, endpoint, dependency_health
-    except (LaunchplaneSafetyError, ValueError) as exc:
+    except (LaunchplaneSafetyError, ValueError, TypeError) as exc:
         raise ServiceResponseError(service_response_diagnostics(provider)) from exc
 
 
@@ -8312,7 +8315,7 @@ def read_product_owner(
     try:
         profile = _require_dict(provider_payload.get("profile"))
         return _project_owner_identity(_client_or_legacy_owner(profile, "client", "owner"))
-    except (LaunchplaneSafetyError, ValueError) as exc:
+    except (LaunchplaneSafetyError, ValueError, TypeError) as exc:
         raise ServiceResponseError(service_response_diagnostics(provider_payload)) from exc
 
 
@@ -8335,7 +8338,7 @@ def read_product_image_repository(
         return _project_image_repository(
             repository.strip().rstrip("/"), pattern=IMAGE_REPOSITORY_RE
         )
-    except (LaunchplaneSafetyError, ValueError) as exc:
+    except (LaunchplaneSafetyError, ValueError, TypeError) as exc:
         raise ServiceResponseError(service_response_diagnostics(provider_payload)) from exc
 
 
@@ -8353,7 +8356,7 @@ def read_production_backup_authority(
         if any(str(key) not in {"status", "trace_id", "authority"} for key in provider_payload):
             raise LaunchplaneSafetyError("unsafe_response_shape")
         return _project_production_backup_authority_read(provider_payload.get("authority"))
-    except (LaunchplaneSafetyError, ValueError) as exc:
+    except (LaunchplaneSafetyError, ValueError, TypeError) as exc:
         raise ServiceResponseError(service_response_diagnostics(provider_payload)) from exc
 
 
@@ -8406,7 +8409,7 @@ def read_dokploy_target(
             "provider_target_record": public_code(provider_target.get("status"), default="missing"),
         }
         return public, private
-    except (LaunchplaneSafetyError, ValueError) as exc:
+    except (LaunchplaneSafetyError, ValueError, TypeError) as exc:
         raise ServiceResponseError(service_response_diagnostics(provider_payload)) from exc
 
 
@@ -8909,9 +8912,12 @@ def execute_production_backup_authority_read(
             raise LaunchplaneSafetyError("unsafe_response_shape")
         status = public_code(provider_payload.get("status"), default="ok")
         payload = base_payload(status=status, operation=operation, request=request)
-        payload["result"] = _project_production_backup_authority_read(
-            provider_payload.get("authority")
-        )
+        try:
+            payload["result"] = _project_production_backup_authority_read(
+                provider_payload.get("authority")
+            )
+        except TypeError as exc:
+            raise ServiceResponseError(service_response_diagnostics(provider_payload)) from exc
         payload["summary"] = {
             "launchplane_status": status,
             "trace_id": public_trace_id(provider_payload.get("trace_id")),
@@ -9198,7 +9204,7 @@ def read_private_health_endpoint(
             raise LaunchplaneSafetyError("unsafe_response_shape")
         record = provider_payload.get("record")
         return _project_private_health_endpoint_record(record), _private_health_endpoint_url(record)
-    except (LaunchplaneSafetyError, ValueError) as exc:
+    except (LaunchplaneSafetyError, ValueError, TypeError) as exc:
         raise ServiceResponseError(service_response_diagnostics(provider_payload)) from exc
 
 
@@ -9293,10 +9299,13 @@ def execute_private_health_endpoint_read(
             raise LaunchplaneSafetyError("invalid_response")
         status = public_code(provider_payload.get("status"), default="ok")
         payload = base_payload(status=status, operation=operation, request=request)
-        payload["result"] = {
-            "count": len(records),
-            "records": [_project_private_health_endpoint_record(record) for record in records],
-        }
+        try:
+            payload["result"] = {
+                "count": len(records),
+                "records": [_project_private_health_endpoint_record(record) for record in records],
+            }
+        except TypeError as exc:
+            raise ServiceResponseError(service_response_diagnostics(provider_payload)) from exc
         payload["summary"] = {
             "launchplane_status": status,
             "trace_id": public_trace_id(provider_payload.get("trace_id")),
