@@ -2228,7 +2228,8 @@ restart boundary; do not interrupt another session to make cache maintenance run
 
 Read this when workers ask the Supervisor to run a review from its terminal.
 Use `pending_reviews.py` there to discover and dispatch requests across the
-explicit Supervisor-owned repositories in the run's ledger. It does not alter
+explicit Supervisor-owned repositories in the run's ledger and retained review
+journals. It does not alter
 the ledger, transcripts, launch files or account configuration. Run it once
 without `--apply` to see pending requests, refused bindings and blocked prior launches:
 
@@ -2475,15 +2476,25 @@ notification; a disposition must follow its latest edit.
 disposition, not a history of terminal input. The dispatcher records delivery
 separately as `notification_status: sent`, `pending` or `blocked`, with
 `notification_journal` in the same durable evidence directory. Discovery reads
-that history without sending or writing. Older receipts without identity metadata attempt
-the same trusted branch-claim binding. Malformed claims or failed GitHub reads
+that history without sending or writing. Older receipts first recover original
+author identity from the matching paid journal and all versions of that completion
+comment, then attempt the trusted branch-claim binding only without retained
+identity. Conflicting or unreadable history blocks delivery rather than rebinding
+to a successor. Malformed claims or failed GitHub reads
 become `notification_error`, preserving the already-posted completion link.
 Delivery history belongs to that posted version. A retained sent or spent outcome
 is read before resolving a live recipient, including after ledger retirement or
 claim handoff. Historical author/provider metadata remains available from the
 receipt and retained journals; it is never replaced by a successor. A delivered
-notice neither confirms provider completion nor weighs findings. Foreign-run
-completions with no local delivery history retain the ownership exclusion.
+notice neither confirms provider completion nor weighs findings. Paid journals
+also keep posts observable after retirement when readback failed before a
+notification could be reserved. Sweeps discover repositories from retained
+notification filenames and verified paid-journal bindings, even after the last
+ledger entry is retired. Legacy paid journals use their retained prompt-source
+repository and unchanged request/head journal key. Unreadable paid-journal
+scope reports attention instead of silently disappearing. Automatic discovery
+still covers open PRs; retain journals for closed items through normal recovery.
+Foreign-run completions with no local history retain the ownership exclusion.
 
 Only a unique, Supervisor-owned author entry in this repository's ledger may
 receive a notification. Native transcript identity must agree with that entry.
@@ -2499,17 +2510,22 @@ entry reports the unsupported route; there is no automatic terminal migration.
 Ledger-relative transcript paths resolve beside the ledger, as for other helpers.
 
 The dispatcher reserves each delivery durably before calling the send helper.
-Checks that stop before delivery record `not_sent` and report notification status
-`pending` with their diagnostic. Later apply passes recheck the ledger, native
-identity and empty prompt before trying again. This expected wait does not itself
-add attention; independent review warnings remain visible. Discovery never retries.
+Checks that stop before delivery record `not_sent` with their diagnostic.
+Busy turns, background tasks, nonempty prompts and verified transcript read races
+report `pending` without adding attention. Unsupported routes, missing home or
+terminal metadata and identity/coordinate mismatches report `blocked` with
+attention. Both remain certainly unsent: after the underlying condition is
+corrected, later apply passes recheck the ledger, native identity and empty prompt.
+Independent review warnings remain visible. Discovery never retries.
 A permission refusal, a queue call, a possibly sent terminal message or an
 interrupted attempt stays spent. Those failures expose `notification_error`,
 set `needs_attention` and make the sweep nonzero, preserving the review link.
 Read the exact session and reconcile a spent attempt before any manual
 notification; never delete its journal to retry or use another route after a
-denial. Once sent, ledger maintenance does not require another notice. Corrected report
-edits get their own version; a later weighed disposition ends notification need.
+denial. Once sent, ledger maintenance does not require another notice. Corrected
+report edits get their own version and retain the original author; an edit cannot
+replay or conceal a spent earlier version. A later weighed disposition ends
+notification need.
 The helper weighs no findings and never calls `ready`.
 Posting removes the inherited per-command own-user
 opt-in before invoking the GitHub helper. An earlier personal-identity approval

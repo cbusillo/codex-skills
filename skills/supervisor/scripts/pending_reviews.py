@@ -262,35 +262,22 @@ def completion_record(comments, request, head, logins) -> dict[str, Any] | None:
     return None
 
 
-def completion_report(record, io, repo, pr, entries, logins, request, evidence):
+def completion_report(record, io, repo, pr, entries, logins, request, evidence, history=None):
     receipt = record.get("receipt", {})
     comment = record["comment"]
     updated = comment.get("updated_at") or comment["created_at"]
-    notification = notification_path(evidence, repo, pr["number"], comment["id"], updated)
     journal = evidence / f"{journal_key(repo, pr['number'], request, pr['head']['sha'])}.json"
-    try:
-        delivery = notification_state(notification)
-    except (ValueError, OSError):
-        delivery = {}  # dispatch reports the retained unreadable state without sending.
-    try:
-        retained = json.loads(journal.read_text())
-        if not isinstance(retained, dict) or retained.get("head") != pr["head"]["sha"] or retained.get("request") != request["id"]:
-            retained = {}
-    except (ValueError, OSError):
-        retained = {}
+    history = history if history is not None else local_history(evidence, repo, pr["number"], request, pr["head"]["sha"], comment)
     # Posted identity is historical evidence. Retirement must neither erase it
     # nor replace it with a successor. Legacy reports may recover it locally.
-    declared = receipt.get("author_session")
-    session = declared if isinstance(declared, str) and declared else None
-    author = None
-    for source in (receipt, delivery, retained):
-        saved, provider = source.get("author_session"), source.get("author_provider")
-        if (isinstance(saved, str) and saved and isinstance(provider, str)
-                and provider in {"openai", "anthropic"} and (session is None or saved == session)):
-            session, author = saved, provider
-            break
-    error = None
-    if session is None or author is None:
+    sessions = {s.get("author_session") for s in [*history["sources"], receipt] if s.get("author_session")}
+    providers = {s.get("author_provider") for s in [*history["sources"], receipt] if s.get("author_provider")}
+    session = next(iter(sessions)) if len(sessions) == 1 else None
+    author = next(iter(providers)) if len(providers) == 1 else None
+    error = history["error"]
+    if len(sessions) > 1 or len(providers) > 1:
+        error = "conflicting retained review authors; reconcile history, never notify a successor"
+    if (session is None or author is None) and not error:
         try:
             bound_session, bound_author = bind_session(io, repo, {pr["head"]["ref"]}, entries, logins, request, pr)
             if session is not None and bound_session != session:
@@ -316,9 +303,68 @@ def completion_report(record, io, repo, pr, entries, logins, request, evidence):
 
 
 def notification_path(evidence, repo, number, comment_id, updated):
-    version = [repo.casefold(), number, comment_id, updated]
-    key = hashlib.sha256(json.dumps(version).encode()).hexdigest()
-    return evidence / f"notification-{key}.json"
+    version = hashlib.sha256(json.dumps(updated).encode()).hexdigest()
+    return evidence / f"{notification_prefix(repo, number, comment_id)}{version}.json"
+
+
+def notification_prefix(repo, number, comment_id):
+    return f"notification-{repo.casefold().replace('/', '~')}-{number}-{comment_id}-"
+
+
+def local_history(evidence, repo, number, request, head, comment):
+    """Historical provenance is independent of live permission to deliver."""
+    paid = evidence / f"{journal_key(repo, number, request, head)}.json"
+    current = notification_path(evidence, repo, number, comment["id"], comment.get("updated_at") or comment["created_at"])
+    paths = sorted(evidence.glob(notification_prefix(repo, number, comment["id"]) + "*.json"))
+    result = {"exists": paid.exists() or bool(paths), "sources": [], "error": None}
+    errors = []
+    for path in [paid, *paths]:
+        try:
+            state = notification_state(path)
+            if not state and not path.exists():
+                continue
+            if path == paid:
+                if state.get("head") != head or state.get("request") != request["id"]:
+                    raise ReviewError("retained paid review binding differs from its journal")
+            else:
+                if (state.get("repository") != repo.casefold() or state.get("pr") != number
+                        or state.get("completion_id") != comment["id"]
+                        or notification_path(evidence, repo, number, comment["id"], state.get("completion_updated_at")) != path):
+                    raise ReviewError("retained notification binding differs from its journal")
+                if (not isinstance(state.get("author_session"), str) or not state["author_session"]
+                        or state.get("author_provider") not in {"openai", "anthropic"}):
+                    raise ReviewError("retained notification author is missing or invalid; never rebind")
+            result["sources"].append(state)
+            if path != paid and path != current and state.get("phase") not in {"sent", "not_sent"}:
+                raise ReviewError(state.get("error") or "prior report version has an unknown notification outcome; never replay")
+        except (ValueError, OSError) as error:
+            errors.append(f"{path}: {error}")
+    result["error"] = "; ".join(errors) or None
+    return result
+
+
+def retained_repositories(evidence):
+    """Recover owned work after ledger retirement, verifying legacy paid keys."""
+    repos, errors = set(), []
+    for path in sorted(evidence.glob("*.json")):
+        notification = re.fullmatch(r"notification-([\w.-]+~[\w.-]+)-(\d+)-(\d+)-[0-9a-f]{64}\.json", path.name, re.ASCII)
+        if notification:
+            repos.add(notification[1].replace("~", "/"))
+            continue
+        if not re.fullmatch(r".+-\d+-[0-9a-f]{64}\.json", path.name):
+            continue
+        try:
+            state = notification_state(path)
+            candidates = {state.get("repository"), *(s.get("repository") for s in state.get("prompt_sources", []))} - {None}
+            number = int(path.stem.rsplit("-", 2)[1])
+            matches = {repo.casefold() for repo in candidates if isinstance(repo, str) and REPO.fullmatch(repo)
+                       and path.stem == journal_key(repo, number, {"id": state["request"]}, state["head"])}
+            if len(matches) != 1:
+                raise ReviewError("cannot recover a unique repository from retained paid journal")
+            repos.update(matches)
+        except (ValueError, OSError, KeyError, TypeError, AttributeError) as error:
+            errors.append({"status": "refused", "journal": str(path), "error": str(error), "needs_attention": True})
+    return repos, errors
 
 
 def notification_state(path):
@@ -683,10 +729,11 @@ def dispatch_review(io, repo, number, entries, checkout, logins, evidence, apply
     completed = completion_record(comments, request, head, logins)
     old = stale_completion(comments, request, head, logins) if completed is None else None
     reviewed_head, completed = old if old else (head, completed)
+    history = None
 
     def completed_result():
         historical_pr = {**pr, "head": {**pr["head"], "sha": reviewed_head}}
-        result = completion_report(completed, io, repo, historical_pr, entries, logins, request, evidence)
+        result = completion_report(completed, io, repo, historical_pr, entries, logins, request, evidence, history)
         if reviewed_head != head:
             return {**result, "status": "completed_stale", "completion_status": result["status"],
                     "reviewed_head": reviewed_head, "current_head": head}
@@ -694,7 +741,8 @@ def dispatch_review(io, repo, number, entries, checkout, logins, evidence, apply
 
     if completed:
         comment = completed["comment"]
-        if notification_path(evidence, repo, number, comment["id"], comment.get("updated_at") or comment["created_at"]).exists():
+        history = local_history(evidence, repo, number, request, reviewed_head, comment)
+        if history["exists"]:
             # This run's delivery history remains observable after retirement.
             # Foreign completions without local history retain the ownership gate.
             return completed_result()
@@ -744,7 +792,8 @@ def dispatch_review(io, repo, number, entries, checkout, logins, evidence, apply
     private_evidence_dir(evidence)
     prompt_file = evidence / f"{key}.prompt.txt"
     output = evidence / f"{key}.response.txt"
-    launch = {**report, "prompt_evidence": str(prompt_file), "response_evidence": str(output), "prompt_sources": [
+    launch = {**report, "repository": repo.casefold(), "pr": number,
+              "prompt_evidence": str(prompt_file), "response_evidence": str(output), "prompt_sources": [
         {"repository": source_repo, "binding": comment_binding(source)} for source_repo, source in sources]}
     # Exclusive creation survives process interruption and unknown remote writes.
     # A later sweep reads remote completion first, then refuses a spent launch.
@@ -818,25 +867,26 @@ def dispatch(io, repo, number, entries, checkout, logins, evidence, apply=False)
     if not report.get("notification_needed"):
         return report
     try:
+        if not report.get("completion_id") or not report.get("completion_updated_at"):
+            raise ReviewError(report.get("notification_error") or "notification needs the posted comment identity and update timestamp")
         path = notification_path(evidence, repo, number, report.get("completion_id"), report.get("completion_updated_at"))
         report["notification_journal"] = str(path)
         prior = notification_state(path)
+        if report.get("notification_error"):
+            raise ReviewError(report["notification_error"])
         if prior.get("phase") == "sent":
             return {**report, "notification_status": "sent", "notification_error": None}
         if prior and prior.get("phase") != "not_sent":
             raise ReviewError(prior.get("error") or "notification outcome unknown; reconcile the retained attempt, never replay")
-        if report.get("notification_error"):
-            raise ReviewError(report["notification_error"])
         matches = [e for e in entries if e.get("session_id") == report.get("author_session")]
         if (len(matches) != 1 or matches[0].get("supervisor_owned") is not True
                 or matches[0].get("repository", "").casefold() != repo.casefold()
                 or matches[0].get("harness") not in {"codex", "claude"}):
             raise ReviewError("notification author is not unique and verified in this repository's ledger")
         entry = matches[0]
-        if not report.get("completion_id") or not report.get("completion_updated_at"):
-            raise ReviewError("notification needs the posted comment identity and update timestamp")
         if not apply:
-            return {**report, "notification_status": "pending",
+            return {**report, "notification_status": "blocked" if prior.get("needs_attention") else "pending",
+                    "needs_attention": report.get("needs_attention", False) or prior.get("needs_attention", False),
                     "notification_error": prior.get("error")}
         private_evidence_dir(evidence)
         message = (f"Supervisor review posted for {repo}#{number}. "
@@ -844,12 +894,13 @@ def dispatch(io, repo, number, entries, checkout, logins, evidence, apply=False)
                    f"Read {report['completion_comment']}, weigh the findings, and continue your brief. "
                    "This notification is not a weighed review or a ready handoff.")
         state = {"phase": "attempted", "author_session": entry["session_id"],
-                 "author_provider": report["author_provider"]}
+                 "author_provider": report["author_provider"], "repository": repo.casefold(), "pr": number,
+                 "completion_id": report["completion_id"], "completion_updated_at": report["completion_updated_at"]}
         atomic_text(path, json.dumps(state), exclusive=not prior)
         try:
             io.notify(entry, message)
         except NotSent as error:
-            atomic_text(path, json.dumps({**state, "phase": "not_sent", "error": str(error)}))
+            atomic_text(path, json.dumps({**state, "phase": "not_sent", "error": str(error), "needs_attention": error.needs_attention}))
             raise
         except (ValueError, OSError, TypeError, KeyError, subprocess.SubprocessError) as error:
             atomic_text(path, json.dumps({**state, "phase": "failed", "error": str(error)}))
@@ -857,14 +908,15 @@ def dispatch(io, repo, number, entries, checkout, logins, evidence, apply=False)
         atomic_text(path, json.dumps({**state, "phase": "sent"}))
         return {**report, "notification_status": "sent"}
     except NotSent as error:
-        return {**report, "notification_status": "pending", "notification_error": str(error)}
+        return {**report, "notification_status": "blocked" if error.needs_attention else "pending",
+                "notification_error": str(error), "needs_attention": report.get("needs_attention", False) or error.needs_attention}
     except (ValueError, OSError, TypeError, KeyError, subprocess.SubprocessError) as error:
         return {**report, "notification_status": "blocked", "notification_error": str(error), "needs_attention": True}
 
 
 def sweep(io, entries, checkouts, logins, evidence, apply=False):
-    reports = []
-    repos = sorted({e["repository"].casefold() for e in entries if e.get("supervisor_owned") is True})
+    retained, reports = retained_repositories(evidence)
+    repos = sorted(retained | {e["repository"].casefold() for e in entries if e.get("supervisor_owned") is True})
     checkouts = {repo.casefold(): path for repo, path in checkouts.items()}
     for repo in repos:
         print(f"Discovering Supervisor reviews in {repo}", file=sys.stderr, flush=True)

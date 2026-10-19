@@ -10,11 +10,15 @@ import re
 import subprocess
 from pathlib import Path
 
-from session_record import session_status
+from session_record import TranscriptChanged, session_status
 
 
 class NotSent(ValueError):
     """Validation stopped before entering a delivery operation; recheck later."""
+
+    def __init__(self, message, *, needs_attention=True):
+        super().__init__(message)
+        self.needs_attention = needs_attention
 
 
 def prepare(entry, message):
@@ -45,7 +49,9 @@ def prepare(entry, message):
     from close_ttys import inventory
     from tmux_terminal import Terminal, belongs_to, process_parents
 
-    terminal = Terminal(entry.get("tmux_socket", "supervisor"))
+    if not entry.get("tmux_socket"):
+        raise ValueError("notification requires the ledger's tmux socket")
+    terminal = Terminal(entry["tmux_socket"])
     identity = entry.get("tmux_session_id")
     if not isinstance(identity, str) or not re.fullmatch(rf"tmux:{re.escape(terminal.socket_name)}:[0-9a-f]{{32}}", identity):
         raise ValueError("notification requires the ledger's exact tmux launch identity")
@@ -53,7 +59,7 @@ def prepare(entry, message):
     def verify():
         current = session_status(entry)
         if not current["at_turn_end"] or current["background_tasks"]:
-            raise ValueError("Claude author is not at a verified idle prompt")
+            raise NotSent("Claude author is not at a verified idle prompt", needs_attention=False)
         row = terminal.read(identity)
         if row["dead"]:
             raise ValueError("Claude author terminal has exited")
@@ -71,17 +77,17 @@ def prepare(entry, message):
             raise ValueError("notification agent PID is not verified in the ledger's tmux pane")
         line = row["input_line"]
         if line["style"] != "empty" or line["text"] != "":
-            raise ValueError("Claude input line is not verified empty; no keys sent")
+            raise NotSent("Claude input line is not verified empty; no keys sent", needs_attention=False)
         # The shared parser identifies only the first composer line. Require its
         # closing separator immediately below, so wrapped input cannot be hidden.
         following = row["screen"][line["line_index"] + 1:]
         if not following or not re.fullmatch(r"\s*[─━-]{3,}\s*", following[0]):
-            raise ValueError("Claude full input area is not verified empty; no keys sent")
+            raise NotSent("Claude full input area is not verified empty; no keys sent", needs_attention=False)
         return current, row
 
     before = verify()
     if verify() != before:
-        raise ValueError("Claude author changed before notification; no keys sent")
+        raise NotSent("Claude author changed before notification; no keys sent", needs_attention=False)
     return lambda: asyncio.run(terminal.send(identity, message))
 
 
@@ -93,6 +99,10 @@ def send(entry, message):
     except PermissionError:
         # A real permission refusal remains spent, even before delivery.
         raise
+    except NotSent:
+        raise
+    except TranscriptChanged as error:
+        raise NotSent(str(error), needs_attention=False) from error
     except (ValueError, OSError, TypeError, KeyError, subprocess.SubprocessError) as error:
         raise NotSent(str(error)) from error
     try:

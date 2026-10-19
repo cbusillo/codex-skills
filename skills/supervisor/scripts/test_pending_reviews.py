@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pending_reviews as reviews
 import review_notifications as notifications
+import session_record
 import github_api
 from github_identity import OWN_USER_OPT_IN
 import test_review_with_model as model_fixture
@@ -184,7 +185,7 @@ class DispatchTests(unittest.TestCase):
                 self.io = FakeIO()
                 self.entries = [{**entry(), "harness": harness}]
                 self.evidence = Path(self.temp.name) / harness
-                with patch.object(self.io, "notify", side_effect=notifications.NotSent("busy")) as send:
+                with patch.object(self.io, "notify", side_effect=notifications.NotSent("busy", needs_attention=False)) as send:
                     result = self.dispatch()
                     self.assertEqual(result["notification_status"], "pending")
                     self.assertFalse(result["needs_attention"])
@@ -253,9 +254,102 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(result["status"], "posted")
         self.assertEqual(result["notification_error"], "posted comment readback unavailable")
         self.assertTrue(result["post"]["ok"])
+        self.assertNotIn("notification_journal", result)
         send.assert_not_called()
         self.assertEqual(self.dispatch()["notification_status"], "sent")
         self.assertEqual(sum(c[0] == "post" for c in self.io.calls), 1)
+
+    def test_paid_history_recovers_post_before_notification_reservation_after_retirement(self):
+        self.io.pr["body"] = "Closes #3"
+        pages = self.io.paged_json
+        def readback(path, **kwargs):
+            if kwargs.get("step_prefix") == "posted_review_comments":
+                raise ValueError("readback failed")
+            return pages(path, **kwargs)
+        with patch.object(self.io, "paged_json", side_effect=readback):
+            self.assertEqual(self.dispatch()["status"], "posted")
+        self.entries = []
+        # Legacy paid files predate explicit repository metadata.
+        paid = next(self.evidence.glob("*.json"))
+        state = json.loads(paid.read_text())
+        state.pop("repository")
+        state.pop("pr")
+        paid.write_text(json.dumps(state))
+        for moved in (False, True):
+            if moved:
+                self.io.pr["head"]["sha"] = "b" * 40
+            result = reviews.sweep(self.io, [], {}, TRUSTED, self.evidence, apply=True)[0]
+            self.assertEqual(result["author_session"], SESSION)
+            self.assertTrue(result["needs_attention"])
+            self.assertEqual(result["notification_status"], "blocked")
+        self.assertFalse(any(c[0] == "notify" for c in self.io.calls))
+
+    def test_edited_reports_keep_original_author_across_successor_claims_and_conflicting_receipts(self):
+        for mode in ("generated", "manual", "legacy"):
+            with self.subTest(mode=mode):
+                self.io, self.entries = FakeIO(), [entry()]
+                self.evidence = Path(self.temp.name) / mode
+                if mode != "generated":
+                    body = f"{reviews.REPORT_HEADING}\nHead: {SHA}\nRetained review."
+                    if mode == "legacy":
+                        body += "\n<!-- supervisor-review " + json.dumps(reviews.receipt_for(self.io.request, SHA)) + " -->"
+                    self.io.comments.append(comment(11, body))
+                self.assertEqual(self.dispatch()["notification_status"], "sent")
+                release = comment(6, "Released claim 5")
+                release["created_at"] = release["updated_at"] = "2026-10-17T21:00:00Z"
+                successor = comment(7, marker({"branch": BRANCH, "session": "successor", "worker": "next",
+                                               "claimed_at": "2026-10-17T22:00:00Z"}))
+                successor["created_at"] = successor["updated_at"] = "2026-10-17T22:00:00Z"
+                self.io.claims += [release, successor]
+                self.entries = [{**entry(), "session_id": "successor"}]
+                report = self.io.comments[-1]
+                report["updated_at"] = "2026-10-17T23:00:00Z"
+                result = self.dispatch()
+                self.assertEqual(result["author_session"], SESSION)
+                self.assertEqual(result["notification_status"], "blocked")
+                self.assertTrue(result["needs_attention"])
+                if mode == "generated":
+                    report["body"] = report["body"].replace(SESSION, "successor")
+                    result = self.dispatch()
+                    self.assertEqual(result["notification_status"], "blocked")
+                    self.assertTrue(result["notification_error"])
+                self.assertEqual(sum(c[0] == "notify" for c in self.io.calls), 1)
+
+    def test_retained_notification_versions_remain_discoverable_and_spent_versions_cannot_be_replayed_by_edit(self):
+        for phase in ("sent", "not_sent", "failed", "attempted", "unreadable"):
+            with self.subTest(phase=phase):
+                self.io, self.entries = FakeIO(), [entry()]
+                self.evidence = Path(self.temp.name) / phase
+                self.io.comments.append(comment(11, f"{reviews.REPORT_HEADING}\nHead: {SHA}\nManual review."))
+                first = self.dispatch()
+                journal = Path(first["notification_journal"])
+                state = json.loads(journal.read_text())
+                state.update(phase=phase, error="retained fixture diagnostic", needs_attention=True)
+                journal.write_text("{broken" if phase == "unreadable" else json.dumps(state))
+                result = reviews.sweep(self.io, [], {}, TRUSTED, self.evidence, apply=True)[0]
+                self.assertEqual(result["notification_status"], "sent" if phase == "sent" else "blocked")
+                if phase != "sent":
+                    self.assertTrue(result["needs_attention"])
+                self.io.comments[-1]["updated_at"] = "2026-10-17T23:00:00Z"
+                result = self.dispatch()
+                if phase in {"failed", "attempted", "unreadable"}:
+                    self.assertEqual(result["notification_status"], "blocked")
+                    self.assertEqual(sum(c[0] == "notify" for c in self.io.calls), 1)
+                else:
+                    self.assertEqual(result["notification_status"], "sent")
+
+    def test_unsent_configuration_failures_are_visible_recheckable_and_do_not_mask_busy_waits(self):
+        for attention in (False, True):
+            with self.subTest(attention=attention):
+                self.io = FakeIO()
+                self.evidence = Path(self.temp.name) / str(attention)
+                with patch.object(self.io, "notify", side_effect=notifications.NotSent("preflight fixture", needs_attention=attention)):
+                    result = self.dispatch()
+                for report in (result, self.dispatch(apply=False)):
+                    self.assertEqual(report["needs_attention"], attention)
+                    self.assertEqual(report["notification_status"], "blocked" if attention else "pending")
+                    self.assertEqual(report["notification_error"], "preflight fixture")
+                self.assertEqual(self.dispatch()["notification_status"], "sent")
 
     def test_discovery_is_read_only_and_apply_reports_author_then_deduplicates(self):
         report = self.dispatch(apply=False)
@@ -1428,8 +1522,9 @@ class NotificationTests(unittest.TestCase):
                         {"codex_home": None}, {"codex_home": "relative"},
                         {"codex_home": str(self.transcript.parent)}):
             with self.subTest(changed=changed), patch.object(notifications.subprocess, "run") as queue:
-                with self.assertRaises(notifications.NotSent):
+                with self.assertRaises(notifications.NotSent) as failure:
                     notifications.send({**self.entry, **changed}, "Read review")
+                self.assertTrue(failure.exception.needs_attention)
                 queue.assert_not_called()
         with patch.object(notifications.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, '{"error":"ownership lease denied"}', "")) as queue:
             with self.assertRaisesRegex(ValueError, "ownership lease denied"):
@@ -1482,6 +1577,54 @@ class NotificationTests(unittest.TestCase):
         self.send.side_effect = SendFailure(self.entry["tmux_session_id"], "unknown", "fixture")
         with self.assertRaises(SendFailure):
             notifications.send(self.entry, "Read review")
+
+    def test_native_read_races_are_quiet_but_stable_malformed_transcripts_need_attention(self):
+        original = session_record.read_jsonl
+        for malformed in (False, True):
+            with self.subTest(malformed=malformed), patch.object(notifications.subprocess, "run") as queue:
+                def racing_read(path):
+                    if malformed:
+                        with path.open("a") as stream:
+                            stream.write('{"unfinished":')
+                    else:
+                        with path.open("a") as stream:
+                            stream.write("\n")
+                    return original(path)
+                with patch.object(session_record, "read_jsonl", side_effect=racing_read):
+                    with self.assertRaises(notifications.NotSent) as failure:
+                        notifications.send(self.entry, "Read review")
+                self.assertFalse(failure.exception.needs_attention)
+                self.assertIsInstance(failure.exception.__cause__, session_record.TranscriptChanged)
+                if malformed:
+                    with self.assertRaises(notifications.NotSent) as failure:
+                        notifications.send(self.entry, "Read review")
+                    self.assertTrue(failure.exception.needs_attention)
+                queue.assert_not_called()
+        def denied_read(path):
+            with path.open("a") as stream:
+                stream.write("\n")
+            raise PermissionError("fixture read denied during append")
+        with patch.object(session_record, "read_jsonl", side_effect=denied_read):
+            with self.assertRaises(PermissionError):
+                notifications.send(self.entry, "Read review")
+
+    def test_claude_live_waits_are_quiet_and_route_problems_require_attention(self):
+        self.claude()
+        for status in ({"at_turn_end": False, "background_tasks": []},
+                       {"at_turn_end": True, "background_tasks": [{"task_id": "live"}]}):
+            with patch.object(notifications, "session_status", return_value=status):
+                with self.assertRaises(notifications.NotSent) as failure:
+                    notifications.send(self.entry, "Read review")
+                self.assertFalse(failure.exception.needs_attention)
+        for changed in ({"backend": "iterm"}, {"tmux_socket": None}, {"tab_id": "@wrong"}):
+            with self.subTest(changed=changed), self.assertRaises(notifications.NotSent) as failure:
+                notifications.send({**self.entry, **changed}, "Read review")
+            self.assertTrue(failure.exception.needs_attention)
+        self.row["input_line"]["text"] = "draft"
+        with self.assertRaises(notifications.NotSent) as failure:
+            notifications.send(self.entry, "Read review")
+        self.assertFalse(failure.exception.needs_attention)
+        self.send.assert_not_called()
 
 
 class AdapterTests(unittest.TestCase):
