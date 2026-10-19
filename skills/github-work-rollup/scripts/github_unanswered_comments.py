@@ -1127,7 +1127,7 @@ def structured_wait_issues(
 ) -> tuple[dict[str, dict[int, dict[str, Any]]], list[dict[str, str]]]:
     """Find open issues whose comments carry a structured wait, whatever their labels.
 
-    One search per repository owner, kept to the scanned repositories. Search
+    One search per account, kept to the scanned repositories. Search
     limits or failures are reported as partial coverage of the waits lane.
     """
     scanned = {repo.casefold(): repo for repo in repositories if "/" in repo}
