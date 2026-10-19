@@ -17,7 +17,7 @@ import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
 import github_plan_closure as closure
-from github_plan_native import queue_input
+from github_plan_native import queue_input, cancel_queue
 from codex_session_proxy import run_client, managed_argv, source_endpoint
 
 
@@ -52,6 +52,12 @@ def run(args) -> int:
         print(json.dumps({"session_id": args.session_id, **rows[0].get("resumed_generation", {})}))
         return 0
     home = args.codex_home.expanduser().resolve(strict=True)
+    if args.command == "queue-cancel":
+        result = asyncio.run(cancel_queue(home, args.session_id, ledger=args.ledger,
+            termination_record=args.termination_record, apply=args.apply,
+            queued_submission_id=args.queued_submission_id, entry_sha256=args.entry_sha256))
+        print(json.dumps(result))
+        return 0
     if args.command == "queue":
         message = args.message_file.read_text() if args.message_file else args.message
         receipt = asyncio.run(queue_input(home, args.session_id, message))
@@ -64,7 +70,7 @@ def run(args) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("launch", "native", "resume", "queue", "status"))
+    parser.add_argument("command", choices=("launch", "native", "resume", "queue", "queue-cancel", "status"))
     parser.add_argument("--session-id")
     parser.add_argument("--codex-home", type=Path)
     parser.add_argument("--proxy", type=Path)
@@ -72,6 +78,12 @@ def main() -> int:
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--message")
     group.add_argument("--message-file", type=Path)
+    authority = parser.add_mutually_exclusive_group()
+    authority.add_argument("--ledger", type=Path)
+    authority.add_argument("--termination-record", type=Path)
+    parser.add_argument("--queued-submission-id")
+    parser.add_argument("--entry-sha256")
+    parser.add_argument("--apply", action="store_true")
     args, native = parser.parse_known_args()
     args.native_args = native
     if args.command not in {"launch", "native"} and (native or not args.session_id):
@@ -82,10 +94,15 @@ def main() -> int:
         parser.error("native is the internal guarded child bootstrap")
     if args.command == "queue" and args.message is None and args.message_file is None:
         parser.error("queue requires --message or --message-file")
+    if args.command == "queue-cancel" and args.ledger is None and args.termination_record is None:
+        parser.error("queue-cancel requires --ledger or --termination-record")
+    if args.command != "queue-cancel" and (args.ledger or args.termination_record or args.apply or args.queued_submission_id or args.entry_sha256):
+        parser.error("cleanup arguments belong to queue-cancel")
     try:
         return run(args)
-    except (OSError, ValueError, subprocess.SubprocessError) as error:
-        print(json.dumps({"ok": False, "error": str(error)}))
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+        message = "Malformed source record; retain the original source identity and retry." if isinstance(error, (KeyError, TypeError)) else str(error)
+        print(json.dumps({"ok": False, "error": message}))
         return 1
 
 

@@ -317,9 +317,15 @@ class ReleaseTests(ReleaseHarness):
             release.termination.verify(self.termination_record, "session-b")
             with patch.object(github_plan_closure, "action_pending", return_value=True), self.assertRaises(ValueError):
                 release.termination.verify(self.termination_record, "session-b")
+            with patch.object(github_plan_closure, "action_pending", return_value=True):
+                process = release.termination._verify_queue_source(self.termination_record, "session-b")
+                with patch.object(tmux_terminal.Terminal, "run", return_value=SimpleNamespace(returncode=0, stdout="")):
+                    release.termination._verify_queue_source(self.termination_record, "session-b", process)
             self.termination_record["tab_id"] = "@wrong"
             with self.assertRaises(ValueError):
                 release.termination.verify(self.termination_record, "session-b")
+            with self.assertRaises(ValueError):
+                release.termination._verify_queue_source(self.termination_record, "session-b")
 
     def test_terminated_session_recent_or_resumed_transcript_refuses(self):
         for mode in ("mtime", "native_record", "other_account"):

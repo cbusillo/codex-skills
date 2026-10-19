@@ -14,6 +14,7 @@ import socket
 import subprocess
 from subprocess import run as run_terminal
 import sys
+from typing import NamedTuple
 
 def native_helpers():
     # GitHub reads and historical receipts do not load terminal dependencies.
@@ -112,9 +113,17 @@ def terminal_state(record):
 
 def transcript_snapshot(record, path):
     """Keep a crash-truncated final line intact; never tolerate interior corruption."""
-    reader, _ = native_helpers()
     before = path.stat()
     lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    records, truncated = transcript_records(record, lines)
+    after = path.stat()
+    if (before.st_mtime_ns, before.st_size) != (after.st_mtime_ns, after.st_size):
+        raise ValueError("Source transcript changed during termination checks")
+    return records, after.st_mtime_ns, after.st_size, truncated
+
+
+def transcript_records(record, lines):
+    reader, _ = native_helpers()
     records, truncated = [], False
     for index, line in enumerate(lines):
         if not line.strip():
@@ -135,14 +144,51 @@ def transcript_snapshot(record, path):
                   {row["sessionId"] for row in records if row.get("sessionId")})
     if identities != {record["session_id"]}:
         raise ValueError("Source transcript identity is uncertain")
-    after = path.stat()
-    if (before.st_mtime_ns, before.st_size) != (after.st_mtime_ns, after.st_size):
-        raise ValueError("Source transcript changed during termination checks")
-    return records, after.st_mtime_ns, after.st_size, truncated
+    return records, truncated
+
+
+def _transcript_activity(times, mtime_ns, truncated, now, ended):
+    if not times or max(times) > ended:
+        raise ValueError("Source transcript is uncertain or resumed after termination")
+    modified = datetime.fromtimestamp(mtime_ns / 1e9, timezone.utc)
+    if truncated and modified > ended:
+        raise ValueError("Truncated transcript has activity after termination")
+    if now - max(*times, modified) < QUIET_PERIOD:
+        raise ValueError("Source transcript activity is recent; preserve claims")
+    return max(times)
 
 
 def verify(record, session):
     """Never infer termination from absence alone; caller supplies original identity."""
+    import github_plan_closure
+    return _verify(record, session, lambda pid, argv: not github_plan_closure.action_pending(session)
+                   and github_plan_closure.guarded_launch_endpoint(pid, argv) is not None)[0]
+
+
+class _TerminationProcess(NamedTuple):
+    original: dict
+    physical: dict
+    cutoff: datetime | None
+
+
+def _verify_queue_source(record, session, process=None, *, latest_pid=None):
+    """Physical termination for cleanup; return context, never a release attestation."""
+    import github_plan_closure
+    return _verify(record, session, lambda pid, argv: github_plan_closure.guarded_launch_endpoint(pid, argv) is not None,
+                   process=process, latest_pid=latest_pid)[1]
+
+
+def _physical_exit(process, independent_harness):
+    native_helpers()[1].verify_process_exit(process.physical, rows=inventory(), ended_at=process.cutoff,
+                                           independent_harness=independent_harness)
+
+
+def _recheck_queue_process(process):
+    import github_plan_closure
+    _physical_exit(process, lambda pid, argv: github_plan_closure.guarded_launch_endpoint(pid, argv) is not None)
+
+
+def _verify(record, session, independent_harness, *, process=None, latest_pid=None):
     if record.get("session_id") != session or record.get("host") != socket.gethostname():
         raise ValueError("Run termination checks on the recorded source host with the exact native session")
     if record.get("harness") not in {"codex", "claude"}:
@@ -152,15 +198,20 @@ def verify(record, session):
         raise ValueError("Termination record requires the recorded source PID and TTY")
     from github_plan_sessions import native_helpers as session_helpers
     session_helpers()
-    import github_plan_closure
     shared = native_helpers()[1]
-    cutoff = shared.native_exit_cutoff(record)
+    if process is None:
+        physical = dict(record)
+        if latest_pid is not None and latest_pid not in {record.get("pid"), record.get("launch_pid")}:
+            if record.get("launch_pid") is not None:
+                raise ValueError("multiple known source launch PIDs require matching original context")
+            physical["launch_pid"] = latest_pid  # Negative veto only; never supplies native pane authority.
+        process = _TerminationProcess(dict(record), physical, shared.native_exit_cutoff(record))
+    elif process.original != record:
+        raise ValueError("termination source identity changed")
+    cutoff = process.cutoff
     if cutoff is not None and cutoff > stamp(record["ended_at"]):
         raise ValueError("Native pane exit follows the proposed termination time")
-    shared.verify_process_exit(
-        record, rows=inventory(), ended_at=cutoff,
-        independent_harness=lambda pid, argv: not github_plan_closure.action_pending(session)
-        and github_plan_closure.guarded_launch_endpoint(pid, argv) is not None)
+    _physical_exit(process, independent_harness)
     roots = record.get("transcript_roots")
     if not isinstance(roots, list) or not roots or not all(isinstance(root, str) and Path(root).is_dir() for root in roots):
         raise ValueError("Supply every known source-account transcript root on the source host")
@@ -174,14 +225,7 @@ def verify(record, session):
         before = transcript_snapshot(record, path)
         records, mtime_ns, _size, truncated = before
         times = [stamp(row["timestamp"]) for row in records if row.get("timestamp")]
-        if not times or max(times) > ended:
-            raise ValueError("Source transcript is uncertain or resumed after termination")
-        modified = datetime.fromtimestamp(mtime_ns / 1e9, timezone.utc)
-        if truncated and modified > ended:
-            raise ValueError("Truncated transcript has activity after termination")
-        activity = max(*times, modified)
-        if now - activity < QUIET_PERIOD:
-            raise ValueError("Source transcript activity is recent; preserve claims")
+        _transcript_activity(times, mtime_ns, truncated, now, ended)
         if transcript_snapshot(record, path) != before:
             raise ValueError("Source transcript changed during termination checks")
         last = max(last, max(times)) if last else max(times)
@@ -214,7 +258,7 @@ def verify(record, session):
             raise ValueError("Retained worktree does not match its recorded branch")
         if Path(root).resolve() != path:
             raise ValueError("Retained worktree does not match its recorded root and branch")
-    return data
+    return data, process
 
 
 def body(data):
