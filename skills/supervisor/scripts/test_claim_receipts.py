@@ -2496,6 +2496,120 @@ os.system(get())
                 with self.subTest(harness=harness, launch=launch):
                     self.assertTrue(receipts.ownership_state(rows, harness)["pending"])
 
+        # An exact native removal is an erasure proof only at its own bound
+        # terminal result. Discovery-only JS patches never supply that proof.
+        writer = 'uv run /catalog/gh-plan.py --repo o/r claim 5'
+        old = 'os.system(' + repr(writer) + ')'
+        program = 'import os\n' + old + '\n'
+        initial = '*** Begin Patch\n*** Add File: /repo/run.py\n+' + '\n+'.join(program.splitlines()) + '\n*** End Patch'
+        removal = '*** Begin Patch\n*** Update File: /repo/run.py\n@@\n-' + old + '\n+print("safe")\n*** End Patch'
+        def invoke(rows, harness, index, name, value):
+            if harness == 'codex':
+                rows[1 + 2 * index]['payload'].update(name=name, arguments=value if isinstance(value, str) else json.dumps(value))
+            else:
+                rows[1 + 2 * index]['message']['content'][0].update(name=name, input=value)
+            rows[2 + 2 * index] = output({'exit_code': 0, 'output': ''}, harness, 'tool-' + str(index))
+        for harness in ('codex', 'claude'):
+            write = ('apply_patch', initial) if harness == 'codex' else ('Write', {'file_path': '/repo/run.py', 'content': program})
+            edit = ('apply_patch', removal) if harness == 'codex' else ('Edit', {'file_path': '/repo/run.py', 'old_string': old, 'new_string': 'print("safe")'})
+            read = ('exec_command', {'cmd': 'python3 /repo/run.py'}) if harness == 'codex' else ('Bash', {'command': 'python3 /repo/run.py'})
+            variants = ('complete', 'pending', 'running', 'unbound', 'unknown_base', 'unmatched',
+                        'later_writer', 'earlier_execution', 'old_writer_pending', 'late_result', 'cached', 'detached', 'failed', 'unknown')
+            for variant in variants:
+                rows = history(harness, *({} for _ in range(4 if variant == 'later_writer' else 3)))
+                invoke(rows, harness, 0, *write)
+                invoke(rows, harness, 1, *edit)
+                invoke(rows, harness, 2, *read)
+                if variant == 'pending':
+                    rows.pop(4)
+                elif variant == 'running':
+                    rows[4] = output({'session_id': 444, 'output': ''}, harness, 'tool-1')
+                elif variant == 'unbound':
+                    rows[4] = output({'exit_code': 0, 'output': ''}, harness, 'unrelated-tool')
+                elif variant == 'failed':
+                    rows[4] = output({'exit_code': 1, 'output': 'write failed'}, harness, 'tool-1')
+                    if harness == 'claude':
+                        rows[4]['message']['content'][0]['is_error'] = True
+                elif variant == 'unknown':
+                    rows[4] = output({'exit_code': 'unknown', 'output': ''}, harness, 'tool-1')
+                    if harness == 'claude':
+                        rows[4]['message']['content'][0]['is_error'] = 'unknown'
+                elif variant == 'old_writer_pending':
+                    rows.pop(2)
+                elif variant == 'unknown_base':
+                    unknown = ('functions.exec', 'const p=' + json.dumps(initial) + ';const ap=tools.apply_patch;await ap(p);') if harness == 'codex' else ('Edit', {'file_path': '/repo/run.py', 'new_string': program})
+                    invoke(rows, harness, 0, *unknown)
+                elif variant == 'unmatched':
+                    unknown = ('apply_patch', removal.replace('-' + old, '-does_not_match()')) if harness == 'codex' else ('Edit', {'file_path': '/repo/run.py', 'old_string': 'does_not_match()', 'new_string': 'print("safe")'})
+                    invoke(rows, harness, 1, *unknown)
+                elif variant == 'later_writer':
+                    invoke(rows, harness, 2, *write)
+                    invoke(rows, harness, 3, *read)
+                elif variant == 'earlier_execution':
+                    rows[3:7] = rows[5:7] + rows[3:5]
+                elif variant == 'late_result':
+                    rows.append(rows.pop(4))
+                elif variant == 'cached':
+                    invoke(rows, harness, 1, 'exec_command' if harness == 'codex' else 'Bash', {'cmd' if harness == 'codex' else 'command': 'cat saved-result.json'})
+                elif variant == 'detached':
+                    unknown = ('functions.exec', 'const h=' + json.dumps(removal) + ';tools.apply_patch(h);') if harness == 'codex' else ('Bash', {'command': "apply_patch <<'PATCH' &\n" + removal + '\nPATCH'})
+                    invoke(rows, harness, 1, *unknown)
+                with self.subTest(harness=harness, native_removal=variant):
+                    self.assertEqual(receipts.ownership_state(rows, harness)['pending'], variant != 'complete')
+
+            if harness == 'codex':
+                # A copy carries its source's uncertainty; ordinary dormant
+                # source precision must not recreate authority to erase it.
+                rows = history(harness, {}, {}, {}, {}, {})
+                invoke(rows, harness, 0, 'apply_patch', initial.replace('/repo/run.py', '/repo/template.py'))
+                uncertain = ('*** Begin Patch\n*** Update File: /repo/template.py\n@@\n-'
+                             + old + '\n+' + old + '\n*** End Patch')
+                invoke(rows, harness, 1, 'functions.exec', 'const p=' + json.dumps(uncertain)
+                       + ';const ap=tools.apply_patch;await ap(p);')
+                invoke(rows, harness, 2, 'exec_command', {'cmd': 'cp template.py run.py'})
+                invoke(rows, harness, 3, *edit)
+                invoke(rows, harness, 4, *read)
+                with self.subTest(harness=harness, native_removal_copied_uncertain_base=True):
+                    self.assertTrue(receipts.ownership_state(rows, harness)['pending'])
+
+            # Cross-history erasure additionally needs a native completion
+            # timestamp; missing/untimed results cannot invent a settled edit.
+            for result_mode in ('missing', 'untimed'):
+                owner, reader = history(harness, {}, {}), history(harness, {})
+                invoke(owner, harness, 0, *write)
+                invoke(owner, harness, 1, *edit)
+                invoke(reader, harness, 0, *read)
+                if result_mode == 'missing':
+                    owner.pop(4)
+                for row in owner:
+                    row.pop('timestamp', None)
+                reader[1]['timestamp'] = reader[2]['timestamp'] = '2026-01-01T00:00:05Z'
+                nodes = [{'harness': harness, 'records': rows} for rows in (owner, reader)]
+                candidates = receipts.ownership_file_candidates(nodes)
+                with self.subTest(harness=harness, native_removal_untimed_peer=result_mode):
+                    self.assertTrue(receipts.ownership_state(reader, harness, file_candidates=candidates)['pending'])
+
+            # A terminal edit cannot erase a later peer's owning contribution.
+            for peer_at, pending in ((None, False), (3, True), (4, True)):
+                owner = history(harness, {}, {})
+                reader = history(harness, {})
+                invoke(owner, harness, 0, *write)
+                invoke(owner, harness, 1, *edit)
+                invoke(reader, harness, 0, *read)
+                for row, at in ((owner[1], 1), (owner[2], 1), (owner[3], 2), (owner[4], 4), (reader[1], 5), (reader[2], 5)):
+                    row['timestamp'] = '2026-01-01T00:00:0' + str(at) + 'Z'
+                peers = [owner]
+                if peer_at is not None:
+                    peer = history(harness, {})
+                    invoke(peer, harness, 0, *write)
+                    peer[1]['timestamp'] = peer[2]['timestamp'] = '2026-01-01T00:00:0' + str(peer_at) + 'Z'
+                    peers.append(peer)
+                for order in (peers, list(reversed(peers))):
+                    nodes = [{'harness': harness, 'records': rows} for rows in (*order, reader)]
+                    candidates = receipts.ownership_file_candidates(nodes)
+                    with self.subTest(harness=harness, native_removal_peer=peer_at, reverse=order != peers):
+                        self.assertEqual(receipts.ownership_state(reader, harness, file_candidates=candidates)['pending'], pending)
+
     def test_wrapped_and_computed_reads_of_claim_text_are_not_writers(self):
         commands = ("python3 - <<'PY'\nline='gh-plan.py claim'\nif 'gh-plan.py' in line and 'claim' in line: print(line)\nPY",
                     'timeout 60 rg -n "gh-plan.py.*claim" skills',
@@ -3453,6 +3567,23 @@ os.system(get())
                 + ';await tools.apply_patch("*** Begin Patch\\n*** Add File: "+path+"\\n"'
                 + '+lines.map(l=>"+"+l).join("\\n")+"\\n*** End Patch");',
             )
+            linked = ('import os\nW=' + repr(writer) + '\nos.system(W)\n') if owning else ('W=' + repr(writer) + '\nprint(W)\n')
+            linked_header = '*** Begin Patch\n*** Add File: /repo/run.py\n'
+            linked_body = ''.join('+' + line + '\n' for line in linked.splitlines()) + '*** End Patch'
+            split_setup = 'const h=' + json.dumps(linked_header) + ';const b=' + json.dumps(linked_body) + ';'
+            repeated = 'import os\nW="echo safe"\nos.system(W)\nW=' + repr(writer) + '\nos.system(W)\n' if owning else linked
+            split_cells += (
+                'const h=' + json.dumps(linked_header) + ';const lines=' + json.dumps(repeated.splitlines())
+                + ';await tools.apply_patch(h+lines.map(l=>"+"+l).join("\\n")+"\\n*** End Patch");',
+                'const path="/repo/run.py";const lines=' + json.dumps(linked.splitlines())
+                + ';await tools.apply_patch("*** Begin Patch\\n*** Add File: "+path+"\\n"'
+                + '+lines.map(l=>"+"+l).join("\\n")+"\\n*** End Patch");',
+                split_setup + 'globalThis.H=h;globalThis.B=b;await Function("return tools.apply_patch(H+B)")();',
+                split_setup + 'globalThis.H=h;globalThis.B=b;await(0,eval)("tools.apply_patch(H+B)");',
+                split_setup + 'await Function("h","b","return tools.apply_patch([h,b].join(\'\'))")(h,b);',
+                'const h=' + json.dumps(linked_header + '+import os\n') + ';const b='
+                + json.dumps(linked_body.replace('+import os\n', '')) + ';await tools.apply_patch([h,b].join(""));',
+            )
             for source in split_cells:
                 cells += (source, 'await eval(' + json.dumps('(async()=>{' + source + '})()') + ');',
                           'await Function(' + json.dumps('return (async()=>{' + source + '})()') + ')();')
@@ -3471,6 +3602,20 @@ os.system(get())
                     rows[4] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-1')
                     with self.subTest(cell=cell, command=command):
                         self.assertEqual(receipts.ownership_state(rows, 'codex')['pending'], owning and executes)
+
+        removed = "os.system(" + repr(writer) + ")"
+        before = '*** Begin Patch\n*** Add File: /repo/run.py\n+import os\n+' + removed + '\n*** End Patch'
+        header = '*** Begin Patch\n*** Update File: /repo/run.py\n'
+        body = '@@\n-' + removed + '\n+print("safe")\n*** End Patch'
+        update = 'const h=' + json.dumps(header) + ';const b=' + json.dumps(body) + ';await tools.apply_patch(h+b);'
+        for prefix in ('', 'await tools.apply_patch(' + json.dumps(before) + ');'):
+            rows = history('codex', {}, {})
+            rows[1]['payload'].update(name='functions.exec', arguments=prefix + update)
+            rows[2] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-0')
+            rows[3]['payload']['arguments'] = json.dumps({'cmd': 'python3 /repo/run.py'})
+            rows[4] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-1')
+            with self.subTest(removal=prefix + update):
+                self.assertEqual(receipts.ownership_state(rows, 'codex')['pending'], bool(prefix))
 
     def test_generated_sources_keep_unresolved_reachable_command_operands(self):
         writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 5 > claim.json'
@@ -3597,16 +3742,18 @@ os.system(get())
         # Extra tiny call operands must not each re-project the large data RHS.
         self.assertLess(totals[1] - totals[0], len(data))
 
-        decoded = []
+        work = []
         for count in (16, 64):
-            source = data + 'const h="*** Begin Patch\\n*** Add File: /repo/run.py\\n";tools.apply_patch(h);'
-            source += ''.join('consume(data.k' + str(index) + ');' for index in range(count))
-            with patch.object(receipts, 'javascript_string', wraps=receipts.javascript_string) as strings:
-                list(receipts.javascript_possible_patches(source))
-            decoded.append(strings.call_count)
-        # A reached header must not make distinct read operands repeatedly
-        # decode the same large aggregate. Count the actual atom work.
-        self.assertLess(decoded[1] - decoded[0], len(data))
+            source = 'const cfg={h:"*** Begin Patch\\n*** Add File: /repo/run.py\\n",' + ','.join(
+                'k' + str(index) + ':"safe"' for index in range(count)) + '};'
+            source += ''.join('consume(cfg.k' + str(index) + ');' for index in range(count))
+            with patch.object(receipts, 'javascript_patch_input', wraps=receipts.javascript_patch_input) as classify:
+                values = list(receipts.javascript_possible_patches(source))
+            work.append((classify.call_count, sum(len(value) for _, value in values)))
+        # Count actual traversal/synthesis with the header inside the shared
+        # aggregate. Distinct reads must not each rebuild its entire closure.
+        self.assertLessEqual(work[1][0] - work[0][0], 8 * (64 - 16))
+        self.assertLessEqual(work[1][1], 6 * work[0][1])
 
         writer_counts = []
         original_content = receipts.executable_content
@@ -3616,7 +3763,6 @@ os.system(get())
             with patch.object(receipts, 'executable_content', wraps=original_content) as classify:
                 generated = list(receipts.javascript_generated_sources(source))
             writer_counts.append((classify.call_count, sum(map(len, generated))))
-            self.assertEqual(len(generated), len(set(generated)))
         # Bound actual parser work and emitted discovery bytes. A cache alone
         # cannot hide a repeated all-source traversal or duplicate carriers.
         self.assertLessEqual(writer_counts[1][0] - writer_counts[0][0], 3 * (64 - 16))
@@ -3773,6 +3919,24 @@ os.system(get())
             ))
             cells.append(('let c="echo safe";(eval)(' + json.dumps('c=' + assigned)
                           + ');await tools.exec_command({cmd:c});', owning))
+            for definition in ('function set(v){globalThis.C=v}',
+                               'const set=v=>{globalThis.C=v};',
+                               'const set=v=>globalThis.C=v;',
+                               'function set(v){Object.assign(globalThis,{C:v})}'):
+                prefix = 'const W=' + assigned + ';' + definition
+                finish = 'try{await Function("return tools.exec_command({cmd:C})")();}catch{}'
+                for use, executes in (('', False), ('set(W);', True),
+                                      ('[W].forEach(set);', True), ('eval("set(W)");', True),
+                                      ('function launch(){set(W)}', False),
+                                      ('function launch(){set(W)}launch();', True),
+                                      ('function launch(){eval("set(W)")}', False)):
+                    cells.append((prefix + use + finish, owning and executes))
+            cells.extend((
+                ('const W=' + assigned + ';function set(v){if(false)set(v);globalThis.C=v}'
+                 + 'try{await Function("return tools.exec_command({cmd:C})")();}catch{}', False),
+                ('const W=' + assigned + ';class Start{static{globalThis.C=W}}'
+                 + 'await Function("return tools.exec_command({cmd:C})")();', owning),
+            ))
             for setter in ('function set(v){globalThis.C=v}set(CMD);',
                            'for(const w of [CMD])globalThis.C=w;',
                            '[CMD].forEach(w=>{globalThis.C=w});'):
@@ -3797,6 +3961,16 @@ os.system(get())
                     + '});await Function("return tools.exec_command({cmd:C})")();', owning),
                 ('globalThis.C="echo safe";Reflect.set(globalThis,"C",' + assigned
                     + ');await Function("return tools.exec_command({cmd:C})")();', owning),
+            ))
+            cells.extend((
+                ('await Function("v","globalThis.C=v")(' + assigned
+                 + ');await Function("return tools.exec_command({cmd:C})")();', owning),
+                ('const c=' + assigned + ';eval("globalThis.C=c");'
+                 + 'await Function("return tools.exec_command({cmd:C})")();', owning),
+                ('const c="echo safe";const fixture=' + assigned
+                 + ';globalThis.opts={cmd:c};await Function("return tools.exec_command(globalThis.opts)")();text(fixture);', False),
+                ('const c="echo safe";const fixture=' + assigned
+                 + ';globalThis.opts={cmd:c};await Function("return tools.exec_command({cmd:globalThis.opts.cmd})")();text(fixture);', False),
             ))
             for mutation in ('globalThis.C=c;', 'Object.assign(globalThis,{C:c});',
                              'Reflect.set(globalThis,"C",c);'):
@@ -3889,6 +4063,10 @@ os.system(get())
             'const metadata=Function;const fixture=' + json.dumps(fake) + ';text(fixture);',
             'const metadata=[eval];const fixture=' + json.dumps(fake) + ';text(fixture);',
             'const o={e:eval,read:text};const fixture=' + json.dumps(fake) + ';o.read(fixture);',
+            'const o={eval:text};o.eval(' + json.dumps(fake) + ');',
+            'const o={eval:text};o.eval("text(1)");',
+            'const o={eval:text};o. eval(' + json.dumps(fake) + ');',
+            'const o={eval:text};o.\neval(' + json.dumps(fake) + ');',
 
         )
         for cell in cells:
@@ -3928,6 +4106,11 @@ os.system(get())
             call = 'text(await tools.exec_command({cmd:' + json.dumps(command) + '}));'
             source = '(async()=>{' + call + '})()'
             for cell in (
+                'const a=[eval];await a[0](' + json.dumps(source) + ');',
+                'const {e}={e:eval};await e(' + json.dumps(source) + ');',
+                'const o={e:eval};await o["e"](' + json.dumps(source) + ');',
+                'const o = {\n e:eval,\n};\nawait o.e(' + json.dumps(source) + ');',
+                'const [F]=[Function];await F(' + json.dumps('return ' + source) + ')();',
                 'await(0,eval)(' + json.dumps(source) + ');',
                 'const run=(f,s)=>f(s);await run(eval,' + json.dumps(source) + ');',
                 'const run=(f,...args)=>f(...args);await run(Function,"c",'

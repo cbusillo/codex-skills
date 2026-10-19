@@ -344,38 +344,85 @@ def javascript_source_calls(native, code):
     """Select source operands from invoked callee values, not saved handles."""
     names = {"eval": "eval", "Function": "constructor", "AsyncFunction": "constructor"}
     handles = {}
+
+    def canonical(raw):
+        def member(match):
+            value = match[1].strip()
+            if re.fullmatch(JS_STRING + r"(?:\s*\+\s*" + JS_STRING + r")*", value):
+                try:
+                    value = "".join(javascript_string(atom[0]) for atom in re.finditer(JS_STRING, value))
+                except ValueError:
+                    pass
+            return "." + value
+        return re.sub(r"\s+", "", re.sub(r"\[([^]\n]*)\]", member, raw))
+
     def source_kind(expression, raw=None):
-        selected = re.sub(r"\s+", "", expression)
+        selected = canonical(raw if raw is not None else expression)
         if selected in handles:
             return handles[selected]
-        kind = next((names[word] for word in re.findall(r"[A-Za-z_$][\w$]*", expression) if word in names), None)
-        if kind is None:
-            member = re.fullmatch(r"(?:globalThis|global|window|self)\s*\[([\s\S]*)\]", (raw if raw is not None else expression).strip())
-            if member:
-                kind = names.get(javascript_literal(member[1], member[1], {}, {}))
+        kind = next((names[word[0]] for word in re.finditer(r"[A-Za-z_$][\w$]*", expression)
+                     if word[0] in names and not expression[:word.start()].rstrip().endswith(".")
+                     and not expression[word.end():].lstrip().startswith(":")), None)
+        if kind is None and selected.rsplit(".", 1)[0] in {"globalThis", "global", "window", "self"}:
+            kind = names.get(selected.rsplit(".", 1)[-1])
+        if kind is None and re.search(r"\.\s*constructor\s*$", expression):
+            kind = "constructor"
         return kind
-    assignments = list(re.finditer(r"(?<![\w.$])([A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*)\s*=(?!=|>)\s*([^;\n]+)", code))
+
+    def members(begin, end):
+        while begin < end and code[begin].isspace():
+            begin += 1
+        while end > begin and code[end - 1].isspace():
+            end -= 1
+        if code[begin:begin + 1] in {"{", "["}:
+            object_ = code[begin] == "{"
+            for index, (start, finish) in enumerate(node_expression_parts(code, begin + 1, end - 1)):
+                parts = node_expression_parts(code, start, finish, ":") if object_ else []
+                if object_:
+                    if len(parts) < 2:
+                        key, value = native[start:finish].strip(), (start, finish)
+                    else:
+                        key, value = native[slice(*parts[0])].strip(), (parts[0][1] + 1, finish)
+                    try:
+                        key = javascript_string(key)
+                    except ValueError:
+                        pass
+                else:
+                    key, value = str(index), (start, finish)
+                for suffix, kind in members(*value):
+                    yield "." + key + suffix, kind
+            return
+        raw = native[begin:end]
+        selected = canonical(raw)
+        plain = re.fullmatch(r"[\w.$\s]+(?:\[[^]\n]*\][\w.$\s]*)*", raw)
+        kind = source_kind(code[begin:end], raw) if plain or re.search(r"\.\s*constructor\s*$", code[begin:end]) else None
+        if kind:
+            yield "", kind
+        for name, kind in handles.items():
+            if name.startswith(selected + "."):
+                yield name[len(selected):], kind
+
+    assignments = []
+    for match in re.finditer(r"(?<![\w.$])(?!const\b|let\b|var\b)([A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*|\s*\[[^]\n]*\])*|\{[^{}]*\}|\[[^\[\]]*\])\s*=(?!=|>)\s*", code):
+        end = node_expression_parts(code, match.end(), len(code), ";\n")[0][1]
+        assignments.append((match.span(1), (match.end(), end)))
     for _ in assignments:
         added = {}
-        for match in assignments:
-            target = re.sub(r"\s+", "", match[1])
-            raw = native[slice(*match.span(2))]
-            expression = match[2].strip()
-            # An aggregate retains its member identity; calling an unrelated
-            # member is not evidence that the saved source handle was used.
-            if expression.startswith("{"):
-                for member in re.finditer(r"([A-Za-z_$][\w$]*)\s*:\s*([^,}]+)", expression):
-                    kind = source_kind(member[2])
-                    if kind:
-                        added[target + "." + member[1]] = kind
-            elif (re.fullmatch(r"[\w.$\s]+", expression)
-                  or re.fullmatch(r"(?:globalThis|global|window|self)\s*\[[^]\n]*\]\s*", raw)
-                  or re.search(r"\.\s*constructor\s*$", expression)):
-                kind = source_kind(expression, raw)
-                if kind is None and re.search(r"\.\s*constructor\s*$", expression):
-                    kind = "constructor"
-                if kind:
-                    added[target] = kind
+        for target, rhs in assignments:
+            values = dict(members(*rhs))
+            raw = native[slice(*target)].strip()
+            if raw.startswith(("{", "[")):
+                object_ = raw.startswith("{")
+                for index, (begin, end) in enumerate(node_expression_parts(code, target[0] + 1, target[1] - 1)):
+                    parts = node_expression_parts(code, begin, end, ":") if object_ else []
+                    key = native[slice(*parts[0])].strip() if parts else native[begin:end].strip() if object_ else str(index)
+                    named = native[parts[0][1] + 1:end].strip() if len(parts) > 1 else native[begin:end].strip()
+                    if re.fullmatch(r"[A-Za-z_$][\w$]*", named):
+                        for suffix, kind in values.items():
+                            if suffix == "." + key or suffix.startswith("." + key + "."):
+                                added[named + suffix[len(key) + 1:]] = kind
+            else:
+                added.update((canonical(raw) + suffix, kind) for suffix, kind in values.items())
         if all(handles.get(name) == kind for name, kind in added.items()):
             break
         handles.update(added)
@@ -688,15 +735,80 @@ def javascript_call_inputs(code, regions, *, receivers=True):
             yield begin + iterable.end(), end
 
 
+def javascript_inactive_definitions(code):
+    """Prune only named definitions with no reachable reference or direct eval."""
+    definitions = []
+    functions = re.finditer(r"(?:^|[;{}\n])\s*(?:async\s+)?function(?:\s*\*\s*|\s+)([A-Za-z_$][\w$]*)\s*\(", code)
+    arrows = re.finditer(r"\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?(?:\([^()]*\)|[A-Za-z_$][\w$]*)\s*=>\s*", code)
+    for match in functions:
+        closing = node_expression_parts(code, match.end(), len(code))[-1][1]
+        opening = closing + 1
+        while opening < len(code) and code[opening].isspace():
+            opening += 1
+        if code[opening:opening + 1] == "{":
+            end = node_expression_parts(code, opening + 1, len(code), "")[0][1]
+            if code[end:end + 1] == "}":
+                definitions.append((match.start(), end + 1, match[1]))
+    for match in arrows:
+        opening = match.end()
+        block = code[opening:opening + 1] == "{"
+        end = node_expression_parts(code, opening + 1 if block else opening, len(code), "" if block else ",;\n")[0][1]
+        if not block or code[end:end + 1] == "}":
+            definitions.append((match.start(), end + int(block), match[1]))
+    if not definitions:
+        return ()
+    definitions.sort(key=lambda definition: (definition[0], -definition[1]))
+    names = {name for _, _, name in definitions}
+    references, eval_owners = {None: set()}, set()
+    words = [(match.start(), match[0]) for match in re.finditer(r"[A-Za-z_$][\w$]*", code)]
+    words.extend((start, None) for start, _, _, direct, _ in javascript_source_calls(code, code) if direct)
+    # Assign each reference to its innermost named definition. A nested dead
+    # definition's own name/body cannot activate it from an active outer body.
+    stack, cursor = [], 0
+    for position, word in sorted(words, key=lambda item: item[0]):
+        while cursor < len(definitions) and definitions[cursor][0] <= position:
+            definition = definitions[cursor]
+            while stack and stack[-1][1] <= definition[0]:
+                stack.pop()
+            stack.append(definition)
+            cursor += 1
+        while stack and stack[-1][1] <= position:
+            stack.pop()
+        owner = stack[-1][2] if stack else None
+        if word is None:
+            eval_owners.add(owner)
+        else:
+            references.setdefault(owner, set()).add(word)
+    live = names & references[None]
+    while True:
+        # Live direct eval may name any lexical helper through a string.
+        added = names if None in eval_owners or live & eval_owners else set().union(*(references.get(name, ()) for name in live)) & names
+        if added <= live:
+            break
+        live.update(added)
+    inactive = []
+    for begin, end, name in definitions:
+        if name not in live and (not inactive or begin >= inactive[-1][1]):
+            inactive.append((begin, end))
+    return inactive
+
+
 def javascript_inputs(native, atoms, code, declarations, bindings=None):
     """Possible RHS inputs are separate from single-site literal proof."""
     member = r"[A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*|\s*\[[^]\n]*\])*"
     references = re.compile(r"(?<![\w.$])(" + member + r")")
     assignments = re.compile(r"(?<![\w.$])(" + member + r")\s*(?:=(?!=|>)|[+*/%&|^-]=|\?\?=|&&=|\|\|=)")
     sources, globals_ = {}, []
+    _, bound = javascript_bindings(code)
     starts = [atom.start() for atom in atoms]
     memo = {}
     bindings = {} if bindings is None else bindings
+    inactive = javascript_inactive_definitions(code)
+    inactive_starts = [begin for begin, _ in inactive]
+
+    def active(position):
+        index = bisect_left(inactive_starts, position + 1) - 1
+        return index < 0 or position >= inactive[index][1]
 
     def literal(begin, end):
         key = native[begin:end].strip()
@@ -732,14 +844,14 @@ def javascript_inputs(native, atoms, code, declarations, bindings=None):
             if first and first[0] in declarations:
                 begin, end = declarations[first[0]]
                 global_receiver = native[begin:end].strip() in {"globalThis", "global", "window", "self"}
-        if global_receiver:
+        if global_receiver and active(assignment.start()):
             globals_.append(rhs)
 
     # A call receiving the global object can mutate its properties without an
     # assignment expression (Object.assign, Reflect.set, or a passed helper).
     for call in re.finditer(r"([A-Za-z_$][\w$]*|\]|\))\s*(?:\?\.)?\s*\(", code):
         parts = node_expression_parts(code, call.end(), len(code))
-        if any(native[begin:end].strip() in {"globalThis", "global", "window", "self"} for begin, end in parts):
+        if active(call.start()) and any(native[begin:end].strip() in {"globalThis", "global", "window", "self"} for begin, end in parts):
             globals_.extend(parts)
 
     for assignment in re.finditer(r"[\]}]\s*=(?!=|>)", code):
@@ -776,7 +888,7 @@ def javascript_inputs(native, atoms, code, declarations, bindings=None):
             selected = key(reference.start(1), reference.end(1))
             children.extend(sources.get(selected, ()))
             if (selected and selected[0] == "local" and selected not in sources
-                    and selected[1] not in bindings and selected[1] not in declarations
+                    and selected[1] in bound and selected[1] not in bindings and selected[1] not in declarations
                     and selected[1] not in {"globalThis", "global", "window", "self", "undefined", "null", "true", "false"}):
                 unknown.append(selected[1])
             if selected and selected[0] == "local" and selected[1] in bindings:
@@ -807,6 +919,16 @@ def javascript_inputs(native, atoms, code, declarations, bindings=None):
         # enumerate a shared aggregate closure for each unrelated call input.
         roots = list(inputs)
         pending, visited, parents, headers = list(roots), set(), {}, set()
+        components = {}
+        def component(value):
+            components.setdefault(value, value)
+            trail = []
+            while components[value] != value:
+                trail.append(value)
+                value = components[value]
+            for selected in trail:
+                components[selected] = value
+            return value
         while pending:
             selected = pending.pop()
             if selected in visited:
@@ -817,6 +939,7 @@ def javascript_inputs(native, atoms, code, declarations, bindings=None):
                 headers.add(selected)
             for child in children:
                 parents.setdefault(child, set()).add(selected)
+                components[component(child)] = component(selected)
             pending.extend(children)
         pending = list(headers)
         while pending:
@@ -824,7 +947,11 @@ def javascript_inputs(native, atoms, code, declarations, bindings=None):
                 if parent not in headers:
                     headers.add(parent)
                     pending.append(parent)
-        return [root for root in roots if root in headers]
+        groups = {}
+        for root in roots:
+            if root in headers:
+                groups.setdefault(component(root), []).append(root)
+        return groups.values()
 
     return reached, globals_, patch_inputs
 
@@ -832,6 +959,44 @@ def javascript_inputs(native, atoms, code, declarations, bindings=None):
 
 def javascript_patch_input(value):
     return re.search(r"(?m)^\*\*\* (?:Add|Update) File: ", value) is not None
+
+
+def javascript_patch_fragments(inputs):
+    """Compose selected partial bodies once, retaining source order and edits."""
+    inputs = sorted(dict.fromkeys(inputs))
+    complete_paths = set()
+    for _, value in inputs:
+        if "*** End Patch" in value:
+            complete_paths.update(effect["path"] for effect in native_file_effects("apply_patch", value)
+                                  if effect["kind"] == "write")
+    emitted = set()
+    headers = []
+    for begin, value in inputs:
+        if javascript_patch_input(value) and value not in emitted:
+            emitted.add(value)
+            yield begin, value
+        for header in re.finditer(r"(?m)^\*\*\* (Add|Update) File: ([^\n]*)", value):
+            paths = [header[2].strip()] if header[2].strip() else [text for _, text in inputs
+                if re.fullmatch(r"[/\w.\-]+", text) and text not in {"", ".", "/"}]
+            headers.extend((begin, header[1], path) for path in paths if path not in complete_paths)
+    if not headers:
+        return
+    fragments = []
+    for position, value in inputs:
+        if "*** End Patch" in value and javascript_patch_input(value):
+            continue
+        # A header's own nonempty body is also a selected fragment. Removal
+        # lines do not become executable additions in a partial alternative.
+        lines = [line[1:] if line.startswith("+") else line for line in value.splitlines()
+                 if not line.startswith(("*** ", "@@", "-"))]
+        fragments.append((position, value, lines))
+    for begin, kind, path in dict.fromkeys(headers):
+        lines = [line for _, value, body in fragments if value != path for line in body]
+        if lines:
+            patch = "*** " + kind + " File: " + path + "\n" + "\n".join("+" + line for line in lines)
+            if patch not in emitted:
+                emitted.add(patch)
+                yield begin, patch
 
 
 def javascript_possible_patches(native, *, capabilities=False):
@@ -848,34 +1013,13 @@ def javascript_possible_patches(native, *, capabilities=False):
             pass
     reached, _, patch_inputs = javascript_inputs(native, atoms, code, declarations)
     operands = patch_inputs(javascript_call_inputs(code, regions))
-    input_cache = {}
-    for operand in operands:
-        expression = native[slice(*operand)].strip()
-        if expression not in input_cache:
-            input_cache[expression] = tuple(dict.fromkeys(reached([operand])))
-        inputs = input_cache[expression]
-        for begin, value in inputs:
-            if javascript_patch_input(value) and value not in seen:
-                seen.add(value)
-                yield begin, value
-            if not javascript_patch_input(value) or list(native_file_effects("apply_patch", value)):
-                continue
-            # A consumed header may be split from both path and +lines. Keep
-            # only the same input's reached fragments as partial file writes.
-            for header in re.finditer(r"(?m)^\*\*\* (Add|Update) File: ([^\n]*)", value):
-                paths = [header[2].strip()] if header[2].strip() else [text for _, text in inputs
-                    if re.fullmatch(r"[/\w.\-]+", text) and text not in {"", ".", "/"}]
-                for path in paths:
-                    for _, fragment in inputs:
-                        if fragment == value or fragment == path:
-                            continue
-                        lines = [line if line.startswith("+") else "+" + line for line in fragment.splitlines()
-                                 if not line.startswith(("*** ", "@@"))]
-                        patch = "*** " + header[1] + " File: " + path + "\n" + "\n".join(lines)
-                        if lines and patch not in seen:
-                            seen.add(patch)
-                            yield begin, patch
-
+    # A shared aggregate is walked once across all header-reaching operands.
+    # Keep origin tuples; repeated statements at distinct origins still matter.
+    for group in operands:
+        for begin, patch in javascript_patch_fragments(reached(group)):
+            if patch not in seen:
+                seen.add(patch)
+                yield begin, patch
 
 
 def javascript_generated_sources(value):
@@ -923,6 +1067,7 @@ def javascript_generated_sources(value):
             continue
         seen.add(key)
         if generated:
+            generated_literals.extend(global_values)
             generated_literals.extend(javascript_source_literals(current_atoms))
             patch_literals.extend(value for value in javascript_source_literals(current_atoms) if javascript_patch_input(value))
             text, projected = current, current_code
@@ -1134,7 +1279,8 @@ def javascript_generated_sources(value):
                 emitted_patches.add(patch)
                 yield "apply_patch(" + json.dumps(patch) + ")"
         if unknown_patch and unknown_inputs:
-            for patch in patch_values:
+            inputs = tuple(enumerate((*patch_values, *fallback)))
+            for _, patch in javascript_patch_fragments(inputs):
                 if patch not in emitted_patches:
                     emitted_patches.add(patch)
                     yield "apply_patch(" + json.dumps(patch) + ")"
@@ -7525,6 +7671,7 @@ def native_file_effects(name, value):
 def file_source_context(effect, previous):
     """Compose only recorded Python bytes, retaining alternatives for uncertain edits."""
     definite = previous.get("definite", False)
+    erasure_exact = previous.get("erasure_exact", definite)
     previous = previous.get("contents", ())
     contents = tuple(content for content in effect["contents"] if isinstance(content, str))
     full = not effect.get("partial", not effect["replaces"])
@@ -7562,7 +7709,14 @@ def file_source_context(effect, previous):
     # Alternatives are real recorded writes, not values fabricated by the
     # analyzer. Keep them isolated: joining programs lets a later definition
     # shadow a reachable owning definition from a different native write.
-    return {"contents": tuple(dict.fromkeys(result)), "definite": definite}, exact
+    # Ordinary source composition can prove dormant code remains inert even
+    # when a native outcome cannot certify erasure. Keep that precision apart
+    # from the stronger completed-update proof, so uncertain edits cannot
+    # retire a previously owning path.
+    erasure_exact = (bool(effect["replaces"]) and effect.get("erasure_exact", True) if full else erasure_exact and exact)
+    erasure_exact &= effect.get("partial") is not True
+    return {"contents": tuple(dict.fromkeys(result)), "definite": definite,
+            "erasure_exact": erasure_exact}, exact
 
 
 def apply_file_effect(effect, cwd, candidates, sources=None, *, python_checks=None):
@@ -7605,7 +7759,8 @@ def apply_file_effect(effect, cwd, candidates, sources=None, *, python_checks=No
                     for root, speculative in roots:
                         destination = posixpath.normpath(root if relative == "." else posixpath.join(root, relative))
                         transferred = {"kind": "write", "path": destination, "contents": contents,
-                                       "replaces": effect["replaces"] and certain and not speculative, "partial": False}
+                                       "replaces": effect["replaces"] and certain and not speculative, "partial": False,
+                                       "erasure_exact": bool(prior and prior.get("erasure_exact", prior.get("definite", False)))}
                         result = apply_file_effect(transferred, None, candidates, sources, python_checks=python_checks)
                         if not certain:
                             result |= destination in previous_candidates
@@ -7677,6 +7832,56 @@ def python_source_checks():
     return fragment, full
 
 
+def native_write_outcomes(records, harness, identifiers):
+    """Reuse native binding; an erasure needs affirmative successful output."""
+    selected = {(name, id(value)) for record in records
+                for identifier, name, value in calls_and_results(record, harness)[0] if identifier in identifiers}
+    native_names = {identifier: name for record in records
+                    for identifier, name, _ in calls_and_results(record, harness)[0] if identifier in identifiers}
+    ends, successful, failed = {}, set(), set()
+    for index, identifier, result in bound_outputs(records, harness, lambda name, value: (name, id(value)) in selected):
+        if result.get("_result") and not result.get("_pending"):
+            ends[identifier] = index
+        if result.get("_tool_error") or type(result.get("exit_code")) is int and result["exit_code"] != 0:
+            failed.add(identifier)
+        elif not result.get("operation") and type(result.get("exit_code")) is int and result["exit_code"] == 0:
+            successful.add(identifier)
+    if harness == "claude":
+        for identifier, index in ends.items():
+            if native_names.get(identifier) not in {"Write", "Edit", "apply_patch", "functions.apply_patch"}:
+                continue
+            for block in (records[index].get("message") or {}).get("content", ()):
+                if (isinstance(block, dict) and block.get("type") == "tool_result"
+                        and block.get("tool_use_id") == identifier):
+                    if block.get("is_error", False) is False and isinstance(block.get("content"), (str, list)):
+                        successful.add(identifier)
+                    else:
+                        failed.add(identifier)
+    return ends, successful - failed
+
+
+def completed_python_update(name, path, context, source, *, python_checks=None):
+    """A finished native exact edit may retire its own recorded old bytes.
+
+    Computed JS writes and explicit partial alternatives cannot prove erasure.
+    The returned full-source state is used only by native completion replay;
+    the writer's original effects and interval remain live until that bound.
+    """
+    if (name not in {"apply_patch", "functions.apply_patch", "Edit"}
+            or Path(path).suffix != ".py" or not source.get("definite") or not source.get("erasure_exact")
+            or not any("updates" in effect for effect in context)
+            or any(effect.get("partial") is True or effect.get("invalidates") for effect in context)):
+        return None
+    contents = source.get("contents", ())
+    if not contents or any(not isinstance(content, str) for content in contents):
+        return None
+    full_check = python_checks[1] if python_checks else python_ownership
+    if any(full_check(content) for content in contents):
+        return None
+    return ({"kind": "write", "path": path, "contents": tuple(contents),
+             "replaces": True, "partial": False},)
+
+
 def ownership_file_candidates(histories, *, python_checks=None):
     """Preserve each peer write's native interval, not its eventual contents.
 
@@ -7693,23 +7898,36 @@ def ownership_file_candidates(histories, *, python_checks=None):
         for identifier, name, value, cwd, stamp in native_calls(node["records"], node["harness"], with_timestamp=True):
             for effect in native_file_effects(name, value):
                 if effect["kind"] == "write":
-                    writes.append((identifier, cwd, native_timestamp(stamp), effect))
-        by_call, sources, local_candidates = {}, {}, set()
-        for identifier, cwd, timestamp, effect in writes:
+                    writes.append((identifier, name, cwd, native_timestamp(stamp), effect))
+        native_updates = any(name in {"apply_patch", "functions.apply_patch", "Edit"} and "updates" in effect
+                             for _, name, _, _, effect in writes)
+        selected = {identifier for identifier, _, _, _, _ in writes} if native_updates else set()
+        ends, successful = native_write_outcomes(node["records"], node["harness"], selected) if native_updates else ({}, set())
+        by_call, sources, local_candidates, earlier = {}, {}, set(), {}
+        for identifier, name, cwd, timestamp, effect in writes:
             path = native_path(effect["path"], native_cwd(effect.get("cwd"), cwd)) if effect["path"] else None
             if path:
-                entry = by_call.setdefault((identifier, path), {"at": timestamp, "owns": False, "final": None, "context": []})
+                entry = by_call.setdefault((identifier, path), {"at": timestamp, "owns": False, "final": None, "context": [], "snapshot": None})
+                if native_updates and any(previous not in successful or ends.get(previous, float("inf")) >= launches.get(identifier, -1)
+                       for previous in earlier.get(path, ()) if previous != identifier) and path in sources:
+                    sources[path] = dict(sources[path], erasure_exact=False)
+                earlier.setdefault(path, set()).add(identifier)
                 owning = apply_file_effect(effect, cwd, local_candidates, sources, python_checks=python_checks)
                 entry["context"].append(dict(effect, path=path, cwd=native_cwd(effect.get("cwd"), cwd)))
                 entry["owns"] |= owning
                 if owning or effect["replaces"]:
                     entry["final"] = owning
+                finished = identifier in ends and identifier in successful and native_timestamp(node["records"][ends[identifier]].get("timestamp")) is not None
+                entry["snapshot"] = (completed_python_update(name, path, entry["context"], sources.get(path, {}), python_checks=python_checks)
+                                     if finished else None)
+                if entry["snapshot"] is not None:
+                    entry["final"] = False
         replacements = {identifier for (identifier, _), entry in by_call.items() if entry["at"] is not None}
         completions = file_write_completions(node["records"], node["harness"], replacements) if replacements else {}
         for (identifier, path), entry in by_call.items():
             completion = completions.get(identifier, float("inf")) if entry["at"] is not None else None
             context = tuple(entry["context"])
-            completed_context = context if entry["final"] is True or any(effect["replaces"] for effect in context) else ()
+            completed_context = entry["snapshot"] or (context if entry["final"] is True or any(effect["replaces"] for effect in context) else ())
             if entry["owns"] or entry["context"]:
                 candidates.setdefault(path, []).append((origin, entry["at"], entry["owns"], False, completion, identifier, context,
                                                        entry["at"], launches.get(identifier), False))
@@ -7748,22 +7966,17 @@ def file_ownership_executions(records, harness, *, file_candidates=(), python_ch
                if any(effect["kind"] == "write" for effect in effects)}
     launches = {identifier: index for index, record in enumerate(records)
                 for identifier, _, _ in calls_and_results(record, harness)[0]}
-    ends = None
+    ends, successful = None, set()
 
     def completion_ends():
-        nonlocal ends
+        nonlocal ends, successful
         if ends is None:
-            selected = {(name, id(value)) for record in records
-                        for source, name, value in calls_and_results(record, harness)[0] if source in writers}
-            ends = {}
-            for index, source, result in bound_outputs(records, harness, lambda name, value: (name, id(value)) in selected):
-                if result.get("_result") and not result.get("_pending"):
-                    ends[source] = index
+            ends, successful = native_write_outcomes(records, harness, writers)
         return ends
 
     own_intervals, completed = {}, []
     candidates, peer_writes, intervals, sources, contributions = set(), [], [], {}, {}
-    generation, active_projection = 0, None
+    generation, active_projection, prior_writers = 0, None, {}
     if isinstance(file_candidates, dict):
         for path, events in file_candidates.items():
             for event in events:
@@ -7804,6 +8017,8 @@ def file_ownership_executions(records, harness, *, file_candidates=(), python_ch
         for effect in context:
             if possible and effect["replaces"]:
                 effect = dict(effect, replaces=False, partial=False)
+            elif possible and "updates" in effect:
+                effect = dict(effect, partial=True)
             apply_file_effect(effect, None, target_candidates, target_sources, python_checks=python_checks)
 
     def replay(events, target_candidates, target_sources):
@@ -7895,7 +8110,8 @@ def file_ownership_executions(records, harness, *, file_candidates=(), python_ch
                 generation += 1
                 path = native_path(effect["path"], native_cwd(effect.get("cwd"), cwd)) if effect["path"] else None
                 owning = apply_file_effect(effect, cwd, local_candidates, local_sources, python_checks=python_checks)
-                possible = dict(effect, replaces=False, partial=False) if effect["replaces"] else effect
+                possible = (dict(effect, replaces=False, partial=False) if effect["replaces"] else
+                            dict(effect, partial=True) if "updates" in effect else effect)
                 apply_file_effect(possible, cwd, candidates, sources, python_checks=python_checks)
                 if path:
                     if effect["replaces"]:
@@ -7940,10 +8156,19 @@ def file_ownership_executions(records, harness, *, file_candidates=(), python_ch
                 continue
             end = completion_ends().get(identifier)
             if end is not None:
+                previous = prior_writers.get(path, set())
+                eligible = (read_at is not None and identifier in successful and (previous or any(effect["replaces"] for effect in written))
+                            and all(source in successful and completion_ends().get(source, float("inf")) < read_at
+                                    for source in previous))
+                snapshot = (completed_python_update(name, path, written, local_sources.get(path, {}), python_checks=python_checks)
+                            if eligible else None)
+                if snapshot is not None:
+                    context = snapshot
                 at = native_timestamp(records[end].get("timestamp"))
-                event = (path, path in local_candidates, path in replacements, origin, tuple(context),
+                event = (path, path in local_candidates, path in replacements or snapshot is not None, origin, tuple(context),
                          (origin, identifier, timestamp, read_at), True)
                 completed.append((end, at, event))
+            prior_writers.setdefault(path, set()).add(identifier)
     return invocations
 
 
