@@ -112,6 +112,7 @@ PLAN_COMMAND_CONTEXT: dict[str, tuple[str, str, bool]] = {
     "next": ("composite", "mixed", False),
     "close": ("composite", "mixed", True),
     "reconcile-landing": ("composite", "mixed", True),
+    "reconcile-status": ("composite", "rest_core", True),
     "project-add": ("gh_cli_graphql", "graphql", True),
     "project-set": ("gh_cli_graphql", "graphql", True),
     "project-list": ("gh_cli_graphql", "graphql", False),
@@ -3203,6 +3204,28 @@ def _claim_once(args: argparse.Namespace) -> None:
           "completed_steps": completed})
 
 
+def refresh_planning_targets(targets: list[tuple[str, int]], *, apply: bool = True) -> dict[str, Any]:
+    """A confirmed fact write and its label projection have separate receipts."""
+    tasks = [{"repo": repo, "number": number, "role": "related"}
+             for repo, number in dict.fromkeys(targets)]
+    return github_plan_landing.run_reconciliation_tasks(argparse.Namespace(**globals()), tasks, apply=apply)
+
+
+def status_recovery(repo: str, number: int) -> dict[str, Any]:
+    return {"issue": {"repo": repo, "number": number},
+            "next_action": f"gh-plan.py --repo {repo} reconcile-status {number} --apply",
+            "scope": "Retry only the projection after resolving its reported review or failure; preserve the committed fact"}
+
+
+def cmd_reconcile_status(args: argparse.Namespace) -> None:
+    repo, number = issue_ref(args.issue, default_repo(args.repo))
+    result = refresh_planning_targets([(repo, number)], apply=args.apply)
+    result["recovery"] = status_recovery(repo, number)
+    if not result["ok"]:
+        raise PlanError("Planning label projection is incomplete", payload=result)
+    emit(result)
+
+
 def cmd_wait(args: argparse.Namespace) -> None:
     try:
         wait_once(args)
@@ -3280,8 +3303,14 @@ def wait_once(args: argparse.Namespace) -> None:
         raise PlanError(str(exc), failure=failure, payload={"structured_wait": wait, "comment": result,
                         "completed_steps": ["post_wait"],
                         "recovery": "Read the published comment and latest wait before any retry"}) from exc
-    emit({"ok": True, "actor": actor, "structured_wait": wait, "comment": result,
-          "issue": compact_issue(issue)})
+    projection = refresh_planning_targets([(issue["repo"], issue["number"])]) if kind == "issue" else None
+    published = {"actor": actor, "structured_wait": wait, "comment": result,
+                 "issue": compact_issue(observed), "projection": projection, "completed_steps": ["post_wait", "wait_record_readback"]}
+    if projection is not None and projection["coverage"] != "complete":
+        published["recovery"] = status_recovery(issue["repo"], issue["number"])
+    if projection is not None and not projection["ok"]:
+        raise PlanError("Wait record is published; planning label projection is incomplete", payload=published)
+    emit({"ok": True, **published})
 
 
 def cmd_create(args: argparse.Namespace) -> None:
@@ -3417,6 +3446,11 @@ def cmd_create(args: argparse.Namespace) -> None:
     for key in ("operation_marker", "reconciled", "reconciliation"):
         if key in issue:
             result[key] = issue[key]
+    result["projection"] = refresh_planning_targets([(repo, int(issue["number"]))])
+    if result["projection"]["coverage"] != "complete":
+        result["recovery"] = status_recovery(repo, int(issue["number"]))
+    if not result["projection"]["ok"]:
+        raise PlanError("Issue is created; planning label projection is incomplete; do not repeat creation", payload=result)
     emit(result)
 
 
@@ -3504,9 +3538,20 @@ def cmd_link(args: argparse.Namespace) -> None:
     else:
         raise PlanError(f"Unsupported relationship: {rel}")
 
+    affected = target if rel == "blocks" else source
+    projection = (refresh_planning_targets([(affected["repo"], int(affected["number"]))])
+                  if rel in {"blocked-by", "blocks", "subissue"} else None)
+    recovery = (status_recovery(affected["repo"], int(affected["number"]))
+                if projection is not None and projection["coverage"] != "complete" else None)
+    if projection is not None and not projection["ok"]:
+        raise PlanError("Native relationship is linked; label projection is incomplete; do not repeat the edge write",
+                        payload={"relationship": rel, "source": compact_issue(source), "target": compact_issue(target),
+                                 "projection": projection, "recovery": recovery, "completed_steps": ["link_relationship"]})
     emit({
         "ok": True,
         "actor": actor,
+        "projection": projection,
+        "recovery": recovery,
         "relationship": rel,
         "source": compact_issue(source),
         "target": compact_issue(target),
@@ -3546,7 +3591,16 @@ def cmd_unlink(args: argparse.Namespace) -> None:
         actor, _ = rest_edit_issue(source_repo, source_number, body=updated)
     else:
         raise PlanError(f"Unlink supports blocked-by, blocks, subissue, and related; got {rel}")
-    emit({"ok": True, "actor": actor, "relationship_removed": rel})
+    affected = target if rel == "blocks" else source
+    projection = (refresh_planning_targets([(affected["repo"], int(affected["number"]))])
+                  if rel in {"blocked-by", "blocks", "subissue"} else None)
+    recovery = (status_recovery(affected["repo"], int(affected["number"]))
+                if projection is not None and projection["coverage"] != "complete" else None)
+    if projection is not None and not projection["ok"]:
+        raise PlanError("Native relationship is unlinked; label projection is incomplete; do not repeat the edge write",
+                        payload={"relationship_removed": rel, "source": compact_issue(source), "target": compact_issue(target),
+                                 "projection": projection, "recovery": recovery, "completed_steps": ["unlink_relationship"]})
+    emit({"ok": True, "actor": actor, "relationship_removed": rel, "projection": projection, "recovery": recovery})
 
 
 def cmd_deps(args: argparse.Namespace) -> None:
@@ -3956,20 +4010,25 @@ def cmd_next(args: argparse.Namespace) -> None:
                 issue,
             )
             actor = relation_actor or actor
+        except PlanError as exc:
+            relationship_error = next_source_error(exc)
+        wait_error = None
+        comment_limit = getattr(args, "comment_limit", None) or 100
+        try:
             if "_graph_comments" in issue:
                 comments = issue["_graph_comments"]
             else:
                 _, comments = collect_paged_rest_items(
-                    f"/repos/{repo}/issues/{issue['number']}/comments", query={},
+                    f"/repos/{repo}/issues/{issue['number']}/comments", query={}, limit=comment_limit + 1,
                     bucket="rest_core", step_prefix="next_issue_comments")
-            try:
+            if len(comments) > comment_limit:
+                wait_error = "Discussion exceeded the comment read bound"
+            else:
                 wait = current_wait(issue, comments, repo)
-            except (ValueError, PlanError) as exc:
-                if isinstance(exc, PlanError) and exc.failure is not None:
-                    raise
-                wait = {"version": 1, "state": "review", "evidence": str(exc), "waits": []}
-        except PlanError as exc:
-            relationship_error = next_source_error(exc)
+        except (ValueError, PlanError) as exc:
+            wait_error = next_source_error(exc) if isinstance(exc, PlanError) else str(exc)
+        if wait_error is not None:
+            wait = {"version": 1, "state": "review", "evidence": wait_error, "waits": []}
         if truncated_relationships:
             relationship_error = (
                 f"dependency relationship reads exceeded the per-relationship limit "
@@ -3985,6 +4044,8 @@ def cmd_next(args: argparse.Namespace) -> None:
             relationship_error=relationship_error,
             structured_wait=wait,
         )
+        if wait_error is not None:
+            evaluated.update(wait_error=wait_error, wait_evidence_complete=False)
         if relationship_error is not None:
             dependency_degraded_count += 1
             if truncated_relationships:
@@ -5744,14 +5805,32 @@ def cmd_close(args: argparse.Namespace) -> None:
             completed_steps.append("close_issue")
 
     label_source = close_result if isinstance(close_result.get("labels"), list) else issue
-    current_labels = {name.casefold() for name in normalize_labels(label_source.get("labels"))}
-    done_label = plan_labels.get("done")
-    add_labels = [done_label] if done_label and done_label.casefold() not in current_labels else None
-    remove_labels = [
-        label
-        for key in ("active", "blocked", "waiting", "stale")
-        if (label := plan_labels.get(key)) and label.casefold() in current_labels
-    ] or None
+    try:
+        _, wait_comments = collect_paged_rest_items(
+            f"/repos/{issue_repo}/issues/{number}/comments", query={}, bucket="rest_core", step_prefix="close_wait_comments")
+        try:
+            close_wait = current_wait(issue, wait_comments, issue_repo)
+        except ValueError as error:
+            close_wait = {"version": 1, "state": "review", "evidence": str(error), "waits": []}
+        closed_projection = github_plan_status.derive(
+            {**issue, "state": "closed", "labels": label_source.get("labels", [])},
+            {"blocked_by": relationship_preflight.get("blocked_by", [])}, close_wait, label_names=plan_labels)
+        if not closed_projection["labels_writable"]:
+            raise close_error_with_recovery(
+                PlanError("Issue is closed; review the structured wait before completing metadata", payload={
+                    "derived": closed_projection, "completed_steps": completed_steps,
+                    "wait_review": f"gh-plan.py --repo {issue_repo} wait {number}"}),
+                issue_repo=issue_repo, number=number, close_reason=close_reason,
+                relationship_preflight=relationship_preflight, project_result=project_result, issue_closed=True,
+                metadata_state="wait_review_required", planning_config=planning_config)
+        label_diff = github_plan_status.label_changes(normalize_labels(label_source.get("labels")), plan_labels, closed_projection)
+    except PlanError as error:
+        if error.payload.get("recovery"):
+            raise
+        raise close_error_with_recovery(error, issue_repo=issue_repo, number=number, close_reason=close_reason,
+            relationship_preflight=relationship_preflight, project_result=project_result, issue_closed=True,
+            metadata_state="wait_read_incomplete", planning_config=planning_config) from error
+    add_labels, remove_labels = label_diff["add"] or None, label_diff["remove"] or None
     if add_labels or remove_labels:
         try:
             label_result = github_issue_core.edit_issue(
@@ -6424,7 +6503,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="How many issues to evaluate per scan allowance (default %(default)s); global next has separate graph and discovery allowances, each with an extra allowance for other-agent issues; discovery also reserves a held-repository allowance and evaluates marked incidents separately")
     p.add_argument("--repo-limit", type=positive_limit, help="Global next: bound accessible repository inventory (default 100)")
     p.add_argument("--repository-issue-limit", type=positive_limit, help=f"Global next: open issues per repository (default {NEXT_DEFAULT_SCAN_LIMIT})")
-    p.add_argument("--comment-limit", type=positive_limit, help="Global next: comments per evaluated issue (default 100)")
+    p.add_argument("--comment-limit", type=positive_limit, help="Comments per evaluated issue (default 100)")
     p.add_argument("--read-workers", type=positive_limit, choices=range(1, 17), default=8, help="Global next: concurrent read workers (default %(default)s)")
     p.add_argument("--time-budget", type=positive_limit, default=180, help="Global next: total read budget in seconds (default %(default)s); raise for wider evidence")
     p.add_argument("--selection-context", help="Current owner holds and issue review evidence JSON; never a durable plan")
@@ -6447,6 +6526,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--pr", type=int, required=True)
     p.add_argument("--apply", action="store_true", help="Repair already-closed automation-owned plans; default is read-only")
     p.set_defaults(func=cmd_reconcile_landing)
+
+    p = sub.add_parser("reconcile-status", help="Project an issue's status labels without repeating a fact write")
+    p.add_argument("issue")
+    p.add_argument("--apply", action="store_true", help="Apply the guarded label projection; default is read-only")
+    p.set_defaults(func=cmd_reconcile_status)
 
     p = sub.add_parser("project-add", help="Add issue to a personal/org Project")
     p.add_argument("issue")

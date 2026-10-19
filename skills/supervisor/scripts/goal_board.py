@@ -83,10 +83,7 @@ def detail_query(numbers):
 
 
 def login(author):
-    if not isinstance(author, dict) or not isinstance(author.get("login"), str):
-        return ""
-    name = author["login"].casefold()
-    return f"{name}[bot]" if author.get("__typename") == "Bot" and not name.endswith("[bot]") else name
+    return github_plan_status.normalize_author({"author": author})["login"]
 
 
 def truncated(connection):

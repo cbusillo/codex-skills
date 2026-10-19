@@ -1527,6 +1527,12 @@ competitor's record.
   The train driver includes separate planning receipts for every confirmed
   landed batch member. A failed planning receipt does not undo a landing;
   rerun this command after resolving its reported blocker.
+- `reconcile-status <issue> [--apply]`: Preview or apply the same guarded status
+  label projection to one issue without posting a wait, changing an edge,
+  creating an issue or closing it. Use the recovery command in a partial receipt
+  after resolving its reported review or failure. Confirmed wait, create and
+  native relationship writes refresh the affected issue's labels immediately;
+  their fact-write evidence remains separate from the projection receipt.
 - `create <title>`: Create a new plan issue. Exact-title dedupe uses REST issue
   search, labels are ensured through REST, and the shared issue helper creates
   the issue with reconciliation evidence for unknown write outcomes. Supports
@@ -1584,16 +1590,19 @@ competitor's record.
   the Project item can still be found; manual fields remain untouched. If closure
   then fails, the result reports
   that split Project state explicitly. Confirmed or read-reconciled issue
-  closure is the commit point for `plan:done`, `plan:active` removal, and an
+  closure is the commit point for the canonical closed status label projection and an
   optional close comment. Exact same-body comments by the acting identity are
   reused on retry, and failures return deterministic `recovery` state so
   rerunning the same command reconciles missing metadata without duplicating
-  evidence.
+  evidence. A real structured wait retains `waiting` alongside `done`.
+  Unread wait evidence preserves labels and returns `wait_review_required` with
+  the confirmed closure; review/record the wait, then rerun close to finish its
+  remaining metadata, comment and dependent steps.
 - Every successful `close`, including an idempotent repair of a confirmed close,
   refreshes direct native parents and `blocking` dependents through that same
   derivation and label readback. Related issues remain open; their own finish
-  lines are not inferred. Same-owner cross-repository targets require verified
-  planning configuration and the existing posting identity. A failure preserves
+  lines are not inferred. Cross-repository targets in the same GitHub account
+  require verified planning configuration and the existing posting identity. A failure preserves
   the confirmed source close and returns recovery evidence for the remaining
   dependents; it never retries the issue-state write.
 - `ensure-labels`: Page through repository labels and create documented missing
@@ -1643,16 +1652,18 @@ of evidence; all unread references and incomplete coverage remain explicit.
 - `next [--milestone <number-or-title>] [--limit <n>] [--scan-limit <n>]`:
   Rank actionable open plans without mutating labels, relationships, milestones,
   Projects, or workflows. Native `blocked-by` relationships are authoritative.
-- The command excludes done, stale, waiting, inconsistently
-  `plan:blocked`, dependency-unknown, and parent plans with open sub-issues. Each
+- The command excludes done, stale, actual structured waits, current native
+  blockers, dependency-unknown, and parent plans with open sub-issues. Missing
+  or malformed wait evidence is `wait_review_required`; an unstatused planning
+  scope is `scope_review_required`. Each
   exclusion includes a normalized reason and dependency evidence when present.
 - Global traversal still evaluates native blockers and children of waiting or
   inconsistently blocked nodes under the same scan allowance. A whole-plan wait
   follows its ordinary descendants; independent blocker links or a child named
   as independently selectable in structured wait evidence retain their own
   eligibility. A later independent route can expose a previously held leaf
-  without rereading it. Stale blocked labels produce issue findings and do not
-  degrade coverage; genuinely unread relationships are named in
+  without rereading it. Recorded labels do not override reviewed native status;
+  genuinely unread relationships are named in
   `dependency_context.unavailable_relationships`.
   Within each milestone, held subtrees use the remaining allowance after the
   unheld frontier; milestone order still comes first. Read-ahead follows that

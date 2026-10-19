@@ -4026,6 +4026,62 @@ TESTS.extend([test_local_next_uses_current_wait_and_native_graph_over_old_labels
               test_unstatused_scope_is_review_work_without_becoming_a_person_wait])
 
 
+def test_local_next_comment_limit_keeps_unread_discussion_under_review() -> None:
+    module = load_module()
+    raw = issue(21)
+    clear = module.github_plan_wait.reviewed(evidence="Earlier review found no holds")
+    held = module.github_plan_wait.reviewed(evidence="Client subsequently requested a test",
+        waiting_for="Client acceptance", ends_when="Client accepts")
+    comments = [{"user": {"login": "owner"}, "body": module.github_plan_wait.marker(record)}
+                for record in (clear, held)]
+    with local_next_fixture(module, [raw], read_relationships=lambda *_: (
+            "automation-gh", relationships(), [])) as result:
+        collector = module.collect_paged_rest_items
+        def bounded_comments(path: str, **kwargs: Any) -> Any:
+            if path.endswith("/comments"):
+                return "automation-gh", comments[:kwargs.get("limit", len(comments))]
+            return collector(path, **kwargs)
+        with patch.object(module, "collect_paged_rest_items", bounded_comments):
+            args = next_args(repo="owner/repo")
+            args.comment_limit = 1
+            module.cmd_next(args)
+            assert not result["candidates"], result
+            observed = result["excluded"][0]
+            assert observed["exclusion"] == "wait_review_required", observed
+            assert observed["wait_evidence_complete"] is False, observed
+            assert result["dependency_context"]["complete"], result
+            args.comment_limit = len(comments)
+            module.cmd_next(args)
+            observed = result["excluded"][0]
+            assert observed["exclusion"] == "waiting", observed
+            assert observed["derived"]["waits"] == held["waits"], observed
+
+
+def test_local_next_comment_read_failure_is_wait_review_not_unknown_dependencies() -> None:
+    module = load_module()
+    with local_next_fixture(module, [issue(21)], read_relationships=lambda *_: (
+            "automation-gh", relationships(), [])) as result:
+        collector = module.collect_paged_rest_items
+        failure = module.PlanError("Fixture discussion transport unavailable")
+        def unavailable_comments(path: str, **kwargs: Any) -> Any:
+            if path.endswith("/comments"):
+                raise failure
+            return collector(path, **kwargs)
+        with patch.object(module, "collect_paged_rest_items", unavailable_comments):
+            module.cmd_next(next_args(repo="owner/repo"))
+    assert not result["candidates"], result
+    observed = result["excluded"][0]
+    assert observed["exclusion"] == "wait_review_required", observed
+    assert observed["wait_evidence_complete"] is False, observed
+    assert observed["wait_error"], observed
+    assert result["dependency_context"]["complete"], result
+    assert not observed["blocked_by"], observed
+
+
+TESTS.extend([test_local_next_comment_limit_keeps_unread_discussion_under_review,
+              test_local_next_comment_read_failure_is_wait_review_not_unknown_dependencies])
+
+
 def main() -> None:
     for test in TESTS:
         test()

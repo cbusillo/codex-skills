@@ -4332,6 +4332,7 @@ class ClaimTests(unittest.TestCase):
                         load_config=lambda repo: PLAN.DEFAULT_CONFIG,
                         find_existing_plan_issues=lambda *a, **k: ("bot", []),
                         ensure_labels=lambda *a, **k: ("bot", []),
+                        refresh_planning_targets=lambda *a, **k: {"ok": True, "coverage": "complete", "issues": []},
                         comment_route=lambda: ("bot", "bot-gh", TEST_BOT), emit=Mock()), \
                         patch.object(github_issue, "create_issue", create):
                     PLAN.cmd_create(args)

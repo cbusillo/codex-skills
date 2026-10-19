@@ -195,6 +195,9 @@ def test_local_next_preserves_issue_ranking_and_includes_prs():
     def collect(path, **kwargs):
         if path.endswith("/pulls"):
             return "automation-gh", [pull()]
+        if path.endswith("/comments"):
+            return "automation-gh", [{"user": {"login": "owner"}, "body": module.github_plan_wait.marker(
+                module.github_plan_wait.reviewed(evidence="Ranking fixture has no person/event wait"))}]
         assert path.endswith("/issues") and kwargs["issue_only"]
         return "automation-gh", [issue(10)]
     with patch.multiple(

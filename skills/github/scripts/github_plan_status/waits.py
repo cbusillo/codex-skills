@@ -19,7 +19,8 @@ def trusted_authors(owner: str, *, configured_bots: Iterable[str] = (),
 
 def author_is_trusted(source: dict[str, Any], owner: str, *,
                       author_logins: Iterable[str] = (), author_ids: Iterable[int] = ()) -> bool:
-    user = source.get("user") or {}
+    from . import normalize_author
+    user = normalize_author(source)
     return (str(user.get("login", "")).casefold() in trusted_authors(owner, configured_bots=author_logins)
             or (type(user.get("id")) is int and user["id"] in author_ids))
 
@@ -105,7 +106,8 @@ def current_record(issue: dict[str, Any], comments: list[dict[str, Any]], truste
     selected = None
     sources = [issue, *comments]
     for source in sources:
-        author = (source.get("user") or {}).get("login", "")
+        from . import normalize_author
+        author = normalize_author(source)["login"]
         if not (trusted(source) if callable(trusted) else author.casefold() in {login.casefold() for login in trusted}):
             continue
         found = records(source.get("body") or "", prefix=prefix, validator=validator)
@@ -126,3 +128,9 @@ def current(issue: dict[str, Any], comments: list[dict[str, Any]], trusted: set[
 def without_records(text: str) -> str:
     indexes = {index for index, _ in live_lines(text)}
     return "\n".join(line for index, line in enumerate(text.splitlines()) if index not in indexes)
+
+
+def require_clear(record: dict[str, Any]) -> None:
+    validate(record)
+    if record["state"] != "clear":
+        raise ValueError("Preserve an unresolved or unreviewed structured wait")

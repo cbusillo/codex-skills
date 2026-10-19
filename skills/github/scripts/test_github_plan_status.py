@@ -146,6 +146,29 @@ class DerivedStatusTests(unittest.TestCase):
         comments.append({"user": {"id": trusted_id, "login": "renamed-owner"}, "body": waits.marker(clear)})
         self.assertEqual(waits.current(issue, comments, trusted), clear)
 
+    def test_rest_and_graphql_bot_authors_resolve_the_same_trusted_wait(self) -> None:
+        login = "fixture-app"
+        bot_login = login + "[bot]"
+        held = waits.reviewed(evidence="Historical automation recorded Client acceptance",
+            waiting_for="Client acceptance", ends_when="Client accepts")
+        sources = [
+            {"user": {"login": bot_login, "type": "Bot", "id": 701}},
+            {"author": {"login": login, "__typename": "Bot", "databaseId": 701}},
+        ]
+        for author in sources:
+            with self.subTest(author=author):
+                source = {**author, "body": waits.marker(held)}
+                self.assertTrue(waits.author_is_trusted(source, "owner", author_logins=(bot_login,)))
+                self.assertTrue(waits.author_is_trusted(source, "owner", author_ids=(701,)))
+                self.assertEqual(waits.current({}, [source], {bot_login}), held)
+                predicate = lambda value: waits.author_is_trusted(value, "owner", author_logins=(bot_login,))
+                self.assertEqual(waits.current({}, [source], predicate), held)
+        impostor = {"author": {"login": login, "__typename": "User", "databaseId": 702},
+                    "body": waits.marker(self.clear)}
+        self.assertFalse(waits.author_is_trusted(impostor, "owner", author_logins=(bot_login,), author_ids=(701,)))
+        issue = {**sources[0], "body": waits.marker(held)}
+        self.assertEqual(waits.current(issue, [impostor], {bot_login}), held)
+
     def test_label_changes_preserve_custom_nonstatus_labels_and_both_holds(self) -> None:
         names = {key: f"view:{key}" for key in github_plan_status.DEFAULT_STATUS_LABELS}
         unrelated = {"customer:requested", "priority:urgent"}

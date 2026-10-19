@@ -11,6 +11,7 @@ import copy
 import importlib.util
 import io
 import json
+import shlex
 import subprocess
 import sys
 import unittest
@@ -717,6 +718,244 @@ class LandingTests(unittest.TestCase):
         self.assertTrue(again["ok"])
         self.assertEqual(next(entry for entry in again["issues"] if entry["repo"] == product and entry["number"] == 8)["status"], "unchanged")
         self.state.assert_not_called()
+
+
+class MutationProjectionTests(unittest.TestCase):
+    """Supported writes must leave persisted labels consistent with the graph."""
+
+    def setUp(self) -> None:
+        self.config = copy.deepcopy(PLAN.DEFAULT_CONFIG)
+        self.config["projects"] = {"enabled": False}
+        self.records = {}
+        self.discussion = {}
+        self.blockers = {}
+        self.fact_writes = []
+        self.add_issue(7)
+        self.add_issue(8)
+        patches = [
+            patch.multiple(PLAN, default_repo=Mock(return_value=REPO),
+                load_config=self.load_config, get_issue=self.get_issue,
+                collect_paged_rest_items=self.read_comments, read_issue_relationships=self.relationships,
+                read_next_parent=Mock(return_value=None), api_json=self.api,
+                comment_route=Mock(return_value=("fixture-bot", "fake-gh", "fixture-bot")),
+                ensure_labels=Mock(return_value=("fixture-bot", [])),
+                find_existing_plan_issues=Mock(return_value=("fixture-bot", [])),
+                close_relationship_preflight=Mock(return_value=("fixture-bot", {"result": "passed"}))),
+            patch.object(PLAN.github_identity, "configured_bot_logins", return_value=("fixture-bot",)),
+            patch.multiple(PLAN.github_issue_core, edit_issue=self.edit_labels,
+                           set_issue_state=self.set_state, create_issue=self.create),
+            patch.object(PLAN.github_comment_core, "comment", self.comment),
+            patch.object(landing.subprocess, "run", return_value=SimpleNamespace(returncode=0)),
+        ]
+        for context in patches:
+            context.start()
+            self.addCleanup(context.stop)
+
+    def add_issue(self, number, *, label_keys=("plan", "active"), wait=None):
+        record = wait or github_plan_wait.reviewed(evidence="Full fixture discussion reviewed")
+        self.records[number] = {
+            "repo": REPO, "id": number + 100, "number": number, "state": "open",
+            "title": "Fixture plan", "user": {"login": "fixture-bot"},
+            "html_url": f"https://github.com/{REPO}/issues/{number}",
+            "body": PLAN.PLAN_MANAGED_PROVENANCE_MARKER + "\n" + github_plan_wait.marker(record),
+            "labels": [{"name": self.config["labels"][key]} for key in label_keys] + [{"name": "bug"}],
+        }
+        self.discussion[number] = []
+        self.blockers[number] = set()
+
+    def load_config(self, _repo, *, discovery=None, **_kwargs):
+        if discovery is not None:
+            discovery.update(status="discovered")
+        return copy.deepcopy(self.config)
+
+    def get_issue(self, ref, repo):
+        issue_repo, number = PLAN.issue_ref(str(ref), repo)
+        assert issue_repo == REPO
+        return "fixture-bot", copy.deepcopy(self.records[number])
+
+    def read_comments(self, path, **_kwargs):
+        number = int(path.split("/issues/")[1].split("/")[0])
+        assert path.endswith("/comments"), path
+        return "fixture-bot", copy.deepcopy(self.discussion[number])
+
+    def relationships(self, repo, number, **_kwargs):
+        assert repo == REPO
+        def reference(target):
+            issue = self.records[target]
+            return {"repo": REPO, "number": target, "state": issue["state"]}
+        return "fixture-bot", {"blocked_by": [reference(n) for n in sorted(self.blockers[number])],
+            "blocking": [reference(n) for n, blockers in self.blockers.items() if number in blockers],
+            "sub_issues": []}
+
+    def api(self, method, path, payload=None, **_kwargs):
+        prefix, _, tail = path.partition("/dependencies/blocked_by")
+        assert tail == "" or tail.startswith("/"), path
+        number = int(prefix.rsplit("/", 1)[1])
+        self.fact_writes.append((method, path, copy.deepcopy(payload)))
+        if method == "POST":
+            target_id = payload["issue_id"]
+            target = next(n for n, issue in self.records.items() if issue["id"] == target_id)
+            self.blockers[number].add(target)
+        elif method == "DELETE":
+            target_id = int(tail[1:])
+            target = next(n for n, issue in self.records.items() if issue["id"] == target_id)
+            self.blockers[number].discard(target)
+        else:
+            raise AssertionError((method, path, payload))
+        return "fixture-bot", {}
+
+    def edit_labels(self, number, *, repo, add_labels=None, remove_labels=None, **_kwargs):
+        assert repo == REPO
+        names = set(PLAN.normalize_labels(self.records[number]["labels"]))
+        names.difference_update(remove_labels or [])
+        names.update(add_labels or [])
+        self.records[number]["labels"] = [{"name": name} for name in sorted(names)]
+        return {"actor": "fixture-bot"}
+
+    def set_state(self, number, *, repo, state, state_reason, **_kwargs):
+        assert repo == REPO
+        self.records[number].update(state=state, state_reason=state_reason)
+        return {"actor": "fixture-bot"}
+
+    def comment(self, _kind, number, body, *, repo, **_kwargs):
+        assert repo == REPO
+        self.discussion[number].append({"id": len(self.discussion[number]) + 1,
+            "user": {"login": "fixture-bot"}, "body": body})
+        return {"actor": "fixture-bot"}
+
+    def create(self, title, body, *, repo, labels, **_kwargs):
+        assert repo == REPO
+        self.add_issue(9)
+        issue = self.records[9]
+        issue.update(title=title, body=body, labels=[{"name": name} for name in labels])
+        return {**copy.deepcopy(issue), "url": issue["html_url"], "actor": "fixture-bot"}
+
+    def command(self, *argv):
+        args = PLAN.build_parser().parse_args(["--repo", REPO, *argv])
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            args.func(args)
+        result = json.loads(output.getvalue())
+        self.assertTrue(result["ok"], result)
+        return result
+
+    def assert_labels(self, number, *keys, extras=("bug",)):
+        self.assertEqual(set(PLAN.normalize_labels(self.records[number]["labels"])),
+                         {self.config["labels"][key] for key in keys} | set(extras))
+
+    def test_wait_records_person_hold_and_refreshes_persisted_labels(self):
+        original = self.records[7]["body"]
+        self.command("wait", "7", "--waiting-for", "Client acceptance", "--ends-when",
+                     "Client accepts the current head", "--evidence", "Client requested acceptance")
+        observed = PLAN.current_wait(self.records[7], self.discussion[7], REPO)
+        self.assertEqual(observed["state"], "waiting")
+        self.assert_labels(7, "plan", "waiting")
+        self.assertEqual(self.records[7]["state"], "open")
+        self.assertEqual(self.records[7]["body"], original)
+
+    def test_wait_clear_refreshes_stale_labels_from_remaining_native_blockers(self):
+        for blocked in (False, True):
+            with self.subTest(blocked=blocked):
+                self.add_issue(7, label_keys=("plan", "blocked", "waiting"), wait=github_plan_wait.reviewed(
+                    evidence="Client still testing", waiting_for="Client", ends_when="Client accepts"))
+                if blocked:
+                    self.blockers[7].add(8)
+                self.command("wait", "7", "--clear", "--evidence", "Client accepted; all holds reviewed")
+                self.assertEqual(PLAN.current_wait(self.records[7], self.discussion[7], REPO)["state"], "clear")
+                self.assert_labels(7, "plan", "blocked" if blocked else "active")
+
+    def test_link_refreshes_the_blocked_side_in_both_relationship_directions(self):
+        for relationship, source, target in (("blocked-by", "7", "8"), ("blocks", "8", "7")):
+            with self.subTest(relationship=relationship):
+                self.add_issue(7)
+                original = self.records[7]["body"]
+                self.command("link", source, relationship, target)
+                self.assertEqual(self.blockers[7], {8})
+                self.assert_labels(7, "plan", "blocked")
+                self.assert_labels(8, "plan", "active")
+                self.assertEqual(self.records[7]["body"], original)
+                self.assertEqual(self.records[7]["state"], "open")
+
+    def test_unlink_last_blocker_refreshes_the_blocked_side_in_both_directions(self):
+        for relationship, source, target in (("blocked-by", "7", "8"), ("blocks", "8", "7")):
+            with self.subTest(relationship=relationship):
+                self.add_issue(7, label_keys=("plan", "blocked"))
+                self.blockers[7].add(8)
+                original = self.records[7]["body"]
+                self.command("unlink", source, relationship, target)
+                self.assertEqual(self.blockers[7], set())
+                self.assert_labels(7, "plan", "active")
+                self.assert_labels(8, "plan", "active")
+                self.assertEqual(self.records[7]["body"], original)
+                self.assertEqual(self.records[7]["state"], "open")
+
+    def test_create_with_actual_wait_persists_waiting_instead_of_default_active(self):
+        self.command("create", "Await acceptance", "--waiting-for", "Client acceptance", "--ends-when",
+                     "Client accepts", "--wait-evidence", "Client requested a test")
+        observed = PLAN.current_wait(self.records[9], self.discussion[9], REPO)
+        self.assertEqual(observed["state"], "waiting")
+        self.assert_labels(9, "plan", "waiting", extras=())
+        self.assertEqual(self.records[9]["state"], "open")
+
+    def test_direct_close_keeps_actual_wait_alongside_done(self):
+        self.add_issue(7, label_keys=("plan", "active", "waiting"), wait=github_plan_wait.reviewed(
+            evidence="Client acceptance remains after delivery", waiting_for="Client acceptance",
+            ends_when="Client accepts"))
+        original = self.records[7]["body"]
+        self.command("close", "7")
+        self.assertEqual(self.records[7]["state"], "closed")
+        self.assertEqual(PLAN.current_wait(self.records[7], self.discussion[7], REPO)["state"], "waiting")
+        self.assert_labels(7, "plan", "done", "waiting")
+        self.assertEqual(self.records[7]["body"], original)
+
+    def test_status_preview_and_apply_change_only_the_derived_labels(self):
+        self.add_issue(7, label_keys=("plan", "blocked", "waiting"))
+        before = copy.deepcopy((self.records, self.discussion, self.blockers, self.fact_writes))
+        preview = self.command("reconcile-status", "7")
+        self.assertEqual((self.records, self.discussion, self.blockers, self.fact_writes), before)
+        self.assertEqual(preview["issues"][0]["derived"]["status"], "active")
+        self.command("reconcile-status", "7", "--apply")
+        self.assert_labels(7, "plan", "active")
+        self.assertEqual((self.discussion, self.blockers, self.fact_writes), before[1:])
+        self.assertEqual(self.records[7]["state"], before[0][7]["state"])
+        self.assertEqual(self.records[7]["body"], before[0][7]["body"])
+        self.assertEqual(self.records[8], before[0][8])
+
+    def test_committed_edge_projection_failure_recovers_without_repeating_the_edge(self):
+        failure = PLAN.github_api_core.FailureDetail(cause="transport_error", message="Fixture label write rejected",
+            retryable=False, fallback_eligible=False, disposition="stop", write_outcome="rejected",
+            request_id="fixture-label-request")
+        before = copy.deepcopy((self.records[7]["body"], self.discussion))
+        with patch.object(PLAN.github_issue_core, "edit_issue", side_effect=PLAN.github_issue_core.IssueError(
+                failure.message, failure=failure)), self.assertRaises(PLAN.PlanError) as caught:
+            self.command("link", "7", "blocked-by", "8")
+        self.assertEqual(self.blockers[7], {8})
+        self.assert_labels(7, "plan", "active")
+        receipt = caught.exception.payload
+        self.assertEqual(receipt["projection"]["issues"][0]["error"]["failure"], failure.as_dict())
+        self.assertEqual(receipt["recovery"]["issue"], {"repo": REPO, "number": 7})
+        fact_writes = copy.deepcopy(self.fact_writes)
+        # Execute the returned supported recovery, rather than replaying link.
+        recovery = PLAN.build_parser().parse_args(shlex.split(receipt["recovery"]["next_action"])[1:])
+        with contextlib.redirect_stdout(io.StringIO()):
+            recovery.func(recovery)
+        self.assertEqual(self.fact_writes, fact_writes)
+        self.assertEqual(self.blockers[7], {8})
+        self.assert_labels(7, "plan", "blocked")
+        self.assertEqual((self.records[7]["body"], self.discussion), before)
+        self.assertEqual(self.records[7]["state"], "open")
+
+    def test_direct_close_with_unreviewed_wait_preserves_labels_and_reports_closed_recovery(self):
+        self.records[7]["body"] = github_plan_wait.without_records(self.records[7]["body"])
+        before = copy.deepcopy((self.records[7]["labels"], self.records[7]["body"], self.discussion))
+        with self.assertRaises(PLAN.PlanError) as caught:
+            self.command("close", "7")
+        self.assertEqual(self.records[7]["state"], "closed")
+        self.assertEqual((self.records[7]["labels"], self.records[7]["body"], self.discussion), before)
+        recovery = caught.exception.payload["recovery"]
+        self.assertTrue(recovery["issue_closed"])
+        self.assertEqual(recovery["completion_metadata"], "wait_review_required")
+        self.assertNotIn("labels_already_complete", caught.exception.payload["completed_steps"])
 
 
 if __name__ == "__main__":

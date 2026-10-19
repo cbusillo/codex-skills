@@ -45,6 +45,7 @@ def load_plan_module() -> Any:
         raise RuntimeError(f"Unable to load {SCRIPT}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    module._fixture_original_comment_collector = module.collect_paged_rest_items
     return module
 
 
@@ -110,12 +111,16 @@ def close_plan_issue(
     state_reason: str | None = None,
     labels: list[str] | None = None,
 ) -> dict[str, Any]:
+    import github_plan_wait
+
     issue = {
         "repo": "owner/repo",
         "number": 10,
         "id": 1010,
         "title": "Durable plan",
-        "body": "## Finish Line\n\nShip it.\n",
+        "body": "## Finish Line\n\nShip it.\n" + github_plan_wait.marker(
+            github_plan_wait.reviewed(evidence="Fixture completion and discussion reviewed")),
+        "user": {"login": "owner"},
         "html_url": "https://github.com/owner/repo/issues/10",
         "labels": [{"name": name} for name in (labels or ["plan", "plan:active"])],
         "state": state,
@@ -128,11 +133,27 @@ def close_plan_issue(
 @contextmanager
 def patched_issue_core(plan: Any, **replacements: Any):
     originals = {name: getattr(plan.github_issue_core, name) for name in replacements}
+    original_collector = plan.collect_paged_rest_items
+    original_projection = plan.refresh_planning_targets
+    if "create_issue" in replacements:
+        # These tests isolate create transport/reconciliation. The stateful
+        # mutation projection module exercises persisted graph and labels.
+        plan.refresh_planning_targets = lambda *_args, **_kwargs: {"ok": True, "coverage": "complete", "issues": []}
+    if ("set_issue_state" in replacements
+            and original_collector is plan._fixture_original_comment_collector):
+        clear = plan.github_plan_wait.reviewed(evidence="Fixture completion and discussion reviewed")
+        def close_comments(path: str, **kwargs: Any):
+            if path.endswith("/comments"):
+                return "automation-gh", [{"user": {"login": "owner"}, "body": plan.github_plan_wait.marker(clear)}]
+            return original_collector(path, **kwargs)
+        plan.collect_paged_rest_items = close_comments
     try:
         for name, replacement in replacements.items():
             setattr(plan.github_issue_core, name, replacement)
         yield
     finally:
+        plan.collect_paged_rest_items = original_collector
+        plan.refresh_planning_targets = original_projection
         for name, original in originals.items():
             setattr(plan.github_issue_core, name, original)
 
@@ -2435,7 +2456,7 @@ def owner_decision_close(
         return "automation-gh", {"data": {"repository": {"issue": {"lastEditedAt": "2026-09-20T00:00:00Z"}}}}
 
     def fake_comments(path: str, **kwargs: Any) -> tuple[str, list[dict[str, Any]]]:
-        if path == f"/repos/owner/repo/issues/comments/{comments[0].get('id')}/reactions":
+        if comments and path == f"/repos/owner/repo/issues/comments/{comments[0].get('id')}/reactions":
             calls.append("reactions")
             if reaction_read_fails:
                 raise plan.PlanError("reaction read unavailable")
@@ -2942,7 +2963,7 @@ def test_close_already_complete_removes_stale_plan_state_labels() -> None:
     payload = json.loads(output.getvalue())
     assert payload["completed_steps"] == ["close_issue_already_complete", "update_labels"], payload
     assert edits[0]["add_labels"] is None, edits
-    assert edits[0]["remove_labels"] == ["plan:blocked", "plan:waiting", "plan:stale"], edits
+    assert set(edits[0]["remove_labels"]) == {"plan:blocked", "plan:waiting", "plan:stale"}, edits
 
 
 def test_close_reports_stale_project_as_non_blocking_warning() -> None:

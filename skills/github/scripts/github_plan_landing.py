@@ -150,9 +150,7 @@ def snapshot(plan: Any, repo: str, number: int) -> tuple[dict[str, Any], dict[st
 
 
 def planning_issue(plan: Any, issue: dict[str, Any], config: dict[str, Any]) -> bool:
-    labels = set(plan.normalize_labels(issue.get("labels")))
-    planning = {config["labels"][key] for key in ("plan", "active", "blocked", "waiting", "stale", "done")}
-    return "pull_request" not in issue and bool(labels.intersection(planning))
+    return github_plan_status.is_planning_issue(issue, config["labels"])
 
 
 def comment_attention(repo: str, number: int) -> bool:
@@ -280,11 +278,7 @@ def run_reconciliation_tasks(plan: Any, tasks: list[dict[str, Any]], *, apply: b
             entry["informational"] = True
         if entry["role"] == "related" and entry["status"].startswith("review_"):
             entry["informational"] = True
-    verified = {"reconciled", "unchanged", "would_reconcile", "not_planning_issue"}
-    return {"ok": all(item.get("informational") or item["status"] in verified for item in tasks),
-            "coverage": "complete" if all(item.get("verified") or item["status"] in verified for item in tasks) else "partial",
-            "review_required": any(item["status"].startswith(("review_", "not_attempted", "reconciliation_")) for item in tasks),
-            "issues": tasks}
+    return {**github_plan_status.receipt_summary(tasks), "issues": tasks}
 
 
 def reconcile_dependents(plan: Any, repo: str, number: int, *, apply: bool) -> dict[str, Any]:
@@ -335,7 +329,9 @@ def reconcile_issue(plan: Any, repo: str, issue_number: int, pull: dict[str, Any
         entry["status"] = "review_open_finish_line"
         entry["next_action"] = "Review the full finish line and discussion; use gh-plan.py close only when complete, then rerun reconcile-landing. Refs and merged prerequisites do not prove completion."
         return
-    if wait["state"] != "clear":
+    try:
+        github_plan_status.wait_records.require_clear(wait)
+    except ValueError:
         entry.update(status="review_wait_record", wait=wait)
         return
     # Use the existing closure's native relationship preflight even in preview.

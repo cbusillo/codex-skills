@@ -94,3 +94,30 @@ def label_changes(recorded: list[str], names: dict[str, str], derived: dict[str,
 
 def project_labels(recorded: list[str], names: dict[str, str], derived: dict[str, Any]) -> list[str]:
     return label_changes(recorded, names, derived)["result"]
+
+
+def normalize_author(source: dict[str, Any]) -> dict[str, Any]:
+    """REST and GraphQL expose the same author with different bot/ID shapes."""
+    author = source.get("user") or source.get("author") or {}
+    login = str(author.get("login") or "")
+    bot = author.get("type") == "Bot" or author.get("__typename") == "Bot"
+    result: dict[str, Any] = {"login": login + "[bot]" if bot and login and not login.endswith("[bot]") else login,
+                              "type": "Bot" if bot else "User"}
+    identity = author.get("databaseId", author.get("id"))
+    if type(identity) is int:
+        result["id"] = identity
+    return result
+
+
+def is_planning_issue(issue: dict[str, Any], names: dict[str, str]) -> bool:
+    observed = {str(item.get("name", "") if isinstance(item, dict) else item).casefold()
+                for item in issue.get("labels", [])}
+    return "pull_request" not in issue and bool(observed & {
+        names[key].casefold() for key in DEFAULT_STATUS_LABELS if key in names})
+
+
+def receipt_summary(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
+    verified = {"reconciled", "unchanged", "would_reconcile", "not_planning_issue"}
+    return {"ok": all(item.get("informational") or item["status"] in verified for item in outcomes),
+            "coverage": "complete" if all(item.get("verified") or item["status"] in verified for item in outcomes) else "partial",
+            "review_required": any(item["status"].startswith(("review_", "not_attempted", "reconciliation_")) for item in outcomes)}

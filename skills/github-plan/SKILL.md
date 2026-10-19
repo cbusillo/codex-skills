@@ -4,6 +4,10 @@ description: Use when the user asks for a plan, what's next / what is next in a 
 metadata:
   short-description: Plan durable work in GitHub issues
 commands:
+  - name: github-plan-reconcile-status
+    source: repo
+    example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "reconcile-status", "<issue>", "--apply"]
+    purpose: Recomputes only status labels from native blockers and reviewed waits, including recovery after a confirmed fact write.
   - name: github-plan-wait
     source: repo
     example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "wait", "<issue>"]
@@ -478,14 +482,14 @@ into its own issue, so it can be selected and claimed without clearing that wait
 For `plan:waiting`, the structured record names the actor/event and ending
 condition; the derived blocker list contains native open issue blockers only.
 
-During an authorized planning update, reconcile `label_blocked_without_native_edge`:
-verify and link an open prerequisite with
+During an authorized planning update, verify and link an open prerequisite with
 `gh-plan.py link <issue> blocked-by <prerequisite>`.
 A prose reference or milestone membership does not create that edge. If the
 prerequisite has closed, reconcile the remaining work under these status labels. If a
 maintainer must identify or create it, follow [Missing Cross-Repository
-Gates](#missing-cross-repository-gates). Choose the status from the actual next
-action or wait; a missing edge alone does not imply `plan:waiting`.
+Gates](#missing-cross-repository-gates). Record actual person/event waits with
+`wait`; the projection chooses the labels. To repair labels after a confirmed
+fact write, use `reconcile-status <issue> --apply` without repeating that write.
 A parent delegated only to open sub-issues stays `plan:active`; native sub-issue
 links express that delegation without a `blocked-by` edge.
 

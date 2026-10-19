@@ -123,7 +123,7 @@ class GoalBoardTests(unittest.TestCase):
         observed = board["tracks"][0]["children"][0]
         self.assertEqual(observed["status"], github_plan_status.DEFAULT_STATUS_LABELS["blocked"])
         self.assertEqual(observed["waits"], held["waits"])
-        self.assertEqual(observed["labels"], ["blocked", "waiting"])
+        self.assertEqual(set(observed["labels"]), {"blocked", "waiting"})
         self.assertEqual(row["body"], original)
         text = goal_board.markdown({**board, "checked_at": "now"})
         self.assertIn(observed["blocked_by"][0]["html_url"], text)
@@ -276,7 +276,7 @@ class GoalBoardTests(unittest.TestCase):
         board = self.replay(listing([{"number": 1, "title": "Track: One"}]), details(t1=long_track))
         self.assertFalse(board["coverage"]["complete"])
         self.assertIn(f"older decisions {goal_board.UNKNOWN}", goal_board.markdown({**board, "checked_at": "now"}))
-        # A decision or handoff inside the window is the latest one, so a long thread stays complete.
+        # The latest decision/handoff is visible, but omitted wait history stays unknown.
         decided = track(1, comments=[comment("Director decision: yes")])
         decided["comments"]["totalCount"] = 145
         decided["lastEditedAt"] = "2026-10-16T12:00:00Z"

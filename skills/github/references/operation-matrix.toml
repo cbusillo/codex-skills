@@ -967,12 +967,12 @@ id = "github.plan.wait"
 request_priority = "essential"
 capabilities = ["issues_read", "issues_write", "pull_requests_read"]
 permission_mode = "input_dependent"
-permission_note = "Default single-record and --all inventories read complete issue discussions; explicit --clear or --waiting-for writes one automation-authored wait record to the existing issue/PR comment endpoint. No grant, label, ownership release or prose replacement."
+permission_note = "Default single-record and --all inventories read complete issue discussions; explicit --clear or --waiting-for writes one automation-authored wait record to the existing issue/PR comment endpoint and refreshes issue status labels through the canonical guarded projection. No new grant, ownership release or prose replacement."
 entrypoint = "github/scripts/gh-plan.py wait"
 intent = "Report legacy records for one review and record every existing person/event/ownership hold or evidenced absence without prose heuristics."
 current_transport = "composite"
 selected_transport = "composite"
-endpoint_or_command = "Paged GET /repos/{repo}/issues and /issues/{number}/comments; GET /issues/{number}; optional shared comment POST; structured record readback"
+endpoint_or_command = "Paged GET /repos/{repo}/issues and /issues/{number}/comments; GET /issues/{number}; optional shared comment POST; structured record readback; delegated guarded issue label projection"
 quota_bucket = "rest_core"
 actor_policy = "automation_required_for_writes"
 mutation_class = "mixed"
@@ -2505,6 +2505,27 @@ reconciliation_strategy = "read_after_write"
 retained_graphql_rationale = "GraphQL GitHub closingIssuesReferences is the authoritative relationship for keyword/manual PR closing links; prose and merged prerequisites never establish completion."
 source_refs = ["github/scripts/gh-plan.py:cmd_reconcile_landing", "github/scripts/github_plan_landing.py:closing_references", "github/scripts/github_plan_landing.py:reconcile", "launchplane/scripts/launchplane-train-drive.py:_with_runtime_reconciliation"]
 test_refs = ["github/scripts/test_github_plan_landing.py:LandingTests", "launchplane/scripts/test_launchplane_train_drive.py:TrainDriveTests"]
+
+[[operations]]
+id = "github.plan.reconcile_status"
+request_priority = "essential"
+capabilities = ["issues_read", "issues_write"]
+permission_mode = "input_dependent"
+permission_note = "Read-only by default. Apply uses verified target configuration and the existing repository posting identity for status label changes only. Missing wait, graph or authority evidence remains review work. No new grant or identity fallback."
+entrypoint = "github/scripts/gh-plan.py reconcile-status"
+intent = "Recover a derived status projection without repeating a confirmed issue, wait, edge or close write."
+current_transport = "composite"
+selected_transport = "composite"
+endpoint_or_command = "Delegated REST issue, comment and native relationship reads, guarded issue label PATCH and readback"
+quota_bucket = "rest_core"
+actor_policy = "automation_required_for_writes"
+mutation_class = "mixed"
+idempotency = "conditional"
+retry_eligibility = "manual"
+reconciliation_strategy = "read_after_write"
+retained_graphql_rationale = "No GraphQL transport; the existing related-issue projection supplies complete evidence and guarded label writes."
+source_refs = ["github/scripts/gh-plan.py:cmd_reconcile_status", "github/scripts/gh-plan.py:refresh_planning_targets", "github/scripts/github_plan_landing.py:reconcile_related"]
+test_refs = ["github/scripts/test_github_plan_landing.py:MutationProjectionTests"]
 
 [[operations]]
 id = "github.worktree.retire_landed"

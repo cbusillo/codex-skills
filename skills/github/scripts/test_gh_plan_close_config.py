@@ -109,6 +109,9 @@ class CloseConfigTests(unittest.TestCase):
                     with patch.multiple(PLAN,
                                         default_repo=Mock(return_value=caller), load_config=config,
                                         get_issue=Mock(return_value=("fixture-bot", issue)),
+                                        collect_paged_rest_items=Mock(return_value=("fixture-bot", [
+                                            {"user": {"login": "fixture"}, "body": PLAN.github_plan_wait.marker(
+                                                PLAN.github_plan_wait.reviewed(evidence="Target completion reviewed"))}])),
                                         close_relationship_preflight=preflight,
                                         comment_route=Mock(return_value=("fixture-bot", "fake-gh", "fixture-bot")),
                                         project_meta=meta,
@@ -150,7 +153,10 @@ class CloseConfigTests(unittest.TestCase):
             if workspace is not None:
                 workspace_path.write_text(json.dumps(workspace))
             issue = {"number": 7, "state": "open", "labels": [{"name": "plan:active"}],
-                     "html_url": "https://github.com/fixture/target/issues/7"}
+                     "html_url": "https://github.com/fixture/target/issues/7",
+                     "user": {"login": "fixture"},
+                     "body": PLAN.github_plan_wait.marker(PLAN.github_plan_wait.reviewed(
+                         evidence="Fixture completion and full discussion reviewed"))}
             if indexed:
                 issue["labels"].append({"name": PLAN.github_plan_trigger.INDEX_LABEL})
             if already_closed:
@@ -181,7 +187,9 @@ class CloseConfigTests(unittest.TestCase):
                                 get_issue=Mock(return_value=("fixture-bot", issue)),
                                 close_relationship_preflight=preflight,
                                 ensure_labels=Mock(return_value=("fixture-bot", [])),
-                                collect_paged_rest_items=trigger_readback or Mock(return_value=("fixture-bot", [])),
+                                collect_paged_rest_items=trigger_readback or Mock(return_value=("fixture-bot", [
+                                    {"user": {"login": "fixture"}, "body": PLAN.github_plan_wait.marker(
+                                        PLAN.github_plan_wait.reviewed(evidence="Target completion reviewed"))}])),
                                 comment_route=Mock(return_value=("fixture-bot", "fake-gh", "fixture-bot")),
                                 project_meta=meta, project_fields=Mock(return_value={"Status": {"id": "status"}}),
                                 find_project_item=Mock(return_value={"id": "item"}), set_project_field=Mock()), \

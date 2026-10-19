@@ -119,7 +119,7 @@ class PlanCommandContextTests(unittest.TestCase):
         commands = (
             ("index",), ("search", "fixture"), ("search", '"user:fixture"'),
             ("next",), ("wait", "--all"), ("create", "fixture"), ("ensure-labels",),
-            ("reconcile-landing", "--pr", "1"), ("milestone-list",), ("milestone-show", "1"),
+            ("reconcile-landing", "--pr", "1"), ("reconcile-status", "1"), ("milestone-list",), ("milestone-show", "1"),
             ("milestone-create", "fixture"), ("milestone-update", "1", "--title", "fixture"),
             ("milestone-close", "1"),
         )
