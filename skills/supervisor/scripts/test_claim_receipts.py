@@ -2659,25 +2659,32 @@ class ReceiptTests(unittest.TestCase):
                 for path in ("run.sh", "run.py"):
                     modes = (("missing", True), ("running", True), ("overlap", True), ("terminal", False),
                              ("overlapping_later_writer", True), ("overlapping_later_append", True),
-                             ("overlapping_later_clear", False), ("overlapping_later_then_clear", False))
+                             ("overlapping_later_clear", False), ("overlapping_later_then_clear", False),
+                             ("overlapping_later_harmless_append", False),
+                             ("overlapping_later_running_harmless_append", False))
                     if harness == "codex":
                         modes += (("polled", False), ("late_poll", True))
                     for mode, pending in modes:
                         with self.subTest(harness=harness, replacement=mode, path=path, timed=timed):
                             python = path.endswith(".py")
                             overlapping = mode.startswith("overlapping_later_")
-                            if python and mode == "overlapping_later_append":
-                                continue
                             old = ("import subprocess\ndef main():\n    subprocess.run(" + repr(writer) + ", shell=True)\n") if python else writer
+                            harmless_append = mode in {"overlapping_later_harmless_append", "overlapping_later_running_harmless_append"}
+                            if python and harmless_append:
+                                old += "main()\n"
                             new = "def main():\n    print('done')\n" if python else "echo done"
                             commands = ["cat > " + path + " <<'EOF'\n" + old + "\nEOF",
                                         'sleep "$DELAY"; cat > ' + path + " <<'EOF'\n" + new + "\nEOF"]
                             if python:
                                 addition = "print('done')" if mode == "overlapping_later_clear" else "main()"
+                                if harmless_append:
+                                    addition = "print('hi')"
+                                elif mode in {"overlapping_later_writer", "overlapping_later_append", "overlapping_later_then_clear"}:
+                                    addition = "import subprocess\nsubprocess.run(" + repr(writer) + ", shell=True)"
                                 commands.append("cat >> run.py <<'EOF'\n\n" + addition + "\nEOF")
                             elif overlapping:
-                                content = "echo done" if mode == "overlapping_later_clear" else writer
-                                redirect = ">>" if mode == "overlapping_later_append" else ">"
+                                content = "echo done" if mode == "overlapping_later_clear" or harmless_append else writer
+                                redirect = ">>" if mode == "overlapping_later_append" or harmless_append else ">"
                                 commands.append("cat " + redirect + " run.sh <<'EOF'\n" + content + "\nEOF")
                                 commands[1] = "printf 'echo done\\n' > run.sh; sleep 30"
                             if mode == "overlapping_later_then_clear":
@@ -2697,6 +2704,8 @@ class ReceiptTests(unittest.TestCase):
                             elif mode == "overlap":
                                 rows.append(rows.pop(4))
                             elif overlapping:
+                                if mode == "overlapping_later_running_harmless_append":
+                                    rows[6] = output({"session_id": 789}, harness, "tool-2")
                                 completion = rows.pop(4)
                                 rows.insert(len(rows) - 2, completion)
                             if mode in {"polled", "late_poll"}:
@@ -2712,8 +2721,10 @@ class ReceiptTests(unittest.TestCase):
                                     row["timestamp"] = f"2026-01-01T00:00:{index:02d}Z"
                             histories = [{"harness": harness, "records": rows}]
                             candidates = receipts.ownership_file_candidates(histories)
-                            self.assertEqual(receipts.ownership_state(rows, harness, file_candidates=candidates)["pending"], pending)
-                            self.assertEqual(receipts.ownership_state(rows, harness)["pending"], pending)
+                            with self.subTest(scope="own_with_candidates"):
+                                self.assertEqual(receipts.ownership_state(rows, harness, file_candidates=candidates)["pending"], pending)
+                            with self.subTest(scope="own_without_candidates"):
+                                self.assertEqual(receipts.ownership_state(rows, harness)["pending"], pending)
 
                             if overlapping and timed:
                                 # The same overlap can be split across native
@@ -2724,7 +2735,8 @@ class ReceiptTests(unittest.TestCase):
                                 for peers in ((peer_a, peer_b), (peer_b, peer_a)):
                                     nodes = [{"harness": harness, "records": value} for value in (*peers, reader)]
                                     candidates = receipts.ownership_file_candidates(nodes)
-                                    self.assertEqual(receipts.ownership_state(reader, harness, file_candidates=candidates)["pending"], pending)
+                                    with self.subTest(scope="peer", reversed=peers[0] is peer_b):
+                                        self.assertEqual(receipts.ownership_state(reader, harness, file_candidates=candidates)["pending"], pending)
                 with self.subTest(harness=harness, within_running_replacement=True, timed=timed):
                     rows = history(harness, {}, {})[:-2 if harness == "codex" else -1]
                     for index, command in enumerate(("cat > run.sh <<'EOF'\n" + writer + "\nEOF",
@@ -2739,6 +2751,35 @@ class ReceiptTests(unittest.TestCase):
                             row["timestamp"] = f"2026-01-01T00:00:{index:02d}Z"
                     candidates = receipts.ownership_file_candidates([{"harness": harness, "records": rows}])
                     self.assertFalse(receipts.ownership_state(rows, harness, file_candidates=candidates)["pending"])
+
+                for path in ("run.sh", "run.py"):
+                    for active_writer, pending in (("unrelated", False), ("harmless_append", False), ("owning_replacement", True)):
+                        with self.subTest(harness=harness, timed=timed, path=path, active_writer=active_writer):
+                            python = path.endswith(".py")
+                            owner = "import subprocess\nsubprocess.run(" + repr(writer) + ", shell=True)" if python else writer
+                            harmless = "print('done')" if python else "echo done"
+                            destination = "other.py" if python else "other.sh"
+                            if active_writer != "unrelated":
+                                destination = path
+                            content = harmless if active_writer == "harmless_append" else owner
+                            redirect = ">>" if active_writer == "harmless_append" else ">"
+                            commands = ("cat > " + path + " <<'EOF'\n" + owner + "\nEOF",
+                                        "cat " + redirect + " " + destination + " <<'EOF'\n" + content + "\nEOF",
+                                        "cat > " + path + " <<'EOF'\n" + harmless + "\nEOF\n" + ("python3 " if python else "bash ") + path)
+                            rows = history(harness, {}, {}, {})[:-2 if harness == "codex" else -1]
+                            for index, command in enumerate(commands):
+                                if harness == "codex":
+                                    rows[2 * index + 1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                                else:
+                                    rows[2 * index + 1]["message"]["content"][0]["input"] = {"command": command}
+                                rows[2 * index + 2] = output({"session_id": 234} if index == 1 else {"exit_code": 0}, harness, f"tool-{index}")
+                            rows.pop()
+                            if timed:
+                                for index, row in enumerate(rows[1:], 1):
+                                    row["timestamp"] = f"2026-01-01T00:00:{index:02d}Z"
+                            candidates = receipts.ownership_file_candidates([{"harness": harness, "records": rows}])
+                            self.assertEqual(receipts.ownership_state(rows, harness, file_candidates=candidates)["pending"], pending)
+                            self.assertEqual(receipts.ownership_state(rows, harness)["pending"], pending)
 
     def test_within_call_file_execution_obeys_write_order_and_replacement(self):
         writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 12'
@@ -2761,6 +2802,8 @@ class ReceiptTests(unittest.TestCase):
         for copier in ("cp", "mv", "install", "install -m 755", "cp -r"):
             # The actual destination receives the recorded executable source.
             scripts += (("cat > tmpl.sh <<'EOF'\n" + writer + "\nEOF\n" + copier + " tmpl.sh run.sh; bash run.sh", True),)
+        for copier in ("cp tmpl.sh out", "cp tmpl.sh b.sh out"):
+            scripts += (("cat > tmpl.sh <<'EOF'\n" + writer + "\nEOF\necho 'echo safe' > b.sh; mkdir out; " + copier + "; bash out/tmpl.sh", True),)
         for copier in ("cp -t out", "cp --target-directory=out"):
             scripts += (("cat > tmpl.sh <<'EOF'\n" + writer + "\nEOF\nmkdir out; " + copier + " tmpl.sh; bash out/tmpl.sh", True),)
         scripts += (("cat > tmpl.sh <<'EOF'\n" + writer + "\nEOF\ncp tmpl.sh run.sh; echo 'echo done' > tmpl.sh; bash run.sh", True),
@@ -2948,7 +2991,7 @@ class ReceiptTests(unittest.TestCase):
             ("import subprocess\nfor helper in ['/catalog/read0.py', '/catalog/read1.py', '/catalog/read2.py', '/catalog/read3.py', '/catalog/read4.py', '/catalog/read5.py', '/catalog/read6.py', '/catalog/read7.py', '/catalog/read8.py', '/catalog/read9.py', '/catalog/read10.py', '/catalog/read11.py', '/catalog/gh-plan.py']:\n    subprocess.run([helper,'--repo','client/repo','claim','12'])", True),
             ("import subprocess\nfor helper in ['/catalog/read0.py', '/catalog/read1.py', '/catalog/read2.py', '/catalog/read3.py', '/catalog/read4.py', '/catalog/read5.py', '/catalog/read6.py', '/catalog/read7.py', '/catalog/read8.py', '/catalog/read9.py', '/catalog/read10.py', '/catalog/read11.py', '/catalog/gh-plan.py']:\n    subprocess.run([helper,'--repo','client/repo','show','12'])", False),
             ("import os\nfor command in ['echo safe0', 'echo safe1', 'echo safe2', 'echo safe3', 'echo safe4', 'echo safe5', 'echo safe6', 'echo safe7', 'echo safe8', 'echo safe9', 'echo safe10', 'echo safe11', 'uv run /catalog/gh-plan.py --repo client/repo claim 12']:\n    os.system(command)", True),
-            ("import subprocess\nfor command in " + repr([["/catalog/gh-plan.py", "--repo", "client/repo", verb, str(index)] for index in range(5) for action in receipts.helper_parser("gh-plan.py")._actions if isinstance(action, argparse._SubParsersAction) for verb in action.choices if verb != "claim"]) + ":\n    subprocess.run(command)", False),
+            ("import subprocess\nfor command in " + repr([["/catalog/gh-plan.py", "--repo", "client/repo", verb, str(index)] for index in range(5) for action in receipts.helper_parser("gh-plan.py")._actions if isinstance(action, argparse._SubParsersAction) for verb in action.choices if not receipts.ownership_command(["/catalog/gh-plan.py", "--repo", "client/repo", verb, str(index)])]) + ":\n    subprocess.run(command)", False),
             ("import subprocess\nfor prefix in [['/catalog/read0.py'], ['/catalog/read1.py'], ['/catalog/read2.py'], ['/catalog/read3.py'], ['/catalog/read4.py'], ['/catalog/read5.py'], ['/catalog/read6.py'], ['/catalog/read7.py'], ['/catalog/read8.py'], ['/catalog/read9.py'], ['/catalog/read10.py'], ['/catalog/read11.py'], ['/catalog/gh-plan.py']]:\n    subprocess.run(prefix+['--repo','client/repo','claim','12'])", True),
             ("import subprocess\nfor prefix in [['/catalog/read0.py'], ['/catalog/read1.py'], ['/catalog/read2.py'], ['/catalog/read3.py'], ['/catalog/read4.py'], ['/catalog/read5.py'], ['/catalog/read6.py'], ['/catalog/read7.py'], ['/catalog/read8.py'], ['/catalog/read9.py'], ['/catalog/read10.py'], ['/catalog/read11.py'], ['/catalog/gh-plan.py']]:\n    subprocess.run(prefix+['--repo','client/repo','show','12'])", False),
             ("import subprocess\nfor text in ['safe0', 'safe1', 'safe2', 'safe3', 'safe4', 'safe5', 'safe6', 'safe7', 'safe8', 'safe9', 'safe10', 'safe11', 'uv run /catalog/gh-plan.py --repo client/repo claim 12']:\n    subprocess.run(['echo',text])", False),
@@ -3025,6 +3068,52 @@ class ReceiptTests(unittest.TestCase):
             ('import os\nclass Job:\n    cmd="echo done"\n    def configure(self): self.cmd=\'uv run /catalog/gh-plan.py --repo client/repo claim 12\'\n    def run(self): self.configure()\njob=Job()\njob.run()\njob.cmd="echo done"\njob.run()\nos.system(job.cmd)', True),
             ('import os\nclass Job:\n    cmd="echo done"\n    def configure(self): self.cmd=\'uv run /catalog/gh-plan.py --repo client/repo claim 12\'\njob=Job()\njob.cmd="echo done"\ndef configure(): job.configure()\nconfigure()\njob.cmd="echo done"\nconfigure()\nos.system(job.cmd)', True),
             ('import os\nclass Job:\n    cmd="echo done"\n    def configure(self): self.cmd=\'uv run /catalog/gh-plan.py --repo client/repo claim 12\'\njob=Job()\njob.cmd="echo done"\ndef configure(target): target.configure()\nconfigure(job)\njob.cmd="echo done"\nconfigure(job)\nos.system(job.cmd)', True),
+            ("import os,sys\nclass Job:\n    def __init__(self,c): self.cmd=c\nfor n in map(int,sys.argv[1:]): os.system('uv run /catalog/gh-plan.py --repo client/repo claim 12')", True),
+            ("import os,sys\nclass Job:\n    def __init__(self,c): self.cmd=c\nfor n in map(str.strip,sys.argv[1:]): os.system('uv run /catalog/gh-plan.py --repo client/repo claim 12')", True),
+            ("import os,sys\nclass Job:\n    def __init__(self,c): self.cmd=c\nfor n in map(os.path.abspath,sys.argv[1:]): os.system('uv run /catalog/gh-plan.py --repo client/repo claim 12')", True),
+            ("import os,sys\nclass Job:\n    def __init__(self,c): self.cmd=c\nfor n in map(Job,sys.argv[1:]): os.system('uv run /catalog/gh-plan.py --repo client/repo claim 12')", True),
+            ("import os\nfor n in map(int,[]): os.system('uv run /catalog/gh-plan.py --repo client/repo claim 12')", False),
+            ('for n in map(int,["1"]): print(n)', False),
+            ("import os\n[os.system('uv run /catalog/gh-plan.py --repo client/repo claim 12') for n in map(int,ids)]", True),
+            ('import os\ndef jobs():\n    os.system(\'uv run /catalog/gh-plan.py --repo client/repo claim 12\')\n    yield "item"\nfor i,c in enumerate(jobs()): pass', True),
+            ('import os\ndef jobs():\n    os.system(\'uv run /catalog/gh-plan.py --repo client/repo claim 12\')\n    yield "item"\nfor c,d in zip(jobs(),[0]): pass', True),
+            ('import os\ndef jobs():\n    os.system(\'uv run /catalog/gh-plan.py --repo client/repo claim 12\')\n    yield "item"\nfor c in tqdm(jobs()): pass', True),
+            ('import os\ndef jobs():\n    os.system(\'uv run /catalog/gh-plan.py --repo client/repo claim 12\')\n    yield "item"\nfor c in itertools.chain(jobs()): pass', True),
+            ('import os\ndef jobs():\n    os.system(\'uv run /catalog/gh-plan.py --repo client/repo claim 12\')\n    yield "item"\nprint(*jobs())', True),
+            ('import os\ndef jobs():\n    os.system(\'uv run /catalog/gh-plan.py --repo client/repo claim 12\')\n    yield "item"\nitems=[*jobs()]', True),
+            ('import os\ndef jobs():\n    os.system(\'uv run /catalog/gh-plan.py --repo client/repo claim 12\')\n    yield "item"\nprint(jobs())', False),
+            ('import os\ndef jobs():\n    os.system(\'uv run /catalog/gh-plan.py --repo client/repo claim 12\')\n    yield "item"\nunused=tqdm(jobs())', False),
+            ('import os\ndef jobs():\n    os.system(\'uv run /catalog/gh-plan.py --repo client/repo claim 12\')\n    yield "item"\nprint(tqdm(jobs()))', False),
+            ('import os\ndef jobs():\n    os.system(\'uv run /catalog/gh-plan.py --repo client/repo claim 12\')\n    yield "item"\ninspect.signature(jobs())', False),
+            ("import contextlib,os\n@contextlib.contextmanager\ndef claimed():\n    os.system('uv run /catalog/gh-plan.py --repo client/repo claim 12')\n    yield\nwith claimed(): pass", True),
+            ("import contextlib,os\nclass Job:\n    @contextlib.contextmanager\n    def claimed(self):\n        os.system('uv run /catalog/gh-plan.py --repo client/repo claim 12')\n        yield\nwith Job().claimed(): pass", True),
+            ("import os\ndef jobs(): yield 'uv run /catalog/gh-plan.py --repo client/repo claim 12'\nfor i,c in enumerate(jobs()): os.system(c)", True),
+            ("import os\nos.system(' && '.join(['cd /repo', 'uv run /catalog/gh-plan.py --repo client/repo claim 12']))", True),
+            ("import os\nos.system(' && '.join(['echo a', 'echo b']))", False),
+            ("import os\nos.system('\\n'.join(['cd /repo', 'uv run /catalog/gh-plan.py --repo client/repo claim 12']))", True),
+            ("import os\nos.system('\\n'.join(['echo a', 'echo b']))", False),
+            ("import os\nos.system('; '.join(['cd /repo', 'uv run /catalog/gh-plan.py --repo client/repo claim 12']))", True),
+            ("import os\nos.system('; '.join(['echo a', 'echo b']))", False),
+            ("import os\nos.system(min(['uv run /catalog/gh-plan.py --repo client/repo claim 12']))", True),
+            ('import os\nos.system(min(["echo a","echo b"]))', False),
+            ("import os\nos.system(max(['uv run /catalog/gh-plan.py --repo client/repo claim 12']))", True),
+            ('import os\nos.system(max(["echo a","echo b"]))', False),
+            ('import os\ncommands=dict([("claim",\'uv run /catalog/gh-plan.py --repo client/repo claim 12\')])\nos.system(commands["claim"])', True),
+            ('import os\nclass Config:\n    cmd="echo done"\n    @classmethod\n    def arm(cls): cls.cmd=\'uv run /catalog/gh-plan.py --repo client/repo claim 12\'\ndef prepare(): Config.arm()\nprepare()\nConfig.cmd="echo done"\nprepare()\nos.system(Config.cmd)', True),
+            ('import os\nclass Child:\n    def __init__(self): self.cmd="echo done"\n    def configure(self): self.cmd=\'uv run /catalog/gh-plan.py --repo client/repo claim 12\'\ndef configure(t): t.configure()\nclass Job:\n    def __init__(self):\n        self.child=Child()\n        self.parts=[self.child]\n    def run(self): self.child.configure()\njob=Job()\njob.run()\njob.child.cmd="echo done"\njob.run()\nos.system(job.child.cmd)', True),
+            ('import os\nclass Child:\n    def __init__(self): self.cmd="echo done"\n    def configure(self): self.cmd=\'uv run /catalog/gh-plan.py --repo client/repo claim 12\'\ndef configure(t): t.configure()\nclass Job:\n    def __init__(self):\n        self.child=Child()\n        self.parts=[self.child]\n    def run(self): configure(self.child)\njob=Job()\njob.run()\njob.child.cmd="echo done"\njob.run()\nos.system(job.child.cmd)', True),
+            ('import os\nclass Child:\n    def __init__(self): self.cmd="echo done"\n    def configure(self): self.cmd=\'uv run /catalog/gh-plan.py --repo client/repo claim 12\'\ndef configure(t): t.configure()\nclass Job:\n    def __init__(self):\n        self.child=Child()\n        self.parts=[self.child]\n    def run(self): \n        for p in self.parts: p.configure()\njob=Job()\njob.run()\njob.child.cmd="echo done"\njob.run()\nos.system(job.child.cmd)', True),
+            ('import argparse,os\ndef claim(args): os.system(\'uv run /catalog/gh-plan.py --repo client/repo claim 12\')\np=argparse.ArgumentParser()\nsub=p.add_subparsers()\nc=sub.add_parser("claim")\nc.set_defaults(func=claim)\nargs=p.parse_args()\nargs.func(args)', True),
+            ('import argparse,os\ndef claim(args): os.system(\'uv run /catalog/gh-plan.py --repo client/repo claim 12\')\np=argparse.ArgumentParser()\nsub=p.add_subparsers()\nc=sub.add_parser("claim")\nc.set_defaults(func=claim)\nargs=p.parse_args()\nprint(args.func)', False),
+            ("import os\nclass Base:\n    def __init__(self,cmd): self.cmd=cmd\n    def run(self): os.system(self.cmd)\nclass Job(Base):\n    def __init__(self,cmd): super().__init__(cmd)\nJob('uv run /catalog/gh-plan.py --repo client/repo claim 12').run()", True),
+            ("import click,os\n@click.group()\ndef cli(): pass\ndef claim(): os.system('uv run /catalog/gh-plan.py --repo client/repo claim 12')\ncli.add_command(claim)\ncli()", True),
+            ("import click,os\n@click.group()\ndef cli(): pass\ndef claim(): os.system('uv run /catalog/gh-plan.py --repo client/repo claim 12')\ncli.add_command(claim)", False),
+            ("from dataclasses import dataclass\nimport os\n@dataclass\nclass Job:\n    cmd: str\n    def __post_init__(self): os.system(self.cmd)\nJob('uv run /catalog/gh-plan.py --repo client/repo claim 12')", True),
+            ('from dataclasses import dataclass\nimport os\n@dataclass\nclass Job: cmd: str\ndef make(): return Job("echo done")\nfirst=make()\nfirst.cmd=\'uv run /catalog/gh-plan.py --repo client/repo claim 12\'\nsecond=make()\nos.system(second.cmd)', False),
+            ('import os\nclass Job:\n    cmd="echo done"\n    def run(self): os.system(self.cmd)\ndef factory(): return Job()\na=factory()\na.cmd=\'uv run /catalog/gh-plan.py --repo client/repo claim 12\'\nb=factory()\nb.run()', False),
+            ("import os\nclass Job:\n    def __init__(self,cmd): os.system(cmd)\nlist(map(Job,['uv run /catalog/gh-plan.py --repo client/repo claim 12']))", True),
+            ("import os\nclass Job:\n    def __init__(self,cmd): os.system(cmd)\nunused=map(Job,['uv run /catalog/gh-plan.py --repo client/repo claim 12'])", False),
+            ('import os\nclass Job:\n    def __init__(self,cmd): os.system(cmd)\nlist(map(Job,["echo done"]))', False),
         )
         for harness in ("codex", "claude"):
             for program, pending in programs:
@@ -3096,6 +3185,10 @@ class ReceiptTests(unittest.TestCase):
             dormant = 'import subprocess\ndef helper():\n    pass\n'
             launched = dormant + 'helper()\n'
             for mutation in ("cp tmpl.py run.py", "mv tmpl.py run.py", "git checkout -- run.py",
+                             "cp /elsewhere/tmpl.py run.py", "mv /elsewhere/tmpl.py run.py",
+                             "install /elsewhere/tmpl.py run.py", "cp -t /repo /elsewhere/run.py",
+                             "cp --target-directory=/repo /elsewhere/run.py",
+                             "cp -r /elsewhere/tmpl/. /repo",
                              "git checkout run.py", "git checkout HEAD run.py", "git -C /repo restore .",
                              "sed -i 's/x/y/' run.py", "perl -pi -e 's/x/y/' run.py",
                              "git checkout -- .", "git restore .", "git restore /repo/",

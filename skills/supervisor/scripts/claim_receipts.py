@@ -885,6 +885,11 @@ def source_mutation_paths(argv):
         return {"path": path, "invalidates": True, "recursive": True, **extra}
     if name in {"cp", "mv", "install"}:
         operands, target, cursor = [], None, 0
+        recursive = name == "mv" or any(word == "--recursive" or word.startswith('-') and not word.startswith('--')
+                                        and any(letter in word[1:] for letter in "rRa") for word in words)
+        def transfer(source, destination, **extra):
+            return invalidation(destination, copy_from=source, replaces=True, copy_recursive=recursive,
+                                copy_contents=source.rstrip('/').endswith('/.'), **extra)
         while cursor < len(words):
             word = words[cursor]
             if name == "install" and word in {"-m", "--mode", "-o", "--owner", "-g", "--group", "--suffix"}:
@@ -902,11 +907,11 @@ def source_mutation_paths(argv):
                 operands.append(word)
             cursor += 1
         if target is not None:
-            return [invalidation(posixpath.join(target, posixpath.basename(path.rstrip('/'))), copy_from=path, replaces=True)
+            return [transfer(path, posixpath.join(target, posixpath.basename(path.rstrip('/'))))
                     for path in operands]
         if len(operands) >= 2:
             destination = operands[-1]
-            return [invalidation(destination, copy_from=path, destination_may_be_directory=True, replaces=True)
+            return [transfer(path, destination, destination_may_be_directory=True, destination_is_directory=len(operands) > 2)
                     for path in operands[:-1]]
     if name in {"sed", "perl"}:
         if any(word.startswith("-") and not word.startswith("--") and "i" in word[1:]
@@ -2290,6 +2295,8 @@ def python_ownership(content, *, partial=False):
     fingerprints = {}
     instances = []
     class_bases = {}
+    method_classes = {}
+    attribute_mutations = 0
 
     class Scope:
         def __init__(self, parent=None, local_names=None, globals_=(), nonlocals=()):
@@ -2371,6 +2378,10 @@ def python_ownership(content, *, partial=False):
             self.kind, self.attributes = kind, {}
             instances.append(self)
 
+    class Super:
+        def __init__(self, kind, receiver):
+            self.kind, self.receiver = kind, receiver
+
     class Partial:
         def __init__(self, functions, arguments, keywords):
             self.functions, self.arguments, self.keywords = functions, arguments, keywords
@@ -2388,9 +2399,9 @@ def python_ownership(content, *, partial=False):
             self.items = items
 
     class Generator:
-        def __init__(self, node, scope, arguments=(), keywords=()):
+        def __init__(self, node, scope, arguments=(), keywords=(), operands=None):
             self.node, self.scope = node, scope
-            self.arguments, self.keywords = arguments, keywords
+            self.arguments, self.keywords, self.operands = arguments, keywords, operands
 
     def same(left, right):
         if isinstance(left, ast.alias) and isinstance(right, ast.alias):
@@ -2503,15 +2514,19 @@ def python_ownership(content, *, partial=False):
     def member(owner, name):
         if isinstance(owner, Instance) and name in owner.attributes:
             return owner.attributes[name]
-        kind = owner.kind if isinstance(owner, Instance) else owner
+        receiver = owner.receiver if isinstance(owner, Super) else owner
+        kind = receiver.kind if isinstance(receiver, Instance) else receiver
+        assigned = class_member(kind, name)
+        if isinstance(owner, Super):
+            assigned = next((matched for base in class_bases.get(id(owner.kind), ()) if (matched := class_member(base, name))), ())
         result = []
-        for item in class_member(kind, name):
+        for item in assigned:
             if isinstance(item, Function):
                 decorators = {ast.unparse(decorator).split('(')[0] for decorator in item.node.decorator_list}
                 if "classmethod" in decorators:
                     item = Bound(item, kind)
-                elif "staticmethod" not in decorators and isinstance(owner, Instance):
-                    item = Bound(item, owner)
+                elif "staticmethod" not in decorators and isinstance(receiver, Instance):
+                    item = Bound(item, receiver)
             result.append(item)
         return choices(result)
 
@@ -2529,20 +2544,17 @@ def python_ownership(content, *, partial=False):
                     return None
         return local
 
-    def iterated(node, scope):
-        if isinstance(node, ast.Call) and "map" in function_names(node.func, scope) and len(node.args) > 1:
-            arguments = [iterated(argument, scope) for argument in node.args[1:]]
-            return choices(item for function in value(node.args[0], scope) for item in invoke(function, scope, arguments, evaluated=True))
-        if isinstance(node, ast.GeneratorExp):
-            local = comprehension(node, scope)
-            if local is None:
-                return ()
-            scan(node.elt, local)
-            return value(node.elt, local)
+    def iterate_values(sequences, scope):
         result = []
-        for sequence in value(node, scope):
+        for sequence in sequences:
             if isinstance(sequence, Generator):
-                if isinstance(sequence.node, (ast.GeneratorExp, ast.Call)):
+                if sequence.operands is not None:
+                    items = choices(item for operand in sequence.operands for item in iterate_values((operand,), sequence.scope))
+                    if sequence.arguments == ("enumerate",):
+                        result.extend((unknown, item) for item in items)
+                    else:
+                        result.extend(items)
+                elif isinstance(sequence.node, (ast.GeneratorExp, ast.Call)):
                     result.extend(iterated(sequence.node, sequence.scope))
                 else:
                     result.extend(invoke(sequence.node, sequence.scope, sequence.arguments, sequence.keywords, evaluated=True, consumed=True))
@@ -2553,6 +2565,21 @@ def python_ownership(content, *, partial=False):
             else:
                 result.append(unknown)
         return choices(result)
+
+    def iterated(node, scope):
+        if isinstance(node, ast.Call) and "map" in function_names(node.func, scope) and len(node.args) > 1:
+            arguments = [iterated(argument, scope) for argument in node.args[1:]]
+            if any(not assigned for assigned in arguments):
+                return ()
+            return choices(item for function in value(node.args[0], scope)
+                           for item in (invoke(function, scope, arguments, evaluated=True) or (unknown,)))
+        if isinstance(node, ast.GeneratorExp):
+            local = comprehension(node, scope)
+            if local is None:
+                return ()
+            scan(node.elt, local)
+            return value(node.elt, local)
+        return iterate_values(value(node, scope), scope)
 
     def value(node, scope):
         if isinstance(node, ast.Name):
@@ -2628,6 +2655,16 @@ def python_ownership(content, *, partial=False):
             if cached is not None:
                 return cached
             names = function_names(node.func, scope)
+            if "super" in names:
+                parameters = [*active[-1].args.posonlyargs, *active[-1].args.args] if active else []
+                kinds = value(node.args[0], scope) if node.args else (method_classes.get(id(active[-1])) if active else None,)
+                receivers = value(node.args[1], scope) if len(node.args) > 1 else scope.get(parameters[0].arg, ()) if parameters else ()
+                return choices(Super(kind, receiver) for kind in kinds for receiver in receivers if isinstance(kind, ast.ClassDef)) or (unknown,)
+            if "enumerate" in names and node.args:
+                result = (Generator(None, scope, operands=value(node.args[0], scope)),)
+                # Enumeration preserves the yielded operand in its pair slot.
+                result[0].arguments = ("enumerate",)
+                return result
             if "map" in names:
                 result = (Generator(node, scope),)
                 expression_values[id(scope), id(node)] = result
@@ -2656,14 +2693,34 @@ def python_ownership(content, *, partial=False):
                         except ValueError:
                             split.append(unknown)
                     return choices(split)
-                if names & {"list", "tuple", "set", "next", "sorted", "dict", "min", "max"} or any(name.endswith(".join") for name in names):
+                if any(name.endswith(".join") for name in names) and isinstance(node.func, ast.Attribute):
+                    rendered = []
+                    for separator in value(node.func.value, scope):
+                        for sequence in arguments:
+                            items = iterate_values((sequence,), scope)
+                            if isinstance(separator, str) and isinstance(sequence, (list, tuple)) and all(isinstance(item, str) for item in sequence):
+                                rendered.append(separator.join(sequence))
+                            else:
+                                rendered.append(overflow if any(executable_value(item) for item in items) else computed)
+                    return choices(rendered)
+                if names & {"min", "max"}:
+                    return iterated(node.args[0], scope) or (unknown,)
+                if "dict" in names:
+                    entries = iterated(node.args[0], scope)
+                    mapping = {}
+                    for entry in entries:
+                        if isinstance(entry, (list, tuple)) and len(entry) == 2 and isinstance(entry[0], (str, int)):
+                            mapping[entry[0]] = choices((*mapping.get(entry[0], ()), entry[1]))
+                    if mapping:
+                        return (Keywords(mapping),)
+                if names & {"list", "tuple", "set", "next", "sorted"}:
                     items = iterated(node.args[0], scope)
                     return items if "next" in names else (list(items),)
             if names & {"functools.partial"} and node.args:
                 result = (Partial(value(node.args[0], scope), expanded_arguments(node.args[1:], scope), call_keywords(node.keywords, scope)),)
                 expression_values[id(scope), id(node)] = result
                 return result
-            if isinstance(node.func, ast.Attribute) and node.func.attr == "parse_args":
+            if isinstance(node.func, ast.Attribute) and node.func.attr in {"parse_args", "add_subparsers", "add_parser"}:
                 result = choices(owner for owner in value(node.func.value, scope) if isinstance(owner, Registry))
                 if result:
                     expression_values[id(scope), id(node)] = result
@@ -2672,22 +2729,9 @@ def python_ownership(content, *, partial=False):
                 result = (Registry(),)
                 expression_values[id(scope), id(node)] = result
                 return result
-            constructed = []
             functions = value(node.func, scope)
-            for kind in functions:
-                if isinstance(kind, ast.ClassDef):
-                    instance = Instance(kind)
-                    initializers = member(instance, "__init__")
-                    if initializers:
-                        for initializer in initializers:
-                            invoke(initializer, scope, node.args, node.keywords)
-                    elif any(function_names(decorator.func if isinstance(decorator, ast.Call) else decorator, scope) & {"dataclasses.dataclass"} for decorator in kind.decorator_list):
-                        fields = [statement.target.id for statement in kind.body if isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name)]
-                        supplied = dict(zip(fields, expanded_arguments(node.args, scope)))
-                        supplied.update(call_keywords(node.keywords, scope))
-                        for name in fields:
-                            instance.attributes[name] = supplied.get(name, class_bindings.get(id(kind), {}).get(name, (unknown,)))
-                    constructed.append(instance)
+            constructed = [construct(kind, scope, expanded_arguments(node.args, scope), call_keywords(node.keywords, scope))
+                           for kind in functions if isinstance(kind, ast.ClassDef)]
             if constructed:
                 result = choices(constructed)
                 expression_values[id(scope), id(node)] = result
@@ -2708,8 +2752,13 @@ def python_ownership(content, *, partial=False):
             if isinstance(item, Keywords):
                 return any(possible_code(assigned) for assigned in item.items.values())
             return any(possible_code(child) for child in item) if isinstance(item, (list, tuple)) else isinstance(item, str) and (overflow in item or executable_content(item) or opaque_ownership("exec_command", {"cmd": item}))
-        if node is not None and any(possible_code(item) for child in ast.iter_child_nodes(node) for item in value(child, scope)):
-            return (overflow,)
+        if node is not None:
+            operands = [item for child in ast.iter_child_nodes(node) for item in value(child, scope)]
+            generators = [item for item in operands if isinstance(item, Generator)]
+            if generators:
+                return (Generator(None, scope, operands=generators),)
+            if any(possible_code(item) for item in operands):
+                return (overflow,)
         return (unknown,)
 
     def add(left, right):
@@ -2804,6 +2853,9 @@ def python_ownership(content, *, partial=False):
         for argument in arguments:
             if isinstance(argument, ast.Starred):
                 sequences = value(argument.value, scope)
+                if any(isinstance(sequence, Generator) for sequence in sequences):
+                    result.extend((item,) for item in iterate_values(sequences, scope))
+                    continue
                 length = max((len(sequence) for sequence in sequences if isinstance(sequence, (list, tuple))), default=0)
                 for index in range(length):
                     result.append(choices(sequence[index] if isinstance(sequence, (list, tuple)) and index < len(sequence) else unknown for sequence in sequences))
@@ -2848,12 +2900,39 @@ def python_ownership(content, *, partial=False):
         memo[identity] = result
         return result
 
+    def reusable_result(item):
+        if isinstance(item, (Instance, Registry)):
+            return False
+        if isinstance(item, Keywords):
+            return all(reusable_result(assigned) for assigned in item.items.values())
+        return all(reusable_result(child) for child in item) if isinstance(item, (list, tuple)) else True
+
+    def construct(kind, scope, arguments, keywords):
+        nonlocal attribute_mutations
+        instance = Instance(kind)
+        initializers = member(instance, "__init__")
+        if initializers:
+            for initializer in initializers:
+                invoke(initializer, scope, arguments, keywords, evaluated=True)
+        elif any(function_names(decorator.func if isinstance(decorator, ast.Call) else decorator, scope) & {"dataclasses.dataclass"} for decorator in kind.decorator_list):
+            fields = [statement.target.id for statement in kind.body if isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name)]
+            supplied = dict(zip(fields, arguments))
+            supplied.update(keywords)
+            for name in fields:
+                attribute_mutations += 1
+                instance.attributes[name] = supplied.get(name, class_bindings.get(id(kind), {}).get(name, (unknown,)))
+            for hook in member(instance, "__post_init__"):
+                invoke(hook, scope)
+        return instance
+
     def invoke(wrapper, caller, arguments=(), keywords=(), *, evaluated=False, consumed=False):
         nonlocal found, recursion_skips, expression_values
         argument_values = list(arguments) if evaluated else expanded_arguments(arguments, caller)
         keyword_values = dict(keywords) if evaluated else call_keywords(keywords, caller)
         if isinstance(wrapper, Partial):
             return choices(item for function in wrapper.functions for item in invoke(function, caller, [*wrapper.arguments, *argument_values], dict(wrapper.keywords, **keyword_values), evaluated=True, consumed=consumed))
+        if isinstance(wrapper, ast.ClassDef):
+            return (construct(wrapper, caller, argument_values, keyword_values),)
         if isinstance(wrapper, ast.alias) and wrapper.name in launches:
             parameter = "args" if wrapper.name.startswith("subprocess.") else "cmd" if wrapper.name == "os.popen" else "command"
             commands = argument_values[0] if argument_values else keyword_values.get(parameter, ())
@@ -2897,7 +2976,7 @@ def python_ownership(content, *, partial=False):
             owning, result = invocation_cache[cache_key]
             found |= owning
             return result
-        previous, generation = found, recursion_skips
+        previous, generation, mutation_start = found, recursion_skips, attribute_mutations
         found = False
         active.append(node)
         expressions, expression_values = expression_values, {}
@@ -2915,7 +2994,8 @@ def python_ownership(content, *, partial=False):
             active.pop()
         owning, result = found, choices(returned) or (unknown,)
         found |= previous
-        if cacheable and recursion_skips == generation:
+        if (cacheable and recursion_skips == generation and attribute_mutations == mutation_start
+                and reusable_result(result)):
             invocation_cache[cache_key] = owning, result
         return result
 
@@ -2935,6 +3015,12 @@ def python_ownership(content, *, partial=False):
         if isinstance(node, ast.Call):
             names = function_names(node.func, scope)
             functions = value(node.func, scope)
+            # Unknown data callees still expand starred operands. Known launch
+            # and wrapper paths expand them in their own actual invocation.
+            if (any(isinstance(argument, ast.Starred) for argument in node.args)
+                    and not names & launches
+                    and not any(isinstance(function, (Function, Bound, Partial, ast.ClassDef)) for function in functions)):
+                expanded_arguments(node.args, scope)
             for function in names & launches:
                 arguments = expanded_arguments(node.args, scope)
                 commands = arguments[0] if arguments else None
@@ -2971,11 +3057,11 @@ def python_ownership(content, *, partial=False):
                         invoke(function, scope, arguments, keywords, evaluated=True)
                 if len(node.args) == 1 and (names & {"list", "tuple", "set", "next", "sum", "any", "all", "sorted", "dict", "min", "max"} or any(name.endswith(".join") for name in names)):
                     iterated(node.args[0], scope)
-                if isinstance(node.func, ast.Attribute) and node.func.attr == "set_defaults":
-                    owner = node.func.value if isinstance(node.func, ast.Attribute) else None
-                    for registry in value(owner, scope):
+                if isinstance(node.func, ast.Attribute) and node.func.attr in {"set_defaults", "add_command"}:
+                    for registry in value(node.func.value, scope):
                         if isinstance(registry, Registry):
-                            registry.handlers.extend(call_keywords(node.keywords, scope).get("func", ()))
+                            handlers = value(node.args[0], scope) if node.func.attr == "add_command" and node.args else call_keywords(node.keywords, scope).get("func", ())
+                            registry.handlers.extend(handlers)
 
         for child in ast.iter_child_nodes(node):
             if not isinstance(child, ast.stmt):
@@ -3002,13 +3088,16 @@ def python_ownership(content, *, partial=False):
         return merged(states)
 
     def bind(target, assigned, scope):
+        nonlocal attribute_mutations
         if isinstance(target, ast.Name):
             scope[target.id] = assigned
         elif isinstance(target, ast.Attribute):
             for owner in value(target.value, scope):
                 if isinstance(owner, Instance):
+                    attribute_mutations += 1
                     owner.attributes[target.attr] = assigned
                 elif isinstance(owner, ast.ClassDef):
+                    attribute_mutations += 1
                     class_bindings.setdefault(id(owner), {})[target.attr] = assigned
         elif isinstance(target, (ast.Tuple, ast.List)):
             for index, child in enumerate(target.elts):
@@ -3089,8 +3178,10 @@ def python_ownership(content, *, partial=False):
                 walk(statement.finalbody, scope)
             elif isinstance(statement, (ast.With, ast.AsyncWith)):
                 for item in statement.items:
+                    assigned = value(item.context_expr, scope)
+                    iterate_values(tuple(value for value in assigned if isinstance(value, Generator)), scope)
                     if item.optional_vars is not None:
-                        bind(item.optional_vars, value(item.context_expr, scope), scope)
+                        bind(item.optional_vars, assigned, scope)
                 walk(statement.body, scope)
             elif isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 function = Function(statement, scope.parent if methods else scope)
@@ -3114,6 +3205,10 @@ def python_ownership(content, *, partial=False):
                 local = Scope(scope)
                 walk(statement.body, local, methods=True)
                 class_bindings[id(statement)] = local.state
+                for assigned in local.state.values():
+                    for function in assigned:
+                        if isinstance(function, Function):
+                            method_classes[id(function.node)] = statement
                 class_bases[id(statement)] = choices(base for expression in statement.bases for base in value(expression, scope) if isinstance(base, ast.ClassDef))
             elif isinstance(statement, ast.Match):
                 scope.state = merge(scope.state, *(branch(case.body, scope) for case in statement.cases))
@@ -3424,30 +3519,39 @@ def apply_file_effect(effect, cwd, candidates, sources=None):
                 source_paths = [item for item in known if item == source or item.startswith(source.rstrip('/') + '/')]
                 if not source_paths:
                     source_paths = [source]
-                directories = effect.get("destination_may_be_directory") and (
+                directories = effect.get("destination_is_directory") or effect.get("destination_may_be_directory") and (
                     effect["path"].endswith('/') or effect["path"] in {".", ".."}
                     or any(item.startswith(path.rstrip('/') + '/') for item in known))
+                roots = [(posixpath.join(path, posixpath.basename(source)) if directories and not effect.get("copy_contents") else path, False)]
+                if effect.get("destination_may_be_directory") and not directories and not effect.get("copy_contents"):
+                    roots.append((posixpath.join(path, posixpath.basename(source)), True))
+                # Unknown source children may replace existing destination
+                # descendants too. Retain their possible bytes without trusting
+                # them as the exact base for a later partial edit.
+                if sources is not None:
+                    for root, _ in roots:
+                        for existing in list(sources):
+                            if existing == root or effect.get("copy_recursive") and existing.startswith(root.rstrip('/') + '/'):
+                                sources[existing] = dict(sources[existing], definite=False)
                 owning = False
                 for original in source_paths:
                     relative = posixpath.relpath(original, source)
-                    destination = path if relative == "." else posixpath.join(path, relative)
-                    if directories:
-                        destination = posixpath.join(path, posixpath.basename(source), "" if relative == "." else relative)
-                    destination = posixpath.normpath(destination)
                     prior = previous_sources.get(original)
                     contents = prior.get("contents", ()) if prior else ()
                     certain = bool(prior and prior.get("definite")) or original in previous_candidates
-                    transferred = {"kind": "write", "path": destination, "contents": contents,
-                                   "replaces": effect["replaces"] and certain, "partial": False}
-                    result = apply_file_effect(transferred, None, candidates, sources)
-                    if not certain:
-                        result |= destination in previous_candidates
-                    if original in previous_candidates:
-                        candidates.add(destination)
-                        result = True
-                    if sources is not None and prior and not prior.get("definite") and destination in sources:
-                        sources[destination] = dict(sources[destination], definite=False)
-                    owning |= bool(result)
+                    for root, speculative in roots:
+                        destination = posixpath.normpath(root if relative == "." else posixpath.join(root, relative))
+                        transferred = {"kind": "write", "path": destination, "contents": contents,
+                                       "replaces": effect["replaces"] and certain and not speculative, "partial": False}
+                        result = apply_file_effect(transferred, None, candidates, sources)
+                        if not certain:
+                            result |= destination in previous_candidates
+                        if original in previous_candidates:
+                            candidates.add(destination)
+                            result = True
+                        if sources is not None and (not certain or speculative) and destination in sources:
+                            sources[destination] = dict(sources[destination], definite=False)
+                        owning |= bool(result)
                 return owning
             if sources is not None:
                 for existing in list(sources):
@@ -3516,8 +3620,7 @@ def ownership_file_candidates(histories):
             if path:
                 entry = by_call.setdefault((identifier, path), {"at": timestamp, "owns": False, "final": None, "context": []})
                 owning = apply_file_effect(effect, cwd, local_candidates, sources)
-                if Path(path).suffix == ".py" or effect.get("invalidates"):
-                    entry["context"].append(dict(effect, path=path, cwd=native_cwd(effect.get("cwd"), cwd)))
+                entry["context"].append(dict(effect, path=path, cwd=native_cwd(effect.get("cwd"), cwd)))
                 entry["owns"] |= owning
                 if owning or effect["replaces"]:
                     entry["final"] = owning
@@ -3527,12 +3630,10 @@ def ownership_file_candidates(histories):
             completion = completions.get(identifier, float("inf")) if entry["at"] is not None else None
             context = tuple(entry["context"])
             completed_context = context if any(effect["replaces"] for effect in context) else ()
-            possible_context = tuple(dict(effect, replaces=False, partial=False)
-                                     if effect["replaces"] else effect for effect in context)
             if entry["owns"] or entry["context"]:
-                candidates.setdefault(path, []).append((origin, entry["at"], entry["owns"], False, completion, identifier, possible_context,
+                candidates.setdefault(path, []).append((origin, entry["at"], entry["owns"], False, completion, identifier, context,
                                                        entry["at"], launches.get(identifier), False))
-                if entry["final"] is True and completion is not None and completion != float("inf"):
+                if entry["final"] is True and completed_context and completion is not None and completion != float("inf"):
                     candidates[path].append((origin, completion, True, False, completion, identifier, completed_context,
                                              entry["at"], launches.get(identifier), True))
             if entry["final"] is False:
@@ -3589,8 +3690,8 @@ def file_ownership_executions(records, harness, *, file_candidates=()):
                 if source != origin and timestamp != float("inf"):
                     peer_writes.append((timestamp, path, owning, replaces, source, context,
                                         (source, identifier, started, index), completed_write))
-                    if owning and timestamp is not None:
-                        intervals.append((path, timestamp, completion))
+                    if not completed_write and timestamp is not None and owning:
+                        intervals.append((path, timestamp, completion, context))
     else:
         candidates.update(file_candidates)
     # Untimestamped historical fixtures retain their native sequence. Real
@@ -3611,31 +3712,36 @@ def file_ownership_executions(records, harness, *, file_candidates=()):
         # that a replacement launched after the other contribution.
         return left[2] is None or right[2] is None or left[2] >= right[2]
 
-    def remember(path, writer, owning, source):
-        contributions.setdefault(path, {})[writer[:2]] = (writer, owning, source)
+    def remember(path, writer, context, *, append=False):
+        entries = contributions.setdefault(path, {})
+        previous = entries.get(writer[:2], (writer, ()))
+        entries[writer[:2]] = (writer, (*previous[1], *context) if append else tuple(context))
+
+    def apply_context(context, target_candidates, target_sources, *, possible=False):
+        for effect in context:
+            if possible and effect["replaces"]:
+                effect = dict(effect, replaces=False, partial=False)
+            apply_file_effect(effect, None, target_candidates, target_sources)
 
     def replay(events, target_candidates, target_sources):
         final = {}
         for path, owning, replaces, source, context, writer, finished in events:
             newer = [entry for entry in contributions.get(path, {}).values()
                      if finished and newer_than(entry[0], writer)]
-            for effect in context:
-                owning |= apply_file_effect(effect, None, target_candidates, target_sources)
+            if context:
+                apply_context(context, target_candidates, target_sources, possible=not finished)
+                owning = path in target_candidates
             if finished:
-                remember(path, writer, owning, target_sources.get(path))
+                remember(path, writer, context)
                 contributions[path] = {key: entry for key, entry in contributions[path].items()
                                        if key == writer[:2] or newer_than(entry[0], writer)}
-                # A terminal result bounds this writer. It cannot erase an
-                # owning write or composed Python source launched after it.
-                owning |= any(entry[1] for entry in newer)
-                contexts = [entry[2] for entry in newer if entry[2]]
-                if contexts:
-                    current = target_sources.get(path, {})
-                    contents = tuple(dict.fromkeys((*current.get("contents", ()),
-                                                    *(content for item in contexts for content in item.get("contents", ())))))
-                    target_sources[path] = {"contents": contents, "definite": False}
+                # Replay only later writes' own effects. Their cumulative
+                # pre-replacement state can contain bytes this writer erased.
+                for _, later in newer:
+                    apply_context(later, target_candidates, target_sources, possible=True)
+                owning = path in target_candidates if context or newer else owning
             else:
-                remember(path, writer, owning, target_sources.get(path))
+                remember(path, writer, context)
             if owning or replaces:
                 final.setdefault(path, {})[source] = owning
         for path, origins in final.items():
@@ -3677,9 +3783,10 @@ def file_ownership_executions(records, harness, *, file_candidates=()):
                     next_peer += 1
                     continue
                 speculative = dict(sources)
+                speculative_candidates = set(candidates)
                 for path, owning, _, _, context, _, _ in events:
-                    for effect in context:
-                        owning |= apply_file_effect(effect, None, set(), speculative)
+                    apply_context(context, speculative_candidates, speculative, possible=True)
+                    owning |= path in speculative_candidates
                     if owning:
                         candidates.add(path)
                 break
@@ -3688,7 +3795,7 @@ def file_ownership_executions(records, harness, *, file_candidates=()):
         # The current invocation observes its own ordered writes immediately.
         # Other invocations retain old and possible new bytes until a bound
         # terminal result proves a full replacement has finished.
-        local_candidates, local_sources, replacements = set(candidates), dict(sources), {}
+        local_candidates, local_sources, replacements, written_by_path = set(candidates), dict(sources), {}, {}
         for effect in effects:
             if effect["kind"] == "write":
                 path = native_path(effect["path"], native_cwd(effect.get("cwd"), cwd)) if effect["path"] else None
@@ -3700,21 +3807,28 @@ def file_ownership_executions(records, harness, *, file_candidates=()):
                         replacements[path] = []
                     if path in replacements:
                         replacements[path].append(dict(effect, path=path, cwd=native_cwd(effect.get("cwd"), cwd)))
+                    written = written_by_path.setdefault(path, [])
+                    written.append(dict(effect, path=path, cwd=native_cwd(effect.get("cwd"), cwd)))
                     if owning:
-                        own_intervals[(path, identifier)] = read_at
+                        own_intervals[(path, identifier)] = read_at, written
                     writer = (origin, identifier, timestamp, read_at)
-                    remember(path, writer, path in local_candidates, local_sources.get(path))
+                    remember(path, writer, [dict(effect, path=path, cwd=native_cwd(effect.get("cwd"), cwd))], append=True)
             else:
-                active = {path for path, start, end in intervals
-                          if timestamp is None or start <= timestamp <= end}
+                active_contexts = [context for _, start, end, context in intervals
+                                   if timestamp is None or start <= timestamp <= end]
                 # Later calls can run while an earlier writer's handle lives.
                 # Record order excludes future writes without timestamps; the
                 # current invocation keeps its explicit shell/patch ordering.
                 if own_intervals:
                     finished = completion_ends()
-                    active.update(path for (path, source), began in own_intervals.items()
-                                  if source != identifier and began is not None and read_at is not None
-                                  and began < read_at <= finished.get(source, float("inf")))
+                    active_contexts.extend(context for (_, source), (began, context) in own_intervals.items()
+                                           if source != identifier and began is not None and read_at is not None
+                                           and began < read_at <= finished.get(source, float("inf")))
+                active = set()
+                for context in active_contexts:
+                    speculative_candidates, speculative_sources = set(), dict(local_sources)
+                    apply_context(context, speculative_candidates, speculative_sources, possible=True)
+                    active.update(speculative_candidates)
                 if {native_path(path, native_cwd(effect.get("cwd"), cwd)) for path in effect["paths"]} & (local_candidates | active):
                     invocations.add(identifier)
         for path, context in replacements.items():
