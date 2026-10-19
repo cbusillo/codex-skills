@@ -100,7 +100,8 @@ def proof(*sources, clear=True):
 
 def output(value, harness, call_id="tool"):
     # Real composed Codex output: native text block -> exec result -> helper JSON.
-    encoded = json.dumps({"output": json.dumps(value)})
+    native = isinstance(value, dict) and any(type(value.get(key)) is int for key in ("exit_code", "session_id"))
+    encoded = json.dumps(value if native else {"output": json.dumps(value)})
     if harness == "codex":
         return {"type": "response_item", "payload": {"type": "custom_tool_call_output", "call_id": call_id,
                 "output": [{"type": "input_text", "text": encoded}]}}
@@ -108,10 +109,10 @@ def output(value, harness, call_id="tool"):
         {"type": "tool_result", "tool_use_id": call_id, "content": encoded}]}}
 
 
-def native_result(identifier):
+def native_result(identifier, status=0):
     # Representative transport, not evidence of a direct patch producer.
     return {'type': 'response_item', 'payload': {'type': 'function_call_output',
-            'call_id': identifier, 'output': 'Exit code: 0\nWall time: 0.01 seconds\nOutput:\n'}}
+            'call_id': identifier, 'output': f'Exit code: {status if status is not None else "unknown"}\nWall time: 0.01 seconds\nOutput:\n'}}
 
 
 def history(harness, *values):
@@ -2536,9 +2537,9 @@ os.system(get())
                     if variant == 'native_text_quoted_failure':
                         rows[4]['payload']['output'] += json.dumps({'exit_code': 1})
                     elif variant == 'native_text_failed':
-                        rows[4]['payload']['output'] = rows[4]['payload']['output'].replace('Exit code: 0', 'Exit code: 1')
+                        rows[4] = native_result('tool-1', status=1)
                     elif variant == 'native_unknown':
-                        rows[4]['payload']['output'] = rows[4]['payload']['output'].replace('Exit code: 0', 'Exit code: unknown')
+                        rows[4] = native_result('tool-1', status=None)
                     elif variant == 'native_nested':
                         rows[4]['payload']['output'] = json.dumps({'output': rows[4]['payload']['output']})
                     elif variant == 'native_unbound':
@@ -2717,9 +2718,10 @@ os.system(get())
                             'name': 'write_stdin', 'arguments': json.dumps({'session_id': 444, 'chars': ''})}}
                     terminal = native_result('unrelated' if mode == 'unbound' else 'poll')
                     if mode == 'failed':
-                        terminal['payload']['output'] = terminal['payload']['output'].replace('Exit code: 0', 'Exit code: 1') + json.dumps({'exit_code': 0})
+                        terminal = native_result(terminal['payload']['call_id'], status=1)
+                        terminal['payload']['output'] += json.dumps({'exit_code': 0})
                     elif mode == 'unknown':
-                        terminal['payload']['output'] = terminal['payload']['output'].replace('Exit code: 0', 'Exit code: unknown')
+                        terminal = native_result(terminal['payload']['call_id'], status=None)
                     elif mode == 'pending':
                         terminal['payload']['output'] = 'Process running with session ID 444'
                     else:
@@ -2727,6 +2729,78 @@ os.system(get())
                     rows[3:3] = [poll, terminal]
                     with self.subTest(harness=harness, native_polled_shell=mode):
                         self.assertEqual(receipts.ownership_state(rows, harness)['pending'], mode != 'success')
+
+            if harness == 'codex':
+                # An unrecognized direct transport cannot borrow a status
+                # printed in stdout. Composed wrappers retain native metadata.
+                for poll, composed in ((False, False), (True, False), (False, True), (True, True)):
+                    for native_success in ((False, True) if composed else (False,)):
+                        rows = history(harness, {}, {}, {})
+                        invoke(rows, harness, 0, *write)
+                        command = "printf 'print(1)\\n' > /repo/run.py"
+                        invoke(rows, harness, 1, 'exec_command', {'cmd': command})
+                        invoke(rows, harness, 2, *read)
+                        writer_call = next(row['payload'] for row in rows
+                                           if row.get('payload', {}).get('call_id') == 'tool-1'
+                                           and row['payload'].get('type') == 'function_call')
+                        writer_result = next(row for row in rows
+                                             if row.get('payload', {}).get('call_id') == 'tool-1'
+                                             and row['payload'].get('type') == 'custom_tool_call_output')
+                        result_id = 'poll' if poll else 'tool-1'
+                        if composed:
+                            writer_call.update(name='functions.exec', arguments=
+                                               'text(await tools.exec_command(' + json.dumps({'cmd': command}) + '));')
+                            terminal = output({'exit_code': 0 if native_success else 1,
+                                               'output': json.dumps({'exit_code': 1 if native_success else 0})},
+                                              harness, result_id)
+                        else:
+                            terminal = native_result(result_id)
+                            terminal['payload']['output'] = ('unrecognized transport header\n'
+                                                             + json.dumps({'exit_code': 0}))
+                        if poll:
+                            writer_result['payload']['output'] = ([{'type': 'text', 'text': json.dumps({'session_id': 444})}]
+                                                                   if composed else 'Process running with session ID 444')
+                            poll_call = {'type': 'response_item', 'payload': {'type': 'function_call', 'call_id': result_id,
+                                         'name': 'functions.exec' if composed else 'write_stdin',
+                                         'arguments': ('text(await tools.write_stdin({session_id:444,chars:""}));' if composed else
+                                                       json.dumps({'session_id': 444, 'chars': ''}))}}
+                            rows[rows.index(writer_result) + 1:rows.index(writer_result) + 1] = [poll_call, terminal]
+                        else:
+                            rows[rows.index(writer_result)] = terminal
+                        with self.subTest(harness=harness, unrecognized_outer_status=True, poll=poll,
+                                          composed=composed, native_success=native_success):
+                            self.assertEqual(receipts.ownership_state(rows, harness)['pending'],
+                                             not (composed and native_success))
+
+            if harness == 'codex':
+                # Native serial normalization preserves wrapper authority even
+                # when another call failed or stdout prints a conflicting code.
+                for deferred in (False, True):
+                    rows = history(harness, {}, {}, {})
+                    invoke(rows, harness, 0, *write)
+                    command = "printf 'print(1)\\n' > /repo/run.py"
+                    invoke(rows, harness, 1, 'functions.exec',
+                           'text(await tools.exec_command({cmd:"cat docs.md"}));'
+                           + 'text(await tools.exec_command(' + json.dumps({'cmd': command}) + '));')
+                    invoke(rows, harness, 2, *read)
+                    call_result = next(row for row in rows
+                                       if row.get('payload', {}).get('call_id') == 'tool-1'
+                                       and row['payload'].get('type') == 'custom_tool_call_output')
+                    blocks = [{'type': 'input_text', 'text': json.dumps(value)} for value in
+                              ({'exit_code': 1, 'output': ''},
+                               {'exit_code': 0, 'output': json.dumps({'exit_code': 1})})]
+                    if deferred:
+                        call_result['payload']['output'] = [
+                            {'type': 'input_text', 'text': 'Script running with cell ID serial-cell\nWall time 0.01 seconds'}, blocks[0]]
+                        wait = {'type': 'response_item', 'payload': {'type': 'function_call', 'call_id': 'wait',
+                                'name': 'functions.wait', 'arguments': json.dumps({'cell_id': 'serial-cell'})}}
+                        terminal = {'type': 'response_item', 'payload': {'type': 'function_call_output', 'call_id': 'wait',
+                                    'output': [{'type': 'input_text', 'text': 'Script completed\nWall time 0.01 seconds'}, blocks[1]]}}
+                        rows[rows.index(call_result) + 1:rows.index(call_result) + 1] = [wait, terminal]
+                    else:
+                        call_result['payload']['output'] = blocks
+                    with self.subTest(harness=harness, serial_native_status=True, deferred=deferred):
+                        self.assertFalse(receipts.ownership_state(rows, harness)['pending'])
 
             def transport(rows, index, mode='success'):
                 identifier = 'tool-' + str(index)
@@ -2828,7 +2902,7 @@ os.system(get())
             # Copy authority follows source readiness, including descendants and
             # transitive transfers. A settled harmless source remains erasable.
             for copy_command in ('cp template.py run.py', 'mv template.py run.py',
-                                 'cp -r /repo/templates/. /repo/', 'cp template.py middle.py; cp middle.py run.py'):
+                                 'cp -r /repo/templates/. /repo/', 'cp template.py middle.py && cp middle.py run.py'):
                 template_path = '/repo/templates/run.py' if 'templates/' in copy_command else '/repo/template.py'
                 for mode in ('pending', 'late', 'tied', 'untimed', 'settled_safe', 'settled_writer', 'unknown', 'failed'):
                     for activation in (False, True):
@@ -2946,7 +3020,7 @@ os.system(get())
 
             # Within one shell call, visible writes and copies are sequential.
             rows = history(harness, {}, {}, {})
-            invoke(rows, harness, 0, *shell("cat > /repo/template.py <<'PY'\n" + program + 'PY\ncp template.py run.py'))
+            invoke(rows, harness, 0, *shell("cat > /repo/template.py <<'PY' && cp template.py run.py\n" + program + 'PY'))
             transport(rows, 0)
             invoke(rows, harness, 1, *edit)
             invoke(rows, harness, 2, *read)
@@ -5524,6 +5598,157 @@ os.system(get())
                     self.assertFalse(receipts.ownership_state(rows, harness, file_candidates=candidates)["pending"])
 
 
+        def invocation(rows, harness, identifier):
+            return next(record for record in rows
+                        if any(source == identifier for source, _, _ in receipts.calls_and_results(record, harness)[0]))
+
+        def terminal(rows, harness, identifier):
+            return next(record for record in rows if identifier in receipts.calls_and_results(record, harness)[1])
+
+        def scripts(harness, commands):
+            rows = history(harness, *({} for _ in commands))
+            for index, command in enumerate(commands):
+                identifier = f"tool-{index}"
+                record = invocation(rows, harness, identifier)
+                if harness == "codex":
+                    record["payload"]["arguments"] = json.dumps({"cmd": command})
+                else:
+                    record["message"]["content"][0]["input"] = {"command": command}
+                result = terminal(rows, harness, identifier)
+                result.clear()
+                result.update(output({"exit_code": 0}, harness, identifier))
+            return rows
+
+        # Separate local calls must settle harmless non-Python sources too.
+        # A source completing during its copy's interval remains uncertain.
+        for harness in ("codex", "claude"):
+            for copier in ("cp", "mv", "install", "cp -r", "transitive"):
+                for mode in ("complete", "failed", "unknown", "pending", "overlap"):
+                    recursive = copier == "cp -r"
+                    source = "tmpl/run.sh" if recursive else "safe.sh"
+                    destination = "out/run.sh" if recursive else "run.sh"
+                    copy = "cp -r tmpl/. out" if recursive else ("cp safe.sh mid.sh" if copier == "transitive" else copier + " safe.sh run.sh")
+                    commands = ["echo " + shlex.quote(writer) + " > " + destination,
+                                "printf 'echo done\\n' > " + source, copy]
+                    if copier == "transitive":
+                        commands.append("cp mid.sh run.sh")
+                    commands.append("bash " + destination)
+                    rows = scripts(harness, commands)
+                    if harness == "claude":
+                        invocation(rows, harness, "tool-1")["message"]["content"][0].update(
+                            name="Write", input={"file_path": "/repo/" + source, "content": "echo done"})
+                    for index in range(len(commands)):
+                        invocation(rows, harness, f"tool-{index}")["timestamp"] = f"2026-01-01T00:00:{index * 2:02d}Z"
+                        terminal(rows, harness, f"tool-{index}")["timestamp"] = f"2026-01-01T00:00:{index * 2 + 1:02d}Z"
+                    result = terminal(rows, harness, "tool-1")
+                    if mode == "pending":
+                        rows.remove(result)
+                    elif mode == "overlap":
+                        rows.remove(result)
+                        copy_call = invocation(rows, harness, "tool-2")
+                        rows.insert(rows.index(copy_call) + 1, result)
+                        result["timestamp"] = "2026-01-01T00:00:04.5Z"
+                    elif mode != "complete":
+                        result.clear()
+                        result.update(output({"exit_code": 1} if mode == "failed" else {}, harness, "tool-1"))
+                        result["timestamp"] = "2026-01-01T00:00:03Z"
+                        if harness == "claude":
+                            result["message"]["content"][0]["is_error"] = True if mode == "failed" else "unknown"
+                    with self.subTest(harness=harness, settled_non_python_source=copier, result=mode):
+                        self.assertEqual(receipts.ownership_state(rows, harness)["pending"], mode != "complete")
+
+            # Copying into an ancestor must preserve unchanged own inputs.
+            # A known nested counterpart can actually overwrite that input.
+            for copier in ("cp -r", "cp -R", "cp -a"):
+                for counterpart in (False, True):
+                    commands = ["echo " + shlex.quote(writer) + " > run.sh",
+                                "printf 'echo done\\n' > tmpl/run.sh"]
+                    if counterpart:
+                        commands.append("echo " + shlex.quote(writer) + " > tmpl/tmpl/run.sh")
+                    commands += [copier + " tmpl/. /repo", "bash run.sh"]
+                    rows = scripts(harness, commands)
+                    with self.subTest(harness=harness, ancestor_copy=copier, known_counterpart=counterpart):
+                        self.assertEqual(receipts.ownership_state(rows, harness)["pending"], counterpart)
+
+        # The same implied-success relation serves an outer exit-zero and a
+        # local reader. Ordered replay must retain later appends and copies.
+        for harness in ("codex", "claude"):
+            owner = "echo " + shlex.quote(writer) + " > run.sh"
+            owning_source = "echo " + shlex.quote(writer) + " > owner.sh"
+            safe_write = "printf 'echo done\\n' > run.sh"
+            cases = (
+                ("unconditional_local", safe_write + "; bash run.sh", True),
+                ("newline_local", safe_write + "\nbash run.sh", True),
+                ("recovered_local", safe_write + " || true; bash run.sh", True),
+                ("guarded_plain", safe_write + " && bash run.sh", False),
+                ("guarded_exit_trap", "trap 'exit 0' EXIT; " + safe_write + " && bash run.sh", False),
+                ("guarded_nested_trap", "{ trap 'exit 0' EXIT; }; " + safe_write + " && bash run.sh", False),
+                ("append_after_replace", "printf '#!/bin/sh\\n' > run.sh && echo " + shlex.quote(writer) + " >> run.sh && bash run.sh; echo end", True),
+                ("copy_after_condition", "if " + safe_write + "; then cp owner.sh run.sh; bash run.sh; fi", True),
+                ("copy_in_group", safe_write + " && { cp owner.sh run.sh || true; } && bash run.sh; echo end", True),
+                ("or_list", "[ -f run.sh ] || " + safe_write + " && bash run.sh; echo end", True),
+                ("literal_false_or", "false || " + safe_write + " && bash run.sh; echo end", False),
+                ("literal_true_or", "true || " + safe_write + " && bash run.sh; echo end", True),
+                ("or_condition", "if [ -f run.sh ] || " + safe_write + "; then bash run.sh; fi", True),
+                ("and_or_list", "[ -f run.sh ] && true || " + safe_write + " && bash run.sh; echo end", True),
+                ("negated_condition", "if ! " + safe_write + "; then bash run.sh; fi", True),
+                ("negated_group_condition", "if ! { " + safe_write + "; }; then bash run.sh; fi", True),
+                ("negated_subshell_condition", "if ! ( " + safe_write + " ); then bash run.sh; fi", True),
+                ("guarded_condition", "if " + safe_write + "; then bash run.sh; fi", False),
+                ("guarded_group_condition", "if { " + safe_write + "; }; then bash run.sh; fi", False),
+                ("guarded_nested_condition", "if true; then if " + safe_write + "; then bash run.sh; fi; fi", False),
+                ("guarded_then", "if true; then " + safe_write + " && bash run.sh; fi", False),
+                ("guarded_subshell", safe_write + " && (cd /repo && bash run.sh); echo exit=$?", False),
+                ("guarded_group", safe_write + " && { bash run.sh; }; echo exit=$?", False),
+                ("guarded_function", "f() { bash run.sh; }; " + safe_write + " && f; echo exit=$?", False),
+                ("guarded_body", "f() { " + safe_write + " && bash run.sh; }; f", False),
+                ("guarded_loop", safe_write + " && for i in one; do bash run.sh; done; echo exit=$?", False),
+                ("guarded_loop_body", "for i in one; do " + safe_write + " && bash run.sh; done", False),
+            )
+            for label, command, pending in cases:
+                rows = scripts(harness, [owner, owning_source, command])
+                with self.subTest(harness=harness, implied_success=label):
+                    self.assertEqual(receipts.ownership_state(rows, harness)["pending"], pending)
+
+            for path in ("run.sh", "run.py"):
+                python = path.endswith(".py")
+                program = "import os\nos.system(" + repr(writer) + ")" if python else writer
+                harmless = "print('safe')" if python else "echo done"
+                original = "printf '%s\\n' " + shlex.quote(program) + " > " + path
+                write = "printf '%s\\n' " + shlex.quote(harmless) + " > " + path
+                reader = ("python3 " if python else "bash ") + path
+                hidden = (("last", write, False), ("and", write + " && echo done", False),
+                          ("semicolon", write + "; echo done", True), ("newline", write + "\necho done", True),
+                          ("or", write + " || true", True), ("or_colon", write + " || :", True),
+                          ("pipeline", write + " | cat", True), ("negation", "! " + write, True),
+                          ("background", write + " &", True),
+                          ("exit", write + "; exit 0", True), ("group", "{ " + write + "; echo done; }", True),
+                          ("subshell", "( " + write + "; echo done )", True),
+                          ("if_condition", "if " + write + "; then :; fi", True),
+                          ("while_condition", "while " + write + "; do break; done", True),
+                          ("until_condition", "until " + write + "; do break; done", True),
+                          ("if_body", "if true; then " + write + "; echo done; fi", True),
+                          ("loop_body", "for i in one; do " + write + "; echo done; done", True),
+                          ("case_body", "case one in one) " + write + "; echo done;; esac", True),
+                          ("trap", "trap 'exit 0' EXIT; " + write, True),
+                          ("nested_trap", "{ trap 'exit 0' EXIT; }; " + write, True),
+                          ("called_trap", "f() { trap 'exit 0' EXIT; }; f; " + write, True),
+                          ("unused_trap", "f() { trap 'exit 0' EXIT; }; " + write, False),
+                          ("tee_last", "printf '%s\\n' " + shlex.quote(harmless) + " | tee " + path, False),
+                          ("tee_hidden", "printf '%s\\n' " + shlex.quote(harmless) + " | tee " + path + "; echo done", True))
+                for label, replacement, pending in hidden:
+                    rows = scripts(harness, [original, replacement, reader])
+                    with self.subTest(harness=harness, outer_success=label, path=path):
+                        self.assertEqual(receipts.ownership_state(rows, harness)["pending"], pending)
+                for copier in ("cp", "mv", "install"):
+                    for suffix, pending in (("", False), (" && echo done", False), ("; echo done", True), (" || true", True), ("negated", True)):
+                        source = "safe.py" if python else "safe.sh"
+                        commands = [original, "printf '%s\\n' " + shlex.quote(harmless) + " > " + source,
+                                    ("! " if suffix == "negated" else "") + copier + " " + source + " " + path + ("" if suffix == "negated" else suffix), reader]
+                        with self.subTest(harness=harness, copy_status=copier, suffix=suffix, path=path):
+                            self.assertEqual(receipts.ownership_state(scripts(harness, commands), harness)["pending"], pending)
+
+
     def test_many_producer_streams_preserve_reader_and_data_behavior(self):
         for count in (12, 64):
             command = "; ".join(["echo 'a\\nb'"] * count)
@@ -5717,7 +5942,7 @@ os.system(get())
                         command = "cat > run.sh <<'EOF'\n" + writer + "\nEOF"
                         if mode == "detached":
                             command = '{ sleep "$DELAY"; ' + command + "\n} &"
-                        read = "printf 'echo done\\n' > run.sh; sleep 1; bash run.sh"
+                        read = "printf 'echo done\\n' > run.sh && sleep 1 && bash run.sh"
                         if harness == "codex":
                             rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
                             rows[3]["payload"]["arguments"] = json.dumps({"cmd": read})
@@ -5782,7 +6007,7 @@ os.system(get())
                                 content = "echo done" if mode == "overlapping_later_clear" or harmless_append else writer
                                 redirect = ">>" if mode == "overlapping_later_append" or harmless_append else ">"
                                 commands.append("cat " + redirect + " run.sh <<'EOF'\n" + content + "\nEOF")
-                                commands[1] = "printf 'echo done\\n' > run.sh; sleep 30"
+                                commands[1] = "printf 'echo done\\n' > run.sh && sleep 30"
                             if mode == "overlapping_later_then_clear":
                                 commands.append("cat > " + path + " <<'EOF'\n" + new + "\nEOF")
                             commands.append(("python3 " if python else "bash ") + path)
@@ -5836,7 +6061,7 @@ os.system(get())
                 with self.subTest(harness=harness, within_running_replacement=True, timed=timed):
                     rows = history(harness, {}, {})[:-2 if harness == "codex" else -1]
                     for index, command in enumerate(("cat > run.sh <<'EOF'\n" + writer + "\nEOF",
-                                                     "sleep 1; printf 'echo done\\n' > run.sh; bash run.sh")):
+                                                     "sleep 1; printf 'echo done\\n' > run.sh && bash run.sh")):
                         if harness == "codex":
                             rows[2 * index + 1]["payload"]["arguments"] = json.dumps({"cmd": command})
                         else:
@@ -5861,7 +6086,7 @@ os.system(get())
                             redirect = ">>" if active_writer == "harmless_append" else ">"
                             commands = ("cat > " + path + " <<'EOF'\n" + owner + "\nEOF",
                                         "cat " + redirect + " " + destination + " <<'EOF'\n" + content + "\nEOF",
-                                        "cat > " + path + " <<'EOF'\n" + harmless + "\nEOF\n" + ("python3 " if python else "bash ") + path)
+                                        "cat > " + path + " <<'EOF' && " + ("python3 " if python else "bash ") + path + "\n" + harmless + "\nEOF")
                             rows = history(harness, {}, {}, {})[:-2 if harness == "codex" else -1]
                             for index, command in enumerate(commands):
                                 if harness == "codex":
@@ -5950,19 +6175,19 @@ os.system(get())
     def test_within_call_file_execution_obeys_write_order_and_replacement(self):
         writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 12'
         scripts = (
-            ("cat > run.sh <<'EOF'\n" + writer + "\nEOF\necho 'echo done' > run.sh\nbash run.sh", False),
+            ("cat > run.sh <<'EOF'\n" + writer + "\nEOF\necho 'echo done' > run.sh && bash run.sh", False),
             ("bash run.sh\ncat > run.sh <<'EOF'\n" + writer + "\nEOF", False),
             ("cat > run.sh <<'EOF'\n" + writer + "\nEOF\nbash run.sh\necho 'echo done' > run.sh", True),
             ("for i in 1 2; do bash run.sh; cat > run.sh <<'EOF'\n" + writer + "\nEOF\ndone", True),
             ("while test -f again; do bash run.sh; cat > run.sh <<'EOF'\n" + writer + "\nEOF\ndone", True),
             ("f() { bash run.sh; }; cat > run.sh <<'EOF'\n" + writer + "\nEOF\nf", True),
             ("f() { bash run.sh; }; cat > run.sh <<'EOF'\n" + writer + "\nEOF", False),
-            ("for i in 1 2; do bash run.sh; cat > run.sh <<'EOF'\n" + writer + "\nEOF\necho 'echo done' > run.sh; done", False),
+            ("for i in 1 2; do bash run.sh; cat > run.sh <<'EOF'\n" + writer + "\nEOF\necho 'echo done' > run.sh; done", True),
             ("for i in 1; do bash run.sh; cat > run.sh <<'EOF'\n" + writer + "\nEOF\ndone", False),
             ("for i in 1 2; do bash run.sh; cat > run.sh <<'EOF'\n" + writer + "\nEOF\nbreak; done", False),
             ("while false; do cat > run.sh <<'EOF'\n" + writer + "\nEOF\ndone; bash run.sh", False),
             ("cat > run.sh <<'EOF'\n" + writer + "\nEOF\nf() { bash run.sh; }", False),
-            ("f() { bash run.sh; }; cat > run.sh <<'EOF'\n" + writer + "\nEOF\necho 'echo done' > run.sh; f", False),
+            ("f() { bash run.sh; }; cat > run.sh <<'EOF'\n" + writer + "\nEOF\necho 'echo done' > run.sh && f", False),
         )
         scripts += (("cat > run.sh <<'EOF'\n" + writer + "\nEOF\ncp missing.sh run.sh; bash run.sh", True),)
         for copier in ("cp", "mv", "install", "install -m 755", "cp -r"):
@@ -5973,7 +6198,7 @@ os.system(get())
         for copier in ("cp -t out", "cp --target-directory=out"):
             scripts += (("cat > tmpl.sh <<'EOF'\n" + writer + "\nEOF\nmkdir out; " + copier + " tmpl.sh; bash out/tmpl.sh", True),)
         scripts += (("cat > tmpl.sh <<'EOF'\n" + writer + "\nEOF\ncp tmpl.sh run.sh; echo 'echo done' > tmpl.sh; bash run.sh", True),
-                    ("cat > run.sh <<'EOF'\n" + writer + "\nEOF\necho 'echo done' > safe.sh; cp safe.sh run.sh; bash run.sh", False),
+                    ("cat > run.sh <<'EOF'\n" + writer + "\nEOF\necho 'echo done' > safe.sh && cp safe.sh run.sh && bash run.sh", False),
                     ("cat > tmpl/run.sh <<'EOF'\n" + writer + "\nEOF\ncp -r tmpl repo; bash repo/run.sh", True))
         scripts += (
             ("case dry in dry) echo " + shlex.quote(writer) + " > run.sh;; esac; bash run.sh", True),
@@ -5983,7 +6208,7 @@ os.system(get())
             ("for i in 1 2; do bash run.sh; [ -f stop ] && break; cat > run.sh <<'EOF'\n" + writer + "\nEOF\ndone", True),
             ("for i in 1 2; do bash run.sh; [ -f stop ] && continue; cat > run.sh <<'EOF'\n" + writer + "\nEOF\ndone", True),
             ("f() { echo 'echo done' > run.sh; }; echo " + shlex.quote(writer) + " > run.sh; test -f dry && f; bash run.sh", True),
-            ("f() { echo 'echo done' > run.sh; }; echo " + shlex.quote(writer) + " > run.sh; true && f; bash run.sh", False),
+            ("f() { echo 'echo done' > run.sh; }; echo " + shlex.quote(writer) + " > run.sh; true && f && bash run.sh", False),
         )
         for branch, pending in (("false && echo 'echo done' > run.sh", True),
                                 ("true || echo 'echo done' > run.sh", True),
@@ -6009,7 +6234,16 @@ os.system(get())
 
 
 
-            scripts += (("echo " + shlex.quote(writer) + " > run.sh; " + branch + "; bash run.sh", pending),)
+            if pending:
+                command = branch + "; bash run.sh"
+            else:
+                command = branch.replace(" > run.sh", " > run.sh && bash run.sh")
+            scripts += (("echo " + shlex.quote(writer) + " > run.sh; " + command, pending),)
+        # Pruning a definitely skipped owner still matters independently of
+        # cleanup precision and success-dependent readers.
+        scripts += (("false && echo " + shlex.quote(writer) + " > run.sh; bash run.sh", False),
+                    ("true || echo " + shlex.quote(writer) + " > run.sh; bash run.sh", False),
+                    ("if false; then echo " + shlex.quote(writer) + " > run.sh; fi; bash run.sh", False))
         for harness in ("codex", "claude"):
             for command, pending in scripts:
                 with self.subTest(harness=harness, command=command):

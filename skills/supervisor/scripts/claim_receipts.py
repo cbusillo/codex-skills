@@ -2153,8 +2153,17 @@ def source_mutation_paths(argv):
     return []
 
 
+def shell_literal_status(words):
+    """Use only the existing literal guard facts; never execute a command."""
+    words = [word for word in words if word not in {";", "\n"}]
+    while words and words[0] in {"do", "then", "else", "{", "("}:
+        words = words[1:]
+    return True if words in (["true"], [":"]) else False if words == ["false"] else None
+
+
 def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None, inline_inputs=None,
-                      stream_sources=None, output_sources=None, execution_events=None, stdin_kinds=None):
+                      stream_sources=None, output_sources=None, execution_events=None, stdin_kinds=None,
+                      success_facts=None):
     """Parse command descriptors once and carry each stdin source through groups.
 
     A balanced group is one outer pipeline node. Its children share the same
@@ -2267,7 +2276,7 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
             language = stdin_language(argv)
             if children is None and tokens[segment[0]] in {"}", ")", "done", "fi", "esac"}:
                 language = compound_stdin_language(tokens, source, segment[0], spans, heredocs) or language
-            nodes.append({"argv": argv, "children": children, "language": language, "index": segment[0],
+            nodes.append({"argv": argv, "children": children, "language": language, "index": segment[0], "stop": segment[-1] + 1,
                           "descriptors": descriptors, "heredocs": heredocs,
                           "substitutions": substitutions,
                           "separator": separator, "source": " ".join(tokens[index] for index in segment)})
@@ -2425,6 +2434,39 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
         return output
 
     nodes = parse(0, len(tokens))
+    if success_facts is not None:
+        def implied_success(nodes, inherited=frozenset(), parent=None):
+            implied, previous, list_success, list_status = set(inherited), "", set(inherited), None
+            for node in nodes:
+                entry = set(implied)
+                child_success = (implied_success(node["children"], entry, node["index"])
+                                 if node["children"] is not None else set())
+                words = node["argv"]
+                while words and words[0] in {"if", "then", "else", "elif", "do", "while", "until"}:
+                    words = words[1:]
+                positive = set() if words[:1] == ["!"] else {node["index"], *child_success}
+                result = shell_literal_status(node["argv"])
+                if previous == "||":
+                    if list_status is False:
+                        list_success = entry | positive
+                    elif list_status is not True and result is not False:
+                        list_success.intersection_update(entry | positive)
+                    list_status = (True if list_status is True or result is True else
+                                   False if list_status is False and result is False else None)
+                elif previous == "&&":
+                    if list_status is not False:
+                        list_success.update(positive)
+                    list_status = (False if list_status is False or result is False else
+                                   True if list_status is True and result is True else None)
+                else:
+                    list_success, list_status = entry | positive, result
+                success_facts[node["index"]] = {"entry": entry, "success": set(list_success),
+                                                "children": child_success, "parent": parent, "stop": node["stop"],
+                                                "overrides": words[:1] == ["trap"] and any(word in {"EXIT", "0"} for word in words[2:])}
+                previous = node["separator"]
+                implied = set(list_success) if previous == "&&" else set(inherited)
+            return list_success if nodes and previous not in {"&", "|", "|&"} else set(inherited)
+        success_facts["end"] = implied_success(nodes)
     def echo_scopes(nodes, scope):
         """Share one unknown echo mode until an actual mutation or child shell."""
         for node in nodes:
@@ -2658,8 +2700,10 @@ def shell_code(text, *, writes=None, reads=None, replacements=None, effects=None
     tokens = list(lexer)
     file_commands, inline_inputs, stream_sources = [], {}, {}
     execution_events = [] if effects is not None else None
+    success_facts = {} if effects is not None else None
     languages = heredoc_languages(tokens, lexer.instream.getvalue(), file_commands=file_commands,
-                                  inline_inputs=inline_inputs, stream_sources=stream_sources, execution_events=execution_events)
+                                  inline_inputs=inline_inputs, stream_sources=stream_sources,
+                                  execution_events=execution_events, success_facts=success_facts)
     contents, owns = {}, False
     identifiers = [index for index, token in enumerate(tokens) if token == "<<"]
     if len(identifiers) != len(bodies):
@@ -2793,7 +2837,7 @@ def shell_code(text, *, writes=None, reads=None, replacements=None, effects=None
                     grouped[key] = dict(event, contents=tuple(event["contents"]))
         ordered = sorted([*grouped.values(), *(event for event in execution_events if event["kind"] == "read")],
                          key=lambda event: (event["position"], event["kind"] != "write"))
-        effects.extend(shell_effect_order(tokens, ordered))
+        effects.extend(shell_effect_order(tokens, ordered, success_facts=success_facts))
     for identifier, language in languages.items():
         if language:
             variants = variants_of(identifier)
@@ -2816,7 +2860,7 @@ def shell_code(text, *, writes=None, reads=None, replacements=None, effects=None
     return code
 
 
-def shell_effect_order(tokens, events):
+def shell_effect_order(tokens, events, *, success_facts=None):
     """Replay repeated bodies and defer function effects until a real call.
 
     Two iterations suffice for literal file writes: the second read observes
@@ -2825,12 +2869,8 @@ def shell_effect_order(tokens, events):
     """
     bounds, definitions, by_position = compound_bounds(tokens), {}, {}
     guards = [True] * len(tokens)
-
-    def status(words):
-        words = [word for word in words if word not in {";", "\n"}]
-        while words and words[0] in {"do", "then", "else", "{", "("}:
-            words = words[1:]
-        return True if words in (["true"], [":"]) else False if words == ["false"] else None
+    success_facts = success_facts or {}
+    end_success = success_facts.get("end", set())
 
     def pattern_matches(raw, word):
         # Preserve shell quoting: quoted/escaped glob characters are literals.
@@ -2875,7 +2915,7 @@ def shell_effect_order(tokens, events):
         if separator not in {";", "\n", "&&", "||", "&", "|", "|&"}:
             continue
         guard(begin, end, executes)
-        result = status(tokens[begin:end])
+        result = shell_literal_status(tokens[begin:end])
         if executes is True:
             previous = result
         elif executes is None and previous != result:
@@ -2923,7 +2963,17 @@ def shell_effect_order(tokens, events):
                 break
             cursor = bounds.get(cursor, cursor) + 1
         if branch is not None:
-            condition = status(tokens[start + 1:branch])
+            condition = shell_literal_status(tokens[start + 1:branch])
+            containing = [position for position, facts in success_facts.items() if isinstance(position, int)
+                          and position <= start < facts["stop"]]
+            parent = success_facts[max(containing)]["parent"] if containing else None
+            condition_positions = [position for position, facts in success_facts.items() if isinstance(position, int)
+                                   and position < branch and facts["stop"] > start and facts["parent"] == parent]
+            if condition_positions:
+                condition_success = success_facts[max(condition_positions)]["success"]
+                for position in success_facts:
+                    if isinstance(position, int) and branch <= position < (other if other is not None else stop):
+                        success_facts[position]["entry"].update(condition_success)
             guard(branch, other if other is not None else stop, condition)
             if other is not None:
                 inverse = not condition if condition is not None and tokens[other] == "else" else None
@@ -2938,17 +2988,29 @@ def shell_effect_order(tokens, events):
     for event in events:
         condition = guards[event["position"]]
         if condition is not False:
-            if condition is None and event["kind"] == "write":
-                event = dict(event, replaces=False, partial=event.get("partial", not event["replaces"]))
+            if event["kind"] == "write":
+                event = dict(event, _replace_success=event["replaces"])
             by_position.setdefault(event["position"], []).append(event)
-    functions = {}
+    functions, function_success = {}, {}
 
-    def walk(begin, end, active=(), in_loop=False, definite=True):
+    def expanded_success(positions):
+        result, pending = set(positions), list(positions)
+        while pending:
+            for position in function_success.get(pending.pop(), ()):
+                if position not in result:
+                    result.add(position)
+                    pending.append(position)
+        return result
+
+    def walk(begin, end, active=(), in_loop=False, definite=True, inherited=frozenset(),
+             scope_entry=frozenset(), completion=None):
+        completion = end_success if completion is None else completion
         index = begin
         while index < end:
+            implied = expanded_success(inherited | (success_facts.get(index, {}).get("entry", set()) - scope_entry))
             if index in definitions:
                 name, start, stop = definitions[index]
-                functions[name] = (start, stop)
+                functions[name] = (index, start, stop)
                 index = stop + 1
                 continue
             token = tokens[index]
@@ -2969,7 +3031,9 @@ def shell_effect_order(tokens, events):
                 for _ in range(iterations):
                     transfer = None
                     for event in walk(index + 1, stop, active, in_loop=True,
-                                      definite=True if definite is True and guards[index] is True and guaranteed else None):
+                                      definite=True if definite is True and guards[index] is True and guaranteed else None,
+                                      inherited=implied, scope_entry=success_facts.get(index, {}).get("entry", set()),
+                                      completion=set()):
                         if event["kind"] in {"break", "continue"}:
                             transfer = event["kind"]
                             break
@@ -2991,13 +3055,28 @@ def shell_effect_order(tokens, events):
                            for path in event["paths"] if path in functions), None)
             if called is not None:
                 if active.count(called) < 2:
-                    yield from walk(*functions[called], (*active, called),
-                                    definite=True if definite is True and guards[index] is True else None)
+                    definition, start, stop = functions[called]
+                    facts = success_facts.get(definition, {})
+                    body_success = facts.get("children", set()) - facts.get("entry", set())
+                    function_success[index] = body_success
+                    yield from walk(start, stop, (*active, called),
+                                    definite=True if definite is True and guards[index] is True else None,
+                                    inherited=implied, scope_entry=facts.get("entry", set()),
+                                    completion=body_success if index in completion else set())
             else:
                 for event in current:
-                    yield dict(event, replaces=False, partial=event.get("partial", not event["replaces"])) if definite is not True and event["kind"] == "write" else event
+                    if event["kind"] == "write":
+                        yield dict(event, replaces=event["replaces"] and index in completion,
+                                   partial=event.get("partial", not event["replaces"]))
+                    else:
+                        yield dict(event, _implied_success=tuple(implied))
             index += 1
-    return list(walk(0, len(tokens)))
+    ordered = list(walk(0, len(tokens)))
+    # A reached EXIT handler can replace the native status. It does not
+    # change the successes required to reach a reader before that exit.
+    if any(success_facts.get(event.get("position"), {}).get("overrides") for event in ordered):
+        ordered = [dict(event, replaces=False) if event["kind"] == "write" else event for event in ordered]
+    return ordered
 
 
 def executable_content_cached(value, cache):
@@ -7749,7 +7828,9 @@ def apply_file_effect(effect, cwd, candidates, sources=None, *, python_checks=No
                     for root, _ in roots:
                         for existing in list(sources):
                             if existing == root or effect.get("copy_recursive") and existing.startswith(root.rstrip('/') + '/'):
-                                sources[existing] = dict(sources[existing], definite=False)
+                                counterpart = posixpath.normpath(posixpath.join(source, posixpath.relpath(existing, root)))
+                                if existing not in source_paths or counterpart in known:
+                                    sources[existing] = dict(sources[existing], definite=False)
                 owning = False
                 for original in source_paths:
                     relative = posixpath.relpath(original, source)
@@ -7824,18 +7905,38 @@ def native_write_outcomes(records, harness, identifiers):
     """Reuse native binding; an erasure needs affirmative successful output."""
     selected = {(name, id(value)) for record in records
                 for identifier, name, value in calls_and_results(record, harness)[0] if identifier in identifiers}
-    native_names = {identifier: name for record in records
-                    for identifier, name, _ in calls_and_results(record, harness)[0] if identifier in identifiers}
+    native_invocations = {identifier: (name, value) for record in records
+                          for identifier, name, value in calls_and_results(record, harness)[0]}
+    native_names = {identifier: name for identifier, (name, _) in native_invocations.items()}
     ends, successful, failed, native_results = {}, set(), set(), {}
     for index, identifier, result in bound_outputs(records, harness, lambda name, value: (name, id(value)) in selected):
         if result.get("_result") and not result.get("_pending"):
             ends[identifier] = index
             native_results[identifier] = result.get("_tool_call_id")
-        payload = records[index].get("payload") or {}
-        outer_text = payload.get("output") if payload.get("call_id") == result.get("_tool_call_id") else None
-        native_status = isinstance(outer_text, str) and outer_text.startswith("Exit code:")
-        if harness == "codex" and (native_status or native_names.get(identifier) in {"apply_patch", "functions.apply_patch"}):
-            continue  # Printed JSON cannot certify or veto the outer native status.
+        if harness == "codex":
+            if not result.get("_result"):
+                continue  # Recursively decoded stdout is never native status.
+            output_call = native_invocations.get(result.get("_tool_call_id"))
+            if output_call is None:
+                continue
+            output_name, output_value = output_call
+            composed = output_name in {"exec", "functions.exec"}
+            serial = composed_calls(output_value) if composed else [(output_name, arguments(output_value), False)]
+            blocks, _ = serial_native_chunk(records[index])
+            wrappers = (serial_native_results(blocks, serial) if serial
+                        and output_name not in {"apply_patch", "functions.apply_patch"} else None)
+            if wrappers is not None:
+                statuses = [wrapper.get("exit_code") for (method, args, stdout), wrapper in zip(serial, wrappers)
+                            if wrapper is not None and (not composed or method in {"write_stdin", "wait"}
+                                or any(effect["kind"] == "write" for effect in native_file_effects(method, args)))]
+                if statuses and all(type(status) is int for status in statuses):
+                    (successful if all(status == 0 for status in statuses) else failed).add(identifier)
+            elif not composed:
+                native = (records[index].get("payload") or {}).get("output")
+                match = re.match(r"\AExit code: (-?\d+)\nWall time: [^\n]+\nOutput:\n", native) if isinstance(native, str) else None
+                if match:
+                    (successful if int(match[1]) == 0 else failed).add(identifier)
+            continue
         if harness == "claude" and native_names.get(identifier) in {"Write", "Edit", "Bash", "apply_patch", "functions.apply_patch"}:
             continue  # Native is_error owns status; content is only stdout.
         if result.get("_tool_error"):
@@ -7844,18 +7945,6 @@ def native_write_outcomes(records, harness, identifiers):
             failed.add(identifier)
         elif not result.get("operation") and type(result.get("exit_code")) is int and result["exit_code"] == 0:
             successful.add(identifier)
-    if harness == "codex":
-        for identifier, index in ends.items():
-            payload = records[index].get("payload") or {}
-            if payload.get("call_id") != native_results.get(identifier):
-                continue
-            native = payload.get("output")
-            match = re.match(r"\AExit code: (-?\d+)\nWall time: [^\n]+\nOutput:\n", native) if isinstance(native, str) else None
-            status = int(match[1]) if match else None
-            if status == 0:
-                successful.add(identifier)
-            elif status is not None:
-                failed.add(identifier)
     if harness == "claude":
         for identifier, index in ends.items():
             if native_names.get(identifier) not in {"Write", "Edit", "Bash", "apply_patch", "functions.apply_patch"}:
@@ -8142,13 +8231,16 @@ def file_ownership_executions(records, harness, *, file_candidates=(), python_ch
         # Other invocations retain old and possible new bytes until a bound
         # terminal result proves a full replacement has finished.
         local_candidates, local_sources, replacements, written_by_path = set(candidates), dict(sources), {}, {}
+        entry_candidates, entry_sources, preceding_writes = set(candidates), dict(sources), []
         for effect in effects:
             if effect["kind"] == "write":
                 if name in {"apply_patch", "functions.apply_patch", "Edit"} and "updates" in effect:
                     effect = dict(effect, _native_update=name)
                 generation += 1
                 path = native_path(effect["path"], native_cwd(effect.get("cwd"), cwd)) if effect["path"] else None
-                owning = apply_file_effect(effect, cwd, local_candidates, local_sources, python_checks=python_checks,
+                preceding_writes.append(effect)
+                local_effect = dict(effect, replaces=False) if effect.get("_replace_success") else effect
+                owning = apply_file_effect(local_effect, cwd, local_candidates, local_sources, python_checks=python_checks,
                                            source_ready=lambda path: source_ready(path, (origin, identifier, timestamp, read_at)))
                 possible = (dict(effect, replaces=False, partial=False) if effect["replaces"] else
                             dict(effect, partial=True) if "updates" in effect else effect)
@@ -8166,6 +8258,17 @@ def file_ownership_executions(records, harness, *, file_candidates=(), python_ch
                     writer = (origin, identifier, timestamp, read_at)
                     remember(path, writer, [dict(effect, path=path, cwd=native_cwd(effect.get("cwd"), cwd))], append=True)
             else:
+                observed_candidates, observed_sources = local_candidates, local_sources
+                required = effect.get("_implied_success", ())
+                proven_writes = frozenset(written.get("position") for written in preceding_writes
+                                         if written.get("_replace_success") and written.get("position") in required)
+                if proven_writes:
+                    observed_candidates, observed_sources = set(entry_candidates), dict(entry_sources)
+                    for written in preceding_writes:
+                        if "_replace_success" in written:
+                            written = dict(written, replaces=bool(written["_replace_success"] and written.get("position") in required))
+                        apply_file_effect(written, cwd, observed_candidates, observed_sources, python_checks=python_checks,
+                                          source_ready=lambda path: source_ready(path, (origin, identifier, timestamp, read_at)))
                 active_contexts = [context for _, start, end, context in intervals
                                    if timestamp is None or start <= timestamp <= end]
                 # Later calls can run while an earlier writer's handle lives.
@@ -8176,25 +8279,23 @@ def file_ownership_executions(records, harness, *, file_candidates=(), python_ch
                     active_contexts.extend(context for (_, source), (began, context) in own_intervals.items()
                                            if source != identifier and began is not None and read_at is not None
                                            and began < read_at <= finished.get(source, float("inf")))
-                key = generation, tuple(id(context) for context in active_contexts)
+                key = generation, tuple(id(context) for context in active_contexts), proven_writes
                 # Pure reads do not change a writer's possible bytes. Reuse
                 # their projection until a write, completion, or interval
                 # membership change affects the source/candidate state.
                 if active_projection is None or active_projection[0] != key:
                     active = set()
                     for context in active_contexts:
-                        speculative_candidates, speculative_sources = set(local_candidates), dict(local_sources)
+                        speculative_candidates, speculative_sources = set(observed_candidates), dict(observed_sources)
                         apply_context(context, speculative_candidates, speculative_sources, possible=True)
                         active.update(speculative_candidates)
                     active_projection = key, active
                 else:
                     active = active_projection[1]
-                if {native_path(path, native_cwd(effect.get("cwd"), cwd)) for path in effect["paths"]} & (local_candidates | active):
+                if {native_path(path, native_cwd(effect.get("cwd"), cwd)) for path in effect["paths"]} & (observed_candidates | active):
                     invocations.add(identifier)
         for path, written in written_by_path.items():
             context = replacements.get(path, written)
-            if path not in candidates and path not in local_candidates and Path(path).suffix != ".py":
-                continue
             end = completion_ends().get(identifier)
             if end is not None:
                 context = tuple(dict(effect, _native_success=identifier in successful) for effect in context)
@@ -8420,7 +8521,8 @@ def serial_ownership_records(records):
                     # Retain its launch so it cannot become a false all-clear.
                     if wrapper is not None:
                         split.append({**({"timestamp": record["timestamp"]} if "timestamp" in record else {}),
-                                      "payload": {"type": "function_call_output", "call_id": part_id, "output": json.dumps(wrapper)}})
+                                      "payload": {"type": "function_call_output", "call_id": part_id,
+                                                  "output": [{"type": "input_text", "text": json.dumps(wrapper)}]}})
         if split is not None:
             expanded.extend(split)
             positions.extend([index] * len(split))

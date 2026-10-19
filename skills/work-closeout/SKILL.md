@@ -375,6 +375,13 @@ established. Fixture strings, assertions, documentation, lint and compilation
 operands do not establish ownership. Shell/interpreter bodies are checked for
 executable ownership commands or process launches, rather than claim words in
 read arguments. Ordinary reads and tests remain supported.
+For generated scripts, put the replacement and its reader in one foreground
+`write && run` chain, or finish a single foreground write with its own successful
+native result before a separate run. A later unconditional command can hide a
+failed rewrite, leaving the previous script executable. Whole-shell success and
+JSON printed by the script cannot prove that rewrite succeeded. For a heredoc,
+place `&& run` on the opening command line, before its body. This is guidance for
+future execution; never repeat an earlier ownership write to manufacture proof.
 Ownership commands before or after inert bodies still count. Substitutions in
 unquoted heredocs may execute and remain unparsed.
 Potential ownership in unparsed shell or computed code-mode commands stays

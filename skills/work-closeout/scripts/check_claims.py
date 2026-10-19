@@ -182,7 +182,9 @@ def check(reader, owner, entry, actor, *, reader_for_repo=None, read_timeout=Non
     file_candidates = claim_receipts.ownership_file_candidates(histories, python_checks=python_checks)
     states = [claim_receipts.ownership_state(node["records"], node["harness"], file_candidates=file_candidates, python_checks=python_checks) for node in histories]
     if any(state["pending"] for state in states):
-        raise ValueError("ownership command has no terminal native result; wait for it to finish, then launch a new check")
+        raise ValueError("ownership command has no terminal native result; wait for it to finish, then launch a new check. "
+                         "For future generated scripts, use write && run or a single foreground write with its own "
+                         "successful native result before the run. Do not repeat an earlier ownership write.")
     parsed_prefixes = {}
     def parsed_outputs(records, harness):
         # This check holds immutable native prefixes. Keep their records alive
