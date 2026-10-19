@@ -209,11 +209,12 @@ def shell_texts(name, value):
             texts = [body] if body is not None else [shlex.join(argv)]
     elif name in {"exec", "functions.exec"} and isinstance(value, str):
         texts = []
-        for m in composed_shell_fields(value):
-            try:
-                texts.append(composed_string(m[1], value))
-            except (ValueError, SyntaxError):
-                pass
+        for current in (value, *javascript_generated_sources(value)):
+            for m in composed_shell_fields(current):
+                try:
+                    texts.append(composed_string(m[1], current))
+                except (ValueError, SyntaxError):
+                    pass
     else:
         return
     yield from texts
@@ -221,47 +222,165 @@ def shell_texts(name, value):
 
 
 def javascript_projection(native):
-    """Mask only established inert atoms; uncertain code stays discoverable."""
+    """Share inert-atom discovery without dropping any executable suffix."""
     atoms, code = [], list(native)
-    token = re.compile(rf"//[^\r\n\u2028\u2029]*|/\*[\s\S]*?\*/|{JS_STRING}|/")
+    string_token = re.compile(JS_STRING)
     regex = re.compile(r"/(?:\\[^\r\n\u2028\u2029]|\[(?:\\[^\r\n\u2028\u2029]|[^\]\\\r\n\u2028\u2029])*\]|[^/\\[\r\n\u2028\u2029])+/[A-Za-z]*")
-    cursor = 0
-    while atom := token.search(native, cursor):
-        raw = atom[0]
-        if raw == "/":
-            prefix = native[:atom.start()].rstrip()
-            # Recognize regex literals only in established expression-prefix
-            # contexts, never by treating their quotes or slash pairs as atoms.
-            keyword = re.search(r"(?:^|[ \t\r\n\u2028\u2029;{}(=,:!?&|~+\-*/%])(?P<keyword>return|throw|case|delete|typeof|void|yield|await|in|else|do)$", prefix)
-            keyword_prefix = keyword is not None and not "".join(code[:keyword.start("keyword")]).rstrip().endswith(".")
-            if prefix and prefix[-1] not in "=(:,[!&|?{;" and not keyword_prefix:
-                break
-            atom = regex.match(native, atom.start())
-            if atom is None:
-                break
-            raw = atom[0]
-        if raw.startswith(("`", "String.raw")):
-            try:
-                javascript_string(raw)
-            except ValueError:
-                # Resuming a flat token scan inside an interpolation could pair
-                # an inner backtick with its outer close and hide executing code.
-                break
+    complete = True
+
+    def mask(start, end):
+        atom = re.compile(r"[\s\S]{" + str(end - start) + "}").match(native, start)
         atoms.append(atom)
-        code[atom.start():atom.end()] = ["\n" if c in "\r\n\u2028\u2029" else " " for c in atom[0]]
-        cursor = atom.end()
+        code[start:end] = ["\n" if c in "\r\n\u2028\u2029" else " " for c in atom[0]]
+
+    def template(start):
+        nonlocal complete
+        cursor, part = start + 1, start
+        while cursor < len(native):
+            if native[cursor] == "\\":
+                cursor += 2
+            elif native[cursor] == "`":
+                mask(part, cursor + 1)
+                return cursor + 1
+            elif native.startswith("${", cursor):
+                mask(part, cursor + 2)
+                cursor = scan(cursor + 2, interpolation=True)
+                part = cursor - 1 if cursor and native[cursor - 1] == "}" else cursor
+            else:
+                cursor += 1
+        complete = False
+        return len(native)
+
+    def scan(cursor, interpolation=False):
+        nonlocal complete
+        braces = 0
+        while cursor < len(native):
+            start, char = cursor, native[cursor]
+            if native.startswith("//", cursor):
+                match = re.match(r"//[^\r\n\u2028\u2029]*", native[cursor:])
+                cursor += match.end()
+                mask(start, cursor)
+            elif native.startswith("/*", cursor):
+                end = native.find("*/", cursor + 2)
+                if end < 0:
+                    complete = False
+                    return len(native)
+                cursor = end + 2
+                mask(start, cursor)
+            elif char in "\"'":
+                atom = string_token.match(native, cursor)
+                if atom is None:
+                    complete = False
+                    return len(native)
+                cursor = atom.end()
+                mask(start, cursor)
+            elif char == "`":
+                cursor = template(cursor)
+            elif char == "/":
+                prefix = "".join(code[:cursor]).rstrip()
+                keyword = re.search(r"(?:^|[ \t\r\n\u2028\u2029;{}(=,:!?&|~+\-*/%])(?P<keyword>return|throw|case|delete|typeof|void|yield|await|in|else|do)$", prefix)
+                keyword_prefix = keyword is not None and not prefix[:keyword.start("keyword")].rstrip().endswith(".")
+                expression_start = not prefix or prefix[-1] in "=(:,[!&|?{;" or keyword_prefix
+                atom = regex.match(native, cursor) if expression_start else None
+                cursor = atom.end() if atom is not None else cursor + 1
+                if atom is not None:
+                    mask(start, cursor)
+            elif char == "}":
+                if interpolation and braces == 0:
+                    return cursor + 1
+                braces -= 1
+                cursor += 1
+            else:
+                braces += char == "{"
+                cursor += 1
+        if interpolation:
+            complete = False
+        return cursor
+
+    try:
+        scan(0)
+    except RecursionError:
+        # Deeply nested templates remain unparsed discovery input rather than
+        # escaping the checker or being mistaken for a completed projection.
+        complete = False
     code = "".join(code)
-    dynamic = bool(re.search(r"\b(?:eval|Function|AsyncFunction|constructor)\b|\bimport\s*\(", code))
-    return atoms, code, dynamic
+    # Source constructors are calls, not identically named properties, class
+    # methods, comments, or module specifier strings. Static imports load a
+    # module; they do not evaluate unrelated path/fixture literals in this cell.
+    source_names = {"eval", "Function", "AsyncFunction"}
+    declarations = list(re.finditer(r"\b(?:const|let|var)\s+(\w+)\s*=\s*([^;\n]+)", code))
+    for _ in declarations:
+        added = {match[1] for match in declarations
+                 if match[2].strip() in source_names
+                 or re.search(r"\.\s*constructor\s*$", match[2])}
+        if added <= source_names:
+            break
+        source_names.update(added)
+    source_calls = list(re.finditer(r"\.\s*constructor\s*\(|\b(?:" +
+                                  "|".join(re.escape(name) for name in source_names) + r")\s*\(", code))
+    for call in re.finditer(r"\bimport\s*\(", code):
+        opening = call.end() + len(re.match(r"\s*", native[call.end():])[0])
+        literal = string_token.match(native, opening)
+        try:
+            specifier = javascript_string(literal[0]) if literal else None
+        except ValueError:
+            specifier = None
+        static = literal is not None and native[literal.end():].lstrip().startswith((")", ","))
+        if not static or specifier is None or specifier.startswith(("data:", "blob:")):
+            source_calls.append(call)
+    regions = []
+    for call in source_calls:
+        depth, cursor = 1, call.end()
+        while cursor < len(code) and depth:
+            depth += (code[cursor] == "(") - (code[cursor] == ")")
+            cursor += 1
+        regions.append((call.end(), cursor - 1 if not depth else len(code)))
+    return atoms, code, regions, complete
+
+
+def javascript_generated_sources(value):
+    """Discover literal source only through projected source-call arguments."""
+    pending, seen = [value], {value}
+    while pending:
+        current = pending.pop()
+        current_atoms, current_code, regions, _ = javascript_projection(current)
+        bindings = {m[1]: (m.start(2), m.end(2))
+                    for m in re.finditer(r"\b(?:const|let|var)\s+(\w+)\s*=([^;\n]*)", current_code)}
+        selected, visited = list(regions), set()
+        while selected:
+            start, end = selected.pop()
+            if (start, end) in visited:
+                continue
+            visited.add((start, end))
+            selected.extend(bindings[word] for word in re.findall(r"\b\w+\b", current_code[start:end])
+                            if word in bindings)
+            for literal in current_atoms:
+                if not start <= literal.start() < end:
+                    continue
+                try:
+                    text = javascript_string(literal[0])
+                except ValueError:
+                    raw = literal[0]
+                    if raw[:1] not in {"`", "}"} or not raw.endswith(("${", "`")):
+                        continue
+                    part = raw[1:-2] if raw.endswith("${") else raw[1:-1]
+                    try:
+                        text = javascript_string("`" + part + "`")
+                    except ValueError:
+                        continue
+                if text not in seen:
+                    seen.add(text)
+                    yield text
+                    pending.append(text)
 
 
 def javascript_call_starts(native, pattern):
-    atoms, _, dynamic = javascript_projection(native)
+    atoms, _, _, _ = javascript_projection(native)
     cursor = 0
     for start in re.finditer(pattern, native):
         while cursor < len(atoms) and atoms[cursor].end() <= start.start():
             cursor += 1
-        if not dynamic and cursor < len(atoms) and atoms[cursor].start() <= start.start() < atoms[cursor].end():
+        if cursor < len(atoms) and atoms[cursor].start() <= start.start() < atoms[cursor].end():
             continue
         yield start
 
@@ -1949,30 +2068,19 @@ def unparsed_command_text(value):
     This is conservative command discovery, not evaluation or completion proof.
     Parsed literal tool arguments have already been removed by the caller.
     """
-    atoms, code, dynamic = javascript_projection(value)
+    unparsed = list(value)
+    for match in composed_shell_fields(value):
+        try:
+            composed_string(match[1], value)
+        except ValueError:
+            continue
+        unparsed[match.start():match.end()] = " " * (match.end() - match.start())
+    value = "".join(unparsed)
+    atoms, code, _, complete = javascript_projection(value)
     literals = [atom for atom in atoms if not atom[0].lstrip(" \t").startswith(("//", "/*"))]
-    if dynamic:
-        # A literal passed to eval/a constructor/import is executable input, not
-        # fixture prose. Preserve decoded source as well as unresolved code.
-        decoded, pending, seen = [], [value], {value}
-        while pending:
-            # Discovery may over-approximate nested strings, but may not hide
-            # generated code behind another layer of literal escaping.
-            for literal in re.finditer(JS_STRING, pending.pop()):
-                try:
-                    text = javascript_string(literal[0])
-                except ValueError:
-                    continue
-                if text not in seen:
-                    seen.add(text)
-                    decoded.append(text)
-                    pending.append(text)
-        return value + " " + " ".join(decoded)
+    generated = list(javascript_generated_sources(value))
     def region(start, delimiter):
         start += len(re.match(r"\s*", value[start:])[0])
-        literal = re.match(JS_STRING, value[start:])
-        if literal is not None and literal[0].startswith("`"):
-            return start, start + literal.end()
         end = re.search(delimiter, code[start:])
         return start, start + end.start() if end else len(code)
     declarations = {m[1]: region(m.end(), r"[;\n]")
@@ -1980,6 +2088,14 @@ def unparsed_command_text(value):
     pending = [region(m.end(), r"[,};\n]") for m in re.finditer(r"\b(?:cmd|command)\s*:", code)]
     pending += [(m.start(1), m.end(1)) for m in re.finditer(r"[{,]\s*(cmd|command)\s*(?=[,}])", code)]
     seen, pieces, unresolved = set(), [], False
+    if not complete:
+        # Truncated/invalid native source is never proof that a command ended
+        # before its unparsed suffix. Preserve it conservatively.
+        pieces.append(value)
+    for text in generated:
+        pieces.extend(shlex.join(argv) for argv in shell_commands("functions.exec", text)
+                      if ownership_command(argv))
+        pieces.append(unparsed_command_text(text))
     def literal_writers():
         for literal in literals:
             try:
@@ -1995,7 +2111,7 @@ def unparsed_command_text(value):
             continue
         seen.add((start, end))
         expression = value[start:end].strip()
-        if expression.startswith('`'):
+        if expression.startswith('`') and re.fullmatch(JS_STRING, expression) is not None:
             command = re.sub(r"\$\{[^}]*\}", "computed-operand", expression.strip('`'))
             substitutions = re.findall(r"\$\{([^}]*)\}", expression)
             safe_substitutions = True
@@ -2073,18 +2189,7 @@ def opaque_ownership(name, value):
             if child and Path(child[0]).name in {"eval", "node"} and OWNERSHIP_TEXT.search(" ".join(child[1:])):
                 return True
     if name in {"exec", "functions.exec"} and isinstance(value, str):
-        def parsed_field(match):
-            try:
-                composed_string(match[1], value)
-            except ValueError:
-                return match[0]
-            return ""
-        unparsed = list(value)
-        dynamic = javascript_projection(value)[2]
-        for match in (() if dynamic else composed_shell_fields(value)):
-            if not parsed_field(match):
-                unparsed[match.start():match.end()] = " " * (match.end() - match.start())
-        unparsed = unparsed_command_text("".join(unparsed))
+        unparsed = unparsed_command_text(value)
         return bool(re.search(r"gh-plan\.py", unparsed) and re.search(r"\bclaim\b", unparsed)
                     or re.search(r"gh-pr\.py|\bgh\s+pr\b", unparsed) and re.search(r"\bcreate\b", unparsed))
     return False
@@ -2460,6 +2565,7 @@ def python_ownership(content, *, partial=False):
     return_values, yield_values = [], []
     fingerprints = {}
     branch_changes = []
+    branch_scopes = []
     class_bases = {}
     method_classes = {}
     attribute_mutations = 0
@@ -2498,7 +2604,10 @@ def python_ownership(content, *, partial=False):
             return self.parent.owner(name) if self.parent is not None else None
 
         def __setitem__(self, name, assigned):
-            self.declarations.get(name, self).state[name] = assigned
+            owner = self.declarations.get(name, self)
+            if owner is not self:
+                observe_scope(owner)
+            owner.state[name] = assigned
 
     class Function:
         def __init__(self, node, scope):
@@ -3393,11 +3502,8 @@ def python_ownership(content, *, partial=False):
                             for row in combinations([*arguments, *keywords.values()])]
             def render(alternative):
                 receiver, row = alternative
-                if receiver is unknown:
-                    # An unknown template may use any argument's conversion.
-                    for item in row:
-                        text_conversion(item, "format", scope, computed if member(item, "__format__", scope, special=True) else "")
-                    return (overflow if any(conversion_witness(item) for item in row) else unknown,)
+                if receiver is unknown or unresolved_text(receiver):
+                    return unknown_template_effects(row, scope, template=receiver)
                 if not isinstance(receiver, str):
                     return (unknown,)
                 positional = [conversion_operand(item, scope) for item in row[:len(arguments)]]
@@ -3458,6 +3564,170 @@ def python_ownership(content, *, partial=False):
             states.append(branch((), scope, executor=lambda local: rendered.extend(render(alternative))))
         scope.state = merge(*states)
         return choices(rendered)
+
+    def uncertain_protocol_effects(operands, scope, callbacks=()):
+        """Unknown protocol order/count keeps zero calls and reachable states."""
+        def havoc():
+            nonlocal attribute_mutations
+            pending = [*operands, *(callback for callback, _ in callbacks)]
+            seen = set()
+            while pending:
+                item = pending.pop()
+                if id(item) in seen:
+                    continue
+                seen.add(id(item))
+                if isinstance(item, Bound):
+                    pending.extend((item.function, item.receiver))
+                elif isinstance(item, Partial):
+                    pending.extend(item.functions)
+                    pending.extend(child for assigned in (*item.arguments, *item.keywords.values()) for child in assigned)
+                elif isinstance(item, Function):
+                    for name in item.free | item.globals | item.nonlocals:
+                        owner = item.scope.owner(name)
+                        if owner is not None:
+                            assigned = owner.get(name, ())
+                            pending.extend(assigned)
+                            owner[name] = choices((*assigned, unknown))
+                elif isinstance(item, Instance):
+                    observe(item.attributes)
+                    for name, assigned in list(item.attributes.items()):
+                        pending.extend(assigned)
+                        item.attributes[name] = choices((*assigned, unknown))
+                elif isinstance(item, Keywords):
+                    observe(item.state)
+                    for name, assigned in list(item.items.items()):
+                        pending.extend(assigned)
+                        item.items[name] = choices((*assigned, unknown))
+                elif isinstance(item, Sequence):
+                    members = tuple(sequence_members(item))
+                    pending.extend(members)
+                    observe(item.state)
+                    item.state['rows'] = choices((*item.state['rows'], *([child] for child in members), [unknown]))
+                elif isinstance(item, (list, tuple)):
+                    pending.extend(item)
+            attribute_mutations += 1
+            expression_values.clear()
+        havoc()
+        actions = (lambda local: (unknown,), *(lambda local, callback=callback, args=args:
+                   invoke(callback, local, args, evaluated=True) for callback, args in callbacks))
+        result = evaluation_alternatives(actions, scope, lambda action: action(scope))
+        havoc()
+        return result
+
+
+    def unknown_template_effects(operands, scope, *, percent=False, template=None):
+        """An unknown field list cannot prove a callback count or conversion."""
+        def callbacks_for(values):
+            pending, seen, callbacks = list(values), set(), []
+            while pending:
+                item = pending.pop()
+                if id(item) in seen:
+                    continue
+                seen.add(id(item))
+                if isinstance(item, Instance):
+                    protocols = (("__str__", ()), ("__repr__", ()),
+                                 ("__int__", ()), ("__index__", ()), ("__float__", ()),
+                                 ("__getitem__", ((unknown,),))) if percent else (
+                                     ("__format__", ((computed,),)), ("__str__", ()), ("__repr__", ()),
+                                     ("__getitem__", ((unknown,),)), ("__getattribute__", ((unknown,),)),
+                                     ("__getattr__", ((unknown,),)))
+                    for name, arguments in protocols:
+                        callbacks.extend((callback, arguments) for callback in member(item, name, special=True))
+                    pending.extend(child for assigned in item.attributes.values() for child in assigned)
+                    if not percent:
+                        for name in class_names(item.kind):
+                            for child in class_member(item.kind, name):
+                                if isinstance(child, Descriptor) and child.kind in {"property", "cached_property"}:
+                                    callbacks.append((Bound(child.function, item), ()))
+                                elif isinstance(child, (Instance, Sequence, Keywords, list, tuple)):
+                                    pending.append(child)
+                elif isinstance(item, Keywords):
+                    pending.extend(child for assigned in item.items.values() for child in assigned)
+                elif isinstance(item, Sequence):
+                    pending.extend(sequence_members(item))
+                elif isinstance(item, (list, tuple)):
+                    pending.extend(item)
+            return callbacks
+
+        outputs = uncertain_protocol_effects(operands, scope, callbacks_for(operands))
+        returned, representatives, analyzed, captured, kind_keys = list(outputs), {}, {}, {}, {}
+        def kind_key(kind):
+            key = id(kind)
+            if key not in kind_keys:
+                kind_keys[key] = ast.dump(kind) if isinstance(kind, ast.AST) else repr(kind)
+            return kind_keys[key]
+
+        def capture_fields(receivers):
+            pending, seen = [callback for callback, _ in callbacks_for(receivers)], set()
+            while pending:
+                callback = pending.pop()
+                if id(callback) in seen:
+                    continue
+                seen.add(id(callback))
+                if isinstance(callback, Bound):
+                    pending.append(callback.function)
+                elif isinstance(callback, Function):
+                    source = ast.dump(callback.node)
+                    captured.setdefault((source, ""), (None,))
+                    bindings = {**{"=" + name: assigned for name, assigned in callback.defaults.items()},
+                                **{name: callback.scope.get(name, ()) for name in callback.free}}
+                    for name, assigned in bindings.items():
+                        pending.extend(assigned)
+                        values = tuple(kind_key(item) if isinstance(item, ast.ClassDef)
+                                       else ast.dump(item.node) if isinstance(item, Function) else item for item in assigned)
+                        key = source, name
+                        captured[key] = choices((*captured.get(key, ()), *values), source_values=False)
+            return tuple(sorted((key, binding_key(assigned)) for key, assigned in captured.items()))
+        # Attribute paths can continue through objects returned by getters.
+        # Join their receiver fields by kind before another callback pass;
+        # fresh allocations of the same shape do not create an endless walk.
+        def join_instance(item):
+            if not isinstance(item, Instance):
+                return item
+            key = kind_key(item.kind)
+            representative = representatives.setdefault(key, Instance(item.kind))
+            if representative is item or id(item) in joining:
+                return representative
+            joining.add(id(item))
+            for name, assigned in item.attributes.items():
+                representative.attributes[name] = choices((*representative.attributes.get(name, ()),
+                                                            *(join_instance(child) for child in assigned)))
+            joining.remove(id(item))
+            return representative
+
+        def fields(item):
+            return tuple(sorted((binding_key(name), binding_key(assigned)) for name, assigned in item.attributes.items()))
+
+        while outputs:
+            joining = set()
+            pending, new_receivers, seen = list(outputs), [], set()
+            while pending:
+                item = pending.pop()
+                if id(item) in seen:
+                    continue
+                seen.add(id(item))
+                if isinstance(item, Instance):
+                    new_receivers.append(item)
+                    join_instance(item)
+                elif isinstance(item, Sequence):
+                    pending.extend(sequence_members(item))
+                elif isinstance(item, Keywords):
+                    pending.extend(child for assigned in item.items.values() for child in assigned)
+                elif isinstance(item, (list, tuple)):
+                    pending.extend(item)
+            captures = capture_fields(new_receivers)
+            dirty = [(key, item) for key, item in representatives.items()
+                     if analyzed.get(key) != (fields(item), captures)]
+            if not dirty:
+                break
+            for key, item in dirty:
+                analyzed[key] = fields(item), captures
+            kinds = {key for key, _ in dirty}
+            receivers = (*tuple(item for _, item in dirty),
+                         *(item for item in new_receivers if kind_key(item.kind) in kinds))
+            outputs = uncertain_protocol_effects((*operands, *receivers), scope, callbacks_for(receivers))
+            returned.extend(outputs)
+        return (overflow if any(conversion_witness(item) for item in (template, *operands, *returned)) else unknown,)
 
     def format_failure(template, operands, percent=False):
         """Retain known command scaffolding when an operand is unresolved."""
@@ -3596,8 +3866,8 @@ def python_ownership(content, *, partial=False):
     text_conversions = {name: operation for operation in ("str", "repr", "ascii") for name in (operation, "builtins." + operation)}
     text_conversions["shlex.quote"] = "quote"
 
-    protocol_data_calls = {name for operation in ("len", "bool", "int", "float", "complex", "hash", "dir", "sorted", "min", "max")
-                           for name in (operation, "builtins." + operation)} | {"pprint.pprint", "pprint.pformat", "json.dumps"}
+    protocol_data_calls = {name for operation in ("len", "bool", "int", "float", "complex", "hash", "dir", "sorted", "min", "max", "any", "all", "sum", "bytes", "range", "set", "frozenset", "dict")
+                           for name in (operation, "builtins." + operation)} | {"pprint.pprint", "pprint.pformat", "json.dumps", "json.dump", "json.loads"}
 
     def data_call_protocol(name, arguments, keywords, scope):
         """Data consumers can execute class protocols and explicit callbacks."""
@@ -3646,6 +3916,10 @@ def python_ownership(content, *, partial=False):
                     return special(item, protocols[operation], local)
                 try:
                     literal = data_literal(item)
+                    def salted(value):
+                        return isinstance(value, (str, bytes)) or isinstance(value, (tuple, list, dict)) and any(salted(child) for child in value)
+                    if operation == 'hash' and salted(literal):
+                        return (unknown,)
                     return (int.__index__(literal) if operation == "index" else getattr(builtins, operation)(literal),)
                 except (InexactDataLoop, TypeError, ValueError, OverflowError):
                     return (unknown,)
@@ -3668,7 +3942,10 @@ def python_ownership(content, *, partial=False):
                         self.operand = operand
                     def __repr__(self):
                         texts = special(self.operand, ("__repr__",), local)
-                        return next((text for text in texts if isinstance(text, str)), computed)
+                        if len(texts) != 1:
+                            uncertain_protocol_effects((self.operand,), local, tuple((callback, ()) for callback in member(self.operand, '__repr__', local, special=True)))
+                            return overflow if any(conversion_witness(text) for text in texts) else computed
+                        return texts[0] if isinstance(texts[0], str) else computed
                 def bounded_rows(parts):
                     rows = [()]
                     for part in parts:
@@ -3750,34 +4027,152 @@ def python_ownership(content, *, partial=False):
                             pending.extend(child for assigned in operand.items.values() for child in assigned)
                         elif isinstance(operand, (Sequence, list, tuple)):
                             pending.extend(sequence_members(operand) if isinstance(operand, Sequence) else operand)
-                    alternatives((lambda target: (unknown,), *(lambda target, instance=instance: special(instance, ("__repr__",), target)
-                                                               for instance in instances)))
+                    uncertain_protocol_effects((item,), local, tuple((callback, ()) for instance in instances
+                                                for callback in member(instance, '__repr__', local, special=True)))
                     return display(computed, local) if operation == "pprint.pprint" else (computed,)
                 return alternatives(lambda target, tree=tree: display(tree, target) for tree in concrete)
             return alternatives(lambda local, item=item: render(item, local) for item in arguments[0]) or (unknown,)
-        if operation == "json.dumps":
-            if len(arguments) != 1:
+        def protocol_leaves(operands):
+            pending, visited = list(operands), set()
+            while pending:
+                item = pending.pop()
+                if id(item) in visited:
+                    continue
+                visited.add(id(item))
+                if isinstance(item, Instance):
+                    yield item
+                elif isinstance(item, Keywords):
+                    pending.extend(child for assigned in item.items.values() for child in assigned)
+                    pending.extend(item.items)
+                elif isinstance(item, Sequence):
+                    pending.extend(sequence_members(item))
+                elif isinstance(item, (list, tuple)):
+                    pending.extend(item)
+                elif item is unknown or isinstance(item, (Generator, Function, Bound, Partial, ast.alias, ast.ClassDef)):
+                    yield item
+
+        if operation in {'json.dumps', 'json.dump', 'json.loads'}:
+            parameters = ('obj','fp') if operation == 'json.dump' else ('s',) if operation == 'json.loads' else ('obj',)
+            arguments, keywords = list(arguments), dict(keywords)
+            if len(arguments) > len(parameters):
                 return (unknown,)
-            def encode(item, local, seen=()):
-                if id(item) in seen:
-                    return (unknown,)
-                descendants = (*seen, id(item))
-                if isinstance(item, Keywords):
-                    for assigned in item.items.values():
-                        alternatives(lambda target, child=child: encode(child, target, descendants) for child in assigned)
-                elif isinstance(item, (Sequence, list, tuple)):
-                    def encode_row(row, target):
-                        for child in row:
-                            encode(child, target, descendants)
+            for index, parameter in enumerate(parameters):
+                if index < len(arguments):
+                    if parameter in keywords:
                         return (unknown,)
-                    rows = sequence_rows(item) if isinstance(item, Sequence) else (item,)
-                    alternatives(lambda target, row=row: encode_row(row, target) for row in rows)
-                elif isinstance(item, Instance):
-                    returned = alternatives(lambda target, callback=callback: invoke(callback, target, [(item,)], evaluated=True)
-                                            for callback in keywords.get("default", ()) if callback is not None)
-                    alternatives(lambda target, child=child: encode(child, target, descendants) for child in returned)
+                elif parameter in keywords:
+                    arguments.append(keywords.pop(parameter))
+                else:
+                    return (unknown,)
+            operands = tuple(item for assigned in arguments for item in assigned)
+            callbacks = []
+            if operation == 'json.loads':
+                # CPython's parser selects which explicit callbacks are reached.
+                source = arguments[0]
+                if len(source) == 1 and isinstance(source[0], (str, bytes)) and not unresolved_text(source[0]) and 'cls' not in keywords:
+                    handlers = {}
+                    def adapt(item):
+                        if isinstance(item, dict):
+                            return Keywords({key:(adapt(child),) for key, child in item.items()})
+                        if isinstance(item, list):
+                            return Sequence(([adapt(child) for child in item],))
+                        return item
+                    for name in ('object_hook', 'object_pairs_hook', 'parse_float', 'parse_int', 'parse_constant'):
+                        if name in keywords and keywords[name] != (None,):
+                            def handler(item, assigned=keywords[name]):
+                                values = alternatives(lambda target, callback=callback: invoke(callback, target, [(adapt(item),)], evaluated=True) for callback in assigned)
+                                return values[0] if len(values) == 1 else unknown
+                            handlers[name] = handler
+                    try:
+                        return (adapt(json.loads(source[0], **handlers)),)
+                    except (TypeError, ValueError, OverflowError):
+                        return (unknown,)
+                callbacks.extend((callback, [(unknown,)]) for name, assigned in keywords.items() if name in {'object_hook','object_pairs_hook','parse_float','parse_int','parse_constant'} for callback in assigned if callback is not None)
+            else:
+                # Primitive JSON without callbacks is inert. In particular, do
+                # not expand a factored source DAG just to learn its layout.
+                defaults = tuple(callback for callback in keywords.get('default', ()) if callback is not None)
+                leaves = tuple(protocol_leaves(arguments[0])) if defaults else ()
+                callbacks.extend((callback, [(item,)]) for item in leaves for callback in defaults)
+                if operation == 'json.dump' and len(arguments) > 1:
+                    callbacks.extend((callback, [(computed,)]) for stream in arguments[1] for callback in member(stream, 'write', scope))
+            for encoder in keywords.get('cls', ()):
+                for instance in invoke(encoder, scope, evaluated=True):
+                    callbacks.extend((callback, [(unknown,)]) for method in ('encode','iterencode','default','decode','raw_decode') for callback in member(instance, method, scope))
+            if callbacks:
+                # One exact object/default call is determinate; aggregate shapes
+                # and custom encoder/decoder behavior have unknown visit counts.
+                if operation == 'json.dumps' and len(arguments[0]) == 1 and isinstance(arguments[0][0], Instance) and len(callbacks) == 1 and 'cls' not in keywords:
+                    callback, args = callbacks[0]
+                    invoke(callback, scope, args, evaluated=True)
+                else:
+                    uncertain_protocol_effects(operands, scope, callbacks)
+            return (unknown,)
+        if operation in {'any','all','sum','bytes','range','set','frozenset','dict'}:
+            if operation == 'bytes' and 'source' in keywords:
+                if arguments:
+                    return (unknown,)
+                arguments, keywords = [keywords['source']], {key:assigned for key,assigned in keywords.items() if key != 'source'}
+            if operation in {'any','all'} and (len(arguments) != 1 or keywords):
                 return (unknown,)
-            return alternatives(lambda local, item=item: encode(item, local) for item in arguments[0]) or (unknown,)
+            if operation == 'sum' and (not 1 <= len(arguments) <= 2 or set(keywords) - {'start'} or len(arguments) == 2 and 'start' in keywords):
+                return (unknown,)
+            if operation == 'range' and (not 1 <= len(arguments) <= 3 or keywords):
+                return (unknown,)
+            if operation in {'set','frozenset'} and (len(arguments) > 1 or keywords):
+                return (unknown,)
+            if operation == 'dict' and len(arguments) > 1:
+                return (unknown,)
+            if operation == 'bytes' and (len(arguments) > 3 or set(keywords) - {'encoding','errors'} or len(arguments) > 1 and 'encoding' in keywords or len(arguments) > 2 and 'errors' in keywords):
+                return (unknown,)
+            operands = tuple(item for assigned in (*arguments, *keywords.values()) for item in assigned)
+            leaves = tuple(protocol_leaves(operands))
+            methods = {'any': ('__bool__','__len__'), 'all': ('__bool__','__len__'),
+                       'sum': ('__add__','__radd__'), 'bytes': ('__bytes__','__index__','__iter__','__next__'),
+                       'range': ('__index__',), 'set': ('__hash__','__eq__','__iter__','__next__'),
+                       'frozenset': ('__hash__','__eq__','__iter__','__next__'),
+                       'dict': ('__hash__','__eq__','__iter__','__next__','keys','__getitem__')}
+            callbacks = []
+            for item in leaves:
+                for method in methods[operation]:
+                    present = member(item, method, scope, special=method != 'keys')
+                    callbacks.extend((callback, [(unknown,)] if method in {'__add__','__radd__','__eq__','__getitem__'} else ()) for callback in present)
+                    if present and (operation in {'any','all'} or operation == 'bytes' and method in {'__bytes__','__index__'}):
+                        break
+            if callbacks:
+                returned = uncertain_protocol_effects(operands, scope, callbacks)
+                if operation not in {'dict','set','frozenset'}:
+                    return (overflow if any(conversion_witness(item) for item in returned) else unknown,)
+            try:
+                positional = [data_literal(assigned[0]) if len(assigned) == 1 else (_ for _ in ()).throw(InexactDataLoop()) for assigned in arguments]
+                named = {key:data_literal(assigned[0]) if len(assigned) == 1 else (_ for _ in ()).throw(InexactDataLoop()) for key, assigned in keywords.items()}
+                result = getattr(builtins, operation)(*positional, **named)
+                if isinstance(result, range):
+                    if len(result) > 10000:
+                        return (unknown,)
+                    result = tuple(result)
+                if isinstance(result, dict):
+                    return (Keywords({key:(item,) for key,item in result.items()}),)
+                if isinstance(result, (list,set,frozenset)):
+                    return (Sequence((list(result),), unique=isinstance(result,(set,frozenset))),)
+                return (result,)
+            except (InexactDataLoop, TypeError, ValueError, OverflowError):
+                if operation == 'dict':
+                    mapping = {}
+                    for operand in arguments[0] if arguments else ():
+                        if isinstance(operand, Keywords):
+                            update_mapping(mapping, operand.items)
+                        else:
+                            for entry in iterate_values((operand,), scope):
+                                if isinstance(entry, (list, tuple)) and len(entry) == 2:
+                                    put_mapping(mapping, entry[0] if isinstance(entry[0], (str, int)) else unknown, (entry[1],))
+                                else:
+                                    put_mapping(mapping, unknown, (entry,))
+                    update_mapping(mapping, keywords)
+                    return (Keywords(mapping),)
+                if operation in {'set','frozenset'} and arguments:
+                    return (Sequence(iterable_rows(arguments[0], scope), unique=True),)
+                return (unknown,)
         if operation in {"sorted", "min", "max"}:
             if not arguments:
                 return (unknown,)
@@ -3793,25 +4188,42 @@ def python_ownership(content, *, partial=False):
                     reflected = "__gt__" if method == "__lt__" else "__lt__"
                     if callbacks:
                         returned = alternatives(lambda target, callback=callback: invoke(callback, target, [(right,)], evaluated=True) for callback in callbacks)
-                        uncertain |= any(item is unknown or unresolved_text(item) for item in returned)
+                        uncertain |= len(returned) != 1 or any(item is unknown or unresolved_text(item) for item in returned)
                         definite = tuple(item for item in returned if item is not NotImplemented)
                         if not any(item is NotImplemented for item in returned):
                             return any(alternatives(lambda target, item=item: (truth(item, target),) for item in definite))
                     callbacks = member(right, reflected, local, special=True) if isinstance(right, Instance) else ()
                     if callbacks:
                         returned = alternatives(lambda target, callback=callback: invoke(callback, target, [(left,)], evaluated=True) for callback in callbacks)
+                        uncertain |= len(returned) != 1 or any(item is unknown or unresolved_text(item) for item in returned)
                         return any(truth(item, local) for item in returned)
                     try:
                         return data_literal(left) < data_literal(right) if method == "__lt__" else data_literal(left) > data_literal(right)
                     except (InexactDataLoop, TypeError, ValueError):
                         uncertain = True
                         return False
-                reversed_order = any(truth(flag, local) for flag in keywords.get("reverse", (False,))) if operation == "sorted" else False
+                reverse_values = []
+                if operation == 'sorted':
+                    for flag in keywords.get('reverse', (False,)):
+                        if isinstance(flag, Instance):
+                            assigned = special(flag, ('__bool__','__len__'), local)
+                            reverse_values.extend(bool(item) if type(item) in (bool,int) else unknown for item in assigned)
+                            if not assigned:
+                                reverse_values.append(True)
+                        else:
+                            try:
+                                reverse_values.append(bool(data_literal(flag)))
+                            except InexactDataLoop:
+                                reverse_values.append(unknown)
+                    uncertain |= any(flag is unknown for flag in reverse_values) or len(set(reverse_values)) != 1
+                reversed_order = any(flag is True for flag in reverse_values)
                 class Ordered:
                     def __init__(self, item):
                         self.item = item
                         self.keys = alternatives(lambda target, callback=callback: (item,) if callback is None else invoke(callback, target, [(item,)], evaluated=True)
                                                  for callback in keywords.get("key", (None,))) or (unknown,)
+                        nonlocal uncertain
+                        uncertain |= len(self.keys) != 1 or any(key is unknown or unresolved_text(key) for key in self.keys)
                     def __lt__(self, other):
                         return any(alternatives(lambda target, left=left, right=right: (compare(left, right, "__lt__"),)
                                                 for left in self.keys for right in other.keys))
@@ -3823,7 +4235,7 @@ def python_ownership(content, *, partial=False):
                     result = sorted(wrapped, reverse=reversed_order)
                     rows = ([entry.item for entry in result],)
                     if uncertain:
-                        rows = (*rows, list(row), list(reversed(row)))
+                        rows = (*rows, list(row), list(reversed(row)), list(reversed(rows[0])))
                     return (Sequence(rows), *((overflow,) if uncertain and conversion_witness(row) else ()))
                 if not wrapped:
                     return keywords.get("default", (unknown,))
@@ -3976,6 +4388,8 @@ def python_ownership(content, *, partial=False):
                         alternatives.append((template, item))
             def render(alternative):
                 template, item = alternative
+                if template is unknown or unresolved_text(template):
+                    return unknown_template_effects((item,), scope, percent=True, template=template)
                 if not isinstance(template, str):
                     return (unknown,)
                 if isinstance(item, tuple):
@@ -4023,7 +4437,8 @@ def python_ownership(content, *, partial=False):
                         if node.func.attr == "get":
                             keys = value(node.args[0], scope) if node.args else (unknown,)
                             for key in keys:
-                                result.extend(owner.items.get(key, value(node.args[1], scope) if len(node.args) > 1 else (None,)) if isinstance(key, (str, int)) else choices(item for assigned in owner.items.values() for item in assigned))
+                                default = value(node.args[1], scope) if len(node.args) > 1 else (None,)
+                                result.extend(owner.items.get(key, default) if isinstance(key, (str, int)) else choices((*default, *(item for assigned in owner.items.values() for item in assigned))))
                                 result.extend(owner.items.get(unknown, ()))
                         else:
                             items = list(owner.items) if node.func.attr == "keys" else [item if node.func.attr == "values" else (key, item) for key, assigned in owner.items.items() for item in assigned]
@@ -5210,6 +5625,14 @@ def python_ownership(content, *, partial=False):
             if not isinstance(child, ast.stmt):
                 scan(child, scope)
 
+    def observe_scope(owner):
+        # A callback can mutate a captured scope outside the caller's parents.
+        if branch_scopes:
+            current, parents = branch_scopes[-1]
+            if owner is not current and owner not in parents:
+                parents[owner] = owner.state
+                owner.state = dict(owner.state)
+
     def observe(mapping):
         """A branch saves only mutable mappings it actually changes."""
         if branch_changes:
@@ -5229,6 +5652,7 @@ def python_ownership(content, *, partial=False):
                     for name in set().union(*(state.keys() for state in alternatives))}
         owners = set().union(*(getattr(state, "parents", {}).keys() for state in states))
         for owner in owners:
+            observe_scope(owner)
             owner.state = merged([getattr(state, "parents", {}).get(owner, owner.state) for state in states])
         attributes = set().union(*(getattr(state, "attributes", {}).keys() for state in states))
         for identity in attributes:
@@ -5332,8 +5756,13 @@ def python_ownership(content, *, partial=False):
             parents[owner] = owner.state
             owner.state = dict(getattr(initial, "parents", {}).get(owner, owner.state))
             owner = owner.parent
+        for captured in getattr(initial, "parents", {}):
+            if captured is not scope and captured not in parents:
+                parents[captured] = captured.state
+                captured.state = dict(initial.parents[captured])
         changes = {}
         branch_changes.append(changes)
+        branch_scopes.append((scope, parents))
         try:
             for target, assigned in getattr(initial, "attributes", {}).values():
                 observe(target)
@@ -5346,6 +5775,7 @@ def python_ownership(content, *, partial=False):
             return Branch(scope.state, {owner: owner.state for owner in parents},
                           {identity: (target, dict(target)) for identity, (target, _) in changes.items()})
         finally:
+            branch_scopes.pop()
             branch_changes.pop()
             scope.state = previous
             for owner, state in parents.items():
@@ -5995,22 +6425,38 @@ def native_file_effects(name, value):
                 yield effect
         return
     if name in {"exec", "functions.exec"} and isinstance(native, str):
-        patches = list(composed_patch_fields(native))
-        calls = [(position, "apply_patch", raw, None) for position, raw in patches]
-        for match in composed_shell_fields(native):
-            opening = native.find("{", match.start())
-            literal = re.match(rf'''\{{(?:{JS_STRING}|[^{{}}"'`])*\}}''', native[opening:])
-            parsed = composed_calls("text(await tools.exec_command(" + literal[0] + "))") if literal else []
-            args = parsed[0][1] if parsed else {}
-            calls.append((match.start(), "exec_command", match[1], args.get("workdir") or args.get("cwd")))
-        if calls:
+        def direct_effects(current):
+            patches = list(composed_patch_fields(current))
+            calls = [(position, "apply_patch", raw, None) for position, raw in patches]
+            for match in composed_shell_fields(current):
+                opening = current.find("{", match.start())
+                literal = re.match(rf'''\{{(?:{JS_STRING}|[^{{}}"'`])*\}}''', current[opening:])
+                parsed = composed_calls("text(await tools.exec_command(" + literal[0] + "))") if literal else []
+                args = parsed[0][1] if parsed else {}
+                calls.append((match.start(), "exec_command", match[1], args.get("workdir") or args.get("cwd")))
             for _, method, raw, cwd in sorted(calls):
                 try:
-                    content = composed_string(raw, native)
+                    content = composed_string(raw, current)
                 except (SyntaxError, ValueError):
                     continue
                 for effect in native_file_effects(method, {"cmd": content} if method == "exec_command" else content):
                     yield dict(effect, cwd=cwd) if cwd else effect
+        direct = list(direct_effects(native))
+        generated = [effect for current in javascript_generated_sources(native)
+                     for effect in direct_effects(current)]
+        if generated:
+            # Source calls are discovered without evaluating JS control flow.
+            # Keep all full-source writes as alternatives before any possible
+            # execution, so opaque interleavings cannot erase old ownership.
+            for effect in (*direct, *generated):
+                if effect["kind"] == "write":
+                    yield dict(effect, replaces=False, partial=effect.get("partial", not effect["replaces"]))
+            for effect in (*direct, *generated):
+                if effect["kind"] != "write":
+                    yield effect
+            return
+        if direct:
+            yield from direct
             return
     texts = list(shell_texts(name, value))
     if texts:

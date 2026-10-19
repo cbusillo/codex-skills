@@ -616,6 +616,87 @@ class ReceiptTests(unittest.TestCase):
         rows[-2:-2] = [poll, output({"exit_code": 0, "output": json.dumps(claim())}, "codex", "poll")]
         self.assertFalse(receipts.ownership_state(rows, "codex")["pending"])
 
+    def test_generated_javascript_file_writes_reach_later_script_execution(self):
+        writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 5'
+        for program, owning in (('import os\nos.system(' + repr(writer) + ')\n', True),
+                                ('writer=' + repr(writer) + '\nprint(writer)\n', False)):
+            shell = "cat > /repo/run.py <<'PY'\n" + program + 'PY'
+            patch_text = ('*** Begin Patch\n*** Add File: /repo/run.py\n' +
+                          ''.join('+' + line + '\n' for line in program.splitlines()) + '*** End Patch')
+            for call in ('text(await tools.exec_command({cmd:' + json.dumps(shell) + '}));',
+                         'text(await tools.apply_patch(' + json.dumps(patch_text) + '));'):
+                source = '(async()=>{' + call + '})()'
+                for inert in ('const fixture=' + json.dumps(source) + ';',
+                              'await eval("1+1"); const fixture=' + json.dumps(source) + ';',
+                              'const fs=await import("node:fs/promises"); const fixture=' + json.dumps(source) + ';'):
+                    with self.subTest(inert_source=inert):
+                        self.assertEqual(list(receipts.native_file_effects('functions.exec', inert)), [])
+                        self.assertEqual(list(receipts.shell_texts('functions.exec', inert)), [])
+                for cell in ('await eval(' + json.dumps(source) + ');',
+                             'const source=' + json.dumps(source) + '; await eval(source);',
+                             'await Function("tools","text",' + json.dumps('return ' + source) + ')(tools,text);'):
+                    for command, executes in (('python3 /repo/run.py', True),
+                                              ('cat /repo/run.py', False), ('python3 /other/run.py', False)):
+                        rows = history('codex', {}, {})
+                        rows[1]['payload'].update(name='functions.exec', arguments=cell)
+                        rows[2] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-0')
+                        rows[3]['payload']['arguments'] = json.dumps({'cmd': command})
+                        rows[4] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-1')
+                        with self.subTest(program=program, cell=cell, command=command):
+                            self.assertEqual(receipts.ownership_state(rows, 'codex')['pending'], owning and executes)
+
+    def test_generated_javascript_reads_execute_recorded_sources_without_erasing_alternatives(self):
+        writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 5'
+        program = 'import os\nos.system(' + repr(writer) + ')\n'
+        patch_text = ('*** Begin Patch\n*** Add File: /repo/run.py\n' +
+                      ''.join('+' + line + '\n' for line in program.splitlines()) + '*** End Patch')
+        overwrite = "cat > /repo/run.py <<'PY'\nprint('safe')\nPY"
+        for command, owning in (('python3 /repo/run.py', True), ('cat /repo/run.py', False),
+                                ('python3 /other/run.py', False)):
+            read = 'text(await tools.exec_command({cmd:' + json.dumps(command) + '}));'
+            source = '(async()=>{' + read + '})()'
+            safe = '(async()=>{text(await tools.exec_command({cmd:' + json.dumps(overwrite) + '}));})()'
+            for cell in ('await eval(' + json.dumps(source) + ');',
+                         'if(false) await eval(' + json.dumps(safe) + '); ' + read,
+                         'if(false) await eval(' + json.dumps(safe) + '); await eval(' + json.dumps(source) + ');'):
+                rows = history('codex', {}, {})
+                rows[1]['payload'].update(name='apply_patch', arguments=patch_text)
+                rows[2] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-0')
+                rows[3]['payload'].update(name='functions.exec', arguments=cell)
+                rows[4] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-1')
+                with self.subTest(cell=cell):
+                    self.assertEqual(receipts.ownership_state(rows, 'codex')['pending'], owning)
+        for generated in (True, False):
+            write = "cat > /repo/run.py <<'PY'\n" + program + 'PY'
+            write_call = 'text(await tools.exec_command({cmd:' + json.dumps(write) + '}));'
+            read_call = 'text(await tools.exec_command({cmd:"python3 /repo/run.py"}));'
+            write_source = '(async()=>{' + write_call + '})()'
+            read_source = '(async()=>{' + read_call + '})()'
+            cell = ('await eval(' + json.dumps(write_source) + '); ' + read_call if generated
+                    else write_call + 'await eval(' + json.dumps(read_source) + ');')
+            rows = history('codex', {})
+            rows[1]['payload'].update(name='functions.exec', arguments=cell)
+            rows[2] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-0')
+            with self.subTest(mixed_source=cell):
+                self.assertTrue(receipts.ownership_state(rows, 'codex')['pending'])
+
+    def test_generated_javascript_partial_patch_keeps_recorded_python_context(self):
+        writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 5'
+        base = "import os\ndef run():\n    print('safe')\nrun()\n"
+        add = '*** Begin Patch\n*** Add File: /repo/run.py\n' + ''.join('+' + line + '\n' for line in base.splitlines()) + '*** End Patch'
+        for action, owning in (('os.system(' + repr(writer) + ')', True), ("print('safe')", False)):
+            update = "*** Begin Patch\n*** Update File: /repo/run.py\n@@\n-    print('safe')\n+    " + action + '\n*** End Patch'
+            call = 'text(await tools.apply_patch(' + json.dumps(update) + '));'
+            cell = 'await eval(' + json.dumps('(async()=>{' + call + '})()') + ');'
+            rows = history('codex', {}, {}, {})
+            rows[1]['payload'].update(name='apply_patch', arguments=add)
+            rows[3]['payload'].update(name='functions.exec', arguments=cell)
+            rows[5]['payload']['arguments'] = json.dumps({'cmd': 'python3 /repo/run.py'})
+            for index in (0, 1, 2):
+                rows[2 + 2 * index] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-' + str(index))
+            with self.subTest(action=action):
+                self.assertEqual(receipts.ownership_state(rows, 'codex')['pending'], owning)
+
     def test_generated_python_writer_requires_execution_of_the_same_native_path(self):
         for harness in ("codex", "claude"):
             for script_path in ("/other/run-claim.py", "/repo/run-claim.py"):
@@ -1159,14 +1240,234 @@ class ReceiptTests(unittest.TestCase):
                    + ')\n  return 1\ntry: int(Value())\nexcept TypeError: pass')
         self.assert_python_patch_ownership(program, False)
 
+    def test_python_uncertain_data_protocols_preserve_reachable_writers(self):
+        writer = 'uv run /catalog/gh-plan.py --repo o/r claim 12'
+        cases = (('key-alternatives',
+          'import os,sys\n'
+          "W='uv run /catalog/gh-plan.py --repo o/r claim 12'\n"
+          "os.system(min([W,'echo safe'],key=lambda c:(c==W) if sys.argv[1:] else (c!=W)))"),
+         ('reverse',
+          'import os,sys\n'
+          "W='uv run /catalog/gh-plan.py --repo o/r claim 12'\n"
+          "os.system(sorted(['echo safe',W],reverse=len(sys.argv)>1)[0])"),
+         ('pretty-alternatives',
+          'import os,sys,pprint\n'
+          "W='uv run /catalog/gh-plan.py --repo o/r claim 12'\n"
+          'class V:\n'
+          " def __repr__(self): return 'echo safe' if sys.argv[1:] else W\n"
+          'os.system(pprint.pformat(V()))'),
+         ('pretty-repeat',
+          'import os,sys,pprint\n'
+          'seen=PRETTY_COMMANDS\n'
+          'class V:\n'
+          ' def __repr__(self): return seen.pop(0)\n'
+          "pprint.pformat({'0':0 if sys.argv[1:] else 1,'1':0 if sys.argv[1:] else 1,'2':0 if sys.argv[1:] "
+          "else 1,'3':0 if sys.argv[1:] else 1,'4':0 if sys.argv[1:] else 1,'5':0 if sys.argv[1:] else "
+          "1,'6':0 if sys.argv[1:] else 1,'7':0 if sys.argv[1:] else 1,'8':0 if sys.argv[1:] else 1,'9':0 "
+          "if sys.argv[1:] else 1,'10':0 if sys.argv[1:] else 1,'11':0 if sys.argv[1:] else 1,'12':0 if "
+          "sys.argv[1:] else 1,'13':0 if sys.argv[1:] else 1,'14':0 if sys.argv[1:] else 1,'15':0 if "
+          "sys.argv[1:] else 1,'last':[[V()]]},width=1)\n"
+          'os.system(seen.pop(0))'),
+         ('any',
+          'import os\n'
+          'class V:\n'
+          ' def __bool__(self):\n'
+          "  os.system('uv run /catalog/gh-plan.py --repo o/r claim 12')\n"
+          '  return True\n'
+          'any([V()])'),
+         ('all',
+          'import os\n'
+          'class V:\n'
+          ' def __len__(self):\n'
+          "  os.system('uv run /catalog/gh-plan.py --repo o/r claim 12')\n"
+          '  return 1\n'
+          'all([V()])'),
+         ('sum',
+          'import os\n'
+          'class V:\n'
+          ' def __radd__(self,other):\n'
+          "  os.system('uv run /catalog/gh-plan.py --repo o/r claim 12')\n"
+          '  return 0\n'
+          'sum([V()])'),
+         ('bytes',
+          'import os\n'
+          'class V:\n'
+          ' def __bytes__(self):\n'
+          "  os.system('uv run /catalog/gh-plan.py --repo o/r claim 12')\n"
+          "  return b''\n"
+          'bytes(V())'),
+         ('range',
+          'import os\n'
+          'class V:\n'
+          ' def __index__(self):\n'
+          "  os.system('uv run /catalog/gh-plan.py --repo o/r claim 12')\n"
+          '  return 1\n'
+          'range(V())'),
+         ('set',
+          'import os\n'
+          'class V:\n'
+          ' def __hash__(self):\n'
+          "  os.system('uv run /catalog/gh-plan.py --repo o/r claim 12')\n"
+          '  return 1\n'
+          'set([V()])'),
+         ('frozenset',
+          'import os\n'
+          'class V:\n'
+          ' def __hash__(self):\n'
+          "  os.system('uv run /catalog/gh-plan.py --repo o/r claim 12')\n"
+          '  return 1\n'
+          'frozenset([V()])'),
+         ('dict',
+          'import os\n'
+          'class V:\n'
+          ' def __hash__(self):\n'
+          "  os.system('uv run /catalog/gh-plan.py --repo o/r claim 12')\n"
+          '  return 1\n'
+          'dict([(V(),1)])'),
+         ('json-dump',
+          'import os,json,io\n'
+          "W='uv run /catalog/gh-plan.py --repo o/r claim 12'\n"
+          'class V: pass\n'
+          'def encode(v):\n'
+          ' os.system(W)\n'
+          ' return None\n'
+          'json.dump(V(),io.StringIO(),default=encode)'),
+         ('json-loads',
+          'import os,json,io\n'
+          "W='uv run /catalog/gh-plan.py --repo o/r claim 12'\n"
+          'def encode(v):\n'
+          ' os.system(W)\n'
+          ' return None\n'
+          "json.loads('{}',object_hook=encode)"),
+         ('json-encoder',
+          'import os,json,io\n'
+          "W='uv run /catalog/gh-plan.py --repo o/r claim 12'\n"
+          'class V: pass\n'
+          'class Encoder(json.JSONEncoder):\n'
+          ' def default(self,v):\n'
+          '  os.system(W)\n'
+          '  return None\n'
+          'json.dumps(V(),cls=Encoder)'),
+         ('json-dump-keywords',
+          'import os,json,io\n'
+          "W='uv run /catalog/gh-plan.py --repo o/r claim 12'\n"
+          'class V: pass\n'
+          'def encode(v):\n'
+          ' os.system(W)\n'
+          ' return None\n'
+          'json.dump(obj=V(),fp=io.StringIO(),default=encode)'),
+         ('json-dumps-keywords',
+          'import os,json,io\n'
+          "W='uv run /catalog/gh-plan.py --repo o/r claim 12'\n"
+          'class V: pass\n'
+          'def encode(v):\n'
+          ' os.system(W)\n'
+          ' return None\n'
+          'json.dumps(obj=V(),default=encode)'),
+         ('json-loads-keywords',
+          'import os,json,io\n'
+          "W='uv run /catalog/gh-plan.py --repo o/r claim 12'\n"
+          'def encode(v):\n'
+          ' os.system(W)\n'
+          ' return None\n'
+          "json.loads(s='{}',object_hook=encode)"),
+         ('bytes-keyword',
+          'import os\n'
+          'class V:\n'
+          ' def __bytes__(self):\n'
+          "  os.system('uv run /catalog/gh-plan.py --repo o/r claim 12')\n"
+          "  return b''\n"
+          'bytes(source=V())'))
+        for name, program in cases:
+            if name == 'pretty-repeat':
+                import pprint
+                observed = []
+                class CountingValue:
+                    def __repr__(self):
+                        observed.append(None)
+                        return 'safe'
+                pprint.pformat({**{str(index):1 for index in range(16)}, 'last':[[CountingValue()]]}, width=1)
+                program = program.replace('PRETTY_COMMANDS', repr(['echo safe'] * len(observed) + [writer]))
+            with self.subTest(operation=name):
+                self.assert_python_patch_ownership(program, True)
+                self.assert_python_patch_ownership(program.replace(writer, 'echo safe'), False)
+
+        for expression in ('any([Value()])', 'all([Value()])', 'bytes(Value())'):
+            program = ('import os\nclass Value:\n def __bool__(self): return False\n def __len__(self): os.system('
+                       + repr(writer) + '); return 0\n def __bytes__(self): return b""\n def __index__(self): os.system('
+                       + repr(writer) + '); return 0\n' + expression)
+            with self.subTest(skipped_protocol=expression):
+                self.assert_python_patch_ownership(program, False)
+        for expression in ('json.dumps([1,2],default=encode)', 'json.loads("1",object_hook=encode)'):
+            program = 'import os,json\ndef encode(item): os.system(' + repr(writer) + '); return None\n' + expression
+            with self.subTest(skipped_json_callback=expression):
+                self.assert_python_patch_ownership(program, False)
+        program = ('import os\nclass Value:\n def __hash__(self): return 1\nd=dict([(Value(),'
+                   + repr(writer) + ')])\nfor command in d.values(): os.system(command)')
+        self.assert_python_patch_ownership(program, True)
+        self.assert_python_patch_ownership(program.replace(writer, 'echo safe'), False)
+
+        for expression in ('any(iterable=[Value()])','all(iterable=[Value()])',
+                           'range(stop=Value())','set(iterable=[Value()])',
+                           'bytes(Value(),source=Value())'):
+            program = ('import os\nclass Value:\n def __bool__(self): os.system(' + repr(writer)
+                       + '); return True\n def __index__(self): os.system(' + repr(writer)
+                       + '); return 1\n def __hash__(self): os.system(' + repr(writer)
+                       + '); return 1\ntry: ' + expression + '\nexcept TypeError: pass')
+            with self.subTest(invalid_arguments=expression):
+                self.assert_python_patch_ownership(program, False)
+
+    def test_python_process_salted_hash_keeps_both_possible_branches(self):
+        writer = 'uv run /catalog/gh-plan.py --repo o/r claim 12'
+        # The source may run in another Python process with a different seed.
+        for operand in ('a', b'a', ('a',1)):
+            program = ('import os\nos.system({' + repr(hash(operand)) + ':"echo safe"}.get(hash('
+                       + repr(operand) + '),' + repr(writer) + '))')
+            with self.subTest(operand=operand):
+                self.assert_python_patch_ownership(program, True)
+                self.assert_python_patch_ownership(program.replace(writer, 'echo safe'), False)
+        program = 'import os,sys\nos.system({0:"echo safe"}.get(sys.argv[1],' + repr(writer) + '))'
+        self.assert_python_patch_ownership(program, True)
+        self.assert_python_patch_ownership(program.replace(writer, 'echo safe'), False)
+
+    def test_python_json_primitive_source_dags_do_not_expand_for_callbacks(self):
+        def measured(size, limit=None):
+            program = 'import sys,json\nitems=[]\n' + ''.join('items=items+["x"] if sys.argv[1:] else items+["y"]\n' for _ in range(size)) + 'json.dumps(items)'
+            calls = 0
+            def profile(frame, event, argument):
+                nonlocal calls
+                if event == 'call':
+                    calls += 1
+                    if limit is not None and calls > limit:
+                        raise AssertionError('JSON serializer expanded callback-free source alternatives')
+            sys.setprofile(profile)
+            try:
+                self.assertFalse(receipts.python_ownership(program))
+            finally:
+                sys.setprofile(None)
+            return calls
+        calls = measured(8)
+        measured(16, calls * 3)
+
     def test_python_pretty_print_preserves_actual_repr_visits(self):
         writer = 'uv run /catalog/gh-plan.py --repo o/r claim 12'
-        for expression, visits in (('pprint.pformat([[value]],width=1)', 3),
-                                   ('pprint.pformat([[value]],width=80)', 1),
-                                   ('pprint.pformat([[value]],width=1,depth=1)', 1),
-                                   ('pprint.pformat([[value]],1,1,1)', 1),
-                                   ('pprint.pprint([[value]],width=1)', 3),
-                                   ('pprint.pformat({"nested":(value,)})', 1)):
+        import contextlib
+        import io
+        import pprint
+        for expression in ('pprint.pformat([[value]],width=1)',
+                           'pprint.pformat([[value]],width=80)',
+                           'pprint.pformat([[value]],width=1,depth=1)',
+                           'pprint.pformat([[value]],1,1,1)',
+                           'pprint.pprint([[value]],width=1)',
+                           'pprint.pformat({"nested":(value,)})'):
+            observed = []
+            class CountingValue:
+                def __repr__(self):
+                    observed.append(None)
+                    return 'long repr string'
+            with contextlib.redirect_stdout(io.StringIO()):
+                eval(expression, {'pprint':pprint, 'value':CountingValue()})
+            visits = len(observed)
             for owning in (True, False):
                 commands = ['echo safe'] * (visits - 1) + [writer] + ['echo safe'] * 4 if owning else ['echo safe'] * visits + [writer]
                 program = ('import os,pprint\nseen=' + repr(commands)
@@ -1180,15 +1481,29 @@ class ReceiptTests(unittest.TestCase):
             with self.subTest(invalid_stream=expression):
                 self.assert_python_patch_ownership(program, owning)
                 self.assert_python_patch_ownership(program.replace(writer, 'echo safe'), False)
-        for position in range(6):
-            commands = ['echo safe'] * 6
+        observed = []
+        class CountingValue:
+            def __repr__(self):
+                observed.append(None)
+                return 'safe'
+        class CountingStream:
+            @property
+            def write(self):
+                observed.append(None)
+                return self.emit
+            def emit(self, text):
+                observed.append(None)
+        pprint.pprint(CountingValue(), stream=CountingStream())
+        visits = len(observed)
+        for position in range(visits + 1):
+            commands = ['echo safe'] * (visits + 1)
             commands[position] = writer
             program = ('import os,pprint\nseen=' + repr(commands)
                        + '\nclass Value:\n def __repr__(self):\n  os.system(seen.pop(0))\n  return "safe"'
                        + '\nclass Stream:\n @property\n def write(self):\n  os.system(seen.pop(0))\n  return self.emit'
                        + '\n def emit(self,text):\n  os.system(seen.pop(0))\npprint.pprint(Value(),stream=Stream())')
             with self.subTest(stream_callback_position=position):
-                self.assert_python_patch_ownership(program, position < 5)
+                self.assert_python_patch_ownership(program, position < visits)
         for owning in (True, False):
             fields = ','.join(repr(str(index)) + ':0 if sys.argv[1:] else 1' for index in range(16))
             program = ('import os,sys,pprint\nWRITER=' + repr(writer) + '\nclass Value:\n def __repr__(self):\n  os.system(WRITER)\n  return "safe"'
@@ -1369,6 +1684,65 @@ class ReceiptTests(unittest.TestCase):
             with self.subTest(numeric_callback=method, conversion=conversion):
                 self.assert_python_patch_ownership(program, True)
                 self.assert_python_patch_ownership(program.replace(header, 'echo safe'), False)
+
+    def test_python_unknown_templates_preserve_callback_count_and_protocols(self):
+        writer = 'uv run /catalog/gh-plan.py --repo o/r claim 12'
+        programs = (
+            "class Value:\n def __getitem__(self,key): return WRITER\nos.system(sys.argv[1] % Value())",
+            "class Leaf:\n def __str__(self):\n  os.system(WRITER)\n  return 'safe'\nclass Value:\n @property\n def attr(self): return Leaf()\nsys.argv[1].format(Value())",
+            "class Leaf:\n def __init__(self,command): self.command=command\n def __str__(self):\n  os.system(self.command)\n  return 'safe'\nclass Value:\n @property\n def first(self): return Leaf('echo safe')\n @property\n def second(self): return Leaf(WRITER)\nsys.argv[1].format(Value())",
+            "saved=None\nclass Leaf:\n def __str__(self):\n  self.command=WRITER\n  return 'safe'\nclass Value:\n @property\n def attr(self):\n  global saved\n  saved=Leaf()\n  return saved\nsys.argv[1].format(Value())\nos.system(saved.command)",
+            "class Leaf:\n def __repr__(self):\n  os.system(WRITER)\n  return 'safe'\nclass Value:\n @property\n def attr(self): return [Leaf()]\nsys.argv[1].format(Value())",
+            "def make(command):\n class Leaf:\n  def __str__(self):\n   os.system(command)\n   return 'safe'\n return Leaf()\nclass Value:\n @property\n def first(self): return make('echo safe')\n @property\n def second(self): return make(WRITER)\nsys.argv[1].format(Value())",
+            "def make(command):\n class Leaf:\n  def __str__(self,command=command):\n   os.system(command)\n   return 'safe'\n return Leaf()\nclass Value:\n @property\n def first(self): return make('echo safe')\n @property\n def second(self): return make(WRITER)\nsys.argv[1].format(Value())",
+            "os.system(sys.argv[1] % WRITER)",
+            "os.system((sys.argv[1]+' ') % WRITER)",
+            "class Value:\n def __repr__(self):\n  os.system(WRITER)\n  return 'safe'\n(sys.argv[1]+' ').format(Value())",
+            "seen=[WRITER,'echo safe']\nclass Value:\n def __format__(self,spec): return seen.pop(0)\nsys.argv[1].format(Value())\nos.system(seen.pop(0))",
+            "seen=['echo safe','echo safe','echo safe',WRITER]\nclass Value:\n def __format__(self,spec): return seen.pop(0)\nsys.argv[1].format(Value())\nos.system(seen.pop(0))",
+            "class Value:\n def __format__(self,spec): return 'safe'\n def __repr__(self):\n  os.system(WRITER)\n  return 'safe'\nsys.argv[1].format(Value())",
+            "class Value:\n def __format__(self,spec): return 'safe'\n def __str__(self):\n  os.system(WRITER)\n  return 'safe'\nsys.argv[1].format(Value())",
+            "class Value:\n @property\n def attr(self):\n  os.system(WRITER)\n  return 'safe'\nsys.argv[1].format(Value())",
+            "class Value:\n def __getitem__(self,key):\n  os.system(WRITER)\n  return 'safe'\nsys.argv[1].format(Value())",
+            "class Value:\n @property\n def attr(self): return WRITER\nos.system(sys.argv[1].format(Value()))",
+            "class Value:\n def __getitem__(self,key): return WRITER\nos.system(sys.argv[1].format(Value()))",
+            "class Value:\n def __repr__(self):\n  os.system(WRITER)\n  return 'safe'\nsys.argv[1] % Value()",
+        )
+        setup = 'import os,sys\nWRITER=' + repr(writer) + '\n'
+        for body in programs:
+            with self.subTest(program=body):
+                self.assert_python_patch_ownership(setup + body, True)
+                self.assert_python_patch_ownership((setup + body).replace(writer, 'echo safe'), False)
+        for body in (
+            "def make():\n class Value:\n  @property\n  def attr(self): return make()\n  def __str__(self): return 'safe'\n return Value()\nsys.argv[1].format(make())",
+            "class Value:\n @property\n def attr(self): return Value()\n def __str__(self): return 'safe'\nsys.argv[1].format(Value())",
+            "class Value:\n def __init__(self,word): self.word=word\n @property\n def attr(self): return Value(self.word+'x')\n def __str__(self): return self.word\nsys.argv[1].format(Value('safe'))",
+        ):
+            with self.subTest(recursive_return=body):
+                self.assert_python_patch_ownership(setup + body, False)
+
+    def test_python_optional_callbacks_preserve_captured_scope_alternatives(self):
+        writer = 'uv run /catalog/gh-plan.py --repo o/r claim 12'
+        program = """import os, sys
+WRITER = COMMAND
+def make():
+ command = WRITER
+ class Value:
+  def __format__(self, spec):
+   nonlocal command
+   command = 'echo safe'
+   return 'safe'
+ def get(): return command
+ return Value(), get
+v, get = make()
+TEMPLATE.format(v)
+os.system(get())
+""".replace('COMMAND', repr(writer))
+        for template in ('sys.argv[1]', "('{}' if sys.argv[1] else 'x')"):
+            with self.subTest(template=template):
+                source = program.replace('TEMPLATE', template)
+                self.assert_python_patch_ownership(source, True)
+                self.assert_python_patch_ownership(source.replace(writer, 'echo safe'), False)
 
     def test_python_format_alternatives_share_one_evaluation_state(self):
         writer = 'uv run /catalog/gh-plan.py --repo o/r claim 12'
@@ -2684,6 +3058,62 @@ class ReceiptTests(unittest.TestCase):
                 with self.subTest(division=cell):
                     self.assertEqual(receipts.ownership_state(rows, 'codex')['pending'], owning)
                     self.assertEqual(list(receipts.shell_texts('functions.exec', cell)), [command])
+
+    def test_composed_command_discovery_keeps_concatenated_and_interpolated_suffixes(self):
+        writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 5 > claim.json'
+        for command, owning in ((writer, True), (writer + ' &', True), ('echo safe', False)):
+            suffix = json.dumps('; ' + command)
+            expressions = (
+                'text(await tools.exec_command({cmd:`cat notes.txt` + ' + json.dumps(' && ' + command) + '}));',
+                'const cmd=`cat notes.txt` + ' + json.dumps(' && ' + command) + '; text(await tools.exec_command({cmd}));',
+                'const stamp=`${Date.now()}`; const prefix="cd /repo"; text(await tools.exec_command({cmd:prefix + ' + suffix + '}));',
+                'const half=total / 2; const prefix="cd /repo"; text(await tools.exec_command({cmd:prefix + ' + suffix + '}));',
+                'const c=' + json.dumps(command) + '; const v=n // ratio:\n/ (await tools.exec_command({cmd:c})).exit_code / 2;',
+            )
+            for cell in expressions:
+                rows = history('codex', {})
+                rows[1]['payload'].update(name='functions.exec', arguments=cell)
+                rows[2] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-0')
+                with self.subTest(cell=cell):
+                    self.assertEqual(receipts.ownership_state(rows, 'codex')['pending'], owning)
+
+    def test_generated_source_discovery_keeps_imports_and_fixtures_inert(self):
+        writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 5 > claim.json'
+        fake = 'text(await tools.exec_command({cmd:' + json.dumps(writer) + '}));'
+        cells = (
+            'const fs=await import("node:fs/promises"); const t=await fs.readFile("skills/github/scripts/gh-plan.py","utf8"); text(t.includes("def claim"));',
+            'const fs=await import("node:fs/promises"); const fixture=' + json.dumps(fake) + '; text(!!fs);',
+            'await import("./gh-plan.py-claim-fixture.js"); const fixture=' + json.dumps(fake) + ';',
+            'await import("gh-plan.py-claim-fixture"); const fixture=' + json.dumps(fake) + ';',
+            'class A {constructor(){}} const fixture=' + json.dumps(fake) + ';',
+            'const fixture=' + json.dumps(fake) + '; text(({}).constructor);',
+            'const half=total / 2; // Function gh-plan.py claim\ntext(half);',
+            'const stamp=`${Date.now()}`; const fixture=' + json.dumps(fake) + '; text(stamp);',
+            'const half=total / 2; const fixture=' + json.dumps(fake) + '; text(half);',
+            'const Constructor=Function; const fixture=' + json.dumps(fake) + '; text(Constructor.name);',
+            'await eval("1+1"); const fixture=' + json.dumps(fake) + ';',
+        )
+        for cell in cells:
+            rows = history('codex', {})
+            rows[1]['payload'].update(name='functions.exec', arguments=cell)
+            rows[2] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-0')
+            with self.subTest(cell=cell):
+                self.assertFalse(receipts.ownership_state(rows, 'codex')['pending'])
+                self.assertEqual(list(receipts.shell_texts('functions.exec', cell)), [])
+        for command, owning in ((writer, True), (writer + ' &', True),
+                                ('echo safe', False), ('echo ' + shlex.quote(writer), False)):
+            source = '(async()=>{text(await tools.exec_command({cmd:' + json.dumps(command) + '}));})()'
+            for cell in ('await eval(' + json.dumps(source) + ');',
+                         'await Function("tools","text",' + json.dumps('return ' + source) + ')(tools,text);',
+                         'const Constructor=Function; await Constructor("tools","text",' + json.dumps('return ' + source) + ')(tools,text);',
+                         'const source=' + json.dumps(source) + '; await eval(source);',
+                         'const suffix=""; const source=`' + source + '${suffix}`; await eval(source);',
+                         'const Constructor=(async()=>{}).constructor; await Constructor("tools","text",' + json.dumps(source) + ')(tools,text);'):
+                rows = history('codex', {})
+                rows[1]['payload'].update(name='functions.exec', arguments=cell)
+                rows[2] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-0')
+                with self.subTest(generated_source=cell):
+                    self.assertEqual(receipts.ownership_state(rows, 'codex')['pending'], owning)
 
     def test_dynamic_javascript_literals_cannot_hide_ownership(self):
         writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 5 > claim.json'
