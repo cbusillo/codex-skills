@@ -1869,11 +1869,15 @@ it live. A proven new TTY occupant born after closure is not the old worker.
 Unidentified interactive clients, pickers, stdio servers and unobserved daemons
 still refuse. Fresh noninteractive execs cannot attach to the predecessor;
 `exec resume`, its `e` alias, and resume pickers can. Process checks share one
-native invocation classifier. Put free-form prompts after the CLI's explicit
-`--` separator so prompt words cannot be mistaken for native resume arguments.
-Unseparated ambiguous text conservatively preserves the source.
-Only a UUID-shaped different native id or a guarded launch binding supplies
-unrelated-session proof; an arbitrary word after `resume` does not. Claude
+native invocation classifier. The OS argument reader preserves quoted prompt
+boundaries and recognizes session operands after `resume --`. It parses only argc
+and argv, never decoding or reporting environment values. A different UUID operand or fresh noninteractive
+exec supplies unrelated-session proof only with those actual boundaries; flattened
+`ps` text supplies conservative veto candidates. If argv is unavailable, use the
+guarded launcher or the existing manual release route. `--last` leaves the target
+unknown, even when its prompt is UUID-shaped. Keep initial managed prompts after
+`--`; launch bindings hash only the preceding option prefix.
+An arbitrary word after `resume` does not prove another session. Claude
 `--continue`/`-c` and ID-less resume pickers leave the native target unknown.
 On the source TTY, a replacement pane's ancestry alone does not establish a
 different native session. Use the guarded launcher or verify the native target

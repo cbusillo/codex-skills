@@ -236,11 +236,12 @@ def process_sessions(text: str, sessions: set[str]) -> list[dict]:
     shared = process_liveness()
     for line in text.splitlines():
         fields = line.split(None, 1)
-        command = fields[1] if fields and fields[0].isdigit() and len(fields) == 2 else line
-        argv = shared.harness_arguments(command)
+        pid = int(fields[0]) if fields and fields[0].isdigit() and len(fields) == 2 else None
+        command = fields[1] if pid is not None else line
+        argv, bounded = shared.process_arguments(pid, command)
         if not argv or shared.harness_family(argv[0]) != "codex":
             continue
-        resumed, _kind, _exact = shared.invocation(argv)
+        resumed, _kind, _exact = shared.invocation(argv, bounded=bounded)
         identities = {shared.native_uuid(value) or value for value in resumed}
         for session in sorted(sessions):
             if (shared.native_uuid(session) or session) not in identities:
@@ -255,15 +256,17 @@ def process_absence_known(text: str, observed_sockets: set[str] | None = None) -
         fields = line.split(None, 1)
         pid = int(fields[0]) if fields and fields[0].isdigit() else None
         command = fields[1] if pid is not None and len(fields) == 2 else line
-        argv = shared.harness_arguments(command)
+        argv, bounded = shared.process_arguments(pid, command)
         if argv and (shared.harness_family(argv[0]) == "codex"
                      or Path(argv[0]).name in {"codex-session.py", "codex_session_proxy.py"}):
             if pid is not None and github_plan_closure.managed_launch(pid, argv, observed_sockets or set()):
                 continue
             # A fresh noninteractive exec cannot attach to a pre-existing
             # thread. Interactive clients, pickers and exec-resume remain unknown.
-            if shared.invocation(argv)[1] == "exec":
+            if shared.invocation(argv, bounded=bounded)[1] == "exec":
                 continue
+            if not bounded:
+                return False
             # A stdio/extension server or unobserved daemon is unidentified too.
             listeners = [argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "--listen"]
             listeners += [arg.split("=", 1)[1] for arg in argv if arg.startswith("--listen=")]

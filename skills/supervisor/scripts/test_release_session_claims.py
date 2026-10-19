@@ -43,6 +43,8 @@ class ReleaseTests(unittest.TestCase):
                 self.assertEqual(result["ended_at"], saved["ended_at"])
 
     def setUp(self):
+        self.enterContext(patch.object(helper.session_liveness, "process_arguments",
+            side_effect=lambda _pid, command: (helper.session_liveness.harness_arguments(command), True)))
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)

@@ -63,6 +63,8 @@ class ReceiptFixture:
         self.stack.enter_context(patch.object(CLOSURE, "host_identity", return_value={"boot": "fixture-boot", "uid": os.getuid()}))
         self.stack.enter_context(patch.object(SESSIONS, "codex_homes", side_effect=lambda **_kw: sorted(self.homes)))
         SESSIONS.native_helpers()
+        self.stack.enter_context(patch.object(SESSIONS.process_liveness(), "process_arguments",
+            side_effect=lambda _pid, command: (SESSIONS.process_liveness().harness_arguments(command), True)))
         import release_session_claims
         self.release = release_session_claims
         self.stack.enter_context(patch.object(self.release, "inventory", side_effect=lambda: list(self.process_rows)))
@@ -342,6 +344,7 @@ class IdleReceiptIntegrationTests(unittest.TestCase):
                     saved = f.log.read_bytes()
                     transcript = f.transcript.read_bytes()
                     self.assert_ended(f)
+
                     verified = CLOSURE.verified_record(f.session, f.home)
                     self.assertIsNotNone(verified)
                     self.assertEqual(verified["transcript"], str(f.transcript))
@@ -371,6 +374,15 @@ class IdleReceiptIntegrationTests(unittest.TestCase):
                             with CLOSURE.ownership(f.session):
                                 CLOSURE.set_action_pending(f.session, False)
                     self.assertFalse(f.mutations)
+
+    def test_guarded_launch_binding_excludes_prompt_but_keeps_option_identity(self):
+        with ReceiptFixture() as f, patch.object(CLOSURE, "process_started_at", return_value=datetime.now(timezone.utc) - timedelta(seconds=2)):
+            native = ["codex", "--remote", "unix://unused", "--", "private initial prompt"]
+            f.managed(native)
+            endpoint = str(CLOSURE.daemon_endpoint(f.home))
+            self.assertEqual(CLOSURE.guarded_launch_endpoint(456, native), endpoint)
+            self.assertEqual(CLOSURE.guarded_launch_endpoint(456, [*native[:-1], "different private prompt"]), endpoint)
+            self.assertIsNone(CLOSURE.guarded_launch_endpoint(456, [native[0], "--model", "changed", *native[1:]]))
 
     def test_observation_uses_saved_native_exit_before_later_closure_record_time(self):
         with ReceiptFixture() as f:
@@ -490,6 +502,11 @@ class IdleReceiptIntegrationTests(unittest.TestCase):
 
 
 class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        shared = SESSIONS.process_liveness()
+        self.enterContext(patch.object(shared, "process_arguments",
+            side_effect=lambda _pid, command: (shared.harness_arguments(command), True)))
+
     def test_native_uuid_alias_processes_report_the_requested_source_identity(self):
         source = "01a1514c-fa7f-7be3-95ba-4d25df73d07e"
         for alias in (source.upper(), source.replace("-", ""), "{" + source + "}", "urn:uuid:" + source.upper()):
@@ -524,7 +541,7 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
 
     def test_resumed_cli_session_is_live_even_without_a_daemon(self):
         for command in ("/opt/bin/codex resume holder", "codex --remote unix://fixture resume holder", "node /opt/bin/codex.js resume holder", "codex exec resume holder", "codex e resume holder",
-                        'codex -c notify=["terminal-notifier", "-message", "hello"] resume holder'):
+                        'codex -c notify=true resume holder'):
             self.assertEqual([r["sessionId"] for r in SESSIONS.process_sessions(command, {"holder"})], ["holder"])
         for command in ("rg resume holder", "rg codex resume holder", "codex exec -- please resume holder", "codex -- please resume holder"):
             self.assertEqual(SESSIONS.process_sessions(command, {"holder"}), [])
@@ -543,7 +560,7 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
                 command = f"456 python /fixture/{wrapper} exec -- resume holder"
                 with patch.object(CLOSURE, "managed_launch", return_value=False) as managed:
                     self.assertFalse(SESSIONS.process_absence_known(command))
-                    managed.assert_called_once_with(456, [f"/fixture/{wrapper}", "exec"], set())
+                    managed.assert_called_once_with(456, [f"/fixture/{wrapper}", "exec", "--", "resume", "holder"], set())
                 with patch.object(CLOSURE, "managed_launch", return_value=True):
                     self.assertTrue(SESSIONS.process_absence_known(command))
                 self.assertEqual(SESSIONS.process_sessions(command, {"holder"}), [])
@@ -685,6 +702,11 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ObservationMergeTests(unittest.TestCase):
+    def setUp(self):
+        shared = SESSIONS.process_liveness()
+        self.enterContext(patch.object(shared, "process_arguments",
+            side_effect=lambda _pid, command: (shared.harness_arguments(command), True)))
+
     def test_malformed_action_barrier_blocks_native_end_proof_without_writing(self):
         with ReceiptFixture() as f:
             f.native_state = "notLoaded"

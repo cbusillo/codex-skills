@@ -8,6 +8,7 @@
 import argparse
 import asyncio
 import errno
+import io
 import json
 import subprocess
 import shlex
@@ -1372,6 +1373,118 @@ def account_launch_args(command_file):
     )
 
 
+class ProcessArgumentsTests(unittest.TestCase):
+    source = "01a1514c-fa7f-7be3-95ba-4d25df73d07e"
+    other = "01970242-7941-7f0c-b461-16aa5723fb51"
+
+    def probe(self, argv, *, tty="source-tty", scope="session", guarded=False):
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
+        entry = {"session_id": self.source, "harness": "codex", "pid": 123, "tty": "source-tty"}
+        with patch.object(session_liveness, "native_arguments", return_value=argv, create=True) as read:
+            result = session_liveness.verify_process_exit(entry, rows=[(456, tty, " ".join(argv))],
+                ended_at=cutoff, started_at=lambda _pid: cutoff + timedelta(seconds=1),
+                independent_harness=lambda *_args: guarded, scope=scope)
+        return result, read
+
+    def test_actual_boundaries_distinguish_quoted_prompts_from_native_commands(self):
+        for word in ("resume", "exec"):
+            with self.subTest(word=word), self.assertRaisesRegex(ValueError, "unidentified harness"):
+                self.probe(["codex", word + " " + self.other])
+        self.probe(["codex", "resume", self.other])
+        self.probe(["codex", "exec", "fresh prompt"])
+        self.probe(["codex", "exec", "-"])
+        self.probe(["codex", "resume", self.other, "-"])
+        with self.assertRaisesRegex(ValueError, "unidentified harness"):
+            self.probe(["codex", "--model", "model resume " + self.other])
+
+    def test_real_resume_after_separator_vetoes_the_source(self):
+        for prefix in (["codex", "resume"], ["codex", "exec", "resume"], ["codex", "e", "resume", "--json"]):
+            with self.subTest(prefix=prefix), self.assertRaisesRegex(ValueError, "resumed harness"):
+                self.probe([*prefix, "--", self.source, "prompt"], tty="other")
+
+    def test_last_and_prompt_uuids_never_supply_an_exact_other_exemption(self):
+        for prefix in (["codex", "resume"], ["codex", "exec", "resume"]):
+            with self.subTest(prefix=prefix), self.assertRaisesRegex(ValueError, "unidentified harness"):
+                self.probe([*prefix, "--last", self.other])
+            self.probe([*prefix, "--last", self.source], tty="other")
+        self.probe(["codex", "resume", self.other, "prompt " + self.source])
+        self.probe(["codex", "resume " + self.source], tty="other")
+
+    def test_unavailable_boundaries_grant_no_invocation_exemption(self):
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
+        entry = {"session_id": self.source, "harness": "codex", "pid": 123, "tty": "source-tty"}
+        for command in ("codex resume " + self.other, "codex exec -- fresh prompt"):
+            with self.subTest(command=command), patch.object(session_liveness, "native_arguments", side_effect=OSError("argv unavailable"), create=True):
+                kwargs = dict(rows=[(456, entry["tty"], command)], ended_at=cutoff,
+                              started_at=lambda _pid: cutoff + timedelta(seconds=1))
+                with self.assertRaisesRegex(ValueError, "unidentified harness"):
+                    session_liveness.verify_process_exit(entry, **kwargs)
+                session_liveness.verify_process_exit(entry, independent_harness=lambda *_args: True, **kwargs)
+
+    def test_physical_scope_never_reads_argv_identity(self):
+        _result, read = self.probe(["codex", "resume", self.source], scope="terminal")
+        read.assert_not_called()
+
+    def test_observer_uses_actual_operands_and_keeps_unavailable_argv_unknown(self):
+        github = str(Path(__file__).resolve().parents[2] / "github/scripts")
+        with patch.object(sys, "path", [github, *sys.path]):
+            import github_plan_sessions as sessions
+        for argv, live in ((["codex", "resume", "--", self.source], True),
+                           (["codex", "exec", "resume", "--", self.source], True),
+                           (["codex", "resume " + self.source], False),
+                           (["codex", "exec", "--", "resume " + self.source], False),
+                           (["codex", "resume", "--last", self.source], False)):
+            with self.subTest(argv=argv), patch.object(session_liveness, "native_arguments", return_value=argv):
+                peers = sessions.process_sessions("456 " + " ".join(argv), {self.source})
+                self.assertEqual(bool(peers), live)
+        for command in ("codex exec -- fresh", "codex app-server --listen unix:///observed"):
+            with self.subTest(command=command), patch.object(session_liveness, "native_arguments", side_effect=OSError("argv unavailable")):
+                self.assertFalse(sessions.process_absence_known("456 " + command, {"/observed"}))
+
+    def test_known_options_and_late_last_preserve_native_positional_roles(self):
+        for prefix in (["codex", "--model", "model with spaces", "resume"],
+                       ["codex", "-c", 'notify=["hello", "world"]', "exec", "--json", "resume"],
+                       ["codex", "resume", "--model=other model"]):
+            with self.subTest(prefix=prefix):
+                self.probe([*prefix, self.other, "prompt " + self.source])
+        self.probe(["codex", "resume", self.other, "-i", "image.png"])
+        for tail in ([self.other, "--last"], [self.other, "prompt", "--last"]):
+            with self.subTest(tail=tail), self.assertRaisesRegex(ValueError, "unidentified harness"):
+                self.probe(["codex", "resume", *tail])
+
+    def test_darwin_buffer_decodes_exact_argc_and_never_the_environment(self):
+        argv = ["codex", "resume " + self.other, "", "--"]
+        data = len(argv).to_bytes(4, sys.byteorder) + b"/fixture/codex\0\0\0" + b"\0".join(arg.encode() for arg in argv) + b"\0"
+        # Invalid UTF-8 in the trailing environment would fail if it were decoded.
+        self.assertEqual(session_liveness.darwin_arguments(data + b"DO_NOT_READ=\xff\0"), argv)
+        for malformed in (b"", b"\0" * 4, data[:4] + b"/fixture/codex\0codex"):
+            with self.subTest(malformed=malformed), self.assertRaises(ValueError):
+                session_liveness.darwin_arguments(malformed)
+
+    def test_linux_reader_preserves_boundaries_and_refuses_truncation(self):
+        from unittest.mock import mock_open
+        argv = ["codex", "resume " + self.other]
+        data = b"\0".join(arg.encode() for arg in argv) + b"\0"
+        with patch.object(sys, "platform", "linux"), patch.object(Path, "open", mock_open(read_data=data)):
+            self.assertEqual(session_liveness.native_arguments(456), argv)
+        for malformed in (b"", data[:-1], b"x" * (session_liveness.ARGUMENT_BYTES + 1)):
+            with self.subTest(size=len(malformed)), patch.object(sys, "platform", "linux"), \
+                    patch.object(Path, "open", mock_open(read_data=malformed)), self.assertRaises(ValueError):
+                session_liveness.native_arguments(456)
+
+    def test_darwin_native_reader_honors_kernel_size_and_argument_count(self):
+        argv = ["codex", "resume", self.other]
+        data = len(argv).to_bytes(4, sys.byteorder) + b"/fixture/codex\0\0" + b"\0".join(arg.encode() for arg in argv) + b"\0DO_NOT_READ=\xff\0"
+        def sysctl(_mib, _count, destination, size, _new, _newsize):
+            size._obj.value = len(data)
+            if destination is not None:
+                session_liveness.ctypes.memmove(destination, data, len(data))
+            return 0
+        library = SimpleNamespace(sysctl=Mock(side_effect=sysctl))
+        with patch.object(sys, "platform", "darwin"), patch.object(session_liveness.ctypes, "CDLL", return_value=library):
+            self.assertEqual(session_liveness.native_arguments(456), argv)
+
+
 class TabCloseTests(unittest.TestCase):
     def setUp(self):
         self.folder = tempfile.TemporaryDirectory()
@@ -1397,6 +1510,8 @@ class TabCloseTests(unittest.TestCase):
         patch.dict("sys.modules", {"iterm2": self.api}).start()
         self.real_inventory = session_liveness.inventory
         self.inventory = patch.object(session_liveness, "inventory", return_value=self.rows).start()
+        patch.object(session_liveness, "process_arguments", side_effect=lambda _pid, command:
+                     (session_liveness.harness_arguments(command), True)).start()
 
     def close(self, identity="owned"):
         return asyncio.run(iterm_tab.close_session(self.app, identity, self.ledger))
@@ -1472,7 +1587,7 @@ class TabCloseTests(unittest.TestCase):
             f"codex exec resume --json {source}", f"codex e resume -m model {source}",
             f"codex resume --all {source}", f"node /bin/codex.js resume --model {other} {source}",
             f"codex exec resume --model={other} {source}",
-            f'codex resume -c notify=["hello", "world"] {source}',
+            f'codex resume -c notify=true {source}',
         ):
             with self.subTest(command=command), self.assertRaises(ValueError):
                 session_liveness.verify_process_exit(entry, rows=[(456, "other", command)])
@@ -1550,7 +1665,7 @@ class TabCloseTests(unittest.TestCase):
             with self.subTest(command=command):
                 session_liveness.verify_process_exit(entry, rows=[(456, "other", command)])
         for command in ("codex resume source -- prompt", "bun /bin/claude.js --resume=source", "node /bin/claude --resume source",
-                        'codex -c notify=["terminal-notifier", "-message", "hello"] resume source',
+                        'codex -c notify=true resume source',
                         "codex exec resume source", "codex e resume source", "node /bin/codex.js exec resume source"):
             with self.subTest(command=command), self.assertRaisesRegex(ValueError, "resumed harness"):
                 session_liveness.verify_process_exit(entry, rows=[(456, "other", command)])

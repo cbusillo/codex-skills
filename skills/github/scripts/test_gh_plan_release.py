@@ -252,6 +252,9 @@ class ReleaseTests(ReleaseHarness):
                 return fixed_now.astimezone(tz or timezone.utc)
 
         self.cutoff_patch = patch.object(release.termination.native_helpers()[1], "native_exit_cutoff", return_value=None)
+        shared = release.termination.native_helpers()[1]
+        self.enterContext(patch.object(shared, "process_arguments",
+            side_effect=lambda _pid, command: (shared.harness_arguments(command), True)))
         for mock in (patch.object(release.termination, "datetime", Clock),
                      patch.object(release.termination.socket, "gethostname", return_value="source-host"),
                      self.cutoff_patch,
