@@ -23,8 +23,8 @@ The five rules come from the recorded
 4. Asserted version-shaped tokens also found in tracked non-test files:
    hard-failure candidates. This includes three-part versions, `>=` specifiers
    and action `@vN` references.
-5. Catalog-only string assertions against SKILL.md, AGENTS.md or references
-   Markdown: hard-failure candidates. Catalog identity is recognized by the
+5. Catalog-only string assertions against SKILL.md, AGENTS.md, references
+   Markdown or `instructions/` Markdown: hard-failure candidates. Catalog identity is recognized by the
    tracked scanner and review-reference paths together.
 
 All classifications still emit warnings and exit zero during this trial.
@@ -45,9 +45,10 @@ This is a heuristic, not proof that the assertion is wrong. It cannot follow
 arbitrary data flow or understand every language/test DSL. Foreign-language
 source-text/instruction checks, computed paths, imported loaders with no path
 argument, and custom assertion helpers can escape it. Python execution
-detection is per function, so an unrelated execution in the same test can
-hide a workflow warning; execution through a helper or later class method can
-produce a false positive. Foreign alias detection is file-wide and conservative.
+detection follows same-file helper functions and same-class methods. A
+`setUp` fixture counts as executed only when a class method that runs a
+process also reads an attribute the fixture stored. An unrelated execution in
+the same test can still hide a workflow warning. Foreign alias detection is file-wide and conservative.
 Coincidental version matches in dependency locks or documentation need triage;
 token duplication alone does not prove ownership.
 Rule 1 covers equality/value pins; raw config membership checks outside workflow

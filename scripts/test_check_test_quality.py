@@ -167,6 +167,12 @@ def test_step():
         self.assertEqual(self.rules(module_helper, paths=paths), set())
         lint = source.replace('subprocess.run(["bash", "-c", self.shell])', "self.shell.split()")
         self.assertIn("workflow-no-execution", self.rules(lint, paths=paths))
+        # An unrelated subprocess elsewhere in the class does not cover the fixture.
+        unrelated = lint + '    def test_tool(self):\n        subprocess.run(["bash", "--version"])\n'
+        self.assertIn("workflow-no-execution", self.rules(unrelated, paths=paths))
+        # A local name that shadows a running module helper is not that helper.
+        shadowed = module_helper.replace("def test_step():\n", "def test_step():\n    run_step = str.split\n")
+        self.assertIn("workflow-no-execution", self.rules(shadowed, paths=paths))
 
     def test_temp_config_even_with_same_tracked_filename_stays_quiet(self) -> None:
         source = '''

@@ -127,24 +127,46 @@ def python_findings(path: str, source: str, tracked: set[str], versions: set[str
             setup = [child for child in node.body if isinstance(child, ast.FunctionDef)
                      and child.name in {"setUp", "setUpClass"}]
             baseline = {**module_aliases, **aliases_for(setup)}
-            methods = {child.name: child for child in node.body if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))}
+            methods: dict[str, ast.AST] = {child.name: child for child in node.body if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))}
             scopes.extend((child, baseline, methods) for child in methods.values())
     # Top-level pytest assertions also count.
     scopes.append((ast.Module(body=[node for node in tree.body if not isinstance(
         node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))], type_ignores=[]), module_aliases, {}))
 
+    def local_names(scope: ast.AST) -> set[str]:
+        bound = {arg.arg for node in ast.walk(scope) if isinstance(node, ast.arguments)
+                 for arg in (*node.posonlyargs, *node.args, *node.kwonlyargs)}
+        stored = {node.id for node in ast.walk(scope) if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)}
+        nested = {node.name for node in ast.walk(scope)
+                  if node is not scope and isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+        return bound | stored | nested
+
     def executes(scope: ast.AST, methods: dict[str, ast.AST], seen: frozenset[int] = frozenset()) -> bool:
         # A step run by a same-file helper (self.helper(...) or helper(...)) is still executed.
+        shadowed = local_names(scope)
         for call in (item for item in ast.walk(scope) if isinstance(item, ast.Call)):
             name = ast.unparse(call.func)
             if EXECUTE.search(name):
                 return True
-            target = functions.get(name) if isinstance(call.func, ast.Name) else (
-                methods.get(call.func.attr) if isinstance(call.func, ast.Attribute)
-                and ast.unparse(call.func.value) in {"self", "cls"} else None)
-            if target is not None and id(target) not in seen and executes(target, methods, seen | {id(scope)}):
+            if isinstance(call.func, ast.Name) and name in functions and name not in shadowed:
+                # A module function's self is not this class, so its method calls are not followed.
+                target, context = functions[name], {}
+            elif isinstance(call.func, ast.Attribute) and ast.unparse(call.func.value) in {"self", "cls"}:
+                target, context = methods.get(call.func.attr), methods
+            else:
+                continue
+            if target is not None and id(target) not in seen and executes(target, context, seen | {id(scope)}):
                 return True
         return False
+
+    def fixture_executed(scope: ast.AST, methods: dict[str, ast.AST]) -> bool:
+        # A fixture is executed only by a method that runs and reads what the fixture stored.
+        stored = {node.attr for node in ast.walk(scope) if isinstance(node, ast.Attribute)
+                  and isinstance(node.ctx, ast.Store) and ast.unparse(node.value) in {"self", "cls"}}
+        return any(method is not scope and executes(method, methods) and any(
+            isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load) and node.attr in stored
+            and ast.unparse(node.value) in {"self", "cls"} for node in ast.walk(method))
+            for method in methods.values())
 
     found: set[Finding] = set()
     for scope, baseline, methods in scopes:
@@ -192,9 +214,8 @@ def python_findings(path: str, source: str, tracked: set[str], versions: set[str
                 return set().union(*(follow(child, seen) for child in ast.iter_child_nodes(item)))
             return follow(node)
 
-        # Fixtures load what the class's tests run; any executing method covers them.
         fixture = getattr(scope, "name", "") in {"setUp", "setUpClass"}
-        executing = executes(scope, methods) or (fixture and any(executes(method, methods) for method in methods.values()))
+        executing = executes(scope, methods) or (fixture and fixture_executed(scope, methods))
         for node in ast.walk(scope):
             if isinstance(node, ast.Call) and not executing and READ.search(ast.unparse(node.func)) and not ast.unparse(node.func).startswith(("json.", "tomllib.", "yaml.", "plistlib.")):
                 for origin in origins(node):
