@@ -1383,7 +1383,8 @@ class ReceiptTests(unittest.TestCase):
                        "runuser deploy", "runuser deploy -c bash",
                        "sudo su - deploy -c 'cd /srv/app && bash -s'",
                        "runuser deploy -c 'cd /srv/app && sh -s'",
-                       "bash -c 'cd /x && bash'", "bash -c '{ cd /x; bash -s; }'"):
+                       "bash -c 'cd /x && bash'", "bash -c '{ cd /x; bash -s; }'",
+                       "{ cat prelude.sh - | bash; }", "bash -c 'cat prelude.sh - | bash'"):
             commands.append((header + " <<'EOF'\n" + writer + "\nEOF", True))
         commands.extend((
             ("cat <<'EOF' | runuser -u deploy -- sh\n" + writer + "\nEOF", True),
@@ -1396,6 +1397,8 @@ class ReceiptTests(unittest.TestCase):
             ("su deploy -c 'cd /x && printf done' <<'EOF'\n" + writer + "\nEOF", False),
             ("bash -c 'cd /x && cat' <<'EOF'\n" + writer + "\nEOF", False),
             ("bash -c 'cd /x && bash < other.sh' <<'EOF'\n" + writer + "\nEOF", False),
+            ("bash -c 'cat prelude.sh - | bash < other.sh' <<'EOF'\n" + writer + "\nEOF", False),
+            ("bash -c 'cat prelude.sh - | cat' <<'EOF'\n" + writer + "\nEOF", False),
             ("su deploy -c 'python3 -' <<'EOF'\n" + python_writer + "\nEOF", True),
             ("runuser -u deploy -- node <<'EOF'\n" + node_writer + "\nEOF", True),
         ))
@@ -2372,6 +2375,13 @@ class ReceiptTests(unittest.TestCase):
                 if not same_call:
                     rows[3]["payload"]["arguments"] = json.dumps({"cmd": "bash run.sh"})
                 self.assertTrue(receipts.ownership_state(rows, "codex")["pending"])
+        for field in ("workdir", "cwd"):
+            rows = history("codex", {})
+            other_patch = patch_body.replace("/repo/run.sh", "/wt/repo/run.sh")
+            rows[1]["payload"].update(name="exec", arguments=
+                "await tools.apply_patch(" + json.dumps(other_patch) + "); "
+                + "text(await tools.exec_command(" + json.dumps({"cmd": "bash run.sh", field: "/wt/repo"}) + "))")
+            self.assertTrue(receipts.ownership_state(rows, "codex")["pending"])
         rows = history("codex", {})
         rows[1]["payload"].update(name="exec", arguments=
             'text(await tools.exec_command({"cmd":"bash run.sh"})); '
@@ -2548,6 +2558,31 @@ class ReceiptTests(unittest.TestCase):
                 candidates = receipts.ownership_file_candidates(histories)
                 self.assertTrue(receipts.ownership_state(reader, harness, file_candidates=candidates)["pending"])
 
+        for harness in ("codex", "claude"):
+            for finish, replace_at, read_at, pending in ((9, 3, 10, True), (9, 3, 4, True),
+                                                        (9, 11, 12, False), (None, 3, 10, True),
+                                                        (None, 11, 12, True)):
+                with self.subTest(harness=harness, owner_finish=finish, replace_at=replace_at, read_at=read_at):
+                    owner, cleanup, reader = (history(harness, {}) for _ in range(3))
+                    for rows, content in ((owner, writer), (cleanup, "echo done")):
+                        if harness == "codex":
+                            rows[1]["payload"]["arguments"] = json.dumps({"cmd": "cat > run.sh <<'EOF'\n" + content + "\nEOF"})
+                        else:
+                            rows[1]["message"]["content"][0].update(name="Write", input={"file_path": "/repo/run.sh", "content": content})
+                    if harness == "codex": reader[1]["payload"]["arguments"] = json.dumps({"cmd": "bash run.sh"})
+                    else: reader[1]["message"]["content"][0]["input"] = {"command": "bash run.sh"}
+                    owner[1]["timestamp"] = "2026-01-01T00:00:01Z"
+                    if finish is not None:
+                        owner[2]["timestamp"] = f"2026-01-01T00:00:{finish:02d}Z"
+                    else:
+                        owner.pop(2)
+                    cleanup[1]["timestamp"] = "2026-01-01T00:00:02Z"
+                    cleanup[2]["timestamp"] = f"2026-01-01T00:00:{replace_at:02d}Z"
+                    reader[1]["timestamp"] = f"2026-01-01T00:00:{read_at:02d}Z"
+                    histories = [{"harness": harness, "records": rows} for rows in (owner, cleanup, reader)]
+                    candidates = receipts.ownership_file_candidates(histories)
+                    self.assertEqual(receipts.ownership_state(reader, harness, file_candidates=candidates)["pending"], pending)
+
     def test_within_call_file_execution_obeys_write_order_and_replacement(self):
         writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 12'
         scripts = (
@@ -2565,6 +2600,16 @@ class ReceiptTests(unittest.TestCase):
             ("cat > run.sh <<'EOF'\n" + writer + "\nEOF\nf() { bash run.sh; }", False),
             ("f() { bash run.sh; }; cat > run.sh <<'EOF'\n" + writer + "\nEOF\necho 'echo done' > run.sh; f", False),
         )
+        scripts += (
+            ("case dry in dry) echo " + shlex.quote(writer) + " > run.sh;; esac; bash run.sh", True),
+            ("case wet in dry) echo " + shlex.quote(writer) + " > run.sh;; esac; bash run.sh", False),
+            ("case dry in $PATTERN) echo " + shlex.quote(writer) + " > run.sh;; *) echo 'echo done' > run.sh;; esac; bash run.sh", True),
+            ('case "$MODE" in dry) echo ' + shlex.quote(writer) + " > run.sh;; esac; bash run.sh", True),
+            ("for i in 1 2; do bash run.sh; [ -f stop ] && break; cat > run.sh <<'EOF'\n" + writer + "\nEOF\ndone", True),
+            ("for i in 1 2; do bash run.sh; [ -f stop ] && continue; cat > run.sh <<'EOF'\n" + writer + "\nEOF\ndone", True),
+            ("f() { echo 'echo done' > run.sh; }; echo " + shlex.quote(writer) + " > run.sh; test -f dry && f; bash run.sh", True),
+            ("f() { echo 'echo done' > run.sh; }; echo " + shlex.quote(writer) + " > run.sh; true && f; bash run.sh", False),
+        )
         for branch, pending in (("false && echo 'echo done' > run.sh", True),
                                 ("true || echo 'echo done' > run.sh", True),
                                 ("test -f dry && echo 'echo done' > run.sh", True),
@@ -2573,7 +2618,22 @@ class ReceiptTests(unittest.TestCase):
                                 ("if false; then echo 'echo done' > run.sh; fi", True),
                                 ("if test -f dry; then echo 'echo done' > run.sh; fi", True),
                                 ("if true; then echo 'echo done' > run.sh; fi", False),
-                                ("if false; then echo skipped; else echo 'echo done' > run.sh; fi", False)):
+                                ("if false; then echo skipped; else echo 'echo done' > run.sh; fi", False),
+                                ('case "$MODE" in dry) echo "echo done" > run.sh;; esac', True),
+                                ("for f in *.bak; do echo 'echo done' > run.sh; done", True),
+                                ("while test -f dry; do echo 'echo done' > run.sh; done", True),
+                                ("for f in one; do echo 'echo done' > run.sh; done", False),
+                                ("for i in one; do test -f stop && break; echo 'echo done' > run.sh; done", True),
+                                ("for i in one; do false && break; echo 'echo done' > run.sh; done", False),
+                                ("for i in one; do true && break; echo 'echo done' > run.sh; done", True),
+                                ('case dry in dry) echo "echo done" > run.sh;; esac', False),
+                                ("case dry in '*' ) echo 'echo done' > run.sh;; esac", True),
+                                ('case dry in "*" ) echo "echo done" > run.sh;; esac', True),
+                                (r"case dry in \* ) echo 'echo done' > run.sh;; esac", True),
+                                ("case '*' in '*' ) echo 'echo done' > run.sh;; esac", False)):
+
+
+
             scripts += (("echo " + shlex.quote(writer) + " > run.sh; " + branch + "; bash run.sh", pending),)
         for harness in ("codex", "claude"):
             for command, pending in scripts:
@@ -2604,6 +2664,26 @@ class ReceiptTests(unittest.TestCase):
             ("import subprocess; fixture=" + repr(writer) + "; subprocess.run(unknown); print(fixture)", False),
             ("import subprocess; n=12; subprocess.run(['echo'," + repr(writer) + ",str(n)])", False),
             ("import subprocess; n=12; subprocess.run(['rg'," + repr(writer) + ",str(n)])", False),
+            ("import subprocess\ndef sh(c): subprocess.run(c, shell=True, check=True)\nsh(" + repr(writer) + ")", True),
+            ("import subprocess\ndef sh(c): subprocess.run(c, shell=True, check=True)\nsh(c=" + repr(writer) + ")", True),
+            ("from subprocess import run; run(['uv','run','/catalog/gh-plan.py','--repo','client/repo','claim','12'])", True),
+            ("import subprocess as sp; sp.run(['uv','run','/catalog/gh-plan.py','--repo','client/repo','claim','12'])", True),
+            ("from subprocess import run as launch; launch(['uv','run','/catalog/gh-plan.py','--repo','client/repo','claim','12'])", True),
+            ("import os\nfor c in [" + repr(writer) + "]:\n    os.system(c)", True),
+            ("import os; cmd, _ = " + repr(writer) + ", 0; os.system(cmd)", True),
+            ("import os; [cmd, _] = [" + repr(writer) + ", 0]; os.system(cmd)", True),
+            ("import os\nfor cmd, _ in [('echo done', " + repr(writer) + "), ('echo skip', 'data')]:\n    os.system(cmd)", False),
+            ("import os; commands=[" + repr(writer) + "]\nfor cmd in commands:\n    os.system(cmd)", True),
+            ("import os; jobs=[('echo done', " + repr(writer) + ")]\nfor cmd, _ in jobs:\n    os.system(cmd)", False),
+            ("import os\nfor cmd in []:\n    os.system(" + repr(writer) + ")", False),
+            ("import os, subprocess\nargv=['uv','run','/catalog/gh-plan.py','--repo','client/repo','claim','12']\nif os.environ.get('DRY'):\n    argv=['echo','skip']\nsubprocess.run(argv)", True),
+            ("import os, subprocess\nargv=['echo'," + repr(writer) + "]\nif os.environ.get('DRY'):\n    argv=['rg'," + repr(writer) + "]\nsubprocess.run(argv)", False),
+            ("def emit(c): print(c)\nemit(" + repr(writer) + ")", False),
+            ("import subprocess\ndef unused(): subprocess.run(" + repr(writer) + ", shell=True)", False),
+            ('import os; n=12; os.system(f"gh issue comment 5 --body \'next: uv run /catalog/gh-plan.py --repo r claim {n}\'")', False),
+            ('import os; os.system(f"gh issue comment 5 --body \'next: uv run /catalog/gh-plan.py --repo r claim 12\'")', False),
+            ('import subprocess; n=12; subprocess.run(["python3", "notify.py", "--message", f"run gh-plan.py --repo r claim {n}"])', False),
+            ('import os, subprocess; n=os.environ["N"]; subprocess.run(["uv", "run", "python3", "notify.py", "--message", f"run gh-plan.py --repo r claim {n}"])', False),
         )
         for harness in ("codex", "claude"):
             for program, pending in programs:

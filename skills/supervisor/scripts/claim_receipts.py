@@ -974,6 +974,18 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                 argv.extend(shlex.split(token, comments=False))
                 last_word = index
                 cursor += 1
+            if any(tokens[opening] == "case" and opening <= segment[0] < closing for opening, closing in bounds.items()):
+                pattern_end = next((at for at in segment if tokens[at] == ")"), None)
+                if pattern_end is not None:
+                    # The pattern and `case word in` prefix do not belong to
+                    # the arm's command or to a literal producer's output.
+                    prefix = []
+                    for at in segment:
+                        prefix.extend(shlex.split(tokens[at], comments=False))
+                        if at == pattern_end:
+                            break
+                    if argv[:len(prefix)] == prefix:
+                        argv = argv[len(prefix):]
             language = stdin_language(argv)
             if children is None and tokens[segment[0]] in {"}", ")", "done", "fi", "esac"}:
                 language = compound_stdin_language(tokens, source, segment[0], spans, heredocs) or language
@@ -983,24 +995,32 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                           "separator": separator, "source": " ".join(tokens[index] for index in segment)})
         return nodes
 
-    def file_sources(identifier):
+    def source_leaves(identifier):
         stream = stream_sources.get(identifier, {})
-        if stream.get("kind") == "file":
-            yield stream["path"]
-        elif stream.get("kind") in {"choice", "concat"}:
+        if stream.get("kind") in {"choice", "concat"}:
             for part in stream["parts"]:
-                yield from file_sources(part)
+                yield from source_leaves(part)
+        else:
+            yield identifier
 
     def assign_language(sources, language, position=None):
         if language:
-            if stdin_kinds is not None and "external" in sources:
+            leaves = set(source for identifier in sources for source in source_leaves(identifier))
+            if stdin_kinds is not None and "external" in leaves:
                 stdin_kinds.add(language)
-            for identifier in sources:
+            executable_sources = set(sources)
+            if any(stream_sources.get(source, {}).get("kind") == "file" for source in leaves):
+                # Unknown file bytes cannot prove the connected literal input
+                # inert. Fully known concatenations retain their exact bytes.
+                executable_sources.update(source for source in leaves
+                                          if source != "external" and stream_sources.get(source, {}).get("kind") != "file")
+            for identifier in executable_sources:
                 if identifier != "external":
                     previous = languages.get(identifier)
                     languages[identifier] = language if previous in {None, language} else "argv"
             if execution_events is not None:
-                paths = [path for identifier in sources for path in file_sources(identifier)]
+                paths = [stream_sources[source]["path"] for source in leaves
+                         if stream_sources.get(source, {}).get("kind") == "file"]
                 if paths:
                     execution_events.append({"kind": "read", "position": position, "paths": paths})
 
@@ -1527,7 +1547,37 @@ def shell_effect_order(tokens, events):
 
     def status(words):
         words = [word for word in words if word not in {";", "\n"}]
+        while words and words[0] in {"do", "then", "else", "{", "("}:
+            words = words[1:]
         return True if words in (["true"], [":"]) else False if words == ["false"] else None
+
+    def pattern_matches(raw, word):
+        # Preserve shell quoting: quoted/escaped glob characters are literals.
+        # Expansions and complex unquoted patterns cannot prove an arm definite.
+        regex, quote, cursor = [], None, 0
+        while cursor < len(raw):
+            char = raw[cursor]
+            if char == "\\" and quote != "'":
+                if cursor + 1 == len(raw):
+                    return None
+                if quote == '"' and raw[cursor + 1] not in '$`"\\\n':
+                    regex.append(re.escape(char))
+                else:
+                    cursor += 1
+                    if raw[cursor] != "\n":
+                        regex.append(re.escape(raw[cursor]))
+            elif quote and char == quote:
+                quote = None
+            elif quote is None and char in "'\"":
+                quote = char
+            elif char in "$`" and quote != "'" or quote is None and char in "[]()":
+                return None
+            elif quote is None and char in "*?":
+                regex.append(".*" if char == "*" else ".")
+            else:
+                regex.append(re.escape(char))
+            cursor += 1
+        return re.fullmatch("".join(regex), word, flags=re.DOTALL) is not None if quote is None else None
 
     def guard(begin, end, condition):
         for at in range(begin, end):
@@ -1555,6 +1605,32 @@ def shell_effect_order(tokens, events):
             executes, previous = True, None
         begin = end + 1
     for start, stop in bounds.items():
+        if tokens[start] == "case":
+            enclosing = guards[start:stop]
+            guard(start, stop, None)
+            if start + 2 < stop and tokens[start + 2] == "in":
+                word = shlex.split(tokens[start + 1])
+                known = len(word) == 1 and not re.search(r"[$`]", tokens[start + 1])
+                arm, first, selected, uncertain_prior = start + 3, True, False, False
+                while arm < stop:
+                    close = next((at for at in range(arm, stop) if tokens[at] == ")"), None)
+                    if close is None:
+                        break
+                    finish = next((at for at in range(close + 1, stop) if tokens[at] in {";;", ";&", ";;&"}), stop)
+                    matches = [pattern_matches(token, word[0]) for token in tokens[arm:close] if token != "|"] if known else [None]
+                    possible = True if True in matches else None if None in matches else False
+                    condition = False if selected or possible is False else True if possible is True and not uncertain_prior else None
+                    for at in range(start if first else arm, finish):
+                        parent = enclosing[at - start]
+                        guards[at] = False if condition is False or parent is False else parent if condition is True and enclosing[0] is True else None
+                    if possible is True:
+                        selected = True
+                    elif possible is None:
+                        uncertain_prior = True
+                    if finish < stop and tokens[finish] != ";;":
+                        break  # Fallthrough remains a possible conditional arm.
+                    first, arm = False, finish + 1
+            continue
         if tokens[start] != "if":
             continue
         branch, other, cursor = None, None, start + 1
@@ -1582,11 +1658,11 @@ def shell_effect_order(tokens, events):
         condition = guards[event["position"]]
         if condition is not False:
             if condition is None and event["kind"] == "write":
-                event = dict(event, replaces=False)
+                event = dict(event, replaces=False, partial=event.get("partial", not event["replaces"]))
             by_position.setdefault(event["position"], []).append(event)
     functions = {}
 
-    def walk(begin, end, active=(), in_loop=False):
+    def walk(begin, end, active=(), in_loop=False, definite=True):
         index = begin
         while index < end:
             if index in definitions:
@@ -1599,16 +1675,20 @@ def shell_effect_order(tokens, events):
                 stop = bounds[index]
                 header_end = next((at for at in range(index + 1, stop) if tokens[at] in {";", "\n"}), stop)
                 header = tokens[index + 1:header_end]
-                iterations = 2
+                iterations, guaranteed = 2, False
                 if token == "for" and len(header) >= 2 and header[1] == "in":
                     items = header[2:]
                     if not any(re.search(r"[$`*?{]", word) for word in items):
                         iterations = min(2, len(items))
+                        guaranteed = bool(items)
+                if token == "while" and header == ["true"] or token == "until" and header == ["false"]:
+                    guaranteed = True
                 if token == "while" and header == ["false"] or token == "until" and header == ["true"]:
                     iterations = 0
                 for _ in range(iterations):
                     transfer = None
-                    for event in walk(index + 1, stop, active, in_loop=True):
+                    for event in walk(index + 1, stop, active, in_loop=True,
+                                      definite=True if definite is True and guards[index] is True and guaranteed else None):
                         if event["kind"] in {"break", "continue"}:
                             transfer = event["kind"]
                             break
@@ -1619,18 +1699,22 @@ def shell_effect_order(tokens, events):
                 continue
             current = by_position.get(index, ())
             if (in_loop and token in {"break", "continue"}
-                    and any(event["kind"] == "read" and event["paths"] == [token] for event in current)
-                    and not any(tokens[start] in {"if", "case"} and start < index < stop
-                                for start, stop in bounds.items())):
-                yield {"kind": token}
-                return
+                    and any(event["kind"] == "read" and event["paths"] == [token] for event in current)):
+                if definite is True and guards[index] is True:
+                    yield {"kind": token}
+                    return
+                definite = None  # The rest of this iteration may be skipped.
+                index += 1
+                continue
             called = next((path for event in current if event["kind"] == "read"
                            for path in event["paths"] if path in functions), None)
             if called is not None:
                 if active.count(called) < 2:
-                    yield from walk(*functions[called], (*active, called))
+                    yield from walk(*functions[called], (*active, called),
+                                    definite=True if definite is True and guards[index] is True else None)
             else:
-                yield from current
+                for event in current:
+                    yield dict(event, replaces=False, partial=event.get("partial", not event["replaces"])) if definite is not True and event["kind"] == "write" else event
             index += 1
     return list(walk(0, len(tokens)))
 
@@ -2096,7 +2180,7 @@ def foreground_python_argv(content):
     return list(argv)
 
 
-def python_ownership(content):
+def python_ownership(content, *, partial=False):
     """Follow actual Python launch operands through their reaching bindings."""
     try:
         tree = ast.parse(textwrap.dedent(content))
@@ -2106,23 +2190,52 @@ def python_ownership(content):
                 "subprocess.check_call", "subprocess.check_output", "exec", "eval"}
     found = False
 
+    def function_name(node, bindings):
+        if isinstance(node, ast.Name):
+            bound = bindings.get(node.id)
+            return bound[0].name if bound and isinstance(bound[0], ast.alias) else node.id if bound is None else None
+        if isinstance(node, ast.Attribute):
+            parent = function_name(node.value, bindings)
+            return parent + "." + node.attr if parent else None
+        return None
+
     def value(node, bindings):
         if isinstance(node, ast.Name):
             return bindings.get(node.id, (None, ()))
         if isinstance(node, ast.Constant):
             return node.value, (node.value,) if isinstance(node.value, str) else ()
+        if isinstance(node, ast.Attribute) and function_name(node, bindings) in launches:
+            return ast.alias(name=function_name(node, bindings)), ()
+        if isinstance(node, ast.JoinedStr):
+            parts = [value(part, bindings)[0] for part in node.values]
+            text = "".join(part if isinstance(part, str) else "$computed_operand" for part in parts)
+            return text, (text,)
+        if isinstance(node, ast.FormattedValue):
+            literal, _ = value(node.value, bindings)
+            if not isinstance(literal, (str, int, float, bool)):
+                return "$computed_operand", ()
+            converted = {ord("r"): repr, ord("s"): str, ord("a"): ascii}.get(node.conversion, lambda item: item)(literal)
+            spec, _ = value(node.format_spec, bindings) if node.format_spec else ("", ())
+            try:
+                return format(converted, spec), ()
+            except (ValueError, TypeError):
+                return "$computed_operand", ()
         if isinstance(node, (ast.List, ast.Tuple)):
             children = [value(element, bindings) for element in node.elts]
             # Unknown arguments do not hide a known executable/action, nor make
             # an echo/rg argv execute the ownership-shaped data it contains.
-            return ([item if isinstance(item, str) else "$computed_operand" for item, _ in children],
+            return ([item if isinstance(item, (str, list, tuple)) else "$computed_operand" for item, _ in children],
                     tuple(piece for _, evidence in children for piece in evidence))
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
             left, left_pieces = value(node.left, bindings)
             right, right_pieces = value(node.right, bindings)
+            if isinstance(left, str) and right is None and not right_pieces:
+                right = "$computed_operand"
+            if isinstance(right, str) and left is None and not left_pieces:
+                left = "$computed_operand"
             literal = left + right if isinstance(left, (str, list, tuple)) and type(left) is type(right) else None
-            return literal, left_pieces + right_pieces
-        if (isinstance(node, ast.Call) and ast.unparse(node.func) == "shlex.split"
+            return literal, (literal,) if isinstance(literal, str) else left_pieces + right_pieces
+        if (isinstance(node, ast.Call) and function_name(node.func, bindings) == "shlex.split"
                 and len(node.args) == 1 and not node.keywords):
             text, pieces = value(node.args[0], bindings)
             if isinstance(text, str):
@@ -2134,9 +2247,9 @@ def python_ownership(content):
         return None, tuple(piece for child in ast.iter_child_nodes(node)
                            for piece in value(child, bindings)[1])
 
-    def scan(node, bindings):
+    def scan(node, bindings, depth):
         nonlocal found
-        function = ast.unparse(node.func) if isinstance(node, ast.Call) else None
+        function = function_name(node.func, bindings) if isinstance(node, ast.Call) else None
         operand = node.args[0] if isinstance(node, ast.Call) and node.args else None
         if isinstance(node, ast.Call) and function in launches and operand is None:
             parameter = "args" if function.startswith("subprocess.") else "cmd" if function == "os.popen" else "command"
@@ -2144,22 +2257,30 @@ def python_ownership(content):
         if function in launches and operand is not None:
             command, pieces = value(operand, bindings)
             if isinstance(command, (list, tuple)):
-                argv = unwrapped_command(command)
-                found |= ownership_command(argv)
-                found |= any(executable_content(body) for body in executor_commands(argv))
-                if "$computed_operand" in command:
-                    found |= opaque_ownership("exec_command", {"cmd": shlex.join(command)})
-                    if argv and (argv[0].startswith("$") or executable_wrapper(argv)):
-                        found |= bool(OWNERSHIP_TEXT.search(" ".join(pieces))
-                                      or OWNERSHIP_TEXT.search("".join(pieces)))
+                argv = [item if isinstance(item, str) else "$computed_operand" for item in command]
+                found |= ownership_command(unwrapped_command(argv))
+                found |= opaque_ownership("exec_command", {"cmd": shlex.join(argv)})
             elif isinstance(command, str):
                 found |= executable_content(command)
             else:
-                found |= bool(OWNERSHIP_TEXT.search(" ".join(pieces))
-                              or OWNERSHIP_TEXT.search("".join(pieces)))
+                found |= any(executable_content(piece) or opaque_ownership("exec_command", {"cmd": piece})
+                             for piece in pieces)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and depth == 0:
+            wrapper = bindings.get(node.func.id, (None, ()))[0]
+            if isinstance(wrapper, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                local = dict(bindings)
+                parameters = [*wrapper.args.posonlyargs, *wrapper.args.args]
+                defaults = dict(zip((parameter.arg for parameter in parameters[-len(wrapper.args.defaults):]), wrapper.args.defaults)) if wrapper.args.defaults else {}
+                supplied = {parameter.arg: argument for parameter, argument in zip(parameters, node.args)}
+                supplied.update({keyword.arg: keyword.value for keyword in node.keywords if keyword.arg is not None})
+                defaults.update({parameter.arg: default for parameter, default in zip(wrapper.args.kwonlyargs, wrapper.args.kw_defaults) if default is not None})
+                for parameter in (*parameters, *wrapper.args.kwonlyargs):
+                    argument = supplied.get(parameter.arg, defaults.get(parameter.arg))
+                    local[parameter.arg] = value(argument, bindings) if argument is not None else (None, ())
+                walk(wrapper.body, local, depth + 1)
         for child in ast.iter_child_nodes(node):
             if not isinstance(child, ast.stmt):
-                scan(child, bindings)
+                scan(child, bindings, depth)
 
     def merge(*states):
         merged = {}
@@ -2168,12 +2289,33 @@ def python_ownership(content):
             literal = alternatives[0][0]
             if any(other[0] != literal for other in alternatives[1:]):
                 literal = None
-            merged[name] = literal, tuple(dict.fromkeys(piece for _, pieces in alternatives for piece in pieces))
+            pieces = []
+            for candidate, evidence in alternatives:
+                if isinstance(candidate, str):
+                    pieces.append(candidate)
+                elif isinstance(candidate, (list, tuple)):
+                    pieces.append(shlex.join([item if isinstance(item, str) else "$computed_operand" for item in candidate]))
+                else:
+                    pieces.extend(evidence)
+            merged[name] = literal, tuple(dict.fromkeys(pieces))
         return merged
 
-    def walk(statements, bindings):
+    def bind(target, assigned, bindings, source=None):
+        if isinstance(target, ast.Name):
+            bindings[target.id] = assigned
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            if isinstance(source, (ast.Tuple, ast.List)) and len(source.elts) == len(target.elts):
+                values = [(value(item, bindings), item) for item in source.elts]
+            elif isinstance(assigned[0], (tuple, list)) and len(assigned[0]) == len(target.elts):
+                values = [((item, (item,) if isinstance(item, str) else ()), None) for item in assigned[0]]
+            else:
+                values = [((None, assigned[1]), None)] * len(target.elts)
+            for child, (item, expression) in zip(target.elts, values):
+                bind(child, item, bindings, expression)
+
+    def walk(statements, bindings, depth=0):
         for statement in statements:
-            scan(statement, bindings)
+            scan(statement, bindings, depth)
             if isinstance(statement, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
                 assigned = value(statement.value, bindings) if statement.value is not None else (None, ())
                 targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
@@ -2184,48 +2326,80 @@ def python_ownership(content):
                             literal, additional = assigned
                             literal = prior + literal if isinstance(statement.op, ast.Add) and isinstance(prior, (str, list, tuple)) and type(prior) is type(literal) else None
                             assigned = literal, pieces + additional
-                        bindings[target.id] = assigned
+                    bind(target, assigned, bindings, statement.value)
+            elif isinstance(statement, ast.Import):
+                for imported in statement.names:
+                    bindings[imported.asname or imported.name.split(".")[0]] = ast.alias(name=imported.name if imported.asname else imported.name.split(".")[0]), ()
+            elif isinstance(statement, ast.ImportFrom):
+                for imported in statement.names:
+                    bindings[imported.asname or imported.name] = ast.alias(name=(statement.module or "") + "." + imported.name), ()
             elif isinstance(statement, ast.If):
                 branches = (statement.body, statement.orelse)
                 if isinstance(statement.test, ast.Constant):
                     branches = (branches[0] if statement.test.value else branches[1],)
-                bindings = merge(*(walk(branch, dict(bindings)) for branch in branches))
+                bindings = merge(*(walk(branch, dict(bindings), depth) for branch in branches))
             elif isinstance(statement, (ast.For, ast.AsyncFor, ast.While)):
-                repeated = merge(bindings, walk(statement.body, dict(bindings)))
+                iteration = dict(bindings)
+                if isinstance(statement, (ast.For, ast.AsyncFor)):
+                    iterable, pieces = value(statement.iter, bindings)
+                    if isinstance(statement.iter, (ast.List, ast.Tuple, ast.Set)):
+                        items = [(value(item, bindings), item) for item in statement.iter.elts]
+                    elif isinstance(iterable, (list, tuple)):
+                        items = [((item, (item,) if isinstance(item, str) else ()), None) for item in iterable]
+                    else:
+                        items = None
+                    if items is not None:
+                        if not items:
+                            bindings = walk(statement.orelse, bindings, depth)
+                            continue
+                        candidates = []
+                        for assigned, expression in items:
+                            candidate = dict(bindings)
+                            bind(statement.target, assigned, candidate, expression)
+                            candidates.append(candidate)
+                        iteration = merge(*candidates)
+                    else:
+                        bind(statement.target, (None, pieces), iteration)
+                repeated = merge(bindings, walk(statement.body, iteration, depth))
                 # A subsequent iteration can execute with a binding written at
                 # the end of the previous one.
-                repeated = merge(repeated, walk(statement.body, dict(repeated)))
-                bindings = walk(statement.orelse, repeated)
+                repeated = merge(repeated, walk(statement.body, dict(repeated), depth))
+                bindings = walk(statement.orelse, repeated, depth)
             elif isinstance(statement, (ast.Try, ast.TryStar)):
-                normal = walk(statement.body, dict(bindings))
+                normal = walk(statement.body, dict(bindings), depth)
                 exceptional = merge(bindings, normal)
-                alternatives = [walk(statement.orelse, normal)]
-                alternatives.extend(walk(handler.body, dict(exceptional)) for handler in statement.handlers)
-                bindings = walk(statement.finalbody, merge(*alternatives))
+                alternatives = [walk(statement.orelse, normal, depth)]
+                alternatives.extend(walk(handler.body, dict(exceptional), depth) for handler in statement.handlers)
+                bindings = walk(statement.finalbody, merge(*alternatives), depth)
             elif isinstance(statement, (ast.With, ast.AsyncWith)):
-                bindings = walk(statement.body, bindings)
-            elif isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                local = dict(bindings)
-                if not isinstance(statement, ast.ClassDef):
-                    for argument in (*statement.args.posonlyargs, *statement.args.args, *statement.args.kwonlyargs):
-                        local.pop(argument.arg, None)
-                walk(statement.body, local)
+                bindings = walk(statement.body, bindings, depth)
+            elif isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                bindings[statement.name] = statement, ()
+                if partial:
+                    # A partial edit may be called by unchanged surrounding
+                    # code; full scripts follow actual call sites instead.
+                    local = dict(bindings)
+                    for parameter in (*statement.args.posonlyargs, *statement.args.args, *statement.args.kwonlyargs):
+                        local.pop(parameter.arg, None)
+                    walk(statement.body, local, depth + 1)
+            elif isinstance(statement, ast.ClassDef):
+                walk(statement.body, dict(bindings), depth)
             elif isinstance(statement, ast.Match):
-                bindings = merge(bindings, *(walk(case.body, dict(bindings)) for case in statement.cases))
+                bindings = merge(bindings, *(walk(case.body, dict(bindings), depth) for case in statement.cases))
         return bindings
 
     walk(tree.body, {})
     return found
 
 
-def python_fragment_ownership(content):
+def python_fragment_ownership(content, *, partial=True):
     """Partial Python edits retain Python string boundaries, never shell syntax."""
     try:
         ast.parse(textwrap.dedent(content))
     except SyntaxError:
         pass
     else:
-        return python_ownership(content)
+        return python_ownership(content, partial=partial)
     # A patch hunk need not be a complete Python module. Tokenization preserves
     # quoted fixture data even without its surrounding block's indentation.
     tokens = []
@@ -2299,10 +2473,10 @@ def python_fragment_ownership(content):
     return False
 
 
-def executable_file_content(path, content):
+def executable_file_content(path, content, *, partial=False):
     if isinstance(content, UnresolvedStream):
         return content.possible_ownership
-    return python_fragment_ownership(content) if Path(path).suffix == ".py" else executable_content(content)
+    return python_fragment_ownership(content, partial=partial) if Path(path).suffix == ".py" else executable_content(content)
 
 
 def executable_content(content):
@@ -2398,15 +2572,21 @@ def native_file_effects(name, value):
     native = arguments(value)
     if name in {"exec", "functions.exec"} and isinstance(native, str):
         patches = list(re.finditer(r'''tools\.apply_patch\(\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')''', native))
-        if patches:
-            calls = [(match.start(), "apply_patch", match[1]) for match in patches]
-            calls.extend((match.start(), "exec_command", match[1]) for match in SHELL_FIELD.finditer(native))
-            for _, method, raw in sorted(calls):
+        calls = [(match.start(), "apply_patch", match[1], None) for match in patches]
+        for match in SHELL_FIELD.finditer(native):
+            opening = native.find("{", match.start())
+            literal = re.match(r'''\{(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^{}"'`])*\}''', native[opening:])
+            parsed = composed_calls("text(await tools.exec_command(" + literal[0] + "))") if literal else []
+            args = parsed[0][1] if parsed else {}
+            calls.append((match.start(), "exec_command", match[1], args.get("workdir") or args.get("cwd")))
+        if calls:
+            for _, method, raw, cwd in sorted(calls):
                 try:
                     content = ast.literal_eval(raw)
                 except (SyntaxError, ValueError):
                     continue
-                yield from native_file_effects(method, {"cmd": content} if method == "exec_command" else content)
+                for effect in native_file_effects(method, {"cmd": content} if method == "exec_command" else content):
+                    yield dict(effect, cwd=cwd) if cwd else effect
             return
     texts = list(shell_texts(name, value))
     if texts:
@@ -2428,9 +2608,9 @@ def native_file_effects(name, value):
 def apply_file_effect(effect, cwd, candidates):
     if effect["kind"] != "write":
         return
-    path = native_path(effect["path"], cwd) if effect["path"] else None
+    path = native_path(effect["path"], effect.get("cwd") or cwd) if effect["path"] else None
     if path:
-        owning = any(executable_file_content(effect["path"], content) for content in effect["contents"])
+        owning = any(executable_file_content(effect["path"], content, partial=effect.get("partial", not effect["replaces"])) for content in effect["contents"])
         if owning:
             candidates.add(path)
         elif effect["replaces"]:
@@ -2473,22 +2653,23 @@ def ownership_file_candidates(histories):
                     writes.append((identifier, cwd, native_timestamp(stamp), effect))
         by_call = {}
         for identifier, cwd, timestamp, effect in writes:
-            path = native_path(effect["path"], cwd) if effect["path"] else None
+            path = native_path(effect["path"], effect.get("cwd") or cwd) if effect["path"] else None
             if path:
                 entry = by_call.setdefault((identifier, path), {"at": timestamp, "owns": False, "final": None})
-                owning = any(executable_file_content(effect["path"], content) for content in effect["contents"])
+                owning = any(executable_file_content(effect["path"], content, partial=effect.get("partial", not effect["replaces"])) for content in effect["contents"])
                 entry["owns"] |= owning
                 if owning or effect["replaces"]:
                     entry["final"] = owning
-        replacements = {identifier for (identifier, _), entry in by_call.items()
-                        if entry["final"] is False and entry["at"] is not None}
+        replacements = {identifier for (identifier, _), entry in by_call.items() if entry["at"] is not None}
         completions = file_write_completions(node["records"], node["harness"], replacements) if replacements else {}
         for (identifier, path), entry in by_call.items():
+            completion = completions.get(identifier, float("inf")) if entry["at"] is not None else None
             if entry["owns"]:
-                candidates.setdefault(path, []).append((origin, entry["at"], True, False))
+                candidates.setdefault(path, []).append((origin, entry["at"], True, False, completion, identifier))
+                if entry["final"] is True and completion is not None and completion != float("inf"):
+                    candidates[path].append((origin, completion, True, False, completion, identifier))
             if entry["final"] is False:
-                at = completions.get(identifier, float("inf")) if entry["at"] is not None else None
-                candidates.setdefault(path, []).append((origin, at, False, True))
+                candidates.setdefault(path, []).append((origin, completion, False, True, completion, identifier))
     return candidates
 
 
@@ -2510,12 +2691,14 @@ def execution_targets(argv):
 def file_ownership_executions(records, harness, *, file_candidates=()):
     """Link actual script reads to the contents preceding them in native time."""
     origin = id(records[0]) if records else None
-    candidates, peer_writes = set(), []
+    candidates, peer_writes, intervals = set(), [], []
     if isinstance(file_candidates, dict):
         for path, events in file_candidates.items():
-            for source, timestamp, owning, replaces in events:
+            for source, timestamp, owning, replaces, completion, identifier in events:
                 if source != origin and timestamp != float("inf"):
                     peer_writes.append((timestamp, path, owning, replaces, source))
+                    if owning and timestamp is not None:
+                        intervals.append((path, timestamp, completion))
     else:
         candidates.update(file_candidates)
     # Untimestamped historical fixtures retain their native sequence. Real
@@ -2553,8 +2736,11 @@ def file_ownership_executions(records, harness, *, file_candidates=()):
         for effect in native_file_effects(name, value):
             if effect["kind"] == "write":
                 apply_file_effect(effect, cwd, candidates)
-            elif {native_path(path, cwd) for path in effect["paths"]} & candidates:
-                invocations.add(identifier)
+            else:
+                active = {path for path, start, end in intervals
+                          if timestamp is None or start <= timestamp <= end}
+                if {native_path(path, effect.get("cwd") or cwd) for path in effect["paths"]} & (candidates | active):
+                    invocations.add(identifier)
     return invocations
 
 
