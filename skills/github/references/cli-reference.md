@@ -1379,8 +1379,10 @@ competitor's record.
   rejects open entries with compact references and `write_outcome=not_started`.
   Issues blocked by the plan do not prevent closure. Closing an open issue
   also runs the comment radar on it, its native blockers, dependents,
-  sub-issues and parent, and issues and PRs in the same account that its body
-  references.
+  sub-issues and parent in any account, and issues and PRs in the same account
+  that its body references. The repository owner is the Director on every one
+  of those threads, so another account's own comments count as outside
+  comments.
   It refuses with `close_attention_preflight` and `write_outcome=not_started`,
   naming each comment, when an outside person's comment has no Director or agent
   reply after its latest version and no targeted response, even on a closed

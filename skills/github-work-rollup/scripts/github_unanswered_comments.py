@@ -137,6 +137,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--outbound", action="store_true", help="Find replies after your last activity in repositories you do not own.")
     parser.add_argument("--self-login", action="append", default=[], help="Human owner login whose reactions and replies count.")
     parser.add_argument(
+        "--director-login",
+        help="The Director's login. Scanned repositories' owners are then not treated as the Director, "
+        "so another account's own comments on its threads count as outside comments.",
+    )
+    parser.add_argument(
         "--mention-approval",
         help="Link to the Director's standing approval for --outbound mention searches under their own login.",
     )
@@ -189,7 +194,9 @@ def resolve_settings(
             *args.bot_login,
         ]
     )
-    inferred_self = [*repo_owners, *(repo.split("/", 1)[0] for repo in repositories if "/" in repo)]
+    director_login = getattr(args, "director_login", None)
+    inferred_self = ([director_login] if director_login
+                     else [*repo_owners, *(repo.split("/", 1)[0] for repo in repositories if "/" in repo)])
     self_logins = rollup.unique([*self_logins, *inferred_self])
 
     until = rollup.parse_timestamp(args.until) or now or datetime.now(timezone.utc)
@@ -211,6 +218,7 @@ def resolve_settings(
         "mention_approval": getattr(args, "mention_approval", None) or config.get("mention_approval"),
         "explicit_scope": explicit_scope,
         "self_logins": self_logins,
+        "infer_owner_logins": not director_login,
         "bot_logins": bot_logins,
         "since": since.astimezone(timezone.utc),
         "until": until.astimezone(timezone.utc),
@@ -1328,7 +1336,8 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
             outbound_self.add(normalized_auth)
 
     repositories = resolve_repositories(settings)
-    self_logins.update(normalize_login(repo.split("/", 1)[0]) for repo in repositories if "/" in repo)
+    if settings.get("infer_owner_logins", True):
+        self_logins.update(normalize_login(repo.split("/", 1)[0]) for repo in repositories if "/" in repo)
     candidate_ids: dict[tuple[str, int], set[tuple[str, int]]] = {}
     coverage_errors: list[dict[str, str]] = []
     people = people_identities(self_logins - bot_logins, settings.get("people_index"))

@@ -71,11 +71,13 @@ class CloseAttentionTests(unittest.TestCase):
                    "parent_issue_url": f"https://api.github.com/repos/{REPO}/issues/2"},
             pages={f"repos/{REPO}/issues/7/sub_issues": [{"html_url": f"https://github.com/{REPO}/issues/10"}],
                    f"repos/{REPO}/issues/7/dependencies/blocked_by": [
-                       {"html_url": f"https://github.com/{REPO}/issues/9"}]})
+                       {"html_url": f"https://github.com/{REPO}/issues/9"},
+                       {"html_url": "https://github.com/client/product/issues/4"}]})
         seen: list[list[str]] = []
         with self.assertRaises(gate.CloseAttentionError) as refused:
             gate.check(REPO, 7, reader=reader, radar=radar(row(9), seen=seen))
-        self.assertEqual(seen, [[f"{REPO}#7", f"{REPO}#9", f"{REPO}#10", f"{REPO}#2"]])
+        # Native links count in any account; body references only in this one (other/repo#3 is left out).
+        self.assertEqual(seen, [[f"{REPO}#7", f"{REPO}#9", "client/product#4", f"{REPO}#10", f"{REPO}#2"]])
         self.assertIn(f"client on {REPO}#9", str(refused.exception))
 
     def test_closing_a_linked_thread_does_not_answer_its_comment(self) -> None:
@@ -149,6 +151,7 @@ class CloseAttentionTests(unittest.TestCase):
         self.assertEqual(payload["status"], "degraded")
         self.assertEqual(commands[0][-4:], ["--thread", f"{REPO}#7", "--thread", f"{REPO}#9"])
         self.assertIn("--include-handled", commands[0])
+        self.assertEqual(commands[0][commands[0].index("--director-login") + 1], "director")
         self.assertEqual(routes, ["fake-gh"])
 
 

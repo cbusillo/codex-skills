@@ -63,25 +63,26 @@ def body_references(repo: str, body: str) -> list[tuple[str, int]]:
 
 
 def linked_threads(reader: GitHubReader, repo: str, number: int, issue: dict[str, Any]) -> list[str]:
-    """The issue's native relationships and same-owner references in its body."""
-    found: list[tuple[str, int]] = []
+    """The issue's native relationships, in any account, and same-owner references in its body."""
+    native: list[tuple[str, int]] = []
     for relationship in RELATIONSHIPS:
         path = (f"repos/{repo}/issues/{number}/sub_issues" if relationship == "sub_issues"
                 else f"repos/{repo}/issues/{number}/dependencies/{relationship}")
         for item in reader.paged_json(path, step_prefix=f"close_attention_{relationship}"):
             match = THREAD_URL.match(str(item.get("html_url") or ""))
             if match:
-                found.append((match[1], int(match[2])))
+                native.append((match[1], int(match[2])))
     parent = API_ISSUE_URL.search(str(issue.get("parent_issue_url") or ""))
     if parent:
-        found.append((parent[1], int(parent[2])))
-    found += body_references(repo, str(issue.get("body") or ""))
+        native.append((parent[1], int(parent[2])))
     owner = repo.split("/", 1)[0].casefold()
+    referenced = [ref for ref in body_references(repo, str(issue.get("body") or ""))
+                  if ref[0].split("/", 1)[0].casefold() == owner]
     threads: list[str] = []
     seen = {(repo.casefold(), number)}
-    for linked_repo, linked_number in found:
+    for linked_repo, linked_number in native + referenced:
         key = (linked_repo.casefold(), linked_number)
-        if key in seen or linked_repo.split("/", 1)[0].casefold() != owner:
+        if key in seen:
             continue
         seen.add(key)
         threads.append(thread_ref(linked_repo, linked_number))
@@ -90,7 +91,9 @@ def linked_threads(reader: GitHubReader, repo: str, number: int, issue: dict[str
 
 def run_radar(threads: list[str], gh_cmd: str | None = None,
               run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run) -> dict[str, Any]:
-    command = ["uv", "run", "--quiet", str(HELPER), "--format", "json", "--include-handled"]
+    # The closing repository's owner is the Director on every thread, including linked threads in other accounts.
+    command = ["uv", "run", "--quiet", str(HELPER), "--format", "json", "--include-handled",
+               "--director-login", threads[0].split("/", 1)[0]]
     for thread in threads:
         command += ["--thread", thread]
     # The radar reads through the same gh route as the close it guards.
