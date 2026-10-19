@@ -724,18 +724,22 @@ def receipt_current(entry: dict) -> bool:
 def source_records(sessions: set[str]) -> dict:
     if not sessions:
         return {}
-    try:
-        before = log_identity(closed_log().lstat())
-        rows = log_rows()
-        if before != log_identity(closed_log().lstat()):
+    for _ in range(2):
+        try:
+            before = log_identity(closed_log().lstat())
+            rows = log_rows()
+            if before != log_identity(closed_log().lstat()):
+                # Another source can atomically replace the shared log while
+                # this source is leased. Read the new generation once.
+                continue
+            LOG_CACHE.set((before, rows))
+            from github_plan_sessions import native_helpers
+            normalize = native_helpers()[1].normalize_ledger_entry
+            return {session: normalize(closed_log(), matches[0]) for session in sessions
+                    if len(matches := [r for r in rows if r.get("session_id") == session]) == 1}
+        except (OSError, ValueError, KeyError, TypeError):
             return {}
-        LOG_CACHE.set((before, rows))
-        from github_plan_sessions import native_helpers
-        normalize = native_helpers()[1].normalize_ledger_entry
-        return {session: normalize(closed_log(), matches[0]) for session in sessions
-                if len(matches := [r for r in rows if r.get("session_id") == session]) == 1}
-    except (OSError, ValueError, KeyError, TypeError):
-        return {}
+    return {}
 
 
 def candidate_records(sessions: set[str]) -> dict:

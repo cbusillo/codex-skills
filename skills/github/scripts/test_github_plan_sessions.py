@@ -351,58 +351,168 @@ class FinishPreviewIntegrationTests(unittest.TestCase):
                     self.assertEqual(code, 1)
                     self.assertFalse(report["ok"])
 
-    def test_pending_preview_refuses_source_or_action_changes_during_proof_and_validation(self):
+    def test_pending_preview_requires_unchanged_source_and_action_through_real_proof(self):
         import github_plan_native as native
-        for boundary in ("discovery", "history"):
-            for timing in ("snapshot_start", "snapshot_end", "proof_return", "process_recheck"):
-                for kind in ("action", "source", "generation"):
-                    with self.subTest(boundary=boundary, timing=timing, kind=kind), ReceiptFixture() as f, ExitStack() as stack:
-                        self.pending(f)
-                        real_proof = native.prove_end
-                        real_snapshot = native.source_snapshot
-                        real_process = native.recheck_source_process
-                        state = {"changed": False, "proof_complete": False}
-                        def change():
-                            if state["changed"]:
-                                return
-                            with CLOSURE.ownership(f.session):
-                                if kind == "action":
-                                    CLOSURE.set_action_pending(f.session, True, method="turn/start", home=f.home)
-                                else:
-                                    with CLOSURE.store_lock(f.log):
-                                        rows = CLOSURE.log_rows()
-                                        if kind == "generation":
-                                            rows[0]["resumed_generation"] = {**f.entry, "launch_generation": "later-generation"}
-                                        else:
-                                            rows[0]["closure_evidence"] = {"changed": "different selected row"}
-                                        CLOSURE.replace_rows(rows)
-                            state["changed"] = True
-                        def snapshot(*args, **kwargs):
-                            if timing == "snapshot_start":
-                                change()
-                            result = real_snapshot(*args, **kwargs)
-                            if timing == "snapshot_end":
-                                change()
-                            return result
-                        async def prove(*args, **kwargs):
-                            result = await real_proof(*args, **kwargs)
-                            state["proof_complete"] = True
-                            if timing == "proof_return":
-                                change()
-                            return result
-                        def process(*args, **kwargs):
-                            result = real_process(*args, **kwargs)
-                            if timing == "process_recheck" and state["proof_complete"]:
-                                change()
-                            return result
-                        def install(_f):
-                            stack.enter_context(patch.object(native, "prove_end", side_effect=prove))
-                            stack.enter_context(patch.object(native, "source_snapshot", side_effect=snapshot))
-                            stack.enter_context(patch.object(native, "recheck_source_process", side_effect=process))
-                        code, report = self.finish(f, **{boundary: install})
-                        self.assertTrue(state["changed"])
+        for timing in ("snapshot_start", "snapshot_end", "proof_return", "process_recheck"):
+            for kind in (None, "action", "source", "generation"):
+                with self.subTest(timing=timing, kind=kind), ReceiptFixture() as f, ExitStack() as stack:
+                    self.pending(f)
+                    paths = [f.log, CLOSURE.lease_path(f.session)]
+                    before = [path.read_bytes() for path in paths]
+                    real_proof = native.prove_end
+                    real_snapshot = native.source_snapshot
+                    real_process = native.recheck_source_process
+                    state = {"changed": False, "proof_complete": False}
+                    def change():
+                        if kind is None or state["changed"]:
+                            return
+                        with CLOSURE.ownership(f.session):
+                            if kind == "action":
+                                CLOSURE.set_action_pending(f.session, True, method="turn/start", home=f.home)
+                            else:
+                                with CLOSURE.store_lock(f.log):
+                                    rows = CLOSURE.log_rows()
+                                    if kind == "generation":
+                                        rows[0]["resumed_generation"] = {**f.entry, "launch_generation": "later-generation"}
+                                    else:
+                                        rows[0]["closure_evidence"] = {"changed": "different selected row"}
+                                    CLOSURE.replace_rows(rows)
+                        state["changed"] = True
+                    def snapshot(*args, **kwargs):
+                        if timing == "snapshot_start":
+                            change()
+                        result = real_snapshot(*args, **kwargs)
+                        if timing == "snapshot_end":
+                            change()
+                        return result
+                    async def prove(*args, **kwargs):
+                        result = await real_proof(*args, **kwargs)
+                        state["proof_complete"] = True
+                        if timing == "proof_return":
+                            change()
+                        return result
+                    def process(*args, **kwargs):
+                        result = real_process(*args, **kwargs)
+                        if timing == "process_recheck" and state["proof_complete"]:
+                            change()
+                        return result
+                    def install(_f):
+                        stack.enter_context(patch.object(native, "prove_end", side_effect=prove))
+                        stack.enter_context(patch.object(native, "source_snapshot", side_effect=snapshot))
+                        stack.enter_context(patch.object(native, "recheck_source_process", side_effect=process))
+                    code, report = self.finish(f, history=install)
+                    self.assertEqual(state["changed"], kind is not None)
+                    if kind is None:
+                        self.assertEqual(code, 0)
+                        self.assertTrue(report["ok"])
+                        self.assertEqual([row["claim_comment"] for row in report["reports"][0]["released_claims"]], [1])
+                        self.assertTrue(CLOSURE.action_pending(f.session))
+                        self.assertEqual([path.read_bytes() for path in paths], before)
+                    else:
                         self.assertEqual(code, 1)
                         self.assertFalse(report["ok"])
+
+    def interleave_source_records(self, f, stack, kind):
+        real = CLOSURE.log_rows
+        state = {"changed": False, "inside": False, "serial": 0}
+        def other_closure():
+            sid = "other-source-" + str(state["serial"])
+            path = f.home / "sessions" / ("rollout-" + sid + ".jsonl")
+            rows = f.release.session_record.read_jsonl(f.transcript)
+            rows[0]["payload"]["id"] = sid
+            path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+            entry = {**f.entry, "session_id": sid, "transcript": str(path),
+                     "pid": 124, "launch_pid": 124, "tty": "other-tty", "launch_generation": sid}
+            f.release.record_closure(f.log, entry, "supervisor")
+        def read():
+            if state["inside"] or state["changed"] and kind != "continuous":
+                return real()
+            state["inside"] = True
+            try:
+                if kind == "malformed":
+                    before = f.log.read_bytes()
+                    try:
+                        f.log.write_text("{")
+                        state["changed"] = True
+                        return real()
+                    finally:
+                        f.log.write_bytes(before)
+                rows = real()
+                if kind == "selected":
+                    metadata = {"codex_home": str(f.home), "launch_pid": 456,
+                                "launch_generation": "later-generation", "launch_started_at": f.entry["launch_started_at"]}
+                    CLOSURE.resumed_launch(f.session, metadata, str(f.transcript), "resumed-tty")
+                else:
+                    state["serial"] += 1
+                    # This independent writer owns only its unrelated source.
+                    with ThreadPoolExecutor(max_workers=1) as pool:
+                        pool.submit(other_closure).result(3)
+                state["changed"] = True
+                return rows
+            finally:
+                state["inside"] = False
+        stack.enter_context(patch.object(CLOSURE, "log_rows", side_effect=read))
+        return state
+
+    def run_source_records_interleaving(self, f, stack, kind, mode):
+        state = {}
+        def install(_f=None):
+            state["read"] = self.interleave_source_records(f, stack, kind)
+        if mode == "preview":
+            code, report = self.finish(f, history=install)
+            accepted = code == 0 and report["ok"]
+        else:
+            import github_plan_native as native
+            with CLOSURE.ownership(f.session):
+                proof = asyncio.run(native.prove_end(f.entry))
+                install()
+                try:
+                    native.resolve_pending(f.session, proof)
+                except ValueError:
+                    accepted = False
+                else:
+                    accepted = True
+        self.assertTrue(state["read"]["changed"])
+        self.assertFalse(f.mutations)
+        return accepted
+
+    def test_unrelated_closure_publication_during_read_preserves_selected_source_authority(self):
+        for mode in ("preview", "resolve"):
+            with self.subTest(mode=mode), ReceiptFixture() as f, ExitStack() as stack:
+                self.pending(f)
+                before = CLOSURE.source_records({f.session})[f.session]
+                lease = CLOSURE.lease_path(f.session).read_bytes()
+                self.assertTrue(self.run_source_records_interleaving(f, stack, "unrelated", mode))
+                stack.close()
+                self.assertEqual(CLOSURE.source_records({f.session})[f.session], before)
+                self.assertEqual(CLOSURE.action_pending(f.session), mode == "preview")
+                if mode == "preview":
+                    self.assertEqual(CLOSURE.lease_path(f.session).read_bytes(), lease)
+
+    def test_unstable_or_malformed_shared_reads_remain_unknown(self):
+        for kind in ("continuous", "malformed"):
+            for mode in ("preview", "resolve"):
+                with self.subTest(kind=kind, mode=mode), ReceiptFixture() as f, ExitStack() as stack:
+                    self.pending(f)
+                    before = CLOSURE.source_records({f.session})[f.session]
+                    lease = CLOSURE.lease_path(f.session).read_bytes()
+                    self.assertFalse(self.run_source_records_interleaving(f, stack, kind, mode))
+                    stack.close()
+                    self.assertEqual(CLOSURE.source_records({f.session})[f.session], before)
+                    self.assertTrue(CLOSURE.action_pending(f.session))
+                    self.assertEqual(CLOSURE.lease_path(f.session).read_bytes(), lease)
+
+    def test_selected_generation_change_during_read_never_borrows_the_new_source(self):
+        for mode in ("preview", "resolve"):
+            with self.subTest(mode=mode), ReceiptFixture() as f, ExitStack() as stack:
+                self.pending(f)
+                before = CLOSURE.source_records({f.session})[f.session]
+                lease = CLOSURE.lease_path(f.session).read_bytes()
+                self.assertFalse(self.run_source_records_interleaving(f, stack, "selected", mode))
+                stack.close()
+                self.assertNotEqual(CLOSURE.source_records({f.session})[f.session], before)
+                self.assertTrue(CLOSURE.action_pending(f.session))
+                self.assertEqual(CLOSURE.lease_path(f.session).read_bytes(), lease)
 
 
 class IdleReceiptIntegrationTests(unittest.TestCase):
