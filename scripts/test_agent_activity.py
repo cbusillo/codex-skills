@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -462,6 +463,23 @@ class ObserverTests(unittest.IsolatedAsyncioTestCase):
             records = [json.loads(p.read_text()) for p in store.events.glob('*.json')]
             self.assertEqual([r['state'] for r in records], ['working'])
             self.assertNotIn('name', records[0])
+
+    async def test_claude_inventory_runs_with_the_expanded_account_home(self):
+        # Account homes are configured with "~"; an unexpanded value makes the
+        # CLI read a directory that does not exist and list no sessions.
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder).resolve()
+            seen = root / 'seen-config-dir'
+            fixture = root / 'claude-fixture'
+            fixture.write_text(f'#!{sys.executable}\nimport os,pathlib\n'
+                               f'pathlib.Path({str(seen)!r}).write_text(os.environ.get("CLAUDE_CONFIG_DIR", ""))\n'
+                               'print("[]")\n')
+            fixture.chmod(0o700)
+            with unittest.mock.patch.dict(os.environ, {'HOME': str(root)}):
+                await claude_poll(ActivityStore(root / 'private'),
+                                  {'accountID': ACCOUNT, 'env': {'CLAUDE_CONFIG_DIR': '~/.claude-accounts/example'}},
+                                  once=True, executable=str(fixture))
+            self.assertEqual(seen.read_text(), str(root / '.claude-accounts' / 'example'))
 
     async def test_real_socket_initial_active_idle_before_terminal_and_unsubscribe(self):
         with tempfile.TemporaryDirectory(dir="/tmp") as temp:
