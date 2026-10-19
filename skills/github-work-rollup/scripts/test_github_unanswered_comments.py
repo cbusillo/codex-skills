@@ -1389,7 +1389,7 @@ def test_outbound_withdrawn_mention_approval_reports_the_gap(monkeypatch, outbou
     monkeypatch.setattr(github_unanswered_comments, "run_json", FakeGitHub(outbound_fixture))
     payload = github_unanswered_comments.collect_payload(outbound_settings())
     assert payload["status"] == "degraded"
-    assert "withdrew" in payload["coverage"]["errors"][0]["error"]
+    assert [error["lane"] for error in payload["coverage"]["errors"]] == ["director_mentions"]
     assert director_search["calls"] == []
 
 
