@@ -171,9 +171,12 @@ def execute(h: Any, args: argparse.Namespace) -> int:
         h.emit(output)
         return 1 if status == "replan_required" else 0
     except urllib.error.HTTPError as error:
+        error_payload = h._ServiceResponse({}, error.code)
         try:
             try:
-                failure = h.summarize_http_error(operation=args.command, request=request, exc=error)
+                error_payload = h._error_payload_from_http(error)
+                failure = h.summarize_http_error(operation=args.command, request=request, exc=error,
+                                                 provider_payload=error_payload)
             except (h.LaunchplaneSafetyError, ValueError, OSError, http.client.HTTPException):
                 failure = h.unavailable_payload(operation=args.command, request=request,
                     status="unavailable", code="invalid_response", message="The service error could not be verified.")
@@ -184,7 +187,7 @@ def execute(h: Any, args: argparse.Namespace) -> int:
                 failure["summary"]["recommendation"] = RECOVERY
             h.emit(failure)
             return 1
-        diagnostics = failure["summary"]
+        diagnostics = h.service_response_diagnostics(error_payload)
     except h.ServiceResponseError as error:
         diagnostics = h.service_response_diagnostics(error)
     except h.LaunchplaneSafetyError as error:

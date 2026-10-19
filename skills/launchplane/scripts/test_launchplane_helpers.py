@@ -1583,13 +1583,12 @@ def test_controller_http_error_keeps_safe_identifiers_without_raw_error_text(mut
                 "code": error_code, "message": "Bearer private-fixture-value",
             }, "token": "private-fixture-value",
         }
+        if error_location != "error":
+            response["result"] = {error_location.split(".")[1]: response.pop("error")}
         error = urllib.error.HTTPError(
             "https://launchplane.example.invalid/controller", http_status, "Rejected", Message(),
             io.BytesIO(json.dumps(response).encode()),
         )
-        if error_location != "error":
-            response["result"] = {error_location.split(".")[1]: response.pop("error")}
-            error.fp = io.BytesIO(json.dumps(response).encode())
         status, payload = _run_controller_response(error, mutate=mutate)
         assert status == 1
         if mutate and (http_status >= 500 or http_status == 408):
@@ -8374,6 +8373,17 @@ def test_compose_domain_review_apply_and_read_back() -> None:
                 assert status == 1 and result["status"] == "invalid" and not posts
                 assert len(reads) == 1 and result["summary"]["trace_id"] == changed["trace_id"]
                 assert "PRIVATE_SENTINEL" not in json.dumps(result)
+            for invalid_routes in ({"private": "PRIVATE_SENTINEL"}, [{"host": ["PRIVATE_SENTINEL"]}]):
+                changed = write_action._ServiceResponse(_domain_inspect(operation, True), 202)
+                changed["trace_id"] = "launchplane_req_invalid_routes"
+                changed["inspect"]["provider"]["domains"] = invalid_routes
+                status, result, posts, reads = run(changed)
+                assert status == 1 and result["status"] == "accepted_unverified"
+                assert len(posts) == 1 and len(reads) == 2
+                assert result["summary"]["read_back_http_status"] == changed.http_status
+                assert result["summary"]["read_back_trace_id"] == changed["trace_id"]
+                assert result["summary"]["trace_id"] == _domain_setup_response(operation, "apply")["trace_id"]
+                assert "PRIVATE_SENTINEL" not in json.dumps(result)
             # A provider route failure cannot be hidden by the tracked record.
             changed = _domain_inspect(operation, True)
             changed["inspect"]["provider"] = _domain_inspect(operation)["inspect"]["provider"]
@@ -9963,7 +9973,7 @@ def test_interrupted_http_verified_apply_preserves_failure_phase(kind: str, phas
     assert "PRIVATE_SENTINEL" not in json.dumps(payload)
 
 
-@pytest.mark.parametrize("kind", ["incomplete", "disconnected", "gateway", "denial", "projection"])
+@pytest.mark.parametrize("kind", ["incomplete", "disconnected", "gateway", "denial", "projection", "decoding", "non_object"])
 @pytest.mark.parametrize("mode", ["dry-run", "apply"])
 @pytest.mark.parametrize("purpose", ["staff_testing", "isolation_staging"])
 def test_interrupted_http_simple_post_preserves_write_uncertainty(kind: str, mode: str, purpose: str) -> None:
@@ -9990,16 +10000,25 @@ def test_interrupted_http_simple_post_preserves_write_uncertainty(kind: str, mod
                 **_testing_hold_response(_testing_hold_plan(after=hold)),
                 "unexpected": "private-provider",
             }, 202)
+        if kind in {"decoding", "non_object"}:
+            response = Mock(status=202)
+            response.read.return_value = b"PRIVATE_SENTINEL" if kind == "decoding" else b"null"
+            with pytest.raises(write_action.ServiceResponseError) as unreadable:
+                write_action._read_service_response(response)
+            fault = unreadable.value
         code, payload, posts, _ = _run_main(argv, post=fault)
     assert code == (0 if kind == "projection" and mode == "apply" else 1)
     assert len(posts) == 1
     assert posts[0]["body"].get("purpose", "staff_testing") == purpose
-    expected = ("accepted_unverified" if mode == "apply" else "invalid") if kind == "projection" else "denied" if kind == "denial" else "outcome_unknown" if mode == "apply" else "unavailable"
+    expected = ("accepted_unverified" if mode == "apply" else "invalid") if kind in {"projection", "decoding", "non_object"} else "denied" if kind == "denial" else "outcome_unknown" if mode == "apply" else "unavailable"
+    if kind in {"decoding", "non_object"}:
+        assert payload["summary"]["http_status"] == response.status
+        assert "PRIVATE_SENTINEL" not in json.dumps(payload)
     if kind == "projection":
         assert payload["summary"]["http_status"] == fault.http_status
         assert payload["summary"]["trace_id"] == fault["trace_id"]
     assert payload["status"] == expected
-    if expected == "outcome_unknown":
+    if expected in {"outcome_unknown", "accepted_unverified"}:
         assert "read" in payload["summary"]["recommendation"].lower()
     assert "private-provider" not in json.dumps(payload)
 
@@ -10405,3 +10424,54 @@ def test_unhashable_service_values_preserve_bounded_failure_receipts(tmp_path, f
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))
+
+
+@pytest.mark.parametrize("phase,failure", [(phase, failure) for phase in ("preflight", "apply", "readback")
+    for failure in ("decoding", "partial", "projection", "comparison") if not (phase == "preflight" and failure == "comparison")])
+def test_runtime_sync_failure_diagnostics_follow_the_current_exchange(phase, failure):
+    flags = ["--product", "example-site", "--context", "example-context", "--instance", "testing"]
+    _, evidence, _ = _run_runtime_sync(["live-target-runtime-sync-dry-run", *flags], [_runtime_sync_response()])
+    applied = write_action._ServiceResponse(_runtime_sync_response(mode="apply"), 201)
+    applied["trace_id"] = "launchplane_req_apply"
+    response = write_action._ServiceResponse(_runtime_sync_response(mode="apply" if phase == "apply" else "dry-run", changed=phase != "readback"), 202)
+    response["trace_id"] = "launchplane_req_current"
+    fault = response
+    if failure == "decoding":
+        raw = Mock(status=response.http_status)
+        raw.read.return_value = b"null"
+        with pytest.raises(write_action.ServiceResponseError) as error:
+            write_action._read_service_response(raw)
+        fault = error.value
+    elif failure == "partial":
+        raw = Mock(status=response.http_status)
+        raw.read.side_effect = http.client.IncompleteRead(b"PRIVATE_SENTINEL")
+        with pytest.raises(http.client.IncompleteRead) as error:
+            write_action._read_service_response(raw)
+        fault = error.value
+    elif failure == "projection":
+        response["status"] = "invalid"
+    elif phase == "apply":
+        response["result"]["tracked_target"]["target_id"] = "different-target"
+    else:
+        response["result"]["runtime_environment"]["changed_keys"] = ["EXAMPLE_API_TOKEN"]
+    responses = ([fault] if phase == "preflight" else [_runtime_sync_response(), fault] if phase == "apply"
+        else [_runtime_sync_response(), applied, fault])
+    with TemporaryDirectory() as directory:
+        path = _write_json(directory, "review.json", evidence)
+        argv = ["live-target-runtime-sync-apply", *flags, "--idempotency-key", "same-apply", "--reviewed-dry-run",
+            "--expected-plan-digest", evidence["result"]["plan_sha256"], "--dry-run-evidence-file", path]
+        code, output, calls = _run_runtime_sync(argv, responses)
+    assert code == 1
+    expected_status = ("unavailable" if failure == "partial" else "invalid") if phase == "preflight" else "accepted_unverified"
+    assert output["status"] == expected_status
+    assert calls.call_count == {"preflight": 1, "apply": 2, "readback": 3}[phase]
+    assert sum(call.kwargs["body"]["mode"] == "apply" for call in calls.call_args_list) == (phase != "preflight")
+    prefix = "read_back_" if phase == "readback" else ""
+    assert output["summary"][prefix + "http_status"] == response.http_status
+    if failure in {"projection", "comparison"}:
+        assert output["summary"][prefix + "trace_id"] == response["trace_id"]
+    if phase == "readback":
+        assert output["summary"]["trace_id"] == applied["trace_id"]
+    else:
+        assert "read_back_http_status" not in output["summary"]
+    assert "PRIVATE_SENTINEL" not in json.dumps(output)

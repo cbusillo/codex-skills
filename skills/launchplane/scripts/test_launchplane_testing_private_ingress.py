@@ -236,13 +236,25 @@ def test_observation_failure_is_not_an_unknown_write(mode):
     assert "PRIVATE_SENTINEL" not in json.dumps(output)
 
 
-@pytest.mark.parametrize("status", [403, 409, 503])
+@pytest.mark.parametrize("status", [403, 409, 503, 408])
 @pytest.mark.parametrize("phase", ["apply", "readback"])
-def test_http_errors_preserve_trace_and_never_switch_route_or_retry(status, phase):
-    failure = urllib.error.HTTPError(SERVICE, status, "PRIVATE_SENTINEL", {}, io.BytesIO(json.dumps({
-        "trace_id": "launchplane_req_refusal", "error": {"code": "authorization_denied" if status == 403 else "reconcile_required",
-        "message": "PRIVATE_SENTINEL"}}).encode()))
+@pytest.mark.parametrize("service_diagnostics", [True, False])
+def test_http_errors_preserve_trace_and_never_switch_route_or_retry(status, phase, service_diagnostics):
+    response = {"trace_id": "launchplane_req_refusal", "error": {
+        "code": "authorization_denied" if status == 403 else "reconcile_required", "message": "PRIVATE_SENTINEL",
+    }} if service_diagnostics else {}
+    failure = urllib.error.HTTPError(SERVICE, status, "PRIVATE_SENTINEL", {}, io.BytesIO(json.dumps(response).encode()))
     code, output, calls, _ = invoke("apply", responses=([receipt("apply")] if phase == "readback" else []) + [failure])
+    if not service_diagnostics and (phase == "readback" or status in {503, 408}):
+        prefix = "read_back_" if phase == "readback" else ""
+        assert output["summary"][prefix + "http_status"] == status
+        assert prefix + "error_code" not in output["summary"]
+        assert prefix + "trace_id" not in output["summary"]
+        assert output["status"] == ("accepted_unverified" if phase == "readback" else "outcome_unknown")
+        return
+    if not service_diagnostics:
+        assert output["status"] == h._status_for_http_error(status, {})
+        return
     assert code != 0 and len(calls) == (2 if phase == "readback" else 1)
     if phase == "readback":
         assert output["status"] == "accepted_unverified"
@@ -254,7 +266,7 @@ def test_http_errors_preserve_trace_and_never_switch_route_or_retry(status, phas
         return
     assert output["summary"]["trace_id"] == "launchplane_req_refusal"
     assert output["summary"]["error_code"] == ("authorization_denied" if status == 403 else "reconcile_required")
-    if status == 503:
+    if status in {503, 408}:
         assert output["status"] == "outcome_unknown"
     else:
         assert output["status"] == h._status_for_http_error(status, {
