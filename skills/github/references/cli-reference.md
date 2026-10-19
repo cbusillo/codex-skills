@@ -1229,7 +1229,8 @@ This flag supplies no cleanup or takeover authority: apply Choose Work's
 verified-handoff and preservation rules before passing it.
 
 For pushed WIP **without a PR**, use that existing same-record resume-only
-route; native-parent and cross-repository handoffs keep the retained-PR route.
+route. Native-parent and cross-repository handoffs still require retained-PR
+proof; they cannot adopt no-PR WIP through that route.
 Verify the source session has finished, its exact authored release, that the
 handoff retains no PR at all, and the preserved branch's live remote head and
 local state before claiming.
