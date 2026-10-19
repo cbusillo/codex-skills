@@ -59,6 +59,19 @@ class NativeFactsTests(unittest.IsolatedAsyncioTestCase):
                 else: altered["executions"]["ended"] = False
                 with self.assertRaises(ValueError): NATIVE.require_quiet(altered, self.source, {})
 
+    async def test_native_timeline_turn_boundaries_use_wire_identity(self):
+        self.responses["thread/timeline/list"]["data"] = [
+            {"type": "turnStarted", "position": 0, "turnId": "actual-turn", "startedAt": 1},
+            {"type": "turnCompleted", "position": 1, "turnId": "actual-turn", "status": "completed"},
+        ]
+        facts = await NATIVE.read_thread_facts(self.request, self.session)
+        NATIVE.require_quiet(facts, self.source, {})
+        for boundary in self.responses["thread/timeline/list"]["data"]:
+            original = boundary.pop("turnId")
+            with self.assertRaises(ValueError):
+                await NATIVE.read_thread_facts(self.request, self.session)
+            boundary["turnId"] = original
+
     async def test_loaded_persistence_read_failure_cannot_use_old_quiet_history(self):
         previous = self.responses["thread/read"]
         async def thread(params):
@@ -75,6 +88,10 @@ class NativeFactsTests(unittest.IsolatedAsyncioTestCase):
             self.responses["thread/timeline/list"] = {"data": [{"type": "realtime", "position": 1, "item": item}]}
             with self.subTest(item=item), self.assertRaises(ValueError):
                 await NATIVE.read_thread_facts(self.request, self.session)
+        self.responses["thread/timeline/list"] = {"data": [], "nextCursor": "older-page",
+                                                 "activeRealtimeSessionAtPageStart": "runtime-before-newest-page"}
+        with self.assertRaises(ValueError):
+            NATIVE.require_quiet(await NATIVE.read_thread_facts(self.request, self.session), self.source, {})
         self.responses["thread/read"]["thread"]["status"] = None
         with self.assertRaises(ValueError): await NATIVE.read_thread_facts(self.request, self.session)
 
@@ -167,6 +184,54 @@ class NativeFactsTests(unittest.IsolatedAsyncioTestCase):
 
 
 class NativeQueueTests(unittest.TestCase):
+    def test_removed_pane_closure_proves_replacement_tree_and_preserves_source_vetoes(self):
+        import uuid
+        from github_plan_sessions import native_helpers
+        native_helpers()
+        import tmux_terminal
+        for change in (None, "nonidle_root", "same_second", "orphan", "orphan_root", "missing_parent", "old_root", "source_pid",
+                       "resume", "uncertain", "source_pane", "late_orphan", "unowned", "no_nonce", "unidentified_harness"):
+            with self.subTest(change=change), ReceiptFixture(str(uuid.uuid4())) as f:
+                CLOSURE.replace_rows([])
+                with CLOSURE.resume_guard(f.session, method="turn/start", home=f.home): pass
+                entry = {**f.entry, "tmux_socket": "fixture", "tmux_session_id": "tmux:fixture:" + "a" * 32,
+                         "window_id": "$1", "tab_id": "@1"}
+                f.native_state = "notLoaded"
+                root_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+                f.process_rows = [(455, f.entry["tty"], "login"), (456, f.entry["tty"], "unrelated-worker")]
+                if change == "nonidle_root": f.process_rows[0] = (455, f.entry["tty"], "replacement-root")
+                if change == "unidentified_harness": f.process_rows[1] = (456, f.entry["tty"], "codex")
+                parents = {99: 1, 455: 99, 456: 455}
+                if change == "orphan": parents[456] = 1
+                if change == "orphan_root": parents[455] = 1
+                if change == "missing_parent": parents.pop(456)
+                if change == "old_root": root_at = datetime.fromisoformat(entry["launch_started_at"])
+                if change == "source_pid": f.process_rows.append((entry["pid"], "other-tty", "codex"))
+                if change == "resume": f.process_rows.append((789, "other-tty", "codex resume " + f.session))
+                if change == "unowned": entry["supervisor_owned"] = False
+                if change == "no_nonce": entry["tmux_session_id"] = "tmux:fixture:123:%1"
+                pane = {"session_id": entry["tmux_session_id"], "dead": False}
+                def inventory():
+                    if change == "late_orphan" and "thread/read" in f.rpc_requests:
+                        parents[456] = 1
+                    return list(f.process_rows)
+                with patch.object(tmux_terminal.Terminal, "list", **(
+                        {"side_effect": ValueError("uncertain inventory")} if change == "uncertain" else
+                        {"return_value": [pane] if change == "source_pane" else []})), \
+                        patch.object(tmux_terminal, "process_parents", side_effect=lambda: dict(parents)), \
+                        patch.object(CLOSURE, "process_started_at", side_effect=lambda pid: root_at + timedelta(seconds=pid != 455 and change != "same_second")), \
+                        patch.object(f.release, "inventory", side_effect=inventory):
+                    if change in (None, "nonidle_root", "same_second"):
+                        closed = f.release.record_closure(f.log, entry, "supervisor")
+                        self.assertEqual(closed["tty_exited_at"], root_at.isoformat())
+                        self.assertFalse(CLOSURE.action_pending(f.session))
+                        self.assertEqual(f.release.record_closure(f.log, entry, "supervisor")["ended_at"], closed["ended_at"])
+                    else:
+                        with self.assertRaises(ValueError): f.release.record_closure(f.log, entry, "supervisor")
+                        self.assertTrue(CLOSURE.action_pending(f.session))
+                        self.assertEqual(json.loads(f.log.read_text()), [])
+                self.assertFalse(f.mutations)
+
     @contextmanager
     def queue_exit_failure(self, target, sent, failure, boundary):
         """Fail actual resource cleanup only after the fixture accepted a mutation."""

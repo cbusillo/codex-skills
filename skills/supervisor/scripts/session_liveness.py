@@ -397,3 +397,40 @@ def native_exit_cutoff(entry):
         # A cutoff only permits verified replacement work on a reused TTY.
         # Its absence retains the stricter PID/TTY path; it is not exit proof.
         return None
+
+
+def replacement_tty_owner(entry, rows, *, started_at):
+    """Prove one newer process tree after the exact source pane disappeared."""
+    socket = entry.get("tmux_socket", "supervisor")
+    identity = entry.get("tmux_session_id")
+    tty = entry.get("tty")
+    if (entry.get("supervisor_owned") is not True or entry.get("_inventory") or entry.get("_backfill")
+            or not isinstance(socket, str) or not isinstance(identity, str)
+            or not re.fullmatch(r"tmux:" + re.escape(socket) + r":[0-9a-f]{32}", identity)
+            or not isinstance(tty, str) or not tty or not entry.get("launch_started_at")):
+        return None
+    rows = rows() if callable(rows) else rows
+    occupants = {pid for pid, process_tty, _command in rows if process_tty == tty.removeprefix("/dev/")}
+    if not occupants:
+        return None
+    from tmux_terminal import Terminal, process_parents, belongs_to
+    try:
+        if any(pane["session_id"] == identity for pane in Terminal(socket).list()):
+            return None
+        parents = process_parents()
+        if not occupants <= parents.keys():
+            return None
+        roots = [pid for pid in occupants if parents[pid] not in occupants]
+        if len(roots) != 1 or not all(belongs_to(pid, roots[0], parents) for pid in occupants):
+            return None
+        # A sole surviving source child can also look like a new root after
+        # reparenting to init/launchd. It does not prove a replacement terminal.
+        if parents[roots[0]] <= 1 or parents[roots[0]] not in parents:
+            return None
+        born = started_at(roots[0])
+        launched = datetime.fromisoformat(entry["launch_started_at"])
+        if launched.tzinfo is None or not launched < born <= datetime.now(timezone.utc):
+            return None
+        return roots[0], born, occupants
+    except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError):
+        return None

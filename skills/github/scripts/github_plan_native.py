@@ -226,7 +226,7 @@ async def read_thread_facts(request, session):
                     or not isinstance(entry.get("turnId"), str) or not entry["turnId"]):
                 raise ValueError("native timeline item identity is unavailable")
         elif entry["type"] in {"turnStarted", "turnCompleted"}:
-            if (not isinstance(entry.get("turn_id"), str) or not entry["turn_id"] or entry["type"] == "turnCompleted"
+            if (not isinstance(entry.get("turnId"), str) or not entry["turnId"] or entry["type"] == "turnCompleted"
                     and entry.get("status") not in {"completed", "interrupted", "failed", "inProgress"}):
                 raise ValueError("native timeline turn identity is unavailable")
         if entry["type"] != "realtime":
@@ -303,6 +303,7 @@ def _source_process(entry, saved):
         raise ValueError("native resumed generation is unavailable")
     effective = {**source, **(generation or {})}
     effective.pop("tty_exited_at", None)
+    effective.pop("_tty_owner", None)
     if generation:
         launch_keys = ("launch_pid", "launch_generation", "launch_started_at", "pid", "tty", "codex_home")
         terminal_keys = ("tmux_session_id", "tmux_socket", "window_id", "tab_id", "iterm_session_id")
@@ -325,6 +326,15 @@ def _source_process(entry, saved):
             effective["tty_exited_at"] = saved["tty_exited_at"]
     else:
         cutoff = process_liveness().native_exit_cutoff(effective)
+        if cutoff is None:
+            from github_plan_sessions import native_helpers
+            native_helpers()
+            import release_session_claims
+            owner = process_liveness().replacement_tty_owner(effective, release_session_claims.inventory,
+                                                           started_at=closure.process_started_at)
+            if owner is not None:
+                effective["_tty_owner"] = owner[:2]
+                cutoff = owner[1]
         if cutoff is not None:
             effective["tty_exited_at"] = cutoff.isoformat()
     return _SourceProcess(source, saved, effective, cutoff)
