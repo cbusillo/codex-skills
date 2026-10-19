@@ -40,6 +40,8 @@ def transcript_snapshot(path, harness, session, context=None):
     records = [json.loads(line) for line in lines if line.strip()]
     for record in records:
         session_record.validate_record(record)
+    if context is None:
+        return claim_history.root_records(path, harness, session, records)
     claim_history.child_records(records, harness, session, context)
     return records
 
@@ -87,7 +89,7 @@ def retained_handoff(comments, source, pulls, *, repo, number, is_pr):
     return verified
 
 
-def check_record(reader, repo, number, session, actor, *, pulls_cache=None, created_prs=(), data_cache=None):
+def check_record(reader, repo, number, session, actor, *, pulls_cache=None, created_prs=(), created_heads=(), data_cache=None):
     if data_cache is None:
         data_cache = {}
     if (repo, number) not in data_cache:
@@ -129,7 +131,9 @@ def check_record(reader, repo, number, session, actor, *, pulls_cache=None, crea
                         ((c.get("body") or "").startswith(f"Handoff from {record['worker']}\n") or c == evidence)):
                     named.update(explicit_pr_numbers(c.get("body") or "", repo))
             pulls = [p for p in pulls if (p.get("head") or {}).get("ref") == record["branch"] or p["number"] in named
-                     or p.get("html_url") in created_prs and claim.pr_issue_reference(p, number, repo=repo, attestation=True)]
+                     or (p.get("html_url") in created_prs
+                         or (repo.casefold(), (p.get("head") or {}).get("ref")) in created_heads)
+                     and claim.pr_issue_reference(p, number, repo=repo, attestation=True)]
         if receipt is not None:
             for pull in pulls:
                 if pull["html_url"] not in receipt["checked_prs"]:
@@ -164,6 +168,8 @@ def check(reader, owner, entry, actor, *, reader_for_repo=None):
             expected.extend(found)
             errors.extend(missing)
     native_repos = {r["repository"] for r in expected}
+    creations = [target for node in histories
+                 for target in claim_receipts.created_pr_targets(node["records"], node["harness"])]
     native_issues = {(r["repository"], r["record"]) for r in expected}
     for node in histories:
         # Canonical source receipts and actual claim targets own scope; raw
@@ -213,6 +219,8 @@ def check(reader, owner, entry, actor, *, reader_for_repo=None):
             repos.add(repo)
     released, blocked, pulls_cache, data_cache = [], [], {}, {}
     created = set().union(*(claim_receipts.created_prs(node["records"], node["harness"]) for node in histories))
+    created_heads = {(target["repository"].casefold(), target["head"]) for target in creations
+                     if target["repository"] and target["head"]}
     for repo, number in sorted(issues):
         try:
             selected = readers[repo]
@@ -221,13 +229,30 @@ def check(reader, owner, entry, actor, *, reader_for_repo=None):
                 raise ValueError("repository's configured automation identity is unknown")
             for native in sorted(native_sessions):
                 released.extend(check_record(selected, repo, number, native, source_actor,
-                                             pulls_cache=pulls_cache, created_prs=created, data_cache=data_cache))
+                                             pulls_cache=pulls_cache, created_prs=created, created_heads=created_heads,
+                                             data_cache=data_cache))
         except ValueError as error:
             blocked.append(str(error))
         except GitHubReadError as error:
             if (repo, number) in expanded - confirmed_issues and getattr(error.result, "status", None) in {404, 410}:
                 continue  # A guessed pair is not source evidence; still reconcile below.
             raise
+    unresolved_creations = []
+    for target in creations:
+        if target.get("url") or target["repository"] and target["head"]:
+            continue
+        # If attribution is unavailable, independently account for every open
+        # issue-linked PR it could have created. Closed PRs need no retained
+        # handoff, and another repository cannot retain this issue's claim.
+        candidates = [(record, pull) for record in released
+                      if not target["repository"] or target["repository"].casefold() == record["repository"].casefold()
+                      for pull in pulls_cache.get(record["repository"], [])
+                      if claim.pr_issue_reference(pull, record["record"], repo=record["repository"], attestation=True)]
+        if any(pull["html_url"] not in record["retained_prs"] for record, pull in candidates):
+            unresolved_creations.append(target)
+    for target in unresolved_creations:
+        blocked.append(f"PR creation {target['invocation']} lacks command-bound repository/head or isolated URL evidence; "
+                       "preserve ownership and use conditional/no")
     observed = {(r["repository"], r["record"], r["claim_comment"]) for r in released}
     if any((r["repository"], r["record"], r["claim_comment"]) not in observed for r in expected) and not blocked:
         blocked.append("native source claims were not verified in the installed repository scope")
@@ -238,7 +263,7 @@ def check(reader, owner, entry, actor, *, reader_for_repo=None):
         blocked.append(f"claim invocation {target['invocation']} lacks canonical command scope; added repositories cannot prove its destination; preserve ownership and use conditional/no")
     return {"operation": claim_receipts.CHECK_OPERATION, "ok": not blocked, "claims_clear": not blocked,
             "session_id": entry["session_id"], "harness": entry["harness"],
-            "coverage": {"owners": sorted(owners), "repositories": sorted(repos), "complete": not unresolved,
+            "coverage": {"owners": sorted(owners), "repositories": sorted(repos), "complete": not unresolved and not unresolved_creations,
                          "session_ids": sorted(native_sessions),
                          "histories": [{k: node[k] for k in ("session_id", "transcript", "digest")} for node in histories[1:]],
                          "scope": "default installation plus native and explicitly added repositories"},

@@ -373,17 +373,7 @@ def session_status(entry: dict) -> dict:
     path = Path(entry["transcript"])
     before = path.stat()
     records = read_jsonl(path)
-    identities = {
-        record.get("sessionId") for record in records if record.get("sessionId")
-    }
-    if entry["harness"] == "codex":
-        identities = {
-            record.get("payload", {}).get("id")
-            for record in records
-            if record.get("type") == "session_meta"
-        }
-    if identities != {entry["session_id"]}:
-        raise ValueError("transcript identity does not match the ledger session")
+    records = claim_history.root_records(path, entry["harness"], entry["session_id"], records)
     def child_read(child, harness, session, context=None):
         initial = child.stat()
         data = read_jsonl(child)

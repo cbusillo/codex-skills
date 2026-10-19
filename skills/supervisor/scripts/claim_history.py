@@ -5,7 +5,7 @@
 """Read native child histories without inventing a second session registry."""
 from __future__ import annotations
 
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 import hashlib
 import json
 import os
@@ -41,8 +41,8 @@ def source_parent(source):
 def child_records(records, harness, session, context=None):
     """Separate a verified native fork's local rows from inherited history.
 
-    Only the native edge traversal supplies ancestry. Root reads keep their
-    strict identity check, and raw rows remain available for the coverage hash.
+    Only verified native edges supply ancestry, including a fork checking its
+    own local work. Raw child rows remain available for the coverage hash.
     """
     identities = ({r.get("sessionId") for r in records if r.get("sessionId")} if harness == "claude" else
                   {r.get("payload", {}).get("id") for r in records if r.get("type") == "session_meta"})
@@ -91,6 +91,82 @@ def codex_homes(path):
     return sorted({p.expanduser().resolve() for p in homes})
 
 
+@contextmanager
+def native_databases(path, homes=None):
+    """Open the same read-only native edge indexes for roots and children."""
+    with ExitStack() as stack:
+        databases = []
+        for home in codex_homes(path) if homes is None else homes:
+            candidates = [p for p in Path(home).glob("state_*.sqlite") if re.fullmatch(r"state_\d+", p.stem)]
+            if candidates:
+                database = max(candidates, key=lambda p: int(p.stem.split("_")[-1]))
+                try:
+                    connection = sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True, timeout=1)
+                except sqlite3.Error as error:
+                    raise ValueError("native child index cannot be read") from error
+                stack.callback(connection.close)
+                databases.append(connection)
+        yield databases
+
+
+def root_context(path, session):
+    """Prove a fork root's own rollout and complete ancestor chain natively."""
+    path = Path(path).expanduser().resolve()
+    ancestors, visited, current = [], set(), session
+    with native_databases(path) as databases:
+        while True:
+            if current in visited or len(visited) >= 128:
+                raise ValueError("native fork root ancestry exceeds its coverage bound")
+            visited.add(current)
+            matches = set()
+            for database in databases:
+                try:
+                    rows = database.execute(
+                        "SELECT t.rollout_path,t.source,e.parent_thread_id FROM threads t "
+                        "LEFT JOIN thread_spawn_edges e ON e.child_thread_id=t.id WHERE t.id=?", (current,)).fetchall()
+                except sqlite3.Error as error:
+                    raise ValueError("native child index schema/read is unavailable") from error
+                for rollout, source, parent in rows:
+                    if not rollout or not source:
+                        raise ValueError("native fork ancestor lacks its rollout")
+                    try:
+                        native_source = json.loads(source)
+                    except json.JSONDecodeError:
+                        # Native indexes store unit source variants (cli,
+                        # vscode, exec) as bare names, but spawned sources
+                        # remain JSON objects carrying the actual parent.
+                        if parent is not None or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", source):
+                            raise
+                        native_source = source
+                    if not isinstance(native_source, (str, dict)):
+                        raise ValueError("native fork ancestor source is malformed")
+                    source_id = source_parent(native_source) if isinstance(native_source, dict) else None
+                    if source_id != parent:
+                        raise ValueError("native fork ancestor parent differs from its edge")
+                    matches.add((str(Path(rollout).expanduser().resolve()), parent))
+            if len(matches) != 1:
+                raise ValueError("native fork root ancestry is absent or differs across indexes")
+            rollout, parent = matches.pop()
+            if current == session and (rollout != str(path) or parent is None):
+                raise ValueError("native fork root differs from its indexed rollout or edge")
+            if parent is None:
+                break
+            ancestors.append(parent)
+            current = parent
+    return {"parent": ancestors[0], "ancestors": tuple(reversed(ancestors))}
+
+
+def root_records(path, harness, session, records):
+    """Read a fork as its own session without trusting copied identity rows."""
+    if harness == "codex" and records and records[0].get("type") == "session_meta":
+        meta = records[0]["payload"]
+        if "forked_from_id" in meta or "subagent_history_start_ordinal" in meta:
+            if meta.get("id") != session:
+                raise ValueError("native fork root identity differs")
+            return child_records(records, harness, session, root_context(path, session))
+    return child_records(records, harness, session)
+
+
 def collect(path, harness, session, records, read, *, homes=None):
     """Return root and quiet child snapshots; missing child evidence refuses.
 
@@ -107,20 +183,12 @@ def collect(path, harness, session, records, read, *, homes=None):
             raise ValueError("native delegated histories are unavailable")
         paths = [(session, child.resolve(), None) for child in children]
     else:
-        with ExitStack() as stack:
-            databases = []
-            for home in codex_homes(path) if homes is None else homes:
-                candidates = [p for p in Path(home).glob("state_*.sqlite") if re.fullmatch(r"state_\d+", p.stem)]
-                if candidates:
-                    database = max(candidates, key=lambda p: int(p.stem.split("_")[-1]))
-                    try:
-                        connection = sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True, timeout=1)
-                    except sqlite3.Error as error:
-                        raise ValueError("native child index cannot be read") from error
-                    stack.callback(connection.close)
-                    databases.append(connection)
+        with native_databases(path, homes) as databases:
             pending, visited, seen_paths = [session], set(), set()
-            ancestry = {session: ()}
+            root_meta = records[0].get("payload", {}) if records and records[0].get("type") == "session_meta" else {}
+            ancestors = (root_context(path, session)["ancestors"] if "forked_from_id" in root_meta
+                         or "subagent_history_start_ordinal" in root_meta else ())
+            ancestry = {session: ancestors}
             while pending:
                 parent = pending.pop()
                 if parent in visited:

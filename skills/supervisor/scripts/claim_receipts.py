@@ -148,8 +148,15 @@ def shell_texts(name, value):
     yield from texts
 
 
-def shell_commands(name, value):
+def shell_commands(name, value, *, depth=0):
     """Only shell tools execute commands; tool prompts and echo operands do not."""
+    def commands(argv):
+        child = unwrapped_command(argv)
+        if (depth < 16 and len(child) == 3 and Path(child[0]).name in {"bash", "sh", "zsh", "dash", "ksh"}
+                and child[1] in {"-c", "-lc"} and foreground_shell_text(child[2])):
+            yield from shell_commands("exec_command", {"cmd": child[2]}, depth=depth + 1)
+        else:
+            yield argv[1:] if argv[0] == "nohup" else argv
     texts = shell_texts(name, value)
     for text in texts:
         try:
@@ -160,12 +167,12 @@ def shell_commands(name, value):
             for token in lexer:
                 if token and all(c in ";&|\n" for c in token):
                     if command:
-                        yield command[1:] if command[0] == "nohup" else command
+                        yield from commands(command)
                     command = []
                 else:
                     command.append(token)
             if command:
-                yield command[1:] if command[0] == "nohup" else command
+                yield from commands(command)
         except ValueError:
             continue
 
@@ -324,7 +331,8 @@ def opaque_ownership(name, value):
                            if Path(word).name in {"gh-plan.py", "gh-pr.py", "gh"}):
                         return True
             if child and Path(child[0]).name in {"bash", "sh", "zsh", "dash", "ksh"}:
-                if any(executable_content(word) for i, word in enumerate(child[1:], 1)
+                if any(executable_content(word) or opaque_ownership("exec_command", {"cmd": word})
+                       for i, word in enumerate(child[1:], 1)
                        if child[i - 1].startswith("-") and "c" in child[i - 1]):
                     return True
             if child and re.fullmatch(r"python[0-9.]*", Path(child[0]).name):
@@ -386,10 +394,25 @@ def unwrapped_command(argv):
             argv = argv[1:]
         elif name in {"command", "exec", "nohup", "time", "env", "timeout", "nice", "stdbuf"}:
             argv = argv[1:]
+            value_options = {
+                "env": {"-u", "--unset", "-C", "--chdir", "-S", "--split-string"},
+                "timeout": {"-k", "--kill-after", "-s", "--signal"},
+                "nice": {"-n", "--adjustment"},
+                "time": {"-o", "--output"},
+                "stdbuf": {"-i", "--input", "-o", "--output", "-e", "--error"},
+                "exec": {"-a"},
+            }.get(name, set())
             while argv and (argv[0].startswith("-") or re.match(r"[A-Za-z_]\w*=", argv[0])):
                 flag = argv.pop(0)
-                if flag in {"-u", "--unset", "-C", "--chdir", "-k", "--kill-after", "-s", "--signal", "-n", "--adjustment", "-o", "--output", "-i", "--input", "-e", "--error"} and argv:
-                    argv.pop(0)
+                option, equal, inline = flag.partition("=")
+                if option in value_options and (equal or argv):
+                    operand = inline if equal else argv.pop(0)
+                    if name == "env" and option in {"-S", "--split-string"}:
+                        try:
+                            argv = shlex.split(operand) + argv
+                        except ValueError:
+                            return ["env", flag, operand, *argv]
+                        break
             if name == "timeout" and argv:
                 argv = argv[1:]
         elif name == "uv":
@@ -416,6 +439,18 @@ def unwrapped_command(argv):
         else:
             break
     return argv
+
+
+def foreground_shell_text(content):
+    """Literal shell control flow and pipes wait; detached/computed code does not."""
+    if "$(" in content or "`" in content:
+        return False
+    try:
+        lexer = shell_lexer(shell_code(content), posix=False)
+        lexer.whitespace_split = True
+        return "&" not in list(lexer)
+    except ValueError:
+        return False
 
 
 def foreground_shell_argv(content):
@@ -534,15 +569,21 @@ def python_fragment_ownership(content):
                 return True
             try:
                 call = ast.parse(expression).body[0].value
-                ast.literal_eval(call.args[0])
+                argument = call.args[0]
             except (ValueError, SyntaxError, AttributeError, IndexError):
-                pass  # A partial block may hold the argument's definition.
-            else:
-                continue  # A complete literal read is known, even in a hunk.
-        # An unfinished/indirect actual launch with ownership text remains
-        # unknown. Quoted fixture text alone has no launch tokens to reach here.
+                continue
+            if isinstance(argument, ast.Name):
+                for index in range(len(tokens) - 2):
+                    if (tokens[index] == (tokenize.NAME, argument.id) and tokens[index + 1][1] == "="
+                            and tokens[index + 2][0] == tokenize.STRING):
+                        definition = argument.id + "=" + tokens[index + 2][1]
+                        if python_ownership(definition + "\n" + expression):
+                            return True
+            continue
+        # Only a truly unfinished actual launch retains uncertain argv text.
+        # Closed calls resolve their own argument instead of borrowing fixtures.
         literals = []
-        for token_kind, literal in tokens if depth == 0 else tokens[cursor:end]:
+        for token_kind, literal in tokens[cursor:end]:
             if token_kind == tokenize.STRING:
                 try:
                     value = ast.literal_eval(literal)
@@ -1066,6 +1107,8 @@ def claim_operand(argv):
 
 def claim_targets(records, harness, *, allowed_sessions=None):
     """Resolve explicit references; bind unscoped numbers to their own receipts."""
+    if harness == "codex":
+        records, _ = serial_ownership_records(records)
     def claiming(name, value):
         return bool(claim_commands(name, value))
     canonical = {}
@@ -1278,31 +1321,118 @@ def sources(records, harness, session, *, parsed=None):
     return list(found.values()), errors
 
 
-def created_prs(records, harness):
-    """Only isolated create commands and their own polls can supply PR URLs."""
+def creation_command(argv):
+    return ownership_command(argv) and script(argv) in {"gh", "gh-pr.py"}
+
+
+def created_pr_evidence(records, harness):
+    """Bind create URLs and definitive no-write reports to isolated invocations."""
     if harness == "codex":
         records, _ = serial_ownership_records(records)
     def creating(name, value):
-        return any(ownership_command(argv) and script(argv) in {"gh", "gh-pr.py"}
-                   for argv in shell_commands(name, value))
+        return any(creation_command(argv) for argv in shell_commands(name, value))
     isolated = {identifier: helper for record in records
                 for identifier, name, value in calls_and_results(record, harness)[0]
                 for helper in ("gh", "gh-pr.py") if creating(name, value) and isolated_command(name, value, helper)}
-    found = set()
+    found, reports, terminal = {}, {}, set()
     for _, source, value in bound_outputs(records, harness, creating, isolated_polls=True):
         if source not in isolated or value.get("_attempt"):
             continue
+        if value.get("_result") and not value.get("_pending"):
+            terminal.add(source)
         operation = value.get("operation")
         if operation:
-            if operation == "github.pr.create" and value.get("ok") is True and isinstance(value.get("url"), str):
-                if re.fullmatch(r"https://github\.com/[^/\s]+/[^/\s]+/pull/[1-9]\d*", value["url"]):
-                    found.add(value["url"])
+            if operation == "github.pr.create":
+                reports.setdefault(source, []).append(value)
+                if value.get("ok") is True and isinstance(value.get("url"), str):
+                    if re.fullmatch(r"https://github\.com/[^/\s]+/[^/\s]+/pull/[1-9]\d*", value["url"]):
+                        found.setdefault(source, set()).add(value["url"])
             continue
         if isolated[source] != "gh":
             continue
         text = value.get("_native_output", "") if value.get("_result") else json.dumps(value)
-        found.update(re.findall(r"https://github\.com/[^/\s\"\\]+/[^/\s\"\\]+/pull/[1-9]\d*", text))
-    return found
+        found.setdefault(source, set()).update(re.findall(r"https://github\.com/[^/\s\"\\]+/[^/\s\"\\]+/pull/[1-9]\d*", text))
+    no_writes = {source for source, values in reports.items() if source in terminal and len(values) == 1
+                 and values[0].get("ok") is False and values[0].get("write_outcome") == "not_started"
+                 and not values[0].get("completed_steps") and not values[0].get("url")}
+    return found, no_writes
+
+
+def created_prs(records, harness):
+    """Only isolated create commands and their own polls can supply PR URLs."""
+    found, _ = created_pr_evidence(records, harness)
+    return set().union(*found.values()) if found else set()
+
+
+def creation_arguments(argv):
+    """Read helper options with its parser, adapting the native gh aliases."""
+    helper = helper_argv(argv)
+    name, action = helper_action(argv)
+    words = helper[1:]
+    if name == "gh":
+        # gh-pr mirrors gh create's long options; these are gh's short forms.
+        aliases = {"-H": "--head", "-R": "--repo", "-t": "--title", "-b": "--body-file",
+                   "--body": "--body-file", "-B": "--base", "-d": "--draft", "-f": "--fill",
+                   "-l": "--label", "-r": "--reviewer", "-a": "--assignee", "-p": "--project",
+                   "-m": "--milestone", "-T": "--template"}
+        words, repository, cursor = [], [], 0
+        create_parser = next(item for item in helper_parser("gh-pr.py")._actions
+                             if isinstance(item, argparse._SubParsersAction)).choices["create"]
+        tail = action[2:]
+        while cursor < len(tail):
+            token = tail[cursor]
+            option, equal, inline = token.partition("=")
+            option = aliases.get(option, option)
+            if token[:2] in {"-H", "-R"} and len(token) > 2 and not equal:
+                option, equal, inline = aliases[token[:2]], "=", token[2:]
+            normalized = option + ("=" + inline if equal else "")
+            if option == "--repo":
+                if equal:
+                    repository = ["--repo", inline]
+                elif cursor + 1 < len(tail):
+                    repository = ["--repo", tail[cursor + 1]]
+                    cursor += 1
+                cursor += 1
+                continue
+            end = option_end(create_parser, [normalized, *tail[cursor + 1:]], 0)
+            if end is None:
+                return None
+            words.extend([normalized, *tail[cursor + 1:cursor + end]])
+            cursor += end
+        words = [*repository, "create", *words]
+    try:
+        args, _ = helper_parser("gh-pr.py").parse_known_args(words)
+    except Exception:
+        return None
+    return args
+
+
+def created_pr_targets(records, harness):
+    """Command-scoped heads survive compound output without borrowing PR URLs."""
+    if harness == "codex":
+        records, _ = serial_ownership_records(records)
+    urls, no_writes = created_pr_evidence(records, harness)
+    targets = []
+    for record in records:
+        for identifier, name, value in calls_and_results(record, harness)[0]:
+            if identifier in no_writes:
+                continue
+            commands = [argv for argv in shell_commands(name, value) if creation_command(argv)]
+            own = urls.get(identifier, set())
+            url = next(iter(own)) if len(commands) == 1 and len(own) == 1 else None
+            for argv in commands:
+                args = creation_arguments(argv)
+                if args is not None and getattr(args, "dry_run", False):
+                    continue
+                repository, head = (getattr(args, "repo", None), getattr(args, "head", None)) if args is not None else (None, None)
+                if not isinstance(repository, str) or not re.fullmatch(r"[\w.-]+/[\w.-]+", repository):
+                    repository = url.split("/")[3] + "/" + url.split("/")[4] if url else None
+                if not isinstance(head, str) or any(symbol in head for symbol in "$`\n"):
+                    head = None
+                elif ":" in head:
+                    head = head.rsplit(":", 1)[1]  # gh accepts OWNER:branch; GitHub's head.ref is branch.
+                targets.append({"invocation": identifier, "repository": repository, "head": head, "url": url})
+    return targets
 
 
 def acceptance(records, harness, session, *, histories=None, history_error=None):

@@ -34,6 +34,38 @@ def pull(number=2, branch=SOURCE["branch"], **changes):
 
 
 class ClaimCloseoutTests(unittest.TestCase):
+    def test_compound_pr_creation_requires_split_branch_handoff(self):
+        from test_claim_receipts import history, claim as native_claim, output, SESSION as native_session
+        for harness in ("codex", "claude"):
+            for creation in ("git push origin feat && gh pr create --repo test/a --head feat",
+                             "gh pr create --repo=test/a -H feat | cat",
+                             "git push origin feat && gh pr create --repo test/a"):
+                with self.subTest(harness=harness, creation=creation):
+                    self.comments = [comment(10, helper.claim.marker({**SOURCE, "session": native_session})),
+                                     comment(11, "Released claim 10\nSession: " + native_session,
+                                             at="2026-01-01T00:02:00Z")]
+                    self.pulls = [pull(3, branch="feat")]
+                    rows = history(harness, native_claim(REPO), {})
+                    if harness == "codex":
+                        rows[3]["payload"]["arguments"] = json.dumps({"cmd": creation})
+                    else:
+                        rows[3]["message"]["content"][0]["input"] = {"command": creation}
+                    rows[4] = output({"exit_code": 0, "output": self.pulls[0]["html_url"]}, harness, "tool-1")
+                    for row in rows:
+                        row["timestamp"] = SOURCE["claimed_at"]
+                    entry = {"session_id": native_session, "harness": harness, "_transcript_records": rows}
+                    with patch.object(helper.sessions, "discover", return_value=({(REPO, 1)}, [REPO])):
+                        report = helper.check(self.reader, [], entry, ACTOR)
+                    self.assertFalse(report["claims_clear"], report)
+                    if "--head feat" in creation or "-H feat" in creation:
+                        self.assertTrue(any("verified retained-PR" in error for error in report["blocked"]), report)
+                    self.comments[-1]["body"] += "\n" + self.pulls[0]["html_url"]
+                    with patch.object(helper.sessions, "discover", return_value=({(REPO, 1)}, [REPO])):
+                        self.assertTrue(helper.check(self.reader, [], entry, ACTOR)["claims_clear"])
+                        self.pulls = []
+                        self.comments[-1]["body"] = "Released claim 10\nSession: " + native_session
+                        self.assertTrue(helper.check(self.reader, [], entry, ACTOR)["claims_clear"])
+
     def test_completed_wrapped_claim_reaches_inventory_and_still_requires_exact_release(self):
         from test_claim_receipts import history, output, SESSION as native_session
         source = comment(10, helper.claim.marker({**SOURCE, "session": native_session}))
@@ -780,6 +812,30 @@ class ClaimCloseoutTests(unittest.TestCase):
                             {'parent': parent, 'ancestors': ()}):
                 with self.subTest(context=invalid), self.assertRaises(ValueError):
                     helper.transcript_snapshot(transcript, 'codex', child, invalid)
+
+    def test_live_fork_snapshot_as_own_root_uses_indexed_identity_and_local_claims(self):
+        from test_claim_history import NativeHistoryTests, records
+        from test_claim_receipts import claim
+        fixture = NativeHistoryTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        parent_claim, child_claim = claim(), claim('example/b', 2, 20)
+        parent_claim['claim']['session'] = 'root'
+        child_claim['claim']['session'] = 'child'
+        parent = records('codex', 'root', parent_claim)
+        raw = fixture.fork_rows(parent, child_claim)
+        fixture.write(fixture.root, parent)
+        fixture.write(fixture.child, raw)
+        snapshot = helper.transcript_snapshot(fixture.child, 'codex', 'child')
+        self.assertEqual({row['payload']['id'] for row in snapshot if row.get('type') == 'session_meta'}, {'child'})
+        self.assertFalse(helper.claim_receipts.sources(snapshot, 'codex', 'root')[0])
+        self.assertEqual(len(helper.claim_receipts.sources(snapshot, 'codex', 'child')[0]), 1)
+        with self.assertRaises(ValueError):
+            helper.transcript_snapshot(fixture.child, 'codex', 'root')
+        with sqlite3.connect(fixture.database) as database:
+            database.execute("DELETE FROM thread_spawn_edges WHERE child_thread_id='child'")
+        with self.assertRaises(ValueError):
+            helper.transcript_snapshot(fixture.child, 'codex', 'child')
 
     def test_live_transcript_snapshot_ignores_only_an_unfinished_tail(self):
         with tempfile.TemporaryDirectory() as tmp:

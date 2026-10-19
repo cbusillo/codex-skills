@@ -5,6 +5,8 @@
 """Native receipt fixtures exercise shutdown acceptance on both harnesses."""
 import json
 import asyncio
+import argparse
+import shlex
 from pathlib import Path
 import tempfile
 from unittest.mock import patch
@@ -14,6 +16,20 @@ import claim_receipts as receipts
 import session_record
 
 SESSION = "native-fixture"
+
+
+def shortest_parser_option(parser, destination, tail):
+    """Choose an abbreviation the maintained parser actually accepts today."""
+    option = next(action.option_strings[0] for action in parser._actions if action.dest == destination)
+    for length in range(3, len(option) + 1):
+        prefix = option[:length]
+        try:
+            _, unknown = parser.parse_known_args([prefix, *tail])
+        except Exception:
+            continue
+        if not unknown:
+            return prefix
+    raise AssertionError("maintained parser cannot accept its own option")
 
 
 def claim(repo="example/a", number=1, identifier=10):
@@ -240,20 +256,52 @@ class ReceiptTests(unittest.TestCase):
             with self.subTest(helper=helper):
                 self.assertTrue(receipts.repository_option(repository.option_strings[0], helper))
                 # A real added option changes abbreviation ambiguity immediately.
-                parser.add_argument("--rate-limit", action="store_true")
+                collision = repository.option_strings[0] + "-fixture-option"
+                while collision in parser._option_string_actions:
+                    collision += "-extra"
+                parser.add_argument(collision, action="store_true")
                 try:
-                    self.assertFalse(receipts.repository_option("--r", helper))
+                    self.assertFalse(receipts.repository_option(repository.option_strings[0][:3], helper))
                     self.assertTrue(receipts.repository_option(repository.option_strings[0], helper))
                 finally:
                     receipts.helper_parser.cache_clear()
         parser = receipts.helper_parser("gh-plan.py")
         claim_parser = next(action for action in parser._actions
                             if isinstance(action, argparse._SubParsersAction)).choices["claim"]
-        claim_parser.add_argument("--dry-run", action="store_true")
+        toggle = "--fixture-toggle"
+        while toggle in claim_parser._option_string_actions:
+            toggle += "-extra"
+        claim_parser.add_argument(toggle, action="store_true")
         try:
-            self.assertEqual(receipts.claim_operand(["gh-plan.py", "claim", "--dry-run", "7"]), "7")
+            self.assertEqual(receipts.claim_operand(["gh-plan.py", "claim", toggle, "7"]), "7")
         finally:
             receipts.helper_parser.cache_clear()
+
+    def test_creation_targets_bind_literal_heads_and_definitive_no_write_results(self):
+        url = "https://github.com/example/a/pull/2"
+        for harness in ("codex", "claude"):
+            for command, head in (("git push origin feat && gh pr create --repo example/a --head feat --body 'Refs #1'", "feat"),
+                                  ("gh pr new -Rexample/a -Howner:feat -t title -b 'Refs #1' | cat", "feat"),
+                                  ("uv run gh-pr.py --repo example/a create --head feat", "feat"),
+                                  ('gh pr create --repo example/a --head "$HEAD" | cat', None)):
+                rows = history(harness, {})
+                if harness == "codex":
+                    rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                else:
+                    rows[1]["message"]["content"][0]["input"] = {"command": command}
+                rows[2] = output({"exit_code": 0, "output": ""}, harness, "tool-0")
+                with self.subTest(harness=harness, command=command):
+                    self.assertEqual(receipts.created_pr_targets(rows, harness), [{
+                        "invocation": "tool-0", "repository": "example/a", "head": head, "url": None}])
+            for outcome in ("not_started", "unknown"):
+                report = {"operation": "github.pr.create", "ok": False, "write_outcome": outcome, "completed_steps": []}
+                rows = history(harness, report)
+                rows[2] = output({"exit_code": 1, "output": json.dumps(report)}, harness, "tool-0")
+                with self.subTest(harness=harness, outcome=outcome):
+                    self.assertEqual(bool(receipts.created_pr_targets(rows, harness)), outcome != "not_started")
+            rows = history(harness, {"operation": "github.pr.create", "ok": True, "url": url})
+            self.assertEqual(receipts.created_pr_targets(rows, harness)[0]["url"], url)
+            self.assertEqual(receipts.created_pr_targets(rows, harness)[0]["repository"], "example/a")
 
     def test_unexpanded_helper_executable_requires_ownership_disposition(self):
         for harness in ("codex", "claude"):
@@ -292,6 +340,10 @@ class ReceiptTests(unittest.TestCase):
                             "(uv run " + helper + ")",
                             "uv --directory /repo run " + helper,
                             "stdbuf -oL uv run " + helper,
+                            "env -i /usr/bin/uv run " + helper,
+                            "env -S 'uv run " + helper + "'",
+                            "exec -a worker uv run " + helper,
+                            "stdbuf -o L uv run " + helper,
                             "bash -lc 'cd /repo && uv run " + helper + "'",
                             "bash -c 'uv run " + helper + " > claim.json'",
                             "for n in 1 2; do uv run " + helper + "; done",
@@ -358,6 +410,10 @@ class ReceiptTests(unittest.TestCase):
         argv = ["uv", "run", "/catalog/gh-plan.py", "--repo", "example/a", "claim", "1"]
         helper = " ".join(argv)
         blocking = ("bash -c '" + helper + "'",
+                    "bash -c '" + helper + "; echo done'",
+                    "bash -lc 'cd /repo && " + helper + " && echo ok'",
+                    "sh -c '" + helper + " | tee claim.json'",
+                    "zsh -c '" + helper + "; true'",
                     "bash -lc '" + helper + ' --next-action "words; literal"' + "'",
                     "python3 -c 'import subprocess; subprocess.run(" + repr(argv).replace("'", '"') + ")'",
                     "python3 -c 'import subprocess; subprocess.run(" + repr(argv).replace("'", '"') + ", check=True, capture_output=True)'" )
@@ -387,9 +443,13 @@ class ReceiptTests(unittest.TestCase):
 
     def test_argparse_repository_prefixes_and_variable_gh_keep_ownership_visible(self):
         for harness in ("codex", "claude"):
-            for prefix in ("--r", "--re", "--rep", "--repo"):
-                for option in (prefix + " example/a", prefix + "=example/a"):
-                    for helper, action in (("gh-plan.py", "claim 1"), ("gh-pr.py", "create")):
+            for helper, action, read in (("gh-plan.py", "claim 1", ["show", "1"]),
+                                         ("gh-pr.py", "create", ["view", "1"])):
+                parser = receipts.helper_parser(helper)
+                full = next(item.option_strings[0] for item in parser._actions if item.dest == "repo")
+                prefixes = {full, shortest_parser_option(parser, "repo", ["example/a", *read])}
+                for prefix in prefixes:
+                    for option in (prefix + " example/a", prefix + "=example/a"):
                         with self.subTest(harness=harness, option=option, helper=helper):
                             rows = history(harness, claim(), {**proof(("example/a", 1, 10)), "harness": harness})
                             command = "uv run " + helper + " " + option + " " + action
@@ -488,7 +548,10 @@ class ReceiptTests(unittest.TestCase):
                    '        rows[1]["message"]["content"][0]["input"] = {"command":\n'
                    '            \'echo "$(cat <<\\\'EOF\\\'; uv run gh-plan.py claim 1 &\\nbody\\nEOF\\n)"\'}\n'
                    '        self.assertTrue(receipts.ownership_state(rows, "claude")["pending"])\n'
-                   '        subprocess.run(["rg", "gh-plan.py", "claim"])')
+                   '        subprocess.run(["rg", "gh-plan.py", "claim"])\n'
+                   '        command = "uv run gh-plan.py --repo example/a claim 1"\n'
+                   '        argv = ["python", "--version"]\n'
+                   '        result = subprocess.run(argv, capture_output=True)')
         patch = ('*** Begin Patch\n*** Update File: /repo/test_sample.py\n@@\n'
                  '     def test_fixture(self):\n@@\n'
                  '                 self.assertTrue(True)\n' +
@@ -1392,6 +1455,21 @@ class ReceiptTests(unittest.TestCase):
                     self.assertEqual(receipts.target_repositories(rows, harness),
                                      {"example/a"} if "claim 1" in command else set())
 
+    def test_serial_numeric_claim_scope_uses_its_own_canonical_native_result(self):
+        rows = history("codex", claim("client/repo", 7))
+        rows[1]["payload"].update(name="functions.exec", arguments=
+            'text(await tools.exec_command({cmd:"git status --short"}));'
+            'text(await tools.exec_command({cmd:"cat README.md"}));'
+            'text(await tools.exec_command({cmd:"uv run gh-plan.py claim 7"}));')
+        wrappers = [{"exit_code": 0, "output": "clean"}, {"exit_code": 0, "output": "read"},
+                    {"exit_code": 0, "output": json.dumps(claim("client/repo", 7))}]
+        rows[2]["payload"]["output"] = [{"type": "input_text", "text": json.dumps(value)} for value in wrappers]
+        self.assertEqual(receipts.target_records(rows, "codex"), {("client/repo", 7)})
+        self.assertFalse(receipts.unscoped_claim_invocations(rows, "codex"))
+        # Dropped native prints cannot donate another result's canonical scope.
+        rows[2]["payload"]["output"].pop(0)
+        self.assertEqual(receipts.target_records(rows, "codex"), {(None, 7)})
+
     def test_numeric_claim_scope_cannot_borrow_mixed_poll_output(self):
         rows = history("codex", claim("foreign/repo", 7))
         rows[1]["payload"]["arguments"] = json.dumps({"cmd": "uv run gh-plan.py claim 7"})
@@ -1423,22 +1501,32 @@ class ReceiptTests(unittest.TestCase):
 
 
     def test_abbreviated_claim_options_preserve_the_literal_issue_operand(self):
+        parser = receipts.helper_parser("gh-plan.py")
+        claim_parser = next(item for item in parser._actions if isinstance(item, argparse._SubParsersAction)).choices["claim"]
+        required = ["--worker", "w", "--session", SESSION, "--branch", "b", "--next-action", "n"]
+        options = []
+        for destination, value in (("next_action", "n"), ("resume_from", "10"), ("planning_checkout", "/repo")):
+            prefix = shortest_parser_option(claim_parser, destination, [value, "7", *required])
+            options.extend(([prefix, value], [prefix + "=" + value]))
+        repository = shortest_parser_option(parser, "repo", ["example/a", "show", "1"])
         for harness in ("codex", "claude"):
-            for options in ("--next n", "--next=n", "--res 10", "--planning /repo"):
-                with self.subTest(harness=harness, options=options):
+            for option in options:
+                argv = [repository, "example/a", "claim", *option, "7", *required]
+                namespace, unknown = parser.parse_known_args(argv)
+                self.assertFalse(unknown)
+                with self.subTest(harness=harness, argv=argv):
                     rows = history(harness, {})
-                    command = "uv run gh-plan.py --repo example/a claim " + options + " 7 > claim.json"
+                    command = shlex.join(["uv", "run", "gh-plan.py", *argv]) + " > claim.json"
                     if harness == "codex":
                         rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
                     else:
                         rows[1]["message"]["content"][0]["input"] = {"command": command}
-                    self.assertEqual(receipts.target_records(rows, harness), {("example/a", 7)})
-        self.assertIsNone(receipts.claim_operand(["gh-plan.py", "claim", "--admission-", "value", "7"]))
-        for harness in ("codex", "claude"):
-            for repository in ("--r example/a", "--re example/a", "--rep=example/a", "--repo=example/a"):
-                inner = "uv run gh-plan.py " + repository + " claim --next n 7"
-                for command in (inner, "bash -c '" + inner + "'",
-                                "python3 -c 'import subprocess; subprocess.run(" + json.dumps(inner.split()) + ")'"):
+                    self.assertEqual(receipts.target_records(rows, harness), {(namespace.repo, int(namespace.issue))})
+            for repo_option in ([repository, "example/a"], [repository + "=example/a"]):
+                argv = ["uv", "run", "gh-plan.py", *repo_option, "claim", *options[0], "7", *required]
+                inner = shlex.join(argv)
+                for command in (inner, "bash -c " + shlex.quote(inner),
+                                "python3 -c " + shlex.quote("import subprocess; subprocess.run(" + repr(argv) + ")")):
                     with self.subTest(harness=harness, command=command):
                         rows = history(harness, {})
                         if harness == "codex":

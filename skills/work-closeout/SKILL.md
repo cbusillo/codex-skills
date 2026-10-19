@@ -303,7 +303,7 @@ a write to manufacture evidence for the earlier invocation. For future claims,
 put `--repo OWNER/REPO` in each command and keep receipts visible with `tee`.
 A numeric or variable issue operand can use its own unique canonical receipt
 from an isolated claim invocation and its native session family to establish
-missing scope. Polls must remain isolated too. Batched commands
+missing scope. Polls must remain isolated too. Batched shell commands
 need explicit repository operands because their shared native output cannot
 bind receipts to individual shell commands. Unknown operands without that
 evidence keep coverage incomplete, even when an older claim was released.
@@ -311,6 +311,11 @@ Another invocation's receipt cannot fill a missing scope gap.
 Canonical receipts and raw created-PR URLs require the helper's own isolated
 output. A completed compound command with known claim scope uses complete
 session inventory to reconcile missing receipts.
+For compound PR creation, provide literal `--repo` and `--head` values so the
+checker can inventory the created branch without borrowing a URL from shared
+stdout. If neither that scope nor an isolated URL is available, independently
+verify handoffs for all open PRs linked to the session's claimed issues. Missing
+handoffs keep coverage incomplete; preserve ownership and record conditional/no.
 A saved report read with `cat`, an earlier proof before another claim or PR was
 created, and final-answer prose do not satisfy shutdown acceptance. Run the
 checker as its own native shell invocation, optionally piped to `tee`, with
@@ -332,7 +337,7 @@ native result before the check launches; a process handle is still pending.
 Every observed process handle in an ownership batch must finish; one terminal
 poll cannot clear other processes from that batch.
 Historical Codex cells containing only literal, serial `text(await tools...)`
-calls can bind each ownership poll to its own complete native result wrapper.
+calls can bind each ownership command or poll to its own complete native result wrapper.
 Unrelated read output and nested saved JSON cannot complete that writer. A
 cell with hidden, computed, missing or ambiguous results retains the refusal;
 checker acceptance still requires the isolated check and poll forms above.

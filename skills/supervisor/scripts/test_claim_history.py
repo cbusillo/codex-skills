@@ -52,7 +52,7 @@ class NativeHistoryTests(unittest.TestCase):
         with sqlite3.connect(self.database) as db:
             db.executescript("CREATE TABLE threads(id TEXT PRIMARY KEY, rollout_path TEXT, source TEXT); "
                              "CREATE TABLE thread_spawn_edges(parent_thread_id TEXT, child_thread_id TEXT PRIMARY KEY, status TEXT);")
-            db.execute("INSERT INTO threads VALUES(?,?,?)", ("root", str(self.root), json.dumps("cli")))
+            db.execute("INSERT INTO threads VALUES(?,?,?)", ("root", str(self.root), "cli"))
             self.edge(db, "root", "child", self.child)
         self.addCleanup(patch.stopall)
         patch.object(claim_history, "codex_homes", return_value=[self.home]).start()
@@ -255,6 +255,70 @@ class NativeHistoryTests(unittest.TestCase):
             self.edge(db, 'child', 'grand', grand)
         self.assertTrue(self.status()['safe_verdict'])
         self.assertEqual({node['session_id'] for node in self.nodes()}, {'root', 'child', 'grand'})
+
+    def test_fork_can_check_its_own_local_work_as_the_root(self):
+        parent_claim = claim()
+        parent_claim['claim']['session'] = 'root'
+        parent = records('codex', 'root', parent_claim, delegate=True)
+        self.write(self.root, parent)
+        self.write(self.child, self.fork_rows(parent))
+        self.assertTrue(self.status(self.child, session='child')['safe_verdict'])
+        value = claim('example/b', 2, 20)
+        value['claim']['session'] = 'child'
+        self.write(self.child, self.fork_rows(parent, value))
+        self.assertFalse(self.status(self.child, session='child')['safe_verdict'])
+        clear = {**proof(('example/b', 2, 20)), 'session_id': 'child'}
+        self.write(self.child, self.fork_rows(parent, value, clear))
+        self.assertTrue(self.status(self.child, session='child')['safe_verdict'])
+
+    def test_fork_root_with_its_own_forked_child_preserves_native_ancestor_chain(self):
+        parent = records('codex', 'root', delegate=True)
+        child = self.fork_rows(parent)
+        grand = self.home / 'sessions' / 'grand.jsonl'
+        self.write(self.root, parent)
+        self.write(self.child, child)
+        self.write(grand, self.fork_rows(child, parent='child', child='grand'))
+        with sqlite3.connect(self.database) as db:
+            self.edge(db, 'child', 'grand', grand)
+        self.assertTrue(self.status(self.child, session='child')['safe_verdict'])
+
+    def test_fork_root_cannot_borrow_another_identity_path_or_parent_edge(self):
+        parent = records('codex', 'root')
+        rows = self.fork_rows(parent)
+        self.write(self.root, parent)
+        self.write(self.child, rows)
+        for session in ('root', 'unrelated-session'):
+            with self.subTest(identity=session), self.assertRaises(ValueError):
+                self.status(self.child, session=session)
+        alternate = self.home / 'sessions' / 'copied-child.jsonl'
+        self.write(alternate, rows)
+        with self.assertRaises(ValueError):
+            self.status(alternate, session='child')
+        with sqlite3.connect(self.database) as db:
+            db.execute("UPDATE thread_spawn_edges SET parent_thread_id='unrelated-session' WHERE child_thread_id='child'")
+        with self.assertRaises(ValueError):
+            self.status(self.child, session='child')
+        with sqlite3.connect(self.database) as db:
+            db.execute("UPDATE thread_spawn_edges SET parent_thread_id='root' WHERE child_thread_id='child'")
+            db.execute("DELETE FROM threads WHERE id='root'")
+        with self.assertRaises(ValueError):
+            self.status(self.child, session='child')
+
+    def test_bare_native_root_source_does_not_mask_malformed_or_child_sources(self):
+        parent = records('codex', 'root')
+        self.write(self.root, parent)
+        self.write(self.child, self.fork_rows(parent))
+        self.assertTrue(self.status(self.child, session='child')['safe_verdict'])
+        for malformed in ('{"subagent":', '"unterminated', '[]', 'null'):
+            with self.subTest(root_source=malformed):
+                with sqlite3.connect(self.database) as db:
+                    db.execute("UPDATE threads SET source=? WHERE id='root'", (malformed,))
+                with self.assertRaises(ValueError):
+                    self.status(self.child, session='child')
+        with sqlite3.connect(self.database) as db:
+            db.execute("UPDATE threads SET source='cli' WHERE id IN ('root','child')")
+        with self.assertRaises(ValueError):
+            self.status(self.child, session='child')
 
     def test_malformed_fork_boundary_or_identity_cannot_hide_local_claims(self):
         parent = records('codex', 'root', delegate=True)
