@@ -13,12 +13,14 @@ import copy
 import argparse
 import io
 import textwrap
+import string
 import tokenize
 import shutil
 import subprocess
 import importlib.util
 import sys
 import builtins
+import pprint
 from functools import lru_cache
 from itertools import product
 from contextlib import redirect_stdout
@@ -218,27 +220,63 @@ def shell_texts(name, value):
 
 
 
-def composed_shell_fields(native):
-    """Executable call starts never come from quoted fixtures or comments."""
-    atoms = []
-    for atom in re.finditer(rf"//[^\r\n\u2028\u2029]*|/\*[\s\S]*?\*/|{JS_STRING}", native):
+def javascript_projection(native):
+    """Mask only established inert atoms; uncertain code stays discoverable."""
+    atoms, code = [], list(native)
+    token = re.compile(rf"//[^\r\n\u2028\u2029]*|/\*[\s\S]*?\*/|{JS_STRING}|/")
+    regex = re.compile(r"/(?:\\[^\r\n\u2028\u2029]|\[(?:\\[^\r\n\u2028\u2029]|[^\]\\\r\n\u2028\u2029])*\]|[^/\\[\r\n\u2028\u2029])+/[A-Za-z]*")
+    cursor = 0
+    while atom := token.search(native, cursor):
         raw = atom[0]
+        if raw == "/":
+            prefix = native[:atom.start()].rstrip()
+            # Recognize regex literals only in established expression-prefix
+            # contexts, never by treating their quotes or slash pairs as atoms.
+            keyword = re.search(r"(?:^|[ \t\r\n\u2028\u2029;{}(=,:!?&|~+\-*/%])(?P<keyword>return|throw|case|delete|typeof|void|yield|await|in|else|do)$", prefix)
+            keyword_prefix = keyword is not None and not "".join(code[:keyword.start("keyword")]).rstrip().endswith(".")
+            if prefix and prefix[-1] not in "=(:,[!&|?{;" and not keyword_prefix:
+                break
+            atom = regex.match(native, atom.start())
+            if atom is None:
+                break
+            raw = atom[0]
         if raw.startswith(("`", "String.raw")):
             try:
                 javascript_string(raw)
             except ValueError:
-                # Interpolations may execute calls. Leave unsupported templates
-                # visible rather than treating their expressions as literal data.
-                continue
-        atoms.append((atom.start(), atom.end()))
+                # Resuming a flat token scan inside an interpolation could pair
+                # an inner backtick with its outer close and hide executing code.
+                break
+        atoms.append(atom)
+        code[atom.start():atom.end()] = ["\n" if c in "\r\n\u2028\u2029" else " " for c in atom[0]]
+        cursor = atom.end()
+    code = "".join(code)
+    dynamic = bool(re.search(r"\b(?:eval|Function|AsyncFunction|constructor)\b|\bimport\s*\(", code))
+    return atoms, code, dynamic
+
+
+def javascript_call_starts(native, pattern):
+    atoms, _, dynamic = javascript_projection(native)
     cursor = 0
-    for start in re.finditer(r"\btools\.exec_command\s*\(", native):
-        while cursor < len(atoms) and atoms[cursor][1] <= start.start():
+    for start in re.finditer(pattern, native):
+        while cursor < len(atoms) and atoms[cursor].end() <= start.start():
             cursor += 1
-        if cursor < len(atoms) and atoms[cursor][0] <= start.start() < atoms[cursor][1]:
+        if not dynamic and cursor < len(atoms) and atoms[cursor].start() <= start.start() < atoms[cursor].end():
             continue
+        yield start
+
+
+def composed_shell_fields(native):
+    """Executable call starts never come from established inert atoms."""
+    for start in javascript_call_starts(native, r"\btools\.exec_command\s*\("):
         if match := SHELL_FIELD.match(native, start.start()):
             yield match
+
+
+def composed_patch_fields(native):
+    for start in javascript_call_starts(native, r"\btools\.apply_patch\s*\("):
+        if match := re.match(rf"\s*({JS_STRING})", native[start.end():]):
+            yield start.start(), match[1]
 
 
 def composed_string(raw, native):
@@ -1911,16 +1949,30 @@ def unparsed_command_text(value):
     This is conservative command discovery, not evaluation or completion proof.
     Parsed literal tool arguments have already been removed by the caller.
     """
-    atoms = list(re.finditer(r'''//[^\n]*|/\*[\s\S]*?\*/|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`''', value))
-    code = list(value)
-    literals = []
-    for atom in atoms:
-        if not atom[0].startswith(("//", "/*")):
-            literals.append(atom)
-        code[atom.start():atom.end()] = ["\n" if c == "\n" else " " for c in atom[0]]
-    code = "".join(code)
+    atoms, code, dynamic = javascript_projection(value)
+    literals = [atom for atom in atoms if not atom[0].lstrip(" \t").startswith(("//", "/*"))]
+    if dynamic:
+        # A literal passed to eval/a constructor/import is executable input, not
+        # fixture prose. Preserve decoded source as well as unresolved code.
+        decoded, pending, seen = [], [value], {value}
+        while pending:
+            # Discovery may over-approximate nested strings, but may not hide
+            # generated code behind another layer of literal escaping.
+            for literal in re.finditer(JS_STRING, pending.pop()):
+                try:
+                    text = javascript_string(literal[0])
+                except ValueError:
+                    continue
+                if text not in seen:
+                    seen.add(text)
+                    decoded.append(text)
+                    pending.append(text)
+        return value + " " + " ".join(decoded)
     def region(start, delimiter):
         start += len(re.match(r"\s*", value[start:])[0])
+        literal = re.match(JS_STRING, value[start:])
+        if literal is not None and literal[0].startswith("`"):
+            return start, start + literal.end()
         end = re.search(delimiter, code[start:])
         return start, start + end.start() if end else len(code)
     declarations = {m[1]: region(m.end(), r"[;\n]")
@@ -1971,6 +2023,7 @@ def unparsed_command_text(value):
         words += re.findall(r"\$\{\s*(\w+)\s*\}", expression)
         pending.extend(declarations[word] for word in words if word in declarations)
         unresolved |= any(word not in declarations for word in words)
+        unresolved |= any(m[0].startswith("String.raw") for m in literals if start <= m.start() < end)
     if unresolved:
         # Parameters, destructuring and for-of bindings do not have a simple
         # declaration to follow. They must not hide executable cell literals.
@@ -2027,7 +2080,8 @@ def opaque_ownership(name, value):
                 return match[0]
             return ""
         unparsed = list(value)
-        for match in composed_shell_fields(value):
+        dynamic = javascript_projection(value)[2]
+        for match in (() if dynamic else composed_shell_fields(value)):
             if not parsed_field(match):
                 unparsed[match.start():match.end()] = " " * (match.end() - match.start())
         unparsed = unparsed_command_text("".join(unparsed))
@@ -3332,19 +3386,29 @@ def python_ownership(content, *, partial=False):
             receivers = value(node.func.value, scope)
         if not dedent and any(not isinstance(item, str) and item is not unknown for item in receivers):
             return None
-        if method == "format" and any(type(item) not in (str, int, float, bool, type(None)) for assigned in [*arguments, *keywords.values()] for item in assigned):
-            rendered = []
-            for receiver in receivers:
+        if method == "format" and (any(type(item) not in (str, int, float, bool, type(None)) or unresolved_text(item)
+                for assigned in [*arguments, *keywords.values()] for item in assigned)
+                or any(item is unknown or unresolved_text(item) for item in receivers)):
+            alternatives = [(receiver, row) for receiver in receivers
+                            for row in combinations([*arguments, *keywords.values()])]
+            def render(alternative):
+                receiver, row = alternative
+                if receiver is unknown:
+                    # An unknown template may use any argument's conversion.
+                    for item in row:
+                        text_conversion(item, "format", scope, computed if member(item, "__format__", scope, special=True) else "")
+                    return (overflow if any(conversion_witness(item) for item in row) else unknown,)
                 if not isinstance(receiver, str):
-                    continue
-                for row in combinations([*arguments, *keywords.values()]):
-                    positional = [conversion_operand(item, scope) for item in row[:len(arguments)]]
-                    named = {key: conversion_operand(item, scope) for key, item in zip(keywords, row[len(arguments):])}
-                    try:
-                        rendered.append(receiver.format(*positional, **named))
-                    except (ValueError, TypeError, KeyError, IndexError, AttributeError, OverflowError):
-                        rendered.append(overflow if any(conversion_witness(item) for item in row) else computed)
-            return choices(rendered)
+                    return (unknown,)
+                positional = [conversion_operand(item, scope) for item in row[:len(arguments)]]
+                named = {key: conversion_operand(item, scope) for key, item in zip(keywords, row[len(arguments):])}
+                try:
+                    return (receiver.format(*positional, **named),)
+                except InvalidTextConversion:
+                    return ()
+                except (ValueError, TypeError, KeyError, IndexError, AttributeError, OverflowError):
+                    return format_failure(receiver, row)
+            return evaluation_alternatives(alternatives, scope, render)
         operands = [receivers, *arguments, *keywords.values()]
         known = [tuple(item for item in assigned if type(item) in (str, int, float, bool, type(None))
                        and not unresolved_text(item))
@@ -3385,10 +3449,45 @@ def python_ownership(content, *, partial=False):
             results.append(rendered)
         return choices(results) or (unknown,)
 
+    def evaluation_alternatives(alternatives, scope, render):
+        """Alternative evaluations execute from the same state, not in sequence."""
+        if len(alternatives) <= 1:
+            return choices(text for alternative in alternatives for text in render(alternative))
+        rendered, states = [], []
+        for alternative in alternatives:
+            states.append(branch((), scope, executor=lambda local: rendered.extend(render(alternative))))
+        scope.state = merge(*states)
+        return choices(rendered)
+
+    def format_failure(template, operands, percent=False):
+        """Retain known command scaffolding when an operand is unresolved."""
+        try:
+            for item in operands:
+                data_literal(item)
+        except InexactDataLoop:
+            pass
+        else:
+            return ()
+        marker = overflow if any(conversion_witness(item) for item in operands) else computed
+        if percent:
+            rendered = re.sub(r"%(?:\([^)]+\))?[#0 +\-]*(?:\*|[0-9]+)?(?:\.(?:\*|[0-9]+))?[hlL]?[diouxXeEfFgGcrsa%]",
+                              lambda match: "%" if match[0] == "%%" else marker, template)
+        else:
+            try:
+                rendered = "".join(literal + (marker if field is not None else "")
+                                   for literal, field, spec, conversion in string.Formatter().parse(template))
+            except ValueError:
+                rendered = template + marker
+        return (rendered if not conversion_witness(template) or executable_operand(rendered) else overflow,)
+
     def text_conversion(item, operation, scope, spec="", seen=()):
         """Render generic values without treating uncertainty as literal data."""
         def uncertain():
             return (overflow if conversion_witness(item) else computed,)
+        if item is unknown:
+            return uncertain()
+        if operation == "format" and unresolved_text(item):
+            return (item,)
         if operation == "quote" and not isinstance(item, str):
             return uncertain()
         if isinstance(item, Instance):
@@ -3403,6 +3502,8 @@ def python_ownership(content, *, partial=False):
             outputs = choices(output for callback in callbacks for output in invoke(callback, scope, [(spec,)] if operation == "format" else (), evaluated=True))
             return choices((output.encode("ascii", "backslashreplace").decode("ascii") if operation == "ascii" else output)
                            if isinstance(output, str) else computed for output in outputs if isinstance(output, str) or output is unknown)
+        if operation == "format" and (spec is unknown or unresolved_text(spec)):
+            return uncertain()
         if operation == "format" and not isinstance(item, (str, bytes, int, float, complex, bool, type(None))):
             return () if spec else text_conversion(item, "str", scope, seen=seen)
         if isinstance(item, (Sequence, Keywords, list, tuple)):
@@ -3459,6 +3560,9 @@ def python_ownership(content, *, partial=False):
             return executable_value(item) or any(conversion_witness(child, descendants) for child in (sequence_members(item) if isinstance(item, Sequence) else item))
         return False
 
+    class InvalidTextConversion(ValueError):
+        pass
+
     def conversion_operand(item, scope):
         if type(item) in (str, bytes, int, float, complex, bool, type(None)):
             return item
@@ -3466,8 +3570,21 @@ def python_ownership(content, *, partial=False):
             def render(self, operation, spec=""):
                 texts = text_conversion(item, operation, scope, spec)
                 if not texts:
-                    raise ValueError("invalid modeled conversion")
+                    raise InvalidTextConversion("invalid modeled conversion")
                 return texts[0] if len(texts) == 1 else overflow if any(executable_operand(text) for text in texts) else computed
+            def numeric(self, operation, expected):
+                assigned = data_call_protocol(operation, [(item,)], {}, scope)
+                if not assigned:
+                    raise InvalidTextConversion("unsupported numeric conversion")
+                if len(assigned) != 1 or type(assigned[0]) is not expected:
+                    raise ValueError("uncertain numeric conversion")
+                return assigned[0]
+            def __int__(self):
+                return self.numeric("int", int)
+            def __index__(self):
+                return self.numeric("index", int)
+            def __float__(self):
+                return self.numeric("float", float)
             def __str__(self):
                 return self.render("str")
             def __repr__(self):
@@ -3479,12 +3596,253 @@ def python_ownership(content, *, partial=False):
     text_conversions = {name: operation for operation in ("str", "repr", "ascii") for name in (operation, "builtins." + operation)}
     text_conversions["shlex.quote"] = "quote"
 
+    protocol_data_calls = {name for operation in ("len", "bool", "int", "float", "complex", "hash", "dir", "sorted", "min", "max")
+                           for name in (operation, "builtins." + operation)} | {"pprint.pprint", "pprint.pformat", "json.dumps"}
+
+    def data_call_protocol(name, arguments, keywords, scope):
+        """Data consumers can execute class protocols and explicit callbacks."""
+        operation = name.removeprefix("builtins.").removeprefix("operator.")
+        def alternatives(actions):
+            return evaluation_alternatives(tuple(actions), scope, lambda action: action(scope))
+
+        def special(item, names, local, args=()):
+            if not isinstance(item, Instance):
+                return ()
+            for method in names:
+                callbacks = member(item, method, local, special=True)
+                if callbacks:
+                    return alternatives(lambda target, callback=callback: invoke(callback, target, args, evaluated=True) for callback in callbacks)
+            return ()
+
+        def truth(item, local):
+            if isinstance(item, Instance):
+                outputs = special(item, ("__bool__", "__len__"), local)
+                return any(bool(output) for output in outputs if type(output) in (bool, int)) if outputs else True
+            try:
+                return bool(data_literal(item))
+            except InexactDataLoop:
+                return False
+
+        if operation == "complex" and (len(arguments) > 1 or keywords):
+            if len(arguments) > 2 or set(keywords) - {"real", "imag"} or (arguments and "real" in keywords) or (len(arguments) > 1 and "imag" in keywords):
+                return (unknown,)
+            real = arguments[0] if arguments else keywords.get("real", (0,))
+            imag = arguments[1] if len(arguments) > 1 else keywords.get("imag", (0,))
+            returned = data_call_protocol("complex", [real], {}, scope)
+            if not any(type(item) in (int, float, complex, bool) or item is unknown for item in returned):
+                return ()
+            data_call_protocol("float", [imag], {}, scope)
+            return (unknown,)
+        if operation in {"len", "bool", "int", "float", "complex", "hash", "dir", "index"}:
+            if len(arguments) != 1 or keywords:
+                return (unknown,)
+            protocols = {"len": ("__len__",), "bool": ("__bool__", "__len__"), "int": ("__int__", "__index__"),
+                         "float": ("__float__", "__index__"), "complex": ("__complex__", "__float__", "__index__"),
+                         "hash": ("__hash__",), "dir": ("__dir__",), "index": ("__index__",)}
+            def convert(item, local):
+                if item is unknown or unresolved_text(item):
+                    return (unknown,)
+                if isinstance(item, Instance):
+                    return special(item, protocols[operation], local)
+                try:
+                    literal = data_literal(item)
+                    return (int.__index__(literal) if operation == "index" else getattr(builtins, operation)(literal),)
+                except (InexactDataLoop, TypeError, ValueError, OverflowError):
+                    return (unknown,)
+            return alternatives(lambda local, item=item: convert(item, local) for item in arguments[0])
+        if operation in {"pprint.pprint", "pprint.pformat"}:
+            if not arguments:
+                return (unknown,)
+            positions = ("stream", "indent", "width", "depth") if operation == "pprint.pprint" else ("indent", "width", "depth")
+            if len(arguments) > len(positions) + 1 or any(key in keywords for key in positions[:len(arguments) - 1]):
+                return (unknown,)
+            keywords = {**dict(zip(positions, arguments[1:])), **keywords}
+            allowed = {"indent", "width", "depth", "compact", "sort_dicts", "underscore_numbers"}
+            if set(keywords) - (allowed | ({"stream"} if operation == "pprint.pprint" else set())):
+                return (unknown,)
+            class InexactPrettyTree(Exception):
+                pass
+            def render(item, local):
+                class Representation:
+                    def __init__(self, operand):
+                        self.operand = operand
+                    def __repr__(self):
+                        texts = special(self.operand, ("__repr__",), local)
+                        return next((text for text in texts if isinstance(text, str)), computed)
+                def bounded_rows(parts):
+                    rows = [()]
+                    for part in parts:
+                        if len(rows) * len(part) > 8:
+                            raise InexactPrettyTree()
+                        rows = [(*row, child) for row in rows for child in part]
+                    return rows
+                def trees(operand, seen=()):
+                    if id(operand) in seen:
+                        return (computed,)
+                    descendants = (*seen, id(operand))
+                    if isinstance(operand, Instance):
+                        return (Representation(operand),)
+                    if isinstance(operand, Keywords):
+                        keys = list(operand.items)
+                        entries = [tuple(child for assigned in operand.items[key] for child in trees(assigned, descendants)) for key in keys]
+                        return tuple(dict(zip(keys, row)) for row in bounded_rows(entries))
+                    if isinstance(operand, (Sequence, list, tuple)):
+                        rows = sequence_rows(operand) if isinstance(operand, Sequence) else (operand,)
+                        rendered = []
+                        for entries in rows:
+                            for row in bounded_rows([trees(child, descendants) for child in entries]):
+                                if len(rendered) == 8:
+                                    raise InexactPrettyTree()
+                                rendered.append(tuple(row) if isinstance(operand, tuple) else list(row))
+                        return tuple(rendered)
+                    return (computed if operand is unknown else operand,)
+                options = {}
+                for key, assigned in keywords.items():
+                    if key == "stream":
+                        continue
+                    if len(assigned) != 1:
+                        continue
+                    try:
+                        options[key] = data_literal(assigned[0])
+                    except InexactDataLoop:
+                        pass
+                def display(tree, target):
+                    def to_stream(stream):
+                        if stream is None:
+                            return io.StringIO()
+                        class Destination:
+                            @property
+                            def write(self):
+                                callbacks = member(stream, "write", target)
+                                if not callbacks:
+                                    raise AttributeError("stream has no write")
+                                return lambda text: alternatives(lambda local, callback=callback: invoke(callback, local, [(text,)], evaluated=True)
+                                                                 for callback in callbacks)
+                        return Destination()
+                    if operation == "pprint.pprint":
+                        streams = choices(destination for stream in keywords.get("stream", (None,))
+                                          for destination in (patched_attributes.get("sys.stdout", (None,)) if stream is None else (stream,)))
+                        def pretty(stream, local):
+                            try:
+                                pprint.pprint(tree, stream=to_stream(stream), **options)
+                            except (AttributeError, TypeError, ValueError, OverflowError):
+                                pass
+                            return (None,)
+                        return alternatives(lambda local, stream=stream: pretty(stream, local) for stream in streams)
+                    try:
+                        return (pprint.pformat(tree, **options),)
+                    except (TypeError, ValueError, OverflowError):
+                        return (unknown,)
+                try:
+                    concrete = trees(item)
+                except InexactPrettyTree:
+                    # A widened tree cannot establish how many repr visits occur.
+                    # Keep the original state and each relevant callback branch.
+                    instances, pending, seen = [], [item], set()
+                    while pending:
+                        operand = pending.pop()
+                        if id(operand) in seen:
+                            continue
+                        seen.add(id(operand))
+                        if isinstance(operand, Instance):
+                            instances.append(operand)
+                        elif isinstance(operand, Keywords):
+                            pending.extend(child for assigned in operand.items.values() for child in assigned)
+                        elif isinstance(operand, (Sequence, list, tuple)):
+                            pending.extend(sequence_members(operand) if isinstance(operand, Sequence) else operand)
+                    alternatives((lambda target: (unknown,), *(lambda target, instance=instance: special(instance, ("__repr__",), target)
+                                                               for instance in instances)))
+                    return display(computed, local) if operation == "pprint.pprint" else (computed,)
+                return alternatives(lambda target, tree=tree: display(tree, target) for tree in concrete)
+            return alternatives(lambda local, item=item: render(item, local) for item in arguments[0]) or (unknown,)
+        if operation == "json.dumps":
+            if len(arguments) != 1:
+                return (unknown,)
+            def encode(item, local, seen=()):
+                if id(item) in seen:
+                    return (unknown,)
+                descendants = (*seen, id(item))
+                if isinstance(item, Keywords):
+                    for assigned in item.items.values():
+                        alternatives(lambda target, child=child: encode(child, target, descendants) for child in assigned)
+                elif isinstance(item, (Sequence, list, tuple)):
+                    def encode_row(row, target):
+                        for child in row:
+                            encode(child, target, descendants)
+                        return (unknown,)
+                    rows = sequence_rows(item) if isinstance(item, Sequence) else (item,)
+                    alternatives(lambda target, row=row: encode_row(row, target) for row in rows)
+                elif isinstance(item, Instance):
+                    returned = alternatives(lambda target, callback=callback: invoke(callback, target, [(item,)], evaluated=True)
+                                            for callback in keywords.get("default", ()) if callback is not None)
+                    alternatives(lambda target, child=child: encode(child, target, descendants) for child in returned)
+                return (unknown,)
+            return alternatives(lambda local, item=item: encode(item, local) for item in arguments[0]) or (unknown,)
+        if operation in {"sorted", "min", "max"}:
+            if not arguments:
+                return (unknown,)
+            allowed = {"key", "reverse"} if operation == "sorted" else {"key", "default"}
+            if set(keywords) - allowed or operation == "sorted" and len(arguments) != 1 or operation != "sorted" and len(arguments) > 1 and "default" in keywords:
+                return (unknown,)
+            rows = iterable_rows(arguments[0], scope) if len(arguments) == 1 else combinations(arguments)
+            def order(row, local):
+                uncertain = False
+                def compare(left, right, method):
+                    nonlocal uncertain
+                    callbacks = member(left, method, local, special=True) if isinstance(left, Instance) else ()
+                    reflected = "__gt__" if method == "__lt__" else "__lt__"
+                    if callbacks:
+                        returned = alternatives(lambda target, callback=callback: invoke(callback, target, [(right,)], evaluated=True) for callback in callbacks)
+                        uncertain |= any(item is unknown or unresolved_text(item) for item in returned)
+                        definite = tuple(item for item in returned if item is not NotImplemented)
+                        if not any(item is NotImplemented for item in returned):
+                            return any(alternatives(lambda target, item=item: (truth(item, target),) for item in definite))
+                    callbacks = member(right, reflected, local, special=True) if isinstance(right, Instance) else ()
+                    if callbacks:
+                        returned = alternatives(lambda target, callback=callback: invoke(callback, target, [(left,)], evaluated=True) for callback in callbacks)
+                        return any(truth(item, local) for item in returned)
+                    try:
+                        return data_literal(left) < data_literal(right) if method == "__lt__" else data_literal(left) > data_literal(right)
+                    except (InexactDataLoop, TypeError, ValueError):
+                        uncertain = True
+                        return False
+                reversed_order = any(truth(flag, local) for flag in keywords.get("reverse", (False,))) if operation == "sorted" else False
+                class Ordered:
+                    def __init__(self, item):
+                        self.item = item
+                        self.keys = alternatives(lambda target, callback=callback: (item,) if callback is None else invoke(callback, target, [(item,)], evaluated=True)
+                                                 for callback in keywords.get("key", (None,))) or (unknown,)
+                    def __lt__(self, other):
+                        return any(alternatives(lambda target, left=left, right=right: (compare(left, right, "__lt__"),)
+                                                for left in self.keys for right in other.keys))
+                    def __gt__(self, other):
+                        return any(alternatives(lambda target, left=left, right=right: (compare(left, right, "__gt__"),)
+                                                for left in self.keys for right in other.keys))
+                wrapped = [Ordered(item) for item in row]
+                if operation == "sorted":
+                    result = sorted(wrapped, reverse=reversed_order)
+                    rows = ([entry.item for entry in result],)
+                    if uncertain:
+                        rows = (*rows, list(row), list(reversed(row)))
+                    return (Sequence(rows), *((overflow,) if uncertain and conversion_witness(row) else ()))
+                if not wrapped:
+                    return keywords.get("default", (unknown,))
+                selected = (min if operation == "min" else max)(wrapped).item
+                return choices(row) if uncertain else (selected,)
+            result = alternatives(lambda local, row=row: order(row, local) for row in rows)
+            if len(arguments) == 1:
+                exhaust_generators(arguments[0])
+            return result or (unknown,)
+        return (unknown,)
+
     def value(node, scope):
         if isinstance(node, ast.FormattedValue) or isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
             cached = expression_values.get((scope, id(node)))
             if cached is not None:
                 return cached
         if isinstance(node, ast.Name):
+            if node.id == "NotImplemented" and scope.get(node.id) is None:
+                return (NotImplemented,)
             if scope.owner(node.id) is None and "builtins." + node.id in patched_attributes:
                 return patched_attributes["builtins." + node.id]
             if scope.owner(node.id) is None and "builtins." + node.id in exception_types:
@@ -3574,18 +3932,16 @@ def python_ownership(content, *, partial=False):
                 rendered = choices(first + (second if isinstance(second, str) else computed) for first in rendered for second in value(part, scope))
             return rendered
         if isinstance(node, ast.FormattedValue):
-            rendered = []
             specs = value(node.format_spec, scope) if node.format_spec else ("",)
             operation = {ord("r"): "repr", ord("s"): "str", ord("a"): "ascii"}.get(node.conversion)
-            for item in value(node.value, scope):
+            alternatives = [(item, spec) for item in value(node.value, scope) for spec in specs]
+            def render(alternative):
+                item, spec = alternative
                 converted = text_conversion(item, operation, scope) if operation else (item,)
-                for literal in converted:
-                    for spec in specs:
-                        if isinstance(spec, str):
-                            rendered.extend(text_conversion(literal, "format", scope, spec))
-                        else:
-                            rendered.append(overflow if conversion_witness(literal) else computed)
-            result = choices(rendered)
+                return choices(text for literal in converted for text in
+                    (text_conversion(literal, "format", scope, spec) if isinstance(spec, str)
+                     else (overflow if conversion_witness(literal) else computed,)))
+            result = evaluation_alternatives(alternatives, scope, render)
             expression_values[scope, id(node)] = result
             return result
         if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
@@ -3610,22 +3966,31 @@ def python_ownership(content, *, partial=False):
             rows = [row for row in assigned if isinstance(row, (list, RowConcat))]
             return choices((*([Sequence(rows)] if rows else []), *(row for row in assigned if not isinstance(row, (list, RowConcat)))))
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
-            rendered = []
+            alternatives = []
             for template in value(node.left, scope):
-                if not isinstance(template, str):
-                    continue
                 for item in value(node.right, scope):
-                    if isinstance(item, tuple):
-                        operands = tuple(conversion_operand(child, scope) for child in item)
-                    elif isinstance(item, Keywords):
-                        operands = {key: conversion_operand(assigned[0], scope) for key, assigned in item.items.items() if len(assigned) == 1}
+                    if isinstance(item, Keywords):
+                        alternatives.extend((template, Keywords(dict(zip(item.items, [(child,) for child in row]))))
+                                            for row in combinations(list(item.items.values())))
                     else:
-                        operands = conversion_operand(item, scope)
-                    try:
-                        rendered.append(template % operands)
-                    except (TypeError, ValueError, KeyError, OverflowError):
-                        rendered.append(overflow if conversion_witness(item) else computed)
-            result = choices(rendered)
+                        alternatives.append((template, item))
+            def render(alternative):
+                template, item = alternative
+                if not isinstance(template, str):
+                    return (unknown,)
+                if isinstance(item, tuple):
+                    operands = tuple(conversion_operand(child, scope) for child in item)
+                elif isinstance(item, Keywords):
+                    operands = {key: conversion_operand(assigned[0], scope) for key, assigned in item.items.items()}
+                else:
+                    operands = conversion_operand(item, scope)
+                try:
+                    return (template % operands,)
+                except InvalidTextConversion:
+                    return ()
+                except (TypeError, ValueError, KeyError, OverflowError):
+                    return format_failure(template, (item,), percent=True)
+            result = evaluation_alternatives(alternatives, scope, render)
             expression_values[scope, id(node)] = result
             return result
         if isinstance(node, ast.IfExp):
@@ -3635,6 +4000,13 @@ def python_ownership(content, *, partial=False):
             if cached is not None:
                 return cached
             names = function_names(node.func, scope)
+            if names & protocol_data_calls:
+                arguments, keywords = expanded_arguments(node.args, scope), call_keywords(node.keywords, scope)
+                functions = value(node.func, scope)
+                result = evaluation_alternatives(tuple(functions), scope,
+                                                 lambda function: invoke(function, scope, arguments, keywords, evaluated=True)) or (unknown,)
+                expression_values[scope, id(node)] = result
+                return result
             transformed = string_transform(node, scope, names)
             if transformed is not None:
                 expression_values[scope, id(node)] = transformed
@@ -3796,8 +4168,10 @@ def python_ownership(content, *, partial=False):
                 return result
             if names & {"format", "builtins.format"} and 1 <= len(node.args) <= 2 and not node.keywords:
                 specs = value(node.args[1], scope) if len(node.args) == 2 else ("",)
-                result = choices(text for item in value(node.args[0], scope) for spec in specs if isinstance(spec, str)
-                                 for text in text_conversion(item, "format", scope, spec))
+                alternatives = [(item, spec) for item in value(node.args[0], scope) for spec in specs]
+                result = evaluation_alternatives(alternatives, scope, lambda pair:
+                    text_conversion(pair[0], "format", scope, computed if pair[1] is unknown else pair[1])
+                    if isinstance(pair[1], str) or pair[1] is unknown else ())
                 expression_values[scope, id(node)] = result
                 return result
             if len(node.args) == 1 and not node.keywords:
@@ -4193,6 +4567,8 @@ def python_ownership(content, *, partial=False):
             return async_result(wrapper.name, argument_values, keyword_values, caller)
         if isinstance(wrapper, ast.alias) and wrapper.name in mock_types:
             return (make_mock(wrapper.name, keyword_values),)
+        if isinstance(wrapper, ast.alias) and wrapper.name in protocol_data_calls:
+            return data_call_protocol(wrapper.name, argument_values, keyword_values, caller)
         if isinstance(wrapper, ast.alias) and wrapper.name in text_conversions and len(argument_values) == 1 and not keyword_values:
             return choices(text for item in argument_values[0] for text in text_conversion(item, text_conversions[wrapper.name], caller))
         if isinstance(wrapper, ast.alias) and wrapper.name in {"print", "builtins.print"}:
@@ -4462,7 +4838,7 @@ def python_ownership(content, *, partial=False):
         "shlex.quote", "shlex.split", "shlex.join", "functools.partial", "operator.methodcaller", "atexit.register", "atexit.unregister",
         "builtins.iter", "builtins.next", "itertools.cycle",
         "threading.Thread", "threading.Timer", "multiprocessing.Process", "collections.deque", "contextlib.ExitStack", "contextlib.AsyncExitStack",
-    }
+    } | protocol_data_calls
 
     def escape_mutables(arguments, seen=None):
         """An unresolved callee cannot prove an escaped container unchanged."""
@@ -4740,7 +5116,7 @@ def python_ownership(content, *, partial=False):
             ordered_consumer = bool(len(node.args) == 1 and not node.keywords and (
                 names & {"list", "tuple", "sorted"} or any(name.endswith(".join") for name in names)))
             conversion_call = bool(names & (text_conversions.keys() | {"format", "builtins.format"}) or isinstance(node.func, ast.Attribute) and node.func.attr == "format")
-            if iterator_next or display_call or ordered_consumer or conversion_call:
+            if iterator_next or display_call or ordered_consumer or conversion_call or names & protocol_data_calls:
                 value(node, scope)
             if (names & (external_mutations | async_names) or isinstance(node.func, ast.Attribute) and (node.func.attr in mutation_methods
                     or any(is_exit_stack(owner) for owner in value(node.func.value, scope)))):
@@ -5537,9 +5913,9 @@ def file_writes(name, value, *, replacements=None):
     if name in {"apply_patch", "functions.apply_patch"} and isinstance(value, str):
         patches.append(value)
     if name in {"exec", "functions.exec"} and isinstance(value, str):
-        for match in re.finditer(r'''tools\.apply_patch\(\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')''', value):
+        for _, raw in composed_patch_fields(value):
             try:
-                patches.append(ast.literal_eval(match[1]))
+                patches.append(composed_string(raw, value))
             except (SyntaxError, ValueError):
                 pass
     for patch in patches:
@@ -5619,8 +5995,8 @@ def native_file_effects(name, value):
                 yield effect
         return
     if name in {"exec", "functions.exec"} and isinstance(native, str):
-        patches = list(re.finditer(r'''tools\.apply_patch\(\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')''', native))
-        calls = [(match.start(), "apply_patch", match[1], None) for match in patches]
+        patches = list(composed_patch_fields(native))
+        calls = [(position, "apply_patch", raw, None) for position, raw in patches]
         for match in composed_shell_fields(native):
             opening = native.find("{", match.start())
             literal = re.match(rf'''\{{(?:{JS_STRING}|[^{{}}"'`])*\}}''', native[opening:])

@@ -1132,6 +1132,144 @@ class ReceiptTests(unittest.TestCase):
                 self.assert_python_patch_ownership(setup + body, True)
                 self.assert_python_patch_ownership((setup + body).replace(writer, 'echo safe'), False)
 
+    def test_python_data_consumers_run_class_special_protocols(self):
+        writer = 'uv run /catalog/gh-plan.py --repo o/r claim 12'
+        protocols = (
+            ('len', '__len__', '1'), ('bool', '__bool__', 'True'), ('bool', '__len__', '1'),
+            ('int', '__int__', '1'), ('int', '__index__', '1'), ('float', '__float__', '1.0'),
+            ('float', '__index__', '1'), ('complex', '__complex__', '1j'), ('complex', '__float__', '1.0'),
+            ('complex', '__index__', '1'), ('hash', '__hash__', '1'), ('dir', '__dir__', '[]'),
+        )
+        for operation, method, result in protocols:
+            for use in (operation + '(value)', 'saved=builtins.' + operation + '\nsaved(value)',
+                        'functools.partial(' + operation + ',value)()'):
+                program = ('import os,builtins,functools\nWRITER=' + repr(writer) + '\nclass Value:\n def '
+                           + method + '(self):\n  os.system(WRITER)\n  return ' + result + '\nvalue=Value()\n' + use)
+                with self.subTest(operation=operation, method=method, use=use):
+                    self.assert_python_patch_ownership(program, True)
+                    self.assert_python_patch_ownership(program.replace(writer, 'echo safe'), False)
+            for owning in (True, False):
+                program = ('import os\nWRITER=' + repr(writer) + '\nclass Value:\n def ' + method + '(self):\n  '
+                           + ('os.system(WRITER)\n  ' if owning else '') + 'return ' + result
+                           + '\nvalue=Value()\nvalue.' + method + '=lambda: '
+                           + (result if owning else 'os.system(WRITER) or ' + result) + '\n' + operation + '(value)')
+                with self.subTest(class_special=operation, method=method, owning=owning):
+                    self.assert_python_patch_ownership(program, owning)
+        program = ('import os\nclass Value:\n def __len__(self):\n  os.system(' + repr(writer)
+                   + ')\n  return 1\ntry: int(Value())\nexcept TypeError: pass')
+        self.assert_python_patch_ownership(program, False)
+
+    def test_python_pretty_print_preserves_actual_repr_visits(self):
+        writer = 'uv run /catalog/gh-plan.py --repo o/r claim 12'
+        for expression, visits in (('pprint.pformat([[value]],width=1)', 3),
+                                   ('pprint.pformat([[value]],width=80)', 1),
+                                   ('pprint.pformat([[value]],width=1,depth=1)', 1),
+                                   ('pprint.pformat([[value]],1,1,1)', 1),
+                                   ('pprint.pprint([[value]],width=1)', 3),
+                                   ('pprint.pformat({"nested":(value,)})', 1)):
+            for owning in (True, False):
+                commands = ['echo safe'] * (visits - 1) + [writer] + ['echo safe'] * 4 if owning else ['echo safe'] * visits + [writer]
+                program = ('import os,pprint\nseen=' + repr(commands)
+                           + '\nclass Value:\n def __repr__(self):\n  os.system(seen.pop(0))\n  return "long repr string"\nvalue=Value()\n' + expression)
+                with self.subTest(expression=expression, owning=owning):
+                    self.assert_python_patch_ownership(program, owning)
+        for expression, owning in (('pprint.pformat(Value(),stream="bad")', False),
+                                   ('pprint.pprint(Value(),stream="bad")', True)):
+            program = ('import os,pprint\nWRITER=' + repr(writer) + '\nclass Value:\n def __repr__(self):\n  os.system(WRITER)\n  return "safe"\ntry: '
+                       + expression + '\nexcept (TypeError,AttributeError): pass')
+            with self.subTest(invalid_stream=expression):
+                self.assert_python_patch_ownership(program, owning)
+                self.assert_python_patch_ownership(program.replace(writer, 'echo safe'), False)
+        for position in range(6):
+            commands = ['echo safe'] * 6
+            commands[position] = writer
+            program = ('import os,pprint\nseen=' + repr(commands)
+                       + '\nclass Value:\n def __repr__(self):\n  os.system(seen.pop(0))\n  return "safe"'
+                       + '\nclass Stream:\n @property\n def write(self):\n  os.system(seen.pop(0))\n  return self.emit'
+                       + '\n def emit(self,text):\n  os.system(seen.pop(0))\npprint.pprint(Value(),stream=Stream())')
+            with self.subTest(stream_callback_position=position):
+                self.assert_python_patch_ownership(program, position < 5)
+        for owning in (True, False):
+            fields = ','.join(repr(str(index)) + ':0 if sys.argv[1:] else 1' for index in range(16))
+            program = ('import os,sys,pprint\nWRITER=' + repr(writer) + '\nclass Value:\n def __repr__(self):\n  os.system(WRITER)\n  return "safe"'
+                       + '\npprint.pformat({' + fields + ',"last":Value()})')
+            with self.subTest(widened_tree=owning):
+                self.assert_python_patch_ownership(program if owning else program.replace(writer, 'echo safe'), owning)
+        program = ('import os,sys,pprint\nseen=["echo safe",' + repr(writer)
+                   + ']\nclass Value:\n def __repr__(self):\n  os.system(seen.pop(0))\n  return "safe"\npprint.pformat({'
+                   + fields + ',"last":Value()})\nos.system(seen.pop(0))')
+        self.assert_python_patch_ownership(program, True)
+        self.assert_python_patch_ownership(program.replace(writer, 'echo safe'), False)
+
+    def test_python_ordering_and_json_consumers_run_only_used_callbacks(self):
+        writer = 'uv run /catalog/gh-plan.py --repo o/r claim 12'
+        for operation, method in (('sorted', '__lt__'), ('min', '__lt__'), ('max', '__gt__')):
+            for items, owning in (('[value,value]', True), ('[value]', False), ('[]', False)):
+                if operation != 'sorted' and items == '[]':
+                    continue
+                program = ('import os\nWRITER=' + repr(writer) + '\nclass Value:\n def ' + method
+                           + '(self,other):\n  os.system(WRITER)\n  return False\nvalue=Value()\n' + operation + '(' + items + ')')
+                with self.subTest(operation=operation, items=items):
+                    self.assert_python_patch_ownership(program, owning)
+                    self.assert_python_patch_ownership(program.replace(writer, 'echo safe'), False)
+            for owning in (True, False):
+                commands = [writer, 'echo safe'] if owning else ['echo safe', writer]
+                program = ('import os\nseen=' + repr(commands) + '\nclass Value:\n def ' + method
+                           + '(self,other):\n  os.system(seen.pop(0))\n  return False\nvalue=Value()\n' + operation + '([value,value])')
+                with self.subTest(comparison_once=operation, owning=owning):
+                    self.assert_python_patch_ownership(program, owning)
+            program = ('import os\nclass Value:\n def ' + method + '(self,other):\n  os.system('
+                       + repr(writer) + ')\n  return False\nvalue=Value()\n' + operation + '([value,value],key=lambda item:0)')
+            self.assert_python_patch_ownership(program, False)
+        program = ('import os\nseen=[' + repr(writer) + ',"echo safe"]\nclass Flag:\n def __bool__(self):\n  os.system(seen.pop(0))\n  return False\nsorted([1],key=lambda item:seen.pop(0),reverse=Flag())')
+        self.assert_python_patch_ownership(program, True)
+        self.assert_python_patch_ownership(program.replace(writer, 'echo safe'), False)
+        program = ('import os\nWRITER=' + repr(writer) + '\nclass Left:\n def __lt__(self,other): return NotImplemented\nclass Right:\n def __gt__(self,other):\n  os.system(WRITER)\n  return False\nsorted([Right(),Left()])')
+        self.assert_python_patch_ownership(program, True)
+        self.assert_python_patch_ownership(program.replace(writer, 'echo safe'), False)
+        for operation in ('min', 'max'):
+            program = ('import os,sys\nWRITER=' + repr(writer) + '\nranks={"echo safe":int(sys.argv[1]),WRITER:0}\nos.system('
+                       + operation + '(["echo safe",WRITER],key=lambda value:ranks[value]))')
+            self.assert_python_patch_ownership(program, True)
+            self.assert_python_patch_ownership(program.replace(writer, 'echo safe'), False)
+        for expression, method, result in (('complex(value,0)', '__complex__', '1j'),
+                                           ('complex(0,value)', '__float__', '1.0'),
+                                           ('complex(real=value)', '__complex__', '1j'),
+                                           ('complex(imag=value)', '__float__', '1.0')):
+            program = ('import os\nWRITER=' + repr(writer) + '\nclass Value:\n def ' + method
+                       + '(self):\n  os.system(WRITER)\n  return ' + result + '\nvalue=Value()\n' + expression)
+            with self.subTest(complex_operands=expression):
+                self.assert_python_patch_ownership(program, True)
+                self.assert_python_patch_ownership(program.replace(writer, 'echo safe'), False)
+        for expression, owning in (('json.dumps(value,default=encode)', True),
+                                   ('json.dumps([{"nested":value}],default=encode)', True),
+                                   ('json.dumps([1,"safe"],default=encode)', False)):
+            program = ('import os,json\nWRITER=' + repr(writer) + '\nclass Value: pass\nvalue=Value()\ndef encode(item):\n os.system(WRITER)\n return None\n' + expression)
+            with self.subTest(json_default=expression):
+                self.assert_python_patch_ownership(program, owning)
+                self.assert_python_patch_ownership(program.replace(writer, 'echo safe'), False)
+
+    def test_python_pretty_print_bounds_optional_primitive_trees(self):
+        def measured(size, limit=None):
+            fields = ','.join(repr(str(index)) + ':0 if sys.argv[1:] else 1' for index in range(size))
+            program = 'import sys,pprint\npprint.pformat({' + fields + '})'
+            calls = 0
+            def profile(frame, event, argument):
+                nonlocal calls
+                if event == 'call':
+                    calls += 1
+                    if limit is not None and calls > limit:
+                        raise AssertionError('pretty-print alternatives exceed linear growth budget')
+            sys.setprofile(profile)
+            try:
+                self.assertFalse(receipts.python_ownership(program))
+            finally:
+                sys.setprofile(None)
+            return calls
+        small = measured(8)
+        self.assertLessEqual(measured(16, small * 3), small * 3)
+
+
     def test_python_text_conversions_follow_actual_callbacks(self):
         writer = 'uv run /catalog/gh-plan.py --repo o/r claim 12'
         setup = 'import os\nWRITER=' + repr(writer) + '\n'
@@ -1186,6 +1324,69 @@ class ReceiptTests(unittest.TestCase):
         for expression in ('list(map(str,[Value()]))', 'from builtins import str as display\ndisplay(Value())'):
             program = ('import os\nWRITER=' + repr(writer) + '\nclass Value:\n def __str__(self):\n  os.system(WRITER)\n  return "safe"\n' + expression)
             with self.subTest(indirect=expression):
+                self.assert_python_patch_ownership(program, True)
+                self.assert_python_patch_ownership(program.replace(writer, 'echo safe'), False)
+
+    def test_python_numeric_formats_preserve_uncertain_command_scaffolding(self):
+        header = 'uv run /catalog/gh-plan.py --repo o/r'
+        setup = 'import os,sys\n'
+        programs = (
+            "os.system('uv run /catalog/gh-plan.py --repo o/r claim %d' % int(sys.argv[1]))",
+            "os.system(f'uv run /catalog/gh-plan.py --repo o/r claim {int(sys.argv[1]):d}')",
+            "n=int(sys.argv[1]);os.system('uv run /catalog/gh-plan.py --repo o/r claim {:d}'.format(n))",
+            "spec=sys.argv[2];os.system(f'uv run /catalog/gh-plan.py --repo o/r claim {12:{spec}}')",
+            "spec=sys.argv[2];os.system('uv run /catalog/gh-plan.py --repo o/r claim '+format(12,spec))",
+            "n=int(sys.argv[1]);spec=sys.argv[2];os.system(f'uv run /catalog/gh-plan.py --repo o/r claim {n:{spec}}')",
+            "n=int(sys.argv[1]);os.system(f'uv run /catalog/gh-plan.py --repo o/r claim {n:>4}')",
+            "n=int(sys.argv[1]);os.system('uv run /catalog/gh-plan.py --repo o/r claim '+format(n,'x'))",
+            "A=" + repr(header) + ";B='echo safe';os.system('%(h)s claim 5' % {'h':A if sys.argv[1:] else B})",
+            "template=sys.argv[1]\nclass Value:\n def __format__(self,spec):\n  os.system("
+            + repr(header + ' claim 12') + ");return 'safe'\nprint(template.format(Value()))",
+        )
+        for body in programs:
+            with self.subTest(program=body):
+                self.assert_python_patch_ownership(setup + body, True)
+                self.assert_python_patch_ownership((setup + body).replace(header, 'echo safe'), False)
+
+        for expression in (repr(header + ' claim %d') + " % 'bad'",
+                           repr(header + ' claim {:d}') + ".format('bad')",
+                           "f'" + header + " claim {12:bad}'"):
+            program = setup + "try: os.system(" + expression + ")\nexcept (TypeError,ValueError): pass"
+            with self.subTest(invalid_numeric_conversion=expression):
+                self.assert_python_patch_ownership(program, False)
+
+        for expression in (repr(header + ' claim {:d}') + '.format(Value())',
+                           repr(header + ' claim %d') + ' % Value()'):
+            program = (setup + 'class Value: pass\ntry: os.system(' + expression
+                       + ')\nexcept (TypeError,ValueError): pass')
+            with self.subTest(unsupported_object_numeric_conversion=expression):
+                self.assert_python_patch_ownership(program, False)
+        for conversion, method, returned in (('%d', '__int__', '12'), ('%d', '__index__', '12'),
+                                              ('%x', '__index__', '12'), ('%f', '__float__', '12.0')):
+            program = (setup + 'class Value:\n def ' + method + '(self):\n  os.system('
+                       + repr(header + ' claim 12') + ');return ' + returned
+                       + '\n' + repr('echo safe ' + conversion) + ' % Value()')
+            with self.subTest(numeric_callback=method, conversion=conversion):
+                self.assert_python_patch_ownership(program, True)
+                self.assert_python_patch_ownership(program.replace(header, 'echo safe'), False)
+
+    def test_python_format_alternatives_share_one_evaluation_state(self):
+        writer = 'uv run /catalog/gh-plan.py --repo o/r claim 12'
+        programs = (
+            ('__str__', "fmt='{}' if sys.argv[1:] else '{} ';print(fmt.format(Value()))"),
+            ('__str__', "fmt='%s' if sys.argv[1:] else '%s ';print(fmt % Value())"),
+            ('__format__', "spec='' if sys.argv[1:] else 'x';print(f'{Value():{spec}}')"),
+            ('__format__', "spec='' if sys.argv[1:] else 'x';print(format(Value(),spec))"),
+            ('__format__', "fmt='{:x}' if sys.argv[1:] else '{:y}';print(fmt.format(Value()))"),
+            ('__str__', "value=Value();fmt='{0!s}{0!s}' if sys.argv[1:] else '{0!s} {0!s}';print(fmt.format(value))"),
+        )
+        for method, body in programs:
+            # Explicit repeated fields still convert twice within each path.
+            initial = ['echo safe'] * (2 if '{0!s}{0!s}' in body else 1) + [writer]
+            parameters = 'self,spec' if method == '__format__' else 'self'
+            program = ('import os,sys\nseen=' + repr(initial) + '\nclass Value:\n def '
+                       + method + '(' + parameters + '): return seen.pop(0)\n' + body + '\nos.system(seen.pop(0))')
+            with self.subTest(program=body):
                 self.assert_python_patch_ownership(program, True)
                 self.assert_python_patch_ownership(program.replace(writer, 'echo safe'), False)
 
@@ -2441,6 +2642,80 @@ class ReceiptTests(unittest.TestCase):
                 rows[2] = output({"exit_code": 0, "output": ""}, harness, "tool-0")
                 with self.subTest(harness=harness, body=body):
                     self.assertEqual(receipts.ownership_state(rows, harness)["pending"], expected)
+
+    def test_composed_regex_and_nested_templates_keep_executable_calls_visible(self):
+        writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 5 > claim.json'
+        for command, owning in ((writer, True), (writer + ' &', True), ('echo safe', False)):
+            calls = ('text(await tools.exec_command({cmd:' + json.dumps(command) + '}));',
+                     "text(await tools.exec_command({cmd:'" + command + "'}));")
+            fixture = 'const fixture=' + json.dumps('text(await tools.exec_command({cmd:`' + writer + '`}));') + '; '
+            for call in calls:
+                for prefix in (r'const re=/^https:\/\//; ', r'const re=/[/*]/; ',
+                               "const re=/'/; ", 'const re=/"/; '):
+                    for inert in ('', fixture):
+                        cell = prefix + inert + call
+                        rows = history('codex', {})
+                        rows[1]['payload'].update(name='functions.exec', arguments=cell)
+                        rows[2] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-0')
+                        with self.subTest(cell=cell):
+                            self.assertEqual(receipts.ownership_state(rows, 'codex')['pending'], owning)
+                            self.assertEqual(list(receipts.shell_texts('functions.exec', cell)), [command])
+                            self.assertEqual(list(receipts.native_file_effects('functions.exec', cell)),
+                                             list(receipts.native_file_effects('exec_command', {'cmd': command})))
+            cell = ('const flag=false; text(`${flag ? `on` : '
+                    '(await tools.exec_command({cmd:' + json.dumps(command) + '})).output}`);')
+            rows = history('codex', {})
+            rows[1]['payload'].update(name='functions.exec', arguments=cell)
+            rows[2] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-0')
+            with self.subTest(cell=cell):
+                self.assertEqual(receipts.ownership_state(rows, 'codex')['pending'], owning)
+                self.assertEqual(list(receipts.shell_texts('functions.exec', cell)), [command])
+            for setup, operand in (('', '{}'), ('', '({})'),
+                                   ('const holder={return:12}; ', 'holder.return'),
+                                   ('const holder={return:12}; ', 'holder. return'),
+                                   ('const holder={return:12}; ', 'holder. /* property */ return'),
+                                   ('const of=12; ', 'of'), ('const $return=12; ', '$return'),
+                                   ('const n=12; ', 'n')):
+                cell = (setup + 'const value=' + operand + ' / (await tools.exec_command({cmd:'
+                        + json.dumps(command) + '})).exit_code / 2;')
+                rows = history('codex', {})
+                rows[1]['payload'].update(name='functions.exec', arguments=cell)
+                rows[2] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-0')
+                with self.subTest(division=cell):
+                    self.assertEqual(receipts.ownership_state(rows, 'codex')['pending'], owning)
+                    self.assertEqual(list(receipts.shell_texts('functions.exec', cell)), [command])
+
+    def test_dynamic_javascript_literals_cannot_hide_ownership(self):
+        writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 5 > claim.json'
+        for command, owning in ((writer, True), (writer + ' &', True), ('echo safe', False)):
+            call = 'text(await tools.exec_command({cmd:' + json.dumps(command) + '}));'
+            source = '(async()=>{' + call + '})()'
+            for cell in (
+                'await eval(' + json.dumps(source) + ');',
+                'await Function("tools", "text", ' + json.dumps('return ' + source) + ')(tools,text);',
+                'const AsyncFunction=(async()=>{}).constructor; await new AsyncFunction("tools", "text", '
+                + json.dumps(call) + ')(tools,text);',
+                'await new (async()=>{}).constructor("tools", "text", ' + json.dumps(call) + ')(tools,text);',
+                'await eval(' + json.dumps(source.replace('gh-plan.py', r'gh-plan\x2epy')) + ');',
+            ):
+                rows = history('codex', {})
+                rows[1]['payload'].update(name='functions.exec', arguments=cell)
+                rows[2] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-0')
+                with self.subTest(cell=cell):
+                    self.assertEqual(receipts.ownership_state(rows, 'codex')['pending'], owning)
+
+    def test_quoted_patch_calls_do_not_fabricate_file_writes(self):
+        patch = '*** Begin Patch\n*** Add File: /repo/fixture.py\n+print("fixture")\n*** End Patch'
+        call = 'text(await tools.apply_patch(' + json.dumps(patch) + '));'
+        direct = list(receipts.native_file_effects('apply_patch', patch))
+        self.assertTrue(any(effect['kind'] == 'write' for effect in direct))
+        self.assertEqual(list(receipts.native_file_effects('functions.exec', call)), direct)
+        for cell in ('const fixture=`' + call + '`;',
+                     'const fixture=' + json.dumps(call) + ';',
+                     '// ' + call + '\n', '/* ' + call + ' */'):
+            with self.subTest(cell=cell):
+                self.assertFalse(any(effect['kind'] == 'write'
+                                     for effect in receipts.native_file_effects('functions.exec', cell)))
 
     def test_composed_fixture_strings_and_comments_are_not_tool_invocations(self):
         writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 5 > claim.json'
