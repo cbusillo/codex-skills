@@ -367,6 +367,73 @@ commands:
         "<plan-sha256>",
       ]
     purpose: Reads back whether stored runtime settings match a reviewed removal, by names and digests only.
+  - name: launchplane-disposable-lane-inspect
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/launchplane-write-action.py",
+        "disposable-lane-inspect",
+        "--payload-file",
+        "<private-file>",
+      ]
+    purpose: Reads one disposable lane's binding digest with every safety fact unknown; changes nothing.
+  - name: launchplane-disposable-lane-collect
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/launchplane-write-action.py",
+        "disposable-lane-collect",
+        "--payload-file",
+        "<private-file>",
+        "--expected-binding-sha256",
+        "<binding-sha256>",
+        "--inspect-evidence-file",
+        "<private-inspect-output>",
+        "--reviewed-inspect",
+      ]
+    purpose: Has the service collect and store short-lived safety facts for a reviewed testing or preview lane binding.
+  - name: launchplane-disposable-lane-record
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/launchplane-write-action.py",
+        "disposable-lane-record",
+        "--payload-file",
+        "<private-file>",
+        "--expected-binding-sha256",
+        "<binding-sha256>",
+        "--inspect-evidence-file",
+        "<private-inspect-output>",
+        "--reviewed-inspect",
+      ]
+    purpose: Records short-lived safety facts for a reviewed lane binding; known facts only for an exact preview.
+  - name: launchplane-disposable-lane-clear
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/launchplane-write-action.py",
+        "disposable-lane-clear",
+        "--payload-file",
+        "<private-file>",
+        "--expected-binding-sha256",
+        "<binding-sha256>",
+        "--inspect-evidence-file",
+        "<private-inspect-output>",
+        "--reviewed-inspect",
+      ]
+    purpose: Clears the stored safety observation for a reviewed testing or preview lane without provider changes.
   - name: launchplane-merge-train-policy-import-dry-run
     source: skill
     resource_path: scripts/launchplane-write-action.py
@@ -1096,6 +1163,11 @@ verification.
   [private ingress caller contract](references/write-action-helper-contract.md#application-testing-private-ingress)
   before use, including private files, review, original-key recovery, redaction
   and readback limits.
+- `disposable-lane-inspect` / `-collect` / `-record` / `-clear` wrap the
+  producer's disposable lane observation operation. Read the
+  [disposable lane contract](references/write-action-helper-contract.md#disposable-lane-observations)
+  before use, including the reviewed inspect binding, testing fact limits, no
+  retry, readback limits and when clearing is appropriate.
 
 - `scripts/launchplane-context.py`: Structural state helper.
 - `scripts/launchplane-write-action.py`: Public-safe write-action wrapper for

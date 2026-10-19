@@ -270,8 +270,15 @@ PROJECTED_HELPER_COMMANDS = {
 # Explicit installed callers of producer service_api surfaces. This does not
 # change the producer's identity dependency or advertise an agent_helper surface.
 SERVICE_API_HELPER_COMMANDS = {
-    f"testing-private-ingress-{mode}": ("prepare_testing_private_ingress", (mode,))
-    for mode in ("dry-run", "apply", "readback")
+    **{
+        f"testing-private-ingress-{mode}": ("prepare_testing_private_ingress", (mode,))
+        for mode in ("dry-run", "apply", "readback")
+    },
+    # prepare-rebuild stays producer-owned until a reviewed caller exists.
+    **{
+        f"disposable-lane-{mode}": ("record_disposable_lane_safety", (mode,))
+        for mode in ("inspect", "collect", "record", "clear")
+    },
 }
 
 LOCAL_EXTENSION_ROUTES = {
@@ -970,7 +977,6 @@ def _validate_operation_coverage(
         "retire_incomplete_testing_generation",
         "prepare_fresh_testing_bootstrap",
         "prepare_testing_replacement_resources",
-        "record_disposable_lane_safety",
         "update_merge_train_operational_policy",
         "apply_odoo_website_settings",
     }
