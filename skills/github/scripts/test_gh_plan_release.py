@@ -268,6 +268,28 @@ class ReleaseTests(ReleaseHarness):
                 self.assertTrue(refused["issue_refusals"])
                 self.assertFalse(refused["released_claims"])
 
+    def test_first_finish_facts_can_be_reconciled_through_actual_producer(self):
+        hand = self.comment(3, "Claimed by trial-b\nSession: session-b", "2026-10-01T01:00:00Z")
+        self.f.comments.append(hand)
+        selected_end = "2026-10-02T00:00:00Z"
+        before = self.consume_related_release(self.f.comments, ended=selected_end)
+        self.assertEqual(before["ended_at"], selected_end)
+        self.assertEqual({r["claim_comment"] for r in before["issue_refusals"]}, {1, hand["id"]})
+        self.assertTrue(before.get("next_action"))
+        self.f.assert_no_writes()
+        # Source and related identity come from canonical records, never advice.
+        self.args.claim_comment = self.f.comments[0]["id"]
+        self.args.related_claim_comment = [hand["id"]]
+        self.evidence["body"] = "\n".join(
+            "Ended at: " + before["ended_at"] if line.startswith("Ended at: ") else
+            "Original ownership context: " + self.f.comments[0]["html_url"] if line.startswith("Handoff: ") else line
+            for line in self.evidence["body"].splitlines())
+        self.f.comment_id_offset = 10
+        self.run_release()
+        after = self.consume_related_release(self.f.comments, ended=selected_end)
+        self.assertFalse(after["issue_refusals"])
+        self.assertEqual({r["claim_comment"] for r in after["released_claims"]}, {1, hand["id"]})
+
     def test_finish_exposes_recorded_end_and_accepts_corrected_producer_evidence(self):
         selected_end = "2026-10-02T00:00:00Z"
         self.evidence["body"] = self.evidence["body"].replace(selected_end, "2026-10-02T00:30:00Z")
@@ -276,7 +298,7 @@ class ReleaseTests(ReleaseHarness):
         refused = self.consume_related_release(produced, ended=selected_end)
         self.assertEqual({r["claim_comment"] for r in refused["issue_refusals"]}, {1, 3})
         self.assertEqual(refused["ended_at"], selected_end)
-        self.assertTrue(all(r.get("next_action") for r in refused["issue_refusals"]))
+        self.assertTrue(refused.get("next_action"))
         self.evidence = {**bad_evidence, "id": 89,
             "body": bad_evidence["body"].replace("2026-10-02T00:30:00Z", refused["ended_at"]),
             "created_at": "2026-10-02T02:00:00Z", "updated_at": "2026-10-02T02:00:00Z"}
@@ -311,7 +333,7 @@ class ReleaseTests(ReleaseHarness):
         refused = self.consume_related_release(self.f.comments)
         self.assertEqual({r["claim_comment"] for r in refused["released_claims"]}, {1, 3})
         self.assertEqual([r.get("claim_comment") for r in refused["issue_refusals"]], [5])
-        self.assertTrue(refused["issue_refusals"][0].get("next_action"))
+        self.assertTrue(refused.get("next_action"))
         self.run_release()
         accepted = self.consume_related_release(self.f.comments)
         self.assertFalse(accepted["issue_refusals"])
@@ -324,7 +346,7 @@ class ReleaseTests(ReleaseHarness):
             with self.subTest(source=source):
                 refused = self.consume_related_release([source])
                 self.assertEqual([r.get("claim_comment") for r in refused["issue_refusals"]], [source["id"]])
-                self.assertTrue(refused["issue_refusals"][0].get("next_action"))
+                self.assertTrue(refused.get("next_action"))
                 self.assertFalse(refused["released_claims"])
 
     def test_ambiguous_or_different_native_source_needs_identity_reconciliation_before_release(self):

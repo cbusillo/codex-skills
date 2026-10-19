@@ -2199,28 +2199,40 @@ With `--repo`, these statuses add `in explicit scope` and the session report's
 Held, foreign, malformed and status-only ownership, unresolved follow-ups and
 failed canonical reads appear in `issue_refusals`, with exact source IDs when
 available. They keep `needs_reconciliation` true and the command nonzero.
-After verifying closure, finish includes its original `ended_at` in the session report.
-Use that verified time in a reconciliating attestation's `Ended at:` field,
-including when releasing related ownership. A release-claim confirmation alone
-does not replace that closure time. If an attestation cited a later time, preserve
-it, post corrected evidence using the report's original time, and use the corrected
-`--evidence-comment` through the supported release-claim route before retrying
-finish. Do not move the recorded closure forward to match a mistaken attestation.
 
-A partially published related release retains its exact unresolved IDs once in
-`issue_refusals`. Inspect the producer's recovery result and reconcile any unknown
-write outcome before retrying. When the outcome is known, follow that recovery
-and rerun the original evidence-backed release-claim command, retaining every
-`--related-claim-comment` argument: it reuses confirmed receipts and deduplicates
-already published related releases. The same route supports a related hand claim
-whose structured source the worker already released. An orphan without a matching
-structured source needs the source author's exact-ID ownership reconciliation;
-do not invent a structured source. Foreign-author records stay with their owning
-identity and must not be released as the configured automation actor. Ambiguous
-or conflicting structured identities need canonical source-author reconciliation
-before selecting a source for release-claim. An ownership diagnostic does not
-truncate the scan: unresolved aliases from every valid source group remain in
-the same report, each with its exact comment ID.
+#### Finish claim reconciliation
+
+After verifying closure, finish includes its original `ended_at` in the session
+report. Refused IDs are accounting facts, not proof that one record belongs to
+another source. The report links this procedure once when reconciliation is needed.
+
+For a first attempt, identify the source in the canonical discussion and verify
+its actor and native identity. Use the report's original `ended_at` in the verified
+attestation's `Ended at:` field. Cite a genuine handoff when available; otherwise
+use the exact original structured ownership context permitted by the
+[manual abandoned-claim procedure](../../github/references/cli-reference.md#abandoned-automation-claims),
+without presenting it as a worker handoff. Run the existing release-claim preflight
+with the selected source and verified related IDs before applying. The producer
+validates that selection. Rerun finish to read the resulting canonical releases.
+Correct a failed or malformed canonical read before selecting release records.
+
+If a release was already attempted, inspect its producer and transport results
+and resolve any unknown write outcome before any retry or new attestation.
+Follow the producer's `release_recovery_action`; confirmed receipts and related
+publications use its existing reuse and deduplication. A partial publication does
+not authorize changing the original related IDs or bypassing producer recovery.
+
+If an attestation cited a later end, resolve any uncertain write first. Preserve
+the mistaken evidence, post corrected evidence using the report's original time,
+and use its corrected `--evidence-comment` through the supported producer route.
+Do not move the recorded closure forward to match the mistaken attestation.
+
+Unresolved aliases remain unresolved until their canonical native identity and
+source relationship are verified. Do not infer that relationship from a shared
+worker token. Unbound or ambiguous identities need source-author reconciliation.
+Foreign-author records stay with their owning identity and must not be released
+as the configured automation actor. Ownership diagnostics retain unresolved IDs
+from every valid source group, each once, without choosing a release route.
 
 `finish` never reconstructs handoffs from shell commands or falls through to
 new release writes after a read failure. Reconcile the named records using

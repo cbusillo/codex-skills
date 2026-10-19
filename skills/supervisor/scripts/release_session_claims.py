@@ -521,40 +521,6 @@ def release_session(reader, entry, actor, supervisor_session, issues, checkout_r
         raise PartialRelease(error, report) from error
 
 
-def ownership_next_action(source, comments, actor, session, ended):
-    """Describe supported reconciliation without granting release authority."""
-    if (source.get("user") or {}).get("login") != actor:
-        return ("Report this ownership record to its owning identity for reconciliation; "
-                "do not release it as the configured automation actor.")
-    records = claim.records(source.get("body") or "")
-    if records:
-        if len(records) != 1 or records[0]["session"] != session:
-            return ("Resolve this comment's canonical source identity through its author's ownership reconciliation "
-                    "before selecting a release source; do not invent a structured identity.")
-        return ("Inspect the producer's recovery result and reconcile any unknown write outcome before retrying. "
-                "Use this report's ended_at for the verified Ended at evidence. If the cited end is later, "
-                "post a corrected attestation and run release-claim with its corrected --evidence-comment, "
-                "preserving the related IDs; then rerun finish.")
-    for candidate in comments:
-        if (candidate.get("user") or {}).get("login") != actor:
-            continue
-        records = claim.records(candidate.get("body") or "")
-        if len(records) != 1 or records[0]["session"] != session:
-            continue
-        try:
-            release.check_related(records[0], source, actor, ended)
-        except (KeyError, TypeError, ValueError):
-            continue
-        return (f"Inspect the prior release-claim result for structured claim {candidate['id']} and reconcile "
-                "any unknown write outcome before retrying. If the cited end is later than this report's ended_at, "
-                "post corrected evidence using that original time and use its corrected --evidence-comment. "
-                "Otherwise follow the producer's recovery instructions and rerun the same evidence-backed command "
-                "with the original --related-claim-comment IDs. Confirmed receipts are reused and published related "
-                "releases deduplicated; then rerun finish.")
-    return ("Obtain the source author's exact-ID ownership reconciliation; no matching structured source is available. "
-            "Do not invent a source or release the record from another identity.")
-
-
 def finished_claims(reader, entry, actor, issues, apply):
     """Consume one canonical release proof per source; never manufacture a release."""
     released, refused, retained_status = [], [], []
@@ -567,8 +533,7 @@ def finished_claims(reader, entry, actor, issues, apply):
             comments = verified_comments(reader, reader.paged_json(
                 f"/repos/{repo}/issues/{number}/comments", step_prefix="finished_claim_history"))
             def source_refusal(source, message):
-                return {**identity, "claim_comment": source["id"], "error": message,
-                        "next_action": ownership_next_action(source, comments, actor, entry["session_id"], ended)}
+                return {**identity, "claim_comment": source["id"], "error": message}
             sources = [c for c in comments if belongs_to_session(c.get("body") or "", entry["session_id"])
                        and (claim.records(c.get("body") or "") or re.match(
                            r"Claimed by:?\s+\S+", claim.ownership_text(c.get("body") or "", strip_quotes=False), re.IGNORECASE))]
@@ -643,11 +608,16 @@ def finished_claims(reader, entry, actor, issues, apply):
     result_status = "needs reconciliation" if refused else "already released" if released else "nothing to release"
     if scope == "explicit scope":
         result_status += " in explicit scope"
-    return {"session_id": entry["session_id"], "ended_at": entry["ended_at"], "claims": [], "released_claims": released,
+    report = {"session_id": entry["session_id"], "ended_at": entry["ended_at"], "claims": [], "released_claims": released,
             "status": result_status, "coverage": scope,
             "handoff_url": released[-1]["handoff_url"] if released else None,
             "dry_run": not apply, "retained_status_claims": retained_status, "issue_refusals": refused,
             "pr_claim_handoffs": [], "closure_evidence": "matched PID/TTY log"}
+    if refused or retained_status:
+        report["next_action"] = ("Reconcile the reported records using "
+            "https://github.com/cbusillo/codex-skills/blob/main/skills/supervisor/references/helpers.md#finish-claim-reconciliation "
+            "and rerun finish.")
+    return report
 
 
 def verified_release_checkout(checkout_root, repo):

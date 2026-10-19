@@ -617,22 +617,23 @@ class ReleaseTests(unittest.TestCase):
         write.assert_not_called()
         run.assert_not_called()
 
-    def test_finish_preserves_missing_native_alias_when_other_ownership_diagnostic_is_deferred(self):
-        alias = comment(9, "Claimed by trial")
-        baseline, baseline_report = self.finish_thread([self.source, alias])
-        self.assertEqual(baseline, 1)
-        self.assertEqual({r["claim_comment"] for r in baseline_report["reports"][0]["issue_refusals"]}, {1, 9})
+    def test_finish_preserves_unbound_alias_when_other_ownership_diagnostic_is_deferred(self):
         diagnostics = [comment(7, "Claimed by orphan-worker\nSession: source-session"),
                        comment(7, helper.claim.marker({**SOURCE, "worker": "foreign-worker"}), author="foreign[bot]")]
-        for diagnostic in diagnostics:
-            for first in (False, True):
-                with self.subTest(diagnostic=diagnostic, first=first):
-                    comments = [diagnostic, self.source, alias] if first else [self.source, alias, diagnostic]
-                    result, report = self.finish_thread(comments)
-                    self.assertEqual(result, 1)
-                    refused = report["reports"][0]["issue_refusals"]
-                    self.assertEqual({r["claim_comment"] for r in refused}, {1, 7, 9})
-                    self.assertEqual(len(refused), 3)
+        for field in ("", "Session ID: source-session", "Native session ID: source-session", "| Session | source-session |"):
+            alias = comment(9, "Claimed by trial\n" + field)
+            baseline, baseline_report = self.finish_thread([self.source, alias])
+            self.assertEqual(baseline, 1)
+            self.assertEqual({r["claim_comment"] for r in baseline_report["reports"][0]["issue_refusals"]}, {1, 9})
+            for diagnostic in diagnostics:
+                for first in (False, True):
+                    with self.subTest(field=field, diagnostic=diagnostic, first=first):
+                        comments = [diagnostic, self.source, alias] if first else [self.source, alias, diagnostic]
+                        result, report = self.finish_thread(comments)
+                        self.assertEqual(result, 1)
+                        refused = report["reports"][0]["issue_refusals"]
+                        self.assertEqual({r["claim_comment"] for r in refused}, {1, 7, 9})
+                        self.assertEqual(len(refused), 3)
 
     def test_finish_status_only_ownership_is_not_a_read_only_session(self):
         result, report = self.finish_thread([], body="Claimed by trial\nSession: source-session")
