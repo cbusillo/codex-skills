@@ -1570,10 +1570,13 @@ def test_controller_rejected_response_keeps_only_safe_trace_and_code() -> None:
         assert ("error_code" in payload["summary"]) == (code == "merge_readiness_not_ready")
 
 
-def test_controller_http_error_keeps_safe_identifiers_without_raw_error_text() -> None:
+@pytest.mark.parametrize("mutate", [False, True])
+@pytest.mark.parametrize("error_location", ["error", "result.error", "result.blocking_reason"])
+def test_controller_http_error_keeps_safe_identifiers_without_raw_error_text(mutate: bool, error_location: str) -> None:
     for http_status, error_code in (
         (403, "merge_readiness_not_ready"), (409, "merge_readiness_not_ready"),
-        (502, "merge_readiness_not_ready"), (409, "merge_train_controller_lease_held"),
+        (502, "merge_readiness_not_ready"), (408, "merge_readiness_not_ready"),
+        (409, "merge_train_controller_lease_held"),
     ):
         response = {
             "trace_id": "launchplane_req_http", "error": {
@@ -1584,25 +1587,33 @@ def test_controller_http_error_keeps_safe_identifiers_without_raw_error_text() -
             "https://launchplane.example.invalid/controller", http_status, "Rejected", Message(),
             io.BytesIO(json.dumps(response).encode()),
         )
-        status, payload = _run_controller_response(error)
+        if error_location != "error":
+            response["result"] = {error_location.split(".")[1]: response.pop("error")}
+            error.fp = io.BytesIO(json.dumps(response).encode())
+        status, payload = _run_controller_response(error, mutate=mutate)
         assert status == 1
+        if mutate and (http_status >= 500 or http_status == 408):
+            assert payload["status"] == "outcome_unknown"
+            assert "controller state" in payload["summary"]["recommendation"]
         assert payload["summary"]["http_status"] == http_status
         assert payload["summary"]["trace_id"] == response["trace_id"]
-        assert payload["summary"]["error_code"] == response["error"]["code"]
+        assert payload["summary"]["error_code"] == error_code
         assert "private-fixture-value" not in json.dumps(payload)
 
 
-def test_controller_merge_refusal_projects_only_valid_pr_number() -> None:
+@pytest.mark.parametrize("mutate", [False, True])
+@pytest.mark.parametrize("http_status", [409, 502, 408])
+def test_controller_merge_refusal_projects_only_valid_pr_number(mutate: bool, http_status: int) -> None:
     for number in (7, True, -1, 0, "7", "Bearer private-fixture-value"):
         response = {
             "trace_id": "launchplane_req_http", "error": {"code": "github_merge_rejected"},
             "details": {"pull_request_number": number, "message": "Bearer private-fixture-value"},
         }
         error = urllib.error.HTTPError(
-            "https://launchplane.example.invalid/controller", 409, "Rejected", Message(),
+            "https://launchplane.example.invalid/controller", http_status, "Rejected", Message(),
             io.BytesIO(json.dumps(response).encode()),
         )
-        status, payload = _run_controller_response(error)
+        status, payload = _run_controller_response(error, mutate=mutate)
         assert status == 1
         assert payload["summary"].get("pull_request_number") == (7 if number == 7 else None)
         assert "private-fixture-value" not in json.dumps(payload)

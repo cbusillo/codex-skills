@@ -7094,7 +7094,14 @@ def execute_post(
     except urllib.error.HTTPError as exc:
         if mutating and (exc.code >= 500 or exc.code == 408):
             payload = _apply_outcome_unknown(operation=operation, request=request, label="affected record and operation state")
-            _require_dict(payload["summary"]).update(service_response_diagnostics(_error_payload_from_http(exc)))
+            error_payload = _error_payload_from_http(exc)
+            summary = _require_dict(payload["summary"])
+            summary.update(service_response_diagnostics(error_payload))
+            if operation == "merge-train-controller-run-once":
+                summary.update(_controller_error_diagnostics(error_payload))
+                summary["recommendation"] = (
+                    "Read the PR and controller state before any retry; the mutating pass may have completed."
+                )
             emit(payload)
             return 1
         emit_http_error_payload(operation=operation, request=request, exc=exc)
