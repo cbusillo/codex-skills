@@ -5,12 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "codex-skills-plan-status"
 version = "0.1.0"
-description = "Native planning status and structured wait contract for catalog and train consumers"
+description = "Planning status, structured waits and Client test notes for catalog and train consumers"
 requires-python = ">=3.12"
 dependencies = []
 
 [tool.setuptools]
 packages = ["github_plan_status"]
+py-modules = ["github_client_test_notes"]
 
 [tool.setuptools.package-data]
 github_plan_status = ["py.typed"]

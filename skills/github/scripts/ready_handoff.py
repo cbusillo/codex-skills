@@ -9,7 +9,6 @@ import base64
 import json
 import re
 import sys
-from dataclasses import dataclass
 from datetime import datetime
 from fnmatch import fnmatchcase
 from pathlib import Path
@@ -21,15 +20,21 @@ HEAD = re.compile(
     r"(?im)^Head(?: SHA)?:[ \t]*(?P<marker>\*\*|`)?"
     r"(?P<sha>[0-9a-f]{40})(?(marker)(?P=marker))(?:[.\s]|$)"
 )
-NOTHING_TO_TEST = "Nothing for the Client to test"
-LEGACY_NOTHING_TO_TEST = "Nothing for the owner to test"
-NO_TEST_MARKERS = (NOTHING_TO_TEST, LEGACY_NOTHING_TO_TEST)
-TEST_NOTE_TITLES = {"client test notes", "owner test notes"}
-HEADING = re.compile(r"^ {0,3}(#{1,6})\s+(.+?)\s*#*\s*$")
-FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
-INLINE_TEST_NOTES = re.compile(
-    r"(?i)^(?:client|owner) test(?: notes|ing)(?:\*\*|[_`])*\s*(?::(?:\*\*|[_`])*|\s*$)"
-)
+# Support both standalone helpers and the Supervisor's package-style imports.
+if __package__:
+    from . import github_client_test_notes as notes_contract
+else:
+    import github_client_test_notes as notes_contract
+
+ENGINEERING_RELEASE_TESTS = notes_contract.ENGINEERING_RELEASE_TESTS
+NOTHING_TO_TEST = notes_contract.NOTHING_TO_TEST
+ClientTestNotes = notes_contract.ClientTestNotes
+INLINE_TEST_NOTES = notes_contract.INLINE_TEST_NOTES
+_markdown_lines = notes_contract._markdown_lines
+_strip_note_decoration = notes_contract._strip_note_decoration
+client_test_notes = notes_contract.client_test_notes
+owner_test_notes = notes_contract.owner_test_notes
+test_notes_sections = notes_contract.test_notes_sections
 MISSING_CLIENT_TEST_NOTES_MESSAGE = (
     'Client test notes are missing; use a "## Client test notes" section '
     'with test instructions or "Nothing for the Client to test: <reason>".'
@@ -37,6 +42,7 @@ MISSING_CLIENT_TEST_NOTES_MESSAGE = (
 UNCONFIRMED_CLIENT_ACCEPTANCE_MESSAGE = (
     "Client acceptance is not confirmed; use --waiting-for-client, or for "
     'engineering-only changes use "Nothing for the Client to test: <reason>" '
+    f'or start release test steps with "{ENGINEERING_RELEASE_TESTS}" '
     'under "## Client test notes"'
 )
 REVIEW_CONFIG_PATH = ".github/github.json"
@@ -62,12 +68,6 @@ SUPERVISOR_RUNS_REVIEW = re.compile(
     r"(?i)^(?:.*?\bso\s+)?supervisor runs the review[.:]?\s*$"
 )
 
-
-@dataclass(frozen=True)
-class ClientTestNotes:
-    review_required: bool
-    error: str = ""
-    explicit_override: bool = False
 
 
 def handoff_line(line):
@@ -102,119 +102,6 @@ def client_release_repository(repository):
 
     return read_client_release_repository(repository)
 
-
-def _markdown_lines(body: str):
-    fence = ""
-    for line in body.splitlines():
-        fence_match = FENCE.match(line)
-        if fence_match:
-            marker, rest = fence_match[1], fence_match[2]
-            if not fence and not (marker[0] == "`" and "`" in rest):
-                fence = marker
-            elif (
-                fence
-                and marker[0] == fence[0]
-                and len(marker) >= len(fence)
-                and not rest.strip()
-            ):
-                fence = ""
-        heading = HEADING.match(line) if not fence else None
-        yield line, heading, fence
-
-
-def _strip_note_decoration(value: str) -> str:
-    return re.sub(r"^(?:[\s>*_`+\-]|\d+[.)]\s)+", "", value)
-
-
-def test_notes_sections(body: str) -> tuple[str, ...]:
-    sections: list[str] = []
-    lines: list[str] = []
-    collecting = False
-    level = 0
-    for line, heading, _fence in _markdown_lines(body):
-        if heading:
-            if heading[2].strip().casefold() in TEST_NOTE_TITLES:
-                if collecting:
-                    sections.append("\n".join(lines).strip())
-                    lines = []
-                collecting = True
-                level = len(heading[1])
-                continue
-            if collecting and len(heading[1]) <= level:
-                sections.append("\n".join(lines).strip())
-                lines = []
-                collecting = False
-        if collecting:
-            lines.append(line)
-    if collecting:
-        sections.append("\n".join(lines).strip())
-    return tuple(sections)
-
-
-def owner_test_notes(body: str) -> str:
-    """Collect Client test notes sections, ignoring headings inside fenced examples."""
-    return "\n".join(section for section in test_notes_sections(body) if section).strip()
-
-
-def client_test_notes(notes: str, *, review_override: bool = False) -> ClientTestNotes:
-    """Validate a Client test notes section with Launchplane's merge-train rule."""
-    notes = re.sub(r"<!--[\s\S]*?-->", "", notes).strip()
-    sections = re.split(r"(?m)^### #([0-9]+)[^\n]*\n", notes)
-    if len(sections) > 1:
-        member_notes = ([sections[0]] if sections[0].strip() else []) + sections[2::2]
-        members = tuple(
-            client_test_notes(section, review_override=review_override)
-            for section in member_notes
-        )
-        return ClientTestNotes(
-            any(member.review_required for member in members),
-            next((member.error for member in members if member.error), ""),
-            review_override,
-        )
-    value = notes
-    placeholder = value.casefold().rstrip(" .!?:;")
-    if not value or any(
-        placeholder == marker or placeholder.startswith(marker + " -")
-        for marker in ("none", "n/a", "todo", "tbd")
-    ):
-        return ClientTestNotes(True, "Client test notes are missing.", review_override)
-    marker = next(
-        (
-            candidate
-            for candidate in NO_TEST_MARKERS
-            if value.casefold().startswith(candidate.casefold())
-        ),
-        "",
-    )
-    if marker:
-        suffix = value[len(marker) :]
-        separators = {":", "."} if marker == LEGACY_NOTHING_TO_TEST else {":"}
-        if (
-            (marker == NOTHING_TO_TEST and not value.startswith(marker))
-            or not suffix
-            or suffix[0] not in separators
-            or not suffix[1:].strip()
-        ):
-            return ClientTestNotes(
-                True,
-                f"Use {NOTHING_TO_TEST}: <reason> with a nonempty reason.",
-                review_override,
-            )
-        if review_override:
-            return ClientTestNotes(
-                True, "The Client review label requires real Client test notes.", True
-            )
-        return ClientTestNotes(False)
-    undecorated = _strip_note_decoration(value)
-    if undecorated.casefold().startswith(
-        (NOTHING_TO_TEST.casefold(), LEGACY_NOTHING_TO_TEST.casefold())
-    ):
-        return ClientTestNotes(
-            True,
-            f"Write {NOTHING_TO_TEST}: <reason> as a plain notes line.",
-            review_override,
-        )
-    return ClientTestNotes(True, explicit_override=review_override)
 
 
 def has_inline_client_test_notes(body: str) -> bool:

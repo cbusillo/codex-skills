@@ -23,6 +23,7 @@ class InstalledContractTests(unittest.TestCase):
         archive = subprocess.run([
             "git", "archive", "HEAD", "skills/github/scripts/pyproject.toml",
             "skills/github/scripts/github_plan_status",
+            "skills/github/scripts/github_client_test_notes.py",
         ], cwd=root, capture_output=True, check=True).stdout
         with tempfile.TemporaryDirectory(prefix=".plan-status-package-", dir=root) as directory:
             temporary = Path(directory)
@@ -42,6 +43,11 @@ class InstalledContractTests(unittest.TestCase):
 from importlib.resources import files
 from github_plan_status import DEFAULT_STATUS_LABELS, derive, label_changes, waits
 from github_plan_status.body import wrap_contributor_plan
+from github_client_test_notes import ENGINEERING_RELEASE_TESTS, client_test_notes
+notes = ENGINEERING_RELEASE_TESTS + '\\nCheck the imported parts at release.'
+assert not client_test_notes(notes).review_required
+assert client_test_notes(notes, review_override=True).review_required
+assert client_test_notes('Approve the screen before merge.').review_required
 held = waits.reviewed(evidence='Client requested acceptance',
                       waiting_for='Client acceptance', ends_when='Client accepts')
 issue = {'state': 'open', 'user': {'id': 71, 'login': 'owner'},

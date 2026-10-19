@@ -591,6 +591,32 @@ still requires current-head acceptance. This read grants no release authority.
 Read-back and uncertain-comment recovery
 use the [shared retry policy](#shared-retry-policy); do not replay an unknown write.
 
+For engineering work that merges to testing now and has Client checks at release,
+start the notes with this exact plain line, followed by real release test steps:
+
+```markdown
+## Client test notes
+Engineering: merge to testing; Client tests at release.
+
+After the real-data import, check the imported parts and supplier costs.
+```
+
+The notes classify the PR: `Nothing for the Client to test: <reason>` and this
+engineering marker allow ordinary checked `ready`. Unmarked test steps need
+Client acceptance before merge. Never use the engineering marker when the Client
+must approve wording, screens, workflows or data before merge; keep those PRs on
+`--waiting-for-client`. A review label, a non-neutral review check, or another
+section or batch member requiring acceptance still keeps that gate. The marker
+needs real steps and applies only at the start of its notes section or batch
+member, outside comments and code examples. Every release still needs the
+Client's acceptance; engineering classification grants no release authority.
+
+`github/scripts/github_client_test_notes.py` owns the marker and parser, exported
+by the existing `codex-skills-plan-status` package alongside planning status.
+`ready_handoff.py` re-exports the contract for producer and watcher callers.
+Launchplane's `control_plane/client_test_notes.py` must import this contract from
+its pinned package dependency so its owner-review check uses the same rule.
+
 To withdraw an earlier Ready after a renewed hold, defect or change request
 (including while CI is pending or failing), use
 `gh-pr.py --repo OWNER/REPO comment <pr> --body-file <file>` with

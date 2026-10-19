@@ -1675,6 +1675,20 @@ class QualificationTests(unittest.TestCase):
         self.io.acceptance = lambda *_args: True
         self.assertTrue(self.qualified())
 
+    def test_engineering_release_notes_enqueue_without_claiming_client_acceptance(self):
+        self.pull["body"] = (
+            "## Client test notes\n"
+            f"{ready_handoff.ENGINEERING_RELEASE_TESTS}\n"
+            "Check the imported parts at release."
+        )
+        self.io.acceptance = lambda *_args: False
+        self.assertTrue(self.qualified())
+        self.pull["labels"] = [{"name": "owner-review"}]
+        self.assertFalse(self.qualified())
+        self.pull["labels"] = []
+        self.pull["body"] += "\n## Owner test notes\nApprove the wording before merge."
+        self.assertFalse(self.qualified())
+
     def test_latest_current_head_changes_requested_refuses(self):
         self.reviews = [
             {
