@@ -321,6 +321,52 @@ commands:
         "<private-file>",
       ]
     purpose: Builds an inert plan for retiring selected workflow authz rules; it has no apply mode.
+  - name: launchplane-runtime-setting-removal-dry-run
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/launchplane-write-action.py",
+        "runtime-setting-removal-dry-run",
+        "--product",
+        "<product>",
+        "--scope",
+        "context",
+        "--context",
+        "<context>",
+        "--key",
+        "<setting-name>",
+        "--reason",
+        "<reason>",
+      ]
+    purpose: Saves a private service review for removing named stored runtime settings and returns its review id and digest; it has no apply.
+  - name: launchplane-runtime-setting-removal-readback
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/launchplane-write-action.py",
+        "runtime-setting-removal-readback",
+        "--product",
+        "<product>",
+        "--scope",
+        "context",
+        "--context",
+        "<context>",
+        "--key",
+        "<setting-name>",
+        "--reason",
+        "<reason>",
+        "--review-id",
+        "<review-id>",
+        "--plan-sha256",
+        "<plan-sha256>",
+      ]
+    purpose: Reads back whether stored runtime settings match a reviewed removal, by names and digests only.
   - name: launchplane-merge-train-policy-import-dry-run
     source: skill
     resource_path: scripts/launchplane-write-action.py
@@ -1239,6 +1285,16 @@ verification.
   digests. Nothing is written and there is no apply mode. Launchplane does not
   know which workflows use a rule; review workflow sources first. Read the
   [helper contract](references/write-action-helper-contract.md#workflow-rule-retirement-inspection).
+- `POST /v1/admin/runtime-settings/removal`: Bounded local-extension path
+  (`runtime-setting-removal-dry-run` / `-readback`, with `--product`,
+  `--scope`, `--context`, `--instance`, one `--key` per setting name, and
+  `--reason`) for the Director agent to review removing stored plain runtime
+  settings. Output holds names and digests only, never values or the reason.
+  A dry run saves a private service review and returns its `review_id` and
+  `plan_sha256`. Readback repeats the same keys and reason with that review id
+  and digest. There is no apply here. Apply belongs to the signed-in admin,
+  and a dry-run digest does not authorize it. Read the
+  [helper contract](references/write-action-helper-contract.md#runtime-setting-removal-review).
 - `POST /v1/product-profiles/{product}/owner`: Bounded local-extension path
   that records or clears a product's Client (`product-owner-dry-run` /
   `-apply`, with `--product`, `--github-login` or `--clear`, and `--reason`).
