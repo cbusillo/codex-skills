@@ -399,6 +399,33 @@ def exact_source_release(source_id: int, candidate: dict[str, Any], comments: li
     return len(pair) == 2 and bool(claim.exact_released_sources(pair))
 
 
+@dataclass(frozen=True)
+class _ReleasedSourceContext:
+    source_id: int
+    author: str
+    source: dict[str, str]
+    ended_at: datetime
+
+    @property
+    def session(self) -> str:
+        return self.source["session"]
+
+
+def _released_source_contexts(comments: list[dict[str, Any]]) -> tuple[_ReleasedSourceContext, ...]:
+    """Select only confirmed canonical authority, never a worker's posting time."""
+    comments = effective_comments(comments)
+    result = []
+    for released, receipt in receipts(comments):
+        if ("_release_evidence" not in released or "legacy_reason" in receipt["source"]
+                or receipt.get("termination") is not None
+                or not exact_source_release(receipt["source_id"], released, comments)):
+            continue
+        source = next(c for c in comments if c.get("id") == receipt["source_id"])
+        result.append(_ReleasedSourceContext(source["id"], source["user"]["login"],
+                                            receipt["source"], stamp(receipt["evidence_at"])))
+    return tuple(result)
+
+
 def followup_release(source: dict[str, Any], comments: list[dict[str, Any]], *, actor: str,
                      session: str, ended: datetime) -> dict[str, Any] | None:
     """Consume an authored exact release using the producer's relationship facts.

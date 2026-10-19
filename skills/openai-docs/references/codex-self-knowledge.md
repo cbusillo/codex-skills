@@ -66,6 +66,6 @@ For product surfaces, distinguish terminal-first CLI work, editor-attached IDE w
 
 For plugin or app failures, check the installed bundle, enabled state, connector authorization, MCP setup, restart or new-thread expectations, and workspace policy before inferring a cause. Route billing, entitlements, undocumented rollout labels, and unsupported access paths to the appropriate support team or workspace administrator.
 
-Memory can provide user preferences or context, but explicit prompt instructions win and memory is not a source for current external facts. Sandbox or network denials require narrowly scoped escalation with a clear justification; destructive commands, writes outside the workspace, and broad access changes require explicit approval.
+Memory can provide user preferences or context, but explicit prompt instructions win and memory is not a source for current external facts. Apply the actual session's harness permissions and [task scope and authorization](../../references/execution-scope.md), together with the Director's current `DIRECTION.md`, for action authority and handling denials.
 
 When a page-specific citation helps, useful official anchors include `concepts/customization#agents-guidance`, `concepts/customization#skills`, `plugins/build#plugin-structure`, `concepts/customization#mcp`, `config-advanced#hooks`, `app/automations#thread-automations`, and `config-reference#configtoml`.

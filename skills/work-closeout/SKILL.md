@@ -117,9 +117,10 @@ preserved, or intentionally left in place.
    with common triggers: docs routing, validation gates, primary commands,
    important workflows, health endpoints, repo relationships, JetBrains
    expectations, cleanup policy, and ownership boundaries. If metadata should
-   change, update it only with approval, including approval already given for
-   that metadata change and scope; otherwise record a concrete remaining item
-   before saying it is safe to exit.
+   change, maintain in-scope metadata under existing task or standing authority,
+   following [task scope](../references/execution-scope.md) for stop boundaries
+   or expanded scope. A read-only audit stays read-only; record any remaining
+   metadata work before saying it is safe to exit.
 
    Also read `cleanup`. During closeout, run or report repo-configured commands
    with `when: "routine"` as closeout evidence. Commands marked `explicit`,
@@ -221,8 +222,17 @@ preserved, or intentionally left in place.
    stash, or overwrite unrelated IDE changes. Whole-worktree retirement requires
    the shared cleanup policy's protected-file, preservation, ownership, and
    authorization evidence.
-7. Do not remove user artifacts, broad system caches, unrelated untracked files,
-   or remote resources without explicit approval.
+7. Do not remove user artifacts, broad system caches, unrelated untracked files
+   or unrelated remote resources without explicit approval. Use `github` for
+   task-owned branch cleanup. Before deleting task-owned testing or preview
+   resources, establish disposability under current overall and repository
+   direction, including their in-use, only-copy, production-isolation and
+   live-data safeguards. For Launchplane-managed lanes, use the
+   [disposable-lane observations](../launchplane/references/write-action-helper-contract.md#disposable-lane-observations)
+   for that evidence. For Launchplane-managed resources, use
+   [contract-backed lifecycle routing](../launchplane/SKILL.md#contract-backed-lifecycle-and-repair-routing).
+   For other resources, use [infra-ops](../infra-ops/SKILL.md#workflow) for
+   documented provider lifecycle operations under existing task authority.
 8. Before a safe-exit all-clear, complete [claim disposition](#claim-disposition)
    for this native session on either harness. Updating status or preserving a
    PR does not release ownership. Keep the claim while a required review is

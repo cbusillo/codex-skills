@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
+from contextvars import ContextVar
 import os
 from pathlib import Path
 import subprocess
@@ -13,6 +15,26 @@ import sys
 
 import github_plan_closure
 import github_plan_native
+
+_SOURCE_CONTEXTS = ContextVar("canonical_source_contexts", default=())
+_SOURCE_READBACK = ContextVar("canonical_source_readback", default=None)
+_PENDING_PROOFS = ContextVar("pending_native_proofs", default=None)
+
+
+@contextmanager
+def _source_readback(readback, contexts=()):
+    """The claim owner supplies canonical reads; native observation never does."""
+    token = _SOURCE_READBACK.set(readback)
+    context_token = _SOURCE_CONTEXTS.set(tuple(contexts))
+    try:
+        yield
+    finally:
+        _SOURCE_CONTEXTS.reset(context_token)
+        _SOURCE_READBACK.reset(token)
+
+
+def _source_home(source):
+    return Path((source.get("resumed_generation") or source)["codex_home"]).resolve()
 
 
 def native_helpers():
@@ -83,15 +105,54 @@ async def observe_home(home: Path, sessions: set[str], proof_sessions: set[str] 
         state = thread.get("status", {}).get("type")
         source = github_plan_closure.RECEIPTS.get().get(session)
         recovering = source and (github_plan_closure.action_pending(session) or source.get("resumed_at"))
-        if prove and recovering and Path(source["codex_home"]).resolve() == home.resolve():
+        if prove and recovering:
+            # A recovering generation must never fall through to the ordinary
+            # authored-release path in another account, even after a clear.
+            if _source_home(source) != home.resolve():
+                return
             if state not in {"idle", "notLoaded"}:
                 live(session, thread)
                 return
-            process = await asyncio.to_thread(github_plan_native.verify_source_process, source)
+            contexts = ([c for c in _SOURCE_CONTEXTS.get() if c.session == session]
+                        if source.get("supervisor_owned") is not True else []) or [None]
+            # A known-live source keeps its action lease available. End-only
+            # candidate qualification may advance, but process failures may not.
+            for first, context in enumerate(contexts):
+                try:
+                    process = await asyncio.to_thread(github_plan_native.verify_source_process, source, _context=context)
+                    break
+                except github_plan_native._SourceEndMismatch:
+                    continue
+            else:
+                live(session, thread)
+                return
             with github_plan_closure.pending_observation(session) as acquired:
                 if not acquired:
+                    live(session, thread)
                     return
-                proof = await github_plan_native.prove_end(source, request, process=process)
+                action = github_plan_closure.lease_state(session)
+                proof = None
+                for index in range(first, len(contexts)):
+                    if (github_plan_closure.source_records({session}).get(session) != source
+                            or github_plan_closure.lease_state(session) != action):
+                        break
+                    try:
+                        if index != first:
+                            process = await asyncio.to_thread(github_plan_native.verify_source_process, source,
+                                                               _context=contexts[index])
+                        proof = await github_plan_native.prove_end(source, request, process=process)
+                        break
+                    except github_plan_native._SourceEndMismatch:
+                        continue
+                if proof is None:
+                    live(session, thread)
+                    return
+                if process.context is not None:
+                    candidates = _PENDING_PROOFS.get()
+                    if candidates is None or _SOURCE_READBACK.get() is None:
+                        raise ValueError("canonical source resolution needs its owner's readback")
+                    candidates[session] = (proof, thread["cwd"])
+                    return
                 # This write stays in the async lease owner, after all worker reads.
                 github_plan_native.resolve_pending(session, proof)
                 peers[:] = [peer for peer in peers if peer["sessionId"] != session]
@@ -213,7 +274,7 @@ async def observe_home(home: Path, sessions: set[str], proof_sessions: set[str] 
                     try:
                         await inspect(session, prove=coverage["peer_complete"])
                     except (KeyError, TypeError, ValueError, AttributeError, OSError, ImportError):
-                        continue  # No successful observation means unknown, never ended.
+                        continue  # The aggregate recovery check owns an unresolved source.
     except aiohttp.ClientConnectorError as error:
         if isinstance(error.os_error, (ConnectionRefusedError, FileNotFoundError)):
             coverage.update(status="unavailable", reason="socket_not_listening")
@@ -274,7 +335,7 @@ def process_absence_known(text: str, observed_sockets: set[str] | None = None) -
     return True
 
 
-def observe(sessions: set[str], proof_sessions: set[str] | None = None):
+def observe(sessions: set[str], proof_sessions: set[str] | None = None, *, _source_contexts=()):
     retained = set()
     with github_plan_closure.observation(sessions, retain=retained) as leased:
         cache_token = github_plan_closure.LOG_CACHE.set(None)
@@ -286,9 +347,44 @@ def observe(sessions: set[str], proof_sessions: set[str] | None = None):
             except (OSError, ValueError):
                 continue
         token = github_plan_closure.RECEIPTS.set(receipts)
+        contexts = list(_SOURCE_CONTEXTS.get())
+        contexts.extend(context for context in _source_contexts if context not in contexts)
+        context_token = _SOURCE_CONTEXTS.set(tuple(contexts))
+        candidates = {}
+        proof_token = _PENDING_PROOFS.set(candidates)
         try:
             peers, states, coverage = _observe(sessions, proof_sessions)
             github_plan_closure.inherit_observed_leases()
+            for session, (proof, cwd) in candidates.items():
+                covered = set(proof["homes"])
+                def idle_copy(peer):
+                    return peer.get("native_state") == "idle" and peer.get("home") in covered
+                if (not coverage["peer_complete"] or coverage["process_coverage"] != "complete"
+                        or any(peer.get("sessionId") == session and not idle_copy(peer) for peer in peers)):
+                    continue
+                # Keep canonical errors outside the asynchronous observation
+                # catch: the claim reports their real class, not native_action.
+                _SOURCE_READBACK.get()(proof["snapshot"]["process"].context)
+                try:
+                    current = github_plan_native.source_snapshot(proof["snapshot"]["entry"], proof["snapshot"]["process"])
+                    if current != proof["snapshot"]:
+                        raise ValueError("native source changed during canonical readback")
+                    github_plan_native.resolve_pending(session, proof)
+                except (KeyError, TypeError, ValueError, OSError, subprocess.SubprocessError):
+                    peers.append({"sessionId": session, "cwd": cwd, "state": "unknown", "source": "native_recovery"})
+                    states[session] = {"state": "live", "source": "native_recovery"}
+                    continue
+                peers[:] = [peer for peer in peers if not (peer.get("sessionId") == session and idle_copy(peer))]
+                states[session] = {"state": "ended", "source": "native_resolution", "resolved_native": True,
+                                   "ended_at": proof["snapshot"]["process"].context.ended_at.isoformat(),
+                                   "native_state": proof["facts"]["state"], "covered_homes": sorted(covered),
+                                   "cwd": cwd, "leased_closure": False}
+            for session, source in receipts.items():
+                if ((source.get("resumed_at") or github_plan_closure.action_pending(session))
+                        and not states.get(session, {}).get("resolved_native")):
+                    if not any(peer.get("sessionId") == session and peer.get("source") == "native_recovery" for peer in peers):
+                        peers.append({"sessionId": session, "cwd": "/", "state": "unknown", "source": "native_recovery"})
+                    states[session] = {"state": "live", "source": "native_recovery"}
             for session in sessions:
                 try:
                     github_plan_closure.require_canonical_identity(session)
@@ -311,6 +407,8 @@ def observe(sessions: set[str], proof_sessions: set[str] | None = None):
                             if state.get("state") == "ended" and session not in unreleased)
             return peers, states, coverage
         finally:
+            _PENDING_PROOFS.reset(proof_token)
+            _SOURCE_CONTEXTS.reset(context_token)
             github_plan_closure.RECEIPTS.reset(token)
             github_plan_closure.LOG_CACHE.reset(cache_token)
 
@@ -322,10 +420,18 @@ def _observe(sessions: set[str], proof_sessions: set[str] | None = None):
         # this does not change configured-only resume or idle admission.
         for row in github_plan_closure.RECEIPTS.get().values():
             try:
-                if row.get("codex_home") and (row.get("resumed_at") or github_plan_closure.action_pending(row["session_id"])):
-                    homes.add(Path(row["codex_home"]).resolve())
-            except (OSError, ValueError):
+                recovering = row.get("resumed_at") or github_plan_closure.action_pending(row["session_id"])
+            except (OSError, ValueError, KeyError, TypeError):
                 continue
+            if recovering:
+                for identity in (row, row.get("resumed_generation")):
+                    if not isinstance(identity, dict):
+                        continue
+                    try:
+                        if identity.get("codex_home"):
+                            homes.add(Path(identity["codex_home"]).resolve())
+                    except (OSError, ValueError, TypeError):
+                        continue
         return await asyncio.gather(*(observe_home(home, sessions, proof_sessions) for home in sorted(homes)), return_exceptions=True)
 
     peers, states, resolutions = [], {}, {}

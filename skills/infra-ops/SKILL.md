@@ -67,14 +67,19 @@ into this repo.
 
 ## Safety Tiers
 
+Apply [task scope and authorization](../references/execution-scope.md) and the
+Director's current overall and product `DIRECTION.md` stop boundaries before
+choosing a write path. Those sources own approval, disposable-lane protections,
+and accepted-release authority.
+
 - **Read-only inventory**: list docs, inspect config, query status endpoints,
   collect health evidence, and summarize current state. Start here.
 - **Reversible pilot write**: create canary routes, temporary records, test
   users, scoped firewall entries, or feature-specific dry-runs only after
   documenting rollback and verification.
-- **Production-impacting mutation**: require explicit user approval, host or
-  account identity checks, snapshot or backup gates when relevant, redacted
-  payload review, and a rollback path before apply.
+- **Production-impacting mutation**: verify host or account identity, satisfy
+  snapshot or backup gates when relevant, review the redacted payload, and
+  establish a rollback path before apply.
 
 When the target is ambiguous, pause mutation and keep working read-only until
 the authority, blast radius, and who holds the rollback are clear.

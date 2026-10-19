@@ -722,9 +722,9 @@ against it. The direction session drafts those pull requests with the Director.
    findings. Once its `DIRECTION.md` is on the default branch, `--weekly`
    finds and audits it every week.
 
-Repositories adopted before this step existed need one catch-up reconciliation:
-codex-skills and jetbrains-inspection-api (codex-lab is retired). Launchplane's pass is
-already done; record each catch-up's completion on GitHub to avoid repeating it.
+For repositories adopted before this step existed, finish any missing step-4
+reconciliation using the existing GitHub dispositions and current
+implementation evidence.
 
 Format chat and GitHub writes under
 [talking with the Director](../references/talking-with-the-director.md).
