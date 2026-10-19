@@ -651,7 +651,7 @@ def test_prune_preserves_writer_started_after_final_read() -> None:
                             "sys.path.insert(0, sys.argv[1]); import direction_mark as mark; "
                             "Path(sys.argv[3]).write_text('ready'); "
                             "now=dt.datetime(2026,10,4,tzinfo=dt.timezone.utc); "
-                            "mark.mark_turn(Path(sys.argv[2]),'o/daily',now) if sys.argv[4]=='turn' "
+                            "mark.mark_turn(Path(sys.argv[2]),'o',now) if sys.argv[4]=='turn' "
                             "else mark.mark_audit(Path(sys.argv[2]),'o/new',now)",
                             str(SCRIPT.parent), str(marker), str(ready), kind,
                         ], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -680,7 +680,7 @@ def test_prune_preserves_writer_started_after_final_read() -> None:
                 assert writer.returncode == 0, (stdout, stderr)
                 after = json.loads(marker.read_text())
                 assert after["turn"] == ("2026-10-04T00:00:00Z" if kind == "turn" else "earlier"), after
-                assert after.get("turn_repo") == ("o/daily" if kind == "turn" else None)
+                assert after.get("turn_repo") == ("o/direction" if kind == "turn" else None)
                 assert after["audits"] == ({"o/new": "2026-10-04T00:00:00Z"} if kind == "audit" else {})
                 assert after["other"] is True
                 assert Path(result["backup"]).read_bytes() == original
@@ -3020,6 +3020,196 @@ def test_audit_identity_refused_link_keeps_other_wait_evidence() -> None:
     assert not report["complete"]
     assert [row["number"] for row in report["items"]] == [2]
     assert report["unavailable"] and report["unavailable"][0]["number"] == 1
+
+
+
+HOOK = Path(__file__).resolve().parents[3] / "hooks" / "direction_check_hook.py"
+
+
+def load_hook() -> Any:
+    spec = importlib.util.spec_from_file_location("direction_check_hook_for_audit", HOOK)
+    assert spec and spec.loader
+    hook = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hook)
+    return hook
+
+
+class WeeklyAccount:
+    """One account on a fake reader: o/direction plus adopted o/a and o/b, and o/plain without a file."""
+
+    def __init__(self, module: Any) -> None:
+        import base64
+
+        self.module = module
+        self.selection = "all"
+        self.failing: set[str] = set()   # repositories whose milestone read fails
+        self.capped: set[str] = set()    # repositories whose closed audit listing hits the page cap
+        self.unknown: set[str] = set()   # repositories whose DIRECTION.md answer is not a 404 or a file
+        self.names = ["direction", "a", "b", "plain"]
+        self.content = {"type": "file", "content": base64.b64encode(DIRECTION.encode()).decode()}
+        self.closed = {**issue(20, "Finished", labels=("audit",)), "state": "closed", "closed_at": stamp(NOW)}
+
+    def fetch(self, args: list[str], **_kwargs: Any) -> Any:
+        path = args[1]
+        repo = "/".join(path.split("/")[1:3])
+        if path.startswith("installation/repositories"):
+            listing = [{"full_name": f"o/{name}", "owner": {"login": "o"}, "archived": False} for name in self.names]
+            return {"repositories": listing, "repository_selection": self.selection}
+        if path.endswith("/contents/DIRECTION.md"):
+            if repo in self.unknown:
+                raise self.module.AuditError("gh: HTTP 502 Bad Gateway")
+            if repo == "o/plain":
+                raise self.module.AuditError("gh: Not Found (HTTP 404)")
+            return self.content
+        if path == f"repos/{repo}":
+            return {"full_name": repo, "archived": False, "default_branch": "main"}
+        if "/milestones?" in path:
+            if repo in self.failing:
+                raise self.module.AuditError("gh: HTTP 502 Bad Gateway")
+            return [milestone(1, "Thin fork decision"), milestone(2, "Dogfood week")]
+        if "/rulesets?" in path:
+            return [{"name": name, "target": "branch", "enforcement": "active"}
+                    for name in self.module.github_rulesets.required_ruleset_names()]
+        if "labels=audit" in path and "state=closed" in path and repo in self.capped:
+            return [self.closed] * 100
+        return []
+
+    def run(self, argv: list[str], marker: Path, shared: list[tuple[str, str]] | None = None) -> tuple[int, dict[str, Any]]:
+        def share(stamp_text: str, owner: str) -> dict[str, Any]:
+            if shared is not None:
+                shared.append((stamp_text, owner))
+            return {"ok": True, "repo": f"{owner}/direction", "issue": 7}
+
+        output = StringIO()
+        with (patch.dict(os.environ, {"DIRECTION_MARKER": str(marker)}),
+              patch.dict(vars(self.module), {
+                  "gh_json": self.fetch,
+                  "fetch_capacity": lambda *_args, **_kwargs: (summary(self.module), []),
+                  "active_unadopted_report": lambda *_args, **_kwargs: {"complete": True, "repositories": [], "unavailable": []},
+              }),
+              patch.object(self.module.direction_mark, "share_weekly", share),
+              patch.dict(vars(self.module.github_identity), {"configured_bot_logins": lambda: ("bot",),
+                                                             "automation_login": lambda: None}),
+              redirect_stdout(output), redirect_stderr(StringIO())):
+            code = self.module.main([*argv, "--automation", "bot", "--gh", "fixture-gh"])
+        return code, json.loads(output.getvalue())
+
+
+def weekly_state(marker: Path, owner: str = "o") -> str | None:
+    """The session-start reminder's weekly-audit state for this machine's marker alone."""
+    hook = load_hook()
+    return hook.reminder_states(hook.read_marker(marker), dt.datetime.now(dt.timezone.utc), owner)["audit"]
+
+
+def test_single_repository_audits_of_every_adopted_repository_leave_the_weekly_reminder() -> None:
+    module = load()
+    account = WeeklyAccount(module)
+    with tempfile.TemporaryDirectory() as tmp:
+        marker = Path(tmp) / "marker.json"
+        for repo in ("o/direction", "o/a", "o/b"):
+            code, result = account.run(["--repo", repo], marker)
+            assert code in (0, 3) and result["run_recorded"] == str(marker), result
+        saved = json.loads(marker.read_text())
+        assert set(saved["audits"]) == {"o/direction", "o/a", "o/b"}
+        assert "weekly_audit" not in saved, "a single-repository audit never records the weekly audit"
+        assert weekly_state(marker) == "due"
+
+
+def test_weekly_audit_records_once_every_adopted_repository_was_read() -> None:
+    module = load()
+    account = WeeklyAccount(module)
+    with tempfile.TemporaryDirectory() as tmp:
+        marker = Path(tmp) / "marker.json"
+        shared: list[tuple[str, str]] = []
+        code, receipt = account.run(["--weekly", "--owner", "o"], marker, shared)
+        assert receipt["repos"] == ["o/direction", "o/a", "o/b"], "OWNER/direction first, then each adopted repository"
+        assert receipt["unread"] == {} and receipt["held"] == {}
+        assert code == (0 if receipt["ok"] else 3)
+        saved = json.loads(marker.read_text())
+        assert receipt["weekly_recorded"]["ran"] == saved["weekly_audit"]["ran"] == receipt["started"]
+        assert saved["weekly_audit"]["record"] == "o/direction"
+        assert set(saved["audits"]) == {"o/direction", "o/a", "o/b"}, "each repository's own window still advances"
+        assert shared == [(receipt["started"], "o")], "the shared record is written once, after the local stamp"
+        assert weekly_state(marker) == "current"
+
+
+def test_weekly_audit_counts_a_held_window_as_read_but_not_failed_reads() -> None:
+    module = load()
+    for broken, recorded in (("capped", True), ("failing", False)):
+        account = WeeklyAccount(module)
+        getattr(account, broken).add("o/b")
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = Path(tmp) / "marker.json"
+            shared: list[tuple[str, str]] = []
+            code, receipt = account.run(["--weekly", "--owner", "o"], marker, shared)
+            saved = json.loads(marker.read_text())
+            assert ("weekly_audit" in saved) is recorded, receipt
+            assert bool(receipt["weekly_recorded"]) is recorded and bool(shared) is recorded
+            if recorded:
+                assert list(receipt["held"]) == ["o/b"] and receipt["unread"] == {}
+                assert code == 3, "the held window is still reported as a coverage finding"
+                assert weekly_state(marker) == "current"
+            else:
+                assert list(receipt["unread"]) == ["o/b"] and code == 1
+                assert "o/a" in saved["audits"], "repositories that were read keep their own stamps"
+                assert weekly_state(marker) == "due"
+
+
+def test_weekly_audit_refuses_an_incomplete_or_unknown_repository_listing() -> None:
+    module = load()
+    for gap in ("page_limit", "installation_selected_repositories", "unknown_adoption"):
+        account = WeeklyAccount(module)
+        if gap == "installation_selected_repositories":
+            account.selection = "selected"
+        elif gap == "unknown_adoption":
+            account.unknown.add("o/plain")
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = Path(tmp) / "marker.json"
+            shared: list[tuple[str, str]] = []
+            listing = module.owner_repositories
+            capped = (lambda owner, **kwargs: (listing(owner, **kwargs)[0], True)) if gap == "page_limit" else listing
+            with patch.object(module, "owner_repositories", capped):
+                code, receipt = account.run(["--weekly", "--owner", "o"], marker, shared)
+            assert code == 1 and receipt["weekly_recorded"] is None and not shared, (gap, receipt)
+            assert receipt["discovery"]["complete"] is False
+            if gap == "unknown_adoption":
+                assert list(receipt["unread"]) == ["o/plain"], "an unreadable DIRECTION.md is not treated as absent"
+            else:
+                assert {"source": "repositories", "reason": gap} in receipt["discovery"]["gaps"]
+            assert "weekly_audit" not in json.loads(marker.read_text())
+            assert weekly_state(marker) == "due"
+
+
+def test_weekly_audit_reports_a_shared_write_failure_after_the_local_stamp() -> None:
+    module = load()
+    account = WeeklyAccount(module)
+    with tempfile.TemporaryDirectory() as tmp:
+        marker = Path(tmp) / "marker.json"
+        failed = {"ok": False, "repo": "o/direction", "error": "gh: HTTP 403"}
+        with patch.object(module.direction_mark, "share_weekly", lambda *_args: failed):
+            output = StringIO()
+            with (patch.dict(os.environ, {"DIRECTION_MARKER": str(marker)}),
+                  patch.dict(vars(module), {"gh_json": account.fetch,
+                                            "fetch_capacity": lambda *_a, **_k: (summary(module), []),
+                                            "active_unadopted_report": lambda *_a, **_k: {"complete": True, "repositories": [], "unavailable": []}}),
+                  redirect_stdout(output), redirect_stderr(StringIO())):
+                code = module.main(["--weekly", "--owner", "o", "--automation", "bot", "--gh", "fixture-gh"])
+        receipt = json.loads(output.getvalue())
+        assert code == 2 and receipt["shared"] == failed
+        assert json.loads(marker.read_text())["weekly_audit"]["ran"] == receipt["weekly_recorded"]["ran"]
+
+
+def test_weekly_mode_requires_an_owner_and_no_other_mode() -> None:
+    module = load()
+    for argv in (["--weekly"], ["--weekly", "--owner", "o", "--repo", "o/a"], ["--weekly", "--owner", "o/a"],
+                 ["--weekly", "--owner", "o", "--stale-waits-only"]):
+        with redirect_stderr(StringIO()):
+            try:
+                module.main(argv)
+            except SystemExit as exc:
+                assert exc.code == 2, argv
+            else:
+                raise AssertionError(argv)
 
 
 def main() -> int:

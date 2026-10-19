@@ -5,16 +5,18 @@
 # ///
 """Record that a daily direction turn just finished, on this machine and for every machine.
 
-The turn goes into the local marker and into one shared turn record, an issue
-in OWNER/direction kept by the automation identity, where OWNER owns the
-covered repository. The session-start hook in `hooks/direction_check_hook.py`
+A daily turn is account-wide: it always covers the Director's OWNER/direction,
+whatever folder the session started in. The turn goes into the local marker
+and into one shared turn record, an issue in OWNER/direction kept by the
+automation identity. The session-start hook in `hooks/direction_check_hook.py`
 reads the marker, reads the shared record when the marker's turn is stale,
 and reminds the owner while a turn is overdue. Only the direction agent runs
-this, at the end of a turn the owner took part in. Weekly audits are not
-marked here: `direction_audit.py` records its own completion per repository,
-so an audit stamp means a real read-only audit ran. The `audits` map holds
-where each repository's next audit window starts; `audit_runs` holds when an
-audit last ran and, when it kept its window open, why.
+this, at the end of a turn the owner took part in. Audits are not marked by
+hand: `direction_audit.py` records each repository's audit and, after a
+complete `--weekly` run, the weekly audit, locally and in its own shared
+record. The `audits` map holds where each repository's next audit window
+starts; `audit_runs` holds when an audit last ran and, when it kept its window
+open, why; `weekly_audit` holds when the last complete weekly audit ran.
 """
 
 from __future__ import annotations
@@ -36,6 +38,9 @@ MARKER_NAME = "direction-last-check.json"
 GITHUB_SCRIPTS = Path(__file__).resolve().parents[2] / "github" / "scripts"
 TURN_RECORD_TAG = "<!-- direction-turn-record -->"
 TURN_RECORD_TITLE = "Daily direction turns"
+WEEKLY_RECORD_TAG = "<!-- direction-weekly-audit-record -->"
+WEEKLY_RECORD_TITLE = "Weekly direction audits"
+OVERALL_REPO = "direction"
 SHARED_TIMEOUT = 60
 
 
@@ -97,18 +102,42 @@ def save(path: Path, current: dict[str, object]) -> None:
         Path(temporary).unlink(missing_ok=True)
 
 
-def covered_repo(repo: str) -> str:
-    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
-        raise ValueError("daily coverage must be OWNER/REPO")
-    return repo
+def account(value: str) -> str:
+    """The Director's account from OWNER, or from OWNER/REPO for the older --repo form."""
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?", value):
+        raise ValueError("the account must be OWNER (or OWNER/REPO)")
+    return value.split("/", 1)[0]
 
 
-def mark_turn(path: Path, repo: str, now: dt.datetime) -> dict[str, object]:
-    repo = covered_repo(repo)
+def legacy_repo(value: str) -> str:
+    """The older `turn --repo OWNER/REPO` form keeps working; only its account is used."""
+    if "/" not in value:
+        raise ValueError("--repo takes OWNER/REPO; pass --owner OWNER instead")
+    return account(value)
+
+
+def direction_repo(value: str) -> str:
+    """OWNER/direction: the repository a daily turn and a weekly audit always cover."""
+    return f"{account(value)}/{OVERALL_REPO}"
+
+
+def mark_turn(path: Path, owner: str, now: dt.datetime) -> dict[str, object]:
+    """Record an account-wide daily turn; its coverage is always OWNER/direction."""
+    repo = direction_repo(owner)
     with marker_lock(path) as path:
         current = load(path)
         current["turn"] = utc_stamp(now)
         current["turn_repo"] = repo
+        save(path, current)
+    return current
+
+
+def mark_weekly(path: Path, owner: str, now: dt.datetime) -> dict[str, object]:
+    """Record a complete weekly audit of the account; only `direction_audit.py --weekly` calls this."""
+    record = direction_repo(owner)
+    with marker_lock(path) as path:
+        current = load(path)
+        current["weekly_audit"] = {"ran": utc_stamp(now), "record": record}
         save(path, current)
     return current
 
@@ -156,6 +185,17 @@ def turn_record_body(stamp: str, repo: str) -> str:
     )
 
 
+def weekly_record_body(stamp: str) -> str:
+    """The shared weekly-audit record the hook parses; its tag and line format are the contract."""
+    return (
+        f"{WEEKLY_RECORD_TAG}\n"
+        "`direction_audit.py --weekly` updates this issue after a weekly audit that read every adopted repository, "
+        "so the session-start reminder on each of the Director's machines sees the same last audit. "
+        "Keep it open and do not edit it by hand.\n\n"
+        f"Last weekly audit: {stamp}\n"
+    )
+
+
 def run_helper(args: list[str], stdin: str | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(args, input=stdin, text=True, capture_output=True, timeout=SHARED_TIMEOUT)
 
@@ -166,7 +206,16 @@ def failure(result: subprocess.CompletedProcess[str]) -> str:
 
 def share_turn(stamp: str, repo: str) -> dict[str, object]:
     """Keep the shared turn record in OWNER/direction current, through the automation helpers."""
-    record_repo = f"{repo.split('/', 1)[0]}/direction"
+    return share_record(direction_repo(repo), TURN_RECORD_TAG, TURN_RECORD_TITLE, turn_record_body(stamp, direction_repo(repo)))
+
+
+def share_weekly(stamp: str, owner: str) -> dict[str, object]:
+    """Keep the shared weekly-audit record in OWNER/direction current; the turn record is not touched."""
+    return share_record(direction_repo(owner), WEEKLY_RECORD_TAG, WEEKLY_RECORD_TITLE, weekly_record_body(stamp))
+
+
+def share_record(record_repo: str, tag: str, title: str, body: str) -> dict[str, object]:
+    """Find the lowest-numbered open issue carrying `tag`, then rewrite it, or create one."""
     try:
         listed = run_helper([str(GITHUB_SCRIPTS / "gh-with-env-token"), "api",
                              f"repos/{record_repo}/issues?state=open&sort=created&direction=asc&per_page=100", "--method", "GET"])
@@ -176,14 +225,13 @@ def share_turn(stamp: str, repo: str) -> dict[str, object]:
         records = sorted(
             issue["number"] for issue in issues
             if isinstance(issue, dict) and "pull_request" not in issue
-            and TURN_RECORD_TAG in str(issue.get("body") or "")
+            and tag in str(issue.get("body") or "")
         )
-        body = turn_record_body(stamp, repo)
         issue_helper = str(GITHUB_SCRIPTS / "gh-issue")
         if records:
             written = run_helper([issue_helper, "edit", str(records[0]), "--repo", record_repo, "--body-file", "-"], body)
         else:
-            written = run_helper([issue_helper, "create", TURN_RECORD_TITLE, "--repo", record_repo], body)
+            written = run_helper([issue_helper, "create", title, "--repo", record_repo], body)
     except (OSError, subprocess.SubprocessError, ValueError, TypeError) as exc:
         return {"ok": False, "repo": record_repo, "error": str(exc)[:300]}
     if written.returncode != 0:
@@ -194,18 +242,21 @@ def share_turn(stamp: str, repo: str) -> dict[str, object]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("kind", choices=["turn"], help="only a daily turn can be marked by hand")
-    parser.add_argument("--repo", required=True, type=covered_repo, help="OWNER/REPO covered by the daily turn")
+    coverage = parser.add_mutually_exclusive_group(required=True)
+    coverage.add_argument("--owner", type=account, help="the Director's account; the turn covers OWNER/direction")
+    coverage.add_argument("--repo", type=legacy_repo, dest="owner", metavar="OWNER/REPO",
+                          help="older form: OWNER/REPO, recorded as OWNER/direction")
     args = parser.parse_args(argv)
     path: Path | str = os.environ.get("DIRECTION_MARKER") or "default direction marker"
     try:
         path = marker_path()
-        written = mark_turn(path, args.repo, dt.datetime.now(dt.timezone.utc))
+        written = mark_turn(path, args.owner, dt.datetime.now(dt.timezone.utc))
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         error = f"Could not record daily direction marker at {path}: {exc}"
         print(json.dumps({"ok": False, "marker": str(path), "local_recorded": False, "error": error}))
         print(f"ERROR: {error}. The turn was not recorded locally or shared.", file=sys.stderr)
         return 1
-    shared = share_turn(str(written["turn"]), args.repo)
+    shared = share_turn(str(written["turn"]), args.owner)
     if not shared["ok"]:
         print(f"ERROR: Daily turn recorded at {path}, but the shared record failed: {shared['error']}", file=sys.stderr)
     print(json.dumps({"ok": shared["ok"], "marker": str(path), "turn": written["turn"], "turn_repo": written["turn_repo"], "shared": shared}))

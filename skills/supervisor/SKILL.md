@@ -622,9 +622,9 @@ for recovery or repeat them as fact.
 ## Procedure
 
 1. Check the permission mode as above.
-2. Load `direction` and take the daily turn for the repository this session
-   opened in, which also clears the turn reminder, before launching or taking
-   over any session.
+2. Load `direction` and take the daily turn, which covers the Director's whole
+   account whatever folder this session opened in and clears the turn
+   reminder, before launching or taking over any session.
 3. Read the latest handoff on the pilot issue, then every comment after it.
    Before you repeat what the Director said, read the exact words where the
    Director said them, not a summary. Allocate new question IDs through the

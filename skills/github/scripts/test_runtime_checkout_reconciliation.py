@@ -775,7 +775,7 @@ def test_session_start_catches_up_without_a_driver_and_keeps_the_reminder(tmp_pa
     first = start_session(fixture)
     assert first.returncode == 0
     assert "Catalog catch-up synchronized" in first.stdout
-    assert "Direction check overdue" in first.stdout
+    assert "Direction turn overdue" in first.stdout
     assert git(fixture.runtime, "rev-parse", "HEAD") == fixture.landing_sha
     assert git(fixture.runtime, "status", "--porcelain") == ""
     second = start_session(fixture)
