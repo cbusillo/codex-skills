@@ -2229,7 +2229,9 @@ Do not move the recorded closure forward to match the mistaken attestation.
 
 Unresolved aliases remain unresolved until their canonical native identity and
 source relationship are verified. Do not infer that relationship from a shared
-worker token. Unbound or ambiguous identities need source-author reconciliation.
+worker token. A Supervisor must not post an exact-ID release on an ended worker's
+behalf for an alias with no native session field. It stays refused, with
+`needs_reconciliation` true, until its native identity is established.
 Foreign-author records stay with their owning identity and must not be released
 as the configured automation actor. Ownership diagnostics retain unresolved IDs
 from every valid source group, each once, without choosing a release route.

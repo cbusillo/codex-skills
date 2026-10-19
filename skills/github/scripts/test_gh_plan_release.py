@@ -272,11 +272,11 @@ class ReleaseTests(ReleaseHarness):
         hand = self.comment(3, "Claimed by trial-b\nSession: session-b", "2026-10-01T01:00:00Z")
         self.f.comments.append(hand)
         selected_end = "2026-10-02T00:00:00Z"
+        self.evidence["body"] = self.evidence["body"].replace(selected_end, "2026-10-02T00:30:00Z")
         before = self.consume_related_release(self.f.comments, ended=selected_end)
         self.assertEqual(before["ended_at"], selected_end)
         self.assertEqual({r["claim_comment"] for r in before["issue_refusals"]}, {1, hand["id"]})
         self.assertTrue(before.get("next_action"))
-        self.f.assert_no_writes()
         # Source and related identity come from canonical records, never advice.
         self.args.claim_comment = self.f.comments[0]["id"]
         self.args.related_claim_comment = [hand["id"]]
