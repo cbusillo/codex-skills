@@ -660,9 +660,9 @@ read every adopted repository. It prints at most two reminder lines, the same
 in every folder: one while the daily turn is more than a day old, and one while
 the weekly audit is more than a week old for an account with direction set up.
 Audits of single repositories never clear the weekly line. The account is the
-owner of the direction repository named by the marker's newest turn or weekly
-audit. Only when the marker records no account does it fall back to the
-folder's origin owner, and only when that owner has `OWNER/direction` set up
+one whose direction repository the marker's newest turn or weekly audit names.
+Only when the marker records no account does it fall back to the account of
+the folder's origin, and only when that account has `OWNER/direction` set up
 as above. A local turn or weekly audit counts only when it names that
 account. While either local stamp is stale it reads
 the shared turn and weekly-audit records in `OWNER/direction` once (see the

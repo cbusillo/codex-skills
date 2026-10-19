@@ -375,10 +375,11 @@ The catalog's session-start hook reads that marker on every host. It prints
 at most two lines, the same in every folder: one when the last turn is more
 than a day old, and one when the last weekly audit is more than a week old.
 The audit line shows only for an account with direction set up, and it names
-no repository. The account is the owner of the direction repository named by
-the marker's newest turn or weekly audit. Only when the marker records no
-account does the hook fall back to the folder's origin owner, and only when that owner's `OWNER/direction` has been audited here or
-is checked out beside the folder. A local turn or weekly audit counts only
+no repository. The account is the one whose direction repository the marker's
+newest turn or weekly audit names. Only when the marker records no account
+does the hook fall back to the account of the folder's origin, and only when
+that account's `OWNER/direction` has been audited here or is checked out
+beside the folder. A local turn or weekly audit counts only
 when it names that account. While either local stamp is stale, the hook
 reads the open issues in `OWNER/direction` once and uses the newest stamp
 across every record it finds. When it cannot read them all, the line says
