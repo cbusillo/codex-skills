@@ -171,9 +171,12 @@ def readback_continue(entry: dict, before_size: int, timeout: float = 10) -> boo
                 stream.seek(before_size)
                 suffix = stream.read().decode()
             records = [json.loads(line) for line in suffix.splitlines() if line.strip()]
-            if any(record.get("type") == "event_msg"
-                   and record.get("payload", {}).get("type") == "user_message"
-                   and record["payload"].get("message") == "continue" for record in records):
+            # A queued message lands as the turn's user message item.
+            if any(record.get("type") == "response_item"
+                   and record.get("payload", {}).get("type") == "message"
+                   and record["payload"].get("role") == "user"
+                   and record["payload"].get("content") == [{"type": "input_text", "text": "continue"}]
+                   for record in records):
                 return True
         except (OSError, ValueError, TypeError, AttributeError):
             pass
