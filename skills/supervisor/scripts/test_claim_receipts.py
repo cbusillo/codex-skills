@@ -1584,7 +1584,7 @@ class ReceiptTests(unittest.TestCase):
             body = ('class A:\n def convert(self): return B()\nclass B(' + native
                     + '):\n def __iter__(self): os.system(W);return iter([])\n')
             for call,expected in (('json.dumps(A(),default=lambda value:value.convert())',True),
-                                  ('json.dumps(A(),default=lambda value:value.convert(),indent=1)',False),
+                                  ('json.dumps(A(),default=lambda value:value.convert(),indent=1)',True),
                                   ('json.dump(A(),io.StringIO(),default=lambda value:value.convert())',False)):
                 with self.subTest(empty_native=native, call=call):
                     self.assert_python_patch_ownership(setup+body+call,expected)
@@ -1607,114 +1607,89 @@ class ReceiptTests(unittest.TestCase):
                    'class A:\n def convert(self): return make()\ntry: json.dumps(A(),default=lambda value:value.convert())\nexcept RecursionError: pass')
         self.assert_python_patch_ownership(program, False)
 
-    def test_python_json_native_container_truth_controls_iteration(self):
+    def assert_json_protocol_paths(self, body, c_writer, pure_writer, *, value='B()', default=''):
+        # Fixed callback fixtures cover both supported encoder paths. An
+        # indented dumps may choose either; dump uses the iterable encoder.
         writer = 'uv run /catalog/gh-plan.py --repo o/r claim 12'
         setup = 'import os,json,io\nW=' + repr(writer) + '\n'
+        suffix = ',' + default if default else ''
+        cases = (('json.dumps(' + value + suffix + ')', c_writer),
+                 ('json.dumps(' + value + suffix + ',indent=1)', c_writer or pure_writer),
+                 ('json.dump(' + value + ',io.StringIO()' + suffix + ')', pure_writer))
+        for call, expected in cases:
+            program = setup + body + 'try: ' + call + '\nexcept (TypeError,ValueError,OverflowError): pass'
+            with self.subTest(call=call):
+                self.assert_python_patch_ownership(program, expected)
+                self.assert_python_patch_ownership(program.replace(writer, 'echo safe'), False)
+
+    def test_python_json_native_container_truth_controls_iteration(self):
+        c_iteration = {'list': True, 'tuple': True, 'dict': False}
         for native, iteration in (('list', '__iter__'), ('tuple', '__iter__'), ('dict', 'items')):
-            for method, results in (('__len__', ('1', '0', '-1', 'None')), ('__bool__', ('True', 'False', '1', 'None'))):
-                for returned in results:
+            for method, results in (('__len__', (('1', True), ('0', False), ('-1', False), ('None', False))),
+                                    ('__bool__', (('True', True), ('False', False), ('1', False), ('None', False)))):
+                for returned, iterates in results:
                     body = ('class Base(' + native + '):\n def ' + method + '(self): return ' + returned
                             + '\n def ' + iteration + '(self): os.system(W);return iter([])\nclass B(Base): pass\n')
-                    for call in ('json.dumps(B())', 'json.dumps(B(),indent=1)', 'json.dump(B(),io.StringIO())'):
-                        program = setup + body + 'try: ' + call + '\nexcept (TypeError,ValueError): pass'
-                        with patch('os.system', return_value=0) as commands:
-                            exec(program, {})
-                        expected = any(args[0] == writer for args, _ in commands.call_args_list)
-                        with self.subTest(native=native, method=method, returned=returned, call=call):
-                            self.assert_python_patch_ownership(program, expected)
-                            self.assert_python_patch_ownership(program.replace(writer, 'echo safe'), False)
-            for truth in ('def __len__(self): os.system(W); return 0',
-                          'def __bool__(self): return False\n def __len__(self): os.system(W); return 1'):
-                body = 'class B(' + native + '):\n ' + truth + '\n'
-                for call in ('json.dumps(B())', 'json.dumps(B(),indent=1)', 'json.dump(B(),io.StringIO())'):
-                    program = setup + body + call
-                    with patch('os.system', return_value=0) as commands:
-                        exec(program, {})
-                    expected = any(args[0] == writer for args, _ in commands.call_args_list)
-                    with self.subTest(native=native, truth=truth, call=call):
-                        self.assert_python_patch_ownership(program, expected)
-                        self.assert_python_patch_ownership(program.replace(writer, 'echo safe'), False)
-            for returned in ('True', 'False'):
+                    with self.subTest(native=native, method=method, returned=returned):
+                        self.assert_json_protocol_paths(body, c_iteration[native], iterates)
+            for truth, writes in (('def __len__(self): os.system(W); return 0', True),
+                                  ('def __bool__(self): return False\n def __len__(self): os.system(W); return 1', False)):
+                with self.subTest(native=native, truth=truth):
+                    self.assert_json_protocol_paths('class B(' + native + '):\n ' + truth + '\n', False, writes)
+            for returned, writes in (('True', True), ('False', False)):
                 argument = '{"child":C()}' if native == 'dict' else '[C()]'
                 body = ('class B(' + native + '):\n def __bool__(self): return ' + returned
                         + '\nclass C:\n def convert(self): os.system(W);return None\n')
-                for call in ('json.dumps(B(' + argument + '),default=lambda value:value.convert())',
-                             'json.dumps(B(' + argument + '),default=lambda value:value.convert(),indent=1)',
-                             'json.dump(B(' + argument + '),io.StringIO(),default=lambda value:value.convert())'):
-                    program = setup + body + call
-                    with patch('os.system', return_value=0) as commands:
-                        exec(program, {})
-                    expected = any(args[0] == writer for args, _ in commands.call_args_list)
-                    with self.subTest(native=native, child_truth=returned, call=call):
-                        self.assert_python_patch_ownership(program, expected)
-                        self.assert_python_patch_ownership(program.replace(writer, 'echo safe'), False)
+                with self.subTest(native=native, child_truth=returned):
+                    self.assert_json_protocol_paths(body, True, writes, value='B(' + argument + ')',
+                                                    default='default=lambda value:value.convert()')
+            body = ('class B(' + native + '):\n def __len__(self): os.system(W);return 1\n def '
+                    + iteration + '(self): os.system(W);return iter([])\n')
+            for indent in ('1.5', '1j', 'b"x"', '[]', '{}'):
+                for call in ('json.dumps(B(),indent=' + indent + ')', 'json.dump(B(),io.StringIO(),indent=' + indent + ')'):
+                    program = 'import os,json,io\nW="uv run /catalog/gh-plan.py --repo o/r claim 12"\n' + body + 'try: ' + call + '\nexcept TypeError: pass'
+                    with self.subTest(native=native, invalid_indent=indent, call=call):
+                        self.assert_python_patch_ownership(program, False)
 
     def test_python_json_container_length_uses_index_protocol(self):
-        writer = 'uv run /catalog/gh-plan.py --repo o/r claim 12'
-        setup = 'import os,json,io\nW=' + repr(writer) + '\n'
+        c_iteration = {'list': True, 'tuple': True, 'dict': False}
         for native, iteration in (('list', '__iter__'), ('tuple', '__iter__'), ('dict', 'items')):
-            for returned in ('1', '0', '-1', 'None', 'True', 'False', repr(2**100)):
+            for returned, iterates in (('1', True), ('0', False), ('-1', False), ('None', False),
+                                       ('True', True), ('False', False), (repr(2**100), False)):
                 for writer_at in ('index', 'iteration'):
                     body = ('class Index:\n def __index__(self): '
                             + ('os.system(W);' if writer_at == 'index' else '') + 'return ' + returned
                             + '\nclass Base(' + native + '):\n def __len__(self): return Index()\n def '
                             + iteration + '(self): ' + ('os.system(W);' if writer_at == 'iteration' else '')
                             + 'return iter([])\nclass B(Base): pass\n')
-                    for call in ('json.dumps(B())', 'json.dumps(B(),indent=1)', 'json.dump(B(),io.StringIO())'):
-                        program = setup + body + 'try: ' + call + '\nexcept (TypeError,ValueError,OverflowError): pass'
-                        with patch('os.system', return_value=0) as commands:
-                            exec(program, {})
-                        expected = any(args[0] == writer for args, _ in commands.call_args_list)
-                        with self.subTest(native=native, returned=returned, writer_at=writer_at, call=call):
-                            self.assert_python_patch_ownership(program, expected)
-                            self.assert_python_patch_ownership(program.replace(writer, 'echo safe'), False)
-            for returned in ('0', '1'):
+                    with self.subTest(native=native, returned=returned, writer_at=writer_at):
+                        self.assert_json_protocol_paths(body, writer_at == 'iteration' and c_iteration[native],
+                                                        writer_at == 'index' or iterates)
+            for returned, iterates in (('0', False), ('1', True)):
                 for writer_at in ('index', 'iteration'):
                     body = ('class Index(int):\n def __index__(self): '
                             + ('os.system(W);' if writer_at == 'index' else '') + 'return 1'
                             + '\nclass B(' + native + '):\n def __len__(self): return Index(' + returned + ')\n def '
                             + iteration + '(self): ' + ('os.system(W);' if writer_at == 'iteration' else '')
                             + 'return iter([])\n')
-                    for call in ('json.dumps(B())', 'json.dumps(B(),indent=1)', 'json.dump(B(),io.StringIO())'):
-                        program = setup + body + call
-                        with patch('os.system', return_value=0) as commands:
-                            exec(program, {})
-                        with self.subTest(native=native, int_subclass=returned, writer_at=writer_at, call=call):
-                            self.assert_python_patch_ownership(program, any(args[0] == writer for args, _ in commands.call_args_list))
-                            self.assert_python_patch_ownership(program.replace(writer, 'echo safe'), False)
+                    with self.subTest(native=native, int_subclass=returned, writer_at=writer_at):
+                        self.assert_json_protocol_paths(body, writer_at == 'iteration' and c_iteration[native],
+                                                        writer_at == 'iteration' and iterates)
             body = ('class Index:\n def __index__(self): os.system(W); return 1\nclass B(' + native
                     + '):\n def __bool__(self): return False\n def __len__(self): return Index()\n')
-            for call in ('json.dumps(B())', 'json.dumps(B(),indent=1)', 'json.dump(B(),io.StringIO())'):
-                program = setup + body + call
-                with patch('os.system', return_value=0) as commands:
-                    exec(program, {})
-                with self.subTest(native=native, bool_priority=call):
-                    self.assert_python_patch_ownership(program, any(args[0] == writer for args, _ in commands.call_args_list))
-                    self.assert_python_patch_ownership(program.replace(writer, 'echo safe'), False)
-
-        for native, iteration in (('list', '__iter__'), ('tuple', '__iter__'), ('dict', 'items')):
+            with self.subTest(native=native, bool_priority=True):
+                self.assert_json_protocol_paths(body, False, False)
             for declaration in ('class Index(int):\n def __new__(cls,value): return int.__new__(cls,1)\n',
                                 'class Base(int):\n def __new__(cls,value): return int.__new__(cls,1)\nclass Index(Base): pass\n'):
                 body = (declaration + 'class B(' + native + '):\n def __len__(self): return Index(0)\n def '
                         + iteration + '(self): os.system(W);return iter([])\n')
-                for call in ('json.dumps(B())', 'json.dumps(B(),indent=1)', 'json.dump(B(),io.StringIO())'):
-                    program = setup + body + call
-                    with patch('os.system', return_value=0) as commands:
-                        exec(program, {})
-                    with self.subTest(native=native, new_override=declaration, call=call):
-                        self.assert_python_patch_ownership(program, any(args[0] == writer for args, _ in commands.call_args_list))
-                        self.assert_python_patch_ownership(program.replace(writer, 'echo safe'), False)
+                with self.subTest(native=native, new_override=declaration):
+                    self.assert_json_protocol_paths(body, c_iteration[native], True)
         for argument in ('1.5', '"0"'):
             body = 'class Index(int):\n def __index__(self): os.system(W);return 1\n'
-            for call in ('json.dumps(Index(' + argument + '),default=lambda value:os.system(W))',
-                         'json.dumps(Index(' + argument + '),default=lambda value:os.system(W),indent=1)',
-                         'json.dump(Index(' + argument + '),io.StringIO(),default=lambda value:os.system(W))'):
-                program = setup + body + call
-                with patch('os.system', return_value=0) as commands:
-                    exec(program, {})
-                with self.subTest(int_subclass_json=call):
-                    self.assert_python_patch_ownership(program, any(args[0] == writer for args, _ in commands.call_args_list))
-                    self.assert_python_patch_ownership(program.replace(writer, 'echo safe'), False)
+            with self.subTest(int_subclass_json=argument):
+                self.assert_json_protocol_paths(body, False, False, value='Index(' + argument + ')',
+                                                default='default=lambda value:os.system(W)')
 
     def test_python_json_load_hooks_preserve_alternative_writer_values(self):
         writer = 'uv run /catalog/gh-plan.py --repo o/r claim 12'
@@ -3473,12 +3448,6 @@ os.system(get())
             inert = ('const fixture=' + json.dumps(writer) + '; const cmd="echo safe"; '
                      + 'await eval(' + json.dumps(source) + ');')
             self.assertFalse(receipts.opaque_ownership('functions.exec', inert))
-            for sink in ('let run=tools.exec_command;run=console.log;run({cmd:W});',
-                         'let run=tools.exec_command;run=console.log;text(run({cmd:W}));',
-                         'const c=console;const d=c;let run=tools.exec_command;run=console.log;run({cmd:W});',
-                         'const run=tools.exec_command;const object={run:console.log};object.run({cmd:W});'):
-                cell = 'const W=' + binding + ';' + sink
-                self.assertFalse(receipts.opaque_ownership('functions.exec', cell))
 
     def test_unresolved_generated_file_inputs_preserve_later_execution_only(self):
         writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 5'
@@ -3488,16 +3457,21 @@ os.system(get())
             patch = '*** Begin Patch\n*** Add File: /repo/run.py\n' + ''.join('+' + line + '\n' for line in program.splitlines()) + '*** End Patch'
             for operand, source in ((shell, 'text(await tools.exec_command({cmd:c}));'),
                                     (patch, 'text(await tools.apply_patch(c));')):
-                cell = ('const commands=[' + json.dumps(operand) + ']; for(const c of commands){'
-                        + 'await eval(' + json.dumps('(async()=>{' + source + '})()') + ');}')
-                for command, executes in (('python3 /repo/run.py', True), ('cat /repo/run.py', False)):
-                    rows = history('codex', {}, {})
-                    rows[1]['payload'].update(name='functions.exec', arguments=cell)
-                    rows[2] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-0')
-                    rows[3]['payload']['arguments'] = json.dumps({'cmd': command})
-                    rows[4] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-1')
-                    with self.subTest(cell=cell, command=command):
-                        self.assertEqual(receipts.ownership_state(rows, 'codex')['pending'], owning and executes)
+                cells = (
+                    'const commands=[' + json.dumps(operand) + '];for(const c of commands){'
+                    + 'await eval(' + json.dumps('(async()=>{' + source + '})()') + ');}',
+                    'const commands=[' + json.dumps(operand) + '];const f=(async()=>{}).constructor("c",'
+                    + json.dumps('return ' + source) + ');for(const c of commands) await f(c);',
+                )
+                for cell in cells:
+                    for command, executes in (('python3 /repo/run.py', True), ('cat /repo/run.py', False)):
+                        rows = history('codex', {}, {})
+                        rows[1]['payload'].update(name='functions.exec', arguments=cell)
+                        rows[2] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-0')
+                        rows[3]['payload']['arguments'] = json.dumps({'cmd': command})
+                        rows[4] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-1')
+                        with self.subTest(cell=cell, command=command):
+                            self.assertEqual(receipts.ownership_state(rows, 'codex')['pending'], owning and executes)
 
     def test_nested_generated_sources_are_discovered_once(self):
         writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 5'
@@ -3514,6 +3488,98 @@ os.system(get())
                 text = receipts.unparsed_command_text(cell)
             self.assertIn(writer, text)
             self.assertEqual(len(visited), len(set(visited)), 'generated descendants were repeatedly rediscovered')
+
+    def test_javascript_command_discovery_covers_noncanonical_tool_callees(self):
+        writer = 'uv run /catalog/gh-plan.py --repo o/r claim 5'
+        calls = (
+            'const {exec_command}=tools;await exec_command(ARGS);',
+            'await tools?.exec_command(ARGS);', 'await tools.exec_command?.(ARGS);',
+            'await tools.exec_command.call(tools,ARGS);',
+            'const run=tools.exec_command.bind(tools);await run(ARGS);',
+            'const o={run:tools.exec_command};await o.run(ARGS);',
+            'await Reflect.apply(tools.exec_command,tools,[ARGS]);',
+        )
+        for command, owning in ((writer, True), ('echo safe', False),
+                                ('echo ' + shlex.quote(writer), False)):
+            setup = 'const W=' + json.dumps(command) + ';const cmd=W;'
+            for call in calls:
+                for fields in ('{cmd:W}', '{"cmd":W}', '{cmd}'):
+                    source = call.replace('ARGS', fields)
+                    for cell in (setup + source, setup + 'await eval(' + json.dumps('(async()=>{' + source + '})()') + ');'):
+                        rows = history('codex', {})
+                        rows[1]['payload'].update(name='functions.exec', arguments=cell)
+                        rows[2] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-0')
+                        with self.subTest(cell=cell):
+                            self.assertEqual(receipts.ownership_state(rows, 'codex')['pending'], owning)
+
+    def test_generated_constructor_parameters_cover_callback_and_reflective_uses(self):
+        writer = 'uv run /catalog/gh-plan.py --repo o/r claim 5'
+        source = json.dumps('return tools.exec_command({cmd:c})')
+        uses = (
+            'for(const c of cmds) await f(c);', 'await Promise.all(cmds.map(f));',
+            'cmds.forEach(f);', 'await Promise.all(cmds.map(c=>f(c)));',
+            'await f.call(null,W);', 'await f.apply(null,[W]);',
+            'await f.bind(null,W)();',
+        )
+        for command, owning in ((writer, True), ('echo safe', False),
+                                ('echo ' + shlex.quote(writer), False)):
+            setup = 'const W=' + json.dumps(command) + ';const cmds=[W];'
+            for factory in ('Function', '(async()=>{}).constructor'):
+                for use in uses:
+                    cell = setup + 'const f=' + factory + '("c",' + source + ');await f("echo safe");' + use
+                    rows = history('codex', {})
+                    rows[1]['payload'].update(name='functions.exec', arguments=cell)
+                    rows[2] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-0')
+                    with self.subTest(cell=cell):
+                        self.assertEqual(receipts.ownership_state(rows, 'codex')['pending'], owning)
+            cell = setup + 'const f$=Function("c",' + source + ');await f$("echo safe");await Promise.all(cmds.map(f$));'
+            with self.subTest(dollar_identifier=cell):
+                self.assertEqual(receipts.opaque_ownership('functions.exec', cell), owning)
+
+    def test_mutable_helpers_and_late_tool_aliases_cannot_discharge_ownership(self):
+        writer = 'uv run /catalog/gh-plan.py --repo o/r claim 5'
+        bodies = (
+            'let run=console.log;const go=()=>run({cmd:W});run=tools.exec_command;await go();',
+            'let run=console.log;const job=Promise.resolve().then(()=>run({cmd:W}));run=tools.exec_command;await job;',
+            'globalThis.text=tools.exec_command;let run=tools.exec_command;run=text;await run({cmd:W});',
+            'globalThis.text=tools.exec_command;await text({cmd:W});',
+            'globalThis.text=tools.exec_command;const c=W;await eval("text({cmd:c})");',
+            'const g=globalThis;g["text"]=tools.exec_command;await text({cmd:W});',
+            'globalThis.console={log:tools.exec_command};let run=tools.exec_command;run=console.log;await run({cmd:W});',
+            'Object.assign(console,{log:tools.exec_command});let run=tools.exec_command;run=console.log;await run({cmd:W});',
+            'Object.defineProperty(console,"log",{value:tools.exec_command});let run=tools.exec_command;run=console.log;await run({cmd:W});',
+            'let run=console.log;run &&=tools.exec_command;await run({cmd:W});',
+            'let run=console.log;[run]=[tools.exec_command];await run({cmd:W});',
+            'let run=console.log;({exec_command:run}=tools);await run({cmd:W});',
+        )
+        for command, owning in ((writer, True), ('echo safe', False)):
+            for body in bodies:
+                cell = 'const W=' + json.dumps(command) + ';' + body
+                rows = history('codex', {})
+                rows[1]['payload'].update(name='functions.exec', arguments=cell)
+                rows[2] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-0')
+                with self.subTest(cell=cell):
+                    self.assertEqual(receipts.ownership_state(rows, 'codex')['pending'], owning)
+
+    def test_bare_assignment_patterns_eval_and_spaced_rest_invalidate_initializers(self):
+        writer = 'uv run /catalog/gh-plan.py --repo o/r claim 5'
+        bodies = (
+            'let cmd="echo safe";[cmd]=[W];await tools.exec_command({cmd});',
+            'let cmd="echo safe";({cmd}={cmd:W});await tools.exec_command({cmd});',
+            'let cmd="echo safe";for([cmd] of [[W]]){}await tools.exec_command({cmd});',
+            'let cmd="echo safe";eval("cmd=W");await tools.exec_command({cmd});',
+            'var cmd="echo safe";const source="cmd=W";eval(source);await tools.exec_command({cmd});',
+            'const cmd="echo safe";async function run(...cmd\n){await tools.exec_command({cmd:cmd[0]});}await run(W);',
+            'const cmd="echo safe";const run=async(...cmd \n)=>{await tools.exec_command({cmd:cmd[0]});};await run(W);',
+        )
+        for command, owning in ((writer, True), ('echo safe', False)):
+            for body in bodies:
+                cell = 'const W=' + json.dumps(command) + ';' + body
+                rows = history('codex', {})
+                rows[1]['payload'].update(name='functions.exec', arguments=cell)
+                rows[2] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-0')
+                with self.subTest(cell=cell):
+                    self.assertEqual(receipts.ownership_state(rows, 'codex')['pending'], owning)
 
     def test_generated_source_bindings_respect_eval_and_constructor_scope(self):
         writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 5'

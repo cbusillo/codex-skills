@@ -376,15 +376,13 @@ def javascript_bindings(code):
     command. Parameters and pattern targets invalidate a same-named constant
     rather than allowing a different scope's value to prove the command safe.
     """
-    sites, declarations = {}, {}
+    sites, declarations, mutable = {}, {}, set()
 
     def bind(start, end):
         target = code[start:end].strip()
         start += len(code[start:end]) - len(code[start:end].lstrip())
         if target.startswith("..."):
-            start += 3
-            target = target[3:].lstrip()
-            start = end - len(target)
+            return bind(start + 3, end)
         parts = node_expression_parts(code, start, end, "=")
         end = parts[0][1]
         target = code[start:end].strip()
@@ -399,7 +397,7 @@ def javascript_bindings(code):
         for begin, end in node_expression_parts(code, opening + 1, len(code)):
             bind(begin, end)
 
-    for declaration in re.finditer(r"\b(?:const|let|var)\s+", code):
+    for declaration in re.finditer(r"\b(const|let|var)\s+", code):
         end = node_expression_parts(code, declaration.end(), len(code), ";\n")[0][1]
         for begin, finish in node_expression_parts(code, declaration.end(), end):
             assignment = node_expression_parts(code, begin, finish, "=")
@@ -411,6 +409,8 @@ def javascript_bindings(code):
             named = re.fullmatch(r"\s*([A-Za-z_$][\w$]*)\s*", code[begin:target_end])
             if named and len(assignment) > 1:
                 declarations[named[1]] = (target_end + 1, finish)
+                if declaration[1] != "const":
+                    mutable.add(named[1])
     for function in re.finditer(r"\bfunction\s*\*?\s*([A-Za-z_$][\w$]*)?\s*\(", code):
         if function[1]:
             bind(function.start(1), function.end(1))
@@ -437,6 +437,19 @@ def javascript_bindings(code):
         delimiter = re.search(r"\b(?:of|in)\b", code[loop.end():end])
         if delimiter:
             bind(loop.end(), loop.end() + delimiter.start())
+    for assignment in re.finditer(r"[\]}]\s*=(?!=|>)", code):
+        finish = assignment.start() + 1
+        depth, opening = 1, assignment.start() - 1
+        while opening >= 0 and depth:
+            depth += (code[opening] in "]}") - (code[opening] in "[{")
+            opening -= 1
+        if not depth:
+            bind(opening + 1, finish)
+    # A direct eval can assign an enclosing mutable binding. Its masked source
+    # is never proof that a let/var initializer remains the command value.
+    if re.search(r"(?<![\w.$])eval\s*\(", code):
+        for name in mutable:
+            sites[name].add(len(code))
     # Method parameters share the same lexical rule as named functions.
     for method in re.finditer(r"\b([A-Za-z_$][\w$]*)\s*\(", code):
         if method[1] in {"if", "for", "while", "switch", "catch", "with", "function"}:
@@ -450,72 +463,6 @@ def javascript_bindings(code):
     return {name: expression for name, expression in declarations.items()
             if len(sites.get(name, ())) == 1}, set(sites)
 
-
-
-def javascript_tool_calls(native, code, method):
-    # Possible tool aliases are deliberately broader than safe operand values:
-    # a reused/mutable name can still invoke a tool, even though its initializer
-    # cannot prove one particular command argument safe.
-    assignments = []
-    for match in re.finditer(r"(?<![\w.$])([A-Za-z_$][\w$]*)\s*=\s*(?!=|>)", code):
-        if code[:match.start()].rstrip().endswith("."):
-            continue
-        end = node_expression_parts(code, match.end(), len(code), ";,\n")[0][1]
-        assignments.append((match[1], match.start(), native[match.end():end].strip()))
-    objects, aliases = {"tools"}, set()
-
-    def member():
-        return (r"(?:" + "|".join(map(re.escape, objects)) + r")\s*(?:\.\s*" + method
-                + r"|\[\s*['\"]" + method + r"['\"]\s*\])")
-
-    for _ in assignments:
-        added_objects = {name for name, _, expression in assignments if expression in objects}
-        added_aliases = {name for name, _, expression in assignments
-                         if re.fullmatch(member(), expression) or expression in aliases}
-        if added_objects <= objects and added_aliases <= aliases:
-            break
-        objects.update(added_objects)
-        aliases.update(added_aliases)
-    pattern = r"(?<![\w.$])(?:" + member() + ("|" + "|".join(map(re.escape, aliases)) if aliases else "") + r")\s*\("
-    calls = list(javascript_call_starts(native, pattern))
-    positions = {position for _, position, _ in assignments} | {call.start() for call in calls}
-    scopes, stack = {}, []
-    for index, char in enumerate(code):
-        if index in positions:
-            scopes[index] = tuple(position for position in stack if code[position] == "{")
-        if char in "([{":
-            stack.append(index)
-        elif char in ")]}":
-            if stack:
-                stack.pop()
-    _, bound = javascript_bindings(code)
-    for call in calls:
-        if code[:call.start()].rstrip().endswith("."):
-            continue
-        name = re.match(r"[A-Za-z_$][\w$]*", call[0])[0]
-        before = [(position, expression) for target, position, expression in assignments
-                  if target == name and position < call.start()]
-        if name in aliases and before:
-            position, expression = before[-1]
-            beginning = max(code.rfind(char, 0, position) for char in ";{}") + 1
-            straight = re.fullmatch(r"\s*(?:(?:const|let|var)\s+)?", code[beginning:position])
-            sink = re.fullmatch(r"console\s*\.\s*(?:log|info|warn|error|debug|dir|table)|text", expression)
-            root = expression.split(".")[0].strip()
-            sink_objects = {root}
-            for _ in assignments:
-                added = {target for target, _, expression in assignments if expression in sink_objects}
-                if added <= sink_objects:
-                    break
-                sink_objects.update(added)
-            changed_sink = re.search(r"\b(?:" + "|".join(map(re.escape, sink_objects))
-                                     + r")\s*(?:\.\s*[A-Za-z_$][\w$]*|\[[^]]*\])\s*=", code)
-            if (straight and sink and root not in bound and not changed_sink
-                    and scopes[position] == scopes[call.start()]):
-                # Only an unconditional assignment in this very scope can
-                # discharge a possible alias. A conditional/different scope
-                # remains uncertainty, never evidence that no tool ran.
-                continue
-        yield call
 
 
 def javascript_source_literals(atoms):
@@ -609,12 +556,7 @@ def javascript_generated_sources(value):
         if generated:
             text, projected = current, current_code
             replacements = []
-            command_regions = [(call.end(), node_expression_parts(projected, call.end(), len(projected))[0][1])
-                               for call in javascript_tool_calls(text, projected, "exec_command")]
             for match in re.finditer(r"(\b(?:cmd|command)\s*:\s*|\btools\.apply_patch\s*\(\s*)((?:(?:globalThis|global|window|self)\s*\.\s*)?(\w+))\b", projected):
-                command_position = any(begin <= match.start() < finish for begin, finish in command_regions)
-                if not command_position and "apply_patch" not in match[1]:
-                    continue
                 operands = globals_ if "." in match[2] else bindings
                 end = node_expression_parts(projected, match.start(2), len(projected))[0][1]
                 operand = literal(current[match.start(2):end])
@@ -623,8 +565,7 @@ def javascript_generated_sources(value):
                 elif match[3] in operands:
                     replacements.append((match.start(2), match.end(2), json.dumps(operands[match[3]])))
             for match in re.finditer(r"([\"'])(cmd|command)\1\s*:\s*((?:(?:globalThis|global|window|self)\s*\.\s*)?(\w+))\b", text):
-                if (not any(begin <= match.start() < finish for begin, finish in command_regions)
-                        or projected[match.start(3):match.end(3)] != match[3]):
+                if projected[match.start(3):match.end(3)] != match[3]:
                     continue
                 operands = globals_ if "." in match[3] else bindings
                 end = node_expression_parts(projected, match.start(3), len(projected))[0][1]
@@ -634,8 +575,7 @@ def javascript_generated_sources(value):
                 elif match[4] in operands:
                     replacements.append((match.start(3), match.end(3), json.dumps(operands[match[4]])))
             for match in re.finditer(r"[{,]\s*(cmd|command)\s*(?=[,}])", projected):
-                if (match[1] in bindings
-                        and any(begin <= match.start() < finish for begin, finish in command_regions)):
+                if match[1] in bindings:
                     replacements.append((match.start(1), match.end(1), match[1] + ":" + json.dumps(bindings[match[1]])))
             for start, end, replacement in sorted(replacements, reverse=True):
                 text = text[:start] + replacement + text[end:]
@@ -668,11 +608,13 @@ def javascript_generated_sources(value):
                 while following < len(current_code) and current_code[following].isspace():
                     following += 1
                 actuals = []
-                if following < len(current_code) and current_code[following] == "(":
+                immediate = following < len(current_code) and current_code[following] == "("
+                if immediate:
                     actuals = [(begin, finish) for begin, finish in node_expression_parts(current_code, following + 1, len(current_code))
                                if current[begin:finish].strip()]
                 assigned = re.search(r"\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:new\s+)?[\w.$]+\s*\(\s*$", current_code[:start])
-                invocations = [actuals] if actuals else []
+                invocations = [actuals] if immediate else []
+                complete_invocations = immediate
                 if assigned:
                     call_names = {assigned[1]}
                     for _ in declarations:
@@ -681,9 +623,18 @@ def javascript_generated_sources(value):
                         if added <= call_names:
                             break
                         call_names.update(added)
-                    for invocation in re.finditer(r"\b(?:" + "|".join(map(re.escape, call_names)) + r")\s*\(", current_code):
+                    invocations = []
+                    covered = {assigned.start(1)}
+                    for alias in call_names - {assigned[1]}:
+                        for declaration in re.finditer(r"\b(?:const|let|var)\s+(" + re.escape(alias) + r")\s*=\s*([A-Za-z_$][\w$]*)", current_code):
+                            if declaration[2] in call_names:
+                                covered.update((declaration.start(1), declaration.start(2)))
+                    for invocation in re.finditer(r"(?<![\w.$])(?:" + "|".join(map(re.escape, call_names)) + r")\s*\(", current_code):
+                        covered.add(invocation.start())
                         invocations.append([(begin, finish) for begin, finish in node_expression_parts(current_code, invocation.end(), len(current_code))
                                             if current[begin:finish].strip()])
+                    complete_invocations = all(reference.start() in covered for reference in re.finditer(
+                        r"(?<![\w.$])(?:" + "|".join(map(re.escape, call_names)) + r")(?![\w$])", current_code))
                 reached = [part for invocation in invocations for part in invocation]
                 visited_actuals = set()
                 while reached:
@@ -724,8 +675,12 @@ def javascript_generated_sources(value):
                         values.append(operand)
                         if operand is not None:
                             child_fallback.append(operand)
-                    if values[0] is not None and all(value == values[0] for value in values):
+                    if complete_invocations and values[0] is not None and all(value == values[0] for value in values):
                         child_bindings[named[1]] = values[0]
+                    else:
+                        # Loops, callbacks and reflective calls are not covered
+                        # by a direct-call list. Their parameters stay unknown.
+                        child_fallback.extend((*fallback, *javascript_source_literals(current_atoms)))
                 parts = parts[-1:]
             else:
                 parts = parts[:1]
@@ -2461,7 +2416,7 @@ def shell_effect_order(tokens, events):
     return list(walk(0, len(tokens)))
 
 
-def _unparsed_command_text(value, *, generated_sources=True):
+def _unparsed_command_text(value, *, generated_sources=True, capabilities=False):
     """Keep command expressions and referenced declarations, excluding JS prose.
 
     This is conservative command discovery, not evaluation or completion proof.
@@ -2482,18 +2437,21 @@ def _unparsed_command_text(value, *, generated_sources=True):
         start += len(re.match(r"\s*", value[start:])[0])
         end = re.search(delimiter, code[start:])
         return start, start + end.start() if end else len(code)
-    declarations, _ = javascript_bindings(code)
-    command_regions = [(call.end(), node_expression_parts(code, call.end(), len(code))[0][1])
-                       for call in javascript_tool_calls(value, code, "exec_command")]
-    pending = [region(m.end(), r"[,};\n]") for m in re.finditer(r"\b(?:cmd|command)\s*:", code)
-               if any(begin <= m.start() < end for begin, end in command_regions)]
-    pending += [(m.start(1), m.end(1)) for m in re.finditer(r"[{,]\s*(cmd|command)\s*(?=[,}])", code)
-                if any(begin <= m.start() < end for begin, end in command_regions)]
-    for match in re.finditer(r"([\"'])(cmd|command)\1\s*:", value):
-        key_end = match.start() + len(match[2]) + 2
-        if (any(atom.start() == match.start() and atom.end() == key_end for atom in atoms)
-                and any(begin <= match.start() < end for begin, end in command_regions)):
-            pending.append(region(match.end(), r"[,};\n]"))
+    declarations, bound = javascript_bindings(code)
+    projected = [code, *(javascript_projection(text)[1] for text in generated)]
+    capabilities |= any(re.search(r"\b(?:tools|exec_command|apply_patch|globalThis|global|window|self)\b", text)
+                        for text in projected)
+    calls = list(re.finditer(r"([A-Za-z_$][\w$]*)\s*\(", code))
+    output_only = (not capabilities and "text" not in bound
+                   and all(match[1] == "text" and not code[:match.start()].rstrip().endswith(".")
+                           for match in calls))
+    pending = [] if output_only else [region(m.end(), r"[,};\n]") for m in re.finditer(r"\b(?:cmd|command)\s*:", code)]
+    if not output_only:
+        pending += [(m.start(1), m.end(1)) for m in re.finditer(r"[{,]\s*(cmd|command)\s*(?=[,}])", code)]
+        for match in re.finditer(r"([\"'])(cmd|command)\1\s*:", value):
+            key_end = match.start() + len(match[2]) + 2
+            if any(atom.start() == match.start() and atom.end() == key_end for atom in atoms):
+                pending.append(region(match.end(), r"[,};\n]"))
 
     seen, pieces, unresolved = set(), [], False
     if not complete:
@@ -2508,7 +2466,7 @@ def _unparsed_command_text(value, *, generated_sources=True):
                 continue
             pieces.extend(shlex.join(argv) for argv in shell_commands("exec_command", {"cmd": command})
                           if ownership_command(argv))
-        nested, _ = _unparsed_command_text(text, generated_sources=False)
+        nested, _ = _unparsed_command_text(text, generated_sources=False, capabilities=capabilities)
         pieces.append(nested)
     def literal_writers():
         for literal in literals:
@@ -4557,7 +4515,7 @@ def python_ownership(content, *, partial=False):
                     return display(computed, local) if operation == "pprint.pprint" else (computed,)
                 return alternatives(lambda target, tree=tree: display(tree, target) for tree in concrete)
             return alternatives(lambda local, item=item: render(item, local) for item in arguments[0]) or (unknown,)
-        def protocol_leaves(operands, *, json_native=False, skip_empty=False):
+        def protocol_leaves(operands, *, json_native=False, skip_empty=False, local=None):
             pending, visited = list(operands), set()
             while pending:
                 item = pending.pop()
@@ -4566,7 +4524,7 @@ def python_ownership(content, *, partial=False):
                 visited.add(id(item))
                 if json_native and isinstance(item, Instance) and json_native_kind(item.kind):
                     native = json_native_kind(item.kind)
-                    protocols = json_native_protocols(item, scope, skip_empty=skip_empty)
+                    protocols = json_native_protocols(item, scope if local is None else local, skip_empty=skip_empty)
                     if protocols:
                         yield item
                     elif native in {"list", "tuple", "dict"}:
@@ -4587,11 +4545,6 @@ def python_ownership(content, *, partial=False):
                 elif item is unknown or isinstance(item, (Generator, Function, Bound, Partial, ast.alias, ast.ClassDef)) or json_native and type(item) in (bytes, complex):
                     yield item
 
-        def json_leaves(operands):
-            indents = keywords.get('indent', ())
-            skip_empty = operation == 'json.dump' or bool(indents) and all(type(indent) in (int, str, bool) for indent in indents)
-            return protocol_leaves(operands, json_native=True, skip_empty=skip_empty)
-
         if operation in {'json.dumps', 'json.dump', 'json.loads'}:
             parameters = ('obj','fp') if operation == 'json.dump' else ('s',) if operation == 'json.loads' else ('obj',)
             arguments, keywords = list(arguments), dict(keywords)
@@ -4611,6 +4564,10 @@ def python_ownership(content, *, partial=False):
                        if operation == 'json.loads' else
                        {'skipkeys','ensure_ascii','check_circular','allow_nan','indent','separators','default','sort_keys'})
             if 'cls' not in keywords and set(keywords) - allowed:
+                return (unknown,)
+            if operation != 'json.loads' and 'cls' not in keywords and keywords.get('indent') and all(
+                    type(indent) in (float, complex, bytes) or isinstance(indent, (Sequence, Keywords, list, tuple))
+                    for indent in keywords['indent']):
                 return (unknown,)
             operands = tuple(item for assigned in arguments for item in assigned)
             callbacks = []
@@ -4653,23 +4610,32 @@ def python_ownership(content, *, partial=False):
             if callbacks:
                 uncertain_protocol_effects(operands, scope, callbacks)
             if operation != 'json.loads':
-                def default_callbacks(values):
-                    callbacks = []
-                    for item in json_leaves(values):
-                        native = json_native_kind(item.kind) if isinstance(item, Instance) else None
-                        if native in {"list", "tuple", "dict"}:
-                            callbacks.extend((Bound(ast.alias(name="json.iterate"), callback), ())
-                                             for callback in json_native_protocols(item, scope, skip_empty=operation == "json.dump" or bool(keywords.get("indent")) and all(type(indent) in (int, str, bool) for indent in keywords["indent"])))
-                        else:
-                            callbacks.extend((callback, [(item,)]) for callback in defaults)
-                    return tuple(callbacks)
-                initial = default_callbacks(arguments[0])
-                if len(arguments[0]) == 1 and isinstance(arguments[0][0], Instance) and len(initial) == 1:
-                    callback, args = initial[0]
-                    outputs = invoke(callback, scope, args, evaluated=True)
-                    protocol_return_effects(operands, scope, default_callbacks, outputs, json_leaves)
-                elif initial:
-                    protocol_return_effects(operands, scope, default_callbacks, receivers_for=json_leaves)
+                def encode_defaults(local, skip_empty):
+                    def leaves(values):
+                        return protocol_leaves(values, json_native=True, skip_empty=skip_empty, local=local)
+                    def default_callbacks(values):
+                        callbacks = []
+                        for item in leaves(values):
+                            native = json_native_kind(item.kind) if isinstance(item, Instance) else None
+                            if native in {"list", "tuple", "dict"}:
+                                callbacks.extend((Bound(ast.alias(name="json.iterate"), callback), ())
+                                                 for callback in json_native_protocols(item, local, skip_empty=skip_empty))
+                            else:
+                                callbacks.extend((callback, [(item,)]) for callback in defaults)
+                        return tuple(callbacks)
+                    initial = default_callbacks(arguments[0])
+                    if len(arguments[0]) == 1 and isinstance(arguments[0][0], Instance) and len(initial) == 1:
+                        callback, args = initial[0]
+                        outputs = invoke(callback, local, args, evaluated=True)
+                        protocol_return_effects(operands, local, default_callbacks, outputs, leaves)
+                    elif initial:
+                        protocol_return_effects(operands, local, default_callbacks, receivers_for=leaves)
+                    return (unknown,)
+                # Indented dumps can select either encoder across supported
+                # Python versions. Keep their callback states as alternatives.
+                modes = ((True,) if operation == 'json.dump' else (False, True)
+                         if any(indent is not None for indent in keywords.get('indent', ())) else (False,))
+                return alternatives(lambda local, mode=mode: encode_defaults(local, mode) for mode in modes)
             return (unknown,)
         if operation in {'any','all','sum','bytes','range','set','frozenset','dict'}:
             if operation == 'bytes' and 'source' in keywords:
