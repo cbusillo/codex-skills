@@ -31,6 +31,7 @@ from pathlib import Path
 
 CHECK_OPERATION = "work-closeout.claims"
 CLAIM_OPERATION = "github.plan.claim"
+_SERIAL_NATIVE_RESULT = object()
 HIDDEN_UV_RUN_OPTIONS = {"--python-preference": True, "--native-tls": False}
 COMMENT = re.compile(r"https://github\.com/([^/\s]+/[^/\s]+)/(?:issues|pull)/([1-9]\d*)#issuecomment-([1-9]\d*)")
 JS_STRING = r'''(?:"(?:[^"\\\r\n]|\\(?:\r\n|[\s\S]))*"|'(?:[^'\\\r\n]|\\(?:\r\n|[\s\S]))*'|(?:String\.raw\s*)?`(?:[^`\\]|\\[\s\S])*`)'''
@@ -2200,7 +2201,7 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
             segments.append((current, ""))
         nodes = []
         for segment, separator in segments:
-            argv, heredocs, children, cursor, last_word = [], [], None, 0, None
+            argv, heredocs, children, child_scope, cursor, last_word = [], [], None, None, 0, None
             substitutions = {}
             descriptors = {0: "pipe-in", 1: "pipe-out", 2: None}
             while cursor < len(segment):
@@ -2217,7 +2218,7 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                     continue
                 if token in {"(", "{"} and index in bounds and bounds[index] in segment:
                     close = bounds[index]
-                    children = parse(index + 1, close)
+                    children, child_scope = parse(index + 1, close), token
                     cursor = segment.index(close) + 1
                     continue
                 if token in {"<", ">", "<<", ">>", "<<<", "<>", "<&", ">&", ">|", "&>", "&>>"}:
@@ -2276,7 +2277,8 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
             language = stdin_language(argv)
             if children is None and tokens[segment[0]] in {"}", ")", "done", "fi", "esac"}:
                 language = compound_stdin_language(tokens, source, segment[0], spans, heredocs) or language
-            nodes.append({"argv": argv, "children": children, "language": language, "index": segment[0], "stop": segment[-1] + 1,
+            nodes.append({"argv": argv, "children": children, "child_scope": child_scope,
+                          "language": language, "index": segment[0], "stop": segment[-1] + 1,
                           "descriptors": descriptors, "heredocs": heredocs,
                           "substitutions": substitutions,
                           "separator": separator, "source": " ".join(tokens[index] for index in segment)})
@@ -2444,7 +2446,33 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                 words = node["argv"]
                 while words and words[0] in {"if", "then", "else", "elif", "do", "while", "until"}:
                     words = words[1:]
-                positive = set() if words[:1] == ["!"] else {node["index"], *child_success}
+                positive = set() if words[:1] == ["!"] else {node["index"]}
+                action = words
+                while action and (action[0] == "!" or re.match(r"[A-Za-z_]\w*=", action[0])):
+                    action = action[1:]
+                # Only shell builtins execute in this scope. A command query
+                # and process launchers such as env cannot terminate it.
+                builtin_action = action[:1] in (["builtin"], ["command"])
+                while action[:1] in (["builtin"], ["command"]):
+                    wrapper, action = action[0], action[1:]
+                    while action and action[0].startswith("-"):
+                        option = action[0]
+                        if option == "--":
+                            action = action[1:]
+                            break
+                        if wrapper == "command" and len(option) > 1 and set(option[1:]) <= {"p", "v", "V"}:
+                            action = [] if set(option[1:]) & {"v", "V"} else action[1:]
+                        else:
+                            break
+                terminates = action[0] if action[:1] in (["exit"], ["return"]) else None
+                if terminates and len(action) > 1 and re.fullmatch(r"[+-]?\d+", action[1]) and int(action[1]) % 256:
+                    terminates = None  # This early result cannot be success.
+                trap = action[1:] if action[:1] == ["trap"] else []
+                explicit_action = trap[:1] == ["--"]
+                if explicit_action:
+                    trap = trap[1:]
+                installation = (len(trap) >= 2 and trap[0] not in {"-", ""}
+                                and (explicit_action or not trap[0].startswith("-")))
                 result = shell_literal_status(node["argv"])
                 if previous == "||":
                     if list_status is False:
@@ -2462,9 +2490,20 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                     list_success, list_status = entry | positive, result
                 success_facts[node["index"]] = {"entry": entry, "success": set(list_success),
                                                 "children": child_success, "parent": parent, "stop": node["stop"],
-                                                "overrides": words[:1] == ["trap"] and any(word in {"EXIT", "0"} for word in words[2:])}
+                                                "subshell": node["child_scope"] == "(",
+                                                "terminates": terminates, "overrides": installation, "builtin_action": builtin_action}
                 previous = node["separator"]
                 implied = set(list_success) if previous == "&&" else set(inherited)
+            list_start = 0
+            for offset, node in enumerate(nodes):
+                if node["separator"] == "&":
+                    for member in nodes[list_start:offset + 1]:
+                        success_facts[member["index"]]["process_scope"] = node["index"]
+                    success_facts[node["index"]]["subshell"] = True
+                if node["separator"] in {";", "\n", "&"}:
+                    list_start = offset + 1
+                if node["separator"] in {"|", "|&"}:
+                    success_facts[node["index"]]["subshell"] = True
             return list_success if nodes and previous not in {"&", "|", "|&"} else set(inherited)
         success_facts["end"] = implied_success(nodes)
     def echo_scopes(nodes, scope):
@@ -2991,26 +3030,78 @@ def shell_effect_order(tokens, events, *, success_facts=None):
             if event["kind"] == "write":
                 event = dict(event, _replace_success=event["replaces"])
             by_position.setdefault(event["position"], []).append(event)
-    functions, function_success = {}, {}
+    functions = {}
+    success_links = {position: facts["children"] for position, facts in success_facts.items()
+                     if isinstance(position, int) and facts.get("children")}
+    success_links["end"] = end_success
+    alternatives, function_calls = {}, set()
+    automatic_traps = {"TRAPEXIT", "TRAPERR", "TRAPZERR", "TRAPDEBUG"}
 
-    def expanded_success(positions):
-        result, pending = set(positions), list(positions)
-        while pending:
-            for position in function_success.get(pending.pop(), ()):
-                if position not in result:
-                    result.add(position)
-                    pending.append(position)
+    def expanded_success(positions, active=frozenset()):
+        result = set()
+        for position in positions:
+            if position in active:
+                continue
+            nested = expanded_success(success_links.get(position, ()), active | {position})
+            for endpoint in alternatives.get(position, ()):
+                nested.intersection_update(expanded_success(endpoint, active | {position}))
+            result.update({position, *nested})
         return result
 
+    def parsed_owner(position):
+        if position in success_facts:
+            return position
+        return max((start for start, facts in success_facts.items() if isinstance(start, int)
+                    and start <= position < facts["stop"]), default=None)
+
+    def live_scopes(position, prefix, boundary):
+        owner = parsed_owner(position)
+        parent = success_facts.get(owner, {}).get("parent")
+        groups = []
+        while parent is not None and parent != boundary:
+            groups.append(parent)
+            parent = success_facts.get(parent, {}).get("parent")
+        scopes = list(prefix)
+        for group in reversed(groups):
+            process = success_facts.get(group, {}).get("process_scope")
+            if process is not None and process not in scopes:
+                scopes.append(process)
+            scopes.append(group)
+        process = success_facts.get(owner, {}).get("process_scope")
+        if process is not None and process not in scopes:
+            scopes.append(process)
+        if success_facts.get(owner, {}).get("subshell") and owner not in scopes:
+            scopes.append(owner)
+        return tuple(scopes)
+
+    def alternate_endpoint(scopes, implied, *, termination=None):
+        process = next(index for index in range(len(scopes) - 1, -1, -1)
+                       if scopes[index] == "end" or success_facts.get(scopes[index], {}).get("subshell"))
+        if termination == "exit":
+            targets = [scopes[process]]
+        elif termination == "return":
+            target = next((scope for scope in reversed(scopes[process:])
+                           if scope in function_calls or success_facts.get(scope, {}).get("subshell")), None)
+            targets = [] if target is None else [target]
+        else:
+            # A reached handler may successfully end its surrounding context.
+            # A subshell installation cannot affect its parent's endpoint.
+            targets = scopes[process:]
+        for target in targets:
+            alternatives.setdefault(target, []).append(frozenset(implied))
+
     def walk(begin, end, active=(), in_loop=False, definite=True, inherited=frozenset(),
-             scope_entry=frozenset(), completion=None):
-        completion = end_success if completion is None else completion
+             scope_entry=frozenset(), scope_prefix=("end",), boundary=None):
         index = begin
         while index < end:
-            implied = expanded_success(inherited | (success_facts.get(index, {}).get("entry", set()) - scope_entry))
+            implied = inherited | (success_facts.get(index, {}).get("entry", set()) - scope_entry)
+            scopes = live_scopes(index, scope_prefix, boundary)
             if index in definitions:
                 name, start, stop = definitions[index]
-                functions[name] = (index, start, stop)
+                if guards[index] is not False:
+                    functions[name] = (parsed_owner(index), start, stop)
+                    if name in automatic_traps:
+                        alternate_endpoint(scopes, implied)
                 index = stop + 1
                 continue
             token = tokens[index]
@@ -3033,7 +3124,7 @@ def shell_effect_order(tokens, events, *, success_facts=None):
                     for event in walk(index + 1, stop, active, in_loop=True,
                                       definite=True if definite is True and guards[index] is True and guaranteed else None,
                                       inherited=implied, scope_entry=success_facts.get(index, {}).get("entry", set()),
-                                      completion=set()):
+                                      scope_prefix=scope_prefix, boundary=boundary):
                         if event["kind"] in {"break", "continue"}:
                             transfer = event["kind"]
                             break
@@ -3048,35 +3139,39 @@ def shell_effect_order(tokens, events, *, success_facts=None):
                 if definite is True and guards[index] is True:
                     yield {"kind": token}
                     return
-                definite = None  # The rest of this iteration may be skipped.
+                definite = None
                 index += 1
                 continue
-            called = next((path for event in current if event["kind"] == "read"
-                           for path in event["paths"] if path in functions), None)
+            facts = success_facts.get(index, {})
+            called = (None if facts.get("builtin_action") else
+                      next((path for event in current if event["kind"] == "read"
+                            for path in event["paths"] if path in functions), None))
             if called is not None:
                 if active.count(called) < 2:
                     definition, start, stop = functions[called]
                     facts = success_facts.get(definition, {})
                     body_success = facts.get("children", set()) - facts.get("entry", set())
-                    function_success[index] = body_success
+                    success_links[index] = body_success
+                    function_calls.add(index)
                     yield from walk(start, stop, (*active, called),
                                     definite=True if definite is True and guards[index] is True else None,
                                     inherited=implied, scope_entry=facts.get("entry", set()),
-                                    completion=body_success if index in completion else set())
+                                    scope_prefix=(*scopes, index), boundary=definition)
             else:
+                facts = success_facts.get(index, {})
+                if current and facts.get("terminates"):
+                    alternate_endpoint(scopes, implied, termination=facts["terminates"])
+                if current and facts.get("overrides"):
+                    alternate_endpoint(scopes, implied)
                 for event in current:
-                    if event["kind"] == "write":
-                        yield dict(event, replaces=event["replaces"] and index in completion,
-                                   partial=event.get("partial", not event["replaces"]))
-                    else:
-                        yield dict(event, _implied_success=tuple(implied))
+                    yield dict(event, _implied_success=tuple(implied)) if event["kind"] == "read" else event
             index += 1
     ordered = list(walk(0, len(tokens)))
-    # A reached EXIT handler can replace the native status. It does not
-    # change the successes required to reach a reader before that exit.
-    if any(success_facts.get(event.get("position"), {}).get("overrides") for event in ordered):
-        ordered = [dict(event, replaces=False) if event["kind"] == "write" else event for event in ordered]
-    return ordered
+    native_success = expanded_success({"end"})
+    return [dict(event, replaces=event["replaces"] and event["position"] in native_success,
+                 partial=event.get("partial", not event["replaces"])) if event["kind"] == "write" else
+            dict(event, _implied_success=tuple(expanded_success(event.get("_implied_success", ()))))
+            for event in ordered]
 
 
 def executable_content_cached(value, cache):
@@ -7923,7 +8018,8 @@ def native_write_outcomes(records, harness, identifiers):
             composed = output_name in {"exec", "functions.exec"}
             serial = composed_calls(output_value) if composed else [(output_name, arguments(output_value), False)]
             blocks, _ = serial_native_chunk(records[index])
-            wrappers = (serial_native_results(blocks, serial) if serial
+            normalized = records[index].get("_native_serial_result") is _SERIAL_NATIVE_RESULT
+            wrappers = (serial_native_results(blocks, serial) if serial and (composed or normalized)
                         and output_name not in {"apply_patch", "functions.apply_patch"} else None)
             if wrappers is not None:
                 statuses = [wrapper.get("exit_code") for (method, args, stdout), wrapper in zip(serial, wrappers)
@@ -8486,7 +8582,7 @@ def serial_ownership_records(records):
     Checker receipts still use their separate isolated-invocation contract.
     """
     expanded, positions, launches, cells, polls, printed = [], [], {}, {}, {}, {}
-    contexts = {}
+    contexts, split_ids = {}, set()
     for index, record in enumerate(records):
         calls, results = calls_and_results(record, "codex")
         for identifier, name, value in calls:
@@ -8513,6 +8609,7 @@ def serial_ownership_records(records):
                 continue
             wrappers = serial_native_results(printed[source], launches[source])
             if wrappers is not None:
+                split_ids.add(source)
                 split = []
                 for part, ((method, args, _), wrapper) in enumerate(zip(launches[source], wrappers)):
                     part_id = f"{source}:serial:{part}"
@@ -8521,6 +8618,7 @@ def serial_ownership_records(records):
                     # Retain its launch so it cannot become a false all-clear.
                     if wrapper is not None:
                         split.append({**({"timestamp": record["timestamp"]} if "timestamp" in record else {}),
+                                      "_native_serial_result": _SERIAL_NATIVE_RESULT,
                                       "payload": {"type": "function_call_output", "call_id": part_id,
                                                   "output": [{"type": "input_text", "text": json.dumps(wrapper)}]}})
         if split is not None:
@@ -8531,7 +8629,6 @@ def serial_ownership_records(records):
             positions.append(index)
     # Remove only launches whose result was actually split. An incomplete cell
     # retains the original pending/opaque behavior.
-    split_ids = {r["payload"]["call_id"].split(":serial:")[0] for r in expanded if ":serial:" in str(r.get("payload", {}).get("call_id", ""))}
     kept = [(r, p) for r, p in zip(expanded, positions)
             if not any(identifier in split_ids for identifier, _, _ in calls_and_results(r, "codex")[0])]
     return [r for r, _ in kept], [p for _, p in kept]

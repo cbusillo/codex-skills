@@ -99,9 +99,8 @@ def proof(*sources, clear=True):
 
 
 def output(value, harness, call_id="tool"):
-    # Real composed Codex output: native text block -> exec result -> helper JSON.
-    native = isinstance(value, dict) and any(type(value.get(key)) is int for key in ("exit_code", "session_id"))
-    encoded = json.dumps(value if native else {"output": json.dumps(value)})
+    # Helper stdout stays nested even when its data happens to name a status.
+    encoded = json.dumps({"output": json.dumps(value)})
     if harness == "codex":
         return {"type": "response_item", "payload": {"type": "custom_tool_call_output", "call_id": call_id,
                 "output": [{"type": "input_text", "text": encoded}]}}
@@ -113,6 +112,24 @@ def native_result(identifier, status=0):
     # Representative transport, not evidence of a direct patch producer.
     return {'type': 'response_item', 'payload': {'type': 'function_call_output',
             'call_id': identifier, 'output': f'Exit code: {status if status is not None else "unknown"}\nWall time: 0.01 seconds\nOutput:\n'}}
+
+
+def shell_result(value, harness, identifier):
+    """Explicit representative direct-shell transport, separate from stdout."""
+    if harness == "claude":
+        return output(value, harness, identifier)
+    record = native_result(identifier, value.get("exit_code"))
+    if type(value.get("session_id")) is int:
+        record["payload"]["output"] = "Process running with session ID " + str(value["session_id"])
+    else:
+        record["payload"]["output"] += value.get("output", "")
+    return record
+
+
+def composed_result(value, identifier):
+    """Declared tools result printed by a composed cell, not direct stdout."""
+    return {"type": "response_item", "payload": {"type": "custom_tool_call_output", "call_id": identifier,
+            "output": [{"type": "input_text", "text": json.dumps(value)}]}}
 
 
 def history(harness, *values):
@@ -2515,8 +2532,7 @@ os.system(get())
                 rows[1 + 2 * index]['payload'].update(name=name, arguments=value if isinstance(value, str) else json.dumps(value))
             else:
                 rows[1 + 2 * index]['message']['content'][0].update(name=name, input=value)
-            rows[2 + 2 * index] = (native_result('tool-' + str(index)) if harness == 'codex' and name in {'apply_patch', 'functions.apply_patch'}
-                                    else output({'exit_code': 0, 'output': ''}, harness, 'tool-' + str(index)))
+            rows[2 + 2 * index] = shell_result({'exit_code': 0, 'output': ''}, harness, 'tool-' + str(index))
         for harness in ('codex', 'claude'):
             write = ('apply_patch', initial) if harness == 'codex' else ('Write', {'file_path': '/repo/run.py', 'content': program})
             edit = ('apply_patch', removal) if harness == 'codex' else ('Edit', {'file_path': '/repo/run.py', 'old_string': old, 'new_string': 'print("safe")'})
@@ -2734,43 +2750,53 @@ os.system(get())
                 # An unrecognized direct transport cannot borrow a status
                 # printed in stdout. Composed wrappers retain native metadata.
                 for poll, composed in ((False, False), (True, False), (False, True), (True, True)):
-                    for native_success in ((False, True) if composed else (False,)):
-                        rows = history(harness, {}, {}, {})
-                        invoke(rows, harness, 0, *write)
-                        command = "printf 'print(1)\\n' > /repo/run.py"
-                        invoke(rows, harness, 1, 'exec_command', {'cmd': command})
-                        invoke(rows, harness, 2, *read)
-                        writer_call = next(row['payload'] for row in rows
-                                           if row.get('payload', {}).get('call_id') == 'tool-1'
-                                           and row['payload'].get('type') == 'function_call')
-                        writer_result = next(row for row in rows
-                                             if row.get('payload', {}).get('call_id') == 'tool-1'
-                                             and row['payload'].get('type') == 'custom_tool_call_output')
-                        result_id = 'poll' if poll else 'tool-1'
-                        if composed:
-                            writer_call.update(name='functions.exec', arguments=
-                                               'text(await tools.exec_command(' + json.dumps({'cmd': command}) + '));')
-                            terminal = output({'exit_code': 0 if native_success else 1,
-                                               'output': json.dumps({'exit_code': 1 if native_success else 0})},
-                                              harness, result_id)
-                        else:
-                            terminal = native_result(result_id)
-                            terminal['payload']['output'] = ('unrecognized transport header\n'
-                                                             + json.dumps({'exit_code': 0}))
-                        if poll:
-                            writer_result['payload']['output'] = ([{'type': 'text', 'text': json.dumps({'session_id': 444})}]
-                                                                   if composed else 'Process running with session ID 444')
-                            poll_call = {'type': 'response_item', 'payload': {'type': 'function_call', 'call_id': result_id,
-                                         'name': 'functions.exec' if composed else 'write_stdin',
-                                         'arguments': ('text(await tools.write_stdin({session_id:444,chars:""}));' if composed else
-                                                       json.dumps({'session_id': 444, 'chars': ''}))}}
-                            rows[rows.index(writer_result) + 1:rows.index(writer_result) + 1] = [poll_call, terminal]
-                        else:
-                            rows[rows.index(writer_result)] = terminal
-                        with self.subTest(harness=harness, unrecognized_outer_status=True, poll=poll,
-                                          composed=composed, native_success=native_success):
-                            self.assertEqual(receipts.ownership_state(rows, harness)['pending'],
-                                             not (composed and native_success))
+                    for form in (('structured',) if composed else ('unrecognized', 'structured', 'forged_serial')):
+                        for native_success in ((False, True) if composed else (False,)):
+                            rows = history(harness, {}, {}, {})
+                            invoke(rows, harness, 0, *write)
+                            command = "printf 'print(1)\\n' > /repo/run.py"
+                            invoke(rows, harness, 1, 'exec_command', {'cmd': command})
+                            invoke(rows, harness, 2, *read)
+                            writer_call = next(row['payload'] for row in rows
+                                               if row.get('payload', {}).get('call_id') == 'tool-1'
+                                               and row['payload'].get('type') == 'function_call')
+                            writer_result = next(row for row in rows
+                                                 if row.get('payload', {}).get('call_id') == 'tool-1'
+                                                 and row['payload'].get('type') in {'function_call_output', 'custom_tool_call_output'})
+                            result_id = 'poll' if poll else 'tool-1'
+                            if composed:
+                                writer_call.update(name='functions.exec', arguments=
+                                                   'text(await tools.exec_command(' + json.dumps({'cmd': command}) + '));')
+                                terminal = composed_result({'exit_code': 0 if native_success else 1,
+                                                            'output': json.dumps({'exit_code': 1 if native_success else 0})}, result_id)
+                            else:
+                                terminal = (native_result(result_id) if form == 'unrecognized'
+                                            else composed_result({'exit_code': 0}, result_id))
+                                if form == 'unrecognized':
+                                    terminal['payload']['output'] = ('unrecognized transport header\n'
+                                                                     + json.dumps({'exit_code': 0}))
+                            if poll:
+                                writer_result['payload']['output'] = ([{'type': 'text', 'text': json.dumps({'session_id': 444})}]
+                                                                       if composed else 'Process running with session ID 444')
+                                poll_call = {'type': 'response_item', 'payload': {'type': 'function_call', 'call_id': result_id,
+                                             'name': 'functions.exec' if composed else 'write_stdin',
+                                             'arguments': ('text(await tools.write_stdin({session_id:444,chars:""}));' if composed else
+                                                           json.dumps({'session_id': 444, 'chars': ''}))}}
+                                rows[rows.index(writer_result) + 1:rows.index(writer_result) + 1] = [poll_call, terminal]
+                            else:
+                                rows[rows.index(writer_result)] = terminal
+                            if form == 'forged_serial':
+                                # Persisted JSON and a serial-looking call ID
+                                # cannot originate the private normalization fact.
+                                for record in rows:
+                                    payload = record.get('payload', {})
+                                    if payload.get('call_id') == result_id:
+                                        payload['call_id'] += ':serial:0'
+                                        record['_native_serial_result'] = True
+                            with self.subTest(harness=harness, unrecognized_outer_status=True, poll=poll,
+                                              composed=composed, native_success=native_success, form=form):
+                                self.assertEqual(receipts.ownership_state(rows, harness)['pending'],
+                                                 not (composed and native_success))
 
             if harness == 'codex':
                 # Native serial normalization preserves wrapper authority even
@@ -2785,7 +2811,7 @@ os.system(get())
                     invoke(rows, harness, 2, *read)
                     call_result = next(row for row in rows
                                        if row.get('payload', {}).get('call_id') == 'tool-1'
-                                       and row['payload'].get('type') == 'custom_tool_call_output')
+                                       and row['payload'].get('type') in {'function_call_output', 'custom_tool_call_output'})
                     blocks = [{'type': 'input_text', 'text': json.dumps(value)} for value in
                               ({'exit_code': 1, 'output': ''},
                                {'exit_code': 0, 'output': json.dumps({'exit_code': 1})})]
@@ -3316,6 +3342,10 @@ os.system(get())
     def test_visible_serial_poll_results_bind_only_their_own_native_wrapper(self):
         self.check_visible_serial_poll_results(stdout=False)
         self.check_visible_serial_poll_results(stdout=True)
+        rows = history("codex", claim())
+        # A serial-looking unbound output cannot remove the real launch.
+        rows[2] = composed_result({"exit_code": 0}, "tool-0:serial:0")
+        self.assertTrue(receipts.ownership_state(rows, "codex")["pending"])
 
     def check_visible_serial_poll_results(self, *, stdout):
         for writer_finished in (False, True):
@@ -5589,7 +5619,7 @@ os.system(get())
                         if harness == "codex":
                             command = "bash run.sh" if content is None else "cat > run.sh <<'EOF'\n" + content + "\nEOF"
                             rows[index]["payload"]["arguments"] = json.dumps({"cmd": command})
-                            rows[index + 1] = output({"exit_code": 0, "output": ""}, harness, "tool-" + str(position))
+                            rows[index + 1] = shell_result({"exit_code": 0, "output": ""}, harness, "tool-" + str(position))
                         elif content is None:
                             rows[index]["message"]["content"][0]["input"] = {"command": "bash run.sh"}
                         else:
@@ -5616,7 +5646,7 @@ os.system(get())
                     record["message"]["content"][0]["input"] = {"command": command}
                 result = terminal(rows, harness, identifier)
                 result.clear()
-                result.update(output({"exit_code": 0}, harness, identifier))
+                result.update(shell_result({"exit_code": 0}, harness, identifier))
             return rows
 
         # Separate local calls must settle harmless non-Python sources too.
@@ -5650,7 +5680,7 @@ os.system(get())
                         result["timestamp"] = "2026-01-01T00:00:04.5Z"
                     elif mode != "complete":
                         result.clear()
-                        result.update(output({"exit_code": 1} if mode == "failed" else {}, harness, "tool-1"))
+                        result.update(shell_result({"exit_code": 1} if mode == "failed" else {}, harness, "tool-1"))
                         result["timestamp"] = "2026-01-01T00:00:03Z"
                         if harness == "claude":
                             result["message"]["content"][0]["is_error"] = True if mode == "failed" else "unknown"
@@ -5747,6 +5777,95 @@ os.system(get())
                                     ("! " if suffix == "negated" else "") + copier + " " + source + " " + path + ("" if suffix == "negated" else suffix), reader]
                         with self.subTest(harness=harness, copy_status=copier, suffix=suffix, path=path):
                             self.assertEqual(receipts.ownership_state(scripts(harness, commands), harness)["pending"], pending)
+
+
+        # Successful scope termination can precede its final write. The same
+        # endpoint relation must govern a caller's reader and native exit-zero.
+        safe_write = "printf 'echo done\\n' > run.sh"
+        owner = "echo " + shlex.quote(writer) + " > run.sh"
+        termination_cases = (
+            ("early_exit", "[ -f run.sh ] && exit 0; " + safe_write, True, True),
+            ("early_exit_implicit", "[ -f run.sh ] && exit; " + safe_write, True, True),
+            ("early_exit_final_exit", "[ -f run.sh ] && exit 0; " + safe_write + " && exit 0", True, True),
+            ("early_exit_group", "{ [ -f run.sh ] && exit 0; " + safe_write + "; }", True, True),
+            ("early_exit_subshell", "( [ -f run.sh ] && exit 0; " + safe_write + " ) && bash run.sh", False, True),
+            ("early_return", "gen() { [ -f run.sh ] && return; " + safe_write + "; }; gen && bash run.sh", False, True),
+            ("explicit_return", "gen() { [ -f run.sh ] && return 0; " + safe_write + "; }; gen && bash run.sh", False, True),
+            ("return_completion", "gen() { [ -f run.sh ] && return 0; " + safe_write + "; }; gen", True, True),
+            ("return_group", "gen() { { [ -f run.sh ] && return; }; " + safe_write + "; }; gen && bash run.sh", False, True),
+            ("return_if", "gen() { if [ -f run.sh ]; then return; fi; " + safe_write + "; }; gen && bash run.sh", False, True),
+            ("function_exit", "gen() { [ -f run.sh ] && exit 0; }; gen; " + safe_write, True, True),
+            ("function_return_continues", "gen() { [ -f run.sh ] && return 0; }; gen; " + safe_write, True, False),
+            ("subshell_exit_isolated", "( [ -f run.sh ] && exit 0; " + safe_write + " ); " + safe_write, True, False),
+            ("pipeline_exit_isolated", "exit 0 | true; " + safe_write, True, False),
+            ("nested_function_exit", "early() { [ -f run.sh ] && exit 0; }; ( early; " + safe_write + " ) && bash run.sh", False, True),
+            ("command_exit", "[ -f run.sh ] && command -- exit 0; " + safe_write, True, True),
+            ("command_options_exit", "[ -f run.sh ] && command -p -- exit 0; " + safe_write, True, True),
+            ("builtin_exit", "[ -f run.sh ] && builtin exit 0; " + safe_write, True, True),
+            ("shadowed_builtin_exit", "exit() { :; }; builtin exit 0; " + safe_write, True, True),
+            ("shadowed_function", "exit() { :; }; exit; " + safe_write, True, False),
+            ("command_query", "command -v exit; " + safe_write, True, False),
+            ("skipped_exit", "false && exit 0; " + safe_write, True, False),
+            ("unused_return", "gen() { [ -f run.sh ] && return; " + safe_write + "; }; " + safe_write, True, False),
+            ("final_exit", safe_write + " && exit 0", True, False),
+            ("final_exit_group", "{ " + safe_write + " && exit 0; }", True, False),
+            ("final_exit_subshell", "( " + safe_write + " && exit 0 )", True, False),
+            ("ordinary_function", "gen() { " + safe_write + "; }; gen && bash run.sh", False, False),
+            ("final_return", "gen() { " + safe_write + " && return 0; }; gen && bash run.sh", False, False),
+        )
+        # Installing a handler may successfully finish its surrounding scope.
+        # Query, reset and ignored-signal forms install no executable handler.
+        handler_cases = [
+            ("trap_" + signal, "trap 'exit 0' " + signal + "; " + safe_write, True, True)
+            for signal in ("ERR", "ZERR", "EXIT", "exit", "SIGEXIT", "DEBUG", "RETURN", "INT")]
+        handler_cases += [
+            (hook, hook + "() { exit 0; }; " + safe_write, True, True)
+            for hook in ("TRAPEXIT", "TRAPERR", "TRAPZERR", "TRAPDEBUG")]
+        handler_cases += [
+            ("trap_explicit_action", "trap -- '-x; exit 0' ERR; " + safe_write, True, True),
+            ("command_options_trap", "command -p -- trap 'exit 0' ERR; " + safe_write, True, True),
+            ("query_print", "trap -p EXIT; " + safe_write, True, False),
+            ("query_list", "trap -l; " + safe_write, True, False),
+            ("query_bare", "trap; " + safe_write, True, False),
+            ("reset", "trap - EXIT; " + safe_write, True, False),
+            ("ignore", "trap '' EXIT; " + safe_write, True, False),
+            ("guarded_trap", "trap 'exit 0' ERR; " + safe_write + " && bash run.sh", False, False),
+            ("subshell_trap", "( trap 'exit 0' ERR; " + safe_write + " ) && bash run.sh", False, True),
+            ("subshell_trap_isolated", "( trap 'exit 0' ERR; : ); " + safe_write, True, False),
+            ("pipeline_trap_isolated", "trap 'exit 0' ERR | true; " + safe_write, True, False),
+            ("function_trap_return", "gen() { trap 'return 0' ERR; " + safe_write + "; }; gen && bash run.sh", False, True),
+            ("guarded_function_trap", "gen() { trap 'return 0' ERR; " + safe_write + " && bash run.sh; }; gen", False, False),
+            ("skipped_hook", "if false; then TRAPEXIT() { exit 0; }; fi; " + safe_write, True, False),
+            ("unused_hook", "unused() { TRAPEXIT() { exit 0; }; }; " + safe_write, True, False),
+            ("called_hook", "install() { TRAPZERR() { exit 0; }; }; install; " + safe_write, True, True),
+        ]
+        # Background calls remain opaque to native ownership completion, but
+        # their child endpoints cannot invalidate a later foreground write.
+        for command in (
+                "exit 0 & " + safe_write,
+                "[ -f run.sh ] && exit 0 & " + safe_write,
+                "{ [ -f run.sh ] && exit 0; } & " + safe_write,
+                "trap 'exit 0' ERR & " + safe_write,
+                "true && trap 'exit 0' ERR & " + safe_write):
+            effects = []
+            receipts.shell_code(command, effects=effects)
+            replacement = next(effect for effect in effects if effect["kind"] == "write")
+            with self.subTest(child_endpoint=command):
+                self.assertTrue(replacement["replaces"])
+
+        for harness in ("codex", "claude"):
+            for label, command, later_reader, pending in (*termination_cases, *handler_cases):
+                commands = [owner, command, *(["bash run.sh"] if later_reader else [])]
+                rows = scripts(harness, commands)
+                if harness == "codex":
+                    # A declared direct native transport fixture, independent
+                    # of the composed-result/serial normalization factories.
+                    for index in range(len(commands)):
+                        result = terminal(rows, harness, f"tool-{index}")
+                        result.clear()
+                        result.update(native_result(f"tool-{index}"))
+                with self.subTest(harness=harness, scope_endpoint=label):
+                    self.assertEqual(receipts.ownership_state(rows, harness)["pending"], pending)
 
 
     def test_many_producer_streams_preserve_reader_and_data_behavior(self):
@@ -5853,8 +5972,8 @@ os.system(get())
                 else:
                     author[index]["message"]["content"][0].update(name="Write", input={"file_path": "/repo/run.sh", "content": content})
             if harness == "codex":
-                author[2] = output({"exit_code": 0, "output": ""}, harness, "tool-0")
-                author[4] = output({"exit_code": 0, "output": ""}, harness, "tool-1")
+                author[2] = shell_result({"exit_code": 0, "output": ""}, harness, "tool-0")
+                author[4] = shell_result({"exit_code": 0, "output": ""}, harness, "tool-1")
             if harness == "codex": reader[1]["payload"]["arguments"] = json.dumps({"cmd": "bash run.sh"})
             else: reader[1]["message"]["content"][0]["input"] = {"command": "bash run.sh"}
             histories = [{"harness": harness, "records": rows} for rows in (author, reader)]
@@ -5909,8 +6028,8 @@ os.system(get())
                 with self.subTest(harness=harness, owner_finish=finish, replace_at=replace_at, read_at=read_at):
                     owner, cleanup, reader = (history(harness, {}) for _ in range(3))
                     if harness == "codex":
-                        owner[2] = output({"exit_code": 0, "output": ""}, harness, "tool-0")
-                        cleanup[2] = output({"exit_code": 0, "output": ""}, harness, "tool-0")
+                        owner[2] = shell_result({"exit_code": 0, "output": ""}, harness, "tool-0")
+                        cleanup[2] = shell_result({"exit_code": 0, "output": ""}, harness, "tool-0")
                     for rows, content in ((owner, writer), (cleanup, "echo done")):
                         if harness == "codex":
                             rows[1]["payload"]["arguments"] = json.dumps({"cmd": "cat > run.sh <<'EOF'\n" + content + "\nEOF"})
@@ -5949,8 +6068,8 @@ os.system(get())
                         else:
                             rows[1]["message"]["content"][0]["input"] = {"command": command}
                             rows[3]["message"]["content"][0]["input"] = {"command": read}
-                        rows[2] = output({"session_id": 123} if mode in {"running", "polled", "late_poll"} else {"exit_code": 0}, harness, "tool-0")
-                        rows[4] = output({"exit_code": 0}, harness, "tool-1")
+                        rows[2] = shell_result({"session_id": 123} if mode in {"running", "polled", "late_poll"} else {"exit_code": 0}, harness, "tool-0")
+                        rows[4] = shell_result({"exit_code": 0}, harness, "tool-1")
                         if mode == "missing":
                             rows.pop(2)
                         elif mode == "overlap":
@@ -5960,7 +6079,7 @@ os.system(get())
                         elif mode in {"polled", "late_poll"}:
                             poll = [{"type": "response_item", "payload": {"type": "function_call", "name": "write_stdin",
                                      "call_id": "writer-poll", "arguments": json.dumps({"session_id": 123})}},
-                                    output({"exit_code": 0}, harness, "writer-poll")]
+                                    shell_result({"exit_code": 0}, harness, "writer-poll")]
                             if mode == "polled":
                                 rows[3:3] = poll
                             else:
@@ -6017,22 +6136,22 @@ os.system(get())
                                     rows[2 * index + 1]["payload"]["arguments"] = json.dumps({"cmd": command})
                                 else:
                                     rows[2 * index + 1]["message"]["content"][0]["input"] = {"command": command}
-                                rows[2 * index + 2] = output({"exit_code": 0}, harness, f"tool-{index}")
+                                rows[2 * index + 2] = shell_result({"exit_code": 0}, harness, f"tool-{index}")
                             if mode in {"running", "polled", "late_poll"}:
-                                rows[4] = output({"session_id": 456}, harness, "tool-1")
+                                rows[4] = shell_result({"session_id": 456}, harness, "tool-1")
                             elif mode == "missing":
                                 rows.pop(4)
                             elif mode == "overlap":
                                 rows.append(rows.pop(4))
                             elif overlapping:
                                 if mode == "overlapping_later_running_harmless_append":
-                                    rows[6] = output({"session_id": 789}, harness, "tool-2")
+                                    rows[6] = shell_result({"session_id": 789}, harness, "tool-2")
                                 completion = rows.pop(4)
                                 rows.insert(len(rows) - 2, completion)
                             if mode in {"polled", "late_poll"}:
                                 poll = [{"type": "response_item", "payload": {"type": "function_call", "name": "write_stdin",
                                          "call_id": "replacement-poll", "arguments": json.dumps({"session_id": 456})}},
-                                        output({"exit_code": 0}, harness, "replacement-poll")]
+                                        shell_result({"exit_code": 0}, harness, "replacement-poll")]
                                 if mode == "polled":
                                     rows[5:5] = poll
                                 else:
@@ -6066,7 +6185,7 @@ os.system(get())
                             rows[2 * index + 1]["payload"]["arguments"] = json.dumps({"cmd": command})
                         else:
                             rows[2 * index + 1]["message"]["content"][0]["input"] = {"command": command}
-                        rows[2 * index + 2] = output({"session_id": 789} if index else {"exit_code": 0}, harness, f"tool-{index}")
+                        rows[2 * index + 2] = shell_result({"session_id": 789} if index else {"exit_code": 0}, harness, f"tool-{index}")
                     if timed:
                         for index, row in enumerate(rows[1:], 1):
                             row["timestamp"] = f"2026-01-01T00:00:{index:02d}Z"
@@ -6093,7 +6212,7 @@ os.system(get())
                                     rows[2 * index + 1]["payload"]["arguments"] = json.dumps({"cmd": command})
                                 else:
                                     rows[2 * index + 1]["message"]["content"][0]["input"] = {"command": command}
-                                rows[2 * index + 2] = output({"session_id": 234} if index == 1 else {"exit_code": 0}, harness, f"tool-{index}")
+                                rows[2 * index + 2] = shell_result({"session_id": 234} if index == 1 else {"exit_code": 0}, harness, f"tool-{index}")
                             rows.pop()
                             if timed:
                                 for index, row in enumerate(rows[1:], 1):
@@ -6124,7 +6243,7 @@ os.system(get())
                                     rows[2 * index + 1]["payload"]["arguments"] = json.dumps({"cmd": command})
                                 else:
                                     rows[2 * index + 1]["message"]["content"][0]["input"] = {"command": command}
-                                rows[2 * index + 2] = output({"exit_code": 0}, harness, f"tool-{index}")
+                                rows[2 * index + 2] = shell_result({"exit_code": 0}, harness, f"tool-{index}")
                             for index, second in enumerate((0, 0, 1, finish or 5, 2, 2, 4, 4), 1):
                                 rows[index]["timestamp"] = f"2026-01-01T00:00:{second:02d}Z"
                             completion = rows.pop(4)
@@ -6158,7 +6277,7 @@ os.system(get())
                             rows[2 * index + 1]["payload"]["arguments"] = json.dumps({"cmd": command})
                         else:
                             rows[2 * index + 1]["message"]["content"][0]["input"] = {"command": command}
-                        rows[2 * index + 2] = output({"session_id": 42} if index == 0 else {"exit_code": 0}, harness, f"tool-{index}")
+                        rows[2 * index + 2] = shell_result({"session_id": 42} if index == 0 else {"exit_code": 0}, harness, f"tool-{index}")
                         for row in rows[2 * index + 1:2 * index + 3]:
                             row["timestamp"] = f"2026-01-01T00:00:{index:02d}Z"
                     candidates = ()
