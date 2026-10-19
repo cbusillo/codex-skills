@@ -2287,13 +2287,13 @@ def python_ownership(content, *, partial=False):
     unknown = object()
     computed, overflow = "$computed_operand", "$computed_ownership_operand"
     found = False
-    active, invocation_cache = [], {}
+    active, invocation_cache, active_iterators = [], {}, set()
     recursion_skips = 0
     class_bindings, expression_values = {}, {}
     exit_callbacks = []
-    return_values = []
+    return_values, yield_values = [], []
     fingerprints = {}
-    instances, containers = [], []
+    branch_changes = []
     class_bases = {}
     method_classes = {}
     attribute_mutations = 0
@@ -2376,7 +2376,6 @@ def python_ownership(content, *, partial=False):
     class Instance:
         def __init__(self, kind):
             self.kind, self.attributes = kind, {}
-            instances.append(self)
 
     class Super:
         def __init__(self, kind, receiver):
@@ -2398,12 +2397,10 @@ def python_ownership(content, *, partial=False):
         def __init__(self, rows, unique=False):
             self.state = {"rows": choices(list(choices(row)) if unique else list(row) for row in rows)}
             self.unique = unique
-            containers.append(self)
 
     class Keywords:
         def __init__(self, items):
             self.state = items
-            containers.append(self)
 
         @property
         def items(self):
@@ -2416,6 +2413,7 @@ def python_ownership(content, *, partial=False):
         def __init__(self, node, scope, arguments=(), keywords=(), operands=None):
             self.node, self.scope = node, scope
             self.arguments, self.keywords, self.operands = arguments, keywords, operands
+            self.positions = None
 
     def same(left, right):
         if isinstance(left, ast.alias) and isinstance(right, ast.alias):
@@ -2508,7 +2506,8 @@ def python_ownership(content, *, partial=False):
     def function_names(node, scope):
         if isinstance(node, ast.Name):
             bound = scope.get(node.id)
-            return {item.name for item in bound if isinstance(item, ast.alias)} if bound else {node.id}
+            return ({item.name for item in bound if isinstance(item, ast.alias)}
+                    | {item.kind.name for item in bound if isinstance(item, Instance) and isinstance(item.kind, ast.alias)}) if bound else {node.id}
         if isinstance(node, ast.Attribute):
             return {parent + "." + node.attr for parent in function_names(node.value, scope)}
         if isinstance(node, ast.Call):
@@ -2548,11 +2547,14 @@ def python_ownership(content, *, partial=False):
             result.append(item)
         return choices(result)
 
-    def comprehension(node, scope):
+    def comprehension(node, scope, outer=None):
         local = Scope(scope)
-        for generator in node.generators:
-            scan(generator.iter, local)
-            items = iterated(generator.iter, local)
+        for index, generator in enumerate(node.generators):
+            if index == 0 and outer is not None:
+                items = iterate_values(outer, scope)
+            else:
+                scan(generator.iter, local)
+                items = iterated(generator.iter, local)
             if not items:
                 return None
             bind(generator.target, items, local)
@@ -2562,37 +2564,101 @@ def python_ownership(content, *, partial=False):
                     return None
         return local
 
+    def generator_values(sequence, scope):
+        if sequence.operands is not None:
+            items = choices(item for operand in sequence.operands for item in iterate_values((operand,), sequence.scope))
+            return choices((unknown, item) for item in items) if sequence.arguments == ("enumerate",) else items
+        if isinstance(sequence.node, ast.GeneratorExp):
+            local = comprehension(sequence.node, sequence.scope, sequence.arguments[0])
+            if local is None:
+                return ()
+            scan(sequence.node.elt, local)
+            return value(sequence.node.elt, local)
+        if isinstance(sequence.node, ast.Call):
+            functions, names, inputs = sequence.arguments
+            arguments = [iterate_values(assigned, sequence.scope) for assigned in inputs]
+            if any(not assigned for assigned in arguments):
+                return ()
+            results = [item for function in functions for item in invoke(function, sequence.scope, arguments, evaluated=True)]
+            if not results and len(arguments) == 1 and names & {"str", "repr", "ascii", "shlex.quote"}:
+                operation = shlex.quote if "shlex.quote" in names else repr if "repr" in names else ascii if "ascii" in names else str
+                results = [operation(item if isinstance(item, (str, int, float, bool)) else computed) for item in arguments[0]]
+            return choices(results) or (unknown,)
+        yielded = {}
+        result = invoke(sequence.node, sequence.scope, sequence.arguments, sequence.keywords, evaluated=True, consumed=True, yielded=yielded)
+        wrapper = sequence.node.function if isinstance(sequence.node, Bound) else sequence.node
+        if isinstance(wrapper, Function) and isinstance(wrapper.node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            paths = yield_paths(wrapper.node.body)
+            if paths is not None:
+                sequence.positions = [choices(item for path in paths.values() if index < len(path)
+                                              for identity in path[index] for item in yielded.get(identity, (unknown,)))
+                                      for index in range(max(paths, default=0))]
+        return result
+
+    def yield_paths(statements):
+        # Merge equal-length alternatives by position. Independent branches
+        # must not expand into every possible complete execution path.
+        def retain(rows, path):
+            length = len(path)
+            rows[length] = tuple(before | after for before, after in zip(rows[length], path)) if length in rows else path
+        paths = {0: ()}
+        for statement in statements:
+            if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Yield):
+                alternatives = {1: (frozenset({id(statement)}),)}
+            elif isinstance(statement, ast.If):
+                bodies = [statement.body, statement.orelse]
+                if isinstance(statement.test, ast.Constant):
+                    bodies = [bodies[0] if statement.test.value else bodies[1]]
+                branches = [yield_paths(body) for body in bodies]
+                if any(branch is None for branch in branches):
+                    return None
+                alternatives = {}
+                for branch in branches:
+                    for path in branch.values():
+                        retain(alternatives, path)
+            elif isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                continue
+            elif any(isinstance(node, (ast.Yield, ast.YieldFrom)) for node in ast.walk(statement)):
+                return None
+            else:
+                continue
+            combined = {}
+            for before in paths.values():
+                for after in alternatives.values():
+                    retain(combined, (*before, *after))
+            paths = combined
+        return paths
+
     def iterate_values(sequences, scope):
+        nonlocal recursion_skips
         result = []
         for sequence in sequences:
             if isinstance(sequence, Generator):
-                if sequence.operands is not None:
-                    items = choices(item for operand in sequence.operands for item in iterate_values((operand,), sequence.scope))
-                    if sequence.arguments == ("enumerate",):
-                        result.extend((unknown, item) for item in items)
-                    else:
-                        result.extend(items)
-                elif isinstance(sequence.node, (ast.GeneratorExp, ast.Call)):
-                    result.extend(iterated(sequence.node, sequence.scope))
-                else:
-                    result.extend(invoke(sequence.node, sequence.scope, sequence.arguments, sequence.keywords, evaluated=True, consumed=True))
+                identity = (id(sequence.node), id(sequence.scope)) if sequence.node is not None else (id(sequence),)
+                if identity in active_iterators:
+                    recursion_skips += 1
+                    result.append(unknown)
+                    continue
+                active_iterators.add(identity)
+                try:
+                    result.extend(generator_values(sequence, scope))
+                finally:
+                    active_iterators.remove(identity)
             elif isinstance(sequence, Sequence):
                 result.extend(item for row in sequence_rows(sequence) for item in row)
             elif isinstance(sequence, (list, tuple)):
                 result.extend(sequence)
             elif isinstance(sequence, Keywords):
                 result.extend(sequence.items)
+            elif isinstance(sequence, str) and overflow in sequence:
+                result.append(overflow)
             else:
                 result.append(unknown)
         return choices(result)
 
     def iterated(node, scope):
         if isinstance(node, ast.Call) and "map" in function_names(node.func, scope) and len(node.args) > 1:
-            arguments = [iterated(argument, scope) for argument in node.args[1:]]
-            if any(not assigned for assigned in arguments):
-                return ()
-            return choices(item for function in value(node.args[0], scope)
-                           for item in (invoke(function, scope, arguments, evaluated=True) or (unknown,)))
+            return iterate_values(value(node, scope), scope)
         if isinstance(node, ast.GeneratorExp):
             local = comprehension(node, scope)
             if local is None:
@@ -2601,9 +2667,37 @@ def python_ownership(content, *, partial=False):
             return value(node.elt, local)
         return iterate_values(value(node, scope), scope)
 
+    def iterable_rows(assigned, scope):
+        """Retain ordered argv rows when a consumer copies or renders them."""
+        rows = []
+        for sequence in assigned:
+            if isinstance(sequence, (Sequence, list, tuple)):
+                rows.extend(list(row) for row in sequence_rows(sequence))
+                continue
+            if isinstance(sequence, Generator) and isinstance(sequence.node, ast.GeneratorExp) and len(sequence.node.generators) == 1:
+                captures = sequence.arguments[0]
+                if all(isinstance(source, (Sequence, list, tuple)) for source in captures):
+                    generator = sequence.node.generators[0]
+                    for source in captures:
+                        for source_row in sequence_rows(source):
+                            words = []
+                            for item in source_row:
+                                local = Scope(sequence.scope)
+                                bind(generator.target, (item,), local)
+                                if any(isinstance(condition, ast.Constant) and not condition.value for condition in generator.ifs):
+                                    continue
+                                for condition in generator.ifs:
+                                    scan(condition, local)
+                                scan(sequence.node.elt, local)
+                                words.append(value(sequence.node.elt, local))
+                            rows.extend(combinations(words))
+                    continue
+            rows.append(list(iterate_values((sequence,), scope)))
+        return rows
+
     def value(node, scope):
         if isinstance(node, ast.Name):
-            return scope.get(node.id, (unknown,))
+            return scope.get(node.id, (ast.alias(name=node.id),) if node.id in pure_data_calls else (unknown,))
         if isinstance(node, ast.Constant):
             return (node.value,)
         if isinstance(node, ast.Dict):
@@ -2630,7 +2724,7 @@ def python_ownership(content, *, partial=False):
                             resolved.append(container[key])
             return choices(resolved) or (unknown,)
         if isinstance(node, ast.Attribute):
-            resolved = [ast.alias(name=name) for name in function_names(node, scope) if name in launches]
+            resolved = [ast.alias(name=name) for name in function_names(node, scope) if name in launches | external_mutations | pure_data_calls]
             for owner in value(node.value, scope):
                 if isinstance(owner, Deferred) and node.attr == "start":
                     resolved.append(owner.callback)
@@ -2641,12 +2735,19 @@ def python_ownership(content, *, partial=False):
         if isinstance(node, ast.Lambda):
             return (Function(node, scope),)
         if isinstance(node, ast.GeneratorExp):
-            return (Generator(node, scope),)
+            # Python captures its outer iterator now; only the body and later
+            # clauses resolve names when the generator is consumed.
+            scan(node.generators[0].iter, scope)
+            return (Generator(node, scope, arguments=(value(node.generators[0].iter, scope),)),)
         if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp)):
             local = comprehension(node, scope)
-            if local is None:
-                return (Sequence(([],)),)
-            return (Sequence((list(value(node.key if isinstance(node, ast.DictComp) else node.elt, local)),)),)
+            if isinstance(node, ast.DictComp):
+                items = {}
+                if local is not None:
+                    for key in value(node.key, local):
+                        items[key if isinstance(key, (str, int)) else unknown] = value(node.value, local)
+                return (Keywords(items),)
+            return (Sequence((list(value(node.elt, local)) if local is not None else [],), unique=isinstance(node, ast.SetComp)),)
         if isinstance(node, ast.JoinedStr):
             rendered = ("",)
             for part in node.values:
@@ -2684,12 +2785,50 @@ def python_ownership(content, *, partial=False):
             if mutated is not None:
                 expression_values[id(scope), id(node)] = mutated
                 return mutated
+            if isinstance(node.func, ast.Attribute) and node.func.attr in {"keys", "values", "items", "get"}:
+                mappings = [owner for owner in value(node.func.value, scope) if isinstance(owner, Keywords)]
+                if mappings:
+                    result = []
+                    for owner in mappings:
+                        if node.func.attr == "get":
+                            keys = value(node.args[0], scope) if node.args else (unknown,)
+                            for key in keys:
+                                result.extend(owner.items.get(key, value(node.args[1], scope) if len(node.args) > 1 else (None,)) if isinstance(key, (str, int)) else choices(item for assigned in owner.items.values() for item in assigned))
+                                result.extend(owner.items.get(unknown, ()))
+                        else:
+                            items = list(owner.items) if node.func.attr == "keys" else [item if node.func.attr == "values" else (key, item) for key, assigned in owner.items.items() for item in assigned]
+                            result.append(Sequence((items,)))
+                    return choices(result) or (unknown,)
             if names & {"contextlib.ExitStack", "contextlib.AsyncExitStack"}:
-                return choices(ast.alias(name=name) for name in names)
-            if names & {"contextlib.ExitStack.enter_context", "contextlib.AsyncExitStack.enter_context", "contextlib.AsyncExitStack.enter_async_context"} and node.args:
-                return iterate_values(value(node.args[0], scope), scope)
-            if not node.args and names & {"list", "set", "dict", "tuple"}:
-                return (Keywords({}) if "dict" in names else () if "tuple" in names else Sequence(([],), unique="set" in names),)
+                result = choices(Instance(ast.alias(name=name)) for name in names)
+                expression_values[id(scope), id(node)] = result
+                return result
+            if isinstance(node.func, ast.Attribute):
+                stacks = [owner for owner in value(node.func.value, scope) if is_exit_stack(owner)]
+                if stacks and node.func.attr in {"enter_context", "enter_async_context", "callback", "push", "close", "aclose"}:
+                    results = []
+                    for stack in stacks:
+                        if node.func.attr in {"close", "aclose"}:
+                            close_context(stack, scope)
+                        elif node.args:
+                            callbacks = []
+                            if node.func.attr in {"enter_context", "enter_async_context"}:
+                                entered, callbacks = enter_context(value(node.args[0], scope), scope, async_=node.func.attr == "enter_async_context")
+                                results.extend(entered)
+                            elif node.func.attr == "callback":
+                                functions = value(node.args[0], scope)
+                                results.extend(functions)
+                                callbacks = [Partial(functions, expanded_arguments(node.args[1:], scope), call_keywords(node.keywords, scope))]
+                            else:
+                                for callback in value(node.args[0], scope):
+                                    callbacks.append(Partial(member(callback, "__exit__") if isinstance(callback, Instance) else (callback,), [(unknown,)] * 3, {}))
+                            observe(stack.attributes)
+                            stack.attributes["_context_exits"] = (*stack.attributes.get("_context_exits", ()), *callbacks)
+                    result = choices(results) or (None,)
+                    expression_values[id(scope), id(node)] = result
+                    return result
+            if not node.args and names & {"list", "set", "frozenset", "dict", "tuple"}:
+                return (Keywords({}) if "dict" in names else () if "tuple" in names else Sequence(([],), unique=bool(names & {"set", "frozenset"})),)
             if "super" in names:
                 parameters = [*active[-1].args.posonlyargs, *active[-1].args.args] if active else []
                 kinds = value(node.args[0], scope) if node.args else (method_classes.get(id(active[-1])) if active else None,)
@@ -2700,8 +2839,9 @@ def python_ownership(content, *, partial=False):
                 # Enumeration preserves the yielded operand in its pair slot.
                 result[0].arguments = ("enumerate",)
                 return result
-            if "map" in names:
-                result = (Generator(node, scope),)
+            if "map" in names and len(node.args) > 1:
+                captured = (value(node.args[0], scope), function_names(node.args[0], scope), tuple(value(argument, scope) for argument in node.args[1:]))
+                result = (Generator(node, scope, arguments=captured),)
                 expression_values[id(scope), id(node)] = result
                 return result
             if names & {"threading.Thread", "multiprocessing.Process", "threading.Timer"}:
@@ -2732,7 +2872,8 @@ def python_ownership(content, *, partial=False):
                     rendered = []
                     for separator in value(node.func.value, scope):
                         for argument in arguments:
-                            for sequence in sequence_rows(argument):
+                            rows = iterable_rows((argument,), scope)
+                            for sequence in rows:
                                 items = iterate_values((sequence,), scope)
                                 if isinstance(separator, str) and isinstance(sequence, (list, tuple)):
                                     rendered.append(separator.join(item if isinstance(item, str) else computed for item in sequence))
@@ -2749,11 +2890,21 @@ def python_ownership(content, *, partial=False):
                             mapping[entry[0]] = choices((*mapping.get(entry[0], ()), entry[1]))
                     if mapping:
                         return (Keywords(mapping),)
-                if names & {"list", "tuple", "set", "next", "sorted"}:
-                    items = iterated(node.args[0], scope)
-                    return items if "next" in names else (tuple(items) if "tuple" in names else Sequence((list(items),), unique="set" in names),)
-            if names & {"functools.partial"} and node.args:
+                if names & {"list", "tuple", "set", "frozenset", "next", "sorted"}:
+                    if "next" in names:
+                        return iterated(node.args[0], scope)
+                    rows = iterable_rows(arguments, scope)
+                    if "sorted" in names:
+                        rows = [sorted(row) if all(isinstance(item, str) for item in row) else row for row in rows]
+                    return choices(tuple(row) for row in rows) if "tuple" in names else (Sequence(rows, unique=bool(names & {"set", "frozenset"})),)
+            if names & {"functools.partial"} and node.args and not isinstance(node.func, ast.Call):
                 result = (Partial(value(node.args[0], scope), expanded_arguments(node.args[1:], scope), call_keywords(node.keywords, scope)),)
+                expression_values[id(scope), id(node)] = result
+                return result
+            if "operator.methodcaller" in names and node.args and not isinstance(node.func, ast.Call):
+                methods = value(node.args[0], scope)
+                result = (Partial(tuple(ast.alias(name="methodcaller." + (method if isinstance(method, str) else computed)) for method in methods),
+                                  expanded_arguments(node.args[1:], scope), call_keywords(node.keywords, scope)),)
                 expression_values[id(scope), id(node)] = result
                 return result
             if isinstance(node.func, ast.Attribute) and node.func.attr in {"parse_args", "add_subparsers", "add_parser"}:
@@ -2777,19 +2928,21 @@ def python_ownership(content, *, partial=False):
                 return choices(ast.alias(name=name) for name in constructors)
             results = []
             for function in functions:
-                results.extend(invoke(function, scope, node.args, node.keywords))
+                results.extend(invoke(function, scope, node.args, node.keywords, unknown_effect=False))
             if results:
                 result = choices(results)
                 expression_values[id(scope), id(node)] = result
                 return result
         # Unknown transforms retain uncertainty in their eventual operand
         # position; ownership-shaped input is never executed on its own.
-        def possible_code(item):
-            if isinstance(item, Keywords):
-                return any(possible_code(assigned) for assigned in item.items.values())
-            if isinstance(item, Sequence):
-                return any(possible_code(row) for row in sequence_rows(item))
-            return any(possible_code(child) for child in item) if isinstance(item, (list, tuple)) else isinstance(item, str) and (overflow in item or executable_content(item) or opaque_ownership("exec_command", {"cmd": item}))
+        def possible_code(item, seen=()):
+            if isinstance(item, (Sequence, Keywords, list, tuple)):
+                if id(item) in seen:
+                    return False
+                descendants = (*seen, id(item))
+                children = item.items.values() if isinstance(item, Keywords) else sequence_rows(item) if isinstance(item, Sequence) else item
+                return any(possible_code(child, descendants) for child in children)
+            return isinstance(item, str) and (overflow in item or executable_content(item) or opaque_ownership("exec_command", {"cmd": item}))
         if node is not None:
             operands = [item for child in ast.iter_child_nodes(node) for item in value(child, scope)]
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
@@ -2856,9 +3009,9 @@ def python_ownership(content, *, partial=False):
             elif isinstance(item, Partial):
                 key = ("partial", child(item.functions), child(item.arguments), tuple(sorted((name, child(assigned)) for name, assigned in item.keywords.items())))
             elif isinstance(item, Sequence):
-                key = ("mutable-sequence", identity, child(sequence_rows(item)))
+                key = ("mutable-sequence", child(sequence_rows(item)))
             elif isinstance(item, Keywords):
-                key = ("mapping", identity, tuple(sorted((str(name), child(assigned)) for name, assigned in item.items.items())))
+                key = ("mapping", tuple(sorted((str(name), child(assigned)) for name, assigned in item.items.items())))
             elif isinstance(item, ast.alias):
                 key = ("alias", item.name)
             elif isinstance(item, ast.ClassDef):
@@ -2898,23 +3051,12 @@ def python_ownership(content, *, partial=False):
             if isinstance(argument, ast.Starred):
                 sequences = value(argument.value, scope)
                 if any(isinstance(sequence, Generator) for sequence in sequences):
-                    # A single yield has alternative values, not one argument
-                    # per alternative. Multiple yields retain their positions.
-                    def single_yield(sequence):
-                        wrapper = sequence.node.function if isinstance(sequence.node, Bound) else sequence.node
-                        if not isinstance(wrapper, Function):
-                            return False
-                        nodes = []
-                        def visit(node):
-                            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)) and node is not wrapper.node:
-                                return
-                            nodes.append(node)
-                            for child in ast.iter_child_nodes(node):
-                                visit(child)
-                        visit(wrapper.node)
-                        return sum(isinstance(node, ast.Yield) for node in nodes) == 1 and not any(isinstance(node, (ast.YieldFrom, ast.For, ast.AsyncFor, ast.While)) for node in nodes)
                     items = iterate_values(sequences, scope)
-                    result.extend([items] if all(single_yield(sequence) for sequence in sequences) else [(item,) for item in items])
+                    if all(isinstance(sequence, Generator) and sequence.positions is not None for sequence in sequences):
+                        length = max((len(sequence.positions) for sequence in sequences), default=0)
+                        result.extend(choices(item for sequence in sequences if index < len(sequence.positions) for item in sequence.positions[index]) for index in range(length))
+                    else:
+                        result.extend((item,) for item in items)
                     continue
                 sequences = tuple(row for sequence in sequences for row in sequence_rows(sequence))
                 length = max((len(sequence) for sequence in sequences if isinstance(sequence, (list, tuple))), default=0)
@@ -2936,7 +3078,6 @@ def python_ownership(content, *, partial=False):
         if isinstance(item, Function):
             result = any(isinstance(node, (ast.Global, ast.Nonlocal))
                          or isinstance(node, (ast.Attribute, ast.Subscript)) and isinstance(node.ctx, ast.Store)
-                         or isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in mutation_methods
                          or isinstance(node, ast.Call) and function_names(node.func, item.scope) & {"atexit.register", "atexit.unregister"}
                          for node in ast.walk(item.node))
             result |= any(effectful(assigned, descendants, memo) for name in item.free for assigned in item.scope.get(name, ()))
@@ -2949,7 +3090,7 @@ def python_ownership(content, *, partial=False):
                           if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
                           and isinstance(node.func.value, ast.Name) and node.func.value.id == receiver_name
                           for method in member(item.receiver, node.func.attr))
-        elif isinstance(item, (Instance, Registry, Deferred, Sequence, Keywords)):
+        elif isinstance(item, (Instance, Registry, Deferred)):
             result = True
         elif isinstance(item, ast.ClassDef):
             result = any(effectful(assigned, descendants, memo) for assigned in class_bindings.get(identity, {}).get("__init__", ()))
@@ -2962,12 +3103,21 @@ def python_ownership(content, *, partial=False):
         memo[identity] = result
         return result
 
-    def reusable_result(item):
-        if isinstance(item, (Instance, Registry, Sequence, Keywords)):
+    def reusable_result(item, seen=()):
+        if id(item) in seen:
+            return True
+        descendants = (*seen, id(item))
+        if isinstance(item, (Instance, Registry, Sequence, Keywords, Generator)):
             return False
-        if isinstance(item, (Function, Bound, Partial, Deferred)):
-            return not effectful(item)
-        return all(reusable_result(child) for child in item) if isinstance(item, (list, tuple)) else True
+        if isinstance(item, Function):
+            return not effectful(item) and all(reusable_result(assigned, descendants) for assigned in [*item.defaults.values(), *(item.scope.get(name, ()) for name in item.free)])
+        if isinstance(item, Bound):
+            return reusable_result(item.function, descendants) and reusable_result(item.receiver, descendants)
+        if isinstance(item, Partial):
+            return all(reusable_result(assigned, descendants) for assigned in [item.functions, item.arguments, *item.keywords.values()])
+        if isinstance(item, Deferred):
+            return reusable_result(item.callback, descendants)
+        return all(reusable_result(child, descendants) for child in item) if isinstance(item, (list, tuple)) else True
 
     def construct(kind, scope, arguments, keywords):
         nonlocal attribute_mutations
@@ -2982,23 +3132,33 @@ def python_ownership(content, *, partial=False):
             supplied.update(keywords)
             for name in fields:
                 attribute_mutations += 1
+                observe(instance.attributes)
                 instance.attributes[name] = supplied.get(name, class_bindings.get(id(kind), {}).get(name, (unknown,)))
             for hook in member(instance, "__post_init__"):
                 invoke(hook, scope)
         return instance
 
-    def invoke(wrapper, caller, arguments=(), keywords=(), *, evaluated=False, consumed=False):
+    def invoke(wrapper, caller, arguments=(), keywords=(), *, evaluated=False, consumed=False, yielded=None, unknown_effect=True):
         nonlocal found, recursion_skips, expression_values
         argument_values = list(arguments) if evaluated else expanded_arguments(arguments, caller)
         keyword_values = dict(keywords) if evaluated else call_keywords(keywords, caller)
         if isinstance(wrapper, Partial):
-            return choices(item for function in wrapper.functions for item in invoke(function, caller, [*wrapper.arguments, *argument_values], dict(wrapper.keywords, **keyword_values), evaluated=True, consumed=consumed))
+            return choices(item for function in wrapper.functions for item in invoke(function, caller, [*wrapper.arguments, *argument_values], dict(wrapper.keywords, **keyword_values), evaluated=True, consumed=consumed, yielded=yielded))
         if isinstance(wrapper, ast.ClassDef):
             return (construct(wrapper, caller, argument_values, keyword_values),)
         if isinstance(wrapper, ast.alias) and wrapper.name in launches:
             parameter = "args" if wrapper.name.startswith("subprocess.") else "cmd" if wrapper.name == "os.popen" else "command"
             commands = argument_values[0] if argument_values else keyword_values.get(parameter, ())
             found |= any(executable_value(command) for command in commands)
+            return (unknown,)
+        if isinstance(wrapper, ast.alias) and (wrapper.name in external_mutations or wrapper.name.startswith("methodcaller.")):
+            method = wrapper.name.removeprefix("methodcaller.") if wrapper.name.startswith("methodcaller.") else "append"
+            receiver = argument_values[-1:] if wrapper.name.startswith("methodcaller.") else argument_values[:1]
+            operands = argument_values[:-1] if wrapper.name.startswith("methodcaller.") else argument_values[1:]
+            owners = [owner for assigned in receiver for owner in assigned if isinstance(owner, (Sequence, Keywords))]
+            if method in mutation_methods:
+                return mutate_values(owners, method, operands, keyword_values, caller)
+            escape_mutables(receiver)
             return (unknown,)
         if isinstance(wrapper, Registry):
             for handler in wrapper.handlers:
@@ -3008,6 +3168,8 @@ def python_ownership(content, *, partial=False):
         if isinstance(wrapper, Bound):
             wrapper, receiver = wrapper.function, wrapper.receiver
         if not isinstance(wrapper, Function):
+            if unknown_effect and not (isinstance(wrapper, ast.alias) and wrapper.name in pure_data_calls):
+                escape_mutables([*argument_values, *keyword_values.values()])
             return ()
         node = wrapper.node
         if not consumed and wrapper.generator:
@@ -3031,7 +3193,7 @@ def python_ownership(content, *, partial=False):
         cache_key = (binding_key(wrapper), tuple(sorted((name, binding_key(assigned)) for name, assigned in local.state.items())))
         # A pure method depends on its receiver attributes just like lexical
         # inputs. Mutating bodies still execute on every actual invocation.
-        cacheable = not effectful(Bound(wrapper, receiver) if receiver is not None else wrapper) and not any(
+        cacheable = yielded is None and not effectful(Bound(wrapper, receiver) if receiver is not None else wrapper) and not any(
             effectful(assigned) for assigned in local.state.values()
             if not (receiver is not None and len(assigned) == 1 and assigned[0] is receiver))
         if cacheable and cache_key in invocation_cache:
@@ -3044,6 +3206,7 @@ def python_ownership(content, *, partial=False):
         expressions, expression_values = expression_values, {}
         returned = []
         return_values.append(returned)
+        yield_values.append({})
         try:
             if isinstance(node, ast.Lambda):
                 scan(node.body, local)
@@ -3052,6 +3215,9 @@ def python_ownership(content, *, partial=False):
                 walk(node.body, local)
         finally:
             return_values.pop()
+            collected = yield_values.pop()
+            if yielded is not None:
+                yielded.update(collected)
             expression_values = expressions
             active.pop()
         owning, result = found, choices(returned) or (unknown,)
@@ -3062,21 +3228,93 @@ def python_ownership(content, *, partial=False):
         return result
 
     mutation_methods = {"append", "extend", "insert", "add", "update", "setdefault", "clear", "pop", "remove", "discard", "reverse", "sort", "copy"}
+    external_mutations = {"heapq.heappush", "bisect.insort", "bisect.insort_left", "bisect.insort_right"}
+    pure_data_calls = {
+        "print", "str", "repr", "ascii", "len", "bool", "int", "float", "bytes", "complex", "hash", "type", "id", "isinstance", "issubclass",
+        "list", "tuple", "set", "frozenset", "dict", "iter", "next", "all", "any", "sum", "min", "max", "sorted", "enumerate", "zip", "map", "range",
+        "getattr", "hasattr", "vars", "dir", "inspect.signature", "pprint.pprint", "pprint.pformat", "json.dumps", "json.loads",
+        "shlex.quote", "shlex.split", "shlex.join", "functools.partial", "operator.methodcaller", "atexit.register", "atexit.unregister",
+        "threading.Thread", "threading.Timer", "multiprocessing.Process", "collections.deque", "contextlib.ExitStack", "contextlib.AsyncExitStack",
+    }
+
+    def escape_mutables(arguments, seen=None):
+        """An unresolved callee cannot prove an escaped container unchanged."""
+        nonlocal attribute_mutations
+        seen = set() if seen is None else seen
+        for assigned in arguments:
+            for owner in assigned:
+                if not isinstance(owner, (Sequence, Keywords, list, tuple)) or id(owner) in seen:
+                    continue
+                seen.add(id(owner))
+                if isinstance(owner, (list, tuple)):
+                    escape_mutables((owner,), seen)
+                    continue
+                children = list(owner.items.values()) if isinstance(owner, Keywords) else [tuple(row) for row in sequence_rows(owner)]
+                if isinstance(owner, Keywords):
+                    previous = owner.items.get(unknown, ())
+                    updated = choices((*previous, unknown))
+                    if updated != previous:
+                        observe(owner.state)
+                        attribute_mutations += 1
+                        owner.items[unknown] = updated
+                else:
+                    rows = sequence_rows(owner)
+                    updated = choices((*rows, *(list(row) + [unknown] for row in rows if not any(item is unknown for item in row))))
+                    if updated != owner.state["rows"]:
+                        observe(owner.state)
+                        attribute_mutations += 1
+                        owner.state["rows"] = updated
+                escape_mutables(children, seen)
+
+    def is_exit_stack(owner):
+        return isinstance(owner, Instance) and isinstance(owner.kind, ast.alias) and owner.kind.name in {"contextlib.ExitStack", "contextlib.AsyncExitStack"}
+
+    def close_context(owner, scope):
+        callbacks = owner.attributes.get("_context_exits", ())
+        observe(owner.attributes)
+        owner.attributes["_context_exits"] = ()
+        for callback in reversed(callbacks):
+            if is_exit_stack(callback):
+                close_context(callback, scope)
+            else:
+                invoke(callback, scope, evaluated=True)
+
+    def enter_context(assigned, scope, *, async_=False):
+        results, exits = [], []
+        for owner in assigned:
+            if isinstance(owner, Generator):
+                results.extend(iterate_values((owner,), scope))
+            elif is_exit_stack(owner):
+                results.append(owner)
+                exits.append(owner)
+            elif isinstance(owner, Instance):
+                for function in member(owner, "__aenter__" if async_ else "__enter__"):
+                    results.extend(invoke(function, scope))
+                exits.append(Partial(member(owner, "__aexit__" if async_ else "__exit__"), [(unknown,)] * 3, {}))
+            else:
+                results.append(owner)
+        return choices(results) or (unknown,), exits
 
     def mutate(node, scope):
-        nonlocal attribute_mutations
-        if not isinstance(node.func, ast.Attribute) or node.func.attr not in mutation_methods:
+        external = bool(function_names(node.func, scope) & external_mutations)
+        if not external and (not isinstance(node.func, ast.Attribute) or node.func.attr not in mutation_methods):
             return None
-        owners = [owner for owner in value(node.func.value, scope) if isinstance(owner, (Sequence, Keywords))]
+        receiver = node.args[0] if external and node.args else node.func.value
+        owners = [owner for owner in value(receiver, scope) if isinstance(owner, (Sequence, Keywords))]
         if not owners:
             return None
-        arguments = expanded_arguments(node.args, scope)
-        name, results = node.func.attr, []
+        arguments = expanded_arguments(node.args[1:] if external else node.args, scope)
+        return mutate_values(owners, "append" if external else node.func.attr, arguments, call_keywords(node.keywords, scope), scope)
+
+    def mutate_values(owners, name, arguments, keywords, scope):
+        nonlocal attribute_mutations
+        results = []
         for owner in owners:
             if name == "copy":
                 results.append(Sequence(sequence_rows(owner), unique=owner.unique) if isinstance(owner, Sequence) else Keywords(dict(owner.items)))
                 continue
             attribute_mutations += 1
+            observe(owner.state)
             if isinstance(owner, Keywords):
                 if name == "clear":
                     owner.items.clear()
@@ -3085,10 +3323,15 @@ def python_ownership(content, *, partial=False):
                         for mapping in assigned:
                             if isinstance(mapping, Keywords):
                                 owner.items.update(mapping.items)
-                    owner.items.update(call_keywords(node.keywords, scope))
+                    owner.items.update(keywords)
                 elif arguments:
                     for key in arguments[0]:
                         if not isinstance(key, (str, int)):
+                            results.extend(item for assigned in owner.items.values() for item in assigned)
+                            default = arguments[1] if len(arguments) > 1 else (None,) if name == "setdefault" else (unknown,)
+                            results.extend(default)
+                            if name == "setdefault":
+                                owner.items[unknown] = choices((*owner.items.get(unknown, ()), *default))
                             continue
                         if name == "setdefault":
                             results.extend(owner.items.setdefault(key, arguments[1] if len(arguments) > 1 else (None,)))
@@ -3114,6 +3357,10 @@ def python_ownership(content, *, partial=False):
                             continue
                         row.extend(iterate_values((operands_row[0],), scope))
                     elif name == "pop" and row:
+                        if operands_row and not isinstance(operands_row[0], int):
+                            results.extend(row)
+                            rows.extend(row[:index] + row[index + 1:] for index in range(len(row)))
+                            continue
                         index = operands_row[0] if operands_row and isinstance(operands_row[0], int) else -1
                         if -len(row) <= index < len(row):
                             results.append(row.pop(index))
@@ -3136,7 +3383,10 @@ def python_ownership(content, *, partial=False):
 
     def scan(node, scope):
         nonlocal found
-        if isinstance(node, (ast.Lambda, ast.GeneratorExp)):
+        if isinstance(node, ast.Lambda):
+            return
+        if isinstance(node, ast.GeneratorExp):
+            value(node, scope)
             return
         if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp)):
             local = comprehension(node, scope)
@@ -3150,7 +3400,8 @@ def python_ownership(content, *, partial=False):
         if isinstance(node, ast.Call):
             names = function_names(node.func, scope)
             functions = value(node.func, scope)
-            if isinstance(node.func, ast.Attribute) and node.func.attr in mutation_methods:
+            if (names & external_mutations or isinstance(node.func, ast.Attribute) and (node.func.attr in mutation_methods
+                    or any(is_exit_stack(owner) for owner in value(node.func.value, scope)))):
                 value(node, scope)
             # Unknown data callees still expand starred operands. Known launch
             # and wrapper paths expand them in their own actual invocation.
@@ -3192,17 +3443,33 @@ def python_ownership(content, *, partial=False):
                 for callback, arguments, keywords in callbacks:
                     for function in value(callback, scope):
                         invoke(function, scope, arguments, keywords, evaluated=True)
-                if node.args and (names & {"list", "tuple", "set", "next", "sum", "any", "all", "sorted", "dict", "min", "max", "collections.deque", "contextlib.ExitStack.enter_context", "contextlib.AsyncExitStack.enter_context", "contextlib.AsyncExitStack.enter_async_context"} or any(name.endswith(".join") for name in names)):
+                if node.args and (names & {"list", "tuple", "set", "frozenset", "next", "sum", "any", "all", "sorted", "dict", "min", "max", "collections.deque", "contextlib.ExitStack.enter_context", "contextlib.AsyncExitStack.enter_context", "contextlib.AsyncExitStack.enter_async_context"} or any(name.endswith(".join") for name in names)):
                     iterated(node.args[0], scope)
                 if isinstance(node.func, ast.Attribute) and node.func.attr in {"set_defaults", "add_command"}:
                     for registry in value(node.func.value, scope):
                         if isinstance(registry, Registry):
                             handlers = value(node.args[0], scope) if node.func.attr == "add_command" and node.args else call_keywords(node.keywords, scope).get("func", ())
                             registry.handlers.extend(handlers)
+                receiver = value(node.func.value, scope) if isinstance(node.func, ast.Attribute) else ()
+                modeled_method = isinstance(node.func, ast.Attribute) and (
+                    node.func.attr in mutation_methods | {"keys", "values", "items", "get", "count", "index"}
+                    and any(isinstance(owner, (Sequence, Keywords)) for owner in receiver)
+                    or any(is_exit_stack(owner) or isinstance(owner, (Registry, Deferred)) for owner in receiver)
+                    or all(isinstance(owner, str) for owner in receiver) and bool(receiver))
+                if not (names & (launches | pure_data_calls | external_mutations) or callbacks or modeled_method):
+                    escape_mutables([*expanded_arguments(node.args, scope), *call_keywords(node.keywords, scope).values(), receiver])
 
         for child in ast.iter_child_nodes(node):
             if not isinstance(child, ast.stmt):
                 scan(child, scope)
+
+    def observe(mapping):
+        """A branch saves only mutable mappings it actually changes."""
+        if branch_changes:
+            changes = branch_changes[-1]
+            identity = id(mapping)
+            if identity not in changes:
+                changes[identity] = mapping, dict(mapping)
 
     class Branch(dict):
         def __init__(self, state, parents, attributes):
@@ -3218,9 +3485,10 @@ def python_ownership(content, *, partial=False):
             owner.state = merged([getattr(state, "parents", {}).get(owner, owner.state) for state in states])
         attributes = set().union(*(getattr(state, "attributes", {}).keys() for state in states))
         for identity in attributes:
-            target = (instances[identity[1]].attributes if identity[0] == "instance" else containers[identity[1]].state
-                      if identity[0] == "container" else class_bindings.setdefault(identity[1], {}))
-            updates = merged([getattr(state, "attributes", {}).get(identity, target) for state in states])
+            target = next(state.attributes[identity][0] for state in states
+                          if identity in getattr(state, "attributes", {}))
+            updates = merged([getattr(state, "attributes", {}).get(identity, (target, target))[1] for state in states])
+            observe(target)
             target.clear()
             target.update(updates)
         return merged(states)
@@ -3233,21 +3501,25 @@ def python_ownership(content, *, partial=False):
             for owner in value(target.value, scope):
                 if isinstance(owner, Instance):
                     attribute_mutations += 1
+                    observe(owner.attributes)
                     owner.attributes[target.attr] = assigned
                 elif isinstance(owner, ast.ClassDef):
                     attribute_mutations += 1
+                    observe(class_bindings.setdefault(id(owner), {}))
                     class_bindings.setdefault(id(owner), {})[target.attr] = assigned
         elif isinstance(target, ast.Subscript):
             for owner in value(target.value, scope):
                 for key in value(target.slice, scope):
                     if isinstance(owner, Keywords):
                         attribute_mutations += 1
+                        observe(owner.state)
                         if isinstance(key, (str, int)):
                             owner.items[key] = assigned
                         else:
                             owner.items[unknown] = choices((*owner.items.get(unknown, ()), *assigned))
                     elif isinstance(owner, Sequence):
                         attribute_mutations += 1
+                        observe(owner.state)
                         rows = []
                         for row in sequence_rows(owner):
                             for item in assigned:
@@ -3271,23 +3543,24 @@ def python_ownership(content, *, partial=False):
             parents[owner] = owner.state
             owner.state = dict(getattr(initial, "parents", {}).get(owner, owner.state))
             owner = owner.parent
-        maps = {("instance", index): instance.attributes for index, instance in enumerate(instances)}
-        maps.update({("class", identity): assigned for identity, assigned in class_bindings.items()})
-        maps.update({("container", index): container.state for index, container in enumerate(containers)})
-        snapshots = {identity: dict(assigned) for identity, assigned in maps.items()}
-        for identity, assigned in maps.items():
-            assigned.clear()
-            assigned.update(getattr(initial, "attributes", {}).get(identity, snapshots[identity]))
+        changes = {}
+        branch_changes.append(changes)
         try:
+            for target, assigned in getattr(initial, "attributes", {}).values():
+                observe(target)
+                target.clear()
+                target.update(assigned)
             walk(statements, scope)
-            return Branch(scope.state, {owner: owner.state for owner in parents}, {identity: dict(assigned) for identity, assigned in maps.items()})
+            return Branch(scope.state, {owner: owner.state for owner in parents},
+                          {identity: (target, dict(target)) for identity, (target, _) in changes.items()})
         finally:
+            branch_changes.pop()
             scope.state = previous
             for owner, state in parents.items():
                 owner.state = state
-            for identity, assigned in maps.items():
-                assigned.clear()
-                assigned.update(snapshots[identity])
+            for target, previous_state in changes.values():
+                target.clear()
+                target.update(previous_state)
 
     def walk(statements, scope, *, methods=False):
         nonlocal attribute_mutations
@@ -3297,7 +3570,9 @@ def python_ownership(content, *, partial=False):
             if isinstance(statement, ast.Return) and return_values:
                 return_values[-1].extend(value(statement.value, scope))
             elif isinstance(statement, ast.Expr) and isinstance(statement.value, (ast.Yield, ast.YieldFrom)) and return_values:
-                return_values[-1].extend(iterated(statement.value.value, scope) if isinstance(statement.value, ast.YieldFrom) else value(statement.value.value, scope))
+                assigned = iterated(statement.value.value, scope) if isinstance(statement.value, ast.YieldFrom) else value(statement.value.value, scope)
+                return_values[-1].extend(assigned)
+                yield_values[-1][id(statement)] = choices((*yield_values[-1].get(id(statement), ()), *assigned))
             elif isinstance(statement, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
                 assigned = value(statement.value, scope) if statement.value is not None else (unknown,)
                 targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
@@ -3308,6 +3583,7 @@ def python_ownership(content, *, partial=False):
                         for owner in previous:
                             if isinstance(owner, Sequence):
                                 attribute_mutations += 1
+                                observe(owner.state)
                                 owner.state["rows"] = add((owner,), assigned)
                                 combined.append(owner)
                             else:
@@ -3348,13 +3624,19 @@ def python_ownership(content, *, partial=False):
                 scope.state = merge(*alternatives)
                 walk(statement.finalbody, scope)
             elif isinstance(statement, (ast.With, ast.AsyncWith)):
+                exits = []
                 for item in statement.items:
                     assigned = value(item.context_expr, scope)
-                    iterate_values(tuple(value for value in assigned if isinstance(value, Generator)), scope)
+                    assigned, callbacks = enter_context(assigned, scope, async_=isinstance(statement, ast.AsyncWith))
+                    exits.extend(callbacks)
                     if item.optional_vars is not None:
-                        assigned = choices(value for entry in assigned for value in (iterate_values((entry,), scope) if isinstance(entry, Generator) else (entry,)))
                         bind(item.optional_vars, assigned, scope)
                 walk(statement.body, scope)
+                for callback in reversed(exits):
+                    if is_exit_stack(callback):
+                        close_context(callback, scope)
+                    else:
+                        invoke(callback, scope, evaluated=True)
             elif isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 function = Function(statement, scope.parent if methods else scope)
                 scope[statement.name] = (function,)
@@ -3905,9 +4187,13 @@ def file_ownership_executions(records, harness, *, file_candidates=()):
         final = {}
         for path, owning, replaces, source, context, writer, finished in events:
             newer = [entry for entry in contributions.get(path, {}).values()
-                     if finished and newer_than(entry[0], writer)]
+                     if finished and replaces and newer_than(entry[0], writer)]
             if context:
-                apply_context(context, target_candidates, target_sources, possible=not finished)
+                # A partial write's bytes were already applied at launch.
+                # Replay them only when an intervening replacement removed
+                # its contribution while the native writer was still alive.
+                if not (finished and not replaces and writer[:2] in contributions.get(path, {})):
+                    apply_context(context, target_candidates, target_sources, possible=not finished)
                 owning = path in target_candidates
             if finished:
                 remember(path, writer, context)
