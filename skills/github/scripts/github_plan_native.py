@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import subprocess
 import uuid
 from typing import NamedTuple
 from datetime import datetime
@@ -370,6 +371,14 @@ def source_snapshot(entry, process=None):
             "homes": sorted(str(value.resolve()) for value in homes), "home_paths": paths, "transcripts": snapshots}
 
 
+def _require_runtime_quiet(facts, statuses):
+    if any(status.get("background_tasks") or status.get("active_realtime_sessions")
+           or status.get("realtime_coverage") is False for status in statuses):
+        raise ValueError("canonical runtime work remains or its lifecycle is unavailable")
+    if (not facts["executions"]["ended"] or facts["background"] or facts["realtime"] or facts["goal"] == "active"):
+        raise ValueError("native execution or scheduled work remains")
+
+
 def require_quiet(facts, snapshot, action):
     if facts["path"] != snapshot["path"] or facts["state"] not in {"idle", "notLoaded"}:
         raise ValueError("native source identity changed or remains active")
@@ -390,11 +399,7 @@ def require_quiet(facts, snapshot, action):
         if position is not None and position > 0:
             raise ValueError("native actual turn is later than the source verdict")
         return
-    if status.get("active_realtime_sessions") or status.get("realtime_coverage") is False:
-        raise ValueError("canonical realtime work remains or its lifecycle is unavailable")
-    if (not facts["executions"]["ended"] or facts["background"] or facts["realtime"]
-            or facts["goal"] == "active"):
-        raise ValueError("native execution or scheduled work remains")
+    _require_runtime_quiet(facts, [status])
     order = status.get("actual_turn_ids", []) or [status["turn_id"]]
     indices = [order.index(turn["id"]) for turn in turns if turn["id"] in order]
     if (not turns or not status["turn_id"] or turns[0]["id"] not in order
@@ -560,11 +565,11 @@ def _cancel_origin(entry, action):
     return primary, home, configured, known
 
 
-def _cancel_files(entry, action, reader=None, retained_homes=()):
+def _cancel_files(entry, action, reader=None, retained_homes=(), transcript_roots=None):
     primary, home, configured, known = _cancel_origin(entry, action)
     homes = {home, *known, *retained_homes}
     snapshots = closure.transcript_facts(entry["session_id"], str(primary), include_status=True,
-                                         additional_homes=homes, reader=reader)
+                                         additional_homes=homes, additional_roots=transcript_roots, reader=reader)
     paths = _authenticated_paths(snapshots, configured | homes)
     homes.update(Path(value) for value in paths)
     return {"home": str(home), "path": str(primary), "homes": sorted(str(value) for value in homes),
@@ -578,10 +583,7 @@ def _cancel_quiet(facts, snapshot, home, target):
     if home == target or facts["state"] != "idle" or facts["queue"]:
         raise ValueError("queue cleanup requires a NotLoaded target and quiet empty loaded peers")
     statuses = [snapshot["transcripts"][path]["status"] for path in snapshot["home_paths"][home]]
-    if (not facts["executions"]["ended"] or facts["background"] or facts["realtime"] or facts["goal"] == "active"
-            or any(status["background_tasks"] or status["active_realtime_sessions"]
-                   or status["realtime_coverage"] is False for status in statuses)):
-        raise ValueError("loaded source work remains or current coverage is unavailable")
+    _require_runtime_quiet(facts, statuses)
 
 
 async def cancel_queue(home: Path, session: str, *, ledger: Path | None = None,
@@ -622,15 +624,19 @@ async def cancel_queue(home: Path, session: str, *, ledger: Path | None = None,
             check_identity()
             if process is not None:
                 recheck_source_process(process)
-            else:
-                termination_process = termination._verify_queue_source(entry, session, termination_process,
+            elif termination_process is None:
+                termination_process = termination._verify_queue_source(entry, session,
                     latest_pid=saved.get("launch_pid") if saved else None)
-            files = _cancel_files(entry, action, reader, retained_homes)
+            else:
+                termination._recheck_queue_process(termination_process)
+            files = _cancel_files(entry, action, reader, retained_homes,
+                                  termination_process.roots if termination_process is not None else None)
             if ledger is None:
                 from datetime import timezone
+                now, ended = datetime.now(timezone.utc), termination.stamp(entry["ended_at"])
                 for snapshot in files["transcripts"].values():
                     termination._transcript_activity([termination.stamp(snapshot["latest"])], snapshot["identity"][3],
-                        snapshot["truncated"], datetime.now(timezone.utc), termination.stamp(entry["ended_at"]))
+                        snapshot["truncated"], now, ended)
             return files
         before = await asyncio.to_thread(source)
         if target not in before["homes"]:
@@ -652,10 +658,13 @@ async def cancel_queue(home: Path, session: str, *, ledger: Path | None = None,
             for value, observed in second.items():
                 _cancel_quiet(observed, after, value, target)
             queue = second[target]["queue"]
-            entries = [{"queuedSubmissionId": key, "clientUserMessageId": client, "sha256": digest}
-                       for key, (client, digest) in sorted(queue.items())]
+            def identities(observed):
+                return [{"queuedSubmissionId": key, "clientUserMessageId": client, "sha256": digest}
+                        for key, (client, digest) in sorted(observed.items())]
+            entries = identities(queue)
             if not apply:
-                return {"ok": True, "preview": True, "entries": entries,
+                return {"ok": True, "preview": True, "codexHome": target, "entries": entries,
+                        "otherHomes": {value: identities(observed["queue"]) for value, observed in second.items() if value != target},
                         "notice": "Apply acquires ownership and repeats every check." if not held else
                                   "Apply repeats every check under ownership."}
             if queued_submission_id not in queue or queue[queued_submission_id][1] != entry_sha256:
@@ -685,6 +694,7 @@ async def cancel_queue(home: Path, session: str, *, ledger: Path | None = None,
                                 if value != target or key != queued_submission_id}
                     if observed["queue"] != expected or observed["path"] != second[value]["path"]:
                         raise ValueError("native queue readback changed")
-            except (OSError, ValueError, TimeoutError, asyncio.CancelledError) as error:
+            except (OSError, ValueError, TimeoutError, asyncio.CancelledError, subprocess.SubprocessError, KeyError, TypeError) as error:
                 raise ValueError("queue deletion is uncertain; preserve state and do not replay") from error
-            return {"ok": True, "queuedSubmissionId": queued_submission_id}
+            return {"ok": True, "codexHome": target, "queuedSubmissionId": queued_submission_id, "deleted": True,
+                    "remainingQueues": {value: len(observed["queue"]) for value, observed in final.items()}}

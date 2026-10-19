@@ -8,7 +8,7 @@ import copy
 import threading
 import json
 import io
-from contextlib import redirect_stdout
+from contextlib import contextmanager, redirect_stdout
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -167,6 +167,29 @@ class NativeFactsTests(unittest.IsolatedAsyncioTestCase):
 
 
 class NativeQueueTests(unittest.TestCase):
+    @contextmanager
+    def cancel_read_boundaries(self, *, before_metadata=None, after_metadata=None, after_facts=None):
+        """Observe real reader boundaries without depending on its nested RPC count."""
+        original_read, original_facts = NATIVE.read_thread, NATIVE.read_thread_facts
+        facts_depth = 0
+        async def facts(request, session):
+            nonlocal facts_depth
+            facts_depth += 1
+            try:
+                value = await original_facts(request, session)
+            finally:
+                facts_depth -= 1
+            if after_facts is not None: after_facts(request.codex_home, value)
+            return value
+        async def metadata(request, session, **kwargs):
+            direct = facts_depth == 0
+            if direct and before_metadata is not None: before_metadata(request.codex_home)
+            value = await original_read(request, session, **kwargs)
+            if direct and after_metadata is not None: after_metadata(request.codex_home, value)
+            return value
+        with patch.object(NATIVE, "read_thread", side_effect=metadata), patch.object(NATIVE, "read_thread_facts", side_effect=facts):
+            yield
+
     def cancel_setup(self, f):
         f.transcript.write_text(f.transcript.read_text().replace("Safe to exit: yes", "Interrupted work"))
         other = f.root / "other-account"
@@ -198,11 +221,17 @@ class NativeQueueTests(unittest.TestCase):
             before = {path: path.read_bytes() for path in (f.transcript, f.log, CLOSURE.lease_path(f.session), ledger)}
             preview = asyncio.run(NATIVE.cancel_queue(other, f.session, ledger=ledger))
             self.assertFalse(deleted)
+            self.assertEqual(preview["codexHome"], str(other))
+            self.assertEqual([entry["queuedSubmissionId"] for entry in preview["otherHomes"][str(f.home)]], ["other-home"])
+            self.assertTrue(preview["otherHomes"][str(f.home)][0]["sha256"])
             self.assertNotIn(selected["input"][0]["text"], json.dumps(preview))
             digest = next(entry["sha256"] for entry in preview["entries"] if entry["queuedSubmissionId"] == selected["id"])
             result = asyncio.run(NATIVE.cancel_queue(other, f.session, ledger=ledger, apply=True,
                 queued_submission_id=selected["id"], entry_sha256=digest))
             self.assertTrue(result["ok"])
+            self.assertEqual(result["codexHome"], str(other))
+            self.assertEqual(result["queuedSubmissionId"], selected["id"])
+            self.assertEqual(result["remainingQueues"], {str(f.home): 1, str(other): 1})
             self.assertEqual(deleted, [{"threadId": f.session, "queuedSubmissionId": selected["id"]}])
             self.assertEqual(f.home_queues[str(other)], [retained])
             self.assertEqual(f.home_queues[str(f.home)][0]["id"], "other-home")
@@ -412,24 +441,21 @@ class NativeQueueTests(unittest.TestCase):
             with self.subTest(changed=changed), ReceiptFixture(str(uuid.uuid4())) as f:
                 other, ledger, selected, _retained, deleted = self.cancel_setup(f)
                 digest = self.cancel_digest(other, f, ledger)
-                original_read = NATIVE.read_thread
-                calls = 0
-                async def read(*args, **kwargs):
-                    nonlocal calls
-                    value = await original_read(*args, **kwargs)
-                    calls += 1
-                    if calls == 2:
-                        if changed == "shared":
-                            rows = json.loads(f.log.read_text())
-                            rows[0]["launch_generation"] = "changed"
-                            CLOSURE.replace_rows(rows)
-                        else:
-                            rows = json.loads(ledger.read_text())
-                            if changed == "selected": rows[0]["retained_note"] = "changed authority"
-                            else: rows.append({"session_id": "unrelated", "harness": "claude", "note": "independent launch"})
-                            ledger.write_text(json.dumps(rows))
-                    return value
-                with patch.object(NATIVE, "read_thread", side_effect=read):
+                injected = False
+                def after_target_facts(home, _facts):
+                    nonlocal injected
+                    if home != str(other) or injected: return
+                    injected = True
+                    if changed == "shared":
+                        rows = json.loads(f.log.read_text())
+                        rows[0]["launch_generation"] = "changed"
+                        CLOSURE.replace_rows(rows)
+                    else:
+                        rows = json.loads(ledger.read_text())
+                        if changed == "selected": rows[0]["retained_note"] = "changed authority"
+                        else: rows.append({"session_id": "unrelated", "harness": "claude", "note": "independent launch"})
+                        ledger.write_text(json.dumps(rows))
+                with self.cancel_read_boundaries(after_facts=after_target_facts):
                     if changed == "unrelated":
                         self.assertTrue(asyncio.run(NATIVE.cancel_queue(other, f.session, ledger=ledger,
                             apply=True, queued_submission_id=selected["id"], entry_sha256=digest))["ok"])
@@ -444,13 +470,8 @@ class NativeQueueTests(unittest.TestCase):
             with self.subTest(mode=mode), ReceiptFixture(str(uuid.uuid4())) as f:
                 other, ledger, selected, _retained, deleted = self.cancel_setup(f)
                 digest = self.cancel_digest(other, f, ledger)
-                original_read = NATIVE.read_thread
-                calls = 0
-                async def read(*args, **kwargs):
-                    nonlocal calls
-                    calls += 1
-                    if mode == "preload" and calls == 5: f.home_states[str(other)] = "idle"
-                    return await original_read(*args, **kwargs)
+                def before_metadata(home):
+                    if mode == "preload" and home == str(other): f.home_states[str(other)] = "idle"
                 remove = f.rpc_results["thread/queue/delete"]
                 def mutation(request):
                     result = remove(request)
@@ -461,11 +482,61 @@ class NativeQueueTests(unittest.TestCase):
                     if mode == "disconnect": return ValueError("fixture transport unavailable")
                     return result
                 f.rpc_results["thread/queue/delete"] = mutation
-                with patch.object(NATIVE, "read_thread", side_effect=read), self.assertRaises(ValueError):
+                with self.cancel_read_boundaries(before_metadata=before_metadata), self.assertRaises(ValueError):
                     asyncio.run(NATIVE.cancel_queue(other, f.session, ledger=ledger, apply=True,
                         queued_submission_id=selected["id"], entry_sha256=digest))
                 self.assertEqual(len(deleted), int(mode != "preload"))
                 self.assertEqual(len(f.home_queues[str(other)]), 2 if mode == "preload" else 1)
+
+    def test_cancel_postdelete_source_failures_are_private_uncertainty_without_replay(self):
+        import subprocess
+        import uuid
+        for failure in (subprocess.CalledProcessError(1, ["fixture", "private-argument"]),
+                        subprocess.TimeoutExpired(["fixture", "private-argument"], 1),
+                        KeyError("private-key"), TypeError("private-source"), OSError("private-source"),
+                        ValueError("private-source"), TimeoutError("private-source"), asyncio.CancelledError("private-source")):
+            with self.subTest(failure=type(failure).__name__), ReceiptFixture(str(uuid.uuid4())) as f:
+                other, ledger, selected, retained, deleted = self.cancel_setup(f)
+                digest = self.cancel_digest(other, f, ledger)
+                original = CLOSURE.transcript_facts
+                def read(*args, **kwargs):
+                    if deleted: raise failure
+                    return original(*args, **kwargs)
+                with patch.object(CLOSURE, "transcript_facts", side_effect=read), self.assertRaises(ValueError) as refused:
+                    asyncio.run(NATIVE.cancel_queue(other, f.session, ledger=ledger, apply=True,
+                        queued_submission_id=selected["id"], entry_sha256=digest))
+                self.assertIsInstance(refused.exception.__cause__, type(failure))
+                self.assertEqual(len(deleted), 1)
+                self.assertEqual(f.home_queues[str(other)], [retained])
+                self.assertNotIn("private-", str(refused.exception))
+                fresh = asyncio.run(NATIVE.cancel_queue(other, f.session, ledger=ledger))
+                self.assertEqual([entry["queuedSubmissionId"] for entry in fresh["entries"]], [retained["id"]])
+                self.assertEqual(len(deleted), 1)
+
+    def test_cancel_cli_postsend_failure_preserves_deleted_state_without_resubmission(self):
+        import sys
+        import uuid
+        with ReceiptFixture(str(uuid.uuid4())) as f:
+            from test_codex_session import SESSION
+            other, ledger, selected, retained, deleted = self.cancel_setup(f)
+            digest = self.cancel_digest(other, f, ledger)
+            original = CLOSURE.transcript_facts
+            def read(*args, **kwargs):
+                if deleted: raise KeyError("private-readback-key")
+                return original(*args, **kwargs)
+            output = io.StringIO()
+            with patch.object(CLOSURE, "transcript_facts", side_effect=read), \
+                    patch.object(sys, "argv", ["codex-session.py", "queue-cancel", "--session-id", f.session,
+                        "--codex-home", str(other), "--ledger", str(ledger), "--apply",
+                        "--queued-submission-id", selected["id"], "--entry-sha256", digest]), redirect_stdout(output):
+                self.assertEqual(SESSION.main(), 1)
+            self.assertFalse(json.loads(output.getvalue())["ok"])
+            self.assertNotIn("private-readback-key", output.getvalue())
+            self.assertEqual(len(deleted), 1)
+            self.assertEqual(f.home_queues[str(other)], [retained])
+            fresh = asyncio.run(NATIVE.cancel_queue(other, f.session, ledger=ledger))
+            self.assertEqual([entry["queuedSubmissionId"] for entry in fresh["entries"]], [retained["id"]])
+            self.assertEqual(len(deleted), 1)
 
     def test_cancel_final_metadata_cannot_change_source_authority(self):
         import uuid
@@ -474,8 +545,7 @@ class NativeQueueTests(unittest.TestCase):
                 with self.subTest(boundary=boundary, changed=changed), ReceiptFixture(str(uuid.uuid4())) as f:
                     other, ledger, selected, _retained, deleted = self.cancel_setup(f)
                     digest = self.cancel_digest(other, f, ledger)
-                    original_read = NATIVE.read_thread
-                    calls, final_inventory = 0, False
+                    final_inventory = False
                     def mutate():
                         if changed in {"selected", "unrelated"}:
                             rows = json.loads(ledger.read_text())
@@ -489,21 +559,18 @@ class NativeQueueTests(unittest.TestCase):
                             action["action_at"] = "2026-10-03T00:00:00Z"
                             path.write_text(json.dumps(action))
                         if changed == "process": f.process_rows = [(f.entry["pid"], "different-tty", "worker")]
-                    async def read(*args, **kwargs):
-                        nonlocal calls, final_inventory
-                        value = await original_read(*args, **kwargs)
-                        calls += 1
-                        if calls == 5:
+                    def after_metadata(home, _metadata):
+                        nonlocal final_inventory
+                        if home == str(other):
                             if boundary == "metadata": mutate()
                             else: final_inventory = True
-                        return value
                     def inventory():
                         nonlocal final_inventory
                         if final_inventory:
                             final_inventory = False
                             mutate()
                         return list(f.process_rows)
-                    with patch.object(NATIVE, "read_thread", side_effect=read), patch.object(f.release, "inventory", side_effect=inventory):
+                    with self.cancel_read_boundaries(after_metadata=after_metadata), patch.object(f.release, "inventory", side_effect=inventory):
                         if changed == "unrelated":
                             self.assertTrue(asyncio.run(NATIVE.cancel_queue(other, f.session, ledger=ledger, apply=True,
                                 queued_submission_id=selected["id"], entry_sha256=digest))["ok"])
@@ -518,7 +585,7 @@ class NativeQueueTests(unittest.TestCase):
         import uuid
         from types import SimpleNamespace
         import github_plan_termination as termination
-        for mode in ("minimal", "historical", "historical_markers", "known_launch_pid", "partial_tail", "interior", "complete_corrupt", "wrong_host", "new_generation", "inventory_marker", "backfill_marker"):
+        for mode in ("minimal", "historical", "historical_markers", "known_launch_pid", "partial_tail", "interior", "complete_corrupt", "wrong_host", "new_generation", "inventory_marker", "backfill_marker", "gone_artifact"):
             with self.subTest(mode=mode), ReceiptFixture(str(uuid.uuid4())) as f:
                 other, _ledger, selected, _retained, deleted = self.cancel_setup(f)
                 # Preserve the original object; an output attestation is insufficient.
@@ -538,6 +605,7 @@ class NativeQueueTests(unittest.TestCase):
                 if mode == "wrong_host": record["host"] = "different-source-host"
                 if mode == "inventory_marker": record["_inventory"] = True
                 if mode == "backfill_marker": record["_backfill"] = True
+                if mode == "gone_artifact": record["retained_artifacts"] = [{"branch": "already-merged", "worktree": str(f.root / "removed-worktree")}]
                 if mode in {"partial_tail", "interior", "complete_corrupt"}:
                     with f.transcript.open("a") as stream:
                         stream.write('{"type":' + ("\n" if mode != "partial_tail" else ""))
@@ -551,17 +619,87 @@ class NativeQueueTests(unittest.TestCase):
                 before = {value: value.read_bytes() for value in (path, f.transcript, f.log, CLOSURE.lease_path(f.session))}
                 with patch.object(termination, "inventory", side_effect=lambda: f.process_rows), \
                         patch.object(termination, "run_terminal", return_value=SimpleNamespace(
-                        returncode=0, stdout="a" * 32 + "\t1\t1\n", stderr="")):
-                    if mode not in {"minimal", "historical", "historical_markers", "partial_tail"}:
+                        returncode=0, stdout="a" * 32 + "\t1\t1\n", stderr="")) as terminal:
+                    if mode not in {"minimal", "historical", "historical_markers", "partial_tail", "gone_artifact"}:
                         with self.assertRaises(ValueError): asyncio.run(NATIVE.cancel_queue(other, f.session, termination_record=path))
                         self.assertFalse(deleted)
                         continue
+                    if mode == "gone_artifact":
+                        import subprocess
+                        with self.assertRaises(subprocess.SubprocessError): termination.verify(record, f.session)
+                    initial_terminal_calls = terminal.call_count
                     preview = asyncio.run(NATIVE.cancel_queue(other, f.session, termination_record=path))
+                    self.assertEqual(terminal.call_count - initial_terminal_calls, 1)
                     digest = next(entry["sha256"] for entry in preview["entries"] if entry["queuedSubmissionId"] == selected["id"])
                     self.assertTrue(asyncio.run(NATIVE.cancel_queue(other, f.session, termination_record=path,
                         apply=True, queued_submission_id=selected["id"], entry_sha256=digest))["ok"])
+                    self.assertEqual(terminal.call_count - initial_terminal_calls, 2)
                 self.assertEqual(len(deleted), 1)
                 self.assertEqual({value: value.read_bytes() for value in before}, before)
+
+    def test_cancel_termination_covers_archive_roots_without_granting_account_authority(self):
+        import os
+        import socket
+        import uuid
+        from types import SimpleNamespace
+        import github_plan_termination as termination
+        for change in ("existing_activity", "fingerprint", "new_copy"):
+            with self.subTest(change=change), ReceiptFixture(str(uuid.uuid4())) as f:
+                other, _ledger, selected, _retained, deleted = self.cancel_setup(f)
+                CLOSURE.replace_rows([])
+                archive = f.root / "retained-transcripts-outside-accounts"
+                archive.mkdir()
+                archived = archive / ("archive-" + f.session + ".jsonl")
+                archived.write_bytes(f.transcript.read_bytes())
+                record = {**f.entry, "host": socket.gethostname(), "cause": "fixture crash", "retained_artifacts": [],
+                    "ended_at": (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(),
+                    "transcript_roots": [str(f.home / "sessions"), str(archive)],
+                    "tmux_socket": "fixture", "tmux_session_id": "tmux:fixture:" + "a" * 32}
+                old = (datetime.now(timezone.utc) - timedelta(days=2)).timestamp()
+                for file in (f.transcript, other / "sessions" / f.transcript.name, archived): os.utime(file, (old, old))
+                authority = f.root / "original-termination.json"
+                authority.write_text(json.dumps(record))
+                authority.chmod(0o600)
+                with patch.object(termination, "run_terminal", return_value=SimpleNamespace(
+                        returncode=0, stdout="a" * 32 + "\t1\t1\n", stderr="")):
+                    with self.assertRaises(ValueError):
+                        asyncio.run(NATIVE.cancel_queue(archive, f.session, termination_record=authority))
+                    preview = asyncio.run(NATIVE.cancel_queue(other, f.session, termination_record=authority))
+                    digest = next(entry["sha256"] for entry in preview["entries"] if entry["queuedSubmissionId"] == selected["id"])
+                    seen = set()
+                    def after_facts(home, _facts):
+                        if home in seen and home == str(other):
+                            if change == "fingerprint": archived.write_bytes(archived.read_bytes() + b" \n")
+                            if change == "new_copy":
+                                copy = archive / ("later-" + f.session + ".jsonl")
+                                copy.write_bytes(archived.read_bytes())
+                                os.utime(copy, (old, old))
+                            os.utime(archived, (old, old))
+                        seen.add(home)
+                    if change == "existing_activity":
+                        with archived.open("a") as stream: stream.write(json.dumps({"type": "event_msg",
+                            "timestamp": datetime.now(timezone.utc).isoformat(), "payload": {"type": "agent_message", "message": "new activity"}}) + "\n")
+                    with self.cancel_read_boundaries(after_facts=after_facts), self.assertRaises(ValueError):
+                        asyncio.run(NATIVE.cancel_queue(other, f.session, termination_record=authority, apply=True,
+                            queued_submission_id=selected["id"], entry_sha256=digest))
+                self.assertFalse(deleted)
+
+    def test_termination_transcript_uses_physical_lines_for_valid_unicode_and_crash_tail(self):
+        import uuid
+        import github_plan_termination as termination
+        with ReceiptFixture(str(uuid.uuid4())) as f:
+            for separator in ("\u2028", "\u2029", "\u0085"):
+                for tail in ("", '{"type":'):
+                    with self.subTest(separator=repr(separator), tail=bool(tail)):
+                        rows = [{"type": "session_meta", "payload": {"id": f.session}},
+                            {"type": "event_msg", "timestamp": "2026-10-01T02:00:00Z", "payload": {
+                                "type": "agent_message", "message": "interrupted" + separator + "work"}}]
+                        f.transcript.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows) + tail)
+                        observed, _mtime, _size, truncated = termination.transcript_snapshot(f.entry, f.transcript)
+                        self.assertEqual(observed, rows)
+                        self.assertEqual(truncated, bool(tail))
+            f.transcript.write_text('{"type":\n' + json.dumps(rows[0]) + "\n")
+            with self.assertRaises(ValueError): termination.transcript_snapshot(f.entry, f.transcript)
 
     def test_cancel_guarded_reused_tty_uses_original_pane_without_clearing_pending(self):
         import os

@@ -115,6 +115,14 @@ class ResumeTests(unittest.TestCase):
         self.assertFalse(SESSION.closure.lease_path(self.native).exists())
         self.spawn.assert_not_called()
 
+    def test_noncleanup_commands_preserve_malformed_data_failure_behavior(self):
+        for command, arguments in (("resume", []), ("queue", ["--message", "fixture input"])):
+            for failure in (KeyError("fixture-key"), TypeError("fixture type")):
+                with self.subTest(command=command, failure=type(failure).__name__), patch.object(SESSION, "run", side_effect=failure), \
+                        patch.object(SESSION.sys, "argv", ["codex-session.py", command, "--session-id", self.native,
+                            "--codex-home", str(self.home), *arguments]), self.assertRaises(type(failure)):
+                    SESSION.main()
+
     def test_resume_records_new_generation_and_uses_exact_home_and_id(self):
         with patch.object(SESSION, "run_client", new_callable=AsyncMock, return_value=0) as guarded:
             self.assertEqual(SESSION.run(self.args), 0)

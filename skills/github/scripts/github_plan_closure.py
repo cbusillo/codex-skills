@@ -519,7 +519,7 @@ def transcript_identity(info: os.stat_result) -> list[int]:
     return [info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns]
 
 
-def transcript_facts(session: str, primary: str, *, include_status: bool = False, additional_homes: set[Path] | None = None, reader=None) -> dict:
+def transcript_facts(session: str, primary: str, *, include_status: bool = False, additional_homes: set[Path] | None = None, additional_roots: set[Path] | frozenset[Path] | None = None, reader=None) -> dict:
     """Authenticate stable native transcripts without deciding final-safe authority."""
     from github_plan_sessions import codex_homes, native_helpers
     from github_plan_release import stamp
@@ -528,22 +528,30 @@ def transcript_facts(session: str, primary: str, *, include_status: bool = False
     def fail(error):
         raise error
     homes = {*codex_homes(strict=True, configured_only=True), *(additional_homes or set())}
-    for home in sorted(homes):
+    roots = set()
+    for home in homes:
         for root in (home / "sessions", home / "archived_sessions"):
             try:
                 root.stat()
             except FileNotFoundError:
                 continue
-            for directory, _, names in os.walk(root, onerror=fail):
+            roots.add(root)
+    for root in additional_roots or set():
+        root = root.resolve(strict=True)
+        if not root.is_dir():
+            raise ValueError("source transcript root is unavailable")
+        roots.add(root)
+    for root in sorted(roots):
+        for directory, _, names in os.walk(root, onerror=fail):
+            if time.monotonic() > deadline:
+                raise TimeoutError("native closure scan exceeded its budget")
+            for name in names:
+                if session not in name or not name.endswith(".jsonl"):
+                    continue
+                path = Path(directory) / name
                 if time.monotonic() > deadline:
                     raise TimeoutError("native closure scan exceeded its budget")
-                for name in names:
-                    if session not in name or not name.endswith(".jsonl"):
-                        continue
-                    path = Path(directory) / name
-                    if time.monotonic() > deadline:
-                        raise TimeoutError("native closure scan exceeded its budget")
-                    paths.add(path.resolve(strict=True))
+                paths.add(path.resolve(strict=True))
     snapshots = {}
     for path in sorted(paths):
         before = path.stat()

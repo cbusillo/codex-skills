@@ -1981,6 +1981,13 @@ record. Without that field a termination transcript must bind to a known account
 actual `sessions` or `archived_sessions` directory. Keep the matching recovery
 ledger when a later generation exists; an older termination record cannot authorize
 cleanup for that generation.
+The cleanup adapter validates the original retained-artifact metadata without
+requiring historical worktrees to remain on disk. Public termination verification
+for claim release still checks those Git artifacts. Cleanup binds the original
+host, PID/TTY and native terminal once, then rechecks physical exit, source files
+and native runtime state at each boundary. Every original termination transcript
+root remains covered, including retained archives outside account directories;
+these roots do not grant account or target authority.
 
 Preview creates no lease or source state. With no existing ownership file, its
 identities are observations only. Apply acquires ownership directly and repeats
@@ -1991,6 +1998,10 @@ copies may be LoadedIdle only with empty queues and complete quiet runtime cover
 There is no automatic unload, resume, archive or drain step. Stop the source through
 its supported native lifecycle before retrying. Restore an unavailable required
 daemon using the account's existing launch procedure, then repeat the preview.
+
+Preview identifies the target `codexHome` and reports opaque entries in other
+relevant homes too. Success names only the deleted entry and target home and gives
+remaining queue counts per home; another stale copy may still need cleanup.
 
 Cancellation sends one native ID deletion and checks the full queue readback. It
 preserves unrelated entries, source transcripts, pending-action floors, action homes

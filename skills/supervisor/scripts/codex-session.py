@@ -100,9 +100,13 @@ def main() -> int:
         parser.error("cleanup arguments belong to queue-cancel")
     try:
         return run(args)
-    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
-        message = "Malformed source record; retain the original source identity and retry." if isinstance(error, (KeyError, TypeError)) else str(error)
-        print(json.dumps({"ok": False, "error": message}))
+    except (KeyError, TypeError):
+        if args.command != "queue-cancel":
+            raise
+        print(json.dumps({"ok": False, "error": "Malformed source record; preserve current state."}))
+        return 1
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        print(json.dumps({"ok": False, "error": str(error)}))
         return 1
 
 
