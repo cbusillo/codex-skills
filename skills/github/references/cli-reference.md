@@ -1666,11 +1666,12 @@ competitor's record.
   another account's own comments count as outside comments.
   It refuses with `close_attention_preflight` and `write_outcome=not_started`,
   naming each comment, when an outside person's comment has no Director or agent
-  reply after its latest version and no targeted response, even on a closed
-  thread, or when coverage is degraded. Planning records and Director question
-  or decision records are not replies or targeted responses, even when they
-  link the comment. Answer each on its thread and rerun. Only the Director
-  overrides:
+  reply posted after its latest version, even on a closed thread, or when
+  coverage is degraded. An edit is never a reply: an older comment edited
+  later does not answer it, even when the edit links or mentions it. Planning
+  records and Director question or decision records are not replies, even when
+  they link the comment. Answer each with a new reply on its thread and rerun.
+  Only the Director overrides:
   `--unanswered-decision COMMENT_URL` names a repository owner comment on
   this issue after the newest such comment, or an unedited `Director decision:`
   record there that the repository owner approved with `+1`. `gh-issue close`

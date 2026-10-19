@@ -892,11 +892,15 @@ def later_reply_for(
     actor_logins: set[str],
     until: datetime,
 ) -> Comment | None:
-    """First owner or automation reply after the comment's latest version, targeted or not.
+    """First owner or automation reply posted after the comment's latest version, targeted or not.
 
-    Planning records and Director questions or decisions are bookkeeping, not replies.
+    An edit is never a reply: an older comment edited later, even one that links or
+    mentions the comment, does not answer it. Planning records and Director questions
+    or decisions are bookkeeping, not replies.
     """
-    responses = sorted(comments, key=lambda comment: (comment_activity_through(comment, until), comment.comment_id))
+    version = comment_activity_through(external, until)
+    unedited = comment_timestamp(external.updated_at) == comment_timestamp(external.created_at)
+    responses = sorted(comments, key=lambda comment: (comment_timestamp(comment.created_at), comment.comment_id))
     for response in responses:
         if (
             is_bookkeeping(response)
@@ -904,7 +908,9 @@ def later_reply_for(
             or not response.body.strip()
         ):
             continue
-        if comment_timestamp(response.created_at) <= until and response_is_after(response, external, until):
+        posted = comment_timestamp(response.created_at)
+        if posted <= until and (posted > version or (
+                posted == version and unedited and response.comment_id > external.comment_id)):
             return response
     return None
 

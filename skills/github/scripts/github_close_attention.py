@@ -6,9 +6,9 @@
 """Refuse to close an issue while an outside person's comment is unanswered.
 
 The existing comment radar (github_unanswered_comments.py) reads the issue and
-the threads it links. A comment blocks closure when no owner or agent reply
-follows its latest version and no targeted response answers it. A recorded
-Director decision on the issue is the only override.
+the threads it links. A comment blocks closure until an owner or agent reply is
+posted after its latest version; an edit to an older comment is not a reply. A
+recorded Director decision on the issue is the only override.
 """
 
 from __future__ import annotations
@@ -112,13 +112,13 @@ def run_radar(threads: list[str], gh_cmd: str | None = None,
 
 def unanswered_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
     # The radar counts a comment on a closed thread as handled; closing over it still needs a reply.
+    # Only later_reply_url counts: the radar's targeted response follows edit time, so it is not used here.
     return [
         {key: row.get(key) for key in ("repo", "number", "author", "comment_url", "created_at",
                                         "updated_at", "body_excerpt")}
         for row in [*(payload.get("attention") or []), *(payload.get("handled") or [])]
         if isinstance(row, dict)
         and row.get("author_class") != "automation"
-        and not row.get("publicly_addressed")
         and not row.get("later_reply_url")
     ]
 
@@ -212,8 +212,8 @@ def check(repo: str, number: int, *, issue: dict[str, Any] | None = None, decisi
     if gaps:
         lines.append("comments could not be fully checked on these threads:")
         lines += [f"- {gap}" for gap in gaps]
-    lines.append("Read and answer each comment with a reply on its thread (link the comment or @mention its "
-                 "author), or rerun once the threads are readable. Only the Director can close over them: rerun "
+    lines.append("Read and answer each comment with a new reply on its thread (editing an older comment does not "
+                 "count), or rerun once the threads are readable. Only the Director can close over them: rerun "
                  "with --unanswered-decision linking the Director's comment on this issue, or a "
                  "\"Director decision:\" record the Director approved with a thumbs-up. Do not close it another way.")
     raise CloseAttentionError("\n".join(lines), cause="unanswered_comments" if rows else "coverage_unknown",

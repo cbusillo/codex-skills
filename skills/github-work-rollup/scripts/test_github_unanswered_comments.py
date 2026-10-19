@@ -167,6 +167,35 @@ def test_later_reply_skips_planning_records_and_follows_the_latest_edit() -> Non
     assert answered["later_reply_url"] == reply.url
 
 
+REPLY_TIMELINES = {
+    # name: (outside comment created/updated, reply author/body/created/updated, answered)
+    "reply posted after": (("15:00", "15:00"), ("fixture-automation", "Yes, attach it.", "16:00", "16:00"), True),
+    "owner reply posted after": (("15:00", "15:00"), ("cbusillo", "Yes, attach it.", "16:00", "16:00"), True),
+    "older agent comment edited after": (("15:00", "15:00"), ("fixture-automation", "CI: green", "14:00", "16:00"), False),
+    "older mention edited after": (
+        ("15:00", "15:00"), ("fixture-automation", "@outside-user CI: green", "14:00", "16:00"), False),
+    "reply before the outside edit": (("15:00", "17:00"), ("fixture-automation", "Yes, attach it.", "16:00", "16:00"), False),
+    "reply before, edited after the outside edit": (
+        ("15:00", "17:00"), ("fixture-automation", "Yes, attach it.", "16:00", "18:00"), False),
+    "reply after the outside edit": (("15:00", "17:00"), ("fixture-automation", "Yes, attach it.", "18:00", "18:00"), True),
+    "same second, posted second": (("15:00", "15:00"), ("fixture-automation", "Yes, attach it.", "15:00", "15:00"), True),
+    "outside person's own follow-up": (("15:00", "15:00"), ("someone-else", "Me too.", "16:00", "16:00"), False),
+}
+
+
+@pytest.mark.parametrize("name", REPLY_TIMELINES)
+def test_later_reply_counts_only_a_reply_posted_after_the_latest_version(name: str) -> None:
+    (outside_created, outside_updated), (author, body, created, updated), answered = REPLY_TIMELINES[name]
+    external = comment(comment_id=1, author="outside-user", body="Can I send a corrected sheet?",
+                       created_at=f"2026-07-25T{outside_created}:00Z", updated_at=f"2026-07-25T{outside_updated}:00Z")
+    reply = comment(comment_id=2, author=author, body=body,
+                    created_at=f"2026-07-25T{created}:00Z", updated_at=f"2026-07-25T{updated}:00Z")
+
+    [result] = classify([external, reply], [external])
+
+    assert result["later_reply_url"] == (reply.url if answered else None)
+
+
 def test_planning_record_linking_a_comment_does_not_answer_it() -> None:
     external = comment(comment_id=1, author="outside-user", body="Can I send a corrected sheet?",
                        created_at="2026-07-25T14:59:27Z")

@@ -85,14 +85,20 @@ class CloseAttentionTests(unittest.TestCase):
         with self.assertRaises(gate.CloseAttentionError) as refused:
             gate.check(REPO, 7, reader=reader, radar=radar(status="clear", handled=(row(9),)))
         self.assertIn(f"client on {REPO}#9", str(refused.exception))
-        answered = gate.check(REPO, 7, reader=reader, radar=radar(status="clear", handled=(row(9, addressed=True),)))
+        answered = gate.check(REPO, 7, reader=reader, radar=radar(status="clear", handled=(
+            row(9, addressed=True, later_reply=f"https://github.com/{REPO}/issues/9#issuecomment-901"),)))
         self.assertEqual(answered["result"], "passed")
 
-    def test_replied_targeted_and_automation_comments_pass(self) -> None:
+    def test_replied_and_automation_comments_pass(self) -> None:
         result = gate.check(REPO, 7, reader=FakeReader(), radar=radar(
             row(later_reply="https://github.com/director/project/issues/7#issuecomment-800"),
-            row(addressed=True), row(author="deploy-bot", author_class="automation")))
+            row(author="deploy-bot", author_class="automation")))
         self.assertEqual(result["result"], "passed")
+
+    def test_a_targeted_response_without_a_later_posted_reply_refuses(self) -> None:
+        # The radar's targeted response follows edit time, so an edited older comment can be one.
+        with self.assertRaises(gate.CloseAttentionError):
+            gate.check(REPO, 7, reader=FakeReader(), radar=radar(row(addressed=True)))
 
     def test_incomplete_coverage_refuses(self) -> None:
         def degraded(_threads: list[str], _gh_cmd: str | None = None) -> dict[str, Any]:
