@@ -298,6 +298,21 @@ commands:
     resource_path: scripts/gh-rulesets.py
     example_argv: ["uv", "run", "scripts/gh-rulesets.py", "plan", "--repo", "OWNER/REPO"]
     purpose: Reads the active repository owner's full ruleset state and reports the idempotent standard-pair and selected client-lock changes without writing.
+  - name: github-required-checks-plan
+    source: skill
+    resource_path: scripts/gh-rulesets.py
+    example_argv: ["uv", "run", "scripts/gh-rulesets.py", "checks-plan", "--repo", "OWNER/REPO", "--target", "classic", "--checks-file", "checks.json", "--out", "plan.json"]
+    purpose: Saves an additive required-check plan and digest using the existing verified repository owner writer.
+  - name: github-required-checks-apply
+    source: skill
+    resource_path: scripts/gh-rulesets.py
+    example_argv: ["uv", "run", "scripts/gh-rulesets.py", "checks-apply", "--plan-file", "plan.json", "--plan-digest", "SHA256", "--confirm-owner-admin-write"]
+    purpose: Applies only the reviewed additive plan after state comparison, then reads it back.
+  - name: github-required-checks-readback
+    source: skill
+    resource_path: scripts/gh-rulesets.py
+    example_argv: ["uv", "run", "scripts/gh-rulesets.py", "checks-readback", "--plan-file", "plan.json", "--plan-digest", "SHA256"]
+    purpose: Verifies the reviewed required-check result without writing.
   - name: github-rulesets-apply
     source: skill
     resource_path: scripts/gh-rulesets.py
@@ -869,7 +884,10 @@ each target repository:
   With the opt-in, publishing checks that the active account matches that
   declaration, and the helpers print `acting as your own GitHub user`.
   With the opt-in, reads of a private repository there that the App cannot
-  see also use that login, scoped to the repository; other reads keep the App.
+  see also use that login, scoped to the repository. In any repository, the
+  opt-in also runs `gh api` reads that only an account can answer (`user/...`,
+  `notifications`, `repos/OWNER/REPO/subscription`) and `gh repo fork` without
+  `--org` as that login; other reads keep the App.
   Commits keep your git identity, and `gh-pr.py create` adds the
   AI-assistance sentence to the body unless it already says so.
   For a fork contribution, the commit's identity follows the fork's `origin`
@@ -1031,8 +1049,7 @@ the landing route:
   merged, releasable, or clean, and before a release. Read the PR and its
   checks for the current head SHA. Match background review evidence to that
   SHA. Unresolved blocking findings against it block the merge or release even
-  when CI is green, until they are addressed, deferred,
-  or declined with a recorded reason under
+  when CI is green, until they are accounted for under
   [reviews by another model](../references/model-review.md). Findings from a
   detached `auto-review-<hex>` worktree are current when their snapshot SHA
   matches the head and history otherwise; those worktrees are not dirty local

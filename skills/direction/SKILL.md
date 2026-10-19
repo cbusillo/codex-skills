@@ -126,7 +126,10 @@ one.
   GitHub and session history itself and writes its output to GitHub, never back
   into another agent's prompt. It runs on a model other than the one that
   produced the run it is scoring, so the agent that judges a run is never the
-  agent that produced it.
+  agent that produced it. An executing agent that needs an outside alignment
+  read on a pending decision asks for a
+  [review by another model](../references/model-review.md#before-a-decision)
+  instead.
 - **Executing agents** work inside the current milestone, weigh reviewer
   findings, and escalate what is not theirs to decide.
 
@@ -608,8 +611,7 @@ Read [reviews by another model](../references/model-review.md) first; it says
 how to weigh a finding. Then apply the split that reference points here for:
 
 - A finding that **adds** (a test, a branch, a safeguard, a criterion, a
-  step) is the executing agent's to judge: act on it, decline it with a
-  recorded reason, or defer it.
+  step) is the executing agent's to weigh under that reference.
 - A finding that **removes or redirects at the level the file names** is not:
   retire a subsystem or design, stop a workstream, change the purpose, journey,
   or stop boundaries, add a milestone, abandon one before it ships, or close

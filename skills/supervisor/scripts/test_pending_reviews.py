@@ -17,9 +17,11 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pending_reviews as reviews
+import review_notifications as notifications
+import session_record
 import github_api
 from github_identity import OWN_USER_OPT_IN
 import test_review_with_model as model_fixture
@@ -104,6 +106,9 @@ class FakeIO:
         self.comments.append(comment(11, body.read_text()))
         return post_payload()
 
+    def notify(self, entry, message):
+        self.calls.append(("notify", copy.deepcopy(entry), message))
+
 
 class DispatchTests(unittest.TestCase):
     def setUp(self):
@@ -127,6 +132,224 @@ class DispatchTests(unittest.TestCase):
 
     def assert_no_post(self):
         self.assertFalse(any(c[0] == "post" for c in self.io.calls))
+
+    def test_posted_review_notifies_exact_ledger_author_once_per_report_version(self):
+        for harness in ("codex", "claude"):
+            with self.subTest(harness=harness):
+                self.io = FakeIO()
+                self.entries = [{**entry(), "harness": harness}]
+                self.evidence = Path(self.temp.name) / harness
+                self.dispatch(apply=False)
+                self.assertFalse(any(c[0] == "notify" for c in self.io.calls))
+                self.assertEqual(self.dispatch()["notification_status"], "sent")
+                self.assertEqual(self.dispatch()["notification_status"], "sent")
+                sends = [c for c in self.io.calls if c[0] == "notify"]
+                self.assertEqual(len(sends), 1)
+                self.assertEqual(sends[0][1], self.entries[0])
+                self.assertIn(SHA, sends[0][2])
+                self.io.comments[-1]["updated_at"] = "2026-10-17T21:00:00Z"
+                self.dispatch()
+                self.assertEqual(sum(c[0] == "notify" for c in self.io.calls), 2)
+                self.assertEqual(sum(c[0] == "review" for c in self.io.calls), 1)
+
+    def test_notification_failure_or_interruption_keeps_completion_and_never_replays(self):
+        from iterm_tab import SendFailure
+        for failure in (ValueError("queue refused"), PermissionError("permission denied"),
+                        SendFailure("terminal", "unknown", "fixture"),
+                        subprocess.TimeoutExpired("send", 30), KeyboardInterrupt()):
+            with self.subTest(failure=type(failure).__name__):
+                self.io = FakeIO()
+                self.evidence = Path(self.temp.name) / type(failure).__name__
+                with patch.object(self.io, "notify", side_effect=failure) as send:
+                    if isinstance(failure, KeyboardInterrupt):
+                        with self.assertRaises(KeyboardInterrupt):
+                            self.dispatch()
+                    else:
+                        report = self.dispatch()
+                        self.assertEqual(report["status"], "posted")
+                        self.assertIn(str(failure), report["notification_error"])
+                        self.assertTrue(report["needs_attention"])
+                    recovered = self.dispatch()
+                    self.assertEqual(recovered["status"], "already_completed")
+                    self.assertEqual(recovered["notification_status"], "blocked")
+                    self.assertTrue(recovered["completion_comment"])
+                    self.assertEqual(send.call_count, 1)
+                    if isinstance(failure, PermissionError):
+                        Path(recovered["notification_journal"]).write_text("[]")
+                        self.assertEqual(self.dispatch()["notification_status"], "blocked")
+                        self.assertEqual(send.call_count, 1)
+
+    def test_preflight_not_sent_is_rechecked_until_delivery_and_then_deduplicated(self):
+        for harness in ("codex", "claude"):
+            with self.subTest(harness=harness):
+                self.io = FakeIO()
+                self.entries = [{**entry(), "harness": harness}]
+                self.evidence = Path(self.temp.name) / harness
+                with patch.object(self.io, "notify", side_effect=notifications.NotSent("busy", needs_attention=False)) as send:
+                    result = self.dispatch()
+                    self.assertEqual(result["notification_status"], "pending")
+                    self.assertFalse(result["needs_attention"])
+                    self.assertEqual(json.loads(Path(result["notification_journal"]).read_text())["phase"], "not_sent")
+                    pending = self.dispatch(apply=False)
+                    self.assertEqual(pending["notification_error"], result["notification_error"])
+                    self.assertFalse(pending["needs_attention"])
+                    self.io.request["updated_at"] = "2026-10-17T21:00:00Z"
+                    self.assertTrue(self.dispatch(apply=False)["needs_attention"])
+                    self.io.request["updated_at"] = STAMP
+                    self.assertEqual(send.call_count, 1)
+                self.assertEqual(self.dispatch()["notification_status"], "sent")
+                self.assertEqual(self.dispatch()["notification_status"], "sent")
+                self.assertEqual(sum(c[0] == "notify" for c in self.io.calls), 1)
+                self.assertEqual(sum(c[0] == "review" for c in self.io.calls), 1)
+
+    def test_delivered_report_versions_survive_retirement_without_erasing_provenance_or_retargeting(self):
+        for mode in ("generated", "manual", "legacy"):
+            for moved in (False, True):
+                with self.subTest(mode=mode, moved=moved):
+                    self.io = FakeIO()
+                    self.io.pr["body"] = "Closes #3"
+                    self.entries = [entry()]
+                    self.evidence = Path(self.temp.name) / f"{mode}-{moved}"
+                    if mode != "generated":
+                        body = f"{reviews.REPORT_HEADING}\nHead: {SHA}\nRetained review."
+                        if mode == "legacy":
+                            body += "\n<!-- supervisor-review " + json.dumps(reviews.receipt_for(self.io.request, SHA)) + " -->"
+                        self.io.comments.append(comment(11, body))
+                    first = self.dispatch()
+                    self.assertEqual(first["notification_status"], "sent")
+                    if moved:
+                        self.io.pr["head"]["sha"] = "b" * 40
+                    for entries in ([], [entry(), entry()], [{**entry(), "supervisor_owned": False}],
+                                    [{**entry(), "repository": "another/repo"}],
+                                    [{**entry(), "session_id": "successor-native"}],
+                                    [{**entry(), "pid": 7, "handoff_url": "https://github.com/example/tool/issues/3#issuecomment-1"}]):
+                        self.entries = entries
+                        result = self.dispatch()
+                        self.assertEqual(result["notification_status"], "sent")
+                        self.assertEqual(result["author_session"], first["author_session"])
+                        self.assertEqual(result["author_provider"], first["author_provider"])
+                        self.assertEqual(result["requested_provider_confirmed"], first["requested_provider_confirmed"])
+                        self.assertEqual(result["needs_attention"], first["needs_attention"])
+                    self.assertEqual(sum(c[0] == "notify" for c in self.io.calls), 1)
+
+    def test_completed_review_never_notifies_missing_or_ambiguous_ledger_author(self):
+        with patch.object(self.io, "notify", side_effect=notifications.NotSent("busy")):
+            self.dispatch()
+        for entries in ([], [entry(), entry()], [{**entry(), "supervisor_owned": False}],
+                        [{**entry(), "repository": "another/repo"}], [{**entry(), "session_id": "successor-native"}]):
+            with self.subTest(entries=entries):
+                self.entries = entries
+                with patch.object(self.io, "notify") as send:
+                    self.assertEqual(self.dispatch()["notification_status"], "blocked")
+                    send.assert_not_called()
+
+    def test_post_readback_failure_preserves_confirmed_post_and_reports_notification_error(self):
+        pages = self.io.paged_json
+        def readback(path, **kwargs):
+            if kwargs.get("step_prefix") == "posted_review_comments":
+                raise ValueError("posted comment readback unavailable")
+            return pages(path, **kwargs)
+        with patch.object(self.io, "paged_json", side_effect=readback), patch.object(self.io, "notify") as send:
+            result = self.dispatch()
+        self.assertEqual(result["status"], "posted")
+        self.assertEqual(result["notification_error"], "posted comment readback unavailable")
+        self.assertTrue(result["post"]["ok"])
+        self.assertNotIn("notification_journal", result)
+        send.assert_not_called()
+        self.assertEqual(self.dispatch()["notification_status"], "sent")
+        self.assertEqual(sum(c[0] == "post" for c in self.io.calls), 1)
+
+    def test_paid_history_recovers_post_before_notification_reservation_after_retirement(self):
+        self.io.pr["body"] = "Closes #3"
+        pages = self.io.paged_json
+        def readback(path, **kwargs):
+            if kwargs.get("step_prefix") == "posted_review_comments":
+                raise ValueError("readback failed")
+            return pages(path, **kwargs)
+        with patch.object(self.io, "paged_json", side_effect=readback):
+            self.assertEqual(self.dispatch()["status"], "posted")
+        self.entries = []
+        # Legacy paid files predate explicit repository metadata.
+        paid = next(self.evidence.glob("*.json"))
+        state = json.loads(paid.read_text())
+        state.pop("repository")
+        state.pop("pr")
+        paid.write_text(json.dumps(state))
+        for moved in (False, True):
+            if moved:
+                self.io.pr["head"]["sha"] = "b" * 40
+            result = reviews.sweep(self.io, [], {}, TRUSTED, self.evidence, apply=True)[0]
+            self.assertEqual(result["author_session"], SESSION)
+            self.assertTrue(result["needs_attention"])
+            self.assertEqual(result["notification_status"], "blocked")
+        self.assertFalse(any(c[0] == "notify" for c in self.io.calls))
+
+    def test_edited_reports_keep_original_author_across_successor_claims_and_conflicting_receipts(self):
+        for mode in ("generated", "manual", "legacy"):
+            with self.subTest(mode=mode):
+                self.io, self.entries = FakeIO(), [entry()]
+                self.evidence = Path(self.temp.name) / mode
+                if mode != "generated":
+                    body = f"{reviews.REPORT_HEADING}\nHead: {SHA}\nRetained review."
+                    if mode == "legacy":
+                        body += "\n<!-- supervisor-review " + json.dumps(reviews.receipt_for(self.io.request, SHA)) + " -->"
+                    self.io.comments.append(comment(11, body))
+                self.assertEqual(self.dispatch()["notification_status"], "sent")
+                release = comment(6, "Released claim 5")
+                release["created_at"] = release["updated_at"] = "2026-10-17T21:00:00Z"
+                successor = comment(7, marker({"branch": BRANCH, "session": "successor", "worker": "next",
+                                               "claimed_at": "2026-10-17T22:00:00Z"}))
+                successor["created_at"] = successor["updated_at"] = "2026-10-17T22:00:00Z"
+                self.io.claims += [release, successor]
+                self.entries = [{**entry(), "session_id": "successor"}]
+                report = self.io.comments[-1]
+                report["updated_at"] = "2026-10-17T23:00:00Z"
+                result = self.dispatch()
+                self.assertEqual(result["author_session"], SESSION)
+                self.assertEqual(result["notification_status"], "blocked")
+                self.assertTrue(result["needs_attention"])
+                if mode == "generated":
+                    report["body"] = report["body"].replace(SESSION, "successor")
+                    result = self.dispatch()
+                    self.assertEqual(result["notification_status"], "blocked")
+                    self.assertTrue(result["notification_error"])
+                self.assertEqual(sum(c[0] == "notify" for c in self.io.calls), 1)
+
+    def test_retained_notification_versions_remain_discoverable_and_spent_versions_cannot_be_replayed_by_edit(self):
+        for phase in ("sent", "not_sent", "failed", "attempted", "unreadable"):
+            with self.subTest(phase=phase):
+                self.io, self.entries = FakeIO(), [entry()]
+                self.evidence = Path(self.temp.name) / phase
+                self.io.comments.append(comment(11, f"{reviews.REPORT_HEADING}\nHead: {SHA}\nManual review."))
+                first = self.dispatch()
+                journal = Path(first["notification_journal"])
+                state = json.loads(journal.read_text())
+                state.update(phase=phase, error="retained fixture diagnostic", needs_attention=True)
+                journal.write_text("{broken" if phase == "unreadable" else json.dumps(state))
+                result = reviews.sweep(self.io, [], {}, TRUSTED, self.evidence, apply=True)[0]
+                self.assertEqual(result["notification_status"], "sent" if phase == "sent" else "blocked")
+                if phase != "sent":
+                    self.assertTrue(result["needs_attention"])
+                self.io.comments[-1]["updated_at"] = "2026-10-17T23:00:00Z"
+                result = self.dispatch()
+                if phase in {"failed", "attempted", "unreadable"}:
+                    self.assertEqual(result["notification_status"], "blocked")
+                    self.assertEqual(sum(c[0] == "notify" for c in self.io.calls), 1)
+                else:
+                    self.assertEqual(result["notification_status"], "sent")
+
+    def test_unsent_configuration_failures_are_visible_recheckable_and_do_not_mask_busy_waits(self):
+        for attention in (False, True):
+            with self.subTest(attention=attention):
+                self.io = FakeIO()
+                self.evidence = Path(self.temp.name) / str(attention)
+                with patch.object(self.io, "notify", side_effect=notifications.NotSent("preflight fixture", needs_attention=attention)):
+                    result = self.dispatch()
+                for report in (result, self.dispatch(apply=False)):
+                    self.assertEqual(report["needs_attention"], attention)
+                    self.assertEqual(report["notification_status"], "blocked" if attention else "pending")
+                    self.assertEqual(report["notification_error"], "preflight fixture")
+                self.assertEqual(self.dispatch()["notification_status"], "sent")
 
     def test_discovery_is_read_only_and_apply_reports_author_then_deduplicates(self):
         report = self.dispatch(apply=False)
@@ -421,6 +644,8 @@ class DispatchTests(unittest.TestCase):
             self.assertEqual(self.dispatch()["author_session"], SESSION)
         self.io.request["body"] = ask()["body"]
         with patch.object(reviews, "registered_worktrees", return_value=[(Path(self.temp.name), successor, "b" * 40)], create=True):
+            self.assertEqual(self.dispatch(apply=False)["notification_status"], "sent")
+            self.evidence = Path(self.temp.name) / "foreign-without-local-history"
             self.assertEqual(self.dispatch(apply=False)["status"], "not_owned")
 
     def test_edited_report_requires_disposition_after_its_latest_edit(self):
@@ -1183,6 +1408,8 @@ class LedgerTests(unittest.TestCase):
                     path.write_text(json.dumps(value))
                     with self.assertRaises(reviews.ReviewError):
                         reviews.review_entries(path)
+            path.write_text(json.dumps([{**entry(), "transcript": "sessions/author.jsonl"}]))
+            self.assertEqual(reviews.review_entries(path)[0]["transcript"], str((path.parent / "sessions/author.jsonl").resolve()))
 
 
     def test_malformed_entries_are_reported_without_authorizing_them_or_hiding_other_repositories(self):
@@ -1249,6 +1476,196 @@ class RunLockTests(unittest.TestCase):
                 with self.assertRaises(BlockingIOError):
                     with reviews.sweep_lock(second / "ledger.json", evidence, apply=True):
                         self.fail("handoff dispatched twice")
+
+
+class NotificationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = self.enterContext(tempfile.TemporaryDirectory())
+        self.home = Path(self.temp).resolve()
+        self.native = "11111111-2222-4333-8444-555555555555"
+        self.transcript = self.home / "sessions" / "native.jsonl"
+        self.transcript.parent.mkdir()
+        self.entry = {**entry(), "session_id": self.native, "codex_home": str(self.home),
+                      "transcript": str(self.transcript)}
+        self.transcript.write_text(json.dumps({"type": "session_meta", "payload": {"id": self.native}}) + "\n")
+
+    def claude(self):
+        self.entry.update(harness="claude", backend="tmux", tmux_socket="fixture",
+                          tmux_session_id="tmux:fixture:" + "a" * 32,
+                          pid=789, tty="ttys123", window_id="$1", tab_id="@2")
+        self.transcript.write_text(json.dumps({"type": "assistant", "sessionId": self.native,
+            "message": {"content": [{"type": "text", "text": "Waiting for review."}], "stop_reason": "end_turn"}}) + "\n")
+        self.row = {"session_id": self.entry["tmux_session_id"], "dead": False, "pid": 456,
+                    **{key: self.entry[key] for key in ("tty", "window_id", "tab_id", "tmux_socket")},
+                    "screen": ["────────", "❯ ", "────────"],
+                    "input_line": {"style": "empty", "text": "", "line_index": 1}}
+        self.read = self.enterContext(patch("tmux_terminal.Terminal.read", side_effect=lambda _: copy.deepcopy(self.row)))
+        self.send = self.enterContext(patch("tmux_terminal.Terminal.send", new_callable=AsyncMock))
+        self.enterContext(patch("close_ttys.inventory", return_value=[(789, "ttys123", "claude")]))
+        self.enterContext(patch("tmux_terminal.process_parents", return_value={789: 456, 456: 1}))
+
+    def test_codex_notification_uses_supported_queue_with_exact_home_and_native_identity(self):
+        with patch.object(notifications.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")) as queue:
+            notifications.send(self.entry, "Read review")
+        argv = queue.call_args.args[0]
+        self.assertIn(str(Path(reviews.__file__).with_name("codex-session.py")), argv)
+        self.assertIn("queue", argv)
+        self.assertEqual(argv[argv.index("--session-id") + 1], self.native)
+        self.assertEqual(Path(argv[argv.index("--codex-home") + 1]).resolve(), self.home)
+        message = (argv[argv.index("--message") + 1] if "--message" in argv
+                   else Path(argv[argv.index("--message-file") + 1]).read_text())
+        self.assertEqual(message, "Read review")
+        self.assertEqual(queue.call_args.kwargs["env"]["CODEX_HOME"], str(self.home))
+
+    def test_codex_identity_or_home_mismatch_refuses_without_queue_and_preserves_helper_denial(self):
+        for changed in ({"session_id": "another-thread"}, {"supervisor_owned": False},
+                        {"codex_home": None}, {"codex_home": "relative"},
+                        {"codex_home": str(self.transcript.parent)}):
+            with self.subTest(changed=changed), patch.object(notifications.subprocess, "run") as queue:
+                with self.assertRaises(notifications.NotSent) as failure:
+                    notifications.send({**self.entry, **changed}, "Read review")
+                self.assertTrue(failure.exception.needs_attention)
+                queue.assert_not_called()
+        with patch.object(notifications.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, '{"error":"ownership lease denied"}', "")) as queue:
+            with self.assertRaisesRegex(ValueError, "ownership lease denied"):
+                notifications.send(self.entry, "Read review")
+            self.assertEqual(queue.call_count, 1)
+
+    def test_claude_notification_reuses_send_only_after_native_idle_and_empty_prompt_checks(self):
+        self.claude()
+        notifications.send(self.entry, "Read review")
+        self.assertEqual(self.read.call_count, 2)
+        self.send.assert_awaited_once_with(self.entry["tmux_session_id"], "Read review")
+
+    def test_claude_real_prompt_parser_accepts_cursor_padding_but_never_visible_input(self):
+        from iterm_tab import ansi_screen, input_line
+        self.claude()
+        for captured, should_send in (("────────\n❯\u00a0\x1b[7m \x1b[0m\n────────", True),
+                                      ("────────\n❯ \x1b[2m   \x1b[0m\n────────", True),
+                                      ("────────\n❯ old input\n────────\nold output\n────────\n❯ \n────────", True),
+                                      ("────────\n❯ \x1b[7mc\x1b[0m\x1b[2mandidate\x1b[0m\n────────", False),
+                                      ("────────\n❯ \x1b[7mc\x1b[0mandidate\n────────", False),
+                                      ("────────\n❯  \nwrapped input\n────────", False)):
+            with self.subTest(captured=captured):
+                screen, styles = ansi_screen(captured)
+                self.row.update(screen=screen, input_line=input_line(screen, styles))
+                self.send.reset_mock()
+                if should_send:
+                    notifications.send(self.entry, "Read review")
+                    self.send.assert_awaited_once_with(self.entry["tmux_session_id"], "Read review")
+                else:
+                    with self.assertRaises(notifications.NotSent):
+                        notifications.send(self.entry, "Read review")
+                    self.send.assert_not_called()
+
+    def test_claude_composer_refuses_nested_prompt_lines_incomplete_frames_and_old_output_fallback(self):
+        from iterm_tab import ansi_screen, input_line
+        self.claude()
+        samples = ["❯ \n────────", "────────\n❯ ", "────────\n❯ \n  \n────────",
+                   "  ────────\n  ❯ \n  ────────", "  ────────\n❯ \n────────",
+                   "────────\n❯ \n  ────────", "────────\n❯ \n────────\n────────"]
+        for marker in (">", "›", "❯"):
+            samples.extend(f"────────\n❯ unfinished draft\n{typed_rule}  {marker}\n────────"
+                           for typed_rule in ("", "  ────────\n"))
+        samples.extend(f"────────\n{marker} \n────────" for marker in (">", "›"))
+        samples.extend(f"────────\n❯ \n────────\noutput\n────────\n{current}\n────────"
+                       for current in ("! command", "$ command", "agent ❯ draft"))
+        for captured in samples:
+            with self.subTest(captured=captured):
+                screen, styles = ansi_screen(captured)
+                self.row.update(screen=screen, input_line=input_line(screen, styles))
+                with self.assertRaises(notifications.NotSent):
+                    notifications.send(self.entry, "Read review")
+        self.send.assert_not_called()
+
+    def test_claude_nonempty_unknown_wrapped_active_changed_or_wrong_target_never_sends(self):
+        self.claude()
+        original = copy.deepcopy(self.row)
+        for change in ({"input_line": {"style": s, "text": "draft", "line_index": 1}}
+                       for s in ("dim", "non_dim", "mixed", "unknown", "empty")):
+            self.row = {**original, **change}
+            with self.subTest(change=change), self.assertRaises(notifications.NotSent):
+                notifications.send(self.entry, "Read review")
+        for change in ({"screen": ["────────", "❯ ", "wrapped draft", "────────"]}, {"dead": True},
+                       {"tty": "ttys999"}, {"window_id": "$9"}, {"tab_id": "@9"}):
+            self.row = {**original, **change}
+            with self.subTest(change=change), self.assertRaises(notifications.NotSent):
+                notifications.send(self.entry, "Read review")
+        self.row = original
+        for change in ({"session_id": "wrong"}, {"pid": 123}, {"backend": "iterm"}, {"tmux_session_id": "%1"}):
+            with self.subTest(change=change), self.assertRaises(notifications.NotSent):
+                notifications.send({**self.entry, **change}, "Read review")
+        for changed_status in ({"at_turn_end": False, "background_tasks": []},
+                               {"at_turn_end": True, "background_tasks": [{"task_id": "live"}]}):
+            with patch.object(notifications, "session_status", return_value=changed_status), self.assertRaises(notifications.NotSent):
+                notifications.send(self.entry, "Read review")
+        self.read.side_effect = [original, {**original, "input_line": {"style": "non_dim", "text": "new draft", "line_index": 1}}]
+        with self.assertRaises(notifications.NotSent):
+            notifications.send(self.entry, "Read review")
+        self.send.assert_not_called()
+
+    def test_preflight_races_and_pre_key_checks_are_not_sent_but_denials_and_send_failures_stay_spent(self):
+        from iterm_tab import SendFailure
+        for error in (ValueError("changed transcript"), FileNotFoundError("not yet written")):
+            with patch.object(notifications, "session_status", side_effect=error), self.assertRaises(notifications.NotSent):
+                notifications.send(self.entry, "Read review")
+        with patch.object(notifications, "session_status", side_effect=PermissionError("denied")), self.assertRaises(PermissionError):
+            notifications.send(self.entry, "Read review")
+        self.claude()
+        self.send.side_effect = ValueError("pre-key check")
+        with self.assertRaises(notifications.NotSent):
+            notifications.send(self.entry, "Read review")
+        self.send.side_effect = SendFailure(self.entry["tmux_session_id"], "unknown", "fixture")
+        with self.assertRaises(SendFailure):
+            notifications.send(self.entry, "Read review")
+
+    def test_native_read_races_are_quiet_but_stable_malformed_transcripts_need_attention(self):
+        original = session_record.read_jsonl
+        for malformed in (False, True):
+            with self.subTest(malformed=malformed), patch.object(notifications.subprocess, "run") as queue:
+                def racing_read(path):
+                    if malformed:
+                        with path.open("a") as stream:
+                            stream.write('{"unfinished":')
+                    else:
+                        with path.open("a") as stream:
+                            stream.write("\n")
+                    return original(path)
+                with patch.object(session_record, "read_jsonl", side_effect=racing_read):
+                    with self.assertRaises(notifications.NotSent) as failure:
+                        notifications.send(self.entry, "Read review")
+                self.assertFalse(failure.exception.needs_attention)
+                self.assertIsInstance(failure.exception.__cause__, session_record.TranscriptChanged)
+                if malformed:
+                    with self.assertRaises(notifications.NotSent) as failure:
+                        notifications.send(self.entry, "Read review")
+                    self.assertTrue(failure.exception.needs_attention)
+                queue.assert_not_called()
+        def denied_read(path):
+            with path.open("a") as stream:
+                stream.write("\n")
+            raise PermissionError("fixture read denied during append")
+        with patch.object(session_record, "read_jsonl", side_effect=denied_read):
+            with self.assertRaises(PermissionError):
+                notifications.send(self.entry, "Read review")
+
+    def test_claude_live_waits_are_quiet_and_route_problems_require_attention(self):
+        self.claude()
+        for status in ({"at_turn_end": False, "background_tasks": []},
+                       {"at_turn_end": True, "background_tasks": [{"task_id": "live"}]}):
+            with patch.object(notifications, "session_status", return_value=status):
+                with self.assertRaises(notifications.NotSent) as failure:
+                    notifications.send(self.entry, "Read review")
+                self.assertFalse(failure.exception.needs_attention)
+        for changed in ({"backend": "iterm"}, {"tmux_socket": None}, {"tab_id": "@wrong"}):
+            with self.subTest(changed=changed), self.assertRaises(notifications.NotSent) as failure:
+                notifications.send({**self.entry, **changed}, "Read review")
+            self.assertTrue(failure.exception.needs_attention)
+        self.row["input_line"]["text"] = "draft"
+        with self.assertRaises(notifications.NotSent) as failure:
+            notifications.send(self.entry, "Read review")
+        self.assertFalse(failure.exception.needs_attention)
+        self.send.assert_not_called()
 
 
 class AdapterTests(unittest.TestCase):

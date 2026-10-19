@@ -490,6 +490,19 @@ stale body, closes the PR so future agents do not treat it as mergeable, and can
 delete the unused remote task branch when `--delete-branch` is explicitly
 requested.
 
+### Required Status Checks
+
+The existing `gh-rulesets.py` verified repository owner writer supports
+`checks-plan --repo OWNER/REPO --target classic|new|RULESET_ID --checks-file checks.json --out plan.json`,
+`checks-apply --plan-file plan.json --plan-digest SHA256 --confirm-owner-admin-write`,
+and `checks-readback --plan-file plan.json --plan-digest SHA256`.
+Read [the required-check procedure](https://github.com/cbusillo/codex-skills#standard-repository-rulesets)
+before using it: it owns explicit App bindings, additive preservation, plan
+review, state-drift refusal, idempotence, readback and the concurrent-writer
+limit. This uses the writer's existing active human repository owner, never App-admin
+fallback. Source implementation and fixture tests do not authorize live calls
+or a rollout apply.
+
 ### Ready Handoffs
 
 When the task authorizes a Supervisor handoff, use
@@ -1206,8 +1219,9 @@ outside the helper-generated fields still refuses. The original status remains q
 the successor's claim comment. Without `--handoff-comment`, only the source
 claim's exact retained branch, worktree, and PR evidence is accepted;
 other Current Status ownership, unreleased comments,
-other artifacts, and visible peer sessions still refuse. Records on another issue must use that
-canonical planning issue's supported handoff route.
+other artifacts, and visible peer sessions still refuse. A source on the claimed
+issue's native parent uses the retained-handoff route below; prose links alone
+cannot select a source record.
 This flag supplies no cleanup or takeover authority: apply Choose Work's
 verified-handoff and preservation rules before passing it.
 
@@ -1246,6 +1260,94 @@ binds its source and handoff so recovery cannot silently discard that proof or
 become conflict-only refresh. Create a new linked worktree only after confirmed
 success; preserve the original checkouts. This route grants no live-operation,
 PR-change, cleanup, access, or takeover authority.
+
+When actionable source work is split from a waiting parent, use its native child
+as `<canonical-issue>` with the parent's original `--resume-from` and
+`--handoff-comment` IDs. If the source claim is absent on the child, the helper
+reads the child's native parent in the same repository and verifies that
+parent's complete source/release/handoff records. The retained PRs must
+independently link that parent. A body link alone, a different parent, or an
+unreadable native relationship cannot supply this proof. Both readbacks recheck
+the native relationship, parent's ownership and release, retained artifacts and
+live sessions. The claim records the handoff's actual parent URL, writes only
+the child's claim/status/labels, and preserves the parent's waits and labels.
+The child's own waits and blockers and the retained PRs' holds still apply.
+Without `--handoff-comment`, resume stays on the claimed record.
+Both same-record and child successors also read the source issue's current
+native children and native child history from its timeline. A detached or
+reparented child remains visible through that history. The parent's structured
+claim history and every handoff naming that exact parent identify one ownership
+family. Resuming a different claim in the parent's own chain does not hide an
+earlier child holder. These checks follow recorded source lineage upward and
+related native current/former children downward across every generation, with
+cycle protection. A released intermediate still connects the family; a
+grandchild holder blocks the grandparent and its other children, and the reverse
+claim order checks those same holders. Once a child records
+that source or handoff, its full ownership is checked, including later plain
+resumes that omit handoff metadata or change branch. Its claims refuse until
+exact authored releases or verified native session completion account for
+them; positive live-session evidence still refuses. Closing a child does not
+release its ownership; use its exact authored release or verified native session
+completion before retrying. A child with no record of
+that source remains unrelated and does not block it. Later claims on a child,
+including plain resume, retained handoff and fresh claims, also recheck the
+original source family recorded in its claim history, so they cannot race a
+new holder on the parent or another child. The requester's own native session
+may occupy a released source worktree; foreign sessions and unreleased
+ownership still refuse. Malformed lineage
+refuses with `claim_resume_lineage_invalid`. These checks read ownership only;
+they do not transfer authority or change the original parent's holds.
+Taking a parent's handoff also checks the claimed child's existing native
+descendants before posting, even if they inherited an earlier unrelated claim
+on that child. The same full-ownership rule applies before and after the write.
+The parent's full ownership is conservative: an unreleased parent claim also
+blocks the child when that claim describes unrelated work. Coordinate its
+exact release, or continue independently authorized work on a separate issue
+and fresh branch without the retained source. A fresh parent claim does not
+itself transfer a child's retained source.
+Cross-record source inference applies only to ordinary successors.
+Conflict-only refresh continues to use the source's canonical issue and checks
+the lineage already recorded there. Cross-repository refresh checks both that
+family and the source's own successors with the runtime inventory and the
+verified planning repository's inventory.
+The resume-source, handoff-author and native-parent guards retain their human
+explanations and expose stable `claim_resume_*`, `claim_handoff_*` or
+`claim_native_parent_*` codes. Native blocker and malformed child-history
+refusals also have specific codes.
+
+Same-record handoff history is not parent lineage. A URL naming the current
+repository and issue is recognized before checking its historical `resume_from`.
+For an old URL after a rename or transfer, a fresh issue read must return the
+same positive immutable issue ID as the current snapshot; number or title
+agreement alone proves nothing. Missing, changed or unreadable identity cannot
+supply that proof. Other inherited-parent lineage remains subject to the
+same-repository and source-reference checks above.
+A historical inherited-parent URL using an old repository name can therefore
+refuse with `claim_resume_lineage_invalid` even after that child's exact release.
+An identity match to the parent does not prove a self-reference on the child.
+This also blocks retained-source resume by that parent or a sibling once the
+family traversal reaches the old URL. That refusal preserves the current
+same-repository proof boundary. Independent work can continue on a separately
+authorized issue and fresh branch without resume/handoff flags or retained
+source assets; do not rewrite claim history or treat a redirect alone as
+cross-repository source authority.
+If an old self-reference cannot be read, an ordinary fresh claim on the current
+issue can still support independently authorized work on a new branch, without
+`--resume-from`, `--handoff-comment` or retained source assets. Its own ownership,
+waits and blockers must be clear; malformed lineage metadata still refuses.
+
+Unreadable current or historical children (including a 403 or ambiguous 404),
+and malformed child history (`claim_child_history_invalid`), block both
+parent-to-child handoffs and plain same-record `--resume-from` on the source.
+Missing evidence is not proof that a child's source ownership ended. Restore
+visibility or valid native history through the existing administrative process
+before retrying resume; do not grant access or skip the record to pass the gate.
+If the evidence cannot be restored, independent work can continue on a separately
+authorized issue and fresh branch, using an ordinary claim without
+`--resume-from` or `--handoff-comment` and without the retained source artifacts.
+That route still enforces its own ownership, waits and blockers; it does not
+release or transfer the child's source, or provide a way to retain the blocked
+same-record branch.
 
 For an explicitly authorized **conflict-only refresh** of a finished session's
 PR, claim its **canonical open planning issue**, even when the brief names only
@@ -2185,6 +2287,26 @@ to that repository, as for the Client App's public-read fallback; public
 repositories, unknown visibility, and the registering account's repositories
 keep the App reader, and `GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1` or
 `--check` keeps it too.
+Under the same per-command opt-in, two commands run as the declared personal
+login whatever credential the repository would select, because an App
+installation token can never act for an account: a `gh api` read of an
+endpoint that answers only for the authenticated account (`user/...`,
+`notifications`, `notifications/...`, `repos/OWNER/REPO/subscription`, also
+given as an `https://api.github.com/` URL), and
+`gh repo fork` without `--org`, whose fork lands in the person's account.
+Stderr names the endpoint or the fork source. Bare `user` stays the App actor
+probe, a fork into an organization keeps the repository's route, and required
+automation authentication keeps the App. The wrapper and `github_api.py` share
+one reading of `gh api` arguments, `parse_gh_api_args`, which follows `gh`'s
+flag parser. Short flags group (`-fname=x` is `-f name=x`, `-iXPOST` is
+`-i -X POST`, `-i=false` sets only `-i`), every option consumes its value, and
+the last `--method` and `--input` win. Fields, or a nonempty `--input`, without
+a method send POST; an explicitly empty method sends GET. A command counts as a write
+unless the method `gh` sends is GET or HEAD, so `-X GET -f per_page=100` stays
+a read. Arguments `gh` rejects, such as an unknown flag or a second endpoint,
+count as a write. A `gh` usage error, which `gh`
+reports before sending any request, is a `validation_error` with
+`write_outcome: not_started`.
 `GITHUB_APP_INSTALLATION_ID` stays the default. Otherwise it prefers `CODEX_GITHUB_TOKEN`, `GH_TOKEN`, and
 `GITHUB_TOKEN` in that order. `--check` reports the selected credential source
 and verifies the current App installation and actor without performing a write.

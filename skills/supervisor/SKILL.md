@@ -424,6 +424,9 @@ including non-dim text, establishes neither its author nor approval.
    [ready handoff contract](../github/references/cli-reference.md#ready-handoffs);
    a renewed wait follows that contract's withdrawal route, and a push needs
    a fresh `ready` call.
+   When the Supervisor runs the review, every brief points the author to the
+   [worker review request](references/helpers.md#worker-review-request) format
+   and follow-through. Keep the template there rather than copying it into briefs.
    Use closing keywords for the PR completing an issue's work. Briefs must not
    append "then the Supervisor verifies/qualifies/reads back the deployed
    change" after routing. Follow GitHub's
@@ -474,7 +477,11 @@ including non-dim text, establishes neither its author nor approval.
    weekly direction audit judges the decision and removes it.
 3. **A check about every 23 minutes.** Rebuild the goal board first, under
    [Milestone State](#milestone-state). Keep the session registry under
-   [Local State](#local-state). Nudge a stalled session with exact facts: the comment,
+   [Local State](#local-state). At takeover and each check, catch up any
+   unverified catalog landings through
+   [catalog landing verification](references/helpers.md#catalog-landing-verification),
+   including landings completed by the service after a local driver stopped.
+   Nudge a stalled session with exact facts: the comment,
    the failing check, the time it last moved. Check each session's context
    size. Let automatic compaction proceed; a routine idle check alone is not
    a reason to compact. When a session needs manual compaction, use the
@@ -504,12 +511,15 @@ including non-dim text, establishes neither its author nor approval.
    refuses a whole batch when its candidate fails, while the driver may only
    report "lease held"; after about 45 minutes, read the candidate's CI
    directly.
-   After landing, load `github` and complete
+   After landing, load `github`. For catalog landings, complete
+   [catalog landing verification](references/helpers.md#catalog-landing-verification)
+   before retiring the source worktree. Then complete
    [After A Merge](../github/SKILL.md#after-a-merge), including
    [issue closure and planning metadata](../github/references/repo-workflow.md#issue-closing-and-post-merge-proof)
-   for the work handed to you. Reconcile closure in the landing flow; do not
-   create a later agent qualification step or per-issue deploy check. The PR's
-   tests and the deploy's existing health checks are the proof.
+   for the work handed to you. Reconcile closure in the landing flow. Apart
+   from catalog landing verification, do not create a later agent qualification
+   step or per-issue deploy check; use the PR's tests and the deploy's existing
+   health checks for that proof.
    For Q154's interim automatic routing, read the
    [auto-enqueue helper procedure](references/helpers.md#interim-auto-enqueue-watcher)
    before running it. Executing sessions still hand off; the Supervisor owns
@@ -644,6 +654,9 @@ for recovery or repeat them as fact.
    start without a comment.
    Read [helper setup](references/helpers.md) before rebuilding the session
    registry or running a helper.
+   While workers post Supervisor review requests, also schedule the
+   [pending-review dispatcher](references/helpers.md#dispatcher-timer) using
+   its documented cadence and terminal route, and recreate it at takeover.
 6. Read `stale_wait_report` from the existing
    `uv run skills/direction/scripts/direction_audit.py --repo OWNER/REPO --stale-waits-only` output for
    each Director repository returned in `discovery_context.repositories` by

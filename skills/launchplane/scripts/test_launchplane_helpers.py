@@ -7584,6 +7584,222 @@ def test_compose_target_review_and_readback_cover_private_and_public_routes(doma
         assert receipt["warnings"][0]["code"] == "reviewed_dry_run_not_apply_eligible"
 
 
+STATE_PLAN_ID = "0123456789abcdef0123456789abcdef"
+STATE_PLAN_SHA256 = "f" * 64
+
+
+def _application_payload(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "context": "example",
+        "instance": "testing",
+        "target_name": "example-testing",
+        "server_id": "server-private-1",
+        "project_name": "example-project-private",
+        "environment_name": "testing",
+        "healthcheck_path": "/health",
+        "state_volume_path": "/srv/state",
+        "reason": "Create the testing lane's application.",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _state_volume_response(
+    mode: str = "dry-run", target_id: str = "app-private-9", **result: object
+) -> dict[str, Any]:
+    planned: dict[str, Any] = {
+        "operation": "create-application",
+        "context": "example",
+        "instance": "testing",
+        "applied": False,
+        "deployment_performed": False,
+        "target": {"context": "example", "instance": "testing", "server_id": "server-private-1"},
+        "allocation": {"app_name": f"lp-testing-app-{STATE_PLAN_ID}-state"},
+        "state_volume_plan_id": STATE_PLAN_ID,
+        "plan_sha256": STATE_PLAN_SHA256,
+        "state_volume": {"name": f"lp-testing-state-{STATE_PLAN_ID}", "mount_path": "/srv/state"},
+    }
+    if mode == "apply":
+        planned.update(
+            applied=True,
+            configuration_matches=True,
+            configuration_evidence="matches",
+            allocation_state="adopted",
+            setup={
+                "applied": True,
+                "target_record": {"context": "example", "instance": "testing", "healthcheck_path": "/health"},
+                "target_id_record": {"context": "example", "instance": "testing", "target_id": target_id},
+                "provider_target_record": {
+                    "provider_id": "dokploy",
+                    "target_category": "application",
+                    "provider_target_type": "application",
+                    "target_id": target_id,
+                },
+            },
+        )
+    planned.update(result)
+    return {"status": "accepted", "trace_id": "launchplane_req_application", "records": {}, "result": planned}
+
+
+def _application_inspect_response(**tracked: object) -> dict[str, Any]:
+    response = _inspect_response("app-private-9")
+    response["inspect"]["target_type"] = "application"
+    response["inspect"]["tracked_target"].update(domains=[], **tracked)
+    return response
+
+
+def test_application_target_apply_reuses_the_reviewed_storage_plan() -> None:
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        payload_path = _write_json(directory, "application.json", _application_payload())
+        status, evidence, posts, _reads = _run_main(
+            ["dokploy-target-create-application-dry-run", "--payload-file", payload_path],
+            post=_state_volume_response(),
+        )
+        assert status == 0, evidence
+        body = posts[0]["body"]
+        assert (body["operation"], body["product"], body["mode"]) == ("create-application", "launchplane", "dry-run")
+        assert "state_volume_plan_id" not in body and "confirmation" not in body
+        assert evidence["result"]["state_volume"] == {"plan_id": STATE_PLAN_ID, "service_plan_sha256": STATE_PLAN_SHA256}
+        for private in ("server-private-1", "example-project-private", "lp-testing-", "/srv/state", "Create the testing"):
+            assert private not in json.dumps(evidence), private
+        evidence_path = _write_json(directory, "application-dry-run.json", evidence)
+        argv = [
+            "dokploy-target-create-application-apply", "--payload-file", payload_path,
+            *_reviewed_apply_argv(evidence["result"]["plan_sha256"], evidence_path, "original-key"),
+        ]
+        # A retry sends the same saved plan and key; it never plans again.
+        for _attempt in range(2):
+            status, receipt, posts, reads = _run_main(
+                argv, post=_state_volume_response("apply"), read=_application_inspect_response()
+            )
+            assert status == 0, receipt
+            assert len(posts) == len(reads) == 1
+            assert posts[0]["idempotency_key"] == "original-key"
+            assert posts[0]["body"]["state_volume_plan_id"] == STATE_PLAN_ID
+            assert posts[0]["body"]["expected_plan_sha256"] == STATE_PLAN_SHA256
+            assert posts[0]["body"]["confirmation"] == write_action.DOKPLOY_TARGET_SETUP_CONFIRMATION
+            assert receipt["result"]["read_back_matches"] is True
+            assert "app-private-9" not in json.dumps(receipt)
+
+        # A 202 is a receipt: retained custody and unverified mounts are not creation.
+        retained = {"status": "accepted", "trace_id": "launchplane_req_retained", "records": {}, "result": {
+            "applied": False, "allocation_state": "retained_uncertain", "original_key": "original-key",
+            "plan_id": STATE_PLAN_ID, "deployment_performed": False, "resources_retained": True,
+            "reviewed_custody_sha256": "e" * 64,
+        }}
+        status, receipt, _posts, reads = _run_main(argv, post=retained, read=_application_inspect_response())
+        assert (status, receipt["status"], reads) == (1, "accepted_unverified", [])
+        assert "state_volume_allocation_retained" in [item["code"] for item in receipt["warnings"]]
+        unverified = _state_volume_response("apply", configuration_evidence="unavailable", configuration_matches=False)
+        status, receipt, _posts, _reads = _run_main(argv, post=unverified, read=_application_inspect_response())
+        assert (status, receipt["status"]) == (1, "accepted_unverified")
+        assert "state_volume_configuration_unverified" in [item["code"] for item in receipt["warnings"]]
+
+        # The tracked target must be the created application with the reviewed health path.
+        for observed in (
+            _application_inspect_response(healthcheck_path="/other"),
+            _application_inspect_response(target_id="app-other"),
+            {**_application_inspect_response(), "inspect": {**_application_inspect_response()["inspect"], "target_type": "compose"}},
+        ):
+            status, receipt, _posts, _reads = _run_main(argv, post=_state_volume_response("apply"), read=observed)
+            assert (status, receipt["result"]["read_back_matches"]) == (1, False)
+
+        # Edited evidence, a changed payload or a missing review never reach the service.
+        _write_json(directory, "application-dry-run.json", {
+            **evidence, "result": {**evidence["result"], "state_volume": {
+                "plan_id": "a" * 32, "service_plan_sha256": STATE_PLAN_SHA256,
+            }},
+        })
+        status, receipt, posts, _reads = _run_main(argv, post=_state_volume_response("apply"))
+        assert (status, posts) == (2, [])
+        assert receipt["warnings"][0]["code"] == "reviewed_dry_run_not_apply_eligible"
+        _write_json(directory, "application-dry-run.json", evidence)
+        _write_json(directory, "application.json", _application_payload(state_volume_path="/srv/other"))
+        status, receipt, posts, _reads = _run_main(argv, post=_state_volume_response("apply"))
+        assert (status, posts) == (2, [])
+        _write_json(directory, "application.json", _application_payload())
+        status, receipt, posts, _reads = _run_main(
+            [value for value in argv if value != "--reviewed-dry-run"], post=_state_volume_response("apply")
+        )
+        assert (status, posts) == (2, [])
+
+
+def _application_response(mode: str = "dry-run", target_id: str = "app-private-9") -> dict[str, Any]:
+    response = _compose_response(mode, target_id)
+    result = response["result"]
+    result["operation"] = "create-application"
+    plan = result["setup"]["plan"]
+    plan["application"] = plan.pop("compose")
+    result["setup"]["provider_target_record"].update(target_category="application", provider_target_type="application")
+    result["setup"]["target_record"]["domains"] = []
+    return response
+
+
+def test_application_target_without_storage_binds_plan_actions_and_payload() -> None:
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        inputs = {key: value for key, value in _application_payload().items() if key != "state_volume_path"}
+        payload_path = _write_json(directory, "application.json", inputs)
+        status, evidence, posts, _reads = _run_main(
+            ["dokploy-target-create-application-dry-run", "--payload-file", payload_path],
+            post=_application_response(),
+        )
+        assert status == 0, evidence
+        assert evidence["result"]["plan_actions"] == {"project": "reuse", "environment": "create", "application": "create"}
+        evidence_path = _write_json(directory, "review.json", evidence)
+        argv = [
+            "dokploy-target-create-application-apply", "--payload-file", payload_path,
+            *_reviewed_apply_argv(evidence["result"]["plan_sha256"], evidence_path),
+        ]
+        status, receipt, posts, _reads = _run_main(
+            argv, post=_application_response("apply"), read=_application_inspect_response()
+        )
+        assert status == 0, receipt
+        assert "state_volume_plan_id" not in posts[0]["body"]
+        # Edited evidence keeping the reviewed digest is refused before any POST.
+        edited_actions = copy.deepcopy(evidence)
+        edited_actions["result"]["plan_actions"]["project"] = "create"
+        changed_payload_path = _write_json(directory, "application-changed.json", {**inputs, "description": "other"})
+        edited_payload = copy.deepcopy(evidence)
+        with open(changed_payload_path, encoding="utf-8") as handle:
+            edited_payload["request"]["payload_digest"] = write_action.metadata_review_digest(json.load(handle))
+        for edited, path in ((edited_actions, payload_path), (edited_payload, changed_payload_path)):
+            edited_path = _write_json(directory, "review-edited.json", edited)
+            status, refused, posts, _reads = _run_main(
+                [
+                    "dokploy-target-create-application-apply", "--payload-file", path,
+                    *_reviewed_apply_argv(evidence["result"]["plan_sha256"], edited_path),
+                ],
+                post=_application_response("apply"),
+            )
+            assert (status, posts) == (2, []), refused
+        changed_plan = _application_response("apply")
+        changed_plan["result"]["setup"]["plan"]["project"]["action"] = "create"
+        status, receipt, _posts, _reads = _run_main(argv, post=changed_plan, read=_application_inspect_response())
+        assert (status, receipt["status"]) == (1, "accepted_unverified")
+        assert "applied_plan_differs_from_review" in [item["code"] for item in receipt["warnings"]]
+
+        for mutate, code in (
+            (lambda data: data.update(instance="prod"), "application_target_requires_testing"),
+            (lambda data: data.update(domains=["testing.example.invalid"]), "unsupported_dokploy_target_field"),
+            (lambda data: data.update(project_id="project-private-1"), "unsupported_dokploy_target_field"),
+            (lambda data: data.update(app_name="chosen"), "unsupported_dokploy_target_field"),
+            (lambda data: data.pop("environment_name"), "environment_name_required"),
+            (lambda data: data.update(healthcheck_path="health"), "invalid_healthcheck_path"),
+            (lambda data: data.update(state_volume_path="srv/state"), "invalid_state_volume_path"),
+            (lambda data: data.update(state_volume_path="/srv/../etc"), "invalid_state_volume_path"),
+            (lambda data: data.update(expected_current_provider_target="app-1"), "invalid_expected_current_provider_target"),
+        ):
+            bad = dict(inputs)
+            mutate(bad)
+            bad_path = _write_json(directory, "application-bad.json", bad)
+            status, payload, posts, _reads = _run_main(
+                ["dokploy-target-create-application-dry-run", "--payload-file", bad_path],
+                post=_application_response(),
+            )
+            assert (status, posts) == (2, []), code
+            assert payload["warnings"][0]["code"] == code
+
+
 COMPOSE_SOURCE = {
     "custom_git_url": "https://github.com/example-owner/example-product.git",
     "custom_git_branch": "main",

@@ -1,21 +1,24 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = ["websockets==17.2"]
 # ///
 """Provider/harness consistency, without real accounts or terminals."""
 
 import argparse
 import asyncio
+import errno
 import json
 import os
 from pathlib import Path
 import shlex
+import socket
 import subprocess
 import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
+import uuid
 from unittest.mock import AsyncMock, Mock, patch
 
 import account_choice
@@ -31,6 +34,157 @@ HARNESS_CHOICES = (
     ("anthropic", "claude", {"CLAUDE_CONFIG_DIR": "/fixture/claude"}),
     ("google", "agy", {}),
 )
+
+
+class ResumeLaunchTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory(dir="/tmp", prefix="resume-tab-"))).resolve()
+        self.home = self.root / "account"
+        self.session = str(uuid.uuid4())
+        transcript = self.home / "sessions" / (self.session + ".jsonl")
+        transcript.parent.mkdir(parents=True)
+        transcript.write_text(json.dumps({"type": "session_meta", "payload": {"id": self.session}}) + "\n")
+        self.endpoint = iterm_tab.codex_daemon_endpoint(self.home)
+        self.endpoint.parent.mkdir()
+        sock = socket.socket(socket.AF_UNIX)
+        self.addCleanup(sock.close)
+        sock.bind(str(self.endpoint))
+        self.endpoint.chmod(0o600)
+        self.entry = {"session_id": self.session, "harness": "codex", "supervisor_owned": True,
+                      "codex_home": str(self.home), "transcript": str(transcript)}
+        self.ledger = self.root / "ledger.json"
+        self.ledger.write_text(json.dumps([self.entry]))
+        self.args = SimpleNamespace(resume_session_id=self.session, ledger=self.ledger,
+                                    command_file=None, brief_file=None, account_provider="openai",
+                                    account_config=None, account=None)
+        self.account = {"provider": "openai", "name": "original", "env": {"CODEX_HOME": str(self.home)}}
+        self.choice = {**self.account, "storage_root": self.root, "account_id": "openai-ab12"}
+        self.enterContext(patch.object(account_choice, "load_config", return_value={"accounts": [self.account]}))
+        self.select = self.enterContext(patch.object(account_choice, "select", return_value=self.choice))
+        self.prepare = self.enterContext(patch.object(account_choice, "prepare_launch"))
+        self.inspect = self.enterContext(patch.object(iterm_tab, "inspect_codex_daemon"))
+        self.start = self.enterContext(patch.object(iterm_tab, "check_codex_daemon"))
+        import github_plan_sessions
+        self.enterContext(patch.object(github_plan_sessions, "codex_homes", return_value=[self.home]))
+        import github_plan_closure
+        self.log = self.root / "closed.json"
+        self.enterContext(patch.object(github_plan_closure, "closed_log", return_value=self.log))
+
+    def test_resume_uses_exact_source_helper_and_existing_receipt_route(self):
+        commands, choices = iterm_tab.prepare_launches(self.args)
+        argv = shlex.split(commands[0])
+        helper = str(Path(iterm_tab.__file__).with_name("codex-session.py").resolve())
+        self.assertIn(helper, argv)
+        self.assertEqual(argv[argv.index("--session-id") + 1], self.session)
+        self.assertEqual(argv[argv.index("--codex-home") + 1], str(self.home))
+        self.select.assert_called_once_with("openai", None, self.account["name"])
+        self.prepare.assert_called_once_with(choices[0])
+        self.inspect.assert_called_once()
+        self.assertEqual(self.inspect.call_args.args[0], self.home)
+        self.start.assert_not_called()
+        self.assertEqual(choices[0]["resume_session_id"], self.session)
+
+    def test_frozen_or_duplicate_source_refuses_before_receipts_and_daemon_reads(self):
+        for rows in ([{"session_id": self.session, "successor_admitted": True}],
+                     [{"session_id": self.session}, {"session_id": self.session}]):
+            with self.subTest(rows=rows):
+                self.log.write_text(json.dumps(rows))
+                self.log.chmod(0o600)
+                original = self.log.read_bytes()
+                with self.assertRaises(ValueError):
+                    iterm_tab.prepare_launches(self.args)
+                self.assertEqual(self.log.read_bytes(), original)
+        self.select.assert_not_called()
+        self.prepare.assert_not_called()
+        self.inspect.assert_not_called()
+
+    def test_tilde_ledger_home_matches_the_same_source_account(self):
+        self.ledger.write_text(json.dumps([{**self.entry, "codex_home": "~/account"}]))
+        with patch.dict(os.environ, {"HOME": str(self.root)}):
+            commands, choices = iterm_tab.prepare_launches(self.args)
+        argv = shlex.split(commands[0])
+        self.assertEqual(argv[argv.index("--codex-home") + 1], str(self.home))
+        self.assertEqual(choices[0]["env"], self.account["env"])
+
+    def test_daemon_failures_stay_on_source_and_refuse_before_receipt_preparation(self):
+        from websockets.exceptions import InvalidHandshake, ConnectionClosedError
+        for failure in (InvalidHandshake("fixture handshake"), ConnectionClosedError(None, None),
+                        iterm_tab.DaemonRefusal("draining", 2), TimeoutError(),
+                        ConnectionRefusedError(errno.ECONNREFUSED, "fixture"),
+                        FileNotFoundError(errno.ENOENT, "fixture")):
+            with self.subTest(failure=type(failure).__name__):
+                self.inspect.side_effect = failure
+                with self.assertRaises(ValueError) as caught:
+                    iterm_tab.prepare_launches(self.args)
+                self.assertIn(str(self.home), str(caught.exception))
+                self.assertNotIn("--account", str(caught.exception))
+        self.prepare.assert_not_called()
+        self.start.assert_not_called()
+
+    def test_missing_source_socket_refuses_before_account_or_launch_effects(self):
+        self.endpoint.unlink()
+        with self.assertRaises(ValueError):
+            iterm_tab.prepare_launches(self.args)
+        self.select.assert_not_called()
+        self.prepare.assert_not_called()
+        self.inspect.assert_not_called()
+        self.start.assert_not_called()
+
+    def test_bad_identity_and_launch_options_refuse_before_receipt_preparation(self):
+        for changes in ({"supervisor_owned": False}, {"harness": "claude"}, {"codex_home": "relative"},
+                        {"session_id": str(uuid.uuid4())}, {"transcript": str(self.root / "foreign.jsonl")}):
+            with self.subTest(changes=changes):
+                self.ledger.write_text(json.dumps([{**self.entry, **changes}]))
+                with self.assertRaises(ValueError):
+                    iterm_tab.prepare_launches(self.args)
+        self.ledger.write_text(json.dumps([self.entry, self.entry]))
+        with self.assertRaises(ValueError):
+            iterm_tab.prepare_launches(self.args)
+        self.ledger.write_text(json.dumps([self.entry]))
+        for field, value in (("account_provider", "anthropic"), ("account", "other"),
+                             ("command_file", [self.root / "command"]), ("brief_file", [self.root / "brief"]),
+                             ("require_browser", True), ("ledger", None)):
+            with self.subTest(field=field), patch.object(self.args, field, value, create=True):
+                with self.assertRaises(ValueError):
+                    iterm_tab.prepare_launches(self.args)
+        self.select.assert_not_called()
+        self.prepare.assert_not_called()
+
+    def test_bad_transcript_socket_and_account_selection_have_no_launch_effects(self):
+        transcript = Path(self.entry["transcript"])
+        original = transcript.read_text()
+        transcript.write_text(json.dumps({"type": "session_meta", "payload": {"id": str(uuid.uuid4())}}) + "\n")
+        with self.assertRaises(ValueError):
+            iterm_tab.prepare_launches(self.args)
+        transcript.write_text(original)
+        self.endpoint.chmod(0o622)
+        with self.assertRaises(ValueError):
+            iterm_tab.prepare_launches(self.args)
+        self.endpoint.chmod(0o600)
+        self.select.return_value = {**self.choice, "env": {"CODEX_HOME": str(self.root)}}
+        with self.assertRaises(ValueError):
+            iterm_tab.prepare_launches(self.args)
+        self.inspect.assert_not_called()
+        self.prepare.assert_not_called()
+
+    def test_resume_metadata_keeps_the_guarded_generation_and_terminal_identity(self):
+        import github_plan_closure as closure
+        from datetime import datetime, timezone
+        born = datetime.now(timezone.utc)
+        generation = {"pid": 456, "launch_pid": 456, "tty": "fixture-tty", "codex_home": str(self.home),
+                      "launch_generation": "guarded-generation", "launch_started_at": born.isoformat()}
+        self.choice["resume_session_id"] = self.session
+        with patch.object(closure, "log_rows", return_value=[{"session_id": self.session, "resumed_generation": generation}]), \
+                patch.object(closure, "process_started_at", return_value=born):
+            result = iterm_tab.source_launch_metadata({"session_id": "terminal-id", "tty": "/dev/fixture-tty"}, self.choice)
+            self.assertEqual({key: result[key] for key in generation}, generation)
+            self.assertEqual(result["native_session_id"], self.session)
+            self.assertEqual(result["session_id"], "terminal-id")
+            for change in ({"tty": "wrong-tty"}, {"codex_home": str(self.root)}, {"launch_started_at": "old"}):
+                with self.subTest(change=change), patch.object(closure, "log_rows", return_value=[
+                        {"session_id": self.session, "resumed_generation": {**generation, **change}}]):
+                    failed = iterm_tab.source_launch_metadata({"session_id": "terminal-id", "tty": "/dev/fixture-tty"}, self.choice)
+                    self.assertTrue(failed["launch_identity_unavailable"])
 
 
 class ProviderLaunchTests(unittest.TestCase):

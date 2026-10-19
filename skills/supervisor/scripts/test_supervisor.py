@@ -1340,6 +1340,59 @@ class AccountChoiceTests(unittest.TestCase):
                 account_choice.record_launch(choice, NOW)
             self.assertEqual(list((Path(folder) / "Launch Receipts").iterdir()), [])
 
+    def test_app_group_receipts_route_through_the_readers_record_launch(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            app = root / "Context Panel"
+            app.write_text("#!/bin/sh\nexit 0\n")
+            app.chmod(0o700)
+            config = accounts_config()
+            config["snapshot_command"] = [str(app), "--account-snapshot"]
+            with patch.object(account_choice, "load_config", return_value=config), \
+                    patch.object(account_choice, "read_snapshot", return_value=(self.snapshot(), None)):
+                choice = account_choice.select("anthropic")
+            self.assertEqual(choice["receipt_app"], str(app))
+            self.assertNotIn(str(app), json.dumps(account_choice.public(choice)))
+            account_choice.prepare_launch(choice)
+            name = "20261003T160000Z-supervisor-" + "a" * 32 + ".json"
+            runner = Mock(return_value=subprocess.CompletedProcess([], 0, name + "\n", ""))
+            choice["storage_root"] = root
+            choice["gui"] = {"app": "Codex"}
+            path = account_choice.record_launch(choice, NOW, runner=runner)
+            argv, options = runner.call_args.args[0], runner.call_args.kwargs
+            self.assertEqual(argv, [str(app), "--record-launch", "--launcher", "supervisor"])
+            self.assertEqual(json.loads(options["input"]), {"schemaVersion": 1, "provider": "anthropic",
+                                                            "accountID": "anthropic-def",
+                                                            "launchedAt": "2026-10-03T16:00:00Z"})
+            self.assertLessEqual(len(options["input"].encode()), 1024)
+            self.assertEqual(path, root / "Launch Receipts" / name)
+            self.assertFalse((root / "Launch Receipts").exists())  # the app wrote it, not this process
+            gui = json.loads((root / "Supervisor GUI Receipts" / name).read_text())
+            self.assertEqual(gui["gui"], {"app": "Codex"})
+
+    def test_app_writer_failures_refuse_without_a_receipt(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            choice = account_choice.choose("anthropic", accounts_config(), self.snapshot(), None)
+            choice.update(storage_root=root, receipt_app=str(root / "missing"))
+            with self.assertRaisesRegex(ValueError, "not installed"):
+                account_choice.prepare_launch(choice)
+            outcomes = {
+                "exit 64: receipt is not current": subprocess.CompletedProcess([], 64, "", "receipt is not current\n"),
+                "exit 1: storage unavailable": subprocess.CompletedProcess([], 1, "", "storage unavailable\n"),
+                "exited 2": subprocess.CompletedProcess([], 2, "", ""),
+                "did not name the receipt": subprocess.CompletedProcess([], 0, "../elsewhere.json\n", ""),
+                "did not finish within": subprocess.TimeoutExpired(["app"], 30),
+                "could not run": FileNotFoundError(2, "missing"),
+            }
+            for reason, outcome in outcomes.items():
+                with self.subTest(reason=reason):
+                    runner = Mock(side_effect=outcome) if isinstance(outcome, BaseException) else Mock(return_value=outcome)
+                    with self.assertRaisesRegex(ValueError, reason) as failed:
+                        account_choice.record_launch({**choice, "gui": {"app": "Codex"}}, NOW, runner=runner)
+                    self.assertIn("nothing was launched", str(failed.exception))
+            self.assertEqual(list(root.iterdir()), [])
+
 
 def fixture_briefs(command_files):
     files = command_files if isinstance(command_files, list) else [command_files]
@@ -2073,7 +2126,7 @@ class TerminalTests(unittest.TestCase):
             terminal, window, app = launch_terminal_fixture()
             with (patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
                   patch.object(account_choice, "read_snapshot", return_value=(google_snapshot(), None)),
-                  patch.object(account_choice, "storage_root", return_value=root)):
+                  patch.object(account_choice, "receipt_route", return_value={"storage_root": root})):
                 result = asyncio.run(iterm_tab.operate(app, args))
             sent = terminal.async_send_text.await_args_list[0].args[0]
             command = sent.removeprefix("\x1b[200~").removesuffix("\x1b[201~")
@@ -2758,7 +2811,7 @@ class TerminalTests(unittest.TestCase):
                     account_choice.prepare_launch(choice)
             self.assertEqual(list((root / "Launch Receipts").iterdir()), [])
 
-    def test_macos_refused_receipt_store_names_the_supported_route(self):
+    def test_explicit_root_refused_by_macos_names_the_app_route(self):
         with tempfile.TemporaryDirectory() as folder:
             choice = {"storage_root": Path(folder)}
             reasons = {}
@@ -2769,8 +2822,8 @@ class TerminalTests(unittest.TestCase):
                     account_choice.prepare_launch(choice)
                 self.assertNotIn(folder, str(failed.exception))
                 reasons[code] = str(failed.exception)
-            self.assertIn("Supervisor's terminal session", reasons[errno.EPERM])
-            self.assertNotIn("Supervisor's terminal session", reasons[errno.EACCES])
+            self.assertIn("--record-launch", reasons[errno.EPERM])
+            self.assertNotIn("--record-launch", reasons[errno.EACCES])
             for reason in reasons.values():
                 self.assertIn("check write access", reason)
 

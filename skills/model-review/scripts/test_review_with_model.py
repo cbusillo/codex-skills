@@ -66,6 +66,11 @@ pwd > "$FAKE_AGY_CWD_FILE"
   diff_path=$(printf '%s' "$2" | sed -n 's/^The changes to review are in \\([^ ]*\\). Read.*/\\1/p')
   [ -n "$diff_path" ] && cat "$diff_path" > "$FAKE_AGY_DIFF_FILE"
 }
+[ -n "$FAKE_AGY_INPUT_NAME" ] && {
+  input_path=$(printf '%s' "$2" | grep -o "/[^ ]*$FAKE_AGY_INPUT_NAME" | head -1)
+  printf '%s' "$input_path" > "$FAKE_AGY_INPUT_FILE.path"
+  [ -n "$input_path" ] && cat "$input_path" > "$FAKE_AGY_INPUT_FILE"
+}
 echo "jetski: some banner text"
 printf '%s' "$FAKE_AGY_JSON"
 """
@@ -96,6 +101,23 @@ def wire_bytes(field: int, data: bytes) -> bytes:
 
 def completed(report: str) -> str:
     return json.dumps({"status": "completed", "review": report})
+
+
+# Context Panel's agent modes: the snapshot, and --record-launch reading one receipt from stdin.
+FAKE_CONTEXT_PANEL = f"""#!{sys.executable}
+import json, os, sys
+if sys.argv[1:] == ["--account-snapshot"]:
+    sys.stdout.write(open(os.environ["FAKE_SNAPSHOT_FILE"]).read())
+    sys.exit(0)
+name = "20261018T184448Z-supervisor-" + "0" * 32 + ".json"
+with open(os.environ["FAKE_RECORD_FILE"], "w") as record:
+    json.dump({{"argv": sys.argv[1:], "stdin": sys.stdin.read(), "name": name}}, record)
+code = int(os.environ.get("FAKE_RECORD_EXIT", "0"))
+if code:
+    sys.stderr.write(os.environ.get("FAKE_RECORD_STDERR", "") + "\\n")
+    sys.exit(code)
+print(name)
+"""
 
 
 class ReviewWithModelTests(unittest.TestCase):
@@ -431,6 +453,37 @@ class ReviewWithModelTests(unittest.TestCase):
         code, result = self.review("anthropic", FAKE_CLAUDE_JSON=json.dumps({"is_error": True, "result": "limit"}))
         self.assertEqual((code, result["ok"]), (1, False))
         self.assertTrue(Path(result["launch_receipt"]).is_file())
+
+    def test_app_group_review_receipt_goes_through_the_readers_record_launch(self) -> None:
+        self.install("claude", FAKE_CLAUDE)
+        app = self.bin / "Context Panel"
+        app.write_text(FAKE_CONTEXT_PANEL)
+        app.chmod(0o700)
+        config = self.home / ".code/skill-data/supervisor.toml"
+        config.write_text(config.read_text().replace(
+            json.dumps([str(self.reader), "--storage-root", str(self.storage)]),
+            json.dumps([str(app), "--account-snapshot"])))
+        capture, received = self.root / "child-env", self.root / "received.json"
+        for exit_code, reason in ((64, "receipt is not current"), (1, "storage unavailable")):
+            with self.subTest(exit_code=exit_code):
+                code, result = self.review("anthropic", FAKE_REVIEW_ENV_FILE=str(capture),
+                                           FAKE_RECORD_FILE=str(received), FAKE_RECORD_EXIT=str(exit_code),
+                                           FAKE_RECORD_STDERR=reason)
+                self.assertEqual((code, result["ok"]), (1, False))
+                self.assertIn(f"exit {exit_code}: {reason}", result["error"])
+                self.assertNotIn("launch_receipt", result)
+                self.assertFalse(capture.exists())
+        code, result = self.review("anthropic", FAKE_REVIEW_ENV_FILE=str(capture), FAKE_RECORD_FILE=str(received),
+                                   FAKE_CLAUDE_JSON=json.dumps({"result": completed("none")}))
+        self.assertEqual((code, result["ok"]), (0, True))
+        self.assertTrue(capture.exists())
+        record = json.loads(received.read_text())
+        self.assertEqual(record["argv"], ["--record-launch", "--launcher", "supervisor"])
+        receipt = json.loads(record["stdin"])
+        self.assertEqual(set(receipt), {"schemaVersion", "provider", "accountID", "launchedAt"})
+        self.assertEqual((receipt["provider"], receipt["accountID"]), ("anthropic", result["account"]["account_id"]))
+        self.assertEqual(Path(result["launch_receipt"]).name, record["name"])
+        self.assertFalse((self.storage / "Launch Receipts").exists())
 
     def test_each_provider_returns_its_review_and_the_model_that_ran(self) -> None:
         self.install("codex", FAKE_CODEX)
@@ -795,16 +848,66 @@ class ReviewWithModelTests(unittest.TestCase):
             self.assertEqual((code, result["ok"]), (1, False))
             self.assertIn("command_diagnostic", result)
 
-    def test_branch_diff_is_given_as_a_temporary_file_and_no_diff_still_runs(self) -> None:
-        self.install("agy", FAKE_AGY)
+    def commit_base_on_main(self, text: str) -> Path:
+        """Make the reviewed repository one committed file whose HEAD is origin/main."""
         subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
         subprocess.run(["git", "-C", str(self.repo), "config", "user.name", "Test"], check=True)
         subprocess.run(["git", "-C", str(self.repo), "config", "user.email", "test@example.com"], check=True)
         source = self.repo / "example.txt"
-        source.write_text("before\n")
+        source.write_text(text)
         subprocess.run(["git", "-C", str(self.repo), "add", "example.txt"], check=True)
         subprocess.run(["git", "-C", str(self.repo), "commit", "-qm", "base"], check=True)
         subprocess.run(["git", "-C", str(self.repo), "update-ref", "refs/remotes/origin/main", "HEAD"], check=True)
+        return source
+
+    def test_inputs_outside_the_repository_are_copied_where_the_reviewer_can_read(self) -> None:
+        self.install("agy", FAKE_AGY)
+        self.commit_base_on_main("base\n")
+        issue = self.root / "saved-issue.md"
+        issue.write_text("# The pending question\n")
+        seen = self.root / "agy-input"
+        env = {"FAKE_AGY_JSON": json.dumps({"response": completed("none")}), "FAKE_AGY_CWD_FILE": str(self.root / "cwd"),
+               "FAKE_AGY_INPUT_NAME": issue.name, "FAKE_AGY_INPUT_FILE": str(seen)}
+        code, result = self.run_helper("run", "--provider", "google", "--repo", str(self.repo),
+                                       "--prompt-file", str(self.prompt), "--input", str(issue), **env)
+        self.assertEqual((code, result["response"]), (0, "none"))
+        self.assertEqual(seen.read_text(), "# The pending question\n")
+        named = Path(Path(f"{seen}.path").read_text())
+        self.assertTrue(named.is_relative_to(self.repo.resolve()), "inputs sit under the reviewer's read root")
+        self.assertFalse(list(self.repo.glob(".model-review-*")), "copied inputs are removed with the scratch")
+        code, result = self.run_helper("run", "--provider", "google", "--repo", str(self.repo),
+                                       "--prompt-file", str(self.prompt), "--input", str(self.root / "absent.md"), **env)
+        self.assertEqual((code, result["ok"], result["phase"]), (1, False, "inputs"))
+
+    def test_links_in_the_request_are_reported_to_caller_and_reviewer(self) -> None:
+        self.install("agy", FAKE_AGY)
+        self.commit_base_on_main("base\n")
+        sent = self.root / "agy-prompt"
+        env = {"FAKE_AGY_JSON": json.dumps({"response": completed("none")}), "FAKE_AGY_CWD_FILE": str(self.root / "cwd"),
+               "FAKE_AGY_PROMPT_FILE": str(sent)}
+        code, result = self.review("google", **env)
+        self.assertEqual(code, 0)
+        self.assertNotIn("unreachable_links", result)
+        without_links = sent.read_text()
+        link = "https://github.com/OWNER/REPO/issues/1#issuecomment-2"
+        self.prompt.write_text(f"Review skills/x.md. Context: {link}, and again ({link}).\n")
+        code, result = self.review("google", **env)
+        self.assertEqual((code, result["unreachable_links"]), (0, [link]))
+        self.assertIn("--input", result["unreachable_links_hint"])
+        told = sent.read_text().replace(f" Context: {link}, and again ({link}).", "")
+        self.assertNotEqual(told, without_links, "the reviewer is told the links cannot be opened")
+
+    def test_links_keep_their_own_brackets_and_lose_surrounding_prose(self) -> None:
+        wiki = "https://en.wikipedia.org/wiki/Capability-based_security_(computing)"
+        quoted = "https://example.com/it's-here"
+        prompt = (f"See {wiki}. Also ({wiki}), [the page]({quoted}), '{quoted}' and "
+                  f"<https://example.com/a>; https://example.com/b?x=1&y=[2].")
+        self.assertEqual(review_with_model.unreachable_links(prompt),
+                         [wiki, quoted, "https://example.com/a", "https://example.com/b?x=1&y=[2]"])
+
+    def test_branch_diff_is_given_as_a_temporary_file_and_no_diff_still_runs(self) -> None:
+        self.install("agy", FAKE_AGY)
+        source = self.commit_base_on_main("before\n")
         subprocess.run(["git", "-C", str(self.repo), "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"], check=True)
         prompt_file, diff_file = self.root / "agy-prompt", self.root / "agy-diff"
         env = {"FAKE_AGY_JSON": json.dumps({"response": completed("none")}), "FAKE_AGY_CWD_FILE": str(self.root / "cwd"),

@@ -4199,6 +4199,11 @@ def _project_success_output(
         return records, _project_dokploy_compose_setup(
             provider_payload.get("result"), request=request
         )
+    if operation in DOKPLOY_APPLICATION_COMMANDS:
+        records = _project_records(provider_payload.get("records"), set())
+        return records, _project_dokploy_application_setup(
+            provider_payload.get("result"), request=request
+        )
     if operation in {"private-health-endpoint-dry-run", "private-health-endpoint-apply"}:
         records = _project_records(provider_payload.get("records"), set())
         return records, _project_private_health_endpoint_plan(
@@ -4417,6 +4422,16 @@ def summarize_success(
                 if operation.endswith("-dry-run")
                 else "Check read_back_matches before relying on the target and its source. "
                 "For a newly created target, add the lane through stable-lane repair."
+            )
+        elif operation in DOKPLOY_APPLICATION_COMMANDS:
+            summary["plan_sha256"] = result.get("plan_sha256")
+            summary["recommendation"] = (
+                "Save this redacted dry-run output and review it, then apply the exact same "
+                "private payload with --expected-plan-digest. Never re-run the dry run to retry: "
+                "keep this evidence and the first apply's --idempotency-key for every retry."
+                if operation.endswith("-dry-run")
+                else "Check read_back_matches and allocation_state before relying on the target. "
+                "Retry only with the original key and evidence."
             )
         elif operation in {
             "private-health-endpoint-dry-run",
@@ -7528,6 +7543,58 @@ DOKPLOY_COMPOSE_SETUP_RESULT_FIELDS = {
     "reason",
     "setup",
 }
+DOKPLOY_APPLICATION_COMMANDS = {
+    "dokploy-target-create-application-dry-run",
+    "dokploy-target-create-application-apply",
+}
+# A testing application in new placement; ids, domains, git source and app names
+# belong to the service or provider and are refused.
+DOKPLOY_APPLICATION_PAYLOAD_FIELDS = {
+    "schema_version",
+    "context",
+    "instance",
+    "target_name",
+    "server_id",
+    "project_name",
+    "project_description",
+    "environment_name",
+    "environment_description",
+    "description",
+    "source_git_ref",
+    "healthcheck_path",
+    "deploy_timeout_seconds",
+    "state_volume_path",
+    "expected_current_provider_target",
+    "reason",
+}
+# With a state volume the route answers with its saved plan, the adopted target
+# or a retained-custody receipt instead of the ordinary setup result.
+DOKPLOY_APPLICATION_STATE_VOLUME_RESULT_FIELDS = {
+    "operation",
+    "context",
+    "instance",
+    "applied",
+    "deployment_performed",
+    "target",
+    "allocation",
+    "state_volume_plan_id",
+    "plan_sha256",
+    "state_volume",
+    "configuration_matches",
+    "configuration_evidence",
+    "allocation_state",
+    "setup",
+}
+DOKPLOY_APPLICATION_RETAINED_RESULT_FIELDS = {
+    "applied",
+    "allocation_state",
+    "original_key",
+    "plan_id",
+    "deployment_performed",
+    "resources_retained",
+    "reviewed_custody_sha256",
+    "retained_provider_effect_phase",
+}
 # Launchplane's typed confirmation for a target-setup apply; the reviewed dry-run
 # evidence and plan digest are what the helper checks before sending it.
 DOKPLOY_TARGET_SETUP_CONFIRMATION = "APPLY DOKPLOY TARGET SETUP"
@@ -7901,6 +7968,109 @@ def _project_dokploy_compose_setup(
     )
     assert_public_safe_shape(projected)
     return projected
+
+
+def _project_dokploy_application_setup(
+    result: object, *, request: dict[str, object] | None
+) -> dict[str, object]:
+    """Plan actions or the service's storage plan, the receipt state and provider kinds;
+    provider ids, server ids, project, environment, application and volume names drop."""
+    request = request or {}
+    source = _require_dict(result)
+    payload_digest = request.get("payload_digest")
+    if not isinstance(payload_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", payload_digest):
+        raise LaunchplaneSafetyError("invalid_response")
+    mode = _reviewed_plan_mode(request.get("mode"))
+    state_volume = request.get("state_volume") is True
+    projected: dict[str, object]
+    if state_volume and source.get("allocation_state") == "retained_uncertain":
+        # A retained receipt is not a created target; finish reports it.
+        if any(str(key) not in DOKPLOY_APPLICATION_RETAINED_RESULT_FIELDS for key in source):
+            raise LaunchplaneSafetyError("unsafe_response_shape")
+        projected = {
+            "mode": mode,
+            "operation": "create-application",
+            "applied": False,
+            "allocation_state": "retained_uncertain",
+        }
+        assert_public_safe_shape(projected)
+        return projected
+    allowed = (
+        DOKPLOY_APPLICATION_STATE_VOLUME_RESULT_FIELDS
+        if state_volume
+        else DOKPLOY_COMPOSE_SETUP_RESULT_FIELDS
+    )
+    if any(str(key) not in allowed for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    if source.get("operation") != "create-application" or source.get("instance") != "testing":
+        raise LaunchplaneSafetyError("invalid_response")
+    if not state_volume and source.get("mode") != mode:
+        raise LaunchplaneSafetyError("invalid_response")
+    setup = source.get("setup")
+    setup = {} if setup is None else _require_dict(setup)
+    projected = {
+        "mode": mode,
+        "operation": "create-application",
+        "context": public_identifier(source.get("context")),
+        "instance": "testing",
+        "applied": bool(_optional_bool(source.get("applied"))),
+    }
+    if state_volume:
+        plan_id = source.get("state_volume_plan_id")
+        service_plan_sha256 = source.get("plan_sha256")
+        if (
+            not isinstance(plan_id, str) or not re.fullmatch(r"[0-9a-f]{32}", plan_id)
+            or not isinstance(service_plan_sha256, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", service_plan_sha256)
+            or source.get("deployment_performed") is not False
+        ):
+            raise LaunchplaneSafetyError("invalid_response")
+        # The service binds each apply request to this saved plan; the helper sends both back.
+        projected["state_volume"] = {
+            "plan_id": plan_id,
+            "service_plan_sha256": service_plan_sha256,
+        }
+        if source.get("allocation_state") is not None:
+            projected["allocation_state"] = public_code(source.get("allocation_state"))
+            projected["configuration_evidence"] = public_code(
+                source.get("configuration_evidence"), default="unavailable"
+            )
+        digest_inputs: dict[str, object] = {"state_volume": projected["state_volume"]}
+    else:
+        plan = _require_dict(setup.get("plan"))
+        plan_actions = {
+            part: public_code(_require_dict(plan.get(part)).get("action"))
+            for part in ("project", "environment", "application")
+        }
+        projected["plan_actions"] = plan_actions
+        digest_inputs = {"plan_actions": plan_actions}
+    provider_target = setup.get("provider_target_record")
+    if provider_target is not None:
+        provider_target = _require_dict(provider_target)
+        projected["provider_target"] = {
+            field: public_code(provider_target.get(field))
+            for field in ("provider_id", "target_category", "provider_target_type")
+        }
+    projected["plan_sha256"] = _application_plan_digest(
+        payload_digest, cast(str, projected["context"]), digest_inputs
+    )
+    assert_public_safe_shape(projected)
+    return projected
+
+
+def _application_plan_digest(
+    payload_digest: str, context: str, digest_inputs: dict[str, object]
+) -> str:
+    # Bind the private payload to the reviewed plan, as for compose creation.
+    return _canonical_sha256(
+        {
+            "payload_digest": payload_digest,
+            "operation": "create-application",
+            "context": context,
+            "instance": "testing",
+            **digest_inputs,
+        }
+    )
 
 
 def product_owner_body(args: argparse.Namespace, *, mode: str) -> dict[str, object]:
@@ -8279,6 +8449,92 @@ def dokploy_compose_body(
         )
         if evidence["request"].get("payload_digest") != request["payload_digest"]:
             raise ValueError("reviewed_dry_run_not_apply_eligible")
+        body["confirmation"] = DOKPLOY_TARGET_SETUP_CONFIRMATION
+    return body, request
+
+
+def dokploy_application_payload(args: argparse.Namespace) -> dict[str, object]:
+    payload = read_payload_file(args.payload_file)
+    if any(key not in DOKPLOY_APPLICATION_PAYLOAD_FIELDS for key in payload):
+        raise ValueError("unsupported_dokploy_target_field")
+    for field in ("context", "instance", "target_name", "server_id", "project_name", "environment_name", "reason"):
+        value = payload.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{field}_required")
+    # The setup route creates application targets only for a lane nobody uses yet.
+    if payload["instance"] != "testing":
+        raise ValueError("application_target_requires_testing")
+    healthcheck_path = payload.get("healthcheck_path", "")
+    if not isinstance(healthcheck_path, str) or (healthcheck_path and not healthcheck_path.startswith("/")):
+        raise ValueError("invalid_healthcheck_path")
+    # Launchplane owns the rest of the state directory rules.
+    state_volume_path = payload.get("state_volume_path")
+    if state_volume_path is not None and (
+        not isinstance(state_volume_path, str)
+        or not state_volume_path.startswith("/")
+        or ".." in state_volume_path.split("/")
+    ):
+        raise ValueError("invalid_state_volume_path")
+    expected_target = payload.get("expected_current_provider_target")
+    if expected_target is not None and not isinstance(expected_target, dict):
+        raise ValueError("invalid_expected_current_provider_target")
+    return payload
+
+
+def dokploy_application_body(
+    args: argparse.Namespace, *, mode: str
+) -> tuple[dict[str, object], dict[str, object]]:
+    payload = dokploy_application_payload(args)
+    request: dict[str, object] = {
+        "mode": mode,
+        "payload_source": "private_file",
+        "payload_digest": metadata_review_digest(payload),
+        "context": public_identifier(payload["context"]),
+        "instance": "testing",
+        "setup_operation": "create-application",
+        "state_volume": bool(payload.get("state_volume_path")),
+    }
+    body: dict[str, object] = {
+        **payload,
+        "operation": "create-application",
+        # Target setup is authorized on Launchplane's own service product.
+        "product": "launchplane",
+        "mode": mode,
+    }
+    if mode == "apply":
+        expected_plan_digest = _reviewed_apply_digest(args)
+        evidence, result = _load_reviewed_evidence(
+            args,
+            operation="dokploy-target-create-application-dry-run",
+            expected_digest=expected_plan_digest,
+            result_status=None,
+        )
+        if (
+            evidence["request"].get("payload_digest") != request["payload_digest"]
+            or evidence["request"].get("state_volume") is not request["state_volume"]
+        ):
+            raise ValueError("reviewed_dry_run_not_apply_eligible")
+        # Recompute the digest from this payload and the saved plan before sending, so
+        # edited evidence cannot carry the reviewed digest onto a different plan.
+        state_volume = result.get("state_volume")
+        if request["state_volume"]:
+            if not isinstance(state_volume, dict):
+                raise ValueError("reviewed_dry_run_not_apply_eligible")
+            digest_inputs: dict[str, object] = {"state_volume": {
+                "plan_id": state_volume.get("plan_id"),
+                "service_plan_sha256": state_volume.get("service_plan_sha256"),
+            }}
+        else:
+            digest_inputs = {"plan_actions": result.get("plan_actions")}
+        if expected_plan_digest != _application_plan_digest(
+            cast(str, request["payload_digest"]), cast(str, request["context"]), digest_inputs
+        ):
+            raise ValueError("reviewed_dry_run_not_apply_eligible")
+        if isinstance(state_volume, dict):
+            # Apply reuses the service's saved storage plan; a new dry run would allocate
+            # different names, so the reviewed one is the only one sent.
+            body["state_volume_plan_id"] = state_volume["plan_id"]
+            body["expected_plan_sha256"] = state_volume["service_plan_sha256"]
         body["confirmation"] = DOKPLOY_TARGET_SETUP_CONFIRMATION
     return body, request
 
@@ -8838,6 +9094,90 @@ def execute_dokploy_compose_apply(
         body=body,
         # Completion compares the saved binding before any provider write.
         preflight=preflight,
+        finish=finish,
+        label="Dokploy target",
+    )
+
+
+def execute_dokploy_application_apply(
+    *, args: argparse.Namespace, request: dict[str, object], body: dict[str, object]
+) -> int:
+    context = cast(str, body["context"]).strip()
+    expected_plan_digest = args.expected_plan_digest.strip().lower()
+    state_volume = request["state_volume"] is True
+
+    def finish(
+        settings: dict[str, str], provider_payload: dict[str, Any], payload: dict[str, Any]
+    ) -> bool:
+        result = payload["result"]
+        result["reviewed_plan_sha256"] = expected_plan_digest
+        if result.get("allocation_state") == "retained_uncertain":
+            # The service kept an uncertain allocation's custody; nothing became the target.
+            payload["warnings"].append(
+                warning(
+                    "state_volume_allocation_retained",
+                    "Launchplane retained the earlier uncertain allocation instead of creating "
+                    "a target. Keep the original key and plan; a new allocation needs a new dry run.",
+                )
+            )
+            return False
+        created_target_id = _dokploy_setup_target_id(provider_payload.get("result"))
+        applied_as_reviewed = (
+            result.get("applied") is True
+            and result.get("plan_sha256") == expected_plan_digest
+            and bool(created_target_id)
+        )
+        if not applied_as_reviewed:
+            payload["warnings"].append(
+                warning(
+                    "applied_plan_differs_from_review",
+                    "Launchplane did not report a created target for the reviewed plan.",
+                )
+            )
+        # An adopted receipt recovered from database evidence does not prove the mount.
+        mount_verified = not state_volume or (
+            result.get("allocation_state") == "adopted"
+            and result.get("configuration_evidence") == "matches"
+        )
+        if not mount_verified:
+            payload["warnings"].append(
+                warning(
+                    "state_volume_configuration_unverified",
+                    "Launchplane did not verify the state volume mount for this receipt. "
+                    "Read back with the original key and plan before relying on it.",
+                )
+            )
+
+        def read() -> dict[str, object]:
+            public, private = read_dokploy_target(
+                settings=settings, context=context, instance="testing", timeout=args.timeout
+            )
+            # Compared here and never printed: the records name the created application.
+            public["target_ids_agree"] = private["target_ids"] == {created_target_id}
+            public["configuration_matches_review"] = (
+                private["domains"] == frozenset()
+                and private["healthcheck_path"] == body.get("healthcheck_path", "")
+            )
+            return public
+
+        read_back_ok = attach_read_back(
+            payload,
+            read=read,
+            matches=lambda observed: observed["provider_target_record"] == "present"
+            and observed["target_type"] == "application"
+            and observed["target_ids_agree"] is True
+            and observed["configuration_matches_review"] is True,
+            label="Dokploy target",
+        )
+        return applied_as_reviewed and mount_verified and read_back_ok
+
+    return execute_verified_apply(
+        args=args,
+        operation=args.command,
+        request=request,
+        path=helper_command_path(args.command),
+        body=body,
+        preflight=lambda _settings: None,
         finish=finish,
         label="Dokploy target",
     )
@@ -9905,6 +10245,22 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         )
         _add_reviewed_apply_arguments(compose_target, apply=command.endswith("-apply"))
 
+    for command, help_text in (
+        (
+            "dokploy-target-create-application-dry-run",
+            "Dry-run creating a testing lane's Dokploy application target from a private payload.",
+        ),
+        (
+            "dokploy-target-create-application-apply",
+            "Create the reviewed testing application target bound to the saved dry-run digest.",
+        ),
+    ):
+        application_target = subparsers.add_parser(command, help=help_text)
+        application_target.add_argument(
+            "--payload-file", required=True, help="Private local JSON payload file."
+        )
+        _add_reviewed_apply_arguments(application_target, apply=command.endswith("-apply"))
+
     domain_plan = subparsers.add_parser(
         "dokploy-target-repair-domain-authority-dry-run",
         help="Plan domain authority from a fresh tracked-target inspection; never apply.",
@@ -10785,6 +11141,18 @@ def main(argv: list[str]) -> int:
             body, request = dokploy_compose_body(args, mode=mode)
             if mode == "apply":
                 return execute_dokploy_compose_apply(args=args, request=request, body=body)
+            return execute_post(
+                args=args,
+                operation=args.command,
+                path=helper_command_path(args.command),
+                request=request,
+                body=body,
+            )
+        if args.command in DOKPLOY_APPLICATION_COMMANDS:
+            mode = "apply" if args.command.endswith("-apply") else "dry-run"
+            body, request = dokploy_application_body(args, mode=mode)
+            if mode == "apply":
+                return execute_dokploy_application_apply(args=args, request=request, body=body)
             return execute_post(
                 args=args,
                 operation=args.command,

@@ -1109,6 +1109,51 @@ uv run skills/github/scripts/gh-rulesets.py apply \
   --confirm-owner-admin-write
 ```
 
+For additive required status checks, use the same verified repository owner writer's
+`checks-plan`, `checks-apply` and `checks-readback` route. It handles one
+repository's default branch at a time. The checks file is a JSON list such as
+`[{"context":"validation","app_id":123}]`; use `null` explicitly for any App.
+Choose `--target classic` for existing classic required-check protection, an
+existing ruleset ID for an active ruleset covering exactly the default branch,
+or `--target new` to create a separate required-check ruleset without bypasses.
+The new ruleset leaves other protection in place and uses non-strict checks;
+an existing target retains its strictness, App bindings, rules and bypass actors.
+Conflicting App bindings for the same context refuse instead of guessing.
+Standard, legacy-alias and client-lock rulesets cannot be check targets because
+standard apply replaces their payloads. Use `--target new` to keep the checks
+in a separate ruleset that standard apply leaves in place.
+
+```sh
+uv run skills/github/scripts/gh-rulesets.py checks-plan \
+  --repo OWNER/REPO --target classic --checks-file checks.json --out plan.json
+```
+
+Review the saved plan's full `before`, `after`, `payload` and exact `added`
+list. Keep the printed `plan_digest` with the approval; the file alone is not
+approval. After any task-specific fresh preflight and authorization, apply
+that file with that digest, then verify it independently:
+
+```sh
+uv run skills/github/scripts/gh-rulesets.py checks-apply \
+  --plan-file plan.json --plan-digest REVIEWED_SHA256 --confirm-owner-admin-write
+uv run skills/github/scripts/gh-rulesets.py checks-readback \
+  --plan-file plan.json --plan-digest REVIEWED_SHA256
+```
+
+Apply validates the digest, recomputes the additive payload from the reviewed
+snapshot, and re-reads current protection and every repository-owned ruleset
+before its single mutation. It refuses drift; it accepts an exact already-applied
+result without another write. Only the classic required-check subresource or
+the selected ruleset is written. Unknown write/readback outcomes stop without
+replay; inspect with `checks-readback` and plan again if the state differs.
+GitHub exposes no conditional-write token here, so preflight and readback do
+not lock out another settings writer between those calls. Coordinate settings
+changes while applying. This path adds no App grant or identity fallback.
+It does not apply repository flags, remove collaborators or manage custom tag
+rules. Implementation tests use fixtures and injected clients, with no live
+repository owner calls. A rollout's default-head and ordinary-PR check proof is still its
+own preflight requirement, separate from the settings snapshot.
+
 On a repository where Clients or their staff are collaborators, add
 `--client-lock` to also manage a ruleset that stops anyone except the admin role
 and the configured App from creating, updating or deleting any branch, and

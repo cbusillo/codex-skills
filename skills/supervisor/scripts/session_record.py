@@ -369,11 +369,30 @@ def summarize(records: list[dict], harness: str, *, claim_histories=None, histor
     return result
 
 
+class TranscriptChanged(ValueError):
+    """The native transcript changed while its status was being read."""
+
+
 def session_status(entry: dict) -> dict:
     path = Path(entry["transcript"])
     before = path.stat()
-    records = read_jsonl(path)
+
+    def checked_stat():
+        after = path.stat()
+        if (before.st_mtime_ns, before.st_size) != (after.st_mtime_ns, after.st_size):
+            raise TranscriptChanged("transcript changed during read; check again")
+        return after
+
+    try:
+        records = read_jsonl(path)
+    except (ValueError, TypeError):
+        # A partial append is a wait; stable malformed data needs attention.
+        # Permission and I/O refusals propagate without being reclassified.
+        checked_stat()
+        raise
+    checked_stat()
     records = claim_history.root_records(path, entry["harness"], entry["session_id"], records)
+
     def child_read(child, harness, session, context=None):
         initial = child.stat()
         data = read_jsonl(child)
@@ -382,15 +401,14 @@ def session_status(entry: dict) -> dict:
         if (initial.st_mtime_ns, initial.st_size) != (final.st_mtime_ns, final.st_size):
             raise ValueError("child transcript identity or activity changed")
         return data
+
     histories, error = None, None
     try:
         histories = claim_history.collect(path, entry["harness"], entry["session_id"], records, child_read)
     except (OSError, ValueError, TypeError, KeyError) as missing:
         error = str(missing)
     result = summarize(records, entry["harness"], claim_histories=histories, history_error=error)
-    after = path.stat()
-    if (before.st_mtime_ns, before.st_size) != (after.st_mtime_ns, after.st_size):
-        raise ValueError("transcript changed during read; check again")
+    after = checked_stat()
     result.update(
         session_id=entry["session_id"],
         harness=entry["harness"],
