@@ -1688,7 +1688,8 @@ def test_unreadable_trusted_record_keeps_a_comment_hold_as_unresolved(monkeypatc
     assert [error["lane"] for error in payload["coverage"]["errors"]] == ["director_waits/141"]
     assert [(row["number"], row["wait_kind"], row["wait_source"], row["wait_review_required"])
             for row in payload["unasked_director_waits"]] == [(141, "unresolved", "unresolved_structured_wait", True)]
-    assert "## Wait Unknown — Structured Record Needs Review" in github_unanswered_comments.render_markdown(payload)
+    rendered = github_unanswered_comments.render_markdown(payload)
+    assert all(row["url"] in rendered for row in payload["unasked_director_waits"]), "the unresolved wait is shown"
 
 
 def test_labeled_wait_reads_a_new_comment_hold_before_search_indexes_it(monkeypatch, tmp_path: Path) -> None:
