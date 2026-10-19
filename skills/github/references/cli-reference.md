@@ -1667,7 +1667,8 @@ competitor's record.
   It refuses with `close_attention_preflight` and `write_outcome=not_started`,
   naming each comment, when an outside person's comment has no Director or agent
   reply posted after its latest version, even on a closed thread, or when
-  coverage is degraded. An edit is never a reply: an older comment edited
+  coverage is degraded. It classifies every comment and edit it fetched, with
+  no scan end. An edit is never a reply: an older comment edited
   later does not answer it, even when the edit links or mentions it. Planning
   records and Director question or decision records are not replies, even when
   they link the comment. Answer each with a new reply on its thread and rerun.

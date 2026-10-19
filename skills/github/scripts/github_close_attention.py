@@ -92,7 +92,8 @@ def linked_threads(reader: GitHubReader, repo: str, number: int, issue: dict[str
 def run_radar(threads: list[str], gh_cmd: str | None = None,
               run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run) -> dict[str, Any]:
     # The closing repository's owner is the Director on every thread, including linked threads in other accounts.
-    command = ["uv", "run", "--quiet", str(HELPER), "--format", "json", "--include-handled",
+    # A close checks the threads as they are now, so nothing fetched falls outside a scan end.
+    command = ["uv", "run", "--quiet", str(HELPER), "--format", "json", "--include-handled", "--no-cutoff",
                "--director-login", threads[0].split("/", 1)[0]]
     for thread in threads:
         command += ["--thread", thread]

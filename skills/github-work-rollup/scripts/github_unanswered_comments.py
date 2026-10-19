@@ -162,6 +162,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Also list handled comments in the JSON report, for callers that apply their own rule.",
     )
+    parser.add_argument(
+        "--no-cutoff",
+        action="store_true",
+        help="Classify --thread comments, edits and reactions fetched after the scan end, for a check of the thread as it is now.",
+    )
     parser.add_argument("--output", type=Path, help="Write the report to this path.")
     args = parser.parse_args()
     if args.limit_repos < 1:
@@ -208,6 +213,9 @@ def resolve_settings(
         since = until - timedelta(hours=rollup.parse_duration_hours(window_label))
     if since >= until:
         raise SystemExit("error: --since must be before --until")
+    no_cutoff = bool(getattr(args, "no_cutoff", False))
+    if no_cutoff and args.until:
+        raise SystemExit("error: --no-cutoff cannot be combined with --until")
 
     return {
         "config_path": str(args.config),
@@ -228,6 +236,7 @@ def resolve_settings(
         "limit_repos": args.limit_repos,
         "include_archived": bool(getattr(args, "include_archived", False)),
         "include_handled": bool(getattr(args, "include_handled", False)),
+        "no_cutoff": no_cutoff,
         "people_index": args.people_index or (Path(str(config["people_index"])) if config.get("people_index") else None),
     }
 
@@ -1516,6 +1525,8 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
     reaction_candidates: list[Comment] = []
     scanned_threads = 0
     thread_worker_count = min(MAX_WORKERS, max(1, len(candidate_ids)))
+    # With --no-cutoff every fetched comment, edit and reaction is classified.
+    classification_until = datetime.max.replace(tzinfo=timezone.utc) if settings.get("no_cutoff") else settings["until"]
     with ThreadPoolExecutor(max_workers=thread_worker_count) as executor:
         futures = {
             executor.submit(collect_thread, repo, number): (repo, number, ids)
@@ -1531,7 +1542,7 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
             comments_through_until = [
                 comment
                 for comment in comments
-                if comment_timestamp(comment.created_at) <= settings["until"]
+                if comment_timestamp(comment.created_at) <= classification_until
             ]
             effective_ids = ids
             if (repo, number) in full_history_threads:
@@ -1590,7 +1601,7 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
                 self_logins,
                 bot_logins,
                 reactions_by_comment,
-                settings["until"],
+                classification_until,
                 people["automation"],
             )
         )

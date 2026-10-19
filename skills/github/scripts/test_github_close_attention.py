@@ -157,6 +157,7 @@ class CloseAttentionTests(unittest.TestCase):
         self.assertEqual(payload["status"], "degraded")
         self.assertEqual(commands[0][-4:], ["--thread", f"{REPO}#7", "--thread", f"{REPO}#9"])
         self.assertIn("--include-handled", commands[0])
+        self.assertIn("--no-cutoff", commands[0])
         self.assertEqual(commands[0][commands[0].index("--director-login") + 1], "director")
         self.assertEqual(routes, ["fake-gh"])
 
