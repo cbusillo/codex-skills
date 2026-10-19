@@ -16,6 +16,7 @@ import io
 import json
 import pathlib
 import re
+import shlex
 import subprocess
 from typing import Any
 
@@ -152,9 +153,9 @@ def unread_wait(error: Exception) -> dict[str, Any]:
     return {"version": 1, "state": "review", "evidence": json.dumps(evidence, sort_keys=True), "waits": []}
 
 
-def snapshot(plan: Any, repo: str, number: int) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+def snapshot(plan: Any, repo: str, number: int, *, checkout: str | None = None) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     _, issue = plan.get_issue(str(number), repo)
-    config = plan.load_config(repo)
+    config = plan.load_config(repo, checkout=checkout) if checkout else plan.load_config(repo)
     if not planning_issue(issue, config):
         return issue, config, {"version": 1, "state": "review", "evidence": "Not a planning issue", "waits": []}
     try:
@@ -182,12 +183,23 @@ def comment_attention(repo: str, number: int) -> bool:
 
 def reconcile_related(plan: Any, repo: str, number: int, *, apply: bool, entry: dict[str, Any]) -> None:
     discovery: dict[str, Any] = {}
-    plan.load_config(repo, discovery=discovery)
+    checkout = entry.get("planning_checkout")
+    if checkout:
+        plan.load_config(repo, checkout=checkout, discovery=discovery)
+    else:
+        plan.load_config(repo, discovery=discovery)
     entry["planning_config"] = discovery
     if discovery.get("status") not in {"discovered", "verified_defaults"}:
-        entry.update(status="review_planning_config", next_action="Run from a matching target checkout so its planning configuration can be verified")
+        if entry.get("config_optional_unless_planning"):
+            _, source = plan.get_issue(str(number), repo)
+            # Unknown custom configuration stays partial. Only an ordinary
+            # generic close may make this configuration review informational.
+            # A failed read leaves the explicit source required.
+            entry["required"] = github_plan_status.is_planning_issue(
+                source, github_plan_status.DEFAULT_STATUS_LABELS)
+        entry.update(status="review_planning_config", next_action="Run from a matching target checkout or pass --planning-checkout to reconcile-status so target configuration can be verified")
         return
-    issue, config, wait = snapshot(plan, repo, number)
+    issue, config, wait = snapshot(plan, repo, number, checkout=checkout)
     if not planning_issue(issue, config):
         entry["status"] = "not_planning_issue"
         return
@@ -220,7 +232,7 @@ def reconcile_related(plan: Any, repo: str, number: int, *, apply: bool, entry: 
         entry["status"] = "review_comments_or_coverage"
         return
     # Re-run the observation immediately before a label write; never edit wait records or prose.
-    fresh, fresh_config, fresh_wait = snapshot(plan, repo, number)
+    fresh, fresh_config, fresh_wait = snapshot(plan, repo, number, checkout=checkout)
     _, fresh_relationships = plan.read_issue_relationships(repo, number, include_blocking=False)
     if (fresh != issue or not github_plan_status.same_wait_projection(issue, fresh_wait, wait)
             or fresh_relationships != relationships or fresh_config != config):
@@ -233,7 +245,7 @@ def reconcile_related(plan: Any, repo: str, number: int, *, apply: bool, entry: 
             gh_cmd=gh_cmd, expected_actor=expected, operation=plan.CURRENT_OPERATION)
     except plan.github_issue_core.IssueError as exc:
         raise plan.plan_error_from_issue(exc) from exc
-    verified, _, verified_wait = snapshot(plan, repo, number)
+    verified, _, verified_wait = snapshot(plan, repo, number, checkout=checkout)
     _, verified_relationships = plan.read_issue_relationships(repo, number, include_blocking=False)
     expected_names = set(changes["result"])
     if (set(plan.normalize_labels(verified.get("labels"))) != expected_names
@@ -303,9 +315,13 @@ def run_reconciliation_tasks(plan: Any, tasks: list[dict[str, Any]], *, apply: b
             projection_status=entry.get("projection_status"), completion_required=entry["role"] == "source",
             required=bool(entry.get("required")) or (entry["role"] == "source" and not optional_source)))
         if entry["status"].startswith(("review_", "reconciliation_", "not_attempted")):
+            recovery_argv = ["gh-plan.py", "--repo", repo, "reconcile-status", str(number), "--apply"]
+            if entry.get("planning_checkout"):
+                recovery_argv.append("--planning-checkout=" + entry["planning_checkout"])
             entry["recovery"] = {
+                "argv": recovery_argv,
                 "issue": {"repo": repo, "number": number},
-                "next_action": f"gh-plan.py --repo {repo} reconcile-status {number} --apply",
+                "next_action": shlex.join(recovery_argv),
                 "authority": "Existing authorized target session; preserve any recorded denial"}
     return {**github_plan_status.receipt_summary(tasks), "issues": tasks}
 

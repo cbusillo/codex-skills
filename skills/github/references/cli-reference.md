@@ -1539,7 +1539,7 @@ competitor's record.
   The train driver includes separate planning receipts for every confirmed
   landed batch member. A failed planning receipt does not undo a landing;
   rerun this command after resolving its reported blocker.
-- `reconcile-status <issue> [--include-dependents] [--apply]`: Preview or apply the same guarded status
+- `reconcile-status <issue> [--include-dependents] [--planning-checkout PATH] [--apply]`: Preview or apply the same guarded status
   label projection to one issue without posting a wait, changing an edge,
   creating an issue or closing it. Use the recovery command in a partial receipt
   after resolving its reported review or failure. Confirmed wait, create and
@@ -1552,7 +1552,12 @@ competitor's record.
   `--include-dependents` also refreshes direct native parents and blocking
   dependents, with automatic neighbors limited to the source account. An
   explicit target remains subject to its existing posting authority; a local
-  checkout proves configuration, never permission. Personal or active-identity
+  checkout proves configuration, never permission. When running elsewhere,
+  `--planning-checkout` names an existing checkout of the target repository;
+  its repository identity is verified before projection. The override applies
+  to root and same-repository snapshots, while foreign neighbors retain their
+  own configuration discovery. Recovery retains a supplied checkout.
+  Personal or active-identity
   opt-ins authorize only the explicit target. Automatic neighbors, including
   all issues discovered by `reconcile-landing`, return review receipts for
   existing authorized target sessions; preview remains available.

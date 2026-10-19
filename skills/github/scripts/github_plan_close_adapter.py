@@ -40,23 +40,16 @@ def reconcile(*, repo: str, number: int, request: Callable[..., tuple[str | None
         # close uses its confirmed closure and complete structured wait reads.
         plan.planning_comment_attention = lambda *_args: False
         try:
-            discovery: dict[str, Any] = {}
-            plan.load_config(repo, discovery=discovery)
-            required = True
-            if discovery.get("status") not in {"discovered", "verified_defaults"}:
-                _, source = plan.get_issue(str(number), repo)
-                # An ordinary close needs no local planning checkout. Unknown
-                # custom labels still retain partial configuration coverage;
-                # canonical planning roots and every provider failure stay required.
-                required = plan.github_plan_status.is_planning_issue(
-                    source, plan.github_plan_status.DEFAULT_STATUS_LABELS)
             return plan.refresh_planning_targets([(repo, number)], apply=apply,
-                include_dependents=include_dependents, required=required)
+                include_dependents=include_dependents, config_optional_unless_planning=True)
         except (plan.PlanError, ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError) as error:
-            failure = getattr(error, "failure", None)
-            return {"ok": False, "coverage": "partial", "review_required": True, "issues": [],
-                    "error": {"message": str(error), **getattr(error, "payload", {}),
-                              **({"failure": failure.as_dict()} if failure is not None else {})}}
+            entry: dict[str, Any] = {"repo": repo, "number": number, "role": "related", "required": True}
+            plan.github_plan_landing.reconciliation_error(entry, error)
+            entry.update(plan.github_plan_status.classify_outcome(entry["status"], required=True))
+            entry["recovery"] = {"issue": {"repo": repo, "number": number},
+                "next_action": "Run reconciliation from an existing authorized target session; preserve the provider failure and do not switch identity or grant access"}
+            return {**plan.github_plan_status.receipt_summary([entry]), "issues": [entry]}
+
     finally:
         if previous is None:
             sys.modules.pop(name, None)

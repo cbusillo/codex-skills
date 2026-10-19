@@ -1641,8 +1641,10 @@ def refresh_after_close(repo: str, number: int, payload: dict[str, Any], *, oper
                 entry.update(status="review_posting_authority", ok=False, verified=False,
                              projection_status="preserved", informational=False)
                 projection["ok"] = False
-        projection.update(coverage="partial", review_required=True, status="review_posting_authority",
-            reason="Exact personal close approval does not authorize automatic planning writes")
+        projection.update(coverage="partial", review_required=True)
+        if not any(entry.get("error") for entry in projection.get("issues", [])):
+            projection.update(status="review_posting_authority",
+                reason="Exact personal close approval does not authorize automatic planning writes")
     summary = github_api_core.aggregate_retry_summaries(summaries)
     projection["retry"] = summary.as_dict() if summary else None
     projection["recovery"] = recovery

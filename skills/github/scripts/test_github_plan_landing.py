@@ -15,6 +15,7 @@ import os
 import shlex
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -1222,17 +1223,60 @@ class MutationProjectionTests(unittest.TestCase):
         self.assertEqual([comment["body"] for comment in self.discussion[7]], [note])
         self.assert_labels(7, "plan", "done")
 
+    def test_status_recovery_uses_verified_checkout_for_every_same_repo_snapshot(self):
+        self.config["labels"] = {key: "target:" + key for key in self.config["labels"]}
+        self.add_issue(7)
+        self.add_issue(8, label_keys=("plan", "blocked"))
+        self.records[7].update(state="closed", state_reason="completed")
+        other = copy.deepcopy(self.config)
+        other["labels"] = {key: "other:" + key for key in other["labels"]}
+        self.add_issue(9, repo="fixture/other", label_keys=("plan", "blocked"))
+        self.records[9]["labels"] = [{"name": other["labels"][key]} for key in ("plan", "blocked")]
+        self.blockers[8] = self.blockers[9] = {7}
+        observations = []
+        with tempfile.TemporaryDirectory() as checkout:
+            def config(repo, *, checkout=None, discovery=None):
+                observations.append((repo, checkout))
+                if discovery is not None:
+                    discovery.update(status="discovered")
+                return copy.deepcopy(self.config if repo == REPO else other)
+            with patch.object(PLAN, "repo_from_git", return_value="fixture/wrong"), self.assertRaises(PLAN.PlanError):
+                self.command("reconcile-status", "7", "--planning-checkout=" + checkout, "--apply")
+            self.assert_labels(7, "plan", "active")
+            with patch.object(PLAN, "repo_from_git", return_value=REPO), patch.object(PLAN, "load_config", side_effect=config):
+                result = self.command("reconcile-status", "7", "--planning-checkout=" + checkout,
+                                      "--include-dependents", "--apply")
+                resume = PLAN.build_parser().parse_args(shlex.split(result["recovery"]["next_action"])[1:])
+                with contextlib.redirect_stdout(io.StringIO()):
+                    resume.func(resume)
+            self.assertTrue(all(path == checkout for repo, path in observations if repo == REPO), observations)
+            self.assertTrue(any(repo == "fixture/other" for repo, _ in observations), observations)
+            self.assertTrue(all(path is None for repo, path in observations if repo == "fixture/other"), observations)
+        self.assert_labels(7, "plan", "done")
+        self.assert_labels(8, "plan", "active")
+        self.assertEqual(set(PLAN.normalize_labels(self.records[9]["labels"])), {other["labels"][key] for key in ("plan", "active")})
+        self.assertEqual(self.fact_writes, [])
+
     def test_pending_close_comment_option_shaped_body_can_resume(self):
         note = "-capture"
         failure = PLAN.github_api_core.FailureDetail(cause="transport_error", message="Label rejected before note",
             retryable=False, fallback_eligible=False, disposition="stop", write_outcome="rejected")
-        with patch.object(PLAN.github_issue_core, "edit_issue", side_effect=PLAN.github_issue_core.IssueError(
+        with patch.multiple(PLAN, project_meta=Mock(return_value=("fixture-bot", 1, {"id": "project", "title": "-capture"})),
+                project_fields=Mock(return_value={}), find_project_item=Mock(return_value={"id": "item"})), \
+                patch.object(PLAN.pathlib.Path, "is_dir", return_value=True), patch.object(PLAN, "repo_from_git", return_value=REPO), \
+                patch.object(PLAN.github_issue_core, "edit_issue", side_effect=PLAN.github_issue_core.IssueError(
                 failure.message, failure=failure)), self.assertRaises(PLAN.PlanError) as caught:
-            self.command("close", "7", "--comment=" + note)
+            self.command("close", "7", "--comment=" + note, "--owner=-owner", "--project=-capture", "--planning-checkout=-checkout")
         pending = caught.exception.payload["recovery"]["pending_comment"]
         resume = PLAN.build_parser().parse_args(pending["resume_argv"][1:])
         self.assertEqual(resume.body, note)
-        with contextlib.redirect_stdout(io.StringIO()):
+        self.assertEqual((resume.owner, resume.project, resume.planning_checkout), ("-owner", "-capture", "-checkout"))
+        projection = PLAN.build_parser().parse_args(shlex.split(caught.exception.payload["recovery"]["projection_command"])[1:])
+        self.assertEqual(projection.planning_checkout, resume.planning_checkout)
+        with patch.multiple(PLAN, project_meta=Mock(return_value=("fixture-bot", 1, {"id": "project", "title": "-capture"})),
+                project_fields=Mock(return_value={}), find_project_item=Mock(return_value={"id": "item"})), \
+                patch.object(PLAN.pathlib.Path, "is_dir", return_value=True), patch.object(PLAN, "repo_from_git", return_value=REPO), \
+                contextlib.redirect_stdout(io.StringIO()):
             resume.func(resume)
         self.assertEqual([comment["body"] for comment in self.discussion[7]], [note])
 

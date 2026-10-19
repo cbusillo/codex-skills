@@ -1604,6 +1604,32 @@ def test_generic_explicit_source_projection_denial_is_a_failed_required_outcome(
         assert {item["name"] for item in records[43]["labels"]} == {names[key] for key in ("plan", "blocked")}
 
 
+def test_generic_missing_checkout_read_failure_keeps_required_source_and_provider_cause() -> None:
+    for personal in (False, True):
+        for status in (403, 503):
+            with generic_close_fixture(verified_checkout=False) as (callback, records, comments, states, posts):
+                def denied(method, path, body, **kwargs):
+                    if method == "GET" and path.endswith("/issues/42") and records[42]["state"] == "closed":
+                        result = failure(status, {"message": "Resource not accessible by integration" if status == 403 else "Service unavailable"}, is_write=False)
+                        result.failure.request_id = "fixture-post-close-read"
+                        return result
+                    return callback(method, path, body, **kwargs)
+                def run(calls):
+                    with patch.object(github_issue.github_identity, "own_user_opted_in", return_value=personal):
+                        code, payload = _run_cli(["close", "owner/repo#42"], io.StringIO(""), timeout=10, planning=True)
+                    assert code != 0 and payload["state"] == "closed", payload
+                    source = payload["projection"]["issues"][0]
+                    assert source["number"] == 42 and source["required"] and not source["ok"], source
+                    provider = source["error"]["failure"]
+                    expected = github_plan_status.failure_disposition(provider["cause"], provider.get("write_outcome"), writes_started=False)
+                    assert source["status"] == expected["status"], source
+                    assert provider["request_id"] == "fixture-post-close-read", source
+                    assert source["recovery"]["issue"] == {"repo": "owner/repo", "number": 42}, source
+                    assert not [call for call in calls if "/issues/43" in call["path"] or "/labels" in call["path"]], calls
+                with_call_stub(denied, run)
+                assert states == [(42, "closed")] and not posts
+
+
 def test_exact_personal_close_optin_never_fans_out_when_later_identity_lookup_disagrees() -> None:
     for lifecycle in (None, "active", "done"):
         with generic_close_fixture() as (callback, records, comments, states, posts):
@@ -1666,6 +1692,7 @@ TESTS = [
     test_generic_cli_projection_failure_preserves_confirmed_close_and_metadata_recovery,
     test_generic_closed_source_transient_comment_read_repairs_lifecycle_and_keeps_wait_review,
     test_generic_explicit_source_projection_denial_is_a_failed_required_outcome,
+    test_generic_missing_checkout_read_failure_keeps_required_source_and_provider_cause,
     test_exact_personal_close_optin_never_fans_out_when_later_identity_lookup_disagrees,
 ]
 

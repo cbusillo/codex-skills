@@ -16,6 +16,7 @@ import json
 import os
 import pathlib
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -3213,9 +3214,12 @@ def automatic_planning_writes_allowed() -> bool:
 
 
 def refresh_planning_targets(targets: list[tuple[str, int]], *, apply: bool = True,
-                             include_dependents: bool = False, required: bool = True) -> dict[str, Any]:
+                             include_dependents: bool = False, required: bool = True,
+                             config_optional_unless_planning: bool = False,
+                             planning_checkout: str | None = None) -> dict[str, Any]:
     """A confirmed fact write and its label projection have separate receipts."""
-    tasks = [{"repo": repo, "number": number, "role": "related", "required": required}
+    tasks = [{"repo": repo, "number": number, "role": "related", "required": required,
+              **({"config_optional_unless_planning": True} if config_optional_unless_planning else {})}
              for repo, number in dict.fromkeys(targets)]
     if include_dependents:
         for repo, number in targets:
@@ -3228,6 +3232,11 @@ def refresh_planning_targets(targets: list[tuple[str, int]], *, apply: bool = Tr
                     entry["status"] = "review_cross_repository"
                 if not any(item["repo"] == target_repo and item["number"] == target_number for item in tasks):
                     tasks.append(entry)
+    if planning_checkout:
+        root_repositories = {repo.casefold() for repo, _ in targets}
+        for entry in tasks:
+            if entry["repo"].casefold() in root_repositories:
+                entry["planning_checkout"] = planning_checkout
     return github_plan_landing.run_reconciliation_tasks(argparse.Namespace(**globals()), tasks, apply=apply)
 
 
@@ -3240,11 +3249,19 @@ def status_recovery(repo: str, number: int) -> dict[str, Any]:
 def cmd_reconcile_status(args: argparse.Namespace) -> None:
     repo, number = issue_ref(args.issue, default_repo(args.repo))
     recovery = status_recovery(repo, number)
+    planning_checkout = getattr(args, "planning_checkout", None)
+    if planning_checkout:
+        checkout_path = pathlib.Path(planning_checkout).expanduser()
+        if not checkout_path.is_dir() or (repo_from_git(checkout_path) or "").casefold() != repo.casefold():
+            raise PlanError("--planning-checkout must name a checkout of the resolved target repository")
     if args.include_dependents:
         recovery["next_action"] = f"gh-plan.py --repo {repo} reconcile-status {number} --include-dependents --apply"
+    if planning_checkout:
+        recovery["next_action"] += " " + shlex.quote("--planning-checkout=" + planning_checkout)
     try:
         result = refresh_planning_targets([(repo, number)], apply=args.apply,
-                                         include_dependents=args.include_dependents, required=True)
+            include_dependents=args.include_dependents, required=True,
+            **({"planning_checkout": planning_checkout} if planning_checkout else {}))
     except PlanError as error:
         error.payload["recovery"] = recovery
         raise
@@ -5847,13 +5864,15 @@ def cmd_close(args: argparse.Namespace) -> None:
         wrapped = close_error_with_recovery(error, issue_repo=issue_repo, number=number, close_reason=close_reason,
             relationship_preflight=relationship_preflight, project_result=project_result, issue_closed=True,
             metadata_state=metadata_state, planning_config=planning_config)
+        if planning_checkout:
+            wrapped.payload["recovery"]["projection_command"] += " " + shlex.quote("--planning-checkout=" + planning_checkout)
         if close_comment:
             resume = ["gh-plan.py", "--repo", issue_repo, "close", str(number),
                       "--reason", close_reason, "--comment=" + close_comment]
             for flag, value in (("--project", args.project), ("--owner", args.owner),
                                 ("--planning-checkout", planning_checkout)):
                 if value:
-                    resume.extend([flag, str(value)])
+                    resume.append(flag + "=" + str(value))
             comment_outcome = "not_attempted"
             if metadata_state == "comment_incomplete":
                 comment_outcome = (error.failure.write_outcome if error.failure else None) or "unknown"
@@ -5982,7 +6001,7 @@ def cmd_close(args: argparse.Namespace) -> None:
         raise PlanError("Issue is closed; dependent planning reconciliation is incomplete", payload={
             "closed": closed_result, "source_projection": source_projection,
             "dependents": dependents, "completed_steps": completed_steps,
-            "recovery": {"next_action": f"gh-plan.py --repo {issue_repo} reconcile-status {number} --include-dependents --apply",
+            "recovery": {"next_action": f"gh-plan.py --repo {issue_repo} reconcile-status {number} --include-dependents --apply" + (" " + shlex.quote("--planning-checkout=" + planning_checkout) if planning_checkout else ""),
                          "scope": "Repair only metadata after resolving the reported problem; preserve the confirmed close"}})
     emit({
         "ok": True,
@@ -6595,6 +6614,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("reconcile-status", help="Project an issue's status labels without repeating a fact write")
     p.add_argument("issue")
+    p.add_argument("--planning-checkout", help="Verified target repository checkout used for root and same-repository configuration")
     p.add_argument("--include-dependents", action="store_true", help="Also refresh direct native parents and blocking dependents")
     p.add_argument("--apply", action="store_true", help="Apply the guarded label projection; default is read-only")
     p.set_defaults(func=cmd_reconcile_status)

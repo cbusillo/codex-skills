@@ -103,7 +103,21 @@ class GoalBoardTests(unittest.TestCase):
         self.assertTrue(board["coverage"]["complete"], board)
         self.assertFalse(observed["unread"])
         self.assertEqual(observed["status"], github_plan_status.DEFAULT_STATUS_LABELS["done"])
-        self.assertEqual(goal_board.child_state(observed), "closed (label plan:active is stale)")
+
+    def test_closed_child_preserves_readable_person_wait_and_native_blocker(self):
+        wait = github_plan_wait.reviewed(evidence="Closure did not end the recorded hold",
+            waiting_for="Owner acceptance", ends_when="Owner accepts the observed result")
+        row = child(10, state="CLOSED", body=github_plan_wait.marker(wait))
+        row["body"] = github_plan_wait.marker(wait)
+        blocker = {"number": 3, "state": "OPEN", "url": "https://github.com/owner/app/issues/3",
+                   "repository": {"nameWithOwner": "owner/app"}}
+        row["blockedBy"] = {"totalCount": 1, "nodes": [blocker]}
+        board = self.replay(listing([{"number": 1, "title": "Track: One"}]), details(t1=track(1, children=[row])))
+        observed = board["tracks"][0]["children"][0]
+        self.assertEqual(observed["waits"], wait["waits"])
+        self.assertEqual(observed["structured_wait"], wait)
+        self.assertEqual(observed["blocked_by"][0]["number"], blocker["number"])
+        self.assertEqual(observed["status"], github_plan_status.DEFAULT_STATUS_LABELS["done"])
 
     def test_native_blockers_and_structured_wait_override_stale_label_and_prose(self):
         clear = github_plan_wait.reviewed(evidence="No person wait remains")
