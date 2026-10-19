@@ -95,6 +95,16 @@ class GoalBoardTests(unittest.TestCase):
             body if isinstance(body, ApiResult) else ApiResult(ok=True, status=200, body=body) for body in bodies]
         return goal_board.goal_board(self.reader, "owner", trusted=TRUSTED, wait_trusted=TRUSTED)
 
+    def test_closed_legacy_child_does_not_require_an_unused_wait_projection(self):
+        row = child(10, state="CLOSED")
+        row["body"] = github_plan_wait.without_records(row["body"])
+        board = self.replay(listing([{"number": 1, "title": "Track: One"}]), details(t1=track(1, children=[row])))
+        observed = board["tracks"][0]["children"][0]
+        self.assertTrue(board["coverage"]["complete"], board)
+        self.assertFalse(observed["unread"])
+        self.assertEqual(observed["status"], github_plan_status.DEFAULT_STATUS_LABELS["done"])
+        self.assertEqual(goal_board.child_state(observed), "closed (label plan:active is stale)")
+
     def test_native_blockers_and_structured_wait_override_stale_label_and_prose(self):
         clear = github_plan_wait.reviewed(evidence="No person wait remains")
         held = github_plan_wait.reviewed(evidence="Owner requested testing", waiting_for="Owner's test",

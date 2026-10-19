@@ -103,6 +103,10 @@ def status_label(labels, unread):
 def derived_status(node, trusted, unread):
     """Native blockers and the last trusted structured wait own current status."""
     unknown = {"status": UNKNOWN, "blocked_by": [], "waits": [], "structured_wait": None}
+    if node["state"] == "CLOSED":
+        # Closed children render their native lifecycle and stale recorded label;
+        # their unused wait projection cannot make the board unreadable.
+        return {**unknown, "status": github_plan_status.DEFAULT_STATUS_LABELS["done"]}
     blockers = node.get("blockedBy")
     if not isinstance(blockers, dict) or truncated(blockers):
         unread.append("native blockers")

@@ -14,7 +14,7 @@ from typing import Any, Callable
 
 def reconcile(*, repo: str, number: int, request: Callable[..., tuple[str | None, Any]],
               actor: str | None, gh_cmd: str, expected_actor: str | None, operation: str,
-              issue_core: Any) -> dict[str, Any]:
+              issue_core: Any, apply: bool = True, include_dependents: bool = True) -> dict[str, Any]:
     name = "_github_plan_confirmed_close"
     spec = importlib.util.spec_from_file_location(name, Path(__file__).with_name("gh-plan.py"))
     assert spec is not None and spec.loader is not None
@@ -40,7 +40,18 @@ def reconcile(*, repo: str, number: int, request: Callable[..., tuple[str | None
         # close uses its confirmed closure and complete structured wait reads.
         plan.planning_comment_attention = lambda *_args: False
         try:
-            return plan.refresh_planning_targets([(repo, number)], include_dependents=True)
+            discovery: dict[str, Any] = {}
+            plan.load_config(repo, discovery=discovery)
+            required = True
+            if discovery.get("status") not in {"discovered", "verified_defaults"}:
+                _, source = plan.get_issue(str(number), repo)
+                # An ordinary close needs no local planning checkout. Unknown
+                # custom labels still retain partial configuration coverage;
+                # canonical planning roots and every provider failure stay required.
+                required = plan.github_plan_status.is_planning_issue(
+                    source, plan.github_plan_status.DEFAULT_STATUS_LABELS)
+            return plan.refresh_planning_targets([(repo, number)], apply=apply,
+                include_dependents=include_dependents, required=required)
         except (plan.PlanError, ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError) as error:
             failure = getattr(error, "failure", None)
             return {"ok": False, "coverage": "partial", "review_required": True, "issues": [],

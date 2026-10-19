@@ -205,7 +205,10 @@ def test_own_user_sibling_writes_use_resolved_personal_actor() -> None:
             ):
                 exit_code = github_issue.main()
             payload = json.loads(stdout.getvalue())
-            assert exit_code == 0 and payload["ok"] is True, payload
+            assert (exit_code != 0) == (command == "close"), payload
+            assert payload["ok"] == (command != "close"), payload
+            if command == "close":
+                assert payload["recovery"]["issue_closed"] is True, payload
             assert payload["actor"] == payload["expected_actor"] == personal_login, payload
             assert sum(call["method"] == "PATCH" for call in calls) == 1, calls
 
@@ -1401,7 +1404,7 @@ def test_close_rejects_comment_with_comment_file() -> None:
 
 
 @contextlib.contextmanager
-def generic_close_fixture(*, reject_labels: bool | str = False):
+def generic_close_fixture(*, reject_labels: bool | str = False, verified_checkout: bool = True):
     """Use the original API mock across the CLI and fresh planning adapter."""
     names = github_plan_status.DEFAULT_STATUS_LABELS
     clear = github_plan_status.wait_records.reviewed(evidence="Dependent discussion fully reviewed")
@@ -1465,6 +1468,8 @@ def generic_close_fixture(*, reject_labels: bool | str = False):
         metadata.parent.mkdir()
         metadata.write_text(json.dumps({"planning": {"labels": dict(names), "projects": {"enabled": False}}}))
         def git(command, **kwargs):
+            if not verified_checkout:
+                return subprocess.CompletedProcess(command, 1, "", "No matching checkout")
             if command == ["git", "rev-parse", "--show-toplevel"]:
                 return subprocess.CompletedProcess(command, 0, str(checkout), "")
             if command == ["git", "remote", "get-url", "origin"]:
@@ -1497,6 +1502,25 @@ def test_generic_cli_close_refreshes_a_nonplan_blockers_dependent_without_fact_e
         assert {item["name"] for item in records[43]["labels"]} == {names[key] for key in ("plan", "active")}
         assert {key: value for key, value in records[43].items() if key != "labels"} == {
             key: value for key, value in dependent.items() if key != "labels"}
+
+
+def test_generic_close_without_a_matching_checkout_preserves_configuration_review() -> None:
+    for labels in ([], [{"name": "bug"}], [{"name": github_plan_status.DEFAULT_STATUS_LABELS["active"]}]):
+        with generic_close_fixture(verified_checkout=False) as (callback, records, comments, states, posts):
+            records[42]["labels"] = labels
+            def run(calls):
+                code, payload = _run_cli(["close", "owner/repo#42"], io.StringIO(""), timeout=10, planning=True)
+                canonical_plan = bool(labels and labels[0]["name"] != "bug")
+                assert (code != 0) == canonical_plan, payload
+                assert payload["state"] == "closed", payload
+                assert payload["projection"]["coverage"] == "partial", payload
+                source = next(row for row in payload["projection"]["issues"] if row["number"] == 42)
+                assert source["status"] == "review_planning_config", source
+                assert source["required"] == canonical_plan, source
+                assert not [call for call in calls if call["method"] not in {"GET", "PATCH"}], calls
+            with_call_stub(callback, run)
+            assert states == [(42, "closed")] and not posts
+            assert records[42]["labels"] == labels
 
 
 def test_generic_cli_projection_failure_preserves_confirmed_close_and_metadata_recovery() -> None:
@@ -1581,17 +1605,21 @@ def test_generic_explicit_source_projection_denial_is_a_failed_required_outcome(
 
 
 def test_exact_personal_close_optin_never_fans_out_when_later_identity_lookup_disagrees() -> None:
-    with generic_close_fixture() as (callback, records, comments, states, posts):
-        before = copy.deepcopy(records[43])
-        def run(calls):
-            with patch.object(github_issue.github_identity, "own_user_opted_in", return_value=True):
-                code, payload = _run_cli(["close", "owner/repo#42"], io.StringIO(""), timeout=10, planning=True)
-            assert code == 0, payload
-            assert payload["projection"]["status"] == "review_posting_authority", payload
-            assert not [call for call in calls if "/issues/43" in call["path"]], calls
-        with_call_stub(callback, run)
-        assert records[43] == before
-        assert states == [(42, "closed")] and posts == [], (states, posts)
+    for lifecycle in (None, "active", "done"):
+        with generic_close_fixture() as (callback, records, comments, states, posts):
+            before = copy.deepcopy(records[43])
+            if lifecycle:
+                records[42]["labels"] = [{"name": github_plan_status.DEFAULT_STATUS_LABELS[key]} for key in ("plan", lifecycle)]
+            def run(calls):
+                with patch.object(github_issue.github_identity, "own_user_opted_in", return_value=True):
+                    code, payload = _run_cli(["close", "owner/repo#42"], io.StringIO(""), timeout=10, planning=True)
+                assert (code != 0) == (lifecycle == "active"), payload
+                assert payload["projection"]["status"] == "review_posting_authority", payload
+                assert payload["projection"]["coverage"] == "partial", payload
+                assert not [call for call in calls if "/issues/43" in call["path"] or "/labels" in call["path"]], calls
+            with_call_stub(callback, run)
+            assert records[43] == before
+            assert states == [(42, "closed")] and posts == [], (states, posts)
 
 
 TESTS = [
@@ -1634,6 +1662,7 @@ TESTS = [
     test_edit_body_file_can_clear_the_body,
     test_close_rejects_comment_with_comment_file,
     test_generic_cli_close_refreshes_a_nonplan_blockers_dependent_without_fact_edits,
+    test_generic_close_without_a_matching_checkout_preserves_configuration_review,
     test_generic_cli_projection_failure_preserves_confirmed_close_and_metadata_recovery,
     test_generic_closed_source_transient_comment_read_repairs_lifecycle_and_keeps_wait_review,
     test_generic_explicit_source_projection_denial_is_a_failed_required_outcome,

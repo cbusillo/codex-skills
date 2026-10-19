@@ -5849,7 +5849,7 @@ def cmd_close(args: argparse.Namespace) -> None:
             metadata_state=metadata_state, planning_config=planning_config)
         if close_comment:
             resume = ["gh-plan.py", "--repo", issue_repo, "close", str(number),
-                      "--reason", close_reason, "--comment", close_comment]
+                      "--reason", close_reason, "--comment=" + close_comment]
             for flag, value in (("--project", args.project), ("--owner", args.owner),
                                 ("--planning-checkout", planning_checkout)):
                 if value:

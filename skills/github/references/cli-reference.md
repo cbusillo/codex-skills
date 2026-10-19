@@ -2069,8 +2069,14 @@ blocking dependents. Provider reads and label writes retain the original close
 transport and automation actor. Partial receipts preserve the confirmed close
 and offer `reconcile-status --include-dependents --apply` recovery, without
 repeating the close comment. Exact personal-identity approval authorizes only
-that close; automatic planning work is returned for existing authorized target
-sessions. The shared `set_issue_state` primitive keeps its existing contract;
+that close; the adapter previews only its explicit target and returns automatic
+planning work for existing authorized target sessions. A required planning source
+that cannot receive its lifecycle labels returns unsuccessful with the confirmed
+close and recovery retained. An ordinary close outside a matching checkout can
+succeed with partial planning-configuration coverage when no canonical planning
+label identifies the source; custom label configuration remains unverified,
+and the receipt retains that review rather than claiming complete projection.
+Provider failures remain unsuccessful. The shared `set_issue_state` primitive keeps its existing contract;
 `gh-plan close` owns its own post-close orchestration.
 `--duplicate-of` accepts the same issue-reference forms, resolves the target's
 REST database id, and sends `state_reason=duplicate` plus `duplicate_issue_id`

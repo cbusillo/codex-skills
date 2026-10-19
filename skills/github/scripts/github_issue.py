@@ -1617,10 +1617,7 @@ def refresh_after_close(repo: str, number: int, payload: dict[str, Any], *, oper
     recovery = {"issue_closed": True, "issue": {"repo": repo, "number": number},
                 "next_action": f"gh-plan.py --repo {repo} reconcile-status {number} --include-dependents --apply",
                 "scope": "Existing authorized target session repairs metadata; do not replay the close or comment"}
-    if github_identity.own_user_opted_in() or github_identity.active_auth_fallback_allowed():
-        return {"ok": True, "coverage": "partial", "review_required": True, "issues": [],
-                "status": "review_posting_authority", "recovery": recovery,
-                "reason": "Exact personal close approval does not authorize automatic planning writes"}
+    personal = github_identity.own_user_opted_in() or github_identity.active_auth_fallback_allowed()
     import github_plan_close_adapter
     summaries: list[github_api_core.RetrySummary] = []
     expected = payload.get("expected_actor")
@@ -1633,7 +1630,19 @@ def refresh_after_close(repo: str, number: int, payload: dict[str, Any], *, oper
         return result.actor or actor, result.body
     projection = github_plan_close_adapter.reconcile(
         repo=repo, number=number, request=request, actor=actor, gh_cmd=DEFAULT_GH,
-        expected_actor=expected, operation=operation, issue_core=sys.modules[__name__])
+        expected_actor=expected, operation=operation, issue_core=sys.modules[__name__],
+        apply=not personal, include_dependents=not personal)
+    if personal:
+        # Read only the explicit target through the confirmed close transport.
+        # Exact close approval does not grant a subsequent label mutation.
+        for entry in projection.get("issues", []):
+            if (entry.get("required") and entry.get("ok") and entry["status"] not in {"not_planning_issue", "unchanged"}
+                    and entry.get("projection_status") != "unchanged"):
+                entry.update(status="review_posting_authority", ok=False, verified=False,
+                             projection_status="preserved", informational=False)
+                projection["ok"] = False
+        projection.update(coverage="partial", review_required=True, status="review_posting_authority",
+            reason="Exact personal close approval does not authorize automatic planning writes")
     summary = github_api_core.aggregate_retry_summaries(summaries)
     projection["retry"] = summary.as_dict() if summary else None
     projection["recovery"] = recovery

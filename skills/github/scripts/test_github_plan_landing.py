@@ -1222,6 +1222,20 @@ class MutationProjectionTests(unittest.TestCase):
         self.assertEqual([comment["body"] for comment in self.discussion[7]], [note])
         self.assert_labels(7, "plan", "done")
 
+    def test_pending_close_comment_option_shaped_body_can_resume(self):
+        note = "-capture"
+        failure = PLAN.github_api_core.FailureDetail(cause="transport_error", message="Label rejected before note",
+            retryable=False, fallback_eligible=False, disposition="stop", write_outcome="rejected")
+        with patch.object(PLAN.github_issue_core, "edit_issue", side_effect=PLAN.github_issue_core.IssueError(
+                failure.message, failure=failure)), self.assertRaises(PLAN.PlanError) as caught:
+            self.command("close", "7", "--comment=" + note)
+        pending = caught.exception.payload["recovery"]["pending_comment"]
+        resume = PLAN.build_parser().parse_args(pending["resume_argv"][1:])
+        self.assertEqual(resume.body, note)
+        with contextlib.redirect_stdout(io.StringIO()):
+            resume.func(resume)
+        self.assertEqual([comment["body"] for comment in self.discussion[7]], [note])
+
     def test_unknown_close_comment_outcome_retains_uncertainty_and_pending_note(self):
         note = "Retain this exact completion note.\nSecond paragraph."
         failure = PLAN.github_api_core.FailureDetail(cause="network_provider_failure", message="Comment outcome unknown",

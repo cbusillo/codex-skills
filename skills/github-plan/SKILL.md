@@ -34,7 +34,7 @@ commands:
     purpose: Searches planning issues with normalized compact output.
   - name: github-plan-create
     source: repo
-    example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "create", "<title>", "--body-file", "<file>"]
+    example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "create", "<title>", "--body-file", "<file>", "--wait-clear", "--wait-evidence", "<reviewed-evidence>"]
     purpose: Creates a durable plan issue with helper-owned labels and optional Project enrollment.
   - name: github-plan-update-section
     source: repo
