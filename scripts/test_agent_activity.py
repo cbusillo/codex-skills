@@ -18,8 +18,8 @@ from types import SimpleNamespace
 
 from aiohttp import web, WSMsgType
 
-from agent_activity import ActivityStore, atomic_json, home_key, hook_activity, uuid7
-from observe_agent_activity import CodexObserver, project_claude, claude_poll, durable_cli
+from agent_activity import FIELDS, PRUNE_STAMP, ActivityStore, atomic_json, home_key, hook_activity, uuid7
+from observe_agent_activity import CodexObserver, project_claude, claude_poll, durable_cli, observe
 
 SESSION = str(uuid.uuid4())
 RUN = str(uuid.uuid4())
@@ -32,10 +32,10 @@ class ActivityTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
-        self.store = ActivityStore(self.root / "panel", self.root / "code")
+        self.store = ActivityStore(self.root / "code")
         self.env = {"CODE_HOME": str(self.root / "code"), "CLAUDE_CONFIG_DIR": str(self.root / "claude")}
         atomic_json(self.store.private / f"binding-{home_key('claude', self.env)}.json",
-                    {"accountID": ACCOUNT, "storageRoot": str(self.root / "panel")})
+                    {"producerID": "codex-skills", "accountID": ACCOUNT})
 
     def events(self):
         return [json.loads(p.read_text()) for p in self.store.events.glob("*.json")]
@@ -68,6 +68,59 @@ class ActivityTests(unittest.TestCase):
         self.hook("StopFailure", error=SECRET)
         self.assertEqual(len({r['runID'] for r in self.events()}), 2)
         self.assertTrue(any(r['state'] == 'failed' for r in self.events()))
+
+    def test_no_free_text_reaches_inbox_or_private_state(self):
+        fields = ('prompt', 'last_assistant_message', 'transcript_path', 'cwd', 'tool_name', 'tool_input',
+                  'command', 'environment', 'inventory_name', 'inventory_summary', 'inventory_cwd', 'codex_item')
+        sentinel = {field: f'sentinel-{field}-{uuid.uuid4().hex}' for field in fields}
+        env = {**self.env, 'SENTINEL_TOKEN': sentinel['environment']}
+        payload = {'session_id': SESSION, 'prompt': sentinel['prompt'],
+                   'last_assistant_message': sentinel['last_assistant_message'],
+                   'transcript_path': sentinel['transcript_path'], 'cwd': sentinel['cwd'],
+                   'tool_name': sentinel['tool_name'],
+                   'tool_input': {'command': sentinel['command'], 'description': sentinel['tool_input']},
+                   'message': sentinel['prompt'], 'error': sentinel['last_assistant_message']}
+        for event, extra in (('UserPromptSubmit', {}), ('PermissionRequest', {}),
+                             ('Notification', {'notification_type': 'permission_prompt'}),
+                             ('SubagentStart', {'agent_id': 'agent-abc123'}),
+                             ('SubagentStop', {'agent_id': 'agent-abc123'}), ('StopFailure', {}), ('Stop', {})):
+            hook_activity({**payload, 'hook_event_name': event, **extra}, env)
+        project_claude(self.store, ACCOUNT, [{'sessionId': RUN, 'status': 'busy', 'name': sentinel['inventory_name'],
+                                              'summary': sentinel['inventory_summary'], 'cwd': sentinel['inventory_cwd']}])
+        codex = str(uuid.uuid4())
+        item = [{'type': 'agentMessage', 'text': sentinel['codex_item']}]
+        frames = [{'method': 'item/agentMessage/delta', 'params': {'threadId': codex, 'delta': sentinel['codex_item']}},
+                  {'method': 'item/completed', 'params': {'threadId': codex, 'item': item[0]}},
+                  {'method': 'turn/started', 'params': {'threadId': codex, 'turn': {'id': RUN, 'status': 'inProgress', 'items': item}}},
+                  {'method': 'turn/completed', 'params': {'threadId': codex, 'turn': {'id': RUN, 'status': 'completed', 'items': item}}}]
+        observer = CodexObserver(self.store, 'openai-0123456789abcdef', self.root)
+
+        class Frames:
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if not frames:
+                    raise StopAsyncIteration
+                return SimpleNamespace(type=WSMsgType.TEXT, data=json.dumps(frames.pop(0)))
+
+        async def observe_frames():
+            observer.ws = Frames()
+            await observer.receive()
+            while not observer.queue.empty():
+                await observer.handle(observer.queue.get_nowait())
+
+        asyncio.run(observe_frames())
+        records = self.events()
+        self.assertEqual({r['outcomeSource'] for r in records}, {'claude-hook', 'claude-inventory', 'codex-turn'})
+        for record in records:
+            self.assertEqual(tuple(record), FIELDS)
+        written = [p for p in (self.root / 'code').rglob('*') if p.is_file()]
+        self.assertTrue(any(p.parent == self.store.private for p in written))
+        for path in written:
+            data = path.read_bytes()
+            for value in sentinel.values():
+                self.assertNotIn(value.encode(), data, path.name)
 
     def test_subagent_parentage_and_nonterminal_reentrant_stop(self):
         self.hook("UserPromptSubmit")
@@ -183,10 +236,10 @@ class ActivityTests(unittest.TestCase):
         self.assertGreater(last['eventID'], first['eventID'])
 
     def test_activity_storage_failure_preserves_advisory_stop(self):
-        bad = self.root / 'redirected-panel'
-        bad.symlink_to(self.root / 'panel', target_is_directory=True)
-        atomic_json(self.store.private / f"binding-{home_key('claude', self.env)}.json",
-                    {'accountID': ACCOUNT, 'storageRoot': str(bad)})
+        target = self.root / 'elsewhere'
+        target.mkdir()
+        self.store.events.rmdir()
+        self.store.events.symlink_to(target, target_is_directory=True)
         hook = Path(__file__).resolve().parents[1] / 'hooks' / 'session_alert_hook.py'
         env = {**os.environ, **self.env}
         env.pop('CODEX_SKILLS_HARNESS', None)
@@ -196,6 +249,7 @@ class ActivityTests(unittest.TestCase):
         self.assertEqual(json.loads(result.stdout), {})
         advisory = json.loads((self.root / 'code' / 'session-events.jsonl').read_text())
         self.assertEqual(advisory['event'], 'Stop')
+        self.assertEqual(list(target.iterdir()), [])
 
     def test_uuid7_and_prune_only_owned_day_old_regular_records(self):
         now = dt.datetime.now(dt.timezone.utc)
@@ -234,17 +288,134 @@ class ActivityTests(unittest.TestCase):
         self.assertEqual(len({r['runID'] for r in self.events()}), 1)
 
     def test_redirected_store_is_refused_without_touching_target(self):
+        target = self.root / 'target'
+        target.mkdir()
         link = self.root / 'link'
-        link.symlink_to(self.root / 'panel', target_is_directory=True)
+        link.symlink_to(target, target_is_directory=True)
         with self.assertRaises(ValueError):
-            ActivityStore(link, self.root / 'other-private')
+            ActivityStore(link)
+        state = self.root / 'redirected-state'
+        state.mkdir()
+        (state / 'agent-activity').symlink_to(target, target_is_directory=True)
+        with self.assertRaises(ValueError):
+            ActivityStore(state)
+        inbox = self.root / 'redirected-inbox'
+        (inbox / 'agent-activity').mkdir(parents=True)
+        (inbox / 'agent-activity' / 'inbox').symlink_to(target, target_is_directory=True)
+        with self.assertRaises(ValueError):
+            ActivityStore(inbox)
+        self.assertEqual(list(target.iterdir()), [])
+
+    def test_inbox_is_private_and_records_are_small(self):
+        loose = self.root / 'loose'
+        (loose / 'agent-activity' / 'inbox').mkdir(parents=True, mode=0o755)
+        (loose / 'agent-activity' / 'inbox').chmod(0o755)
+        store = ActivityStore(loose)
+        store.emit(ACCOUNT, 'claude', SESSION, 'working', 'claude-hook', start=True)
+        self.hook('UserPromptSubmit')
+        for folder in (store.private, store.events, self.store.private, self.store.events):
+            self.assertEqual(folder.stat().st_mode & 0o777, 0o700)
+        files = [*store.events.iterdir(), *self.store.events.iterdir()]
+        self.assertEqual(len(files), 2)
+        for path in files:
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            self.assertLessEqual(path.stat().st_size, 1024)
+
+
+class ProducerBoundaryTests(unittest.TestCase):
+    """Only entry points shared with the earlier App Group writer, so these also run against it."""
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.code = self.root / 'code'
+        self.state = self.code / 'agent-activity'
+        self.inbox = self.state / 'inbox'
+        self.app_group = self.root / 'Group Containers' / 'Context Panel'
+        self.app_group.mkdir(parents=True)
+        self.state.mkdir(parents=True, mode=0o700)
+        self.env = {'CODE_HOME': str(self.code), 'CLAUDE_CONFIG_DIR': str(self.root / 'claude')}
+        # A binding written before the inbox still names the App Group store.
+        binding = self.state / f"binding-{home_key('claude', self.env)}.json"
+        binding.write_text(json.dumps({'producerID': 'codex-skills', 'accountID': ACCOUNT,
+                                       'storageRoot': str(self.app_group)}))
+
+    def hook(self, event, session=SESSION):
+        hook_activity({'hook_event_name': event, 'session_id': session}, dict(self.env))
+
+    def inbox_records(self):
+        return [json.loads(p.read_text()) for p in self.inbox.glob('*.json')]
+
+    def test_hook_and_observer_write_only_the_private_inbox(self):
+        self.hook('UserPromptSubmit')
+        self.hook('Stop')
+        hook = Path(__file__).resolve().parents[1] / 'hooks' / 'session_alert_hook.py'
+        env = {**os.environ, **self.env}
+        env.pop('CODEX_SKILLS_HARNESS', None)
+        child = str(uuid.uuid4())
+        result = subprocess.run([sys.executable, str(hook)], env=env, capture_output=True, text=True,
+                                input=json.dumps({'hook_event_name': 'UserPromptSubmit', 'session_id': child}), timeout=5)
+        self.assertEqual(result.returncode, 0)
+        snapshot = self.root / 'snapshot.py'
+        snapshot.write_text('import json\nprint(json.dumps(' + repr({
+            'schemaVersion': 1, 'accounts': [{'provider': 'anthropic', 'id': ACCOUNT, 'label': 'main'}]}) + '))\n')
+        config = self.root / 'supervisor.toml'
+        config.write_text('[accounts]\nsnapshot_command = '
+                          + json.dumps([sys.executable, str(snapshot), '--storage-root', str(self.app_group)]) + '\n'
+                          '[[accounts.account]]\nname = "main"\nprovider = "anthropic"\ncontext_panel_label = "main"\n'
+                          '[accounts.account.env]\nCLAUDE_CONFIG_DIR = ' + json.dumps(self.env['CLAUDE_CONFIG_DIR']) + '\n')
+        inventory = self.root / 'claude-fixture'
+        observed = str(uuid.uuid4())
+        inventory.write_text(f'#!{sys.executable}\nimport json\n'
+                             f'print(json.dumps([{{"sessionId": {observed!r}, "status": "busy"}}]))\n')
+        inventory.chmod(0o700)
+        asyncio.run(observe(config, once=True, state_root=self.code, claude_cli=inventory))
+        self.assertEqual(list(self.app_group.rglob('*')), [])
+        records = self.inbox_records()
+        self.assertEqual({r['sessionID'] for r in records}, {SESSION, child, observed})
+        self.assertEqual({r['outcomeSource'] for r in records}, {'claude-hook', 'claude-inventory'})
+        binding = json.loads((self.state / f"binding-{home_key('claude', self.env)}.json").read_text())
+        self.assertEqual(binding, {'producerID': 'codex-skills', 'accountID': ACCOUNT})
+
+    def plant(self):
+        """Day-old owned inbox and private files, plus files the prune must keep."""
+        self.inbox.mkdir(mode=0o700, exist_ok=True)
+        old = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=2)).isoformat().replace('+00:00', 'Z')
+        owned = self.inbox / f'codex-skills-{uuid.uuid4()}.json'
+        owned.write_text(json.dumps({'producerID': 'codex-skills', 'observedAt': old}))
+        other = self.inbox / f'codex-skills-{uuid.uuid4()}.json'
+        other.write_text(json.dumps({'producerID': 'another-producer', 'observedAt': old}))
+        foreign = self.inbox / 'foreign.json'
+        foreign.write_text(json.dumps({'producerID': 'codex-skills', 'observedAt': old}))
+        key = uuid.uuid4().hex * 2
+        private = self.state / f'{key}.json'
+        private.write_text(json.dumps({'producerID': 'codex-skills', 'observedAt': old}))
+        (self.state / f'{key[:2]}.lock').touch()
+        return [owned, private], [other, foreign]
+
+    def test_hook_prunes_owned_day_old_files_at_most_once_per_window(self):
+        removable, kept = self.plant()
+        self.hook('UserPromptSubmit')
+        self.assertEqual([p.exists() for p in removable], [False, False])
+        self.assertTrue(all(p.exists() for p in kept))
+        self.assertEqual(len(self.inbox_records()), 3)  # The new event plus the two kept files.
+        stamp = self.state / PRUNE_STAMP
+        self.assertEqual(stamp.stat().st_mode & 0o777, 0o600)
+        removable, kept = self.plant()
+        self.hook('Stop')
+        self.assertTrue(all(p.exists() for p in removable))  # Within the window: no second prune.
+        hour_ago = stamp.stat().st_mtime - 3601
+        os.utime(stamp, (hour_ago, hour_ago))
+        self.hook('UserPromptSubmit')
+        self.assertEqual([p.exists() for p in removable], [False, False])
+        self.assertTrue(all(p.exists() for p in kept))
 
 
 class ObserverTests(unittest.IsolatedAsyncioTestCase):
     async def test_overflow_is_a_recoverable_source_gap(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder).resolve()
-            store = ActivityStore(root / 'panel', root / 'private')
+            store = ActivityStore(root / 'private')
             observer = CodexObserver(store, 'openai-a', root)
             observer.queue = asyncio.Queue(maxsize=1)
 
@@ -262,7 +433,7 @@ class ObserverTests(unittest.IsolatedAsyncioTestCase):
     async def test_claude_reads_multiple_pipe_chunks_before_projecting(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder).resolve()
-            store = ActivityStore(root / 'panel', root / 'private')
+            store = ActivityStore(root / 'private')
             script = ('import json,sys,time; '
                       f'data=json.dumps([{{"sessionId":{SESSION!r},"status":"busy","name":"x"*100000}}]); '
                       'sys.stdout.write(data[:64]);sys.stdout.flush();time.sleep(.03); '
@@ -279,7 +450,7 @@ class ObserverTests(unittest.IsolatedAsyncioTestCase):
     async def test_real_socket_initial_active_idle_before_terminal_and_unsubscribe(self):
         with tempfile.TemporaryDirectory(dir="/tmp") as temp:
             root = Path(temp).resolve()
-            store = ActivityStore(root / 'panel', root / 'code')
+            store = ActivityStore(root / 'code')
             home = root / 'codex'
             sock = home / 'app-server-control' / 'app-server-control.sock'
             sock.parent.mkdir(parents=True)
@@ -353,7 +524,7 @@ class ObserverTests(unittest.IsolatedAsyncioTestCase):
     async def test_structured_failed_and_interrupted_do_not_become_completed(self):
         with tempfile.TemporaryDirectory(dir="/tmp") as temp:
             root = Path(temp).resolve()
-            store = ActivityStore(root / 'panel', root / 'code')
+            store = ActivityStore(root / 'code')
             observer = CodexObserver(store, 'openai-0123456789abcdef', root)
             for status in ('failed', 'interrupted'):
                 await observer.turn(SESSION, {'id': str(uuid.uuid4()), 'status': status, 'error': {'message': SECRET}})
