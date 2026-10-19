@@ -1197,12 +1197,11 @@ def source_launch_metadata(result, choice):
     if choice.get("resume_session_id"):
         result["native_session_id"] = choice["resume_session_id"]
     try:
-        from session_liveness import inventory
+        from session_liveness import harness_arguments, inventory
         github = str(Path(__file__).resolve().parents[2] / "github/scripts")
         if github not in sys.path:
             sys.path.append(github)
         import github_plan_closure
-        from github_plan_sessions import codex_argv_start
         tty = result.get("tty")
         if not isinstance(tty, str) or not tty:
             raise ValueError("launch TTY is unavailable")
@@ -1223,11 +1222,14 @@ def source_launch_metadata(result, choice):
                 raise ValueError("resumed generation does not match this terminal")
             result.update(generation)
             return result
-        candidates = [(pid, codex_argv_start(command.split())) for pid, terminal, command in inventory()
-                      if terminal == tty.removeprefix("/dev/") and codex_argv_start(command.split()) is not None]
+        candidates = []
+        for pid, terminal, command in inventory():
+            argv = harness_arguments(command)
+            if terminal == tty.removeprefix("/dev/") and argv and Path(argv[0]).name.casefold().startswith("codex"):
+                candidates.append((pid, command.split()[0] == argv[0]))
         # The guarded parent is a Python helper on the same TTY. Prefer the
         # native executable over the wrapper when both are visible.
-        matches = [pid for pid, kind in candidates if kind == 0]
+        matches = [pid for pid, direct in candidates if direct]
         if not matches:
             proxies = {r.get("launch_pid"): r for r in github_plan_closure.log_rows()
                        if r.get("record_kind") == "managed_proxy" and r.get("codex_home") == result["codex_home"]}

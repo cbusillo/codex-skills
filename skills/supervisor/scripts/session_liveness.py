@@ -53,10 +53,11 @@ def harness_arguments(command):
     # the prompt separator establish identity; arbitrary prompt text does not.
     words = command.split()
     positions = words[:1]
-    if words and (Path(words[0]).name in {"node", "nodejs", "bun"} or re.fullmatch(r"python(?:3(?:\.\d+)?)?", Path(words[0]).name)):
+    if words and (Path(words[0]).name in {"node", "nodejs", "bun", "deno", "sh", "bash", "zsh"}
+                  or re.fullmatch(r"python(?:3(?:\.\d+)?)?", Path(words[0]).name)):
         positions = words[:2]
     index = next((i for i, arg in enumerate(positions)
-                  if Path(arg).name in {"codex", "claude", "claude.js"}), None)
+                  if Path(arg).name.casefold().startswith("codex") or Path(arg).name in {"claude", "claude.js"}), None)
     if index is None:
         return []
     argv = words[index:]
@@ -68,12 +69,19 @@ def invocation(argv):
     # can contain spaces. Scan the native prefix conservatively, rather than
     # losing a real resume behind a fragment of that value. The explicit --
     # prompt separator was already removed by harness_arguments.
-    if len(argv) > 1 and Path(argv[0]).name == "codex" and argv[1] == "exec":
-        return [], "exec"
-    resumed = [argv[i + 1].strip("\"'") for i, arg in enumerate(argv[:-1])
-               if arg in {"--resume", "-r"} or arg == "resume" and Path(argv[0]).name == "codex"]
-    resumed.extend(arg.split("=", 1)[1].strip("\"'") for arg in argv if arg.startswith("--resume="))
-    return resumed, None
+    if not argv:
+        return [], None
+    codex = Path(argv[0]).name in {"codex", "codex.js"}
+    if not codex and Path(argv[0]).name not in {"claude", "claude.js"}:
+        return [], None  # Wrappers require their own guarded launch receipt.
+    markers = [i for i, arg in enumerate(argv)
+               if arg in {"--resume", "-r"} or codex and arg == "resume"]
+    resumed = [argv[i + 1] for i in markers if i + 1 < len(argv) and not argv[i + 1].startswith("-")]
+    options = [arg.split("=", 1)[1] for arg in argv if arg.startswith("--resume=")]
+    resumed.extend(value for value in options if value and not value.startswith("-"))
+    if markers or options:
+        return resumed, "resume"
+    return [], "exec" if codex and len(argv) > 1 and argv[1] in {"exec", "e"} else None
 
 
 def verify_process_exit(entry, *, rows=None, ended_at=None, started_at=None,
@@ -115,10 +123,10 @@ def verify_process_exit(entry, *, rows=None, ended_at=None, started_at=None,
         owner_known = replacement_owner is not None and replacement_owner(pid)
         if replacement_owner is not None and not owner_known:
             raise ValueError("process belongs to no verified new TTY owner; terminal kept")
-        source_names = {"codex": {"codex"}, "claude": {"claude", "claude.js"}}.get(entry.get("harness"), {"codex", "claude", "claude.js"})
+        source_names = {"codex": {"codex", "codex.js"}, "claude": {"claude", "claude.js"}}.get(entry.get("harness"), {"codex", "codex.js", "claude", "claude.js"})
         if argv and Path(argv[0]).name in source_names:
             explicit_other = len(resumed) == 1 and resumed[0] and not resumed[0].startswith("-")
-            noninteractive = Path(argv[0]).name == "codex" and command_kind == "exec"
+            noninteractive = command_kind == "exec"
             guarded = independent_harness is not None and independent_harness(pid, argv)
             if not (explicit_other or noninteractive or guarded or owner_known):
                 raise ValueError("unidentified harness on the recorded TTY; preserve claims and verify native identity")
@@ -126,10 +134,9 @@ def verify_process_exit(entry, *, rows=None, ended_at=None, started_at=None,
 
 
 def require_safe_status(status, *, exited=False):
-    verdict = status.get("declared_safe_verdict", status["safe_verdict"]) if exited else status["safe_verdict"]
-    if not verdict:
+    if not status["safe_verdict"]:
         raise ValueError("latest transcript lacks an unqualified Safe to exit: yes")
-    if status.get("background_tasks"):
+    if not exited and status.get("background_tasks"):
         raise ValueError("native background tasks or scheduled jobs remain; preserve the session")
 
 
@@ -138,6 +145,11 @@ def native_exit_cutoff(entry):
     if not entry.get("tmux_session_id"):
         return None
     from tmux_terminal import Terminal
-    terminal = Terminal(entry.get("tmux_socket", "supervisor"))
-    row = terminal.dead_pane(entry["tmux_session_id"], entry)
-    return datetime.fromisoformat(row["exited_at"]) if row.get("exited_at") else None
+    try:
+        terminal = Terminal(entry.get("tmux_socket", "supervisor"))
+        row = terminal.dead_pane(entry["tmux_session_id"], entry)
+        return datetime.fromisoformat(row["exited_at"]) if row.get("exited_at") else None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        # A cutoff only permits verified replacement work on a reused TTY.
+        # Its absence retains the stricter PID/TTY path; it is not exit proof.
+        return None

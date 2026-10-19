@@ -23,6 +23,7 @@ import github_plan_release as release
 import github_identity
 import github_comment
 import github_plan_claim
+import github_plan_closure
 
 PLAN, CLAIM, BOT = fixtures.PLAN, fixtures.CLAIM, fixtures.TEST_BOT
 
@@ -252,6 +253,7 @@ class ReleaseTests(ReleaseHarness):
 
         for mock in (patch.object(release.termination, "datetime", Clock),
                      patch.object(release.termination.socket, "gethostname", return_value="source-host"),
+                     patch.object(release.termination.native_helpers()[1], "native_exit_cutoff", return_value=None),
                      patch.object(release.termination, "inventory", return_value=[]),
                      patch.object(release.termination, "run_terminal", return_value=SimpleNamespace(
                          returncode=1, stdout="", stderr="no server running on /fixture/socket"))):
@@ -284,6 +286,22 @@ class ReleaseTests(ReleaseHarness):
                 with self.assertRaises(PLAN.PlanError):
                     self.run_release()
                 self.f.assert_no_writes()
+
+    def test_termination_tty_reuse_requires_native_cutoff_and_pending_action_veto(self):
+        self.termination_setup()
+        shared = release.termination.native_helpers()[1]
+        cutoff = release.stamp(self.termination_record["ended_at"])
+        newer = cutoff + timedelta(seconds=1)
+        with patch.object(release.termination, "inventory", return_value=[(88, "ttys123", "codex --remote unix:///new-client")]), \
+                patch.object(shared, "process_started_at", return_value=newer), \
+                patch.object(github_plan_closure, "guarded_launch_endpoint", return_value="/new-client"), \
+                patch.object(github_plan_closure, "action_pending", return_value=False):
+            with patch.object(shared, "native_exit_cutoff", return_value=None), self.assertRaises(ValueError):
+                release.termination.verify(self.termination_record, "session-b")
+            with patch.object(shared, "native_exit_cutoff", return_value=cutoff):
+                release.termination.verify(self.termination_record, "session-b")
+                with patch.object(github_plan_closure, "action_pending", return_value=True), self.assertRaises(ValueError):
+                    release.termination.verify(self.termination_record, "session-b")
 
     def test_terminated_session_recent_or_resumed_transcript_refuses(self):
         for mode in ("mtime", "native_record", "other_account"):

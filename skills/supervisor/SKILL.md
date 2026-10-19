@@ -710,12 +710,17 @@ report the ambiguity and keep it open. A malformed ledger is a fleet-wide
 read blocker: report the invalid entry and reconcile it against its original
 launch receipt before retrying; never guess or skip identity checks.
 
-When `closeout_blockers` lists background tasks, report their ids and keep the
-session open. Nudge that exact worker to check each task's completion condition
-and stop a finished or obsolete task through its own TaskStop, then give a
-fresh close-out verdict. A still-needed task remains a wait. A missing terminal
+Before exit, when `closeout_blockers` lists background tasks or scheduled jobs,
+report their ids and keep the session open. Nudge that exact worker to check
+each task's completion condition and stop an obsolete task through its native
+TaskStop or CronDelete route, then give a fresh close-out verdict. A still-needed
+task remains a wait. A missing terminal
 notice is uncertainty, not proof that a task ended; never send exit keys or
 stop another session's tasks to clear the list.
+Once process exit is independently proven, use the established final-verdict
+and process closure checks. Scheduled jobs alone do not suppress a review
+notification to an idle empty Claude prompt; an active turn or Bash/Monitor
+task still does.
 
 Aim to finish verification and shutdown within two minutes of the worker's
 verdict. If a check fails, keep the session open and report the exact missing

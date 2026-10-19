@@ -203,7 +203,7 @@ def strip_claude_exit_tail(records: list[dict]) -> list[dict]:
 
 
 def track_claude_background_tasks(record: dict, running: dict, scheduled: dict, tools: dict) -> None:
-    """Follow Bash run_in_background and Monitor tasks from start to their terminal notice or TaskStop."""
+    """Follow Bash/Monitor tasks and native scheduled jobs through their completion or deletion."""
     message = record.get("message")
     if not isinstance(message, dict):
         message = {}

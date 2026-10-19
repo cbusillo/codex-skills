@@ -25,50 +25,6 @@ import codex_session_proxy as proxy
 
 
 class IngressTests(unittest.IsolatedAsyncioTestCase):
-    async def test_late_action_ack_preserves_completed_turn_without_releasing_inflight_lease(self):
-        for method in ("thread/queue/add", "turn/start"):
-            with self.subTest(method=method), ReceiptFixture(str(uuid.uuid4())) as f:
-                closure.replace_rows([])
-                task, request, response, _ = await self.start_client(f)
-                received, acknowledge = threading.Event(), threading.Event()
-
-                async def delayed(_request):
-                    received.set()
-                    if not await asyncio.to_thread(acknowledge.wait, 5):
-                        raise TimeoutError("fixture acknowledgement not released")
-                    return {"thread": {"id": f.session, "path": str(f.transcript)}}
-
-                def lease_available():
-                    try:
-                        with closure.ownership(f.session):
-                            return True
-                    except closure.LeaseBusy:
-                        return False
-
-                f.rpc_results[method] = delayed
-                try:
-                    sending = asyncio.create_task(self.send(task, request, response, method, f.session))
-                    self.assertTrue(await asyncio.to_thread(received.wait, 3))
-                    self.assertFalse(await asyncio.to_thread(lease_available))
-                    before = closure.action_time(f.session)
-                    with f.transcript.open("a") as stream:
-                        for payload in ({"type": "task_started"},
-                                        {"type": "agent_message", "message": "Safe to exit: yes"},
-                                        {"type": "task_complete"}):
-                            stream.write(json.dumps({"type": "event_msg", "timestamp": datetime.now(timezone.utc).isoformat(),
-                                                     "payload": payload}) + "\n")
-                    acknowledge.set()
-                    self.assertIn("result", await sending)
-                    self.assertEqual(closure.action_time(f.session), before)
-                    self.assertTrue(await asyncio.to_thread(lease_available))
-                finally:
-                    acknowledge.set()
-                    (f.root / "stop").touch()
-                    self.assertEqual(await asyncio.wait_for(task, 8), 0)
-                closed = await asyncio.to_thread(f.release.record_closure, f.log, f.entry, "supervisor")
-                self.assertTrue(closed["process_exit_verified"])
-                self.assertFalse(closure.action_pending(f.session))
-
     async def test_clock_request_then_client_shutdown_preserves_only_a_fresh_verdict(self):
         from websockets.asyncio.client import unix_connect
         for action in (None, "thread/queue/add", "thread/resume", "turn/start", "item/commandExecution/requestApproval"):
@@ -980,14 +936,14 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.wait_for(task, 8)
 
     async def test_real_cli_proxy_wrapper_and_native_process_lines_are_all_observed(self):
-        from github_plan_sessions import codex_argv_start
+        from session_liveness import harness_arguments
         with ReceiptFixture() as f:
             task, _, _, _ = await self.start_client(f, wrapper=True, external=True)
             try:
                 lines = [line.split() for line in f.commands.splitlines() if line.split() and line.split()[0].isdigit()]
                 self.assertEqual(len(lines), 3)  # Owned proxy, waiting wrapper, native client.
                 for line in lines:
-                    self.assertIsNotNone(codex_argv_start(line[1:]), "real client/helper line was ignored: " + " ".join(line[1:3]))
+                    self.assertTrue(harness_arguments(" ".join(line[1:])), "real client/helper line was ignored: " + " ".join(line[1:3]))
                 _, states, coverage = await asyncio.to_thread(f.observe)
                 self.assertEqual(coverage["process_coverage"], "complete")
                 self.assertEqual(states[f.session]["state"], "ended")

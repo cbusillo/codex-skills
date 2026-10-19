@@ -93,14 +93,19 @@ other sessions; a malformed ledger itself ends the watch. Transcript errors
 include malformed nested payload, message, content and identity fields; they
 supply no completion proof for that session.
 Status output includes the latest response and can be private; keep it
-out of public comments. For Claude, `background_tasks` lists the Bash
-background and Monitor tasks that have not yet sent a terminal notice or been
-stopped. At a turn end, an empty list means nothing will resume the session:
-a "waiting" message there is a stall to nudge. A listed task is a live wait;
+out of public comments. For Claude, `background_tasks` lists unresolved Bash
+background and Monitor tasks plus native scheduled jobs. Before exit, these
+tasks block finished-session candidates, including jobs waiting for a future
+wakeup. A "waiting" message at a turn end with no tasks is a stall to nudge.
+A listed task is a live wait;
 check that its condition can still end it, for example CI already settled
 under a `--watch` that never exits on green, before waiting on it. Context
 counts may be absent and are not a reason to hand off. For Claude, the count
-includes cached input.
+includes cached input. After independently verified process exit, closure
+retains its final-verdict and process checks; a leftover task record adds no
+new closure condition. Review notifications may reach an idle empty Claude
+prompt with scheduled jobs, while an active firing turn or Bash/Monitor task
+still prevents the notification.
 
 For tmux entries, replace `iterm_session_id` with `tmux_session_id` from launch
 output and record `backend: "tmux"`, `tmux_socket`, `window_id`, `tab_id`, `tty`
@@ -1630,8 +1635,8 @@ and split tabs refuse. Never add a Director's tab to the Supervisor ledger.
 
 The close command requires iTerm's native shell integration to report an
 editing prompt whose entire command is empty. Missing/unknown input refuses;
-screen appearance and `--verified-input` are not substitutes for the close
-command's native proof. A successful final `exec` normally ends the terminal;
+screen appearance is not a substitute for the close command's native proof.
+A successful final `exec` normally ends the terminal;
 after the exit wait, use `list` and record closure if the exact session is gone.
 Native prompt proof is needed only for a surviving idle outer shell, such as
 an older returning launch or a failed `exec`. On Chris-Studio's zsh shells,
@@ -1842,7 +1847,11 @@ Any active thread, source PID (including reuse), old worker on the source TTY,
 resume process, unknown client, changed generation or unavailable evidence keeps
 it live. A proven new TTY occupant born after closure is not the old worker.
 Unidentified interactive clients, pickers, stdio servers and unobserved daemons
-still refuse. Fresh noninteractive execs cannot attach to the predecessor.
+still refuse. Fresh noninteractive execs cannot attach to the predecessor;
+`exec resume`, its `e` alias, and resume pickers can. Process checks share one
+native invocation classifier. Put free-form prompts after the CLI's explicit
+`--` separator so prompt words cannot be mistaken for native resume arguments.
+Unseparated ambiguous text conservatively preserves the source.
 The supported daemon-routed fresh and resume launchers run each TUI through a
 private local RPC ingress, connected to the existing selected-home daemon. Each
 action holds its targets' ownership leases until its matching native response;
@@ -1909,7 +1918,9 @@ defeat authored-release/unloaded recovery. Native acknowledgement alone cannot
 clear this barrier: a successful verified closure in the shared log needs a
 fresh final safe verdict after the latest guarded action, including overlapping
 actions, acknowledgements (including native errors) and approval answers, and
-clears it while holding source ownership. An older
+clears it while holding source ownership. Each action acknowledgement refreshes
+the barrier while its lease is still held; it does not prove an accepted queue
+or turn completed. An older
 safe message followed only by a newer task-complete record is insufficient.
 Pending queued submissions, malformed queue
 pages or missing queue evidence still refuse native end proof, including when

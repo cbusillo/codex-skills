@@ -417,10 +417,30 @@ class IdleReceiptIntegrationTests(unittest.TestCase):
 
 class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
     def test_resumed_cli_session_is_live_even_without_a_daemon(self):
-        for command in ("/opt/bin/codex resume holder", "codex --remote unix://fixture resume holder", "node /opt/bin/codex.js resume holder", "codex exec resume holder"):
+        for command in ("/opt/bin/codex resume holder", "codex --remote unix://fixture resume holder", "node /opt/bin/codex.js resume holder", "codex exec resume holder", "codex e resume holder",
+                        'codex -c notify=["terminal-notifier", "-message", "hello"] resume holder'):
             self.assertEqual([r["sessionId"] for r in SESSIONS.process_sessions(command, {"holder"})], ["holder"])
-        for command in ("rg resume holder", "rg codex resume holder", "codex exec please resume holder", "codex please resume holder"):
+        for command in ("rg resume holder", "rg codex resume holder", "codex exec -- please resume holder", "codex -- please resume holder"):
             self.assertEqual(SESSIONS.process_sessions(command, {"holder"}), [])
+
+    def test_resume_pickers_prevent_process_absence_but_explicit_exec_prompts_do_not(self):
+        for command in ("codex exec resume --last", "codex e resume --last", "node /opt/bin/codex.js e resume --last"):
+            with self.subTest(command=command):
+                self.assertFalse(SESSIONS.process_absence_known(command))
+        for command in ("codex exec -- please resume holder", "codex e -- resume holder", "node /opt/bin/codex.js exec -- resume holder"):
+            with self.subTest(command=command):
+                self.assertTrue(SESSIONS.process_absence_known(command))
+
+    def test_wrapper_absence_requires_guarded_launch_identity(self):
+        for wrapper in ("codex-session.py", "codex_session_proxy.py"):
+            with self.subTest(wrapper=wrapper):
+                command = f"456 python /fixture/{wrapper} exec -- resume holder"
+                with patch.object(CLOSURE, "managed_launch", return_value=False) as managed:
+                    self.assertFalse(SESSIONS.process_absence_known(command))
+                    managed.assert_called_once_with(456, [f"/fixture/{wrapper}", "exec"], set())
+                with patch.object(CLOSURE, "managed_launch", return_value=True):
+                    self.assertTrue(SESSIONS.process_absence_known(command))
+                self.assertEqual(SESSIONS.process_sessions(command, {"holder"}), [])
 
     async def observe(self, state, *, safe=True, after=None, changed=False, mismatch=False, with_peer=False, unsafe=False,
                       receipt=None, proof_sessions=None, receipt_changed=False):

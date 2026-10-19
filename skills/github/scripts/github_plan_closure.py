@@ -457,7 +457,7 @@ def transcripts(session: str, primary: str) -> dict:
         status = native_helpers()[1].summarize(records, "codex")
         after = path.stat()
         if (transcript_identity(before) != transcript_identity(after)
-                or not status.get("declared_safe_verdict", status["safe_verdict"]) or status.get("background_tasks")):
+                or not status["safe_verdict"]):
             raise ValueError("native transcript is changing or lacks a final safe verdict")
         timestamps = [r["timestamp"] for r in records if r.get("timestamp")]
         if not timestamps:

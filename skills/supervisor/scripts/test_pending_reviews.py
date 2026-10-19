@@ -1528,6 +1528,17 @@ class NotificationTests(unittest.TestCase):
         self.assertEqual(self.read.call_count, 2)
         self.send.assert_awaited_once_with(self.entry["tmux_session_id"], "Read review")
 
+    def test_idle_scheduled_wakeup_does_not_suppress_review_but_firing_turn_does(self):
+        self.claude()
+        status = {"at_turn_end": True, "background_tasks": [{"task_id": "wake", "kind": "scheduled"}]}
+        with patch.object(notifications, "session_status", return_value=status):
+            notifications.send(self.entry, "Read review")
+        self.send.assert_awaited_once_with(self.entry["tmux_session_id"], "Read review")
+        self.send.reset_mock()
+        with patch.object(notifications, "session_status", return_value={**status, "at_turn_end": False}), self.assertRaises(notifications.NotSent):
+            notifications.send(self.entry, "Read review")
+        self.send.assert_not_called()
+
     def test_claude_real_prompt_parser_accepts_cursor_padding_but_never_visible_input(self):
         from iterm_tab import ansi_screen, input_line
         self.claude()

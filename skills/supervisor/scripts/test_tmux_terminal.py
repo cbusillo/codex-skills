@@ -1048,18 +1048,23 @@ for line in sys.stdin:
         entry = {**self.entry(row), "session_id": native, "harness": "codex",
                  "transcript": str(transcript), "handoff_url": "https://github.com/example/repo/issues/1#issuecomment-2"}
         self.ledger.write_text(json.dumps([entry]))
-        argv = [sys.executable, str(scripts / "iterm_tab.py"), "--backend", "tmux", "--tmux-socket", self.socket,
-                "close", "--ledger", str(self.ledger), "--session-id", row["session_id"]]
         self.assertTrue(self.terminal.select(row["session_id"])["dead"])
         records[1]["payload"]["message"] = "still working"
         transcript.write_text("".join(json.dumps(r) + "\n" for r in records))
-        refused = self.run_child(argv, check=False)
-        self.assertNotEqual(refused.returncode, 0)
+        with self.assertRaises(ValueError) as expected:
+            session_liveness.require_safe_status({"safe_verdict": False}, exited=True)
+        # The host may immediately reuse this disposable PTY. Control only the
+        # process snapshot; the exact native identity and conditional kill stay real.
+        with patch.object(session_liveness, "inventory", return_value=[]), self.assertRaises(ValueError) as refused:
+            self.terminal.close(row["session_id"], self.ledger)
+        self.assertEqual(refused.exception.args, expected.exception.args)
         self.assertTrue(self.terminal.select(row["session_id"])["dead"])
         records[1]["payload"]["message"] = "Safe to exit: yes"
         transcript.write_text("".join(json.dumps(r) + "\n" for r in records))
-        applied = self.run_child(argv)
-        self.assertTrue(json.loads(applied.stdout)["close_requested"])
+        with patch.object(session_liveness, "inventory", return_value=[]):
+            applied = self.terminal.close(row["session_id"], self.ledger)
+        self.assertTrue(applied["close_requested"])
+        self.assertNotIn(row["session_id"], {pane["session_id"] for pane in self.terminal.list()})
 
 
 class DetachedTerminalTests(TmuxFixture):

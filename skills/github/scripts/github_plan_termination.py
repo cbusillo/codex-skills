@@ -150,13 +150,17 @@ def verify(record, session):
     pid, tty = record.get("pid"), record.get("tty")
     if type(pid) is not int or pid <= 0 or not isinstance(tty, str) or not tty.strip():
         raise ValueError("Termination record requires the recorded source PID and TTY")
-    tty = tty.removeprefix("/dev/")
     from github_plan_sessions import native_helpers as session_helpers
     session_helpers()
     import github_plan_closure
-    native_helpers()[1].verify_process_exit(
-        record, rows=inventory(), ended_at=stamp(record["ended_at"]),
-        independent_harness=lambda pid, argv: github_plan_closure.guarded_launch_endpoint(pid, argv) is not None)
+    shared = native_helpers()[1]
+    cutoff = shared.native_exit_cutoff(record)
+    if cutoff is not None and cutoff > stamp(record["ended_at"]):
+        raise ValueError("Native pane exit follows the proposed termination time")
+    shared.verify_process_exit(
+        record, rows=inventory(), ended_at=cutoff,
+        independent_harness=lambda pid, argv: not github_plan_closure.action_pending(session)
+        and github_plan_closure.guarded_launch_endpoint(pid, argv) is not None)
     roots = record.get("transcript_roots")
     if not isinstance(roots, list) or not roots or not all(isinstance(root, str) and Path(root).is_dir() for root in roots):
         raise ValueError("Supply every known source-account transcript root on the source host")

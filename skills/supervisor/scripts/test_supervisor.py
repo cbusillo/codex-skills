@@ -1392,11 +1392,12 @@ class TabCloseTests(unittest.TestCase):
 
     def test_resume_identity_is_read_only_from_harness_operands(self):
         entry = {**self.entry, "session_id": "source", "pid": 123}
-        for command in ("echo codex resume source", "python worker.py resume source", "codex -- resume source", "codex exec resume source"):
+        for command in ("echo codex resume source", "python worker.py resume source", "codex -- resume source", "codex exec -- resume source"):
             with self.subTest(command=command):
                 session_liveness.verify_process_exit(entry, rows=[(456, "other", command)])
         for command in ("codex resume source -- prompt", "bun /bin/claude.js --resume=source", "node /bin/claude --resume source",
-                        'codex -c notify=["terminal-notifier", "-message", "hello"] resume source'):
+                        'codex -c notify=["terminal-notifier", "-message", "hello"] resume source',
+                        "codex exec resume source", "codex e resume source", "node /bin/codex.js exec resume source"):
             with self.subTest(command=command), self.assertRaisesRegex(ValueError, "resumed harness"):
                 session_liveness.verify_process_exit(entry, rows=[(456, "other", command)])
 
@@ -1405,13 +1406,27 @@ class TabCloseTests(unittest.TestCase):
             with self.subTest(pid=value), self.assertRaises(ValueError):
                 session_liveness.verify_process_exit({**self.entry, "pid": value}, rows=self.rows)
 
-    def test_declared_verdict_only_qualifies_after_independent_exit_and_never_ignores_tasks(self):
-        status = {"safe_verdict": False, "declared_safe_verdict": True, "background_tasks": []}
+    def test_resume_picker_is_not_fresh_exec_and_explicit_prompt_is_unrelated(self):
+        entry = {**self.entry, "harness": "codex", "session_id": "source"}
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
+        born = cutoff + timedelta(seconds=1)
+        for command in ("codex exec resume --last", "codex e resume --last", "node /bin/codex.js exec resume --last"):
+            with self.subTest(command=command), self.assertRaises(ValueError):
+                session_liveness.verify_process_exit(entry, rows=[(456, self.entry["tty"], command)],
+                                                     ended_at=cutoff, started_at=lambda _pid: born)
+        for command in ("codex exec -- resume source", "codex e -- resume source"):
+            with self.subTest(command=command):
+                session_liveness.verify_process_exit(entry, rows=[(456, self.entry["tty"], command)],
+                                                     ended_at=cutoff, started_at=lambda _pid: born)
+
+    def test_jobs_block_pre_exit_candidates_but_do_not_redefine_verified_exit(self):
+        status = {"safe_verdict": True, "background_tasks": [{"task_id": "wake", "kind": "scheduled"}]}
         with self.assertRaises(ValueError):
             session_liveness.require_safe_status(status)
         session_liveness.require_safe_status(status, exited=True)
-        with self.assertRaises(ValueError):
-            session_liveness.require_safe_status({**status, "background_tasks": [{"task_id": "wake"}]}, exited=True)
+        for exited in (False, True):
+            with self.subTest(exited=exited), self.assertRaises(ValueError):
+                session_liveness.require_safe_status({**status, "safe_verdict": False}, exited=exited)
 
     def test_refuses_missing_duplicate_director_or_moved_identity(self):
         for entries in ([], [self.entry, self.entry],

@@ -343,7 +343,20 @@ class ReleaseTests(unittest.TestCase):
                 self.assertEqual(retried["ended_at"], closed["ended_at"])
                 self.assertEqual(retried["tty_exited_at"], closed["tty_exited_at"])
 
-    def test_scheduled_or_background_tasks_block_ordinary_finish(self):
+    def test_missing_dead_pane_uses_strict_exit_check_without_accepting_caller_cutoff(self):
+        import tmux_terminal
+        entry = {**self.entry, "tmux_socket": "fixture", "tmux_session_id": "tmux:fixture:" + "a" * 32,
+                 "tty_exited_at": "2099-01-01T00:00:00Z"}
+        for error in (ValueError("pane missing"), OSError("inventory unavailable")):
+            with self.subTest(error=type(error).__name__), patch.object(tmux_terminal.Terminal, "dead_pane", side_effect=error):
+                log = self.root / f"fallback-{type(error).__name__}.json"
+                closed = helper.record_closure(log, entry, "supervisor")
+                self.assertNotIn("tty_exited_at", closed)
+                with patch.object(helper, "inventory", return_value=[(456, entry["tty"], "codex exec -- new work")]), self.assertRaises(ValueError):
+                    helper.record_closure(self.root / "must-not-publish.json", entry, "supervisor")
+                self.assertFalse((self.root / "must-not-publish.json").exists())
+
+    def test_scheduled_jobs_do_not_change_post_exit_finish_policy(self):
         entry = {**self.entry, "harness": "claude"}
         records = [
             {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "create", "name": "CronCreate", "input": {}}]}},
@@ -353,8 +366,7 @@ class ReleaseTests(unittest.TestCase):
                 "stop_reason": "end_turn", "content": [{"type": "text", "text": "Safe to exit: yes"}]}},
         ]
         self.transcript.write_text("".join(json.dumps({**r, "sessionId": SOURCE["session"]}) + "\n" for r in records))
-        with self.assertRaisesRegex(ValueError, "scheduled jobs remain"):
-            helper.validate_closure(entry, "supervisor")
+        helper.validate_closure(entry, "supervisor")
 
     def test_finish_self_release_with_session_field_and_progress_note(self):
         released = self.own_release(body="Released claim 1\n\nSession: source-session\nEngineering handoff")
