@@ -341,10 +341,45 @@ def javascript_projection(native):
     return atoms, code, regions, complete
 
 
-def javascript_source_calls(native, code):
-    """Select source operands from invoked callee values, not saved handles."""
+def javascript_literal_members(native, code, begin, end):
+    """Share literal aggregate property names and their original value spans."""
+    while begin < end and code[begin].isspace():
+        begin += 1
+    while end > begin and code[end - 1].isspace():
+        end -= 1
+    opening = code[begin:begin + 1]
+    if opening not in {"{", "["} or code[end - 1:end] != ("}" if opening == "{" else "]"):
+        return None
+    if node_expression_parts(code, begin + 1, end, "", first=True)[0][1] != end - 1:
+        return None
+    if not native[begin + 1:end - 1].strip():
+        return []
+    object_, values = opening == "{", []
+    for index, (start, finish) in enumerate(node_expression_parts(code, begin + 1, end - 1)):
+        parts = node_expression_parts(code, start, finish, ":") if object_ else []
+        if not object_:
+            name, operand = (None if code[start:finish].lstrip().startswith("...") else str(index)), (start, finish)
+        else:
+            name = native[slice(*parts[0])].strip()
+            operand = (parts[0][1] + 1, finish) if len(parts) > 1 else (start, finish)
+            if not re.fullmatch(r"[A-Za-z_$][\w$]*|\d+", name):
+                computed = name[1:-1].strip() if name.startswith("[") and name.endswith("]") else name
+                try:
+                    name = javascript_string(computed)
+                except ValueError:
+                    name = None
+        values.append((name, operand))
+    return values
+
+
+def javascript_source_calls(native, code, *, global_this=False):
+    """Select invoked source handles using the binding scanner's shared sites."""
     names = {"eval": "eval", "Function": "constructor", "AsyncFunction": "constructor"}
-    handles = {}
+    facts = {}
+    javascript_bindings(code, _facts=facts)
+    pairs, owners, parents, bound = (facts[name] for name in ("pairs", "owners", "parents", "bound"))
+    reference = re.compile(r"(?<![\w.$])([A-Za-z_$][\w$]*(?:\s*(?:\?\.|\.)\s*[A-Za-z_$][\w$]*|\s*(?:\?\.\s*)?\[[^]\n]*\])*)")
+    visible, assignments, member_cache, member_indexes, reference_cache = {}, {}, {}, {}, {}
 
     def canonical(raw):
         def member(match):
@@ -355,88 +390,165 @@ def javascript_source_calls(native, code):
                 except ValueError:
                     pass
             return "." + value
-        return re.sub(r"\s+", "", re.sub(r"\[([^]\n]*)\]", member, raw))
+        raw = re.sub(r"\?\.\s*(?=\[)", "", raw)
+        return re.sub(r"\s+", "", re.sub(r"\[([^]\n]*)\]", member, raw)).replace("?.", ".")
 
-    def source_kind(expression, raw=None):
-        selected = canonical(raw if raw is not None else expression)
-        if selected in handles:
-            return handles[selected]
-        kind = next((names[word[0]] for word in re.finditer(r"[A-Za-z_$][\w$]*", expression)
-                     if word[0] in names and not expression[:word.start()].rstrip().endswith(".")
-                     and not expression[word.end():].lstrip().startswith(":")), None)
-        if kind is None and selected.rsplit(".", 1)[0] in {"globalThis", "global", "window", "self"}:
-            kind = names.get(selected.rsplit(".", 1)[-1])
-        if kind is None and re.search(r"\.\s*constructor\s*$", expression):
-            kind = "constructor"
-        return kind
+    def binding(name, position):
+        owner = owners[position]
+        key, trail = (owner, name), []
+        while (owner, name) not in visible:
+            trail.append((owner, name))
+            if name in bound.get(owner, {}):
+                break
+            if owner == -1:
+                owner = None
+                break
+            owner = parents[owner]
+        result = visible.get((owner, name), owner)
+        for selected in trail:
+            visible[selected] = result
+        return visible.get(key, result)
 
-    def members(begin, end):
+    # Index the existing RHS table once. Scope facts choose which same-named
+    # binding a target can affect; a definite straight-line replacement can
+    # retire an old handle, while conditional/nonlocal writes remain possible.
+    statement_starts, start = [], 0
+    for position, char in enumerate(code):
+        statement_starts.append(start)
+        if char in ";{}\n":
+            start = position + 1
+    for match in re.finditer(r"(?<![\w.$])(?!const\b|let\b|var\b)([A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*|\s*\[[^]\n]*\])*|\{[^{}]*\}|\[[^\[\]]*\])\s*=(?!=|>)\s*", code):
+        end = node_expression_parts(code, match.end(), len(code), ";\n", first=True)[0][1]
+        raw, target = native[match.start(1):match.end(1)].strip(), match.span(1)
+        targets = []
+        if raw.startswith(("{", "[")):
+            object_ = raw.startswith("{")
+            for index, (begin, finish) in enumerate(node_expression_parts(code, target[0] + 1, target[1] - 1)):
+                parts = node_expression_parts(code, begin, finish, ":") if object_ else []
+                key = native[slice(*parts[0])].strip() if parts else native[begin:finish].strip() if object_ else str(index)
+                named = native[parts[0][1] + 1:finish].strip() if len(parts) > 1 else native[begin:finish].strip()
+                if re.fullmatch(r"[A-Za-z_$][\w$]*", named):
+                    targets.append((named, "." + key))
+        else:
+            targets.append((canonical(raw), ""))
+        prefix = code[statement_starts[match.start(1)]:match.start(1)]
+        definite = re.fullmatch(r"\s*(?:(?:const|let|var)\s+)?", prefix) is not None
+        for selected, suffix in targets:
+            base = selected.split(".", 1)[0]
+            owner = binding(base, match.start(1))
+            assignments.setdefault((owner, selected), []).append((selected, suffix, match.start(1),
+                owners[match.start(1)], definite, (match.end(), end)))
+
+    def members(begin, end, active=()):
+        key = begin, end
+        if key in member_cache:
+            return member_cache[key]
+        if key in active:
+            return {}
+        active = (*active, key)
         while begin < end and code[begin].isspace():
             begin += 1
         while end > begin and code[end - 1].isspace():
             end -= 1
-        if code[begin:begin + 1] in {"{", "["}:
-            object_ = code[begin] == "{"
-            for index, (start, finish) in enumerate(node_expression_parts(code, begin + 1, end - 1)):
-                parts = node_expression_parts(code, start, finish, ":") if object_ else []
-                if object_:
-                    if len(parts) < 2:
-                        key, value = native[start:finish].strip(), (start, finish)
-                    else:
-                        key, value = native[slice(*parts[0])].strip(), (parts[0][1] + 1, finish)
-                    try:
-                        key = javascript_string(key)
-                    except ValueError:
-                        pass
-                else:
-                    key, value = str(index), (start, finish)
-                for suffix, kind in members(*value):
-                    yield "." + key + suffix, kind
-            return
-        raw = native[begin:end]
-        selected = canonical(raw)
-        plain = re.fullmatch(r"[\w.$\s]+(?:\[[^]\n]*\][\w.$\s]*)*", raw)
-        kind = source_kind(code[begin:end], raw) if plain or re.search(r"\.\s*constructor\s*$", code[begin:end]) else None
-        if kind:
-            yield "", kind
-        for name, kind in handles.items():
-            if name.startswith(selected + "."):
-                yield name[len(selected):], kind
+        values = {}
+        aggregate = javascript_literal_members(native, code, begin, end)
+        if aggregate is None and code[begin:begin + 1] in {"{", "["} and begin in pairs:
+            # An unknown transformation may preserve the literal receiver's
+            # source handles. This is possible capability, not exact projection.
+            aggregate = javascript_literal_members(native, code, begin, pairs[begin] + 1)
+        if aggregate is not None:
+            for name, operand in aggregate:
+                if name is not None:
+                    values.update(("." + name + suffix, kind) for suffix, kind in members(*operand, active).items())
+        else:
+            raw = native[begin:end]
+            plain = reference.fullmatch(code[begin:end])
+            if plain:
+                values.update(reference_members(canonical(raw), begin, active))
+            elif re.search(r"\.\s*constructor\s*$", code[begin:end]):
+                values[""] = "constructor"
+            elif re.fullmatch(JS_STRING, raw.strip()) or re.fullmatch(r"\s*(?:\d+(?:\.\d+)?|undefined|null|true|false)\s*", raw):
+                values[""] = None
+        member_cache[key] = values
+        return values
 
-    assignments = []
-    for match in re.finditer(r"(?<![\w.$])(?!const\b|let\b|var\b)([A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*|\s*\[[^]\n]*\])*|\{[^{}]*\}|\[[^\[\]]*\])\s*=(?!=|>)\s*", code):
-        end = node_expression_parts(code, match.end(), len(code), ";\n")[0][1]
-        assignments.append((match.span(1), (match.end(), end)))
-    for _ in assignments:
-        added = {}
-        for target, rhs in assignments:
-            values = dict(members(*rhs))
-            raw = native[slice(*target)].strip()
-            if raw.startswith(("{", "[")):
-                object_ = raw.startswith("{")
-                for index, (begin, end) in enumerate(node_expression_parts(code, target[0] + 1, target[1] - 1)):
-                    parts = node_expression_parts(code, begin, end, ":") if object_ else []
-                    key = native[slice(*parts[0])].strip() if parts else native[begin:end].strip() if object_ else str(index)
-                    named = native[parts[0][1] + 1:end].strip() if len(parts) > 1 else native[begin:end].strip()
-                    if re.fullmatch(r"[A-Za-z_$][\w$]*", named):
-                        for suffix, kind in values.items():
-                            if suffix == "." + key or suffix.startswith("." + key + "."):
-                                added[named + suffix[len(key) + 1:]] = kind
-            else:
-                added.update((canonical(raw) + suffix, kind) for suffix, kind in values.items())
-        if all(handles.get(name) == kind for name, kind in added.items()):
-            break
-        handles.update(added)
-        names.update((name, kind) for name, kind in added.items() if "." not in name)
-    pairs, stack = {}, []
-    for position, char in enumerate(code):
-        if char in "([{":
-            stack.append(position)
-        elif char in ")]}":
-            if stack:
-                begin = stack.pop()
-                pairs[position] = begin
-                pairs[begin] = position
+    def selected_members(rhs, suffix, active):
+        values = members(*rhs, active)
+        if rhs not in member_indexes:
+            if rhs not in member_cache:
+                return {}
+            index = {"": values}
+            for name, kind in values.items():
+                for dot in re.finditer(r"\.", name):
+                    if dot.start():
+                        prefix = name[:dot.start()]
+                        index.setdefault(prefix, {})[name[dot.start():]] = kind
+                if name:
+                    index.setdefault(name, {})[""] = kind
+            member_indexes[rhs] = index
+        return member_indexes[rhs].get(suffix, {})
+
+    def reference_members(selected, position, active=()):
+        base, _, _ = selected.partition(".")
+        owner = binding(base, position)
+        scope = owners[position]
+        prefixes = selected.split(".")
+        candidates = [event for length in range(1, len(prefixes) + 1)
+                      for event in assignments.get((owner, ".".join(prefixes[:length])), ())
+                      if event[3] != scope or event[2] < position]
+        if owner is None and "." not in selected:
+            for receiver in ("globalThis", "global", "window", "self"):
+                for _, suffix, at, context, definite, rhs in assignments.get((None, receiver + "." + selected), ()):
+                    if context != scope or at < position:
+                        candidates.append((selected, suffix, at, context, definite, rhs))
+        # Missing provenance is unknown, not proof that a prior source handle
+        # disappeared. A known data value uses None and can retire that handle.
+        resolved = {event[2]: selected_members(event[5], event[1] + selected[len(event[0]):], active)
+                    for event in candidates}
+        last = max((event[2] for event in candidates if event[3] == scope and event[4]
+                    and "" in resolved[event[2]]), default=-1)
+        candidates = [event for event in candidates if event[3] != scope or event[2] >= last]
+        signature = tuple(event[2] for event in candidates)
+        cache_key = owner, selected, signature, last
+        if cache_key in reference_cache:
+            return reference_cache[cache_key]
+        values = {}
+        # Intrinsics remain an initial alternative until a definite known
+        # replacement at this call's scope retires them. A conditional or
+        # sibling-function write cannot remove that initial capability.
+        if last < 0 and owner is None:
+            if base in {"globalThis", "global", "window", "self"} or base == "this" and global_this:
+                values.update(("." + name, kind) for name, kind in names.items())
+            elif base in names:
+                values[""] = names[base]
+            elif base == "text":
+                values[""] = None
+            suffix = selected[len(base):]
+            values = {name[len(suffix):]: kind for name, kind in values.items()
+                      if name == suffix or name.startswith(suffix + ".")}
+        for target, source_suffix, at, _, _, rhs in candidates:
+            for name, kind in resolved[at].items():
+                if kind is not None or name not in values:
+                    values[name] = kind
+        # call/apply/bind preserve the source function's capability.
+        if not values and selected.rsplit(".", 1)[-1] in {"call", "apply", "bind"}:
+            parent = selected.rsplit(".", 1)[0]
+            values.update((name, kind) for name, kind in reference_members(parent, position, active).items() if not name)
+        reference_cache[cache_key] = values
+        return values
+
+    def source_kind(expression, raw=None, position=0):
+        raw = expression if raw is None else raw
+        for word in reference.finditer(expression):
+            if expression[word.end():].lstrip().startswith(":"):
+                continue
+            selected = canonical(raw[word.start():word.end()])
+            kind = reference_members(selected, position + word.start()).get("")
+            if kind:
+                return kind
+        if re.search(r"\.\s*constructor\s*$", expression):
+            return "constructor"
+        return None
 
     def callee(opening):
         end = opening
@@ -454,7 +566,11 @@ def javascript_source_calls(native, code):
                     begin -= 1
                 if begin == finish:
                     break
-                if code[begin:finish] in {"await", "return", "typeof", "void", "new", "delete", "yield", "throw", "case", "in", "of"}:
+                before = begin
+                while before and code[before - 1].isspace():
+                    before -= 1
+                if (code[begin:finish] in {"await", "return", "typeof", "void", "new", "delete", "yield", "throw", "case", "in", "of"}
+                        and (not before or code[before - 1] != ".")):
                     begin = finish
                     break
             before = begin
@@ -475,35 +591,29 @@ def javascript_source_calls(native, code):
             continue
         start, finish = callee(opening)
         expression = code[start:finish].strip()
+        start += len(code[start:finish]) - len(code[start:finish].lstrip())
         end = pairs.get(opening, len(code))
-        # Named declarations and class/object methods are not invocations.
         following = end + 1
         while following < len(code) and code[following].isspace():
             following += 1
         if not expression or code[following:following + 1] == "{":
             continue
-        kind = source_kind(expression, native[start:finish])
-        if kind is None and re.search(r"\.\s*constructor\s*$", expression):
-            kind = "constructor"
+        kind = source_kind(expression, native[start:finish], start)
         reflective = re.fullmatch(r"Reflect\s*\.\s*(apply|construct)", expression)
         parts = node_expression_parts(code, opening + 1, end)
-        passed_handles = [part for part in parts if source_kind(code[slice(*part)], native[slice(*part)])]
+        passed_handles = [part for part in parts if source_kind(code[slice(*part)], native[slice(*part)], part[0])]
         if kind is None and not reflective and expression != "import":
             if not passed_handles or expression == "text":
                 continue
-            # A source handle actually passed to a wrapper may consume that
-            # same invocation's other inputs. Saved metadata elsewhere cannot.
             handle = passed_handles[0]
-            kind = source_kind(code[slice(*handle)], native[slice(*handle)])
+            kind = source_kind(code[slice(*handle)], native[slice(*handle)], handle[0])
             parts = [part for part in parts if part not in passed_handles]
-        # A source constructor's returned function is handled with that
-        # constructor's actuals, not mistaken for another source constructor.
         if finish and code[finish - 1] == ")" and finish - 1 in pairs:
             prefix = code[start:pairs[finish - 1]].strip()
             if prefix and not re.search(r"\.\s*bind$", prefix):
                 continue
         if reflective and parts:
-            kind = source_kind(code[slice(*parts[0])], native[slice(*parts[0])])
+            kind = source_kind(code[slice(*parts[0])], native[slice(*parts[0])], parts[0][0])
         if kind is None and expression == "import":
             kind = "import"
             operand = native[slice(*parts[0])].strip() if parts else ""
@@ -539,7 +649,7 @@ def javascript_binding_names(code, start, end):
     if target.startswith("..."):
         yield from javascript_binding_names(code, start + 3, end)
         return
-    end = node_expression_parts(code, start, end, "=")[0][1]
+    end = node_expression_parts(code, start, end, "=", first=True)[0][1]
     target = code[start:end].strip()
     if target.startswith(("{", "[")):
         for begin, finish in node_expression_parts(code, start + 1, end - 1):
@@ -549,42 +659,77 @@ def javascript_binding_names(code, start, end):
         yield target, start
 
 
-def javascript_bindings(code, *, sloppy=False):
-    """Resolve only a single declaration site, never a reused lexical name.
+def javascript_bindings(code, *, sloppy=False, _facts=None):
+    """Keep single-site literal proof and expose its indexed binding facts.
 
-    This projection deliberately does not guess which block/function owns a
-    command. Parameters and pattern targets invalidate a same-named constant
-    rather than allowing a different scope's value to prove the command safe.
+    Command proof stays conservative across scopes. Source-handle discovery
+    requests the same sites with lexical containment, without recursing through
+    the direct-eval invalidation that consumes source-handle discovery itself.
     """
     sites, declarations, mutable = {}, {}, set()
+    records, ranges, functions, pairs, stack = [], {}, set(), {}, []
+    if _facts is not None:
+        for position, char in enumerate(code):
+            if char in "([{":
+                stack.append(position)
+            elif char in ")]}":
+                if stack:
+                    begin = stack.pop()
+                    pairs[begin], pairs[position] = position, begin
+                    if code[begin] == "{":
+                        ranges[begin] = position + 1
 
-    def bind(start, end):
+    def bind(start, end, owner=None, kind=None):
         for name, position in javascript_binding_names(code, start, end):
             sites.setdefault(name, set()).add(position)
+            if _facts is not None and kind is not None:
+                records.append((name, position, owner, kind))
 
-    def parameters(opening):
+    def parameters(opening, owner=None):
         for begin, end in node_expression_parts(code, opening + 1, len(code)):
-            bind(begin, end)
+            bind(begin, end, owner, "parameter")
+
+    def body(opening):
+        if _facts is None:
+            return None
+        closing = pairs.get(opening)
+        if closing is None:
+            return None
+        begin = closing + 1
+        while begin < len(code) and code[begin].isspace():
+            begin += 1
+        return begin if code[begin:begin + 1] == "{" else None
 
     for declaration in re.finditer(r"\b(const|let|var)\s+", code):
-        end = node_expression_parts(code, declaration.end(), len(code), ";\n")[0][1]
+        end = node_expression_parts(code, declaration.end(), len(code), ";\n", first=True)[0][1]
         for begin, finish in node_expression_parts(code, declaration.end(), end):
             assignment = node_expression_parts(code, begin, finish, "=")
             target_end = assignment[0][1]
             loop = re.search(r"\b(?:of|in)\b", code[begin:target_end])
             if loop:
                 target_end = begin + loop.start()
-            bind(begin, target_end)
+            bind(begin, target_end, ("at", declaration.start()) if _facts is not None else None, declaration[1])
             named = re.fullmatch(r"\s*([A-Za-z_$][\w$]*)\s*", code[begin:target_end])
             if named and len(assignment) > 1:
                 declarations[named[1]] = (target_end + 1, finish)
                 if declaration[1] != "const":
                     mutable.add(named[1])
     for function in re.finditer(r"\bfunction\s*\*?\s*([A-Za-z_$][\w$]*)?\s*\(", code):
+        owner = body(function.end() - 1)
+        if owner is not None:
+            functions.add(owner)
         if function[1]:
-            bind(function.start(1), function.end(1))
-        parameters(function.end() - 1)
+            bind(function.start(1), function.end(1), kind="function")
+        parameters(function.end() - 1, owner)
     for arrow in re.finditer(r"=>", code):
+        owner = None
+        if _facts is not None:
+            owner = arrow.end()
+            while owner < len(code) and code[owner].isspace():
+                owner += 1
+            if code[owner:owner + 1] != "{":
+                ranges[owner] = node_expression_parts(code, owner, len(code), ",;\n", first=True)[0][1]
+            functions.add(owner)
         end = arrow.start()
         while end and code[end - 1].isspace():
             end -= 1
@@ -594,15 +739,18 @@ def javascript_bindings(code, *, sloppy=False):
                 depth += (code[opening] == ")") - (code[opening] == "(")
                 opening -= 1
             if not depth:
-                parameters(opening + 1)
+                parameters(opening + 1, owner)
         else:
-            name = re.search(r"[A-Za-z_$][\w$]*$", code[:end])
+            begin = end
+            while begin and (code[begin - 1].isalnum() or code[begin - 1] in "_$"):
+                begin -= 1
+            name = re.fullmatch(r"[A-Za-z_$][\w$]*", code[begin:end])
             if name:
-                bind(name.start(), name.end())
+                bind(begin, end, owner, "parameter")
     for caught in re.finditer(r"\bcatch\s*\(", code):
-        parameters(caught.end() - 1)
+        parameters(caught.end() - 1, body(caught.end() - 1))
     for loop in re.finditer(r"\bfor\s*(?:await\s*)?\(\s*(?!const\b|let\b|var\b)", code):
-        end = node_expression_parts(code, loop.end(), len(code), ";")[0][1]
+        end = node_expression_parts(code, loop.end(), len(code), ";", first=True)[0][1]
         delimiter = re.search(r"\b(?:of|in)\b", code[loop.end():end])
         if delimiter:
             bind(loop.end(), loop.end() + delimiter.start())
@@ -614,21 +762,54 @@ def javascript_bindings(code, *, sloppy=False):
             opening -= 1
         if not depth and (opening < 0 or not re.match(r"[\w$)\]]", code[opening])):
             bind(opening + 1, finish)
-    # A direct eval can assign an enclosing mutable binding. Its masked source
-    # is never proof that a let/var initializer remains the command value.
-    if any(direct for _, _, _, direct, _ in javascript_source_calls(code, code)):
+    if _facts is None and any(direct for _, _, _, direct, _ in javascript_source_calls(code, code)):
         for name in sites if sloppy else mutable:
             sites[name].add(len(code))
-    # Method parameters share the same lexical rule as named functions.
     for method in re.finditer(r"\b([A-Za-z_$][\w$]*)\s*\(", code):
         if method[1] in {"if", "for", "while", "switch", "catch", "with", "function"}:
             continue
-        end = node_expression_parts(code, method.end(), len(code))[ -1][1]
-        if code[end:end + 1] == ")" and code[end + 1:].lstrip().startswith("{"):
-            parameters(method.end() - 1)
+        end = node_expression_parts(code, method.end(), len(code))[-1][1]
+        following = end + 1
+        while following < len(code) and code[following].isspace():
+            following += 1
+        if code[end:end + 1] == ")" and code[following:following + 1] == "{":
+            owner = body(method.end() - 1)
+            if owner is not None:
+                functions.add(owner)
+            parameters(method.end() - 1, owner)
     for assignment in re.finditer(r"(?<![\w.$])([A-Za-z_$][\w$]*)\s*(?:=(?!=|>)|[+*/%&|^-]=|\?\?=|&&=|\|\|=)", code):
-        if not code[:assignment.start(1)].rstrip().endswith("."):
+        before = assignment.start(1)
+        while before and code[before - 1].isspace():
+            before -= 1
+        if not before or code[before - 1] != ".":
             sites.setdefault(assignment[1], set()).add(assignment.start(1))
+    if _facts is not None:
+        # One containment index for the binding scanner's own sites. No
+        # execution states or second binding parser are maintained here.
+        for match in re.finditer(r"\bclass\s+([A-Za-z_$][\w$]*)", code):
+            records.append((match[1], match.start(1), None, "class"))
+        owners, parents, scopes = [-1] * (len(code) + 1), {}, sorted(ranges.items())
+        stack, cursor = [], 0
+        for position in range(len(code) + 1):
+            while stack and ranges[stack[-1]] <= position:
+                stack.pop()
+            while cursor < len(scopes) and scopes[cursor][0] <= position:
+                begin, end = scopes[cursor]
+                while stack and ranges[stack[-1]] <= begin:
+                    stack.pop()
+                parents[begin] = stack[-1] if stack else -1
+                if end > position:
+                    stack.append(begin)
+                cursor += 1
+            owners[position] = stack[-1] if stack else -1
+        bound = {}
+        for name, position, override, kind in records:
+            owner = owners[position] if override is None else owners[override[1]] if isinstance(override, tuple) else override
+            if kind == "var":
+                while owner != -1 and owner not in functions:
+                    owner = parents.get(owner, -1)
+            bound.setdefault(owner, {}).setdefault(name, set()).add(position)
+        _facts.update(pairs=pairs, owners=owners, parents=parents, bound=bound)
     return {name: expression for name, expression in declarations.items()
             if len(sites.get(name, ())) == 1}, set(sites)
 
@@ -722,15 +903,21 @@ def javascript_call_inputs(code, regions, *, receivers=True):
     """Select possible call operands, never unrelated fixture declarations."""
     source_starts = {start for start, _ in regions}
     for call in re.finditer(r"([A-Za-z_$][\w$]*|\]|\))\s*(?:\?\.)?\s*\(", code):
-        if call.end() in source_starts or call[1] in {"if", "for", "while", "switch", "catch", "with"}:
+        if call.end() in source_starts:
             continue
+        if call[1] in {"if", "for", "while", "switch", "catch", "with", "return", "throw", "typeof", "void", "new", "delete", "yield", "await"}:
+            before = call.start()
+            while before and code[before - 1].isspace():
+                before -= 1
+            if not before or code[before - 1] != ".":
+                continue
         yield from node_expression_parts(code, call.end(), len(code))
         # Collection methods consume their receiver as well as their actuals.
-        receiver = re.search(r"([A-Za-z_$][\w$]*)\s*\.\s*$", code[:call.start()])
+        receiver = re.search(r"(?<![\w.$])([A-Za-z_$][\w$]*(?:\s*(?:\?\.|\.)\s*[A-Za-z_$][\w$]*|\s*(?:\?\.\s*)?\[[^]\n]*\])*)\s*(?:\?\.|\.)\s*$", code[:call.start()])
         if receivers and receiver:
             yield receiver.start(1), receiver.end(1)
     for loop in re.finditer(r"\bfor\s*(?:await\s*)?\(", code):
-        begin, end = node_expression_parts(code, loop.end(), len(code), ";")[0]
+        begin, end = node_expression_parts(code, loop.end(), len(code), ";", first=True)[0]
         iterable = re.search(r"\bof\b", code[begin:end])
         if iterable:
             yield begin + iterable.end(), end
@@ -747,13 +934,13 @@ def javascript_inactive_definitions(code):
         while opening < len(code) and code[opening].isspace():
             opening += 1
         if code[opening:opening + 1] == "{":
-            end = node_expression_parts(code, opening + 1, len(code), "")[0][1]
+            end = node_expression_parts(code, opening + 1, len(code), "", first=True)[0][1]
             if code[end:end + 1] == "}":
                 definitions.append((match.start(), end + 1, match[1]))
     for match in arrows:
         opening = match.end()
         block = code[opening:opening + 1] == "{"
-        end = node_expression_parts(code, opening + 1 if block else opening, len(code), "" if block else ",;\n")[0][1]
+        end = node_expression_parts(code, opening + 1 if block else opening, len(code), "" if block else ",;\n", first=True)[0][1]
         if not block or code[end:end + 1] == "}":
             definitions.append((match.start(), end + int(block), match[1]))
     if not definitions:
@@ -796,10 +983,13 @@ def javascript_inactive_definitions(code):
 
 def javascript_inputs(native, atoms, code, declarations, bindings=None):
     """Possible RHS inputs are separate from single-site literal proof."""
-    member = r"[A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*|\s*\[[^]\n]*\])*"
+    member = r"[A-Za-z_$][\w$]*(?:\s*(?:\?\.|\.)\s*[A-Za-z_$][\w$]*|\s*(?:\?\.\s*)?\[[^]\n]*\])*"
     references = re.compile(r"(?<![\w.$])(" + member + r")")
     assignments = re.compile(r"(?<![\w.$])(" + member + r")\s*(?:=(?!=|>)|[+*/%&|^-]=|\?\?=|&&=|\|\|=)")
     sources, globals_ = {}, []
+    aggregates, projections, origins = {}, {}, {}
+    qualified, uncertain, all_members, wildcards = {}, {}, {}, {}
+    escaped = set()
     _, bound = javascript_bindings(code)
     starts = [atom.start() for atom in atoms]
     memo = {}
@@ -832,15 +1022,92 @@ def javascript_inputs(native, atoms, code, declarations, bindings=None):
                 return "member", value
         return None
 
+    def aggregate(span):
+        if span not in aggregates:
+            members_ = javascript_literal_members(native, code, *span)
+            aggregates[span] = (dict(members_) if members_ is not None
+                                and all(name is not None and name != "__proto__" for name, _ in members_) else None)
+        return aggregates[span]
+
+    def origin(name, active=()):
+        if name in origins:
+            return origins[name]
+        if name in active or name not in declarations:
+            return None
+        span = declarations[name]
+        # Only a fresh literal allocation certifies receiver identity. A
+        # call/global/parameter can alias another receiver and remains broad.
+        members_ = javascript_literal_members(native, code, *span)
+        result = span if members_ is not None and all(name != "__proto__" for name, _ in members_) else None
+        if result is None:
+            alias = native[slice(*span)].strip()
+            if re.fullmatch(r"[A-Za-z_$][\w$]*", alias):
+                result = origin(alias, (*active, name))
+        origins[name] = result
+        return result
+
+    def location(begin, end):
+        raw = native[begin:end].strip()
+        receiver = re.match(r"[A-Za-z_$][\w$]*", raw)
+        if receiver is None or receiver.end() == len(raw):
+            return None
+        path = []
+        for part in re.finditer(r"\.\s*([A-Za-z_$][\w$]*)|\[([^]\n]*)\]", raw[receiver.end():]):
+            if part[1] is not None:
+                path.append(part[1])
+            elif re.fullmatch(r"\s*\d+\s*", part[2]):
+                path.append(str(int(part[2])))
+            else:
+                path.append(javascript_literal(part[2], native, declarations, bindings))
+        return receiver[0], tuple(path)
+
+    def projected(span, path, active=(), *, certain=False):
+        selected = span, path, certain
+        if span in escaped:
+            return () if certain and path else (span,)
+        if selected in projections:
+            return projections[selected]
+        if not path:
+            return (span,)
+        if selected in active:
+            return () if certain else (span,)
+        members_ = aggregate(span)
+        if members_ is not None and path[0] is not None and path[0] in members_:
+            result = projected(members_[path[0]], path[1:], (*active, selected), certain=certain)
+        elif members_ is None:
+            alias = native[slice(*span)].strip()
+            if re.fullmatch(r"[A-Za-z_$][\w$]*", alias) and alias in declarations:
+                result = projected(declarations[alias], path, (*active, selected), certain=certain)
+            else:
+                result = () if certain else (span,)
+        else:
+            result = () if certain else (span,)
+        projections[selected] = result
+        return result
+
     for assignment in assignments.finditer(code):
         selected = key(assignment.start(1), assignment.end(1))
-        if selected is None:
+        target = location(assignment.start(1), assignment.end(1))
+        if selected is None and target is None:
             continue
-        rhs = node_expression_parts(code, assignment.end(), len(code), ",;\n")[0]
-        sources.setdefault(selected, []).append(rhs)
+        rhs = node_expression_parts(code, assignment.end(), len(code), ",;\n", first=True)[0]
+        if target is None:
+            sources.setdefault(selected, []).append(rhs)
+        else:
+            receiver_name, path = target
+            allocation = origin(receiver_name) if len(path) == 1 else None
+            if allocation is not None and path[0] in {None, "__proto__"}:
+                escaped.add(allocation)
+            fresh = allocation if allocation not in escaped else None
+            if path and path[-1] is not None:
+                all_members.setdefault(path[-1], []).append(rhs)
+                index, property_ = (qualified, (fresh, path[-1])) if fresh is not None else (uncertain, path[-1])
+                index.setdefault(property_, []).append(rhs)
+            else:
+                wildcards.setdefault(allocation, []).append(rhs)
         receiver = native[assignment.start(1):assignment.end(1)].strip()
         global_receiver = re.match(r"(?:globalThis|global|window|self)(?=\s*[.[])", receiver)
-        if not global_receiver and selected[0] == "member":
+        if not global_receiver and target is not None:
             first = re.match(r"[A-Za-z_$][\w$]*", receiver)
             if first and first[0] in declarations:
                 begin, end = declarations[first[0]]
@@ -855,6 +1122,34 @@ def javascript_inputs(native, atoms, code, declarations, bindings=None):
         if active(call.start()) and any(native[begin:end].strip() in {"globalThis", "global", "window", "self"} for begin, end in parts):
             globals_.extend(parts)
 
+    # An opaque consumer or method may copy, inherit or mutate properties.
+    # Lose only the new member precision; retain the old broad source index.
+    for begin, end in javascript_call_inputs(code, ()):
+        if not active(begin):
+            continue
+        while begin < end and code[begin].isspace():
+            begin += 1
+        while end > begin and code[end - 1].isspace():
+            end -= 1
+        while (code[begin:begin + 1] == "(" and end > begin
+               and node_expression_parts(code, begin + 1, end, "", first=True)[0][1] == end - 1):
+            begin, end = begin + 1, end - 1
+            while begin < end and code[begin].isspace():
+                begin += 1
+            while end > begin and code[end - 1].isspace():
+                end -= 1
+        raw = native[begin:end].strip()
+        target = location(begin, end)
+        spans = projected(declarations[target[0]], target[1], certain=True) if target is not None and target[0] in declarations else ((begin, end),)
+        for span in spans:
+            name = native[slice(*span)].strip()
+            allocation = origin(name) if re.fullmatch(r"[A-Za-z_$][\w$]*", name) else None
+            if allocation is None and javascript_literal_members(native, code, *span) is not None:
+                allocation = span
+            if allocation is not None:
+                escaped.add(allocation)
+    projections.clear()
+
     for assignment in re.finditer(r"[\]}]\s*=(?!=|>)", code):
         end, depth, begin = assignment.start() + 1, 1, assignment.start() - 1
         while begin >= 0 and depth:
@@ -862,14 +1157,14 @@ def javascript_inputs(native, atoms, code, declarations, bindings=None):
             begin -= 1
         if depth or begin >= 0 and re.match(r"[\w$)\]]", code[begin]):
             continue
-        rhs = node_expression_parts(code, assignment.end(), len(code), ",;\n")[0]
+        rhs = node_expression_parts(code, assignment.end(), len(code), ",;\n", first=True)[0]
         for name, _ in javascript_binding_names(code, begin + 1, end):
             sources.setdefault(("local", name), []).append(rhs)
     for declaration in re.finditer(r"\b(?:function\s*\*?\s*|class\s+)([A-Za-z_$][\w$]*)", code):
         opening = code.find("{", declaration.end())
         if opening < 0:
             continue
-        end = node_expression_parts(code, opening + 1, len(code), "")[0][1]
+        end = node_expression_parts(code, opening + 1, len(code), "", first=True)[0][1]
         sources.setdefault(("local", declaration[1]), []).append((opening + 1, end))
 
     nodes = {}
@@ -879,30 +1174,50 @@ def javascript_inputs(native, atoms, code, declarations, bindings=None):
         values, children, unknown = [], [], []
         value = literal(begin, end)
         if value is not None:
-            values.append((begin, value))
+            values.append((begin, end, value))
         for atom in atoms[bisect_left(starts, begin):bisect_left(starts, end)]:
             try:
-                values.append((atom.start(), javascript_string(atom[0])))
+                values.append((atom.start(), atom.end(), javascript_string(atom[0])))
             except ValueError:
                 pass
         for reference in references.finditer(code, begin, end):
             selected = key(reference.start(1), reference.end(1))
-            children.extend(sources.get(selected, ()))
+            target = location(reference.start(1), reference.end(1))
+            if target is None:
+                children.extend(sources.get(selected, ()))
+            else:
+                receiver_name, path = target
+                allocation = origin(receiver_name) if len(path) == 1 else None
+                fresh = allocation if allocation not in escaped else None
+                if path and path[-1] is not None:
+                    if fresh is not None:
+                        children.extend(qualified.get((fresh, path[-1]), ()))
+                        children.extend(uncertain.get(path[-1], ()))
+                    else:
+                        children.extend(all_members.get(path[-1], ()))
+                else:
+                    children.extend(span for spans in all_members.values() for span in spans)
+                children.extend(wildcards.get(None, ()))
+                if fresh is not None:
+                    children.extend(wildcards.get(fresh, ()))
+                else:
+                    children.extend(span for owner, spans in wildcards.items() if owner is not None for span in spans)
             if (selected and selected[0] == "local" and selected not in sources
                     and selected[1] in bound and selected[1] not in bindings and selected[1] not in declarations
                     and selected[1] not in {"globalThis", "global", "window", "self", "undefined", "null", "true", "false"}):
                 unknown.append(selected[1])
             if selected and selected[0] == "local" and selected[1] in bindings:
-                values.append((reference.start(1), bindings[selected[1]]))
-            # A member can come from its receiver's aggregate initializer;
-            # its property name is never a bare local reference.
-            receiver = re.match(r"[A-Za-z_$][\w$]*", reference[1])
-            if receiver and reference[1].strip() != receiver[0]:
-                children.extend(sources.get(("local", receiver[0]), ()))
+                values.append((reference.start(1), reference.end(1), bindings[selected[1]]))
+            # Static literal members retain their own source ranges. Unknown
+            # keys and receiver identities keep possible aggregate inputs.
+            if target is not None:
+                receiver_name, path = target
+                for span in sources.get(("local", receiver_name), ()):
+                    children.extend(projected(span, path))
         nodes[begin, end] = tuple(values), tuple(dict.fromkeys(children)), tuple(unknown)
         return nodes[begin, end]
 
-    def reached(inputs, *, unresolved=None):
+    def reached(inputs, *, unresolved=None, origins=False):
         pending, visited = list(inputs), set()
         while pending:
             selected = pending.pop()
@@ -910,7 +1225,7 @@ def javascript_inputs(native, atoms, code, declarations, bindings=None):
                 continue
             visited.add(selected)
             values, children, unknown = node(*selected)
-            yield from values
+            yield from values if origins else ((begin, text) for begin, _, text in values)
             pending.extend(children)
             if unresolved is not None:
                 unresolved.extend(unknown)
@@ -920,27 +1235,16 @@ def javascript_inputs(native, atoms, code, declarations, bindings=None):
         # enumerate a shared aggregate closure for each unrelated call input.
         roots = list(inputs)
         pending, visited, parents, headers = list(roots), set(), {}, set()
-        components = {}
-        def component(value):
-            components.setdefault(value, value)
-            trail = []
-            while components[value] != value:
-                trail.append(value)
-                value = components[value]
-            for selected in trail:
-                components[selected] = value
-            return value
         while pending:
             selected = pending.pop()
             if selected in visited:
                 continue
             visited.add(selected)
             values, children, _ = node(*selected)
-            if any(javascript_patch_input(text) for _, text in values):
+            if any(javascript_patch_input(text) for _, _, text in values):
                 headers.add(selected)
             for child in children:
                 parents.setdefault(child, set()).add(selected)
-                components[component(child)] = component(selected)
             pending.extend(children)
         pending = list(headers)
         while pending:
@@ -948,11 +1252,24 @@ def javascript_inputs(native, atoms, code, declarations, bindings=None):
                 if parent not in headers:
                     headers.add(parent)
                     pending.append(parent)
-        groups = {}
+        # Transparent aliases of one shared aggregate have one composition.
+        # Independent operands never exchange fragments through a shared child.
+        transparent, selected_roots = {}, set()
         for root in roots:
-            if root in headers:
-                groups.setdefault(component(root), []).append(root)
-        return groups.values()
+            if root not in headers:
+                continue
+            selected, trail = root, set()
+            while selected not in transparent and selected not in trail:
+                trail.add(selected)
+                values, children, _ = node(*selected)
+                if values or len(children) != 1:
+                    break
+                selected = children[0]
+            selected = transparent.get(selected, selected)
+            for alias in trail:
+                transparent[alias] = selected
+            selected_roots.add(selected)
+        return ((root,) for root in sorted(selected_roots))
 
     return reached, globals_, patch_inputs
 
@@ -963,31 +1280,32 @@ def javascript_patch_input(value):
 
 
 def javascript_patch_fragments(inputs):
-    """Compose selected partial bodies once, retaining source order and edits."""
+    """Compose one operand; a resolved span covers only its own header atoms."""
     inputs = sorted(dict.fromkeys(inputs))
-    complete_paths = set()
-    for _, value in inputs:
+    complete = []
+    for begin, end, value in inputs:
         if "*** End Patch" in value:
-            complete_paths.update(effect["path"] for effect in native_file_effects("apply_patch", value)
-                                  if effect["kind"] == "write")
-    emitted = set()
-    headers = []
-    for begin, value in inputs:
+            paths = {effect["path"] for effect in native_file_effects("apply_patch", value)
+                     if effect["kind"] == "write"}
+            if paths:
+                complete.append((begin, end, paths))
+    emitted, headers = set(), []
+    for begin, end, value in inputs:
         if javascript_patch_input(value) and value not in emitted:
             emitted.add(value)
             yield begin, value
         for header in re.finditer(r"(?m)^\*\*\* (Add|Update) File: ([^\n]*)", value):
-            paths = [header[2].strip()] if header[2].strip() else [text for _, text in inputs
+            paths = [header[2].strip()] if header[2].strip() else [text for _, _, text in inputs
                 if re.fullmatch(r"[/\w.\-]+", text) and text not in {"", ".", "/"}]
-            headers.extend((begin, header[1], path) for path in paths if path not in complete_paths)
+            headers.extend((begin, header[1], path) for path in paths
+                           if not any(start <= begin and end <= finish and path in paths_
+                                      for start, finish, paths_ in complete))
     if not headers:
         return
     fragments = []
-    for position, value in inputs:
+    for position, _, value in inputs:
         if "*** End Patch" in value and javascript_patch_input(value):
             continue
-        # A header's own nonempty body is also a selected fragment. Removal
-        # lines do not become executable additions in a partial alternative.
         lines = [line[1:] if line.startswith("+") else line for line in value.splitlines()
                  if not line.startswith(("*** ", "@@", "-"))]
         fragments.append((position, value, lines))
@@ -1017,7 +1335,7 @@ def javascript_possible_patches(native, *, capabilities=False):
     # A shared aggregate is walked once across all header-reaching operands.
     # Keep origin tuples; repeated statements at distinct origins still matter.
     for group in operands:
-        for begin, patch in javascript_patch_fragments(reached(group)):
+        for begin, patch in javascript_patch_fragments(reached(group, origins=True)):
             if patch not in seen:
                 seen.add(patch)
                 yield begin, patch
@@ -1042,7 +1360,7 @@ def javascript_generated_sources(value):
         local_capabilities = javascript_capabilities(current_code, current) or global_this and bool(re.search(r"\bthis\b", current_code))
         root_capabilities |= local_capabilities
         declarations, bound = javascript_bindings(current_code, sloppy=sloppy)
-        source_calls = list(javascript_source_calls(current, current_code))
+        source_calls = list(javascript_source_calls(current, current_code, global_this=global_this))
         direct_eval = any(direct for _, _, _, direct, _ in source_calls)
         bindings = {name: text for name, text in inherited.items() if name not in bound and not direct_eval}
 
@@ -1075,7 +1393,7 @@ def javascript_generated_sources(value):
             replacements = []
             for match in re.finditer(r"(\b(?:cmd|command)\s*:\s*|\btools\.apply_patch\s*\(\s*)((?:(?:globalThis|global|window|self)\s*\.\s*)?(\w+))\b", projected):
                 operands = {} if "." in match[2] else bindings
-                end = node_expression_parts(projected, match.start(2), len(projected))[0][1]
+                end = node_expression_parts(projected, match.start(2), len(projected), first=True)[0][1]
                 operand = literal(current[match.start(2):end])
                 if operand is not None:
                     replacements.append((match.start(2), end, json.dumps(operand)))
@@ -1085,7 +1403,7 @@ def javascript_generated_sources(value):
                 if projected[match.start(3):match.end(3)] != match[3]:
                     continue
                 operands = {} if "." in match[3] else bindings
-                end = node_expression_parts(projected, match.start(3), len(projected))[0][1]
+                end = node_expression_parts(projected, match.start(3), len(projected), first=True)[0][1]
                 operand = literal(current[match.start(3):end])
                 if operand is not None:
                     replacements.append((match.start(3), end, json.dumps(operand)))
@@ -1280,7 +1598,7 @@ def javascript_generated_sources(value):
                 emitted_patches.add(patch)
                 yield "apply_patch(" + json.dumps(patch) + ")"
         if unknown_patch and unknown_inputs:
-            inputs = tuple(enumerate((*patch_values, *fallback)))
+            inputs = tuple((index, index + 1, value) for index, value in enumerate((*patch_values, *fallback)))
             for _, patch in javascript_patch_fragments(inputs):
                 if patch not in emitted_patches:
                     emitted_patches.add(patch)
@@ -1352,22 +1670,12 @@ def shell_commands(name, value, *, depth=0):
             yield from shell_commands("exec_command", {"cmd": body}, depth=depth + 1)
         else:
             yield argv[1:] if argv[0] == "nohup" else argv
-    texts = shell_texts(name, value)
-    for text in texts:
+    for text in shell_texts("exec_command" if name == "functions.exec_command" else name, value):
         try:
-            lexer = shell_lexer(shell_code(text))
-            lexer.whitespace = " \t\r"
-            lexer.whitespace_split = True
-            command = []
-            for token in lexer:
-                if token and all(c in ";&|\n" for c in token):
-                    if command:
-                        yield from commands(command)
-                    command = []
-                else:
-                    command.append(token)
-            if command:
-                yield from commands(command)
+            reached = []
+            shell_code(text, commands=reached, source_shell=arguments(value).get("shell") if name in {"exec_command", "functions.exec_command"} and isinstance(arguments(value), dict) else None)
+            for argv in reached:
+                yield from commands(argv)
         except ValueError:
             continue
 
@@ -1552,12 +1860,14 @@ def forwards_stdin(argv):
     return True
 
 
-def node_expression_parts(code, start, end, separators=","):
+def node_expression_parts(code, start, end, separators=",", *, first=False):
     """Split actual JS expressions at balanced, unquoted delimiters."""
     parts, stack, begin = [], [], start
     for cursor in range(start, end):
         token = code[cursor]
         if not stack and token in separators:
+            if first:
+                return [(begin, cursor)]
             parts.append((begin, cursor))
             begin = cursor + 1
         elif token in "([{":
@@ -1627,7 +1937,7 @@ def node_control_statements(code):
                         while at < body["end"] - 1:
                             label = re.match(r"(case|default)\b", code[at:]) if not stack else None
                             if label:
-                                colon = node_expression_parts(code, at + label.end(), body["end"] - 1, ":")[0][1]
+                                colon = node_expression_parts(code, at + label.end(), body["end"] - 1, ":", first=True)[0][1]
                                 labels.append((at, colon + 1, label[1]))
                                 at = colon + 1
                                 continue
@@ -1652,7 +1962,7 @@ def node_control_statements(code):
                     return {"kind": keyword[1], "start": start, "end": end,
                             "condition": (condition + 1, finish), "body": [body],
                             "other": [other] if other else []}
-        end = node_expression_parts(code, cursor, len(code), ";\n")[0][1]
+        end = node_expression_parts(code, cursor, len(code), ";\n", first=True)[0][1]
         if end <= cursor:
             end = cursor + 1
         elif end < len(code) and code[end] in ";\n":
@@ -1707,7 +2017,7 @@ def node_deferred_functions(code):
         if body < len(code) and code[body] == "{":
             begin, end = body + 1, closing(body)
         else:
-            begin, end = node_expression_parts(code, body, len(code), ";,\n")[0]
+            begin, end = node_expression_parts(code, body, len(code), ";,\n", first=True)[0]
         functions.append((binding[1], binding.start(1), begin, end))
     return functions
 
@@ -1725,7 +2035,7 @@ def node_ownership(content):
     declarations = {}
     for definition in re.finditer(r"(?<![\w$.])([A-Za-z_$][\w$]*)\s*(\+=|=)(?!=|>)", code):
         start = definition.end()
-        _, end = node_expression_parts(code, start, len(code), ";,\n")[0]
+        _, end = node_expression_parts(code, start, len(code), ";,\n", first=True)[0]
         declarations.setdefault(definition[1], []).append((definition.start(), start, end, definition[2]))
     statements = node_control_statements(code)
     deferred = node_deferred_functions(code)
@@ -2164,13 +2474,16 @@ def shell_literal_status(words):
 
 def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None, inline_inputs=None,
                       stream_sources=None, output_sources=None, execution_events=None, stdin_kinds=None,
-                      success_facts=None):
+                      success_facts=None, source_bodies=None, source_shell=None):
     """Parse command descriptors once and carry each stdin source through groups.
 
     A balanced group is one outer pipeline node. Its children share the same
     parser, so inner separators and redirections cannot be borrowed by siblings.
     Source sets preserve distinct bodies without concatenating unrelated data.
     """
+    root_stop = len(tokens)
+    source_at = [source] * root_stop
+    source_bodies = {} if source_bodies is None else source_bodies
     spans, cursor = [], 0
     for token in tokens:
         start = source.find(token, cursor)
@@ -2179,29 +2492,59 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
             cursor = start + len(token)
     bounds = compound_bounds(tokens)
     definitions = {}
-    for index, token in enumerate(tokens):
-        if not re.fullmatch(r"[A-Za-z_]\w*", token):
-            continue
-        if tokens[index + 1:index + 3] == ["(", ")"]:
-            name, body = token, index + 3
-        elif token == "function" and index + 1 < len(tokens) and re.fullmatch(r"[A-Za-z_]\w*", tokens[index + 1]):
-            name, body = tokens[index + 1], index + 2
-            if tokens[body:body + 2] == ["(", ")"]:
-                body += 2
-        else:
-            continue
-        while body < len(tokens) and tokens[body] in {";", "\n"}:
-            body += 1
-        if body in bounds:
-            stop = bounds[body] + 1
-        else:
-            stop = body
-            while stop < len(tokens) and not all(c in ";&|\n" for c in tokens[stop]):
-                stop = bounds.get(stop, stop) + 1
-        if body < stop:
-            definitions[index] = (name, body, stop)
+
+    def register_definitions(first, last):
+        for index in range(first, last):
+            token = tokens[index]
+            if not re.fullmatch(r"[A-Za-z_]\w*", token):
+                continue
+            if tokens[index + 1:index + 3] == ["(", ")"]:
+                name, body = token, index + 3
+            elif token == "function" and index + 1 < last and re.fullmatch(r"[A-Za-z_]\w*", tokens[index + 1]):
+                name, body = tokens[index + 1], index + 2
+                if tokens[body:body + 2] == ["(", ")"]:
+                    body += 2
+            else:
+                continue
+            while body < last and tokens[body] in {";", "\n"}:
+                body += 1
+            if body in bounds:
+                stop = bounds[body] + 1
+            else:
+                stop = body
+                while stop < last and not all(c in ";&|\n" for c in tokens[stop]):
+                    stop = bounds.get(stop, stop) + 1
+            if body < stop:
+                definitions[index] = (name, body, stop)
+
+    register_definitions(0, root_stop)
     stream_sources = {} if stream_sources is None else stream_sources
     languages = {}
+
+    def embedded(body):
+        code, child_tokens, bodies = shell_source(body)
+        # One position domain, but embedded roots are entered only by their caller.
+        scope = len(tokens)
+        tokens.append(";")
+        spans.append((None, None))
+        source_at.append(None)
+        begin = len(tokens)
+        tokens.extend(child_tokens)
+        source_at.extend([code] * len(child_tokens))
+        cursor = 0
+        for token in child_tokens:
+            start = code.find(token, cursor)
+            spans.append((start, start + len(token)) if start >= 0 else (None, None))
+            if start >= 0:
+                cursor = start + len(token)
+        stop = len(tokens)
+        tokens.append(";")
+        spans.append((None, None))
+        source_at.append(None)
+        bounds.update((begin + left, begin + right) for left, right in compound_bounds(child_tokens).items())
+        source_bodies.update((begin + at, value) for at, value in bodies.items())
+        register_definitions(begin, stop)
+        return scope, begin, stop, parse(begin, stop)
 
     def parse(begin, end):
         segments, current, index = [], [], begin
@@ -2230,6 +2573,7 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
         for segment, separator in segments:
             argv, heredocs, children, child_scope, cursor, last_word = [], [], None, None, 0, None
             substitutions = {}
+            word_literals = []
             descriptors = {0: "pipe-in", 1: "pipe-out", 2: None}
             while cursor < len(segment):
                 index, token = segment[cursor], tokens[segment[cursor]]
@@ -2241,6 +2585,7 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                     placeholder = f"PROCESS_SUBSTITUTION_{index}"
                     substitutions[placeholder] = (token, parse(opening + 1, close))
                     argv.append(placeholder)
+                    word_literals.append(False)
                     cursor = segment.index(close) + 1
                     continue
                 if token in {"(", "{"} and index in bounds and bounds[index] in segment:
@@ -2255,6 +2600,7 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                             and spans[previous][1] == spans[index][0]):
                         fd = int(tokens[previous])
                         argv.pop()
+                        word_literals.pop()
                     operand = tokens[segment[cursor + 1]] if cursor + 1 < len(segment) else ""
                     if (cursor + 2 < len(segment) and operand in {"<", ">"}
                             and tokens[segment[cursor + 2]] == "(" and segment[cursor + 2] in bounds
@@ -2279,20 +2625,23 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                         descriptors[fd] = ("input-file", target[0]) if len(target) == 1 else None
                     elif token in {">", ">>", ">|", "&>", "&>>"}:
                         target = shlex.split(operand, comments=False)
-                        descriptors[fd] = ("file", target[0], token not in {">>", "&>>"}) if len(target) == 1 else None
+                        descriptors[fd] = ("file", target[0], token not in {">>", "&>>"}, index) if len(target) == 1 else None
                         if token.startswith("&>"):
                             descriptors[2] = descriptors[fd]
                     else:
                         descriptors[fd] = None
                     cursor += 2
                     continue
-                argv.extend(shlex.split(token, comments=False))
+                decoded = shlex.split(token, comments=False)
+                argv.extend(decoded)
+                word_literals.extend([shell_word_literal(token)] * len(decoded))
                 last_word = index
                 cursor += 1
             definition = definitions.get(segment[0])
             if definition is not None:
                 name, body, stop = definition
                 argv, children, child_scope = [name], parse(body, stop), None
+                word_literals = [True]
                 descriptors = {0: "pipe-in", 1: "pipe-out", 2: None}
             if any(tokens[opening] == "case" and opening <= segment[0] < closing for opening, closing in bounds.items()):
                 pattern_end = next((at for at in segment if tokens[at] == ")"), None)
@@ -2306,11 +2655,47 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                             break
                     if argv[:len(prefix)] == prefix:
                         argv = argv[len(prefix):]
+                        word_literals = word_literals[len(prefix):]
+            inline_body, body_scope, fresh_shell, child_shell = None, None, False, None
+            if children is None and definition is None:
+                action, _, _, _ = shell_command_action(argv)
+                child = unwrapped_command(action, unwrap_code=False)
+                body = None
+                if action[:1] == ["eval"] and all(word_literals[len(argv) - len(action) + 1:]):
+                    body = " ".join(action[1:]) if len(action) > 1 else None
+                elif action[:1] == ["emulate"]:
+                    bodies = list(executor_commands(action))
+                    body = bodies[0] if len(bodies) == 1 else None
+                    if body is not None and not word_literals[argv.index(body, 1)]:
+                        body = None
+                elif shell_c_body(child) is not None and argv[-len(child):] == child:
+                    child_body = shell_c_body(child)
+                    if word_literals[len(argv) - len(child) + child.index(child_body, 1)]:
+                        body, fresh_shell, child_shell = child_body, True, Path(child[0]).name
+                if body is not None:
+                    body_scope, child_begin, child_end, children = embedded(body)
+                    inline_body = (child_begin, child_end, body_scope)
             language = stdin_language(argv)
+            input_positions = None
+            redirection_owner = segment[0]
             if children is None and tokens[segment[0]] in {"}", ")", "done", "fi", "esac"}:
-                language = compound_stdin_language(tokens, source, segment[0], spans, heredocs) or language
+                language = compound_stdin_language(tokens, source_at[segment[0]], segment[0], spans, heredocs) or language
+                opening = next((begin for begin, close in bounds.items() if close == segment[0]), None)
+                if opening is not None:
+                    redirection_owner = opening
+                if opening is not None and language:
+                    def consumers(prior):
+                        for candidate in prior:
+                            if candidate["children"] is not None:
+                                yield from consumers(candidate["children"])
+                            elif opening <= candidate["index"] < segment[0]:
+                                child = unwrapped_command(candidate["argv"], unwrap_code=False)
+                                if candidate["language"] or language == "shell" and child[:1] == ["eval"]:
+                                    yield candidate["index"]
+                    input_positions = tuple(consumers(nodes))
             nodes.append({"argv": argv, "children": children, "child_scope": child_scope, "definition": definition,
                           "language": language, "index": segment[0], "stop": segment[-1] + 1,
+                          "inline_body": inline_body, "body_scope": body_scope, "fresh_shell": fresh_shell, "child_shell": child_shell, "input_positions": input_positions, "redirection_owner": redirection_owner,
                           "descriptors": descriptors, "heredocs": heredocs,
                           "substitutions": substitutions,
                           "separator": separator, "source": " ".join(tokens[index] for index in segment)})
@@ -2340,18 +2725,22 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                     previous = languages.get(identifier)
                     languages[identifier] = language if previous in {None, language} else "argv"
             if execution_events is not None:
+                execution_events.extend({"kind": "stdin", "position": position, "source": identifier,
+                                         "language": language, "command_effect": True}
+                                        for identifier in executable_sources if identifier != "external")
                 paths = [stream_sources[source]["path"] for source in leaves
                          if stream_sources.get(source, {}).get("kind") == "file"]
                 if paths:
                     execution_events.append({"kind": "read", "position": position, "paths": paths})
 
-    def record_file(node, target, sources, forwards, replaces=True):
+    def record_file(node, target, sources, forwards, replaces=True, *, position=None, command_effect=False):
         if file_commands is not None:
             identifiers = sorted((identifier for identifier in sources if identifier != "external"), key=repr)
             for identifier in identifiers or [None]:
                 file_commands.append({"target": target, "body": identifier,
                                       "argv": node["argv"], "source": node["source"],
-                                      "position": node["index"],
+                                      "position": node["index"] if position is None else position,
+                                      "owner_position": node["redirection_owner"] if position is not None else node["index"], "command_effect": command_effect,
                                       "forwards": forwards, "replaces": replaces})
 
     def append_streams(before, after):
@@ -2373,6 +2762,13 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
     def flow(nodes, inherited):
         output, pipe, previous = set(), set(), ""
         for node in nodes:
+            if execution_events is not None:
+                execution_events.append({"kind": "command", "position": node["index"],
+                                         "argv": node["argv"], "inline_body": node["inline_body"] is not None,
+                                         "command_effect": True})
+                execution_events.extend({"kind": "input_expansion", "position": identifier,
+                                         "owner_position": node["redirection_owner"], "source": identifier}
+                                        for identifier in node["heredocs"])
             descriptors = node["descriptors"]
             incoming = pipe if previous in {"|", "|&"} else inherited
             input_source = descriptors[0]
@@ -2384,10 +2780,13 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
             if isinstance(input_source, tuple) and input_source[0] == "process-input":
                 inputs = flow(input_source[1], inherited)
             if node["children"] is not None:
+                if execution_events is not None and node["inline_body"] is not None:
+                    execution_events.append({"kind": "read", "position": node["index"], "paths": [], "command_effect": True})
                 produced = flow(node["children"], inputs)
                 forwards = bool(produced)
             else:
-                assign_language(inputs, node["language"], node["index"])
+                for position in node["input_positions"] if node["input_positions"] is not None else (node["index"],):
+                    assign_language(inputs, node["language"], position)
                 child = stream_argv(node["argv"])
                 if execution_events is not None:
                     execution_events.append({"kind": "read", "position": node["index"], "paths": execution_targets(node["argv"]), "command_effect": True})
@@ -2454,9 +2853,9 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                             if word in node["substitutions"] and node["substitutions"][word][0] == ">":
                                 flow(node["substitutions"][word][1], inputs)
                             else:
-                                record_file(node, word, inputs, True, not any(flag in {"-a", "--append"} for flag in child[1:]))
+                                record_file(node, word, inputs, True, not any(flag in {"-a", "--append"} for flag in child[1:]), command_effect=True)
             if isinstance(descriptors[1], tuple) and descriptors[1][0] == "file":
-                record_file(node, descriptors[1][1], produced, forwards, descriptors[1][2])
+                record_file(node, descriptors[1][1], produced, forwards, descriptors[1][2], position=descriptors[1][3])
             elif isinstance(descriptors[1], tuple) and descriptors[1][0] == "process-output":
                 flow(descriptors[1][1], produced)
             outgoing = produced if descriptors[1] == "pipe-out" else set()
@@ -2467,42 +2866,13 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                 output = append_streams(output, outgoing)
         return output
 
-    nodes = parse(0, len(tokens))
+    nodes = parse(0, root_stop)
     if success_facts is not None:
-        def command_action(words):
-            action = list(words)
-            path_assignment = False
-            while action and (action[0] == "!" or re.match(r"[A-Za-z_]\w*=", action[0])):
-                path_assignment |= action[0].startswith("PATH=")
-                action = action[1:]
-            while action[:1] in (["time"], ["noglob"], ["nocorrect"]):
-                prefix, action = action[0], action[1:]
-                if prefix == "time" and action[:1] == ["-p"]:
-                    action = action[1:]
-            asynchronous = action[:1] == ["coproc"]
-            if asynchronous:
-                action = action[1:]
-            # Only shell builtins execute in this scope. A command query
-            # and process launchers such as env cannot terminate it.
-            builtin_action = action[:1] in (["builtin"], ["command"])
-            dispatch = {"builtin_only": False, "standard_path": False,
-                        "path_assignment": path_assignment}
-            while action[:1] in (["builtin"], ["command"]):
-                wrapper, action = action[0], action[1:]
-                dispatch["builtin_only"], dispatch["standard_path"] = wrapper == "builtin", False
-                while action and action[0].startswith("-"):
-                    option = action[0]
-                    if option == "--":
-                        action = action[1:]
-                        break
-                    if wrapper == "command" and len(option) > 1 and set(option[1:]) <= {"p", "v", "V"}:
-                        dispatch["standard_path"] |= "p" in option[1:]
-                        action = [] if set(option[1:]) & {"v", "V"} else action[1:]
-                    else:
-                        break
-            return action, builtin_action, asynchronous, dispatch
-
         def hash_changes(action):
+            def path_value(value):
+                return re.sub(r"^\$(?:PWD|\{PWD\})/", "./", value)
+            if action and (assignment := re.fullmatch(r"commands\[([^]\s]+)\]=(.*)", action[0])):
+                return (("set", (assignment[1],), path_value(assignment[2]), frozenset({"zsh"})),)
             if action[:1] != ["hash"]:
                 return ()
             cursor, flags, path = 1, set(), None
@@ -2519,38 +2889,48 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                         path = word[offset + 1:] or (action[cursor] if cursor < len(action) else None)
                         cursor += not word[offset + 1:] and cursor < len(action)
                         break
-            names = [word for word in action[cursor:] if "/" not in word]
-            if (path is not None or flags & {"d", "t"}) and not action[cursor:]:
+            operands = action[cursor:]
+            if (path is not None or flags & {"d", "t"}) and not operands:
                 return ()
-            changes = [("reset", (), None)] if "r" in flags else []
-            if "t" in flags:
+            dialects = frozenset({"bash"}) if flags & {"d", "p"} or "r" in flags and operands else frozenset({"bash", "zsh"})
+            changes = [("reset", (), None, dialects)] if "r" in flags else []
+            if "t" in flags or "l" in flags:
                 return tuple(changes)
+            names = [word for word in operands if "/" not in word and "=" not in word]
             if path is not None:
-                changes.append(("set", tuple(names), path))
-            elif names:
-                changes.append(("forget", tuple(names), None))
+                changes.append(("set", tuple(names), path_value(path), frozenset({"bash"})))
+            elif "d" in flags:
+                changes.append(("forget", tuple(names), None, frozenset({"bash"})))
+            else:
+                for word in operands:
+                    name, equal, value = word.partition("=")
+                    if equal and name and value:
+                        changes.append(("set", (name,), path_value(value), frozenset({"zsh"})))
+                if names:
+                    changes.append(("forget", tuple(names), None, frozenset({"bash"})))
             return tuple(changes)
 
         def implied_success(nodes, inherited=frozenset(), parent=None):
             implied, previous, list_success, list_status = set(inherited), "", set(inherited), None
             for node in nodes:
                 entry = set(implied)
-                child_success = (implied_success(node["children"], entry, node["index"])
+                redirections = {value[3] for value in node["descriptors"].values()
+                                if isinstance(value, tuple) and value[0] == "file"}
+                child_parent = node["body_scope"] if node["body_scope"] is not None else node["index"]
+                child_success = (implied_success(node["children"], entry | redirections, child_parent)
                                  if node["children"] is not None else set())
+                if node["body_scope"] is not None:
+                    success_facts[child_parent] = {"entry": entry, "success": set(child_success),
+                        "children": child_success, "parent": node["index"], "stop": node["inline_body"][1],
+                        "subshell": node["fresh_shell"], "fresh_shell": node["fresh_shell"], "shell": node["child_shell"]}
+                    child_success = {child_parent}
+                child_success.update(redirections)
                 words = node["argv"]
                 while words and words[0] in {"if", "then", "else", "elif", "do", "while", "until"}:
                     words = words[1:]
                 positive = set() if words[:1] == ["!"] else {node["index"]}
-                action, builtin_action, asynchronous, dispatch = command_action(words)
-                opaque_emulate = False
-                while action[:1] == ["emulate"]:
-                    bodies = list(executor_commands(action))
-                    opaque_emulate |= bool(bodies)
-                    child = foreground_shell_argv(bodies[0]) if len(bodies) == 1 else None
-                    if child is None:
-                        break
-                    action, builtin_action, child_async, dispatch = command_action(child)
-                    asynchronous |= child_async
+                action, builtin_action, asynchronous, dispatch = shell_command_action(words)
+                opaque_emulate = bool(action[:1] == ["emulate"] and list(executor_commands(action)))
                 if asynchronous:
                     positive = set()
                 terminates = ("exit" if action[:1] in (["exit"], ["logout"], ["bye"]) else
@@ -2577,6 +2957,7 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                            or action[:1] == ["unfunction"]
                            or action[:1] in (["unhash"], ["disable"]) and "f" in flags) else [])
                 alias_installation = bool(action[:1] == ["alias"] and any("=" in word for word in action[1:]))
+                opaque_context &= node["inline_body"] is None
                 installation |= opaque_context or alias_installation
                 signals = {signal.upper() for signal in trap[1:]}
                 may_skip = opaque_context or alias_installation or installation and "DEBUG" in signals
@@ -2597,10 +2978,11 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                     list_success, list_status = entry | positive, result
                 success_facts[node["index"]] = {"entry": entry, "success": set(list_success),
                                                 "children": child_success, "parent": parent, "stop": node["stop"],
-                                                "subshell": node["child_scope"] == "(" or asynchronous,
+                                                "subshell": node["child_scope"] == "(" or asynchronous, "asynchronous": asynchronous,
                                                 "terminates": terminates, "overrides": installation, "builtin_action": builtin_action,
-                                                "hash_changes": hash_changes(action), "builtin_change": (tuple(operands), "n" not in flags) if action[:1] == ["enable"] and not flags.intersection("adfps") else None,
-                                                "dispatch": dispatch, "removes": removes, "removal_patterns": "m" in flags, "definition": node["definition"], "pipeline": previous in {"|", "|&"}, "command": action[0] if action else None, "may_skip": may_skip,
+                                                "action": action, "hash_changes": hash_changes(action), "builtin_change": (tuple(operands), "n" not in flags) if action[:1] == ["enable"] and not flags.intersection("adfps") else None,
+                                                "dispatch": dispatch, "redirections": redirections, "inline_body": node["inline_body"], "opaque_context": opaque_context,
+                                                "exports": (tuple(operands), "n" not in flags) if action[:1] == ["export"] and "f" in flags else (tuple(operands), True) if action[:1] in (["declare"], ["typeset"]) and {"f", "x"} <= flags else None, "removes": removes, "removal_patterns": "m" in flags, "definition": node["definition"], "pipeline": previous in {"|", "|&"}, "command": action[0] if action else None, "may_skip": may_skip,
                                                 "inherit_override": opaque_context or alias_installation or any(signal not in {"ERR", "ZERR"} for signal in signals)}
                 previous = node["separator"]
                 implied = set(list_success) if previous == "&&" else set(inherited)
@@ -2610,12 +2992,33 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                     for member in nodes[list_start:offset + 1]:
                         success_facts[member["index"]]["process_scope"] = node["index"]
                     success_facts[node["index"]]["subshell"] = True
+                    success_facts[node["index"]]["asynchronous"] = True
                 if node["separator"] in {";", "\n", "&"}:
                     list_start = offset + 1
                 if node["separator"] in {"|", "|&"}:
                     success_facts[node["index"]]["subshell"] = True
             return list_success if nodes and previous not in {"&", "|", "|&"} else set(inherited)
         success_facts["end"] = implied_success(nodes)
+        def redirection_scopes(nodes):
+            for node in nodes:
+                opening = node["redirection_owner"]
+                if opening != node["index"]:
+                    # Prefix grammar can put the opening token inside the
+                    # existing command node rather than at its first token.
+                    opening = max(position for position, facts in success_facts.items()
+                                  if isinstance(position, int) and position <= opening < facts["stop"])
+                    node["redirection_owner"] = opening
+                    redirections = success_facts[node["index"]]["redirections"]
+                    success_facts[opening]["redirections"].update(redirections)
+                    success_facts[opening]["children"].update(redirections)
+                    for position, facts in success_facts.items():
+                        if isinstance(position, int) and opening <= position < node["index"]:
+                            facts["entry"].update(redirections)
+                if node["children"] is not None:
+                    redirection_scopes(node["children"])
+        redirection_scopes(nodes)
+        success_facts["root_stop"] = root_stop
+        success_facts["root_shell"] = Path(source_shell).name if isinstance(source_shell, str) and source_shell else None
     def echo_scopes(nodes, scope):
         """Share one unknown echo mode until an actual mutation or child shell."""
         for node in nodes:
@@ -2801,8 +3204,8 @@ def stdin_ownership(content, language):
     return language is not None and bool(OWNERSHIP_TEXT.search(content))
 
 
-def shell_code(text, *, writes=None, reads=None, replacements=None, effects=None):
-    """Extract bodies first, then resolve streams across the complete command."""
+def shell_source(text):
+    """Tokenize one source and retain its literal heredoc bodies."""
     # Quoted cat substitutions are a common CLI body argument. Their literal
     # contents must never participate in either shell lexing or '&' detection.
     substitution = re.compile(r"\$\(cat[ \t]+<<(-?)(['\"])([\w-]+)\2[ \t]*\n([\s\S]*?)\n[\t]*\3\r?\n\s*\)")
@@ -2847,25 +3250,87 @@ def shell_code(text, *, writes=None, reads=None, replacements=None, effects=None
     lexer.whitespace = " \t\r"
     lexer.whitespace_split = True
     tokens = list(lexer)
-    file_commands, inline_inputs, stream_sources = [], {}, {}
-    execution_events = [] if effects is not None else None
-    success_facts = {} if effects is not None else None
-    languages = heredoc_languages(tokens, lexer.instream.getvalue(), file_commands=file_commands,
-                                  inline_inputs=inline_inputs, stream_sources=stream_sources,
-                                  execution_events=execution_events, success_facts=success_facts)
-    contents, owns = {}, False
     identifiers = [index for index, token in enumerate(tokens) if token == "<<"]
     if len(identifiers) != len(bodies):
         raise ValueError("unparsed heredoc correspondence")
-    for identifier, (content, expands) in zip(identifiers, bodies):
+    return code, tokens, dict(zip(identifiers, bodies))
+
+
+def shell_command_action(words):
+    """Normalize same-process shell prefixes to a fixpoint."""
+    action, path_assignment = list(words), False
+    while action:
+        word = action[0]
+        if word == "!" or re.match(r"[A-Za-z_]\w*\+?=", word):
+            path_assignment |= bool(re.match(r"PATH\+?=", word))
+            action = action[1:]
+        elif word in {"time", "noglob", "nocorrect"}:
+            action = action[1:]
+            if word == "time" and action[:1] == ["-p"]:
+                action = action[1:]
+        else:
+            break
+    asynchronous = action[:1] == ["coproc"]
+    if asynchronous:
+        action = action[1:]
+    builtin_action = action[:1] in (["builtin"], ["command"])
+    dispatch = {"builtin_only": False, "standard_path": False, "path_assignment": path_assignment, "external_command": False}
+    while action[:1] in (["builtin"], ["command"]):
+        wrapper, action = action[0], action[1:]
+        dispatch["builtin_only"], dispatch["standard_path"] = wrapper == "builtin", False
+        dispatch["external_command"] = wrapper == "command"
+        while action and action[0].startswith("-"):
+            option = action[0]
+            if option == "--":
+                action = action[1:]
+                break
+            if wrapper == "command" and len(option) > 1 and set(option[1:]) <= {"p", "v", "V"}:
+                dispatch["standard_path"] |= "p" in option[1:]
+                action = [] if set(option[1:]) & {"v", "V"} else action[1:]
+            else:
+                break
+    return action, builtin_action, asynchronous, dispatch
+
+
+def shell_word_literal(raw):
+    """Whether decoding this word leaves no outer-shell expansion unresolved."""
+    quote, escaped = None, False
+    for char in raw:
+        if escaped:
+            escaped = False
+        elif char == "\\" and quote != "'":
+            escaped = True
+        elif quote == "'":
+            if char == "'":
+                quote = None
+        elif char in "$`":
+            return False
+        elif char in "'\"":
+            quote = None if quote == char else char if quote is None else quote
+    return True
+
+
+def shell_code(text, *, writes=None, reads=None, replacements=None, effects=None, commands=None, source_shell=None):
+    """Extract bodies first, then resolve streams across the complete command."""
+    code, tokens, source_bodies = shell_source(text)
+    root_stop = len(tokens)
+    file_commands, inline_inputs, stream_sources = [], {}, {}
+    execution_events, success_facts = [], {}
+    languages = heredoc_languages(tokens, code, file_commands=file_commands,
+                                  inline_inputs=inline_inputs, stream_sources=stream_sources,
+                                  execution_events=execution_events, success_facts=success_facts, source_bodies=source_bodies, source_shell=source_shell)
+    contents, owns, expansion_owners = {}, False, set()
+    for identifier, (content, expands) in source_bodies.items():
         if expands:
-            owns |= any(executable_content(expansion) or opaque_ownership("exec_command", {"cmd": expansion})
-                        for expansion in shell_expansions(content, heredoc=True))
+            if any(executable_content(expansion) or opaque_ownership("exec_command", {"cmd": expansion})
+                   for expansion in shell_expansions(content, heredoc=True)):
+                expansion_owners.add(identifier)
             content = re.sub(r"\\([\\$`\n])", lambda match: "" if match[1] == "\n" else match[1], content)
         contents[identifier] = content
     for identifier, (raw, content) in inline_inputs.items():
-        owns |= any(executable_content(expansion) or opaque_ownership("exec_command", {"cmd": expansion})
-                    for expansion in shell_expansions(raw))
+        if any(executable_content(expansion) or opaque_ownership("exec_command", {"cmd": expansion})
+               for expansion in shell_expansions(raw)):
+            expansion_owners.add(identifier)
         contents[identifier] = content
     def possible_substring(identifier, needle):
         @lru_cache(maxsize=None)
@@ -2953,9 +3418,6 @@ def shell_code(text, *, writes=None, reads=None, replacements=None, effects=None
             for part in stream["parts"]:
                 yield from file_parts(part)
 
-    for identifier in languages:
-        if reads is not None and languages.get(identifier):
-            reads.update(file_parts(identifier))
     if writes is not None or effects is not None:
         for command in file_commands:
             input_source = command["body"]
@@ -2971,11 +3433,12 @@ def shell_code(text, *, writes=None, reads=None, replacements=None, effects=None
                 writes.extend((command["target"], content) for content in variants)
             if effects is not None:
                 execution_events.append({"kind": "write", "position": command["position"],
+                                         "owner_position": command["owner_position"], "command_effect": command["command_effect"],
                                          "path": command["target"], "contents": variants,
                                          "replaces": command["replaces"]})
             if replacements is not None and command["replaces"]:
                 replacements.add(command["target"])
-    if effects is not None:
+    if execution_events is not None:
         grouped = {}
         for event in execution_events:
             if event["kind"] == "write":
@@ -2986,12 +3449,22 @@ def shell_code(text, *, writes=None, reads=None, replacements=None, effects=None
                     grouped[key]["contents"] += tuple(event["contents"])
                 else:
                     grouped[key] = dict(event, contents=tuple(event["contents"]))
-        ordered = sorted([*grouped.values(), *(event for event in execution_events if event["kind"] == "read")],
+        ordered = sorted([*grouped.values(), *(event for event in execution_events if event["kind"] != "write")],
                          # Redirections open before the command mutates its operands.
                          key=lambda event: (event["position"], event["kind"] != "write",
                                             bool(event.get("command_effect"))))
-        effects.extend(shell_effect_order(tokens, ordered, success_facts=success_facts))
-    for identifier, language in languages.items():
+        reached = shell_effect_order(tokens, ordered, success_facts=success_facts)
+        if effects is not None:
+            effects.extend(event for event in reached if event["kind"] in {"write", "read"})
+        if commands is not None:
+            commands.extend((["coproc", *event["argv"]] if event.get("detached") and event["argv"][:1] != ["coproc"] else event["argv"]) for event in reached
+                            if event["kind"] == "command" and event["argv"] and not event["inline_body"])
+        owns |= any(event["source"] in expansion_owners for event in reached if event["kind"] == "input_expansion")
+        reached_inputs = {(event["source"], event["language"]) for event in reached if event["kind"] == "stdin"}
+        if reads is not None:
+            for identifier, language in reached_inputs:
+                reads.update(file_parts(identifier))
+    for identifier, language in reached_inputs:
         if language:
             variants = variants_of(identifier)
             if variants is not None:
@@ -3001,7 +3474,7 @@ def shell_code(text, *, writes=None, reads=None, replacements=None, effects=None
         raise ExecutableOwnership("executable stdin")
     # Here-string words are stdin data. Remove them from later argv inspection.
     masked, cursor = [], 0
-    for index, token in enumerate(tokens):
+    for index, token in enumerate(tokens[:root_stop]):
         start = code.find(token, cursor)
         if start < 0:
             continue
@@ -3138,16 +3611,31 @@ def shell_effect_order(tokens, events, *, success_facts=None):
         if condition is not False:
             if event["kind"] == "write":
                 event = dict(event, _replace_success=event["replaces"])
-            by_position.setdefault(event["position"], []).append(event)
+            by_position.setdefault(event.get("owner_position", event["position"]), []).append(event)
     functions, hashes, builtin_states = {}, {}, {}
-    # GNU Bash implemented default builtins, not help-only grammar keywords:
-    # https://www.gnu.org/software/bash/manual/html_node/Bash-Builtins.html
-    # Optional/custom builds and dynamically loaded builtins are not inferred.
-    bash_builtins = frozenset(""". : [ alias bg bind break builtin caller cd command
-        compgen complete compopt continue declare dirs disown echo enable eval exec exit
-        export false fc fg getopts hash help history jobs kill let local logout mapfile
-        popd printf pushd pwd read readarray readonly return set shift shopt source
-        suspend test times trap true type typeset ulimit umask unalias unset wait""".split())
+    # Core defaults shared by supported Bash3.2/5.3 and zsh shells.
+    # Version/build/shell-dependent names retain external possibilities.
+    # https://github.com/zsh-users/zsh/blob/zsh-5.9/Src/builtin.c
+    # https://www.gnu.org/software/bash/manual/html_node/Optional-Features.html
+    bash_builtin_defaults = dict.fromkeys(""". : [ break builtin cd command continue
+        declare echo enable eval exec exit export false getopts hash kill let local
+        logout printf pwd read readonly return set shift source test times
+        trap true type typeset umask unset wait""".split(), frozenset({True}))
+    bash_builtin_defaults.update(dict.fromkeys("""alias bg bind caller compgen complete
+        compopt dirs disown fc fg help history jobs mapfile popd pushd readarray
+        shopt suspend ulimit unalias""".split(), frozenset({True, False})))
+
+    builtin_defaults = {name: {"bash": values, "zsh": values}
+                        for name, values in bash_builtin_defaults.items()}
+    for name in "alias bg dirs disown fc fg history jobs popd pushd suspend unalias".split():
+        builtin_defaults[name]["zsh"] = frozenset({True})
+    builtin_defaults["shopt"] = {"bash": frozenset({True}), "zsh": frozenset({False})}
+
+    def builtin_default(name, shell_context):
+        dialects = {shell_context} if shell_context in {"bash", "zsh"} else {"bash", "zsh"}
+        return frozenset((value, dialect) for dialect in dialects
+                         for value in builtin_defaults.get(name, {}).get(dialect, frozenset({False})))
+
     success_links = {position: facts["children"] for position, facts in success_facts.items()
                      if isinstance(position, int) and facts.get("children")}
     success_links["end"] = end_success
@@ -3214,17 +3702,28 @@ def shell_effect_order(tokens, events, *, success_facts=None):
     def visible_binding(name, scopes, table=None, default=None):
         table = functions if table is None else table
         default = ([], False) if default is None else default
+        exported_only = False
         for scope in reversed(scopes):
             if scope != "end" and not success_facts.get(scope, {}).get("subshell"):
                 continue
             if (name, scope) in table:
-                return table[name, scope]
+                value = table[name, scope]
+                if exported_only:
+                    return ([binding for binding in value[0] if binding[3]], False)
+                return value
+            if scope != "end" and success_facts.get(scope, {}).get("fresh_shell"):
+                if table is not functions:
+                    return default
+                exported_only = True
         return default
 
     def walk(begin, end, active=(), in_loop=False, definite=True, inherited=frozenset(),
-             scope_entry=frozenset(), scope_prefix=("end",), boundary=None):
+             scope_entry=frozenset(), scope_prefix=("end",), boundary=None, loop_header=False, shell_context=None):
         index = begin
         while index < end:
+            if guards[index] is False:
+                index = bounds.get(index, index) + 1 if tokens[index] != "case" else index + 1
+                continue
             implied = inherited | (success_facts.get(index, {}).get("entry", set()) - scope_entry)
             scopes = live_scopes(index, scope_prefix, boundary)
             for at, scope in enumerate(scopes):
@@ -3239,8 +3738,9 @@ def shell_effect_order(tokens, events, *, success_facts=None):
             if index in definitions:
                 name, start, stop = definitions[index]
                 if guards[index] is not False:
-                    binding = (parsed_owner(index), start, stop)
                     old, certain = visible_binding(name, scopes)
+                    # Bash replaces a function value without clearing export attributes.
+                    binding = (parsed_owner(index), start, stop, any(binding[3] for binding in old))
                     functions[name, process] = (([binding], True) if definite is True and guards[index] is True and certain_scope else
                                                 ([*old, binding], certain))
                     if name in automatic_traps:
@@ -3250,7 +3750,7 @@ def shell_effect_order(tokens, events, *, success_facts=None):
                 index = stop
                 continue
             token = tokens[index]
-            if token in {"for", "select", "while", "until"} and index in bounds:
+            if not loop_header and token in {"for", "select", "while", "until"} and index in bounds:
                 stop = bounds[index]
                 header_end = next((at for at in range(index + 1, stop) if tokens[at] in {";", "\n"}), stop)
                 header = tokens[index + 1:header_end]
@@ -3264,12 +3764,25 @@ def shell_effect_order(tokens, events, *, success_facts=None):
                     guaranteed = True
                 if token == "while" and header == ["false"] or token == "until" and header == ["true"]:
                     iterations = 0
-                for _ in range(iterations):
+                for iteration in range(max(1, iterations)):
+                    # A while/until condition is a reached command even when
+                    # its body never runs. Reuse normal dispatch for that node.
+                    if iteration == 0 or token in {"while", "until"}:
+                        previous_link = success_links.get(index, set())
+                        for event in walk(index, index + 1, active, in_loop=in_loop, definite=definite,
+                                          inherited=inherited, scope_entry=scope_entry,
+                                          scope_prefix=scope_prefix, boundary=boundary, loop_header=True, shell_context=shell_context):
+                            # Successful loop completion does not certify that
+                            # a failing condition completed its intrinsic writes.
+                            yield dict(event, replaces=False, _replace_success=False) if event["kind"] == "write" and event.get("command_effect") else event
+                        success_links[index] = previous_link
+                    if not iterations:
+                        break
                     transfer = None
                     for event in walk(index + 1, stop, active, in_loop=True,
                                       definite=True if definite is True and guards[index] is True and guaranteed else None,
                                       inherited=implied, scope_entry=success_facts.get(index, {}).get("entry", set()),
-                                      scope_prefix=scope_prefix, boundary=boundary):
+                                      scope_prefix=scope_prefix, boundary=boundary, shell_context=shell_context):
                         if event["kind"] in {"break", "continue"}:
                             transfer = event["kind"]
                             break
@@ -3279,6 +3792,12 @@ def shell_effect_order(tokens, events, *, success_facts=None):
                 index = stop + 1
                 continue
             current = by_position.get(index, ())
+            # Redirections belong to the shell, including before a function call.
+            for event in current:
+                if event["kind"] == "input_expansion" or event["kind"] == "write" and not event.get("command_effect"):
+                    yield event
+            current = tuple(event for event in current if event["kind"] != "input_expansion"
+                            and (event["kind"] != "write" or event.get("command_effect")))
             if (in_loop and token in {"break", "continue"}
                     and any(event["kind"] == "read" and event["paths"] == [token] for event in current)):
                 if definite is True and guards[index] is True:
@@ -3295,51 +3814,100 @@ def shell_effect_order(tokens, events, *, success_facts=None):
                 function_calls.add(index)
                 if process in hooked:
                     alternatives.setdefault(index, []).append(frozenset(implied))
-                for definition, start, stop in possible:
+                for definition, start, stop, exported in possible:
                     definition_facts = success_facts.get(definition, {})
                     body_guarantees.append(definition_facts.get("children", set()) - definition_facts.get("entry", set()))
                     yield from walk(start, stop, (*active, called),
                                     definite=True if definite is True and guards[index] is True and certain_scope and certain and len(possible) == 1 else None,
-                                    inherited=implied, scope_entry=definition_facts.get("entry", set()),
-                                    scope_prefix=(*scopes, index), boundary=definition)
-                success_links[index] = set.intersection(*body_guarantees) if certain else set()
+                                    inherited=implied | facts.get("redirections", set()), scope_entry=definition_facts.get("entry", set()),
+                                    scope_prefix=(*scopes, index), boundary=definition, shell_context=shell_context)
+                success_links[index] = (set.intersection(*body_guarantees) if certain else set()) | facts.get("redirections", set())
             if not certain:
                 dispatch = facts.get("dispatch", {})
                 exact = definite is True and guards[index] is True and certain_scope and not possible
                 command = facts.get("command")
-                available = visible_binding(command, scopes, builtin_states, frozenset({command in bash_builtins}))
-                builtin_possible = True in available
+                availability = visible_binding(command, scopes, builtin_states, builtin_default(command, shell_context))
+                available = frozenset(value for value, dialect in availability)
+                # Optional builds can execute an explicitly requested disabled builtin.
+                builtin_possible = True in available or dispatch.get("builtin_only") and command in bash_builtin_defaults
+                # zsh command normally forces external dispatch; Bash may
+                # retain its builtin. Explicit builtin / command -p stay precise.
+                hash_dialects = {dialect for value, dialect in availability
+                                 if not value or dispatch.get("external_command") and dialect != "bash"}
+                lookup_command = command
+                if command == "exec":
+                    target = unwrapped_command(facts.get("action", ()), unwrap_code=False)
+                    lookup_command = target[0] if target and "/" not in target[0] else None
+                    hash_dialects = {shell_context} if shell_context in {"bash", "zsh"} else {"bash", "zsh"}
                 if current and dispatch.get("path_assignment") and command is None and exact:
                     for name in {name for name, _ in hashes}:
-                        hashes[name, process] = (frozenset(), False)
-                if current and builtin_possible:
-                    for operation, names, path in facts.get("hash_changes", ()):
+                        hashes[name, process] = frozenset()
+                if current and (builtin_possible or command and command.startswith("commands[")):
+                    for operation, names, path, dialects in facts.get("hash_changes", ()):
+                        dialects &= {shell_context} if shell_context in {"bash", "zsh"} else {"bash", "zsh"}
+                        if not dialects:
+                            continue
                         names = {name for name, _ in hashes} if operation == "reset" else names
                         for name in names:
-                            previous, was_certain = visible_binding(name, scopes, hashes, (frozenset(), False))
-                            changed = frozenset({path}) if operation == "set" else frozenset()
-                            hashes[name, process] = ((changed, operation == "set") if exact and available == {True}
-                                                     else (previous | changed, was_certain and operation == "set"))
+                            previous = visible_binding(name, scopes, hashes, frozenset())
+                            changed = frozenset((path, dialect) for dialect in dialects) if operation == "set" else frozenset()
+                            exact_dialects = dialects - ({"zsh"} if dispatch.get("external_command") else set())
+                            exact_dialects &= {dialect for dialect in dialects
+                                               if (True, dialect) in availability and (False, dialect) not in availability}
+                            retained = frozenset(binding for binding in previous if binding[1] not in exact_dialects)
+                            hashes[name, process] = retained | changed if exact else previous | changed
                     if facts.get("builtin_change"):
                         names, enabled = facts["builtin_change"]
                         for name in names:
                             # enable cannot create an unknown builtin; dynamic
                             # loading requires a separately unsupported -f form.
-                            if name not in bash_builtins:
+                            if name not in bash_builtin_defaults:
                                 continue
-                            previous = visible_binding(name, scopes, builtin_states, frozenset({name in bash_builtins}))
-                            changed = frozenset({enabled})
-                            builtin_states[name, process] = changed if exact and available == {True} else previous | changed
-                if (current and not dispatch.get("builtin_only") and not dispatch.get("standard_path")
-                        and not dispatch.get("path_assignment") and False in available):
-                    paths, hashed = visible_binding(command, scopes, hashes, (frozenset(), False))
+                            previous = visible_binding(name, scopes, builtin_states, builtin_default(name, shell_context))
+                            dialects = ({shell_context} if shell_context in {"bash", "zsh"} else {"bash", "zsh"}) if enabled else {"bash"}
+                            if shell_context in {"bash", "zsh"}:
+                                dialects &= {shell_context}
+                            changed = (frozenset(binding for binding in builtin_default(name, shell_context) if binding[1] in dialects)
+                                       if enabled else frozenset((False, dialect) for dialect in dialects))
+                            exact_dialects = {dialect for dialect in dialects
+                                              if (True, dialect) in availability and (False, dialect) not in availability}
+                            retained = frozenset(binding for binding in previous if binding[1] not in exact_dialects)
+                            builtin_states[name, process] = retained | changed if exact else previous | changed
+                paths = frozenset()
+                if (current and (command == "exec" or not dispatch.get("builtin_only")) and not dispatch.get("standard_path")
+                        and not dispatch.get("path_assignment") and hash_dialects):
+                    paths = frozenset(path for path, dialect in visible_binding(lookup_command, scopes, hashes, frozenset())
+                                      if dialect in hash_dialects)
                     if paths:
-                        if hashed and available == {False}:
-                            current = tuple(event for event in current if not event.get("command_effect"))
-                        else:
-                            current = tuple(dict(event, replaces=False, _replace_success=False)
-                                            if event["kind"] == "write" and event.get("command_effect") else event for event in current)
+                        current = tuple(dict(event, replaces=False, _replace_success=False)
+                                        if event["kind"] == "write" and event.get("command_effect") else event for event in current)
                         current = (*current, {"kind": "read", "position": index, "paths": sorted(paths)})
+                if current and facts.get("exports"):
+                    names, exported = facts["exports"]
+                    for name in names:
+                        bindings, binding_certain = visible_binding(name, scopes)
+                        functions[name, process] = ([(*binding[:3], exported) for binding in bindings], binding_certain)
+                if facts.get("inline_body"):
+                    begin, stop, body_scope = facts["inline_body"]
+                    body_facts = success_facts[body_scope]
+                    # A possible hash wrapper can forward code in another shell.
+                    child_shell = (None if paths else body_facts.get("shell")) if body_facts.get("fresh_shell") else shell_context
+                    for event in walk(begin, stop, active, definite=None if paths else definite,
+                                      inherited=implied | facts.get("redirections", set()), scope_entry=facts.get("entry", set()),
+                                      scope_prefix=(*scopes, body_scope), boundary=body_scope, shell_context=child_shell):
+                        yield (dict(event, replaces=False, _replace_success=False)
+                               if paths and event["kind"] == "write" else event)
+                elif facts.get("opaque_context"):
+                    # Unknown same-context code can call visible functions, but
+                    # a parsed literal body is traversed precisely above.
+                    for name in {name for name, _ in functions}:
+                        bindings, _ = visible_binding(name, scopes)
+                        if active.count(name) >= 2:
+                            continue
+                        for definition, begin, stop, exported in bindings:
+                            yield from walk(begin, stop, (*active, name), definite=None,
+                                            inherited=implied, scope_entry=success_facts.get(definition, {}).get("entry", set()),
+                                            scope_prefix=(*scopes, index), boundary=definition, shell_context=shell_context)
                 if current and facts.get("removes"):
                     for name in {name for name, _ in functions}:
                         if any(re.search(r"[$`]", operand) or (pattern_matches(operand, name) is not False
@@ -3353,14 +3921,17 @@ def shell_effect_order(tokens, events, *, success_facts=None):
                     alternate_endpoint(scopes, implied, inherit=facts.get("inherit_override", False))
                     if facts.get("may_skip"):
                         uncertain_commands.setdefault(process, []).append(frozenset(implied))
-                observed = set(implied)
+                observed = set(implied) | facts.get("redirections", set())
                 for scope in scopes:
                     for before in uncertain_commands.get(scope, ()):
                         observed.intersection_update(before)
                 for event in current:
-                    yield dict(event, _implied_success=tuple(observed)) if event["kind"] == "read" else event
+                    if event["kind"] == "command":
+                        yield dict(event, detached=any(scope != "end" and success_facts.get(scope, {}).get("asynchronous") for scope in scopes))
+                    else:
+                        yield dict(event, _implied_success=tuple(observed)) if event["kind"] == "read" else event
             index += 1
-    ordered = list(walk(0, len(tokens)))
+    ordered = list(walk(0, success_facts.get("root_stop", len(tokens)), shell_context=success_facts.get("root_shell")))
     native_success = expanded_success({"end"})
     return [dict(event, replaces=event["replaces"] and event["position"] in native_success,
                  partial=event.get("partial", not event["replaces"])) if event["kind"] == "write" else
@@ -3718,7 +4289,7 @@ def unwrapped_command(argv, *, unwrap_code=True, stop_at=()):
             break
         if name == "coproc" and len(argv) > 2 and argv[2] in {"{", "(", "if", "for", "while", "until", "case"}:
             argv = argv[2:]
-        elif re.match(r"[A-Za-z_]\w*=", argv[0]) or name in {"if", "elif", "while", "until", "!", "{", "(", "do", "then", "else", "builtin", "noglob", "nocorrect", "coproc"}:
+        elif re.match(r"[A-Za-z_]\w*\+?=", argv[0]) or name in {"if", "elif", "while", "until", "!", "{", "(", "do", "then", "else", "builtin", "noglob", "nocorrect", "coproc"}:
             argv = argv[1:]
         elif name in {"command", "exec", "nohup", "time", "env", "timeout", "nice", "stdbuf"}:
             argv = argv[1:]
@@ -3730,7 +4301,7 @@ def unwrapped_command(argv, *, unwrap_code=True, stop_at=()):
                 "stdbuf": {"-i", "--input", "-o", "--output", "-e", "--error"},
                 "exec": {"-a"},
             }.get(name, set())
-            while argv and (argv[0].startswith("-") or re.match(r"[A-Za-z_]\w*=", argv[0])):
+            while argv and (argv[0].startswith("-") or re.match(r"[A-Za-z_]\w*\+?=", argv[0])):
                 flag = argv.pop(0)
                 option, equal, inline = flag.partition("=")
                 if option in value_options and (equal or argv):
@@ -3741,6 +4312,8 @@ def unwrapped_command(argv, *, unwrap_code=True, stop_at=()):
                         except ValueError:
                             return ["env", flag, operand, *argv]
                         break
+                elif name == "exec" and re.fullmatch(r"-[cl]*a", flag) and argv:
+                    argv.pop(0)
             if name == "timeout" and argv:
                 argv = argv[1:]
         elif name == "uv":
@@ -8005,7 +8578,7 @@ def native_file_effects(name, value):
         capabilities = any(javascript_capabilities(javascript_projection(current)[1], current) for current in sources)
         def direct_effects(current):
             patches = list(composed_patch_fields(current))
-            calls = [(position, "apply_patch", raw, None) for position, raw in patches]
+            calls = [(position, "apply_patch", raw, None, None) for position, raw in patches]
             for _, patch in javascript_possible_patches(current, capabilities=capabilities):
                 for effect in native_file_effects("apply_patch", patch):
                     yield dict(effect, replaces=False, partial=True)
@@ -8014,13 +8587,13 @@ def native_file_effects(name, value):
                 literal = re.match(rf'''\{{(?:{JS_STRING}|[^{{}}"'`])*\}}''', current[opening:])
                 parsed = composed_calls("text(await tools.exec_command(" + literal[0] + "))") if literal else []
                 args = parsed[0][1] if parsed else {}
-                calls.append((match.start(), "exec_command", match[1], args.get("workdir") or args.get("cwd")))
-            for _, method, raw, cwd in sorted(calls):
+                calls.append((match.start(), "exec_command", match[1], args.get("workdir") or args.get("cwd"), args.get("shell")))
+            for _, method, raw, cwd, shell in sorted(calls):
                 try:
                     content = composed_string(raw, current)
                 except (SyntaxError, ValueError):
                     continue
-                for effect in native_file_effects(method, {"cmd": content} if method == "exec_command" else content):
+                for effect in native_file_effects(method, {"cmd": content, "shell": shell} if method == "exec_command" else content):
                     yield dict(effect, cwd=cwd) if cwd else effect
         direct = list(direct_effects(native))
         generated = [effect for current in sources[1:] for effect in direct_effects(current)]
@@ -8038,12 +8611,12 @@ def native_file_effects(name, value):
         if direct:
             yield from direct
             return
-    texts = list(shell_texts(name, value))
+    texts = list(shell_texts("exec_command" if name == "functions.exec_command" else name, value))
     if texts:
         for text in texts:
             effects = []
             try:
-                shell_code(text, effects=effects)
+                shell_code(text, effects=effects, source_shell=native.get("shell") if name in {"exec_command", "functions.exec_command"} and isinstance(native, dict) else None)
             except ValueError:
                 pass  # Typed ownership retains the effects collected first.
             yield from effects

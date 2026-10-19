@@ -739,6 +739,106 @@ class ReceiptTests(unittest.TestCase):
             with self.subTest(action=action):
                 self.assertEqual(receipts.ownership_state(rows, 'codex')['pending'], owning)
 
+        # Independent operands must not suppress or lend bodies to one another.
+        header = '*** Begin Patch\n*** Add File: /repo/run.py\n'
+        complete = header + "+print('setup')\n*** End Patch"
+        for body, owning in ((['import os', 'os.system(' + repr(writer) + ')'], True),
+                             (['writer=' + repr(writer), 'print(writer)'], False)):
+            setup = 'const path="/repo/run.py";const lines=' + json.dumps(body) + ';'
+            split = '"*** Begin Patch\\n*** Add File: "+path+"\\n"+lines.map(l=>"+"+l).join("\\n")+"\\n*** End Patch"'
+            variants = (
+                setup + 'await tools.apply_patch("*** Begin Patch\\n*** Add File: "+path+"\\n+print(1)\\n*** End Patch");await tools.apply_patch(' + split + ');',
+                setup + 'const full=' + json.dumps(complete) + ';const cond=false;await tools.apply_patch(cond?full:' + split + ');',
+                'await tools.apply_patch(' + json.dumps(complete) + ');globalThis.H=' + json.dumps(header)
+                + ';globalThis.B=' + json.dumps('\n'.join('+' + line for line in body) + '\n*** End Patch')
+                + ';await Function("return tools.apply_patch(H+B)")();',
+            )
+            for source in variants:
+                for cell in (source, 'await eval(' + json.dumps('(async()=>{' + source + '})()') + ');',
+                             'await Function(' + json.dumps('return (async()=>{' + source + '})()') + ')();'):
+                    for command, executes in (('python3 /repo/run.py', True), ('cat /repo/run.py', False)):
+                        rows = history('codex', {}, {})
+                        rows[1]['payload'].update(name='functions.exec', arguments=cell)
+                        rows[2] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-0')
+                        rows[3]['payload']['arguments'] = json.dumps({'cmd': command})
+                        rows[4] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-1')
+                        with self.subTest(independent_patch=cell, command=command):
+                            self.assertEqual(receipts.ownership_state(rows, 'codex')['pending'], owning and executes)
+        source = ('const end="\\n*** End Patch";await tools.apply_patch(' + json.dumps(header)
+                  + '+["print(1)"].map(l=>"+"+l).join("\\n")+end);await tools.apply_patch('
+                  + json.dumps(header.replace('run.py', 'tool.py')) + '+'
+                  + json.dumps(['import os', 'os.system(' + repr(writer) + ')'])
+                  + '.map(l=>"+"+l).join("\\n")+end);')
+        for cell in (source, 'await eval(' + json.dumps('(async()=>{' + source + '})()') + ');',
+                     'await Function(' + json.dumps('return (async()=>{' + source + '})()') + ')();'):
+            for path, owning in (('run.py', False), ('tool.py', True)):
+                rows = history('codex', {}, {})
+                rows[1]['payload'].update(name='functions.exec', arguments=cell)
+                rows[2] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-0')
+                rows[3]['payload']['arguments'] = json.dumps({'cmd': 'python3 /repo/' + path})
+                rows[4] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-1')
+                with self.subTest(separate_patch_bodies=cell, path=path):
+                    self.assertEqual(receipts.ownership_state(rows, 'codex')['pending'], owning)
+        # Keywords are call operands when they name object properties.
+        for action, owning in (('os.system(' + repr(writer) + ')', True),
+                               ('print(' + repr(writer) + ')', False)):
+            for name in ('return', 'if', 'for', 'while', 'switch', 'catch', 'with'):
+                for access in ('.' + name, '?.' + name):
+                    cell = ('const h=' + json.dumps(header) + ';const b='
+                            + json.dumps('+import os\n+' + action + '\n*** End Patch')
+                            + ';const o={' + name + ':tools.apply_patch};await o' + access + '([h,b].join(""));')
+                    rows = history('codex', {}, {})
+                    rows[1]['payload'].update(name='functions.exec', arguments=cell)
+                    rows[2] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-0')
+                    rows[3]['payload']['arguments'] = json.dumps({'cmd': 'python3 /repo/run.py'})
+                    rows[4] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-1')
+                    with self.subTest(keyword_patch_member=access, action=action):
+                        self.assertEqual(receipts.ownership_state(rows, 'codex')['pending'], owning)
+        # Literal properties and proven distinct allocations keep separate
+        # operand origins; opaque receiver identities retain alternatives.
+        for action, owning in (('os.system(' + repr(writer) + ')', True),
+                               ('print(' + repr(writer) + ')', False)):
+            safe = '[' + json.dumps(header) + ',"+print(1)",end].join("")'
+            own = '[' + json.dumps(header.replace('run.py', 'tool.py')) + ',' + json.dumps('+import os\n+' + action) + ',end].join("")'
+            setup = 'const end="\\n*** End Patch";'
+            cells = (
+                (setup + 'const cfg={a:' + safe + ',b:' + own + '};await tools.apply_patch(cfg.a);await tools.apply_patch(cfg.b);', [('run.py', False), ('tool.py', owning)]),
+                (setup + 'const cfg={a:' + safe + ',b:' + own + '};await tools.apply_patch(cfg["a"]);await tools.apply_patch(cfg["b"]);', [('run.py', False), ('tool.py', owning)]),
+                (setup + 'const cfg={a:' + safe + ',b:' + own + '};await tools.apply_patch(cfg?.a);await tools.apply_patch(cfg?.b);', [('run.py', False), ('tool.py', owning)]),
+                (setup + 'const cfg={box:{a:' + safe + ',b:' + own + '}};await tools.apply_patch(cfg.box.a);await tools.apply_patch(cfg.box.b);', [('run.py', False), ('tool.py', owning)]),
+                (setup + 'const cfg=[' + safe + ',' + own + '];await tools.apply_patch(cfg[0]);await tools.apply_patch(cfg[1]);', [('run.py', False), ('tool.py', owning)]),
+                (setup + 'const cfg={a:' + safe + ',b:' + own + '};const alias=cfg;await tools.apply_patch(alias.a);await tools.apply_patch(alias.b);', [('run.py', False), ('tool.py', owning)]),
+                (setup + 'const a={},b={};a.x=' + safe + ';b.x=' + own + ';await tools.apply_patch(a.x);await tools.apply_patch(b.x);', [('run.py', False), ('tool.py', owning)]),
+                (setup + 'const a={},b={};const alias=a;alias.x=' + own + ';b.x=' + safe + ';await tools.apply_patch(a.x);', [('tool.py', owning)]),
+                (setup + 'const a=getObj(),b=getObj();a.x=' + safe + ';b.x=' + own.replace('tool.py', 'run.py') + ';await tools.apply_patch(a.x);', [('run.py', owning)]),
+                (setup + 'const a={};a.x=' + safe + ';a[unknown]=' + own.replace('tool.py', 'run.py') + ';await tools.apply_patch(a.x);', [('run.py', owning)]),
+                (setup + 'const a={},b={};b.x=' + safe + ';a[unknown]=' + own.replace('tool.py', 'run.py') + ';await tools.apply_patch(b.x);', [('run.py', False)]),
+                (setup + 'const a={};a.x=' + safe + ';other[unknown]=' + own.replace('tool.py', 'run.py') + ';await tools.apply_patch(a.x);', [('run.py', owning)]),
+                (setup + 'const cfg={a:' + safe + ',b:' + own + '};await tools.apply_patch(cfg[unknown]);', [('tool.py', owning)]),
+                (setup + 'const a={};a.x=' + own + ';const b={__proto__:a};await tools.apply_patch(b.x);', [('tool.py', owning)]),
+                (setup + 'const a={},b={};a.x=' + own + ';b.__proto__=a;await tools.apply_patch(b.x);', [('tool.py', owning)]),
+                (setup + 'const a={},b={};a.x=' + own + ';Object.setPrototypeOf(b,a);await tools.apply_patch(b.x);', [('tool.py', owning)]),
+                (setup + 'const a={},b={};a.x=' + own + ';Reflect.setPrototypeOf(b,a);await tools.apply_patch(b.x);', [('tool.py', owning)]),
+                (setup + 'const a={},b={};a.x=' + own + ';Object.assign(b,a);await tools.apply_patch(b.x);', [('tool.py', owning)]),
+                (setup + 'const a={},b={};const aa=a,bb=b;a.x=' + own + ';Object.assign(bb,aa);await tools.apply_patch(b.x);', [('tool.py', owning)]),
+                (setup + 'const cfg={a:[' + safe + ',' + own.replace('tool.py', 'run.py') + ']};cfg.a.reverse();await tools.apply_patch(cfg.a[0]);', [('run.py', owning)]),
+                (setup + 'const a={},b={};a.x=' + safe + ';b.x=' + own + ';const cfg={a:[1,2]};cfg.a.reverse();await tools.apply_patch(a.x);await tools.apply_patch(b.x);', [('run.py', False), ('tool.py', owning)]),
+                (setup + 'const a={},b={};a.x=' + own.replace('tool.py', 'run.py') + ';b.x=' + safe + ';function unused(){Object.assign(b,a)}await tools.apply_patch(b.x);', [('run.py', False)]),
+                (setup + 'const a={},b={};a.x=' + own.replace('tool.py', 'run.py') + ';b.x=' + safe + ';function copy(){Object.assign(b,a)}copy();await tools.apply_patch(b.x);', [('run.py', owning)]),
+            )
+            for source, reads in cells:
+                for cell in (source, 'await eval(' + json.dumps('(async()=>{' + source + '})()') + ');',
+                             'await Function(' + json.dumps('return (async()=>{' + source + '})()') + ')();'):
+                    for path, expected in reads:
+                        rows = history('codex', {}, {})
+                        rows[1]['payload'].update(name='functions.exec', arguments=cell)
+                        rows[2] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-0')
+                        rows[3]['payload']['arguments'] = json.dumps({'cmd': 'python3 /repo/' + path})
+                        rows[4] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-1')
+                        with self.subTest(aggregate_patch=cell, path=path):
+                            self.assertEqual(receipts.ownership_state(rows, 'codex')['pending'], expected)
+
+
     def test_generated_python_writer_requires_execution_of_the_same_native_path(self):
         for harness in ("codex", "claude"):
             for script_path in ("/other/run-claim.py", "/repo/run-claim.py"):
@@ -4297,6 +4397,94 @@ os.system(get())
             totals.append(sum(processed))
         self.assertLess(totals[1] - totals[0], len(data))
 
+        # Count real splitter traversal, not calls to a memoized wrapper.
+        parts = receipts.node_expression_parts
+        scanned = []
+        class Counted(str):
+            def __getitem__(self, index):
+                if isinstance(index, int):
+                    work[0] += 1
+                return super().__getitem__(index)
+        def measure(code, *args, **kwargs):
+            return parts(Counted(code), *args, **kwargs)
+        for count in (16, 64):
+            source = ''.join('o.k' + str(index) + '=1;' for index in range(count))
+            _, code, _, _ = receipts.javascript_projection(source)
+            work = [0]
+            with patch.object(receipts, 'node_expression_parts', side_effect=measure):
+                list(receipts.javascript_source_calls(source, code))
+            scanned.append(work[0])
+        with self.subTest(first_expression_work=True):
+            self.assertLessEqual(scanned[1], 6 * scanned[0])
+        # Include the shared scope index and copied spans so binding lookup
+        # cannot hide the same quadratic traversal outside the splitter.
+        class SourceWork(str):
+            def __iter__(self):
+                for value in super().__iter__():
+                    work[0] += 1
+                    yield value
+            def __getitem__(self, index):
+                value = super().__getitem__(index)
+                work[0] += len(value) if isinstance(index, slice) else 1
+                return SourceWork(value) if isinstance(index, slice) else value
+        for form in ('assignments', 'scopes', 'aliases'):
+            scanned = []
+            for count in (16, 64):
+                if form == 'assignments':
+                    source = ''.join('o.k' + str(index) + '=1;' for index in range(count))
+                elif form == 'scopes':
+                    source = ''.join('function f' + str(index) + '(globalThis){return globalThis;}' for index in range(count))
+                    source += 'await globalThis.eval("0");'
+                else:
+                    source = 'const g=globalThis;' + 'await (0,g.eval)("0");' * count
+                _, code, _, _ = receipts.javascript_projection(source)
+                work = [0]
+                calls = list(receipts.javascript_source_calls(source, SourceWork(code)))
+                with self.subTest(source_discovery_calls=form, count=count):
+                    self.assertEqual(len(calls), 0 if form == 'assignments' else 1 if form == 'scopes' else count)
+                scanned.append(work[0])
+            with self.subTest(source_discovery_work=form):
+                self.assertLessEqual(scanned[1], 6 * scanned[0])
+        # Count executed classifier lines too: memoized RHS values must not
+        # still enumerate an entire aggregate for every distinct member read.
+        traversal = []
+        for count in (16, 64):
+            source = 'const cfg={' + ','.join('k' + str(index) + ':eval' for index in range(count)) + '};'
+            source += ''.join('await cfg.k' + str(index) + '("0");' for index in range(count))
+            _, code, _, _ = receipts.javascript_projection(source)
+            work = [0]
+            owner_file = receipts.javascript_source_calls.__code__.co_filename
+            def executed(frame, event, arg):
+                if frame.f_code.co_filename == owner_file:
+                    if event == 'line':
+                        work[0] += 1
+                    return executed
+                return None
+            previous = sys.gettrace()
+            sys.settrace(executed)
+            try:
+                calls = list(receipts.javascript_source_calls(source, code))
+            finally:
+                sys.settrace(previous)
+            self.assertEqual(len(calls), count)
+            traversal.append(work[0])
+        self.assertLessEqual(traversal[1], 6 * traversal[0])
+        # Static cfg.kI safe members in the original row are now inert.
+        # Keep synthesis meaningful by selecting one shared patch aggregate.
+        work = []
+        for count in (16, 64):
+            source = 'const shared={h:"*** Begin Patch\\n*** Add File: /repo/run.py\\n",b:'
+            source += json.dumps('+import os\n+os.system(' + repr(writer) + ')\n*** End Patch') + '};'
+            source += 'const cfg={' + ','.join('k' + str(index) + ':shared' for index in range(count)) + '};'
+            source += ''.join('consume(cfg.k' + str(index) + ');' for index in range(count))
+            with patch.object(receipts, 'javascript_patch_input', wraps=receipts.javascript_patch_input) as classify:
+                values = list(receipts.javascript_possible_patches(source))
+            self.assertTrue(any(writer in value and '/repo/run.py' in value for _, value in values))
+            work.append((classify.call_count, sum(len(value) for _, value in values)))
+        self.assertLessEqual(work[1][0] - work[0][0], 8 * (64 - 16))
+        self.assertLessEqual(work[1][1], 6 * work[0][1])
+
+
     def test_javascript_command_discovery_covers_noncanonical_tool_callees(self):
         writer = 'uv run /catalog/gh-plan.py --repo o/r claim 5'
         calls = (
@@ -4500,6 +4688,84 @@ os.system(get())
             rows[2] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-0')
             with self.subTest(cell=cell):
                 self.assertEqual(receipts.ownership_state(rows, 'codex')['pending'], owning)
+
+        for command, owning in ((writer, True), ('echo safe', False)):
+            source = '(async()=>{await tools.exec_command({cmd:' + json.dumps(command) + '});})()'
+            cells = []
+            for name in ('eval', 'Function', 'text'):
+                operand = json.dumps(('return ' if name == 'Function' else '') + source)
+                cells.append(('const c=[' + name + '].slice();await c[0](' + operand + ')'
+                              + ('()' if name == 'Function' else '') + ';', owning and name != 'text'))
+            for name in ('eval', 'Function'):
+                operand = json.dumps(('return ' if name == 'Function' else '') + source)
+                for callee in ('globalThis.' + name, name):
+                    call = 'await ' + callee + '(' + operand + ')' + ('()' if name == 'Function' else '') + ';'
+                    for prefix, expected in (
+                        ('if(unknown) globalThis.' + name + '=text;', owning),
+                        ('function unused(){globalThis.' + name + '=text;}', owning),
+                        ('function unused(){globalThis.' + name + '=text;globalThis.' + name + '(' + operand + ')' + ('()' if name == 'Function' else '') + ';}', owning),
+                        ('globalThis.' + name + '=unknown;', owning),
+                        ('globalThis.' + name + '=text;', False),
+                        ('', owning),
+                    ):
+                        cells.append((prefix + call, expected))
+            for callee in ('(0,globalThis.eval)', 'globalThis?.eval', '[globalThis.eval][0]',
+                           '(0,globalThis.Function)', 'globalThis?.Function', '[globalThis["Function"]][0]',
+                           '(0,globalThis["ev"+"al"])', 'globalThis?.["ev"+"al"]'):
+                constructor = 'Function' in callee
+                cells.append(('await ' + callee + '(' + json.dumps(('return ' if constructor else '') + source)
+                              + ')' + ('()' if constructor else '') + ';', owning))
+            for receiver in ('this.eval', 'this?.eval', '(0,this.eval)', '[this.eval][0]',
+                             'this["ev"+"al"]', 'this.Function', '(0,this.Function)'):
+                constructor = 'Function' in receiver
+                inner = receiver + '(' + json.dumps(('return ' if constructor else '') + source) + ')' + ('()' if constructor else '')
+                cells.extend((('try{await ' + inner + ';}catch{}', False),
+                              ('await Function(' + json.dumps('return ' + inner) + ')();', owning),
+                              ('try{await Function(' + json.dumps('"use strict";return ' + inner) + ')();}catch{}', False),
+                              ('await(0,eval)(' + json.dumps(inner) + ');', owning),
+                              ('await(0,eval)(' + json.dumps('"use strict";' + inner) + ');', owning),
+                              ('try{await eval(' + json.dumps(inner) + ');}catch{}', False)))
+            for setup, callee, expected in (
+                ('const e=globalThis.eval;', 'e', owning),
+                ('const g=globalThis;', '(0,g.eval)', owning),
+                ('const holder={g:globalThis};', 'holder.g.eval', owning),
+                ('let e=globalThis.eval;e=text;', 'e', False),
+                ('let e=text;e=globalThis.eval;', 'e', owning),
+                ('let e=globalThis.eval;if(flag)e=text;', 'e', owning),
+                ('let e=text;if(flag)e=globalThis.eval;', 'e', owning),
+                ('let e=globalThis.eval;e=unknown;', 'e', owning),
+                ('let e=globalThis.eval;e=getHandle();', 'e', owning),
+                ('let g=globalThis;g={eval:text};', 'g.eval', False),
+                ('let g={eval:text};g=globalThis;', 'g.eval', owning),
+                ('let g=globalThis;if(flag)g={eval:text};', 'g.eval', owning),
+                ('let g=globalThis;g=unknown;', 'g.eval', owning),
+                ('globalThis.text=eval;let e=eval;e=text;', 'e', owning),
+                ('const globalThis={eval:text};', 'globalThis.eval', False),
+                ('const o={eval:text};', 'o.eval', False),
+                ('const o={eval:text};', 'o?.eval', False),
+                ('const o={eval:text};', '(0,o.eval)', False),
+                ('const o={eval:text};', '[o.eval][0]', False),
+                ('function preview(globalThis){return globalThis;}', 'globalThis.eval', owning),
+                ('function preview(){const globalThis={eval:text};return globalThis;}', 'globalThis.eval', owning),
+            ):
+                cells.append((setup + 'await ' + callee + '(' + json.dumps(source) + ');', expected))
+            for setup, callee in (
+                ('const g=globalThis;async function run(g){await g.eval(SRC)}await run({eval:text});', ''),
+                ('async function run(globalThis){await globalThis.eval(SRC)}await run({eval:text});', ''),
+                ('async function run(){const globalThis={eval:text};await globalThis.eval(SRC)}await run();', ''),
+                ('const e=eval;async function run(e){await e(SRC)}await run(text);', ''),
+            ):
+                cells.append((setup.replace('SRC', json.dumps(source)), False))
+            for name in ('return', 'new', 'in', 'of', 'delete'):
+                for access in ('.' + name, '?.' + name):
+                    cells.append(('const o={' + name + ':eval};await o' + access + '(' + json.dumps(source) + ');', owning))
+            for cell, expected in cells:
+                rows = history('codex', {})
+                rows[1]['payload'].update(name='functions.exec', arguments=cell)
+                rows[2] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-0')
+                with self.subTest(source_handle=cell):
+                    self.assertEqual(receipts.ownership_state(rows, 'codex')['pending'], expected)
+
 
     def test_composed_regex_and_nested_templates_keep_executable_calls_visible(self):
         writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 5 > claim.json'
@@ -4864,7 +5130,8 @@ os.system(get())
             for command in ("uv run scripts/gh-plan.py --repo example/a claim 5 &",
                             "nohup gh pr create --title x &",
                             "coproc uv run scripts/gh-plan.py --repo example/a claim 5",
-                            "coproc JOB { uv run scripts/gh-plan.py --repo example/a claim 5; }"):
+                            "coproc JOB { uv run scripts/gh-plan.py --repo example/a claim 5; }",
+                            "gen() { uv run scripts/gh-plan.py --repo example/a claim 5; }; coproc gen"):
                 rows = history(harness, claim(), {**proof(), "harness": harness})
                 if harness == "codex":
                     rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
@@ -6055,7 +6322,8 @@ os.system(get())
             ("current_bytes", [hash_bind + "; printf 'echo safe\\n' > run.sh && cp a b"], False),
             ("default_copy", [safe_file, "cp safe.sh run.sh", "bash run.sh"], False),
             ("hashed_copy", [safe_file, "hash -p ./safe.sh cp; cp safe.sh run.sh", "bash run.sh"], True),
-            ("hashed_reader", [safe_file, "hash -p ./safe.sh bash; bash run.sh"], False),
+            # A hashed wrapper can forward argv to the default reader.
+            ("hashed_reader", [safe_file, "hash -p ./safe.sh bash; bash run.sh"], True),
             ("hashed_copy_redirection", [safe_file, "hash -p ./safe.sh cp; cp safe.sh run.sh > run.sh", "bash run.sh"], False),
             ("default_copy_redirection", ["cp run.sh owning.sh", "cp owning.sh run.sh > run.sh", "bash run.sh"], True),
             ("unknown_builtin_restoration", [hash_bind + "; enable cp || true; cp a b"], True),
@@ -6066,14 +6334,184 @@ os.system(get())
             ("reenabled_builtin", ["hash -p ./run.sh echo; enable -n echo; enable echo; echo safe"], False),
             ("conditional_disable", ['hash -p ./run.sh echo; if [ -n "$X" ]; then enable -n echo; fi; echo safe'], True),
         ]
-        hash_cases += [("builtin_" + name + "_" + command, ["hash -p ./run.sh " + name + "; " + command], False)
-                       for name, command in (("echo", "echo safe"), ("echo", "command echo safe"),
-                                             ("echo", "builtin echo safe"), ("pwd", "pwd"),
-                                             ("alias", "alias"), ("trap", "trap -p"))]
+        # A Bash-only hash binding cannot borrow zsh external-command dispatch.
+        hash_cases += [("builtin_" + name + "_" + command, ["hash -p ./run.sh " + name + "; " + command], pending)
+                       for name, command, pending in (("echo", "echo safe", False), ("echo", "command echo safe", False),
+                                                      ("echo", "builtin echo safe", False), ("pwd", "pwd", False),
+                                                      ("trap", "trap -p", False))]
+        # The native fixture records no Bash version or optional build features.
+        # These names can therefore dispatch the hash on stock Bash3.2 or a
+        # feature-disabled build; enable cannot create an absent builtin.
+        for name in ("mapfile", "readarray", "compopt"):
+            binding = "hash -p ./run.sh " + name
+            hash_cases += [
+                (name + "_version_dependent", [binding + "; " + name], True),
+                (name + "_explicit_bash", ["/bin/bash -c " + shlex.quote(binding + "; " + name)], True),
+                (name + "_failed_enable", [binding + "; enable " + name + " || true; " + name], True),
+            ]
+        # This newly added hash-precision control previously assumed ALIAS was
+        # compiled in. Preserve both possible builds and test supported bypasses.
+        hash_cases += [
+            ("alias_feature_dependent", ["hash -p ./run.sh alias; alias"], True),
+            ("alias_enable_restoration", ["hash -p ./run.sh alias; enable -n alias; enable alias || true; alias"], True),
+            ("alias_builtin_bypass", ["hash -p ./run.sh alias; builtin alias"], False),
+            ("alias_standard_path_bypass", ["hash -p ./run.sh alias; command -p alias"], False),
+            ("alias_reset_bypass", ["hash -p ./run.sh alias; hash -r; alias"], False),
+        ]
+        # Literal code enters the same ordered parser and scope relation.
+        # Fresh processes import only possible exported functions; declarations
+        # and unrelated commands never execute a hash target.
+        hash_cases += [
+            ('f1_zsh_hash_copy', ["printf 'echo safe\\n' > safe.sh && chmod +x safe.sh; hash -p ./safe.sh cp; cp run.sh other.sh", 'bash other.sh'], True),
+            ('f1_disabled_hash_copy', ["printf 'echo safe\\n' > safe.sh && chmod +x safe.sh; set +h; hash -p ./safe.sh cp; cp run.sh other.sh", 'bash other.sh'], True),
+            ('f1_export_path_copy', ['printf \'echo safe\\n\' > safe.sh && chmod +x safe.sh; hash -p ./safe.sh cp; export PATH="$PATH"; cp run.sh other.sh', 'bash other.sh'], True),
+            ('f1_forwarding_hash_reader', ['printf \'#!/bin/sh\\nexec /bin/bash "$@"\\n\' > wrap.sh; chmod +x wrap.sh; hash -p ./wrap.sh bash; bash run.sh'], True),
+            ('f2_zsh_hash_assignment', ['hash cp=$PWD/run.sh; cp a b'], True),
+            ('f2_zsh_commands_assignment', ['commands[cp]=$PWD/run.sh; cp a b'], True),
+            ('f3_exec_hash', ['hash -p ./run.sh cp; exec cp a b'], True),
+            ('f3_exec_options_hash', ['hash -p ./run.sh cp; exec -cl -a sample cp a b'], True),
+            ('f4_time_assignment', ['gen() { bash run.sh; }; time X=1 gen'], True),
+            ('f4_time_negation', ['gen() { bash run.sh; }; time ! gen'], True),
+            ('f4_append_assignment', ['gen() { bash run.sh; }; X+=1 gen'], True),
+            ('f5_eval_direct', ['gen() { bash run.sh; }; eval gen'], True),
+            ('f5_eval_compound', ["gen() { bash run.sh; }; eval 'true; gen'"], True),
+            ('f5_emulate_compound', ["gen() { bash run.sh; }; emulate zsh -c 'true; gen'"], True),
+            ('f5_eval_true_control', ['gen() { bash run.sh; }; eval true'], False),
+            ('f5_emulate_true_control', ["gen() { bash run.sh; }; emulate zsh -c 'true'"], False),
+            ('f6_disabled_explicit_mutator', ['enable -n hash; builtin hash -p ./run.sh cp || true; cp a b'], True),
+            ('direct_hash_control', ['hash -p ./run.sh cp; cp a b'], True),
+            ('child_local_hash', ["/bin/bash -c 'hash -p ./run.sh cp; cp a b'"], True),
+            ('child_same_body_owning_write', ['/bin/bash -c \'printf \'"\'"\'%s\\n\'"\'"\' \'"\'"\'uv run /catalog/gh-plan.py --repo client/repo claim 12\'"\'"\' > child.sh && chmod +x child.sh && hash -p ./child.sh cp; cp a b\''], True),
+            ('child_rewrite_before_hashed_read', ['/bin/bash -c \'hash -p ./run.sh cp; printf \'"\'"\'echo safe\\n\'"\'"\' > run.sh && cp a b\''], False),
+            ('child_success_proves_guarded_rewrite', ['/bin/bash -c \'printf \'"\'"\'echo safe\\n\'"\'"\' > run.sh && true\' && bash run.sh'], False),
+            ('child_failure_does_not_prove_rewrite', ['/bin/bash -c \'printf \'"\'"\'echo safe\\n\'"\'"\' > run.sh; false\'; bash run.sh'], True),
+            ('new_shell_does_not_inherit_hash', ["hash -p ./run.sh cp; /bin/bash -c 'cp a b'"], False),
+            ('parenthesized_subshell_inherits_hash', ['hash -p ./run.sh cp; (cp a b)'], True),
+            ('new_shell_does_not_inherit_shadow', ["cp() { :; }; /bin/bash -c 'hash -p ./run.sh cp; cp a b'"], True),
+            ('new_shell_does_not_inherit_function', ["gen() { bash run.sh; }; /bin/bash -c 'gen; true'"], False),
+            ('new_shell_imports_exported_function', ["gen() { bash run.sh; }; export -f gen; /bin/bash -c 'gen; true'"], True),
+            ('child_hash_does_not_escape', ["/bin/bash -c 'hash -p ./run.sh cp'; cp a b"], False),
+            ('child_function_does_not_escape', ["/bin/bash -c 'gen() { bash run.sh; }'; gen; true"], False),
+            ('ordinary_direct_read', ['bash run.sh'], True),
+            ('eval_body_owning_producer', ['eval \'printf \'"\'"\'%s\\n\'"\'"\' \'"\'"\'uv run /catalog/gh-plan.py --repo client/repo claim 12\'"\'"\' > nested.sh && bash nested.sh\''], True),
+            ('eval_body_guarded_rewrite', ['eval \'printf \'"\'"\'echo safe\\n\'"\'"\' > run.sh && bash run.sh\''], False),
+            ('eval_body_failed_rewrite', ['eval \'printf \'"\'"\'echo safe\\n\'"\'"\' > run.sh; false\'; bash run.sh'], True),
+            ('eval_body_early_success', ['eval \'[ -f run.sh ] && exit 0; printf \'"\'"\'echo safe\\n\'"\'"\' > run.sh\'', 'bash run.sh'], True),
+            ('emulate_body_owning_producer', ['emulate zsh -c \'printf \'"\'"\'%s\\n\'"\'"\' \'"\'"\'uv run /catalog/gh-plan.py --repo client/repo claim 12\'"\'"\' > nested.sh && bash nested.sh\''], True),
+            ('emulate_body_guarded_rewrite', ['emulate zsh -c \'printf \'"\'"\'echo safe\\n\'"\'"\' > run.sh && bash run.sh\''], False),
+            ('emulate_body_failed_rewrite', ['emulate zsh -c \'printf \'"\'"\'echo safe\\n\'"\'"\' > run.sh; false\'; bash run.sh'], True),
+            ('emulate_body_early_success', ['emulate zsh -c \'[ -f run.sh ] && exit 0; printf \'"\'"\'echo safe\\n\'"\'"\' > run.sh\'', 'bash run.sh'], True),
+            ('child_body_owning_producer', ['/bin/bash -c \'printf \'"\'"\'%s\\n\'"\'"\' \'"\'"\'uv run /catalog/gh-plan.py --repo client/repo claim 12\'"\'"\' > nested.sh && bash nested.sh\''], True),
+            ('child_body_guarded_rewrite', ['/bin/bash -c \'printf \'"\'"\'echo safe\\n\'"\'"\' > run.sh && bash run.sh\''], False),
+            ('child_body_failed_rewrite', ['/bin/bash -c \'printf \'"\'"\'echo safe\\n\'"\'"\' > run.sh; false\'; bash run.sh'], True),
+            ('child_body_early_success', ['/bin/bash -c \'[ -f run.sh ] && exit 0; printf \'"\'"\'echo safe\\n\'"\'"\' > run.sh\' && bash run.sh'], True),
+            ('literal_child_with_expanded_environment', ["X=$X /bin/bash -c 'hash -p ./run.sh cp; cp a b'"], True),
+            ('literal_eval_with_expanded_environment', ["gen() { bash run.sh; }; X=$X eval 'gen'"], True),
+            ('nested_fresh_shell_entry', ['/bin/bash -c \'/bin/bash -c \'"\'"\'hash -p ./run.sh cp; cp a b\'"\'"\'\''], True),
+            ('child_scope_position_isolation', ["/bin/bash -c 'true; true'; printf 'echo safe\\n' > run.sh && bash run.sh"], False),
+            ('child_outer_redirection_before_body', ["/bin/bash -c 'bash run.sh' > run.sh"], False),
+            ('skipped_literal_child', ["false && /bin/bash -c 'hash -p ./run.sh cp; cp a b'"], False),
+            ('skipped_literal_eval', ["gen() { bash run.sh; }; false && eval 'gen'"], False),
+            ('hashed_intrinsic_tee', ["printf 'echo safe\\n' > safe.sh; hash -p ./safe.sh tee; printf 'echo safe\\n' | tee run.sh", 'bash run.sh'], True),
+            ('direct_redirection_before_reader', ['bash run.sh > run.sh'], False),
+            ('function_redirection_before_reader', ['gen() { bash run.sh; }; gen > run.sh'], False),
+            ('exported_function_redefinition', ["gen() { :; }; export -f gen; gen() { bash run.sh; }; /bin/bash -c 'gen; true'"], True),
+            ('unexported_function_redefinition', ["gen() { :; }; gen() { bash run.sh; }; /bin/bash -c 'gen; true'"], False),
+            ('builtin_exec_hash_child', ['hash -p ./run.sh cp; builtin exec cp a b'], True),
+            ('exec_clustered_argv0_hash_child', ['hash -p ./run.sh cp; exec -cla sample cp a b'], True),
+            ('exec_absolute_path_bypasses_hash', ['hash -p ./run.sh cp; exec /bin/cp a b'], False),
+            ('builtin_exec_absolute_path_bypasses_hash', ['hash -p ./run.sh cp; builtin exec /bin/cp a b'], False),
+            ('exec_absolute_real_owner', ['hash -p ./run.sh cp; exec /repo/run.sh'], True),
+            ('builtin_exec_absolute_real_owner', ['hash -p ./run.sh cp; builtin exec /repo/run.sh'], True),
+            ('zsh_shopt_binding_metadata', ['hash shopt=$PWD/run.sh'], False),
+            ('zsh_shopt_binding_query', ['hash shopt=$PWD/run.sh; hash'], False),
+            ('zsh_shopt_binding_dispatch', ['hash shopt=$PWD/run.sh; shopt'], True),
+            ('zsh_shopt_explicit_builtin', ['hash shopt=$PWD/run.sh; builtin shopt || true'], False),
+            ('zsh_shopt_standard_path', ['hash shopt=$PWD/run.sh; command -p shopt || true'], False),
+            ('zsh_command_echo_binding', ['hash echo=$PWD/run.sh; command echo safe'], True),
+            ('zsh_echo_binding_plain_builtin', ['hash echo=$PWD/run.sh; echo safe'], False),
+            ('zsh_echo_binding_explicit_builtin', ['hash echo=$PWD/run.sh; builtin echo safe'], False),
+            ('zsh_echo_binding_standard_path', ['hash echo=$PWD/run.sh; command -p echo safe'], False),
+            ('zsh_echo_binding_command_query', ['hash echo=$PWD/run.sh; command -v echo'], False),
+            ('zsh_echo_binding_verbose_query', ['hash echo=$PWD/run.sh; command -V echo'], False),
+            ('direct_skipped_literal_stdin', ["false && python3 <<'PYCODE'\nimport subprocess\nsubprocess.run(['uv', 'run', '/catalog/gh-plan.py', '--repo', 'client/repo', 'claim', '12'])\nPYCODE\n\ntrue"], False),
+            ('direct_reached_literal_stdin', ["python3 <<'PYCODE'\nimport subprocess\nsubprocess.run(['uv', 'run', '/catalog/gh-plan.py', '--repo', 'client/repo', 'claim', '12'])\nPYCODE\n\ntrue"], True),
+            ('direct_unknown_literal_stdin', ['[ -n "$X" ] && python3 <<\'PYCODE\'\nimport subprocess\nsubprocess.run([\'uv\', \'run\', \'/catalog/gh-plan.py\', \'--repo\', \'client/repo\', \'claim\', \'12\'])\nPYCODE\n\ntrue'], True),
+            ('child_skipped_literal_stdin', ['false && /bin/bash -c \'python3 <<\'"\'"\'PYCODE\'"\'"\'\nimport subprocess\nsubprocess.run([\'"\'"\'uv\'"\'"\', \'"\'"\'run\'"\'"\', \'"\'"\'/catalog/gh-plan.py\'"\'"\', \'"\'"\'--repo\'"\'"\', \'"\'"\'client/repo\'"\'"\', \'"\'"\'claim\'"\'"\', \'"\'"\'12\'"\'"\'])\nPYCODE\n\'\ntrue'], False),
+            ('child_reached_literal_stdin', ['/bin/bash -c \'python3 <<\'"\'"\'PYCODE\'"\'"\'\nimport subprocess\nsubprocess.run([\'"\'"\'uv\'"\'"\', \'"\'"\'run\'"\'"\', \'"\'"\'/catalog/gh-plan.py\'"\'"\', \'"\'"\'--repo\'"\'"\', \'"\'"\'client/repo\'"\'"\', \'"\'"\'claim\'"\'"\', \'"\'"\'12\'"\'"\'])\nPYCODE\n\'\ntrue'], True),
+            ('child_unknown_literal_stdin', ['[ -n "$X" ] && /bin/bash -c \'python3 <<\'"\'"\'PYCODE\'"\'"\'\nimport subprocess\nsubprocess.run([\'"\'"\'uv\'"\'"\', \'"\'"\'run\'"\'"\', \'"\'"\'/catalog/gh-plan.py\'"\'"\', \'"\'"\'--repo\'"\'"\', \'"\'"\'client/repo\'"\'"\', \'"\'"\'claim\'"\'"\', \'"\'"\'12\'"\'"\'])\nPYCODE\n\'\ntrue'], True),
+            ('unused_literal_stdin_function', ["gen() {\npython3 <<'PYCODE'\nimport subprocess\nsubprocess.run(['uv', 'run', '/catalog/gh-plan.py', '--repo', 'client/repo', 'claim', '12'])\nPYCODE\n}; true"], False),
+            ('reached_literal_stdin_function', ["gen() {\npython3 <<'PYCODE'\nimport subprocess\nsubprocess.run(['uv', 'run', '/catalog/gh-plan.py', '--repo', 'client/repo', 'claim', '12'])\nPYCODE\n}; gen; true"], True),
+            ('skipped_literal_here_string', ['false && python3 <<< \'import subprocess\nsubprocess.run([\'"\'"\'uv\'"\'"\', \'"\'"\'run\'"\'"\', \'"\'"\'/catalog/gh-plan.py\'"\'"\', \'"\'"\'--repo\'"\'"\', \'"\'"\'client/repo\'"\'"\', \'"\'"\'claim\'"\'"\', \'"\'"\'12\'"\'"\'])\'; true'], False),
+            ('reached_literal_here_string', ['python3 <<< \'import subprocess\nsubprocess.run([\'"\'"\'uv\'"\'"\', \'"\'"\'run\'"\'"\', \'"\'"\'/catalog/gh-plan.py\'"\'"\', \'"\'"\'--repo\'"\'"\', \'"\'"\'client/repo\'"\'"\', \'"\'"\'claim\'"\'"\', \'"\'"\'12\'"\'"\'])\'; true'], True),
+            ('skipped_heredoc_expansion', ['false && cat <<EOF\n$(uv run /catalog/gh-plan.py --repo client/repo claim 12)\nEOF\ntrue'], False),
+            ('reached_heredoc_expansion', ['cat <<EOF\n$(uv run /catalog/gh-plan.py --repo client/repo claim 12)\nEOF\ntrue'], True),
+            ('unknown_heredoc_expansion', ['[ -n "$X" ] && cat <<EOF\n$(uv run /catalog/gh-plan.py --repo client/repo claim 12)\nEOF\ntrue'], True),
+            ('zero_body_loop_heredoc_expansion', ['while false; do :; done <<EOF\n$(uv run /catalog/gh-plan.py --repo client/repo claim 12)\nEOF\ntrue'], True),
+            ('skipped_loop_heredoc_expansion', ['false && while false; do :; done <<EOF\n$(uv run /catalog/gh-plan.py --repo client/repo claim 12)\nEOF\ntrue'], False),
+            ('zero_body_loop_literal_input', ["while false; do python3; done <<'PYCODE'\nimport subprocess\nsubprocess.run(['uv', 'run', '/catalog/gh-plan.py', '--repo', 'client/repo', 'claim', '12'])\nPYCODE\ntrue"], False),
+            ('compound_redirection_before_reader', ['while bash run.sh; do break; done > run.sh'], False),
+            ('skipped_compound_redirection_preserves_source', ['false && while false; do :; done > run.sh; bash run.sh'], True),
+            ('context_unknown_root_command', ['hash echo=$PWD/run.sh; command echo safe'], True),
+            ('context_known_bash_command', ["/bin/bash -c 'hash -p ./run.sh echo; command echo safe'"], False),
+            ('context_known_zsh_command', ["/bin/zsh -c 'hash echo=$PWD/run.sh; command echo safe'"], True),
+            ('context_known_bash_shopt', ["/bin/bash -c 'hash -p ./run.sh shopt; shopt'"], False),
+            ('context_known_zsh_shopt', ["/bin/zsh -c 'hash shopt=$PWD/run.sh; shopt'"], True),
+            ('context_copied_bash', ["/bin/bash -c 'hash -p ./run.sh echo; (command echo safe)'"], False),
+            ('context_eval_bash', ['/bin/bash -c \'hash -p ./run.sh echo; eval \'"\'"\'command echo safe\'"\'"\'\''], False),
+            ('context_nested_bash', ['/bin/zsh -c \'/bin/bash -c \'"\'"\'hash -p ./run.sh echo; command echo safe\'"\'"\'\''], False),
+            ('context_hash_wrapper_alternative', ["printf 'echo safe\\n' > safe.sh; hash -p ./safe.sh bash; bash -c 'hash echo=$PWD/run.sh; command echo safe'"], True),
+            ('context_hash_bash_zsh_hash_binding', ["/bin/bash -c 'hash cp=./run.sh; cp a b'"], False),
+            ('context_hash_bash_zsh_commands_binding', ["/bin/bash -c 'commands[cp]=./run.sh; cp a b'"], False),
+            ('context_hash_zsh_bash_hash_binding', ["/bin/zsh -c 'hash -p ./run.sh cp || true; cp a b'"], False),
+            ('context_hash_zsh_invalid_replacement_keeps_binding', ["/bin/zsh -c 'hash cp=./run.sh; hash -p ./safe.sh cp || true; cp a b'"], True),
+            ('context_hash_unknown_invalid_replacement_keeps_binding', ['hash cp=./run.sh; hash -p ./safe.sh cp || true; cp a b'], True),
+            ('context_hash_zsh_named_dir_does_not_delete', ["/bin/zsh -c 'hash cp=./run.sh; hash -d cp || true; cp a b'"], True),
+            ('context_hash_unknown_named_dir_does_not_delete', ['hash cp=./run.sh; hash -d cp || true; cp a b'], True),
+            ('context_hash_bash_delete_clears', ["/bin/bash -c 'hash -p ./run.sh cp; hash -d cp; cp a b'"], False),
+            ('context_hash_unknown_bash_origin_delete_clears', ['hash -p ./run.sh cp; hash -d cp; cp a b'], False),
+            ('context_hash_unknown_bash_origin_replacement_clears', ['hash -p ./run.sh cp; hash -p ./safe.sh cp; cp a b'], False),
+            ('context_hash_zsh_replacement_clears', ["/bin/zsh -c 'hash cp=./run.sh; hash cp=./safe.sh; cp a b'"], False),
+            ('context_hash_unknown_zsh_origin_replacement_clears', ['hash cp=./run.sh; hash cp=./safe.sh; cp a b'], False),
+            ('context_hash_unknown_shared_reset_clears', ['hash cp=./run.sh; hash -r; cp a b'], False),
+            ('context_dispatch_bash_hash_command_echo', ['hash -p ./run.sh echo; command echo safe'], False),
+            ('context_dispatch_zsh_hash_command_echo', ['hash echo=$PWD/run.sh; command echo safe'], True),
+            ('context_dispatch_zsh_hash_bash_disable_echo', ['hash echo=$PWD/run.sh; enable -n echo || true; echo safe'], False),
+            ('context_dispatch_bash_hash_bash_disable_echo', ['hash -p ./run.sh echo; enable -n echo; echo safe'], True),
+            ('context_dispatch_zsh_hash_bash_disable_command_echo', ['hash echo=$PWD/run.sh; enable -n echo || true; command echo safe'], True),
+            ('context_zsh_alias_core', ["/bin/zsh -c 'hash alias=$PWD/run.sh; alias'"], False),
+            ('context_unknown_alias_bash_feature', ['hash -p ./run.sh alias; alias'], True),
+        ]
         for harness in ("codex", "claude"):
             for label, commands, pending in hash_cases:
                 with self.subTest(harness=harness, hash_dispatch=label):
                     self.assertEqual(receipts.ownership_state(scripts(harness, [hash_owner, *commands]), harness)["pending"], pending)
+
+
+        for harness in ("codex", "claude"):
+            for shell, body, expected in (("/bin/bash", "hash echo=$PWD/run.sh; command echo safe", False),
+                                          ("/bin/bash", "hash shopt=$PWD/run.sh; shopt", False),
+                                          ("/bin/zsh", "hash echo=$PWD/run.sh; command echo safe", True),
+                                          (None, "hash echo=$PWD/run.sh; command echo safe", True),
+                                          ({"untrusted": "bash"}, "hash echo=$PWD/run.sh; command echo safe", True)):
+                with self.subTest(harness=harness, recorded_shell=shell):
+                    rows = scripts(harness, [hash_owner, body])
+                    if harness == "codex":
+                        rows[3]["payload"]["arguments"] = json.dumps({"cmd": body, "shell": shell})
+                    else:
+                        # Bash's extra input key is not a shell-selection contract.
+                        rows[3]["message"]["content"][0]["input"]["shell"] = shell
+                    self.assertEqual(receipts.ownership_state(rows, harness)["pending"], expected if harness == "codex" else True)
+        for method in ("exec_command", "functions.exec_command"):
+            for shell, expected in (("/bin/bash", False), ("/bin/zsh", True), (None, True)):
+                with self.subTest(method=method, shell=shell):
+                    effects = list(receipts.native_file_effects(method, {"cmd": "hash echo=$PWD/run.sh; command echo safe", "shell": shell}))
+                    self.assertEqual(any(effect["kind"] == "read" and "./run.sh" in effect.get("paths", ()) for effect in effects), expected)
+        for shell, expected in (("/bin/bash", False), ("/bin/zsh", True), (None, True)):
+            with self.subTest(composed_shell=shell):
+                args = {"cmd": "hash echo=$PWD/run.sh; command echo safe", "shell": shell, "workdir": "/repo"}
+                effects = list(receipts.native_file_effects("functions.exec", "await tools.exec_command(" + json.dumps(args) + ")"))
+                self.assertEqual(any(effect["kind"] == "read" and "./run.sh" in effect.get("paths", ()) for effect in effects), expected)
 
 
     def test_many_producer_streams_preserve_reader_and_data_behavior(self):
