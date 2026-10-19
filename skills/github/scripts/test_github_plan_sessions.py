@@ -294,6 +294,9 @@ class IdleReceiptIntegrationTests(unittest.TestCase):
                 f.process_rows = [(456, "fixture-tty", " ".join(native))]
                 self.assert_ended(f)
                 closed = f.release.record_closure(f.log, f.entry, "supervisor")
+                self.assertTrue(f.release.validate_closure({
+                    **closed, "handoff_url": "https://github.com/test/repo/issues/1#issuecomment-2"
+                }, "supervisor")["safe_verdict"])
                 with self.assertRaises(ValueError):
                     f.release.validate_closure({**closed, "ended_at": datetime.now(timezone.utc).isoformat()}, "supervisor")
                 # A changed argv cannot borrow the guarded client's identity.

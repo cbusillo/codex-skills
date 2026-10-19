@@ -90,11 +90,16 @@ def verify_process_exit(entry, *, ended_at=None):
                          and process_absence_known(" ".join(argv[executable:])))
             if not unrelated and Path(argv[executable]).name == "codex" and closure.remote_endpoints(argv[executable:]):
                 try:
+                    records = closure.log_rows()
                     sockets = {str(closure.daemon_endpoint(Path(row["codex_home"])))
-                               for row in closure.log_rows()
+                               for row in records
                                if row.get("record_kind") in {"managed_launch", "managed_proxy"}}
-                    source = {k: v for k, v in entry.items() if not k.startswith("_")}
-                    unrelated = (closure.receipt_current(source)
+                    source = next((row for row in records if row.get("session_id") == entry["session_id"]), {})
+                    # Discovery may enrich the handoff URL after closure. It
+                    # does not change the native generation's exit evidence.
+                    identity = {k: v for k, v in entry.items() if not k.startswith("_") and k != "handoff_url"}
+                    unrelated = (identity == {k: v for k, v in source.items() if k != "handoff_url"}
+                                 and closure.receipt_current(source)
                                  and not closure.action_pending(entry["session_id"])
                                  and closure.managed_launch(process_pid, argv[executable:], sockets))
                 except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
