@@ -132,6 +132,12 @@ def composed_result(value, identifier):
             "output": [{"type": "input_text", "text": json.dumps(value)}]}}
 
 
+def cell_header(cell=None):
+    """One declared representative outer-cell header, independent of stdout."""
+    status = 'Script running with cell ID ' + cell if cell is not None else 'Script completed'
+    return {'type': 'input_text', 'text': status + '\nWall time 0.01 seconds'}
+
+
 def persisted_serial_result(identifier):
     """Derive private fields/part IDs from the normalizer, then lose provenance."""
     code = 'text(await tools.exec_command({cmd:"printf done"}));' * 2
@@ -2831,11 +2837,11 @@ os.system(get())
                                {'exit_code': 0, 'output': json.dumps({'exit_code': 1})})]
                     if deferred:
                         call_result['payload']['output'] = [
-                            {'type': 'input_text', 'text': 'Script running with cell ID serial-cell\nWall time 0.01 seconds'}, blocks[0]]
+                            cell_header('serial-cell'), blocks[0]]
                         wait = {'type': 'response_item', 'payload': {'type': 'function_call', 'call_id': 'wait',
                                 'name': 'functions.wait', 'arguments': json.dumps({'cell_id': 'serial-cell'})}}
                         terminal = {'type': 'response_item', 'payload': {'type': 'function_call_output', 'call_id': 'wait',
-                                    'output': [{'type': 'input_text', 'text': 'Script completed\nWall time 0.01 seconds'}, blocks[1]]}}
+                                    'output': [cell_header(), blocks[1]]}}
                         rows[rows.index(call_result) + 1:rows.index(call_result) + 1] = [wait, terminal]
                     else:
                         call_result['payload']['output'] = blocks
@@ -2859,7 +2865,7 @@ os.system(get())
                             invoke(rows, harness, 2, *read)
                             written = next(record for record in rows
                                            if 'tool-1' in receipts.calls_and_results(record, harness)[1])
-                            blocks = [{'type': 'input_text', 'text': 'Script running with cell ID outer-cell\nWall time 0.01 seconds'}]
+                            blocks = [cell_header('outer-cell')]
                             if count == 2:
                                 blocks.append({'type': 'input_text', 'text': json.dumps({'exit_code': 0, 'output': ''})})
                             written['payload']['output'] = blocks
@@ -2876,7 +2882,7 @@ os.system(get())
                             wait = {'payload': {'type': 'function_call', 'name': 'functions.wait', 'call_id': 'outer-wait',
                                     'arguments': json.dumps({'cell_id': 'outer-cell'})}}
                             terminal = composed_result({'exit_code': 0} if stdout else {'exit_code': status, 'output': ''}, 'outer-wait')
-                            terminal['payload']['output'].insert(0, {'type': 'input_text', 'text': 'Script completed\nWall time 0.01 seconds'})
+                            terminal['payload']['output'].insert(0, cell_header())
                             position = rows.index(written) + 1
                             rows[position:position] = [*poll, wait, terminal]
                             for index, record in enumerate(rows[1:], 1):
@@ -3399,7 +3405,7 @@ os.system(get())
                         blocks = [{"type": "input_text", "text": json.dumps(read_value)}]
                         if native is not None:
                             blocks.insert(1 if read_first else 0, {"type": "input_text", "text": json.dumps(native)})
-                        blocks.insert(0, {"type": "input_text", "text": "Script completed\nWall time 0.1 seconds\nOutput:\n"})
+                        blocks.insert(0, cell_header())
                         rows[2] = {"type": "response_item", "payload": {"type": "custom_tool_call_output", "call_id": "tool-0", "output": blocks}}
                         self.assertEqual(receipts.ownership_state(rows, "codex")["pending"], state != "finished")
 
@@ -4856,7 +4862,9 @@ os.system(get())
     def test_shell_detached_ownership_never_uses_shell_exit_as_writer_completion(self):
         for harness in ("codex", "claude"):
             for command in ("uv run scripts/gh-plan.py --repo example/a claim 5 &",
-                            "nohup gh pr create --title x &"):
+                            "nohup gh pr create --title x &",
+                            "coproc uv run scripts/gh-plan.py --repo example/a claim 5",
+                            "coproc JOB { uv run scripts/gh-plan.py --repo example/a claim 5; }"):
                 rows = history(harness, claim(), {**proof(), "harness": harness})
                 if harness == "codex":
                     rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
@@ -4866,17 +4874,17 @@ os.system(get())
                 self.assertFalse(session_record.summarize(rows, harness)["safe_verdict"])
                 self.assertTrue(receipts.ownership_state(rows, harness)["pending"])
             # Quoted data and ordinary foreground nohup are not detachment.
-            command = 'nohup gh pr create --title "&"'
-            if harness == "codex":
-                rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
-            else:
-                rows[1]["message"]["content"][0]["input"] = {"command": command}
-            self.assertTrue(session_record.summarize(rows, harness)["safe_verdict"])
+            for command in ('nohup gh pr create --title "&"', "nohup gh pr create --title coproc"):
+                if harness == "codex":
+                    rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                else:
+                    rows[1]["message"]["content"][0]["input"] = {"command": command}
+                self.assertTrue(session_record.summarize(rows, harness)["safe_verdict"])
 
     def test_visible_composed_ownership_can_finish_through_an_outer_cell_poll(self):
         rows = history("codex", claim(), proof())
         rows[1]["payload"].update(name="functions.exec", arguments='text(await tools.exec_command({cmd:"uv run scripts/gh-plan.py --repo example/a claim 5"}));')
-        rows[2] = output("Script running with cell ID owning-cell", "codex", "tool-0")
+        rows[2] = output(cell_header('owning-cell')['text'], "codex", "tool-0")
         poll = {"type": "response_item", "payload": {"type": "function_call", "name": "functions.wait", "call_id": "wait",
                 "arguments": json.dumps({"cell_id": "owning-cell"})}}
         rows[3:3] = [poll, output({"exit_code": 0, "output": ""}, "codex", "wait")]
@@ -4886,10 +4894,10 @@ os.system(get())
         # Each wait returns only new output, so preserve earlier visible results.
         rows[1]["payload"]["arguments"] += 'text(await tools.exec_command({cmd:"gh pr create --title x"}));'
         rows[2] = {"payload": {"type": "custom_tool_call_output", "call_id": "tool-0", "output": [
-            {"type": "input_text", "text": "Script running with cell ID owning-cell\nWall time 0.1 seconds\nOutput:\n"},
+            cell_header('owning-cell'),
             {"type": "input_text", "text": json.dumps({"exit_code": 0, "output": json.dumps({"exit_code": 0})})}]}}
         rows[4] = {"payload": {"type": "custom_tool_call_output", "call_id": "wait", "output": [
-            {"type": "input_text", "text": "Script completed\nWall time 0.1 seconds\nOutput:\n"},
+            cell_header(),
             {"type": "input_text", "text": json.dumps({"exit_code": 0, "output": ""})}]}}
         self.assertTrue(session_record.summarize(rows, "codex")["safe_verdict"])
         # An empty final wait cannot borrow saved native JSON from earlier stdout.
@@ -5196,9 +5204,9 @@ os.system(get())
             additions = [call, checked]
             if deferred:
                 checked['payload']['call_id'] = 'outer-wait'
-                checked['payload']['output'].insert(0, {'type': 'input_text', 'text': 'Script completed\nWall time 0.01 seconds'})
+                checked['payload']['output'].insert(0, cell_header())
                 additions = [call, {'payload': {'type': 'function_call_output', 'call_id': 'launch', 'output': [
-                    {'type': 'input_text', 'text': 'Script running with cell ID checker-cell\nWall time 0.01 seconds'}]}},
+                    cell_header('checker-cell')]}},
                     {'payload': {'type': 'function_call', 'name': 'functions.wait', 'call_id': 'outer-wait',
                                  'arguments': json.dumps({'cell_id': 'checker-cell'})}}, checked]
             records[-2:-2] = additions
@@ -5915,6 +5923,49 @@ os.system(get())
             ("ordinary_function", "gen() { " + safe_write + "; }; gen && bash run.sh", False, False),
             ("final_return", "gen() { " + safe_write + " && return 0; }; gen && bash run.sh", False, False),
         )
+        termination_cases += tuple(
+            ("prefixed_function_" + prefix, "gen() { bash run.sh; }; " + prefix + " gen", False, True)
+            for prefix in ("time", "time -p", "noglob", "nocorrect", "nocorrect noglob"))
+        termination_cases += tuple(
+            ("prefixed_exit_" + prefix, "[ -f run.sh ] && " + prefix + " exit 0; " + safe_write, True, True)
+            for prefix in ("time", "time -p", "noglob", "nocorrect"))
+        termination_cases += tuple(
+            ("removed_" + name + "_" + removal,
+             name + "() { :; }; " + removal + " " + name + "; "
+             + ("[ -f run.sh ] && exit 0; " + safe_write if name == "exit" else "bash run.sh"),
+             name == "exit", True)
+            for removal in ("unset -f", "unset", "unfunction", "unhash -f", "disable -f")
+            for name in ("exit", "bash"))
+        termination_cases += (
+            ("hashed_script_dispatch", "chmod +x run.sh; hash -p ./run.sh cp; cp a b", False, True),
+            ("hash_declaration_only", "hash -p ./run.sh cp", False, False),
+            ("hash_reset", "hash -p ./run.sh cp; hash -r; cp a b", False, False),
+            ("hash_query", "hash -t cp; " + safe_write, True, False),
+            ("hash_query_overrides_binding", "hash -t -p ./run.sh cp; " + safe_write, True, False),
+            ("prefixed_eval", '[ -f run.sh ] && time eval "exit 0"; ' + safe_write, True, True),
+            ("prefixed_trap", "time trap 'exit 0' EXIT; " + safe_write, True, True),
+            ("prefixed_builtin", "exit() { :; }; time builtin exit 0; " + safe_write, True, True),
+            ("prefixed_command_query", "time command -v exit; " + safe_write, True, False),
+            ("external_env", "gen() { bash run.sh; }; env gen || true", False, False),
+            ("external_nohup", "gen() { bash run.sh; }; nohup gen || true", False, False),
+            ("command_bypasses_function", "gen() { bash run.sh; }; time command gen || true", False, False),
+            ("coproc_function", "gen() { bash run.sh; }; coproc gen", False, True),
+            ("coproc_completion", "coproc " + safe_write, True, True),
+            ("child_removes_exit", "exit() { :; }; ( unset -f exit; [ -f run.sh ] && exit 0; " + safe_write + " ) && bash run.sh", False, True),
+            ("child_removes_reader", "bash() { :; }; ( unset -f bash; bash run.sh )", False, True),
+            ("child_removal_isolated", "exit() { :; }; ( unset -f exit; : ); exit; " + safe_write, True, False),
+            ("child_reader_removal_isolated", "bash() { :; }; ( unset -f bash; : ); bash run.sh", False, False),
+            ("child_conditional_shadow", 'gen() { bash run.sh; }; ( if [ -n "$X" ]; then gen() { :; }; fi; gen ); ' + safe_write, True, True),
+            ("pattern_removes_reader", "bash() { :; }; unhash -fm 'ba*'; bash run.sh", False, True),
+            ("conditional_removal_preserves_body", 'gen() { bash run.sh; }; if [ -n "$X" ]; then unset -f gen; fi; gen', False, True),
+            ("variable_only_removal", "exit() { :; }; unset -v exit; exit; " + safe_write, True, False),
+            ("unrelated_removal", "exit() { :; }; unset -f other; exit; " + safe_write, True, False),
+            ("emulate_local_function", "gen() { bash run.sh; }; emulate zsh -c 'gen'", False, True),
+            ("emulate_builtin_bypass", "gen() { bash run.sh; }; emulate zsh -c 'command gen' || true", False, False),
+            ("emulate_clustered_exit", '[ -f run.sh ] && emulate zsh -fc "exit 0"; ' + safe_write, True, True),
+            ("emulate_query", "emulate -l zsh; " + safe_write, True, False),
+            ("emulate_exit", '[ -f run.sh ] && emulate zsh -c "exit 0"; ' + safe_write, True, True),
+        )
         # Installing a handler may successfully finish its surrounding scope.
         # Query, reset and ignored-signal forms install no executable handler.
         handler_cases = [
@@ -5927,6 +5978,9 @@ os.system(get())
             ("inherited_debug_subshell", "trap 'if [[ $BASH_SUBSHELL == 1 ]]; then exit 0; fi' DEBUG; set -T; ( " + safe_write + " ) && bash run.sh", False, True),
             ("zsh_inherited_debug_subshell", "TRAPDEBUG() { if [[ $ZSH_SUBSHELL == 1 ]]; then exit 0; fi; }; ( " + safe_write + " ) && bash run.sh", False, True),
             ("zsh_short_debug", "TRAPDEBUG() exit 0; " + safe_write, True, True),
+            ("debug_skip_lower", "shopt -s extdebug; trap '[[ $BASH_COMMAND != printf* ]]' debug; " + safe_write + " && bash run.sh", False, True),
+            ("debug_skip_mixed", "shopt -s extdebug; trap '[[ $BASH_COMMAND != printf* ]]' dEbUg; " + safe_write + " && bash run.sh", False, True),
+            ("invalid_sigdebug", "shopt -s extdebug; trap '[[ $BASH_COMMAND != printf* ]]' SIGDEBUG; " + safe_write + " && bash run.sh", False, False),
             ("debug_skip", "shopt -s extdebug; trap '[[ $BASH_COMMAND != printf* ]]' DEBUG; " + safe_write + " && bash run.sh", False, True),
             ("guarded_before_hook", "( " + safe_write + " ) && bash run.sh; trap 'exit 0' DEBUG", False, False),
             ("inherited_err_suppressed", "trap 'exit 0' ERR; set -E; ( " + safe_write + " ) && bash run.sh", False, False),
@@ -5975,6 +6029,51 @@ os.system(get())
                         result.update(native_result(f"tool-{index}"))
                 with self.subTest(harness=harness, scope_endpoint=label):
                     self.assertEqual(receipts.ownership_state(rows, harness)["pending"], pending)
+
+        # Hash declarations are metadata. Only a later dispatch reads the
+        # selected script, with the caller's current file/scope provenance.
+        hash_owner = "printf '%s\\n' " + shlex.quote(writer) + " > run.sh && chmod +x run.sh"
+        hash_bind = "hash -p ./run.sh cp"
+        safe_file = "printf 'echo safe\\n' > safe.sh && chmod +x safe.sh"
+        hash_cases = [
+            ("declaration", [hash_bind], False),
+            ("query", [hash_bind + "; hash -t cp"], False),
+            ("dispatch", [hash_bind + "; cp a b"], True),
+            ("reset", [hash_bind + "; hash -r; cp a b"], False),
+            ("delete", [hash_bind + "; hash -d cp; cp a b"], False),
+            ("path_reset", [hash_bind + '; PATH="$PATH"; cp a b'], False),
+            ("function_precedence", ["cp() { :; }; " + hash_bind + "; cp a b"], False),
+            ("command_bypass", ["cp() { :; }; " + hash_bind + "; command cp a b"], True),
+            ("builtin_bypass", [hash_bind + "; builtin cp a b || true"], False),
+            ("standard_path", [hash_bind + "; command -p cp a b"], False),
+            ("child_inherits", [hash_bind + "; (cp a b)"], True),
+            ("child_isolated", ["(" + hash_bind + "); cp a b"], False),
+            ("child_replacement_isolated", [safe_file + "; " + hash_bind + "; (hash -p ./safe.sh cp); cp a b"], True),
+            ("conditional_replacement", [safe_file + "; " + hash_bind + '; if [ -n "$X" ]; then hash -p ./safe.sh cp; fi; cp a b'], True),
+            ("definite_replacement", [safe_file + "; " + hash_bind + "; hash -p ./safe.sh cp; cp a b"], False),
+            ("separate_native_calls", [hash_bind, "cp a b"], False),
+            ("current_bytes", [hash_bind + "; printf 'echo safe\\n' > run.sh && cp a b"], False),
+            ("default_copy", [safe_file, "cp safe.sh run.sh", "bash run.sh"], False),
+            ("hashed_copy", [safe_file, "hash -p ./safe.sh cp; cp safe.sh run.sh", "bash run.sh"], True),
+            ("hashed_reader", [safe_file, "hash -p ./safe.sh bash; bash run.sh"], False),
+            ("hashed_copy_redirection", [safe_file, "hash -p ./safe.sh cp; cp safe.sh run.sh > run.sh", "bash run.sh"], False),
+            ("default_copy_redirection", ["cp run.sh owning.sh", "cp owning.sh run.sh > run.sh", "bash run.sh"], True),
+            ("unknown_builtin_restoration", [hash_bind + "; enable cp || true; cp a b"], True),
+            ("disabled_explicit_mutator", [hash_bind + "; enable -n hash; builtin hash -r || true; cp a b"], True),
+            ("conditional_reset_default_reader", [safe_file, 'hash -p ./safe.sh bash; if [ -n "$X" ]; then hash -r; fi; bash run.sh'], True),
+            ("conditional_delete_default_reader", [safe_file, 'hash -p ./safe.sh bash; if [ -n "$X" ]; then hash -d bash; fi; bash run.sh'], True),
+            ("disabled_builtin", ["hash -p ./run.sh echo; enable -n echo; echo safe"], True),
+            ("reenabled_builtin", ["hash -p ./run.sh echo; enable -n echo; enable echo; echo safe"], False),
+            ("conditional_disable", ['hash -p ./run.sh echo; if [ -n "$X" ]; then enable -n echo; fi; echo safe'], True),
+        ]
+        hash_cases += [("builtin_" + name + "_" + command, ["hash -p ./run.sh " + name + "; " + command], False)
+                       for name, command in (("echo", "echo safe"), ("echo", "command echo safe"),
+                                             ("echo", "builtin echo safe"), ("pwd", "pwd"),
+                                             ("alias", "alias"), ("trap", "trap -p"))]
+        for harness in ("codex", "claude"):
+            for label, commands, pending in hash_cases:
+                with self.subTest(harness=harness, hash_dispatch=label):
+                    self.assertEqual(receipts.ownership_state(scripts(harness, [hash_owner, *commands]), harness)["pending"], pending)
 
 
     def test_many_producer_streams_preserve_reader_and_data_behavior(self):

@@ -2390,8 +2390,8 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                 assign_language(inputs, node["language"], node["index"])
                 child = stream_argv(node["argv"])
                 if execution_events is not None:
-                    execution_events.append({"kind": "read", "position": node["index"], "paths": execution_targets(node["argv"])})
-                    execution_events.extend({"kind": "write", "position": node["index"],
+                    execution_events.append({"kind": "read", "position": node["index"], "paths": execution_targets(node["argv"]), "command_effect": True})
+                    execution_events.extend({"kind": "write", "position": node["index"], "command_effect": True,
                                              "contents": (), "replaces": False, **mutation}
                                             for mutation in source_mutation_paths(node["argv"]))
                 substitution_outputs = {}
@@ -2469,6 +2469,68 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
 
     nodes = parse(0, len(tokens))
     if success_facts is not None:
+        def command_action(words):
+            action = list(words)
+            path_assignment = False
+            while action and (action[0] == "!" or re.match(r"[A-Za-z_]\w*=", action[0])):
+                path_assignment |= action[0].startswith("PATH=")
+                action = action[1:]
+            while action[:1] in (["time"], ["noglob"], ["nocorrect"]):
+                prefix, action = action[0], action[1:]
+                if prefix == "time" and action[:1] == ["-p"]:
+                    action = action[1:]
+            asynchronous = action[:1] == ["coproc"]
+            if asynchronous:
+                action = action[1:]
+            # Only shell builtins execute in this scope. A command query
+            # and process launchers such as env cannot terminate it.
+            builtin_action = action[:1] in (["builtin"], ["command"])
+            dispatch = {"builtin_only": False, "standard_path": False,
+                        "path_assignment": path_assignment}
+            while action[:1] in (["builtin"], ["command"]):
+                wrapper, action = action[0], action[1:]
+                dispatch["builtin_only"], dispatch["standard_path"] = wrapper == "builtin", False
+                while action and action[0].startswith("-"):
+                    option = action[0]
+                    if option == "--":
+                        action = action[1:]
+                        break
+                    if wrapper == "command" and len(option) > 1 and set(option[1:]) <= {"p", "v", "V"}:
+                        dispatch["standard_path"] |= "p" in option[1:]
+                        action = [] if set(option[1:]) & {"v", "V"} else action[1:]
+                    else:
+                        break
+            return action, builtin_action, asynchronous, dispatch
+
+        def hash_changes(action):
+            if action[:1] != ["hash"]:
+                return ()
+            cursor, flags, path = 1, set(), None
+            while cursor < len(action) and action[cursor].startswith("-"):
+                word = action[cursor]
+                cursor += 1
+                if word == "--":
+                    break
+                for offset, flag in enumerate(word[1:], 1):
+                    if flag not in "dlprt":
+                        return ()
+                    flags.add(flag)
+                    if flag == "p":
+                        path = word[offset + 1:] or (action[cursor] if cursor < len(action) else None)
+                        cursor += not word[offset + 1:] and cursor < len(action)
+                        break
+            names = [word for word in action[cursor:] if "/" not in word]
+            if (path is not None or flags & {"d", "t"}) and not action[cursor:]:
+                return ()
+            changes = [("reset", (), None)] if "r" in flags else []
+            if "t" in flags:
+                return tuple(changes)
+            if path is not None:
+                changes.append(("set", tuple(names), path))
+            elif names:
+                changes.append(("forget", tuple(names), None))
+            return tuple(changes)
+
         def implied_success(nodes, inherited=frozenset(), parent=None):
             implied, previous, list_success, list_status = set(inherited), "", set(inherited), None
             for node in nodes:
@@ -2479,23 +2541,18 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                 while words and words[0] in {"if", "then", "else", "elif", "do", "while", "until"}:
                     words = words[1:]
                 positive = set() if words[:1] == ["!"] else {node["index"]}
-                action = words
-                while action and (action[0] == "!" or re.match(r"[A-Za-z_]\w*=", action[0])):
-                    action = action[1:]
-                # Only shell builtins execute in this scope. A command query
-                # and process launchers such as env cannot terminate it.
-                builtin_action = action[:1] in (["builtin"], ["command"])
-                while action[:1] in (["builtin"], ["command"]):
-                    wrapper, action = action[0], action[1:]
-                    while action and action[0].startswith("-"):
-                        option = action[0]
-                        if option == "--":
-                            action = action[1:]
-                            break
-                        if wrapper == "command" and len(option) > 1 and set(option[1:]) <= {"p", "v", "V"}:
-                            action = [] if set(option[1:]) & {"v", "V"} else action[1:]
-                        else:
-                            break
+                action, builtin_action, asynchronous, dispatch = command_action(words)
+                opaque_emulate = False
+                while action[:1] == ["emulate"]:
+                    bodies = list(executor_commands(action))
+                    opaque_emulate |= bool(bodies)
+                    child = foreground_shell_argv(bodies[0]) if len(bodies) == 1 else None
+                    if child is None:
+                        break
+                    action, builtin_action, child_async, dispatch = command_action(child)
+                    asynchronous |= child_async
+                if asynchronous:
+                    positive = set()
                 terminates = ("exit" if action[:1] in (["exit"], ["logout"], ["bye"]) else
                               "return" if action[:1] == ["return"] else None)
                 if action[:1] == ["exec"] and unwrapped_command(action):
@@ -2508,10 +2565,21 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                     trap = trap[1:]
                 installation = (len(trap) >= 2 and trap[0] not in {"-", ""}
                                 and (explicit_action or not trap[0].startswith("-")))
-                opaque_context = bool(action[:1] in (["eval"], ["source"], ["."]) and len(action) > 1)
+                opaque_context = bool(action[:1] in (["eval"], ["source"], ["."]) and len(action) > 1
+                                      or opaque_emulate)
+                flags, operands = set(), list(action[1:])
+                while operands and operands[0].startswith("-"):
+                    flag = operands.pop(0)
+                    if flag == "--":
+                        break
+                    flags.update(flag[1:])
+                removes = (operands if (action[:1] == ["unset"] and ("f" in flags or not flags)
+                           or action[:1] == ["unfunction"]
+                           or action[:1] in (["unhash"], ["disable"]) and "f" in flags) else [])
                 alias_installation = bool(action[:1] == ["alias"] and any("=" in word for word in action[1:]))
                 installation |= opaque_context or alias_installation
-                may_skip = opaque_context or alias_installation or installation and "DEBUG" in trap[1:]
+                signals = {signal.upper() for signal in trap[1:]}
+                may_skip = opaque_context or alias_installation or installation and "DEBUG" in signals
                 result = shell_literal_status(node["argv"])
                 if previous == "||":
                     if list_status is False:
@@ -2529,10 +2597,11 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                     list_success, list_status = entry | positive, result
                 success_facts[node["index"]] = {"entry": entry, "success": set(list_success),
                                                 "children": child_success, "parent": parent, "stop": node["stop"],
-                                                "subshell": node["child_scope"] == "(",
+                                                "subshell": node["child_scope"] == "(" or asynchronous,
                                                 "terminates": terminates, "overrides": installation, "builtin_action": builtin_action,
-                                                "definition": node["definition"], "pipeline": previous in {"|", "|&"}, "command": action[0] if action else None, "may_skip": may_skip,
-                                                "inherit_override": opaque_context or alias_installation or any(signal not in {"ERR", "ZERR"} for signal in trap[1:])}
+                                                "hash_changes": hash_changes(action), "builtin_change": (tuple(operands), "n" not in flags) if action[:1] == ["enable"] and not flags.intersection("adfps") else None,
+                                                "dispatch": dispatch, "removes": removes, "removal_patterns": "m" in flags, "definition": node["definition"], "pipeline": previous in {"|", "|&"}, "command": action[0] if action else None, "may_skip": may_skip,
+                                                "inherit_override": opaque_context or alias_installation or any(signal not in {"ERR", "ZERR"} for signal in signals)}
                 previous = node["separator"]
                 implied = set(list_success) if previous == "&&" else set(inherited)
             list_start = 0
@@ -2910,13 +2979,17 @@ def shell_code(text, *, writes=None, reads=None, replacements=None, effects=None
         grouped = {}
         for event in execution_events:
             if event["kind"] == "write":
-                key = (event["position"], event["path"])
+                # Keep shell redirections separate from effects of the
+                # resolved executable; a hash override changes only the latter.
+                key = (event["position"], event["path"], bool(event.get("command_effect")))
                 if key in grouped:
                     grouped[key]["contents"] += tuple(event["contents"])
                 else:
                     grouped[key] = dict(event, contents=tuple(event["contents"]))
         ordered = sorted([*grouped.values(), *(event for event in execution_events if event["kind"] == "read")],
-                         key=lambda event: (event["position"], event["kind"] != "write"))
+                         # Redirections open before the command mutates its operands.
+                         key=lambda event: (event["position"], event["kind"] != "write",
+                                            bool(event.get("command_effect"))))
         effects.extend(shell_effect_order(tokens, ordered, success_facts=success_facts))
     for identifier, language in languages.items():
         if language:
@@ -3066,7 +3139,15 @@ def shell_effect_order(tokens, events, *, success_facts=None):
             if event["kind"] == "write":
                 event = dict(event, _replace_success=event["replaces"])
             by_position.setdefault(event["position"], []).append(event)
-    functions = {}
+    functions, hashes, builtin_states = {}, {}, {}
+    # GNU Bash implemented default builtins, not help-only grammar keywords:
+    # https://www.gnu.org/software/bash/manual/html_node/Bash-Builtins.html
+    # Optional/custom builds and dynamically loaded builtins are not inferred.
+    bash_builtins = frozenset(""". : [ alias bg bind break builtin caller cd command
+        compgen complete compopt continue declare dirs disown echo enable eval exec exit
+        export false fc fg getopts hash help history jobs kill let local logout mapfile
+        popd printf pushd pwd read readarray readonly return set shift shopt source
+        suspend test times trap true type typeset ulimit umask unalias unset wait""".split())
     success_links = {position: facts["children"] for position, facts in success_facts.items()
                      if isinstance(position, int) and facts.get("children")}
     success_links["end"] = end_success
@@ -3130,6 +3211,16 @@ def shell_effect_order(tokens, events, *, success_facts=None):
         for target in targets:
             alternatives.setdefault(target, []).append(frozenset(implied))
 
+    def visible_binding(name, scopes, table=None, default=None):
+        table = functions if table is None else table
+        default = ([], False) if default is None else default
+        for scope in reversed(scopes):
+            if scope != "end" and not success_facts.get(scope, {}).get("subshell"):
+                continue
+            if (name, scope) in table:
+                return table[name, scope]
+        return default
+
     def walk(begin, end, active=(), in_loop=False, definite=True, inherited=frozenset(),
              scope_entry=frozenset(), scope_prefix=("end",), boundary=None):
         index = begin
@@ -3149,7 +3240,7 @@ def shell_effect_order(tokens, events, *, success_facts=None):
                 name, start, stop = definitions[index]
                 if guards[index] is not False:
                     binding = (parsed_owner(index), start, stop)
-                    old, certain = functions.get((name, process), ([], False))
+                    old, certain = visible_binding(name, scopes)
                     functions[name, process] = (([binding], True) if definite is True and guards[index] is True and certain_scope else
                                                 ([*old, binding], certain))
                     if name in automatic_traps:
@@ -3198,16 +3289,7 @@ def shell_effect_order(tokens, events, *, success_facts=None):
                 continue
             facts = success_facts.get(index, {})
             called = facts.get("command") if not facts.get("builtin_action") else None
-            possible, certain = [], False
-            if called is not None:
-                for scope in reversed(scopes):
-                    if scope != "end" and not success_facts.get(scope, {}).get("subshell"):
-                        continue
-                    bindings, definite_binding = functions.get((called, scope), ([], False))
-                    possible.extend(bindings)
-                    if definite_binding:
-                        certain = True
-                        break
+            possible, certain = visible_binding(called, scopes) if called is not None else ([], False)
             if possible and active.count(called) < 2:
                 body_guarantees = []
                 function_calls.add(index)
@@ -3222,6 +3304,49 @@ def shell_effect_order(tokens, events, *, success_facts=None):
                                     scope_prefix=(*scopes, index), boundary=definition)
                 success_links[index] = set.intersection(*body_guarantees) if certain else set()
             if not certain:
+                dispatch = facts.get("dispatch", {})
+                exact = definite is True and guards[index] is True and certain_scope and not possible
+                command = facts.get("command")
+                available = visible_binding(command, scopes, builtin_states, frozenset({command in bash_builtins}))
+                builtin_possible = True in available
+                if current and dispatch.get("path_assignment") and command is None and exact:
+                    for name in {name for name, _ in hashes}:
+                        hashes[name, process] = (frozenset(), False)
+                if current and builtin_possible:
+                    for operation, names, path in facts.get("hash_changes", ()):
+                        names = {name for name, _ in hashes} if operation == "reset" else names
+                        for name in names:
+                            previous, was_certain = visible_binding(name, scopes, hashes, (frozenset(), False))
+                            changed = frozenset({path}) if operation == "set" else frozenset()
+                            hashes[name, process] = ((changed, operation == "set") if exact and available == {True}
+                                                     else (previous | changed, was_certain and operation == "set"))
+                    if facts.get("builtin_change"):
+                        names, enabled = facts["builtin_change"]
+                        for name in names:
+                            # enable cannot create an unknown builtin; dynamic
+                            # loading requires a separately unsupported -f form.
+                            if name not in bash_builtins:
+                                continue
+                            previous = visible_binding(name, scopes, builtin_states, frozenset({name in bash_builtins}))
+                            changed = frozenset({enabled})
+                            builtin_states[name, process] = changed if exact and available == {True} else previous | changed
+                if (current and not dispatch.get("builtin_only") and not dispatch.get("standard_path")
+                        and not dispatch.get("path_assignment") and False in available):
+                    paths, hashed = visible_binding(command, scopes, hashes, (frozenset(), False))
+                    if paths:
+                        if hashed and available == {False}:
+                            current = tuple(event for event in current if not event.get("command_effect"))
+                        else:
+                            current = tuple(dict(event, replaces=False, _replace_success=False)
+                                            if event["kind"] == "write" and event.get("command_effect") else event for event in current)
+                        current = (*current, {"kind": "read", "position": index, "paths": sorted(paths)})
+                if current and facts.get("removes"):
+                    for name in {name for name, _ in functions}:
+                        if any(re.search(r"[$`]", operand) or (pattern_matches(operand, name) is not False
+                               if facts.get("removal_patterns") else operand == name)
+                               for operand in facts["removes"]):
+                            bindings, _ = visible_binding(name, scopes)
+                            functions[name, process] = (list(bindings), False)
                 if current and facts.get("terminates"):
                     alternate_endpoint(scopes, implied, termination=facts["terminates"])
                 if current and facts.get("overrides"):
@@ -3456,6 +3581,15 @@ def executor_commands(argv):
             if body is not None:
                 yield body
         return
+    if name == "emulate":
+        mode = next((index for index, word in enumerate(argv[1:], 1) if not word.startswith("-")), len(argv))
+        # -l queries and -L is incompatible with code execution. Only -R may
+        # precede the mode; invocation flags, including clustered -c, follow it.
+        if mode < len(argv) and all(re.fullmatch(r"-R+", word) for word in argv[1:mode]):
+            body = shell_c_body(["zsh", *argv[mode + 1:]])
+            if body is not None:
+                yield body
+        return
     value_options = {
         "sudo": {"-u", "--user", "-g", "--group", "-h", "--host", "-p", "--prompt", "-C", "--close-from", "-R", "--chroot", "-D", "--chdir", "-r", "--role", "-t", "--type"},
         "doas": {"-u", "-C"},
@@ -3575,12 +3709,16 @@ def shell_expansions(text, *, heredoc=False):
         cursor += 1
 
 
-def unwrapped_command(argv, *, unwrap_code=True):
+def unwrapped_command(argv, *, unwrap_code=True, stop_at=()):
     """Transparent process wrappers change execution, never operand meaning."""
     argv = list(argv)
     while argv:
         name = Path(argv[0]).name
-        if re.match(r"[A-Za-z_]\w*=", argv[0]) or name in {"if", "elif", "while", "until", "!", "{", "(", "do", "then", "else", "builtin"}:
+        if name in stop_at:
+            break
+        if name == "coproc" and len(argv) > 2 and argv[2] in {"{", "(", "if", "for", "while", "until", "case"}:
+            argv = argv[2:]
+        elif re.match(r"[A-Za-z_]\w*=", argv[0]) or name in {"if", "elif", "while", "until", "!", "{", "(", "do", "then", "else", "builtin", "noglob", "nocorrect", "coproc"}:
             argv = argv[1:]
         elif name in {"command", "exec", "nohup", "time", "env", "timeout", "nice", "stdbuf"}:
             argv = argv[1:]
@@ -3612,6 +3750,12 @@ def unwrapped_command(argv, *, unwrap_code=True):
             # uv's '-' is Python stdin even behind env/assignment wrappers.
             # Preserve that execution mode while normalizing the launcher.
             argv = ["python", *child] if child[:1] == ["-"] else child
+        elif unwrap_code and name == "emulate":
+            bodies = list(executor_commands(argv))
+            child = foreground_shell_argv(bodies[0]) if len(bodies) == 1 else None
+            if child is None:
+                break
+            argv = child
         elif unwrap_code and (((body := shell_c_body(argv)) is not None and (child := foreground_shell_argv(body)))
               or (re.fullmatch(r"python[0-9.]*", name) and len(argv) == 3 and argv[1] == "-c"
                   and (child := foreground_python_argv(argv[2])))):
@@ -8210,6 +8354,11 @@ def execution_targets(argv):
     if not child:
         return []
     name = Path(child[0]).name
+    if name == "emulate":
+        return [path for body in executor_commands(child)
+                for command in shell_commands("exec_command", {"cmd": body}) for path in execution_targets(command)]
+    if name == "hash":
+        return []  # Installing or querying a binding does not run its target.
     interprets = child[0] == "." or name in {"bash", "sh", "zsh", "dash", "ksh", "source"} or re.fullmatch(r"python[0-9.]*", name)
     if interprets:
         if any(option == "-m" or option.startswith("-") and "c" in option for option in child[1:]):
@@ -9056,7 +9205,8 @@ def bound_outputs(records, harness, predicate, *, receipts=None, isolated_polls=
                     try:
                         lexer = shell_lexer(shell_code(command), posix=False)
                         lexer.whitespace_split = True
-                        if "&" in list(lexer):
+                        if ("&" in list(lexer) or any(unwrapped_command(argv, stop_at={"coproc"})[:1] == ["coproc"]
+                                for argv in shell_commands("exec_command", {"cmd": command}))):
                             opaque.add(source)
                     except ValueError:
                         opaque.add(source)
