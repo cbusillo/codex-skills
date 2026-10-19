@@ -875,6 +875,66 @@ def stream_argv(argv):
     return child
 
 
+def source_mutation_paths(argv):
+    """Names changed by concrete file-copy or worktree-restore commands."""
+    child = unwrapped_command(argv)
+    if not child or any(word in {"--help", "--version"} for word in child[1:]):
+        return []
+    name, words = Path(child[0]).name, child[1:]
+    if name in {"cp", "mv", "install"}:
+        operands, target, cursor = [], None, 0
+        while cursor < len(words):
+            word = words[cursor]
+            if word in {"-t", "--target-directory"} and cursor + 1 < len(words):
+                target, cursor = words[cursor + 1], cursor + 2
+                continue
+            if word.startswith("--target-directory="):
+                target = word.partition("=")[2]
+            elif word == "--":
+                operands.extend(words[cursor + 1:])
+                break
+            elif not word.startswith("-"):
+                operands.append(word)
+            cursor += 1
+        if target is not None:
+            return [posixpath.join(target, posixpath.basename(path)) for path in operands]
+        if len(operands) >= 2:
+            destination = operands[-1]
+            return [destination, *(posixpath.join(destination, posixpath.basename(path)) for path in operands[:-1])]
+    if name == "git":
+        directory = ""
+        while words and words[0].startswith("-"):
+            option = words.pop(0)
+            if option in {"-C", "-c", "--git-dir", "--work-tree"} and words:
+                value = words.pop(0)
+                if option == "-C":
+                    directory = posixpath.join(directory, value)
+        if not words:
+            return []
+        operation, words = words[0], words[1:]
+        if operation == "checkout" and "--" in words:
+            return [posixpath.join(directory, path) for path in words[words.index("--") + 1:]]
+        short = {letter for word in words if word.startswith("-") and not word.startswith("--")
+                 for letter in word[1:]}
+        staged = "--staged" in words or "S" in short
+        worktree = "--worktree" in words or "W" in short
+        if operation == "restore" and not (staged and not worktree):
+            paths, cursor = [], 0
+            while cursor < len(words):
+                word = words[cursor]
+                if word == "--":
+                    paths.extend(words[cursor + 1:])
+                    break
+                if word in {"-s", "--source", "--pathspec-from-file"}:
+                    cursor += 2
+                    continue
+                if not word.startswith("-"):
+                    paths.append(word)
+                cursor += 1
+            return [posixpath.join(directory, path) for path in paths]
+    return []
+
+
 def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None, inline_inputs=None,
                       stream_sources=None, output_sources=None, execution_events=None, stdin_kinds=None):
     """Parse command descriptors once and carry each stdin source through groups.
@@ -1070,6 +1130,9 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                 child = stream_argv(node["argv"])
                 if execution_events is not None:
                     execution_events.append({"kind": "read", "position": node["index"], "paths": execution_targets(node["argv"])})
+                    execution_events.extend({"kind": "write", "position": node["index"], "path": path,
+                                             "contents": (), "replaces": False, "invalidates": True}
+                                            for path in source_mutation_paths(node["argv"]))
                 substitution_outputs = {}
                 for placeholder, (direction, commands) in node["substitutions"].items():
                     if direction == "<":
@@ -2181,7 +2244,7 @@ def foreground_python_argv(content):
 
 
 def python_ownership(content, *, partial=False):
-    """Follow actual Python launch operands through bounded reaching values."""
+    """Follow Python execution operands through bounded values and lexical scopes."""
     try:
         tree = ast.parse(textwrap.dedent(content))
     except SyntaxError:
@@ -2189,26 +2252,149 @@ def python_ownership(content, *, partial=False):
     launches = {"os.system", "os.popen", "subprocess.run", "subprocess.Popen", "subprocess.call",
                 "subprocess.check_call", "subprocess.check_output", "exec", "eval"}
     unknown = object()
-    computed = "$computed_operand"
-    overflow = "$computed_ownership_operand"
+    computed, overflow = "$computed_operand", "$computed_ownership_operand"
     found = False
-    active = []
-    invocation_cache = {}
+    active, invocation_cache = [], {}
     recursion_skips = 0
-    class_bindings = {}
-    method_owners = {}
+    class_bindings, expression_values = {}, {}
+    exit_callbacks = []
+
+    class Scope:
+        def __init__(self, parent=None, local_names=None, globals_=(), nonlocals=()):
+            self.parent, self.local_names, self.state = parent, local_names, {}
+            self.declarations = {}
+            for name in globals_:
+                owner = self
+                while owner.parent is not None:
+                    owner = owner.parent
+                self.declarations[name] = owner
+            for name in nonlocals:
+                owner = parent
+                while owner is not None:
+                    if owner.local_names is not None and name in owner.local_names:
+                        self.declarations[name] = owner
+                        break
+                    owner = owner.parent
+
+        def get(self, name, default=None):
+            if name in self.declarations:
+                return self.declarations[name].get(name, default)
+            if name in self.state:
+                return self.state[name]
+            if self.local_names is not None and name in self.local_names:
+                return default
+            return self.parent.get(name, default) if self.parent is not None else default
+
+        def __setitem__(self, name, assigned):
+            self.declarations.get(name, self).state[name] = assigned
+
+    class Function:
+        def __init__(self, node, scope):
+            self.node, self.scope = node, scope
+            parameters = [*node.args.posonlyargs, *node.args.args]
+            self.defaults = {parameter.arg: value(default, scope) for parameter, default in zip(parameters[-len(node.args.defaults):], node.args.defaults)} if node.args.defaults else {}
+            self.defaults.update({parameter.arg: value(default, scope) for parameter, default in zip(node.args.kwonlyargs, node.args.kw_defaults) if default is not None})
+            loaded, local = set(), {parameter.arg for parameter in (*parameters, *node.args.kwonlyargs)}
+            local.update(parameter.arg for parameter in (node.args.vararg, node.args.kwarg) if parameter is not None)
+            self.globals, self.nonlocals = set(), set()
+            def names(item):
+                if isinstance(item, (ast.Global, ast.Nonlocal)):
+                    (self.globals if isinstance(item, ast.Global) else self.nonlocals).update(item.names)
+                    return
+                if isinstance(item, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+                    for generator in item.generators:
+                        names(generator.iter)
+                        for condition in generator.ifs:
+                            names(condition)
+                    if isinstance(item, ast.DictComp):
+                        names(item.key)
+                        names(item.value)
+                    else:
+                        names(item.elt)
+                    return
+                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and item is not node:
+                    local.add(item.name)
+                    return
+                if isinstance(item, ast.Lambda) and item is not node:
+                    return
+                if isinstance(item, ast.Name):
+                    (loaded if isinstance(item.ctx, ast.Load) else local).add(item.id)
+                if isinstance(item, (ast.Import, ast.ImportFrom)):
+                    local.update(alias.asname or (alias.name.split('.')[0] if isinstance(item, ast.Import) else alias.name) for alias in item.names)
+                for child in ast.iter_child_nodes(item):
+                    names(child)
+            names(node)
+            self.locals = local - self.globals - self.nonlocals
+            self.free = loaded - self.locals
+
+    class Bound:
+        def __init__(self, function, receiver):
+            self.function, self.receiver = function, receiver
+
+    class Instance:
+        def __init__(self, kind):
+            self.kind, self.attributes = kind, {}
+
+    class Partial:
+        def __init__(self, functions, arguments, keywords):
+            self.functions, self.arguments, self.keywords = functions, arguments, keywords
+
+    class Registry:
+        def __init__(self):
+            self.handlers = []
+
+    class Deferred:
+        def __init__(self, callback):
+            self.callback = callback
+
+    class Keywords:
+        def __init__(self, items):
+            self.items = items
+
+    class Generator:
+        def __init__(self, node, scope):
+            self.node, self.scope = node, scope
 
     def same(left, right):
         if isinstance(left, ast.alias) and isinstance(right, ast.alias):
             return left.name == right.name
         return left == right
 
+    def executable_value(item):
+        if isinstance(item, (list, tuple)):
+            argv = [word if isinstance(word, str) else computed for word in item]
+            text = shlex.join(argv)
+            return ownership_command(unwrapped_command(argv)) or opaque_ownership("exec_command", {"cmd": text}) or overflow_execution(text)
+        return isinstance(item, str) and (executable_content(item) or opaque_ownership("exec_command", {"cmd": item}) or overflow_execution(item))
+
+    def helper_witness(item):
+        if isinstance(item, str):
+            commands = list(shell_commands("exec_command", {"cmd": item}))
+            if len(commands) != 1:
+                return None
+            argv = commands[0]
+        elif isinstance(item, (list, tuple)) and all(isinstance(word, str) for word in item):
+            argv = item
+        else:
+            return None
+        name, action = helper_action(argv)
+        if name not in {"gh-plan.py", "gh-pr.py", "gh"}:
+            return None
+        if not action:
+            return name, None
+        if name == "gh":
+            return None
+        parser = helper_parser(name)
+        verbs = {verb for option in parser._actions if isinstance(option, argparse._SubParsersAction) for verb in option.choices}
+        flags = {flag for option in parser._actions for flag in option.option_strings}
+        return (name, action[0]) if action[0] in verbs | flags else None
+
     def widen(items):
-        """Keep known argument positions when alternatives exceed the bound."""
         if all(same(item, items[0]) for item in items):
             return items[0]
         if all(isinstance(item, (list, tuple)) for item in items) and len({len(item) for item in items}) == 1:
             return [widen(list(column)) for column in zip(*items)]
+        marker = overflow if any(executable_value(item) for item in items) else computed
         if all(isinstance(item, str) for item in items):
             prefix = ""
             for column in zip(*items):
@@ -2220,17 +2406,32 @@ def python_ownership(content, *, partial=False):
                 if len(set(column)) != 1:
                     break
                 suffix = column[0] + suffix
-            return prefix + overflow + suffix
-        return overflow
+            return prefix + marker + suffix
+        return marker
 
     def choices(items):
         unique = []
         for item in items:
             if not any(same(item, prior) for prior in unique):
                 unique.append(item)
-        # Callable and import identities are already bounded by this AST. Do
-        # not lose a later callback or import while bounding composed text.
-        return tuple(unique) if len(unique) <= 8 or any(isinstance(item, ast.AST) for item in unique) else (*unique[:7], widen(unique))
+        if len(unique) <= 8 or any(isinstance(item, (ast.AST, Function, Bound, Instance, Partial, Registry, Deferred, Keywords, Generator)) for item in unique):
+            return tuple(unique)
+        # Keep canonical helper/action witnesses concrete. Widening known
+        # read-only actions would invent a dynamic action and a false refusal.
+        witnesses, remaining = {}, []
+        for item in unique:
+            witness = helper_witness(item)
+            if witness is None:
+                remaining.append(item)
+            else:
+                witnesses.setdefault(witness, item)
+        result = list(unique[:7])
+        for item in witnesses.values():
+            if not any(same(item, prior) for prior in result):
+                result.append(item)
+        if remaining:
+            result.append(widen(remaining))
+        return tuple(result)
 
     def combinations(parts):
         rows = [()]
@@ -2238,52 +2439,149 @@ def python_ownership(content, *, partial=False):
             rows = list(choices([list(row) + [item] for row in rows for item in part]))
         return rows
 
-    def function_names(node, bindings):
+    def function_names(node, scope):
         if isinstance(node, ast.Name):
-            bound = bindings.get(node.id)
+            bound = scope.get(node.id)
             return {item.name for item in bound if isinstance(item, ast.alias)} if bound else {node.id}
         if isinstance(node, ast.Attribute):
-            return {parent + "." + node.attr for parent in function_names(node.value, bindings)}
+            return {parent + "." + node.attr for parent in function_names(node.value, scope)}
         if isinstance(node, ast.Call):
-            return function_names(node.func, bindings)
+            return function_names(node.func, scope)
         return set()
 
-    def value(node, bindings):
+    def member(owner, name):
+        if isinstance(owner, Instance) and name in owner.attributes:
+            return owner.attributes[name]
+        kind = owner.kind if isinstance(owner, Instance) else owner
+        result = []
+        for item in class_bindings.get(id(kind), {}).get(name, ()):
+            if isinstance(item, Function):
+                decorators = {ast.unparse(decorator).split('(')[0] for decorator in item.node.decorator_list}
+                if "classmethod" in decorators:
+                    item = Bound(item, kind)
+                elif "staticmethod" not in decorators and isinstance(owner, Instance):
+                    item = Bound(item, owner)
+            result.append(item)
+        return choices(result)
+
+    def comprehension(node, scope):
+        local = Scope(scope)
+        for generator in node.generators:
+            scan(generator.iter, local)
+            items = iterated(generator.iter, local)
+            if not items:
+                return None
+            bind(generator.target, items, local)
+            for condition in generator.ifs:
+                scan(condition, local)
+                if isinstance(condition, ast.Constant) and not condition.value:
+                    return None
+        return local
+
+    def iterated(node, scope):
+        if isinstance(node, ast.GeneratorExp):
+            local = comprehension(node, scope)
+            if local is None:
+                return ()
+            scan(node.elt, local)
+            return value(node.elt, local)
+        result = []
+        for sequence in value(node, scope):
+            if isinstance(sequence, Generator):
+                result.extend(iterated(sequence.node, sequence.scope))
+            elif isinstance(sequence, (list, tuple)):
+                result.extend(sequence)
+            elif isinstance(sequence, Keywords):
+                result.extend(sequence.items)
+            else:
+                result.append(unknown)
+        return choices(result)
+
+    def value(node, scope):
         if isinstance(node, ast.Name):
-            return bindings.get(node.id, (unknown,))
+            return scope.get(node.id, (unknown,))
         if isinstance(node, ast.Constant):
             return (node.value,)
-        if isinstance(node, ast.Attribute):
-            resolved = [ast.alias(name=name) for name in function_names(node, bindings) if name in launches]
-            for owner in value(node.value, bindings):
-                if isinstance(owner, ast.ClassDef):
-                    resolved.extend(class_bindings.get(id(owner), {}).get(node.attr, ()))
+        if isinstance(node, ast.Dict):
+            items = {}
+            for key, expression in zip(node.keys, node.values):
+                if key is None:
+                    for mapping in value(expression, scope):
+                        if isinstance(mapping, Keywords):
+                            items.update(mapping.items)
+                else:
+                    for literal in value(key, scope):
+                        if isinstance(literal, (str, int)):
+                            items[literal] = value(expression, scope)
+            return (Keywords(items),)
+        if isinstance(node, ast.Subscript):
+            resolved = []
+            for container in value(node.value, scope):
+                for key in value(node.slice, scope):
+                    if isinstance(container, Keywords) and isinstance(key, (str, int)):
+                        resolved.extend(container.items.get(key, (unknown,)))
+                    elif isinstance(container, (list, tuple)) and isinstance(key, int) and -len(container) <= key < len(container):
+                        resolved.append(container[key])
             return choices(resolved) or (unknown,)
+        if isinstance(node, ast.Attribute):
+            resolved = [ast.alias(name=name) for name in function_names(node, scope) if name in launches]
+            for owner in value(node.value, scope):
+                if isinstance(owner, Deferred) and node.attr == "start":
+                    resolved.append(owner.callback)
+                resolved.extend(member(owner, node.attr))
+            return choices(resolved) or (unknown,)
+        if isinstance(node, ast.Lambda):
+            return (Function(node, scope),)
+        if isinstance(node, ast.GeneratorExp):
+            return (Generator(node, scope),)
+        if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp)):
+            local = comprehension(node, scope)
+            if local is None:
+                return ([],)
+            return (list(value(node.key if isinstance(node, ast.DictComp) else node.elt, local)),)
         if isinstance(node, ast.JoinedStr):
-            return choices("".join(part if isinstance(part, str) else computed for part in row)
-                           for row in combinations([value(part, bindings) for part in node.values]))
+            rendered = ("",)
+            for part in node.values:
+                rendered = choices(first + (second if isinstance(second, str) else computed) for first in rendered for second in value(part, scope))
+            return rendered
         if isinstance(node, ast.FormattedValue):
             rendered = []
-            for literal, spec in combinations([value(node.value, bindings), value(node.format_spec, bindings) if node.format_spec else ("",)]):
-                if not isinstance(literal, (str, int, float, bool)) or not isinstance(spec, str):
-                    rendered.append(computed)
-                    continue
-                converted = {ord("r"): repr, ord("s"): str, ord("a"): ascii}.get(node.conversion, lambda item: item)(literal)
-                try:
-                    rendered.append(format(converted, spec))
-                except (ValueError, TypeError):
-                    rendered.append(computed)
+            specs = value(node.format_spec, scope) if node.format_spec else ("",)
+            for literal in value(node.value, scope):
+                for spec in specs:
+                    if not isinstance(literal, (str, int, float, bool)) or not isinstance(spec, str):
+                        rendered.append(computed)
+                        continue
+                    converted = {ord("r"): repr, ord("s"): str, ord("a"): ascii}.get(node.conversion, lambda item: item)(literal)
+                    try:
+                        rendered.append(format(converted, spec))
+                    except (ValueError, TypeError):
+                        rendered.append(computed)
             return choices(rendered)
         if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
-            return choices(combinations([value(element, bindings) for element in node.elts]))
+            return choices(combinations([value(element, scope) for element in node.elts]))
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-            return add(value(node.left, bindings), value(node.right, bindings))
+            return add(value(node.left, scope), value(node.right, scope))
         if isinstance(node, ast.IfExp):
-            return choices((*value(node.body, bindings), *value(node.orelse, bindings)))
+            return choices((*value(node.body, scope), *value(node.orelse, scope)))
         if isinstance(node, ast.Call):
-            names = function_names(node.func, bindings)
+            cached = expression_values.get((id(scope), id(node)))
+            if cached is not None:
+                return cached
+            names = function_names(node.func, scope)
+            if names & {"threading.Thread", "multiprocessing.Process", "threading.Timer"}:
+                target = node.args[1] if len(node.args) > 1 else next((keyword.value for keyword in node.keywords if keyword.arg in {"target", "function"}), None)
+                position = 2 if "threading.Timer" in names else 3
+                args = node.args[position] if len(node.args) > position else next((keyword.value for keyword in node.keywords if keyword.arg == "args"), None)
+                kwarg_node = node.args[position + 1] if len(node.args) > position + 1 else next((keyword.value for keyword in node.keywords if keyword.arg == "kwargs"), None)
+                sequences = value(args, scope) if args is not None else ([],)
+                assigned = [choices(sequence[index] for sequence in sequences if isinstance(sequence, (list, tuple)) and index < len(sequence)) for index in range(max((len(sequence) for sequence in sequences if isinstance(sequence, (list, tuple))), default=0))]
+                callbacks = value(target, scope) if target is not None else (unknown,)
+                result = (Deferred(Partial(callbacks, assigned, keyword_mapping(kwarg_node, scope))),)
+                expression_values[id(scope), id(node)] = result
+                return result
             if len(node.args) == 1 and not node.keywords:
-                arguments = value(node.args[0], bindings)
+                arguments = value(node.args[0], scope)
                 if names & {"shlex.quote", "str", "repr", "ascii"}:
                     operation = shlex.quote if "shlex.quote" in names else repr if "repr" in names else ascii if "ascii" in names else str
                     return choices(operation(item if isinstance(item, (str, int, float, bool)) else computed) for item in arguments)
@@ -2295,38 +2593,55 @@ def python_ownership(content, *, partial=False):
                         except ValueError:
                             split.append(unknown)
                     return choices(split)
-            classes = [item for item in value(node.func, bindings) if isinstance(item, ast.ClassDef)]
-            if classes:
-                return choices(classes)
-            constructors = {name for name in names if name in {
-                "concurrent.futures.ThreadPoolExecutor", "concurrent.futures.ProcessPoolExecutor"}}
+                if names & {"list", "tuple", "set", "next"}:
+                    items = iterated(node.args[0], scope)
+                    return items if "next" in names else (list(items),)
+            if names & {"functools.partial"} and node.args:
+                result = (Partial(value(node.args[0], scope), expanded_arguments(node.args[1:], scope), call_keywords(node.keywords, scope)),)
+                expression_values[id(scope), id(node)] = result
+                return result
+            if "typer.Typer" in names:
+                result = (Registry(),)
+                expression_values[id(scope), id(node)] = result
+                return result
+            instances = []
+            for kind in value(node.func, scope):
+                if isinstance(kind, ast.ClassDef):
+                    instance = Instance(kind)
+                    for initializer in member(instance, "__init__"):
+                        invoke(initializer, scope, node.args, node.keywords)
+                    instances.append(instance)
+            if instances:
+                result = choices(instances)
+                expression_values[id(scope), id(node)] = result
+                return result
+            constructors = {name for name in names if name in {"concurrent.futures.ThreadPoolExecutor", "concurrent.futures.ProcessPoolExecutor", "multiprocessing.Pool", "multiprocessing.pool.ThreadPool"}}
             if constructors:
                 return choices(ast.alias(name=name) for name in constructors)
-        # An unsupported transformation of potentially executable text is an
-        # opaque result, not a standalone execution of its input. Its eventual
-        # command/argument position below decides whether it can own anything.
+        # Unknown transforms retain uncertainty in their eventual operand
+        # position; ownership-shaped input is never executed on its own.
         def possible_code(item):
-            if isinstance(item, (list, tuple)):
-                return any(possible_code(child) for child in item)
-            return isinstance(item, str) and (overflow in item or executable_content(item)
-                                               or opaque_ownership("exec_command", {"cmd": item}))
-        if any(possible_code(item) for child in ast.iter_child_nodes(node) for item in value(child, bindings)):
+            if isinstance(item, Keywords):
+                return any(possible_code(assigned) for assigned in item.items.values())
+            return any(possible_code(child) for child in item) if isinstance(item, (list, tuple)) else isinstance(item, str) and (overflow in item or executable_content(item) or opaque_ownership("exec_command", {"cmd": item}))
+        if node is not None and any(possible_code(item) for child in ast.iter_child_nodes(node) for item in value(child, scope)):
             return (overflow,)
         return (unknown,)
 
     def add(left, right):
         result = []
-        for first, second in combinations([left, right]):
-            if isinstance(first, str) and second is unknown:
-                second = computed
-            if isinstance(second, str) and first is unknown:
-                first = computed
-            result.append(first + second if isinstance(first, (str, list, tuple)) and type(first) is type(second) else unknown)
+        # Apply the operation before bounding its results. Bounding pairs first
+        # loses the executable identity of a later helper argv prefix.
+        for first in left:
+            for second in right:
+                if isinstance(first, str) and second is unknown:
+                    second = computed
+                if isinstance(second, str) and first is unknown:
+                    first = computed
+                result.append(first + second if isinstance(first, (str, list, tuple)) and type(first) is type(second) else unknown)
         return choices(result)
 
     def overflow_execution(command):
-        # Widening is uncertainty only in executable positions. A body/message
-        # or an echo argument cannot become a command just by losing a value.
         if overflow not in command:
             return False
         for argv in shell_commands("exec_command", {"cmd": command}):
@@ -2341,167 +2656,304 @@ def python_ownership(content, *, partial=False):
                 return True
         return False
 
-    def invoke(wrapper, bindings, arguments=(), keywords=()):
+    def binding_key(item, seen=()):
+        if isinstance(item, Function):
+            if id(item) in seen:
+                return ("recursive", id(item.node))
+            return ("function", id(item.node), tuple(sorted((name, binding_key(item.scope.get(name, (unknown,)), (*seen, id(item)))) for name in item.free)))
+        if isinstance(item, Bound):
+            return (binding_key(item.function, seen), binding_key(item.receiver, seen))
+        if isinstance(item, Instance):
+            if id(item) in seen:
+                return ("instance", id(item))
+            return ("instance", id(item), tuple(sorted((name, binding_key(assigned, (*seen, id(item)))) for name, assigned in item.attributes.items())))
+        if isinstance(item, Registry):
+            return ("registry", id(item), binding_key(item.handlers, seen))
+        if isinstance(item, Partial):
+            return ("partial", binding_key(item.functions, seen), binding_key(item.arguments, seen), tuple(sorted((name, binding_key(assigned, seen)) for name, assigned in item.keywords.items())))
+        if isinstance(item, Keywords):
+            return ("mapping", tuple(sorted((str(name), binding_key(assigned, seen)) for name, assigned in item.items.items())))
+        if isinstance(item, ast.alias):
+            return ("alias", item.name)
+        if isinstance(item, ast.AST):
+            return ("node", id(item))
+        if isinstance(item, (list, tuple)):
+            return tuple(binding_key(child, seen) for child in item)
+        return (type(item).__name__, repr(item))
+
+    def keyword_mapping(node, scope):
+        result = {}
+        if node is not None:
+            for mapping in value(node, scope):
+                if isinstance(mapping, Keywords):
+                    for name, assigned in mapping.items.items():
+                        if isinstance(name, str):
+                            result[name] = choices((*result.get(name, ()), *assigned))
+        return result
+
+    def call_keywords(keywords, scope):
+        result = {}
+        for keyword in keywords:
+            if keyword.arg is None:
+                result.update(keyword_mapping(keyword.value, scope))
+            else:
+                result[keyword.arg] = value(keyword.value, scope)
+        return result
+
+    def expanded_arguments(arguments, scope):
+        result = []
+        for argument in arguments:
+            if isinstance(argument, ast.Starred):
+                sequences = value(argument.value, scope)
+                length = max((len(sequence) for sequence in sequences if isinstance(sequence, (list, tuple))), default=0)
+                for index in range(length):
+                    result.append(choices(sequence[index] if isinstance(sequence, (list, tuple)) and index < len(sequence) else unknown for sequence in sequences))
+            else:
+                result.append(value(argument, scope))
+        return result
+
+    def effectful(item, seen=()):
+        if isinstance(item, Function):
+            if id(item) in seen:
+                return False
+            if any(isinstance(node, (ast.Global, ast.Nonlocal))
+                   or isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Store)
+                   or isinstance(node, ast.Call) and function_names(node.func, item.scope) & {"atexit.register", "atexit.unregister"}
+                   for node in ast.walk(item.node)):
+                return True
+            return any(effectful(assigned, (*seen, id(item))) for name in item.free for assigned in item.scope.get(name, ()))
+        if isinstance(item, (Bound, Instance, Registry, Deferred, ast.ClassDef)):
+            return True
+        if isinstance(item, Partial):
+            return any(effectful(function, seen) for function in item.functions)
+        if isinstance(item, (list, tuple)):
+            return any(effectful(child, seen) for child in item)
+        return False
+
+    def invoke(wrapper, caller, arguments=(), keywords=(), *, evaluated=False):
         nonlocal found, recursion_skips
-        if active.count(wrapper) >= 2:
+        argument_values = list(arguments) if evaluated else expanded_arguments(arguments, caller)
+        keyword_values = dict(keywords) if evaluated else call_keywords(keywords, caller)
+        if isinstance(wrapper, Partial):
+            for function in wrapper.functions:
+                invoke(function, caller, [*wrapper.arguments, *argument_values], dict(wrapper.keywords, **keyword_values), evaluated=True)
+            return
+        receiver = None
+        if isinstance(wrapper, Bound):
+            wrapper, receiver = wrapper.function, wrapper.receiver
+        if not isinstance(wrapper, Function):
+            return
+        node = wrapper.node
+        if active.count(node) >= 2:
             recursion_skips += 1
             return
-        local = dict(bindings)
-        parameters = [*wrapper.args.posonlyargs, *wrapper.args.args]
-        owner = method_owners.get(id(wrapper))
-        if owner is not None and parameters and not any(isinstance(decorator, ast.Name) and decorator.id == "staticmethod" for decorator in wrapper.decorator_list):
-            local[parameters.pop(0).arg] = (owner,)
-        defaults = dict(zip((parameter.arg for parameter in parameters[-len(wrapper.args.defaults):]), wrapper.args.defaults)) if wrapper.args.defaults else {}
-        supplied = {parameter.arg: argument for parameter, argument in zip(parameters, arguments)}
-        supplied.update({keyword.arg: keyword.value for keyword in keywords if keyword.arg is not None})
-        defaults.update({parameter.arg: default for parameter, default in zip(wrapper.args.kwonlyargs, wrapper.args.kw_defaults) if default is not None})
-        for parameter in (*parameters, *wrapper.args.kwonlyargs):
-            argument = supplied.get(parameter.arg, defaults.get(parameter.arg))
-            local[parameter.arg] = value(argument, bindings) if argument is not None else (unknown,)
-        def key(item):
-            if isinstance(item, ast.alias):
-                return ("alias", item.name)
-            if isinstance(item, ast.AST):
-                return ("node", id(item))
-            if isinstance(item, (list, tuple)):
-                return tuple(key(child) for child in item)
-            return (type(item).__name__, repr(item))
-        cache_key = (id(wrapper), tuple(sorted((name, key(items)) for name, items in local.items())),
-                     tuple(sorted((owner, tuple(sorted((name, key(items)) for name, items in state.items()))) for owner, state in class_bindings.items())))
-        if cache_key in invocation_cache:
+        local = Scope(wrapper.scope, wrapper.locals, wrapper.globals, wrapper.nonlocals)
+        parameters = [*node.args.posonlyargs, *node.args.args]
+        if receiver is not None and parameters:
+            local[parameters.pop(0).arg] = (receiver,)
+        supplied = {parameter.arg: assigned for parameter, assigned in zip(parameters, argument_values)}
+        supplied.update(keyword_values)
+        for parameter in (*parameters, *node.args.kwonlyargs):
+            local[parameter.arg] = supplied.get(parameter.arg, wrapper.defaults.get(parameter.arg, (unknown,)))
+        if node.args.vararg is not None:
+            local[node.args.vararg.arg] = choices(combinations(argument_values[len(parameters):]))
+        if node.args.kwarg is not None:
+            names = {parameter.arg for parameter in (*parameters, *node.args.kwonlyargs)}
+            local[node.args.kwarg.arg] = (Keywords({name: assigned for name, assigned in keyword_values.items() if name not in names}),)
+        cache_key = (binding_key(wrapper), tuple(sorted((name, binding_key(assigned)) for name, assigned in local.state.items())))
+        # Methods may update their receiver. Their effects must run at every
+        # actual call; clear ordinary wrappers use lexical dependency caching.
+        cacheable = receiver is None and not effectful(wrapper) and not any(effectful(assigned) for assigned in local.state.values())
+        if cacheable and cache_key in invocation_cache:
             found |= invocation_cache[cache_key]
             return
         previous, generation = found, recursion_skips
         found = False
-        active.append(wrapper)
-        walk(wrapper.body, local)
+        active.append(node)
+        if isinstance(node, ast.Lambda):
+            scan(node.body, local)
+        else:
+            walk(node.body, local)
         active.pop()
         result = found
         found |= previous
-        # An active recursion guard is not proof about a later independent
-        # invocation. Only reuse walks that completed without truncation.
-        if recursion_skips == generation:
+        if cacheable and recursion_skips == generation:
             invocation_cache[cache_key] = result
 
-    def scan(node, bindings):
+    def scan(node, scope):
         nonlocal found
+        if isinstance(node, (ast.Lambda, ast.GeneratorExp)):
+            return
+        if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp)):
+            local = comprehension(node, scope)
+            if local is not None:
+                if isinstance(node, ast.DictComp):
+                    scan(node.key, local)
+                    scan(node.value, local)
+                else:
+                    scan(node.elt, local)
+            return
         if isinstance(node, ast.Call):
-            names = function_names(node.func, bindings)
-            functions = value(node.func, bindings)
+            names = function_names(node.func, scope)
+            functions = value(node.func, scope)
             for function in names & launches:
-                operand = node.args[0] if node.args else None
-                if operand is None:
+                arguments = expanded_arguments(node.args, scope)
+                commands = arguments[0] if arguments else None
+                if commands is None:
                     parameter = "args" if function.startswith("subprocess.") else "cmd" if function == "os.popen" else "command"
-                    operand = next((keyword.value for keyword in node.keywords if keyword.arg == parameter), None)
-                if operand is not None:
-                    for command in value(operand, bindings):
-                        if isinstance(command, (list, tuple)):
-                            argv = [item if isinstance(item, str) else computed for item in command]
-                            found |= ownership_command(unwrapped_command(argv))
-                            command = shlex.join(argv)
-                        if isinstance(command, str):
-                            found |= executable_content(command) or opaque_ownership("exec_command", {"cmd": command}) or overflow_execution(command)
+                    commands = call_keywords(node.keywords, scope).get(parameter)
+                if commands is not None:
+                    found |= any(executable_value(command) for command in commands)
             called = False
             for function in functions:
-                if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if isinstance(function, (Function, Bound, Partial)):
                     called = True
-                    invoke(function, bindings, node.args, node.keywords)
+                    invoke(function, scope, node.args, node.keywords)
                 elif isinstance(function, ast.ClassDef):
                     called = True
-                    for initializer in class_bindings.get(id(function), {}).get("__init__", ()):
-                        if isinstance(initializer, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                            invoke(initializer, bindings, node.args, node.keywords)
+                    value(node, scope)
+                elif isinstance(function, Registry):
+                    called = True
+                    for handler in function.handlers:
+                        invoke(handler, scope)
             if not called:
-                # These APIs execute callbacks. Reflection and data factories
-                # merely receiving a callable do not invoke its body.
-                target = next((keyword.value for keyword in node.keywords if keyword.arg == "target"), None)
-                callback_args = next((keyword.value.elts for keyword in node.keywords if keyword.arg == "args" and isinstance(keyword.value, (ast.Tuple, ast.List))), ())
-                if target is not None and any(name in {"threading.Thread", "multiprocessing.Process"} for name in names):
-                    callbacks = [(target, callback_args)]
+                callbacks = []
+                if node.args and "atexit.register" in names:
+                    exit_callbacks.append(Partial(value(node.args[0], scope), [value(argument, scope) for argument in node.args[1:]], call_keywords(node.keywords, scope)))
+                elif node.args and "atexit.unregister" in names:
+                    functions = value(node.args[0], scope)
+                    exit_callbacks[:] = [callback for callback in exit_callbacks if not any(function in callback.functions for function in functions)]
                 elif node.args and any(name.endswith(".submit") for name in names):
-                    callbacks = [(node.args[0], node.args[1:])]
-                else:
-                    callbacks = []
-                for callback, arguments in callbacks:
-                    for function in value(callback, bindings):
-                        if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                            invoke(function, bindings, arguments)
+                    callbacks.append((node.args[0], [value(argument, scope) for argument in node.args[1:]], call_keywords(node.keywords, scope)))
+                elif len(node.args) > 1 and any(name.endswith(".map") for name in names):
+                    callbacks.append((node.args[0], [iterated(argument, scope) or (unknown,) for argument in node.args[1:]], {}))
+                for callback, arguments, keywords in callbacks:
+                    for function in value(callback, scope):
+                        invoke(function, scope, arguments, keywords, evaluated=True)
+                if len(node.args) == 1 and names & {"list", "tuple", "set", "next", "sum", "any", "all"}:
+                    iterated(node.args[0], scope)
         for child in ast.iter_child_nodes(node):
             if not isinstance(child, ast.stmt):
-                scan(child, bindings)
+                scan(child, scope)
+
+    class Branch(dict):
+        def __init__(self, state, parents):
+            super().__init__(state)
+            self.parents = parents
 
     def merge(*states):
-        return {name: choices(item for state in states for item in state.get(name, (unknown,)))
-                for name in set().union(*(state.keys() for state in states))}
+        def merged(alternatives):
+            return {name: choices(item for state in alternatives for item in state.get(name, (unknown,)))
+                    for name in set().union(*(state.keys() for state in alternatives))}
+        owners = set().union(*(getattr(state, "parents", {}).keys() for state in states))
+        for owner in owners:
+            owner.state = merged([getattr(state, "parents", {}).get(owner, owner.state) for state in states])
+        return merged(states)
 
-    def bind(target, assigned, bindings):
+    def bind(target, assigned, scope):
         if isinstance(target, ast.Name):
-            bindings[target.id] = assigned
+            scope[target.id] = assigned
+        elif isinstance(target, ast.Attribute):
+            for owner in value(target.value, scope):
+                if isinstance(owner, Instance):
+                    owner.attributes[target.attr] = assigned
+                elif isinstance(owner, ast.ClassDef):
+                    class_bindings.setdefault(id(owner), {})[target.attr] = assigned
         elif isinstance(target, (ast.Tuple, ast.List)):
             for index, child in enumerate(target.elts):
-                bind(child, choices(item[index] if isinstance(item, (list, tuple)) and len(item) == len(target.elts) else unknown for item in assigned), bindings)
+                bind(child, choices(item[index] if isinstance(item, (list, tuple)) and len(item) == len(target.elts) else unknown for item in assigned), scope)
 
-    def walk(statements, bindings):
+    def branch(statements, scope, initial=None):
+        previous = scope.state
+        scope.state = dict(previous if initial is None else initial)
+        parents, owner = {}, scope.parent
+        while owner is not None:
+            parents[owner] = owner.state
+            owner.state = dict(getattr(initial, "parents", {}).get(owner, owner.state))
+            owner = owner.parent
+        try:
+            walk(statements, scope)
+            return Branch(scope.state, {owner: owner.state for owner in parents})
+        finally:
+            scope.state = previous
+            for owner, state in parents.items():
+                owner.state = state
+
+    def walk(statements, scope, *, methods=False):
         for statement in statements:
-            scan(statement, bindings)
+            expression_values.clear()
+            scan(statement, scope)
             if isinstance(statement, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
-                assigned = value(statement.value, bindings) if statement.value is not None else (unknown,)
+                assigned = value(statement.value, scope) if statement.value is not None else (unknown,)
                 targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
                 for target in targets:
                     if isinstance(statement, ast.AugAssign) and isinstance(statement.op, ast.Add) and isinstance(target, ast.Name):
-                        assigned = add(bindings.get(target.id, (unknown,)), assigned)
-                    bind(target, assigned, bindings)
+                        assigned = add(scope.get(target.id, (unknown,)), assigned)
+                    bind(target, assigned, scope)
             elif isinstance(statement, ast.Import):
                 for imported in statement.names:
-                    bindings[imported.asname or imported.name.split(".")[0]] = (ast.alias(name=imported.name if imported.asname else imported.name.split(".")[0]),)
+                    scope[imported.asname or imported.name.split(".")[0]] = (ast.alias(name=imported.name if imported.asname else imported.name.split(".")[0]),)
             elif isinstance(statement, ast.ImportFrom):
                 for imported in statement.names:
-                    bindings[imported.asname or imported.name] = (ast.alias(name=(statement.module or "") + "." + imported.name),)
+                    scope[imported.asname or imported.name] = (ast.alias(name=(statement.module or "") + "." + imported.name),)
             elif isinstance(statement, ast.If):
-                branches = (statement.body, statement.orelse)
+                bodies = (statement.body, statement.orelse)
                 if isinstance(statement.test, ast.Constant):
-                    branches = (branches[0] if statement.test.value else branches[1],)
-                bindings = merge(*(walk(branch, dict(bindings)) for branch in branches))
+                    bodies = (bodies[0] if statement.test.value else bodies[1],)
+                scope.state = merge(*(branch(body, scope) for body in bodies))
             elif isinstance(statement, (ast.For, ast.AsyncFor, ast.While)):
-                iteration = dict(bindings)
+                iteration = dict(scope.state)
                 if isinstance(statement, (ast.For, ast.AsyncFor)):
-                    iterable = value(statement.iter, bindings)
-                    items = choices(item for sequence in iterable if isinstance(sequence, (list, tuple)) for item in sequence)
-                    if not items and all(isinstance(sequence, (list, tuple)) for sequence in iterable):
-                        bindings = walk(statement.orelse, bindings)
+                    items = iterated(statement.iter, scope)
+                    if not items:
+                        walk(statement.orelse, scope)
                         continue
-                    bind(statement.target, items or (unknown,), iteration)
-                repeated = merge(bindings, walk(statement.body, iteration))
-                repeated = merge(repeated, walk(statement.body, dict(repeated)))
-                bindings = walk(statement.orelse, repeated)
+                    previous = scope.state
+                    scope.state = iteration
+                    bind(statement.target, items, scope)
+                    iteration, scope.state = scope.state, previous
+                repeated = merge(scope.state, branch(statement.body, scope, iteration))
+                repeated = merge(repeated, branch(statement.body, scope, repeated))
+                scope.state = repeated
+                walk(statement.orelse, scope)
             elif isinstance(statement, (ast.Try, ast.TryStar)):
-                normal = walk(statement.body, dict(bindings))
-                exceptional = merge(bindings, normal)
-                alternatives = [walk(statement.orelse, normal)]
-                alternatives.extend(walk(handler.body, dict(exceptional)) for handler in statement.handlers)
-                bindings = walk(statement.finalbody, merge(*alternatives))
+                normal = branch(statement.body, scope)
+                exceptional = merge(scope.state, normal)
+                alternatives = [branch(statement.orelse, scope, normal)]
+                alternatives.extend(branch(handler.body, scope, exceptional) for handler in statement.handlers)
+                scope.state = merge(*alternatives)
+                walk(statement.finalbody, scope)
             elif isinstance(statement, (ast.With, ast.AsyncWith)):
                 for item in statement.items:
                     if item.optional_vars is not None:
-                        bind(item.optional_vars, value(item.context_expr, bindings), bindings)
-                bindings = walk(statement.body, bindings)
+                        bind(item.optional_vars, value(item.context_expr, scope), scope)
+                walk(statement.body, scope)
             elif isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                bindings[statement.name] = (statement,)
+                function = Function(statement, scope.parent if methods else scope)
+                scope[statement.name] = (function,)
+                for decorator in statement.decorator_list:
+                    call = decorator.func if isinstance(decorator, ast.Call) else decorator
+                    if isinstance(call, ast.Attribute) and call.attr == "command":
+                        for registry in value(call.value, scope):
+                            if isinstance(registry, Registry):
+                                registry.handlers.append(function)
+                    if function_names(call, scope) & {"atexit.register"}:
+                        exit_callbacks.append(Partial((function,), [], {}))
                 if partial:
-                    invoke(statement, bindings)
+                    invoke(function, scope)
             elif isinstance(statement, ast.ClassDef):
-                bindings[statement.name] = (statement,)
-                for method in statement.body:
-                    if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                        method_owners[id(method)] = statement
-                class_bindings[id(statement)] = walk(statement.body, dict(bindings))
+                scope[statement.name] = (statement,)
+                local = Scope(scope)
+                walk(statement.body, local, methods=True)
+                class_bindings[id(statement)] = local.state
             elif isinstance(statement, ast.Match):
-                bindings = merge(bindings, *(walk(case.body, dict(bindings)) for case in statement.cases))
-        return bindings
+                scope.state = merge(scope.state, *(branch(case.body, scope) for case in statement.cases))
+        return scope.state
 
-    walk(tree.body, {})
+    walk(tree.body, Scope())
+    for callback in reversed(exit_callbacks):
+        invoke(callback, Scope(), evaluated=True)
     return found
-
 
 def python_fragment_ownership(content, *, partial=True):
     """Partial Python edits retain Python string boundaries, never shell syntax."""
@@ -2762,6 +3214,8 @@ def file_source_context(effect, previous):
             updated = source
             for old, new, count in effect["updates"]:
                 if old and old in updated:
+                    if count != -1 and updated.count(old) != 1:
+                        exact = False
                     updated = updated.replace(old, new, count)
                 else:
                     exact = False
@@ -2789,6 +3243,10 @@ def apply_file_effect(effect, cwd, candidates, sources=None):
         return
     path = native_path(effect["path"], native_cwd(effect.get("cwd"), cwd)) if effect["path"] else None
     if path:
+        if effect.get("invalidates"):
+            if sources is not None:
+                sources.pop(path, None)
+            return False
         owning = any(executable_file_content(effect["path"], content, partial=effect.get("partial", not effect["replaces"])) for content in effect["contents"])
         if sources is not None and Path(path).suffix == ".py":
             sources[path], exact = file_source_context(effect, sources.get(path, {}))
@@ -2892,7 +3350,19 @@ def file_ownership_executions(records, harness, *, file_candidates=()):
     launches = {identifier: index for index, record in enumerate(records)
                 for identifier, _, _ in calls_and_results(record, harness)[0]}
     ends = None
-    own_intervals = {}
+
+    def completion_ends():
+        nonlocal ends
+        if ends is None:
+            selected = {(name, id(value)) for record in records
+                        for source, name, value in calls_and_results(record, harness)[0] if source in writers}
+            ends = {}
+            for index, source, result in bound_outputs(records, harness, lambda name, value: (name, id(value)) in selected):
+                if result.get("_result") and not result.get("_pending"):
+                    ends[source] = index
+        return ends
+
+    own_intervals, completed = {}, []
     candidates, peer_writes, intervals, sources = set(), [], [], {}
     if isinstance(file_candidates, dict):
         for path, events in file_candidates.items():
@@ -2913,18 +3383,51 @@ def file_ownership_executions(records, harness, *, file_candidates=()):
         if not groups or groups[-1][0] != at:
             groups.append((at, []))
         groups[-1][1].append(event)
+
+    def replay(events, target_candidates, target_sources):
+        final = {}
+        for path, owning, replaces, source, context in events:
+            for effect in context:
+                owning |= apply_file_effect(effect, None, set(), target_sources)
+            if owning or replaces:
+                final.setdefault(path, {})[source] = owning
+        for path, origins in final.items():
+            if any(origins.values()):
+                target_candidates.add(path)
+            else:
+                target_candidates.discard(path)
+
     next_peer = 0
     invocations = set()
     for identifier, name, value, cwd, stamp, effects in calls:
         timestamp = native_timestamp(stamp)
+        read_at = launches.get(identifier)
+        # Only already-launched writes can contribute their completed state.
+        # Merge those native completions with peers in timestamp order; an own
+        # completion with no timestamp still has exact native record order.
+        due = [(at, event) for index, at, event in completed if read_at is not None and index < read_at]
+        completed = [(index, at, event) for index, at, event in completed if read_at is None or index >= read_at]
+        if due:
+            upcoming = {}
+            for at, events in groups[next_peer:]:
+                upcoming.setdefault(at, []).extend(events)
+            for at, event in due:
+                upcoming.setdefault(at, []).append(event)
+            groups[next_peer:] = sorted(upcoming.items(), key=lambda item: float("-inf") if item[0] is None else item[0])
         while next_peer < len(groups):
             at, events = groups[next_peer]
             if at is not None and timestamp is not None and at > timestamp:
                 break
             if at is not None and at == timestamp:
-                # Native timestamp resolution cannot order a simultaneous peer
-                # completion. Keep every possible writer, and reconsider the
-                # whole group at the next strictly later call.
+                # Own native completion order is known even when timestamps
+                # tie. Foreign same-time events remain possible alternatives.
+                local = [event for event in events if event[3] == origin]
+                replay(local, candidates, sources)
+                events = [event for event in events if event[3] != origin]
+                groups[next_peer] = at, events
+                if not events:
+                    next_peer += 1
+                    continue
                 speculative = dict(sources)
                 for path, owning, _, _, context in events:
                     for effect in context:
@@ -2932,45 +3435,46 @@ def file_ownership_executions(records, harness, *, file_candidates=()):
                     if owning:
                         candidates.add(path)
                 break
-            final = {}
-            for path, owning, replaces, source, context in events:
-                for effect in context:
-                    owning |= apply_file_effect(effect, None, set(), sources)
-                if owning or replaces:
-                    final.setdefault(path, {})[source] = owning
-            for path, origins in final.items():
-                if any(origins.values()):
-                    candidates.add(path)
-                else:
-                    candidates.discard(path)
+            replay(events, candidates, sources)
             next_peer += 1
+        # The current invocation observes its own ordered writes immediately.
+        # Other invocations retain old and possible new bytes until a bound
+        # terminal result proves a full replacement has finished.
+        local_candidates, local_sources, replacements = set(candidates), dict(sources), {}
         for effect in effects:
             if effect["kind"] == "write":
-                owning = apply_file_effect(effect, cwd, candidates, sources)
-                if owning:
-                    path = native_path(effect["path"], native_cwd(effect.get("cwd"), cwd)) if effect["path"] else None
-                    if path:
-                        own_intervals[(path, identifier)] = launches.get(identifier)
+                path = native_path(effect["path"], native_cwd(effect.get("cwd"), cwd)) if effect["path"] else None
+                owning = apply_file_effect(effect, cwd, local_candidates, local_sources)
+                possible = dict(effect, replaces=False, partial=False) if effect["replaces"] else effect
+                apply_file_effect(possible, cwd, candidates, sources)
+                if path:
+                    if effect["replaces"]:
+                        replacements[path] = []
+                    if path in replacements:
+                        replacements[path].append(dict(effect, path=path, cwd=None))
+                    if owning:
+                        own_intervals[(path, identifier)] = read_at
             else:
                 active = {path for path, start, end in intervals
                           if timestamp is None or start <= timestamp <= end}
-                # A later native call can run while an earlier writer's exec
-                # handle is still alive. Local record order excludes future
-                # writes even when native timestamps are unavailable. The same
-                # invocation's effects retain their explicit shell/patch order.
-                read_at = launches.get(identifier)
-                if own_intervals and ends is None:
-                    selected = {(name, id(value)) for record in records
-                                for source, name, value in calls_and_results(record, harness)[0] if source in writers}
-                    ends = {}
-                    for index, source, result in bound_outputs(records, harness, lambda name, value: (name, id(value)) in selected):
-                        if result.get("_result") and not result.get("_pending"):
-                            ends[source] = index
-                active.update(path for (path, source), began in own_intervals.items()
-                              if source != identifier and began is not None and read_at is not None
-                              and began < read_at <= ends.get(source, float("inf")))
-                if {native_path(path, native_cwd(effect.get("cwd"), cwd)) for path in effect["paths"]} & (candidates | active):
+                # Later calls can run while an earlier writer's handle lives.
+                # Record order excludes future writes without timestamps; the
+                # current invocation keeps its explicit shell/patch ordering.
+                if own_intervals:
+                    finished = completion_ends()
+                    active.update(path for (path, source), began in own_intervals.items()
+                                  if source != identifier and began is not None and read_at is not None
+                                  and began < read_at <= finished.get(source, float("inf")))
+                if {native_path(path, native_cwd(effect.get("cwd"), cwd)) for path in effect["paths"]} & (local_candidates | active):
                     invocations.add(identifier)
+        for path, context in replacements.items():
+            if path not in candidates and path not in local_candidates and Path(path).suffix != ".py":
+                continue
+            end = completion_ends().get(identifier)
+            if end is not None:
+                at = native_timestamp(records[end].get("timestamp"))
+                event = (path, path in local_candidates, True, origin, tuple(context))
+                completed.append((end, at, event))
     return invocations
 
 

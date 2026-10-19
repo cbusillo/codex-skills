@@ -2653,6 +2653,65 @@ class ReceiptTests(unittest.TestCase):
                         # cross-history candidates to contribute.
                         self.assertEqual(receipts.ownership_state(rows, harness)["pending"], pending)
 
+        for harness in ("codex", "claude"):
+            for timed in (False, True):
+                for path in ("run.sh", "run.py"):
+                    modes = (("missing", True), ("running", True), ("overlap", True), ("terminal", False))
+                    if harness == "codex":
+                        modes += (("polled", False), ("late_poll", True))
+                    for mode, pending in modes:
+                        with self.subTest(harness=harness, replacement=mode, path=path, timed=timed):
+                            python = path.endswith(".py")
+                            rows = history(harness, *({} for _ in range(4 if python else 3)))[:-2 if harness == "codex" else -1]
+                            old = ("import subprocess\ndef main():\n    subprocess.run(" + repr(writer) + ", shell=True)\n") if python else writer
+                            new = "def main():\n    print('done')\n" if python else "echo done"
+                            commands = ["cat > " + path + " <<'EOF'\n" + old + "\nEOF",
+                                        'sleep "$DELAY"; cat > ' + path + " <<'EOF'\n" + new + "\nEOF"]
+                            if python:
+                                commands.append("cat >> run.py <<'EOF'\n\nmain()\nEOF")
+                            commands.append(("python3 " if python else "bash ") + path)
+                            for index, command in enumerate(commands):
+                                if harness == "codex":
+                                    rows[2 * index + 1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                                else:
+                                    rows[2 * index + 1]["message"]["content"][0]["input"] = {"command": command}
+                                rows[2 * index + 2] = output({"exit_code": 0}, harness, f"tool-{index}")
+                            if mode in {"running", "polled", "late_poll"}:
+                                rows[4] = output({"session_id": 456}, harness, "tool-1")
+                            elif mode == "missing":
+                                rows.pop(4)
+                            elif mode == "overlap":
+                                rows.append(rows.pop(4))
+                            if mode in {"polled", "late_poll"}:
+                                poll = [{"type": "response_item", "payload": {"type": "function_call", "name": "write_stdin",
+                                         "call_id": "replacement-poll", "arguments": json.dumps({"session_id": 456})}},
+                                        output({"exit_code": 0}, harness, "replacement-poll")]
+                                if mode == "polled":
+                                    rows[5:5] = poll
+                                else:
+                                    rows.extend(poll)
+                            if timed:
+                                for index, row in enumerate(rows[1:], 1):
+                                    row["timestamp"] = f"2026-01-01T00:00:{index:02d}Z"
+                            histories = [{"harness": harness, "records": rows}]
+                            candidates = receipts.ownership_file_candidates(histories)
+                            self.assertEqual(receipts.ownership_state(rows, harness, file_candidates=candidates)["pending"], pending)
+                            self.assertEqual(receipts.ownership_state(rows, harness)["pending"], pending)
+                with self.subTest(harness=harness, within_running_replacement=True, timed=timed):
+                    rows = history(harness, {}, {})[:-2 if harness == "codex" else -1]
+                    for index, command in enumerate(("cat > run.sh <<'EOF'\n" + writer + "\nEOF",
+                                                     "sleep 1; printf 'echo done\\n' > run.sh; bash run.sh")):
+                        if harness == "codex":
+                            rows[2 * index + 1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                        else:
+                            rows[2 * index + 1]["message"]["content"][0]["input"] = {"command": command}
+                        rows[2 * index + 2] = output({"session_id": 789} if index else {"exit_code": 0}, harness, f"tool-{index}")
+                    if timed:
+                        for index, row in enumerate(rows[1:], 1):
+                            row["timestamp"] = f"2026-01-01T00:00:{index:02d}Z"
+                    candidates = receipts.ownership_file_candidates([{"harness": harness, "records": rows}])
+                    self.assertFalse(receipts.ownership_state(rows, harness, file_candidates=candidates)["pending"])
+
     def test_within_call_file_execution_obeys_write_order_and_replacement(self):
         writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 12'
         scripts = (
@@ -2715,17 +2774,20 @@ class ReceiptTests(unittest.TestCase):
 
 
     def test_python_repeated_clear_helpers_do_not_expand_with_call_paths(self):
-        counts = []
-        for depth in (3, 6):
-            program = "import subprocess\ndef leaf(): subprocess.run(['echo', 'done'])\n"
-            for index in range(depth):
-                child = 'leaf' if index == 0 else f'step{index - 1}'
-                program += f'def step{index}(): {child}(); {child}()\n'
-            program += f'step{depth - 1}()'
-            with patch.object(receipts, 'ownership_command', wraps=receipts.ownership_command) as classify:
-                self.assertFalse(receipts.python_ownership(program))
-                counts.append(classify.call_count)
-        self.assertLessEqual(counts[1], counts[0] * 3)
+        for store_result in (False, True):
+            counts = []
+            for depth in (3, 6):
+                program = "import subprocess\ndef leaf(): subprocess.run(['echo', 'done'])\n"
+                for index in range(depth):
+                    child = 'leaf' if index == 0 else f'step{index - 1}'
+                    assignment = f'result{index} = ' if store_result else ''
+                    program += f'def step{index}(): {assignment}{child}(); {child}()\n'
+                program += f'step{depth - 1}()'
+                with patch.object(receipts, 'ownership_command', wraps=receipts.ownership_command) as classify:
+                    self.assertFalse(receipts.python_ownership(program))
+                    counts.append(classify.call_count)
+            with self.subTest(store_result=store_result):
+                self.assertLessEqual(counts[1], counts[0] * 3)
 
 
     def test_python_process_launches_resolve_only_literal_concatenation(self):
@@ -2792,6 +2854,59 @@ class ReceiptTests(unittest.TestCase):
             ("import subprocess; text=" + repr(writer) + "; subprocess.run('gh issue comment 5 --body ' + transform(text), shell=True)", False),
             ("import subprocess; text=" + repr(writer) + "; subprocess.run(['echo', transform(text)])", False),
             ("import subprocess; text=" + repr(writer) + "; subprocess.run(['python3', 'notify.py', '--message', transform(text)])", False),
+            ("import subprocess\n[subprocess.run(c, shell=True) for c in ['git fetch', " + repr(writer) + "]]", True),
+            ("import subprocess\n{subprocess.run(c, shell=True) for c in ['git fetch', " + repr(writer) + "]}", True),
+            ("import subprocess\n{c:subprocess.run(c, shell=True) for c in ['git fetch', " + repr(writer) + "]}", True),
+            ("import subprocess\nunused=(subprocess.run(c, shell=True) for c in [" + repr(writer) + "])", False),
+            ("import subprocess\nlist(subprocess.run(c, shell=True) for c in [" + repr(writer) + "])", True),
+            ("import subprocess\nfrom concurrent.futures import ThreadPoolExecutor\ndef sh(c): subprocess.run(c, shell=True)\ncmds=['git fetch'," + repr(writer) + "]\nwith ThreadPoolExecutor() as ex:\n    futures=[ex.submit(sh,c) for c in cmds]", True),
+            ("import subprocess\nfrom concurrent.futures import ThreadPoolExecutor\ndef sh(c): subprocess.run(c, shell=True)\nwith ThreadPoolExecutor() as ex:\n    list(ex.map(sh,[" + repr(writer) + "]))", True),
+            ("import subprocess, threading\ndef claim(): subprocess.run(" + repr(writer) + ", shell=True)\nthreading.Timer(0,claim).start()", True),
+            ("import subprocess, functools\ndef sh(c): subprocess.run(c, shell=True)\njob=functools.partial(sh," + repr(writer) + ")\njob()", True),
+            ("import subprocess, functools\ndef sh(c): subprocess.run(c, shell=True)\njob=functools.partial(sh," + repr(writer) + ")", False),
+            ("import subprocess, atexit\ndef claim(): subprocess.run(" + repr(writer) + ", shell=True)\natexit.register(claim)", True),
+            ("import subprocess, typer\napp=typer.Typer()\n@app.command()\ndef claim(): subprocess.run(" + repr(writer) + ", shell=True)\napp()", True),
+            ("import subprocess, typer\napp=typer.Typer()\n@app.command()\ndef claim(): subprocess.run(" + repr(writer) + ", shell=True)", False),
+            ("import subprocess, pytest\n@pytest.fixture\ndef claim(): subprocess.run(" + repr(writer) + ", shell=True)", False),
+            ("import subprocess, click\n@click.command()\ndef claim(): subprocess.run(" + repr(writer) + ", shell=True)", False),
+            ("import subprocess\nclass Job:\n    def __init__(self,cmd): self.cmd=cmd\n    def run(self): subprocess.run(self.cmd,shell=True)\njob=Job(" + repr(writer) + ")\njob.run()", True),
+            ("import subprocess\nclass Job:\n    def __init__(self,cmd): self.cmd=cmd\n    def run(self): subprocess.run(self.cmd,shell=True)\na=Job(" + repr(writer) + ")\nb=Job('echo done')\na.run()", True),
+            ("import subprocess\nclass Job:\n    def __init__(self,cmd): self.cmd=cmd\n    def run(self): subprocess.run(self.cmd,shell=True)\na=Job(" + repr(writer) + ")\nb=Job('echo done')\nb.run()", False),
+            ("import subprocess\nCOMMAND='echo done'\ndef run(): subprocess.run(COMMAND,shell=True)\ndef main():\n    COMMAND=" + repr(writer) + "\n    print(COMMAND)\n    run()\nmain()", False),
+            ("import subprocess\nCOMMAND='echo done'\ndef run(): subprocess.run(COMMAND,shell=True)\nCOMMAND=" + repr(writer) + "\nrun()", True),
+            ("import subprocess\nCOMMAND=" + repr(writer) + "\ndef run(): subprocess.run(COMMAND,shell=True)\nCOMMAND='echo done'\nrun()", False),
+            ("import subprocess\ndef main():\n    command=" + repr(writer) + "\n    def run(): subprocess.run(command,shell=True)\n    run()\nmain()", True),
+            ("import subprocess\ncommands=[['echo', 'safe0'], ['echo', 'safe1'], ['echo', 'safe2'], ['echo', 'safe3'], ['echo', 'safe4'], ['echo', 'safe5'], ['echo', 'safe6'], ['echo', 'safe7'], ['echo', 'safe8'], ['echo', 'safe9']]\nfor cmd in commands:\n    subprocess.run(cmd)", False),
+            ("import subprocess\nfor shell in ('/bin/bash','/bin/zsh'):\n    for command in ('echo -- marker','echo first','echo -E second'):\n        subprocess.run([shell,'-c',command])", False),
+            ("import subprocess\nfor helper in ['/catalog/read0.py', '/catalog/read1.py', '/catalog/read2.py', '/catalog/read3.py', '/catalog/read4.py', '/catalog/read5.py', '/catalog/read6.py', '/catalog/read7.py', '/catalog/read8.py', '/catalog/read9.py', '/catalog/read10.py', '/catalog/read11.py', '/catalog/gh-plan.py']:\n    subprocess.run([helper,'--repo','client/repo','claim','12'])", True),
+            ("import subprocess\nfor helper in ['/catalog/read0.py', '/catalog/read1.py', '/catalog/read2.py', '/catalog/read3.py', '/catalog/read4.py', '/catalog/read5.py', '/catalog/read6.py', '/catalog/read7.py', '/catalog/read8.py', '/catalog/read9.py', '/catalog/read10.py', '/catalog/read11.py', '/catalog/gh-plan.py']:\n    subprocess.run([helper,'--repo','client/repo','show','12'])", False),
+            ("import os\nfor command in ['echo safe0', 'echo safe1', 'echo safe2', 'echo safe3', 'echo safe4', 'echo safe5', 'echo safe6', 'echo safe7', 'echo safe8', 'echo safe9', 'echo safe10', 'echo safe11', 'uv run /catalog/gh-plan.py --repo client/repo claim 12']:\n    os.system(command)", True),
+            ("import subprocess\nfor command in [['/catalog/gh-plan.py', '--repo', 'client/repo', 'show', '0'], ['/catalog/gh-plan.py', '--repo', 'client/repo', 'search', '0'], ['/catalog/gh-plan.py', '--repo', 'client/repo', 'index', '0'], ['/catalog/gh-plan.py', '--repo', 'client/repo', 'show', '1'], ['/catalog/gh-plan.py', '--repo', 'client/repo', 'search', '1'], ['/catalog/gh-plan.py', '--repo', 'client/repo', 'index', '1'], ['/catalog/gh-plan.py', '--repo', 'client/repo', 'show', '2'], ['/catalog/gh-plan.py', '--repo', 'client/repo', 'search', '2'], ['/catalog/gh-plan.py', '--repo', 'client/repo', 'index', '2'], ['/catalog/gh-plan.py', '--repo', 'client/repo', 'show', '3'], ['/catalog/gh-plan.py', '--repo', 'client/repo', 'search', '3'], ['/catalog/gh-plan.py', '--repo', 'client/repo', 'index', '3'], ['/catalog/gh-plan.py', '--repo', 'client/repo', 'show', '4'], ['/catalog/gh-plan.py', '--repo', 'client/repo', 'search', '4'], ['/catalog/gh-plan.py', '--repo', 'client/repo', 'index', '4']]:\n    subprocess.run(command)", False),
+            ("import subprocess\nfor prefix in [['/catalog/read0.py'], ['/catalog/read1.py'], ['/catalog/read2.py'], ['/catalog/read3.py'], ['/catalog/read4.py'], ['/catalog/read5.py'], ['/catalog/read6.py'], ['/catalog/read7.py'], ['/catalog/read8.py'], ['/catalog/read9.py'], ['/catalog/read10.py'], ['/catalog/read11.py'], ['/catalog/gh-plan.py']]:\n    subprocess.run(prefix+['--repo','client/repo','claim','12'])", True),
+            ("import subprocess\nfor prefix in [['/catalog/read0.py'], ['/catalog/read1.py'], ['/catalog/read2.py'], ['/catalog/read3.py'], ['/catalog/read4.py'], ['/catalog/read5.py'], ['/catalog/read6.py'], ['/catalog/read7.py'], ['/catalog/read8.py'], ['/catalog/read9.py'], ['/catalog/read10.py'], ['/catalog/read11.py'], ['/catalog/gh-plan.py']]:\n    subprocess.run(prefix+['--repo','client/repo','show','12'])", False),
+            ("import subprocess\nfor text in ['safe0', 'safe1', 'safe2', 'safe3', 'safe4', 'safe5', 'safe6', 'safe7', 'safe8', 'safe9', 'safe10', 'safe11', 'uv run /catalog/gh-plan.py --repo client/repo claim 12']:\n    subprocess.run(['echo',text])", False),
+            ("import os\nfor tool in ['ruff','mypy','pytest']:\n    for target in ['a','b','c']:\n        os.system(f'{tool} {target}')", False),
+            ("import subprocess, threading\ndef claim(): subprocess.run(" + repr(writer) + ",shell=True)\nthreading.Timer(0,claim)", False),
+            ("import subprocess, threading\ndef claim(): subprocess.run(" + repr(writer) + ",shell=True)\nthreading.Thread(target=claim)", False),
+            ("import subprocess, threading\ndef claim(): subprocess.run(" + repr(writer) + ",shell=True)\njob=threading.Timer(0,claim)\njob.start()", True),
+            ("import subprocess\nunused=lambda: subprocess.run(" + repr(writer) + ",shell=True)", False),
+            ("import subprocess\njob=lambda: subprocess.run(" + repr(writer) + ",shell=True)\njob()", True),
+            ("import subprocess\nCOMMAND='echo done'\ndef run():\n    global COMMAND\n    subprocess.run(COMMAND,shell=True)\n    COMMAND=" + repr(writer) + "\nrun()\nrun()", True),
+            ("import subprocess\nCOMMAND=" + repr(writer) + "\ndef reset():\n    global COMMAND\n    COMMAND='echo done'\nreset()\nsubprocess.run(COMMAND,shell=True)", False),
+            ("import subprocess\nCOMMAND=" + repr(writer) + "\ndef reset():\n    global COMMAND\n    if condition: COMMAND='echo done'\nreset()\nsubprocess.run(COMMAND,shell=True)", True),
+            ("import subprocess\nCOMMAND=" + repr(writer) + "\ndef reset():\n    global COMMAND\n    if True: COMMAND='echo done'\nreset()\nsubprocess.run(COMMAND,shell=True)", False),
+            ("import subprocess\ndef main():\n    command='echo done'\n    def run():\n        nonlocal command\n        subprocess.run(command,shell=True)\n        command=" + repr(writer) + "\n    run()\n    run()\nmain()", True),
+            ("import subprocess\ndef main():\n    command=" + repr(writer) + "\n    def reset():\n        nonlocal command\n        command='echo done'\n    reset()\n    subprocess.run(command,shell=True)\nmain()", False),
+            ("import subprocess, threading\ndef sh(c): subprocess.run(c,shell=True)\noptions={'c':" + repr(writer) + "}\nthreading.Thread(target=sh,kwargs=options).start()", True),
+            ("import subprocess\nfrom concurrent.futures import ThreadPoolExecutor\ndef sh(c): subprocess.run(c,shell=True)\nwith ThreadPoolExecutor() as ex: ex.submit(sh,c=" + repr(writer) + ")", True),
+            ("import subprocess,atexit\nCOMMAND='echo done'\ndef run(): subprocess.run(COMMAND,shell=True)\natexit.register(run)\nCOMMAND=" + repr(writer), True),
+            ("import subprocess,atexit\ndef claim(): subprocess.run(" + repr(writer) + ",shell=True)\natexit.register(claim)\natexit.unregister(claim)", False),
+            ("import subprocess\nCOMMAND='echo done'\ndef set_command():\n    global COMMAND\n    COMMAND=" + repr(writer) + "\ndef configure(): set_command()\nconfigure()\nCOMMAND='echo done'\nconfigure()\nsubprocess.run(COMMAND,shell=True)", True),
+            ("import subprocess\ndef sh(*args): subprocess.run(args)\nsh('uv','run','/catalog/gh-plan.py','--repo','client/repo','claim','12')", True),
+            ("import subprocess\ndef sh(**kw): subprocess.run(**kw)\nsh(args=['uv','run','/catalog/gh-plan.py','--repo','client/repo','claim','12'])", True),
+            ("import subprocess\ndef sh(*args): subprocess.run(args)\nsh('echo'," + repr(writer) + ")", False),
+            ("import subprocess\ndef sh(**kw): subprocess.run(**kw)\nsh(args=['python3','notify.py','--message'," + repr(writer) + "])", False),
+            ("import subprocess\ndef sh(*args, **kw): subprocess.run(*args,**kw)\nargv=['uv','run','/catalog/gh-plan.py','--repo','client/repo','claim','12']\nsh(*[argv],**{'check':True})", True),
             ("def emit(c): print(c)\nemit(" + repr(writer) + ")", False),
             ("import subprocess\ndef unused(): subprocess.run(" + repr(writer) + ", shell=True)", False),
             ('import os; n=12; os.system(f"gh issue comment 5 --body \'next: uv run /catalog/gh-plan.py --repo r claim {n}\'")', False),
@@ -2823,10 +2938,10 @@ class ReceiptTests(unittest.TestCase):
             else:
                 rows[index]["message"]["content"][0].update(name=method, input=value)
 
-        def write(harness, content):
+        def write(harness, content, path="/repo/run.py"):
             if harness == "codex":
-                return "apply_patch", "*** Begin Patch\n*** Add File: /repo/run.py\n" + "\n".join("+" + line for line in content.splitlines()) + "\n*** End Patch"
-            return "Write", {"file_path": "/repo/run.py", "content": content}
+                return "apply_patch", "*** Begin Patch\n*** Add File: " + path + "\n" + "\n".join("+" + line for line in content.splitlines()) + "\n*** End Patch"
+            return "Write", {"file_path": path, "content": content}
 
         def edit(mode, addition):
             if mode == "Edit":
@@ -2838,6 +2953,43 @@ class ReceiptTests(unittest.TestCase):
         for harness in ("codex", "claude"):
             shell = "exec_command" if harness == "codex" else "Bash"
             run = {"cmd" if harness == "codex" else "command": "python3 run.py"}
+            if harness == "codex":
+                with self.subTest(duplicate_anchored_patch=True):
+                    source = 'import subprocess\ndef preview():\n    print("plan")\n    return 0\ndef main():\n    print("plan")\n    return 0\nmain()\n'
+                    patch_body = '*** Begin Patch\n*** Update File: /repo/run.py\n@@ def main():\n     print("plan")\n+    subprocess.run(' + repr(writer) + ', shell=True)\n     return 0\n*** End Patch'
+                    rows = history(harness, {}, {}, {})
+                    invocation(harness, rows, 0, *write(harness, source))
+                    invocation(harness, rows, 1, "apply_patch", patch_body)
+                    invocation(harness, rows, 2, shell, run)
+                    self.assertTrue(receipts.ownership_state(rows, harness)["pending"])
+
+            dormant = 'import subprocess\ndef helper():\n    pass\n'
+            launched = dormant + 'helper()\n'
+            for mutation in ("cp tmpl.py run.py", "mv tmpl.py run.py", "git checkout -- run.py",
+                             "git restore --source=HEAD -- run.py", "git restore -SW -- run.py",
+                             "git restore --staged -W -- run.py", "git restore -S --worktree -- run.py",
+                             "git restore --staged --worktree -- run.py"):
+                with self.subTest(harness=harness, source_mutation=mutation):
+                    rows = history(harness, {}, {}, {}, {}, {})
+                    invocation(harness, rows, 0, *write(harness, dormant))
+                    invocation(harness, rows, 1, *write(harness, launched, "/repo/tmpl.py"))
+                    invocation(harness, rows, 2, shell, {"cmd" if harness == "codex" else "command": mutation})
+                    invocation(harness, rows, 3, "Edit", {"file_path": "/repo/run.py", "old_string": "def helper():\n    pass",
+                               "new_string": "def helper():\n    subprocess.run(" + repr(writer) + ", shell=True)"})
+                    invocation(harness, rows, 4, shell, run)
+                    self.assertTrue(receipts.ownership_state(rows, harness)["pending"])
+
+            for reader in ("rg main run.py", "sed -n '1,20p' run.py", "cat run.py", "git diff -- run.py",
+                           "git restore -S -- run.py", "git restore --staged -- run.py"):
+                with self.subTest(harness=harness, source_reader=reader):
+                    rows = history(harness, {}, {}, {}, {})
+                    invocation(harness, rows, 0, *write(harness, base))
+                    invocation(harness, rows, 1, shell, {"cmd" if harness == "codex" else "command": reader})
+                    invocation(harness, rows, 2, "Edit", {"file_path": "/repo/run.py", "old_string": base,
+                               "new_string": base + "# documentation\n"})
+                    invocation(harness, rows, 3, shell, run)
+                    self.assertFalse(receipts.ownership_state(rows, harness)["pending"])
+
             for mode in ("Edit", "apply_patch", "append"):
                 for addition, replaced, expected in ((caller, False, True), ('message = "main()"\n', False, False),
                                                       (caller, True, False)):
