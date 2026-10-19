@@ -144,7 +144,7 @@ self.assertIn("The requested operation could not be completed.", result.stderr)
 '''
         self.assertEqual(self.rules(source, paths={".github/workflows/ci.yml"}), set())
 
-    def test_workflow_step_run_by_same_file_helper_is_execution(self) -> None:
+    def test_workflow_step_run_by_class_helper_method_is_execution(self) -> None:
         source = '''
 class Tests(unittest.TestCase):
     def setUp(self):
@@ -157,26 +157,11 @@ class Tests(unittest.TestCase):
 '''
         paths = {".github/workflows/ci.yml"}
         self.assertEqual(self.rules(source, paths=paths), set())
-        module_helper = '''
-def run_step(shell):
-    return subprocess.run(["bash", "-c", shell])
-def test_step():
-    workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
-    assert run_step(workflow["jobs"]["build"]["steps"][0]["run"]).returncode == 0
-'''
-        self.assertEqual(self.rules(module_helper, paths=paths), set())
         lint = source.replace('subprocess.run(["bash", "-c", self.shell])', "self.shell.split()")
         self.assertIn("workflow-no-execution", self.rules(lint, paths=paths))
         # An unrelated subprocess elsewhere in the class does not cover the fixture.
         unrelated = lint + '    def test_tool(self):\n        subprocess.run(["bash", "--version"])\n'
         self.assertIn("workflow-no-execution", self.rules(unrelated, paths=paths))
-        # A local name that shadows a running module helper is not that helper.
-        for binding in ("    run_step = str.split\n", "    from lint_helpers import run_step\n"):
-            shadowed = module_helper.replace("def test_step():\n", "def test_step():\n" + binding)
-            self.assertIn("workflow-no-execution", self.rules(shadowed, paths=paths))
-        # A nested function's own parameter does not shadow the helper in the enclosing test.
-        nested = module_helper.replace("def test_step():\n", "def test_step():\n    def unrelated(run_step):\n        pass\n")
-        self.assertEqual(self.rules(nested, paths=paths), set())
 
     def test_temp_config_even_with_same_tracked_filename_stays_quiet(self) -> None:
         source = '''

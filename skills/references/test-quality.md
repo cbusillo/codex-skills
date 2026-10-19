@@ -45,10 +45,12 @@ This is a heuristic, not proof that the assertion is wrong. It cannot follow
 arbitrary data flow or understand every language/test DSL. Foreign-language
 source-text/instruction checks, computed paths, imported loaders with no path
 argument, and custom assertion helpers can escape it. Python execution
-detection follows same-file helper functions and same-class methods. A
+detection follows `self` and `cls` method calls within the same class. A
 `setUp` fixture counts as executed only when a class method that runs a
 process also reads an attribute the fixture stored. An unrelated execution in
-the same test can still hide a workflow warning. Foreign alias detection is file-wide and conservative.
+the same test can still hide a workflow warning, and a step run through a
+module-level helper function is still a false positive. Foreign alias
+detection is file-wide and conservative.
 Coincidental version matches in dependency locks or documentation need triage;
 token duplication alone does not prove ownership.
 Rule 1 covers equality/value pins; raw config membership checks outside workflow

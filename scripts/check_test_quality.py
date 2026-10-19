@@ -118,7 +118,6 @@ def python_findings(path: str, source: str, tracked: set[str], versions: set[str
     module_aliases = aliases_for([node for node in tree.body if not isinstance(
         node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
     )])
-    functions = {node.name: node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
     scopes: list[tuple[ast.AST, dict[str, ast.AST], dict[str, ast.AST]]] = []
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -133,44 +132,17 @@ def python_findings(path: str, source: str, tracked: set[str], versions: set[str
     scopes.append((ast.Module(body=[node for node in tree.body if not isinstance(
         node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))], type_ignores=[]), module_aliases, {}))
 
-    def local_names(scope: ast.AST) -> set[str]:
-        # Names bound in this scope only; nested functions, classes and lambdas bind their own.
-        names: set[str] = set()
-        arguments = getattr(scope, "args", None)
-        if isinstance(arguments, ast.arguments):
-            names |= {arg.arg for arg in (*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs,
-                                          arguments.vararg, arguments.kwarg) if arg is not None}
-        pending = list(ast.iter_child_nodes(scope))
-        while pending:
-            node = pending.pop()
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                names.add(node.name)
-                continue
-            if isinstance(node, ast.Lambda):
-                continue
-            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
-                names.add(node.id)
-            elif isinstance(node, (ast.Import, ast.ImportFrom)):
-                names |= {(alias.asname or alias.name).split(".")[0] for alias in node.names}
-            pending.extend(ast.iter_child_nodes(node))
-        return names
-
     def executes(scope: ast.AST, methods: dict[str, ast.AST], seen: frozenset[int] = frozenset()) -> bool:
-        # A step run by a same-file helper (self.helper(...) or helper(...)) is still executed.
-        shadowed = local_names(scope)
+        # A step run by a method of the same class (self.helper(...)) is still executed. Only
+        # self/cls attribute calls are followed: a local name cannot rebind them, so no symbol
+        # table is needed. Bare module-function helpers stay a documented false positive.
         for call in (item for item in ast.walk(scope) if isinstance(item, ast.Call)):
-            name = ast.unparse(call.func)
-            if EXECUTE.search(name):
+            if EXECUTE.search(ast.unparse(call.func)):
                 return True
-            if isinstance(call.func, ast.Name) and name in functions and name not in shadowed:
-                # A module function's self is not this class, so its method calls are not followed.
-                target, context = functions[name], {}
-            elif isinstance(call.func, ast.Attribute) and ast.unparse(call.func.value) in {"self", "cls"}:
-                target, context = methods.get(call.func.attr), methods
-            else:
-                continue
-            if target is not None and id(target) not in seen and executes(target, context, seen | {id(scope)}):
-                return True
+            if isinstance(call.func, ast.Attribute) and ast.unparse(call.func.value) in {"self", "cls"}:
+                target = methods.get(call.func.attr)
+                if target is not None and id(target) not in seen and executes(target, methods, seen | {id(scope)}):
+                    return True
         return False
 
     def fixture_executed(scope: ast.AST, methods: dict[str, ast.AST]) -> bool:
