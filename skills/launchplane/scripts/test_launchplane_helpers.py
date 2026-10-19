@@ -7831,7 +7831,7 @@ def test_application_storage_retention_requires_original_key_readback_custody() 
         digest = evidence["result"]["plan_sha256"]
 
         def readback_evidence(key: str, name: str) -> str:
-            status, readback, _posts, _reads = _run_main(
+            readback_status, readback, *_ = _run_main(
                 [
                     "dokploy-target-create-application-readback", "--payload-file", payload_path,
                     "--idempotency-key", key, "--expected-plan-digest", digest,
@@ -7839,7 +7839,7 @@ def test_application_storage_retention_requires_original_key_readback_custody() 
                 ],
                 post=_state_volume_readback_response(),
             )
-            assert status == 0, readback
+            assert readback_status == 0, readback
             return _write_json(directory, name, readback)
 
         readback_path = readback_evidence("original-key", "readback.json")
@@ -7870,20 +7870,37 @@ def test_application_storage_retention_requires_original_key_readback_custody() 
         assert receipt["result"]["reviewed_custody_sha256"] == STATE_CUSTODY_SHA256
         assert "project-private-1" not in json.dumps(receipt)
 
-        # A receipt for other custody is not the reviewed retention.
-        other = {**retained, "result": {**receipt_result, "reviewed_custody_sha256": "d" * 64}}
-        status, receipt, _posts, _reads = _run_main(argv, post=other)
-        assert (status, receipt["status"]) == (1, "accepted_unverified")
+        # A receipt that differs from the reviewed retention in any binding is not it.
+        for field, value in (
+            ("reviewed_custody_sha256", "d" * 64),
+            ("plan_id", "a" * 32),
+            ("original_key", "other-key"),
+            ("allocation_state", "adopted"),
+            ("applied", True),
+            ("deployment_performed", True),
+            ("resources_retained", False),
+        ):
+            other = {**retained, "result": {**receipt_result, field: value}}
+            status, receipt, _posts, _reads = _run_main(argv, post=other)
+            assert (status, receipt["status"]) == (1, "accepted_unverified"), field
 
-        # Without readback custody from the original key and plan, nothing is sent.
+        # Without readback custody from the original key, payload and plan, nothing is sent.
         other_key_readback = readback_evidence("other-key", "other-readback.json")
-        edited = json.loads(Path(readback_path).read_text(encoding="utf-8"))
-        edited["result"]["custody_sha256"] = "d" * 64
-        edited_path = _write_json(directory, "edited-readback.json", edited)
+        saved_readback = json.loads(Path(readback_path).read_text(encoding="utf-8"))
+        edited_readbacks = []
+        for section, field, value in (
+            ("result", "custody_sha256", "d" * 64),
+            ("result", "plan_sha256", "e" * 64),
+            ("result", "state_volume", {"plan_id": "a" * 32, "service_plan_sha256": STATE_PLAN_SHA256}),
+            ("request", "payload_digest", "f" * 64),
+        ):
+            edited = copy.deepcopy(saved_readback)
+            edited[section][field] = value
+            edited_readbacks.append(_write_json(directory, f"edited-readback-{field}.json", edited))
         for changed in (
             ["d" * 64 if value == STATE_CUSTODY_SHA256 else value for value in argv],
             [other_key_readback if value == readback_path else value for value in argv],
-            [edited_path if value == readback_path else value for value in argv],
+            *([edited_path if value == readback_path else value for value in argv] for edited_path in edited_readbacks),
             [str(Path(directory) / "missing.json") if value == readback_path else value for value in argv],
             ["other-key" if value == "original-key" else value for value in argv],
             [value for value in argv if value != "--reviewed-dry-run"],

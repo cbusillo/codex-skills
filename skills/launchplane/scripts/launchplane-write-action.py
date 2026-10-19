@@ -4556,12 +4556,13 @@ def summarize_http_error(
         **diagnostics,
         "recommendation": http_error_recommendation(status),
     }
-    if request.get("setup_operation") == "create-application" and isinstance(
-        summary["error_code"], str
+    error_code = summary["error_code"]
+    if (
+        request.get("setup_operation") == "create-application"
+        and isinstance(error_code, str)
+        and error_code in APPLICATION_STATE_VOLUME_NEXT_STEPS
     ):
-        summary["recommendation"] = APPLICATION_STATE_VOLUME_NEXT_STEPS.get(
-            summary["error_code"], summary["recommendation"]
-        )
+        summary["recommendation"] = APPLICATION_STATE_VOLUME_NEXT_STEPS[error_code]
     payload["summary"] = summary
     if operation == "privileged-policy-propose" and (exc.code in {404, 409} or 500 <= exc.code < 600):
         payload["status"] = (
