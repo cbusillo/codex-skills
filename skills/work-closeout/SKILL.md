@@ -250,6 +250,9 @@ changed and no refused request is retried under another identity. Repeated
 `--repository ACCOUNT/REPOSITORY` adds context for missing/truncated receipts or
 another installation; `--owner ACCOUNT` requires that account to be covered, and
 refuses if no repository context is known. Neither option narrows native scope.
+Only actual claim destinations add mandatory inventory; foreign read targets,
+admission evidence and created-PR URLs do not. Created PRs retain their separate
+handoff verification.
 Claude's native session subagent directory is included because its delegated
 tools may inherit the parent's session ID. Codex's native read-only parent/child
 index supplies child thread IDs and rollouts, including descendants and closed
@@ -296,7 +299,8 @@ record the blocker and next actor, and continue independent work. Do not repeat
 a write to manufacture evidence for the earlier invocation. For future claims,
 put `--repo OWNER/REPO` in each command and keep receipts visible with `tee`.
 A numeric or variable issue operand can use its own unique canonical receipt
-from an isolated claim invocation to establish missing scope. Batched commands
+from an isolated claim invocation and its native session family to establish
+missing scope. Polls must remain isolated too. Batched commands
 need explicit repository operands because their shared native output cannot
 bind receipts to individual shell commands. Unknown operands without that
 evidence keep coverage incomplete, even when an older claim was released.
@@ -337,7 +341,10 @@ Keep ownership results visible: use one foreground shell command or one
 with shell `&` or drop an inner execution result. A detached writer with no
 recoverable terminal result leaves closeout conditional/no; record that blocker
 and preserve the session rather than rerunning the write to manufacture evidence.
-Foreground timeout/env/uv launchers retain native completion and helper scope.
+Parsed foreground launchers and compound shell commands retain native completion
+and helper scope. A literal single-command shell body or a single blocking
+Python subprocess call can use the same completion evidence; arbitrary executor
+code and detached descendants remain unresolved.
 Use a literal helper path: a whole shell-variable executable leaves its writer
 unresolved and keeps the verdict conditional/no.
 Quoted heredoc bodies are data only when they are not passed to an executor,

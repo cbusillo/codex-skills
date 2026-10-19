@@ -229,7 +229,16 @@ def unparsed_command_text(value):
                     for m in re.finditer(r"\b(?:const|let|var)\s+(\w+)\s*=", code)}
     pending = [region(m.end(), r"[,};\n]") for m in re.finditer(r"\b(?:cmd|command)\s*:", code)]
     pending += [(m.start(1), m.end(1)) for m in re.finditer(r"[{,]\s*(cmd|command)\s*(?=[,}])", code)]
-    seen, pieces = set(), []
+    seen, pieces, unresolved = set(), [], False
+    def literal_writers():
+        for literal in literals:
+            try:
+                text = ast.literal_eval(literal[0]) if not literal[0].startswith('`') else literal[0][1:-1]
+            except (ValueError, SyntaxError):
+                continue
+            if isinstance(text, str) and executable_content(text):
+                yield text
+    writers = list(literal_writers())
     while pending:
         start, end = pending.pop()
         if (start, end) in seen:
@@ -238,8 +247,19 @@ def unparsed_command_text(value):
         expression = value[start:end].strip()
         if expression.startswith('`'):
             command = re.sub(r"\$\{[^}]*\}", "computed-operand", expression.strip('`'))
-            if not any(c in command for c in "`$;&|\n"):
-                # A computed operand does not change the executable of a read.
+            substitutions = re.findall(r"\$\{([^}]*)\}", expression)
+            safe_substitutions = True
+            for substitution in substitutions:
+                bound = declarations.get(substitution.strip())
+                try:
+                    operand = ast.literal_eval(value[bound[0]:bound[1]].strip()) if bound else None
+                except (ValueError, SyntaxError):
+                    operand = None
+                if not isinstance(operand, (str, int, float)) or any(c in str(operand) for c in "`$;&|\n\"'"):
+                    safe_substitutions = False
+            if (safe_substitutions or not writers) and not any(c in command for c in "`$;&|\n"):
+                # Interpolation may introduce shell syntax. Known safe operands
+                # or the absence of executable ownership literals preserve reads.
                 argv = shlex.split(command)
                 if argv and Path(argv[0]).name in {"rg", "grep", "cat", "sed", "head", "tail", "ls"}:
                     continue
@@ -249,7 +269,14 @@ def unparsed_command_text(value):
                     continue
         fragment = code[start:end] + " " + " ".join(m[0] for m in literals if start <= m.start() < end)
         pieces.append(fragment)
-        pending.extend(declarations[word] for word in re.findall(r"\b\w+\b", fragment) if word in declarations)
+        words = re.findall(r"\b\w+\b", code[start:end])
+        words += re.findall(r"\$\{\s*(\w+)\s*\}", expression)
+        pending.extend(declarations[word] for word in words if word in declarations)
+        unresolved |= any(word not in declarations for word in words)
+    if unresolved:
+        # Parameters, destructuring and for-of bindings do not have a simple
+        # declaration to follow. They must not hide executable cell literals.
+        pieces.extend(writers)
     return " ".join(pieces)
 
 
@@ -271,7 +298,8 @@ def opaque_ownership(name, value):
             child = unwrapped_command(argv)
             executable = helper_argv(argv)
             _, action = helper_action(argv)
-            if executable and executable[0].startswith("$") and action[:1] in (["claim"], ["create"]):
+            if (executable and executable[0].startswith("$")
+                    and (action[:1] in (["claim"], ["create"]) or action[:2] == ["pr", "create"])):
                 return True
             if not ownership_command(argv):
                 inspected = child
@@ -340,13 +368,13 @@ def unwrapped_command(argv):
     argv = list(argv)
     while argv:
         name = Path(argv[0]).name
-        if re.match(r"[A-Za-z_]\w*=", argv[0]):
+        if re.match(r"[A-Za-z_]\w*=", argv[0]) or name in {"do", "then", "else", "builtin"}:
             argv = argv[1:]
         elif name in {"command", "exec", "nohup", "time", "env", "timeout", "nice"}:
             argv = argv[1:]
             while argv and (argv[0].startswith("-") or re.match(r"[A-Za-z_]\w*=", argv[0])):
                 flag = argv.pop(0)
-                if flag in {"-u", "--unset", "-C", "--chdir", "-k", "--kill-after", "-s", "--signal", "-n", "--adjustment"} and argv:
+                if flag in {"-u", "--unset", "-C", "--chdir", "-k", "--kill-after", "-s", "--signal", "-n", "--adjustment", "-o", "--output"} and argv:
                     argv.pop(0)
             if name == "timeout" and argv:
                 argv = argv[1:]
@@ -355,11 +383,58 @@ def unwrapped_command(argv):
             while argv and argv[0].startswith("-"):
                 flag = argv.pop(0)
                 if flag in {"--directory", "--project", "--python", "-p", "--with", "-w", "--group",
-                            "--env-file", "--package", "--with-requirements", "--with-editable", "--extra"} and argv:
+                            "--env-file", "--package", "--with-requirements", "--with-editable", "--extra",
+                            "--cache-dir", "--index-url", "--default-index", "--config-file", "--no-group",
+                            "--only-group", "--python-preference", "--refresh-package"} and argv:
                     argv.pop(0)
+        elif ((name in {"bash", "sh", "zsh", "dash", "ksh"} and len(argv) == 3
+               and argv[1] in {"-c", "-lc"} and (child := foreground_shell_argv(argv[2])))
+              or (re.fullmatch(r"python[0-9.]*", name) and len(argv) == 3 and argv[1] == "-c"
+                  and (child := foreground_python_argv(argv[2])))):
+            argv = child
         else:
             break
     return argv
+
+
+def foreground_shell_argv(content):
+    """A single literal shell command waits for its child; compound code is opaque."""
+    if "$(" in content or "`" in content:
+        return None
+    try:
+        lexer = shell_lexer(content)
+        lexer.whitespace = " \t\r"
+        lexer.whitespace_split = True
+        argv = list(lexer)
+    except ValueError:
+        return None
+    return argv if argv and not any(all(c in ";&|<>\n" for c in token) for token in argv) else None
+
+
+def foreground_python_argv(content):
+    """Recognize only one literal blocking subprocess call, with no other code."""
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return None
+    statements = [node for node in tree.body if not (
+        isinstance(node, ast.Import) and len(node.names) == 1
+        and node.names[0].name == "subprocess" and node.names[0].asname is None)]
+    if len(statements) != 1 or not isinstance(statements[0], ast.Expr):
+        return None
+    call = statements[0].value
+    if (not isinstance(call, ast.Call) or len(call.args) != 1
+            or ast.unparse(call.func) not in {"subprocess.run", "subprocess.call", "subprocess.check_call", "subprocess.check_output"}):
+        return None
+    try:
+        argv = ast.literal_eval(call.args[0])
+        options = {keyword.arg: ast.literal_eval(keyword.value) for keyword in call.keywords}
+    except (ValueError, TypeError):
+        return None
+    if (None in options or "executable" in options or options.get("shell", False) is not False
+            or not isinstance(argv, (list, tuple)) or not argv or not all(isinstance(word, str) for word in argv)):
+        return None
+    return list(argv)
 
 
 def python_ownership(content):
@@ -763,6 +838,11 @@ def ownership_state(records, harness, *, file_candidates=()):
     return {"indices": [positions[i] for i in indices], "pending": bool(pending)}
 
 
+def repository_option(token):
+    """The helpers accept unambiguous argparse prefixes for their global repo."""
+    return token.partition("=")[0] in {"--r", "--re", "--rep", "--repo"}
+
+
 def helper_action(argv):
     """Only the actual subcommand, after helper-wide options, selects an action."""
     helper = helper_argv(argv)
@@ -770,9 +850,9 @@ def helper_action(argv):
         return "", []
     name, action = Path(helper[0]).name, helper[1:]
     while action:
-        if action[0] == "--repo" and len(action) > 1:
+        if repository_option(action[0]) and "=" not in action[0] and len(action) > 1:
             action = action[2:]
-        elif action[0].startswith("--repo="):
+        elif repository_option(action[0]) and "=" in action[0]:
             action = action[1:]
         else:
             break
@@ -791,22 +871,14 @@ def ownership_command(argv):
     return owning and not help_only
 
 
-def target_repositories(records, harness):
-    repos = {target["repository"] for target in claim_targets(records, harness) if target["repository"]}
-    for record in records:
-        calls, _ = calls_and_results(record, harness)
-        for _, name, value in calls:
-            for argv in shell_commands(name, value):
-                if script(argv) not in {"gh-plan.py", "gh-pr.py"} and helper_argv(argv)[:2] not in (["gh", "pr"], ["gh", "issue"]):
-                    continue
-                for i, token in enumerate(argv):
-                    repo = argv[i + 1] if token in {"--repo", "-R"} and i + 1 < len(argv) else token.removeprefix("--repo=") if token.startswith("--repo=") else ""
-                    if re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
-                        repos.add(repo)
-                    match = re.match(r"https://github\.com/([^/\s]+/[^/\s]+)/(?:issues|pull)/", token)
-                    if match:
-                        repos.add(match[1])
-    return repos
+def target_repositories(records, harness, *, allowed_sessions=None):
+    """Only actual claim destinations select mandatory ownership inventory.
+
+    Foreign reads, PR creation and admission evidence do not create claims in
+    their referenced repositories. PR URLs retain their separate provenance.
+    """
+    return {target["repository"] for target in claim_targets(records, harness, allowed_sessions=allowed_sessions)
+            if target["repository"]}
 
 
 def target_records(records, harness):
@@ -851,6 +923,10 @@ def claim_operand(argv):
         if token == "--":
             return next(tokens, None)
         option, equal, _ = token.partition("=")
+        if option.startswith("--") and option not in options:
+            matches = {known for known in options | {"--help"} if known.startswith(option)}
+            if len(matches) == 1:
+                option = matches.pop()
         if option in options:
             if not equal and next(tokens, None) is None:
                 return None
@@ -861,13 +937,17 @@ def claim_operand(argv):
     return None
 
 
-def claim_targets(records, harness):
+def claim_targets(records, harness, *, allowed_sessions=None):
     """Resolve explicit references; bind unscoped numbers to their own receipts."""
     def claiming(name, value):
         return bool(claim_commands(name, value))
     canonical = {}
-    for _, source, value in bound_outputs(records, harness, claiming):
-        if value.get("operation") != CLAIM_OPERATION:
+    identities = ({record.get("payload", {}).get("id") for record in records if record.get("type") == "session_meta"}
+                  if harness == "codex" else {record.get("sessionId") for record in records if record.get("sessionId")})
+    identities = set(allowed_sessions) if allowed_sessions is not None else identities
+    for _, source, value in bound_outputs(records, harness, claiming, isolated_polls=True):
+        if (value.get("operation") != CLAIM_OPERATION
+                or (value.get("claim") or {}).get("session") not in identities):
             continue
         issue = value.get("issue") or {}
         repo, number = issue.get("repo"), issue.get("number")
@@ -896,8 +976,11 @@ def claim_targets(records, harness):
                     resolved = {(explicit[1], int(explicit[2]))}
                 elif re.fullmatch(r"#?[1-9]\d*", target):
                     number = int(target.removeprefix("#"))
-                    repos = {argv[i + 1] for i, token in enumerate(argv[:-1]) if token in {"--repo", "-R"}}
-                    repos.update(token.removeprefix("--repo=") for token in argv if token.startswith("--repo="))
+                    normalized = helper_argv(argv)
+                    repos = {normalized[i + 1] for i, token in enumerate(normalized[:-1])
+                             if token == "-R" or repository_option(token) and "=" not in token}
+                    repos.update(token.partition("=")[2] for token in normalized
+                                 if repository_option(token) and "=" in token)
                     repos = {repo for repo in repos if re.fullmatch(r"[\w.-]+/[\w.-]+", repo)}
                     # Only isolated native output can establish an invocation's
                     # destination; another command may print a saved receipt.

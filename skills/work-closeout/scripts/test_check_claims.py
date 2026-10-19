@@ -557,8 +557,6 @@ class ClaimCloseoutTests(unittest.TestCase):
                         self.assertTrue(released["claims_clear"], released)
                         self.assertEqual({r["repository"] for r in released["released_claims"]}, {REPO, foreign})
                         client_comments.pop()
-                    else:
-                        self.assertTrue(any("lacks canonical command scope" in reason for reason in report["blocked"]), report)
                     self.assertFalse(any("/None" in str(call) for call in self.reader.get_json.call_args_list))
 
     def test_dynamic_claim_with_its_own_canonical_receipt_still_requires_release(self):
@@ -772,6 +770,113 @@ class ClaimCloseoutTests(unittest.TestCase):
             result = helper.check(self.reader, "test", entry, ACTOR, reader_for_repo=lambda *_: self.reader)
         self.assertEqual({call.args[1] for call in discover.call_args_list}, {"test", "second"})
         self.assertFalse(result["claims_clear"])  # Missing source readback cannot be an empty all-clear.
+
+
+    def test_foreign_reads_pr_creation_and_admission_links_do_not_expand_claim_inventory(self):
+        from test_claim_receipts import history, claim as native_claim, output, SESSION as native_session
+        self.comments = [comment(10, helper.claim.marker({**SOURCE, "session": native_session})),
+                         comment(11, "Released claim 10\nSession: " + native_session, at="2026-01-01T00:02:00Z")]
+        for harness in ("codex", "claude"):
+            for command in (
+                "gh issue view -R upstream/x 5",
+                "gh pr view https://github.com/upstream/x/pull/9",
+                "uv run gh-plan.py --repo upstream/x show 1",
+                "gh pr create --repo upstream/x",
+                "uv run gh-pr.py --repo upstream/x create",
+                "uv run gh-plan.py --repo test/a claim 1 --admission-link https://github.com/upstream/x/issues/9",
+            ):
+                with self.subTest(harness=harness, command=command):
+                    rows = history(harness, native_claim(REPO), {})
+                    if harness == "codex":
+                        rows[3]["payload"]["arguments"] = json.dumps({"cmd": command})
+                    else:
+                        rows[3]["message"]["content"][0]["input"] = {"command": command}
+                    rows[4] = output({"exit_code": 0, "output": ""}, harness, "tool-1")
+                    for row in rows:
+                        row["timestamp"] = SOURCE["claimed_at"]
+                    entry = {"session_id": native_session, "harness": harness, "_transcript_records": rows}
+                    foreign_reader = Mock(side_effect=AssertionError("unrelated repository must not be read"))
+                    with patch.object(helper.sessions, "discover", return_value=({(REPO, 1)}, [REPO])):
+                        report = helper.check(self.reader, [], entry, ACTOR, reader_for_repo=foreign_reader)
+                    self.assertTrue(report["claims_clear"], report)
+                    self.assertEqual(report["coverage"]["repositories"], [REPO])
+                    foreign_reader.assert_not_called()
+
+    def test_child_process_handle_cannot_borrow_a_parent_claim_invocation(self):
+        from test_claim_receipts import history, claim as native_claim, output, SESSION as native_session
+        root = history("codex", {})
+        root[1]["payload"]["arguments"] = json.dumps({"cmd": "uv run gh-plan.py --repo test/a claim 1"})
+        root[2] = output({"session_id": 123}, "codex", "tool-0")
+        root[-2:-2] = [
+            {"payload": {"type": "function_call", "name": "write_stdin", "call_id": "root-poll", "arguments": '{"session_id":123}'}},
+            output({"exit_code": 0, "output": ""}, "codex", "root-poll"),
+        ]
+        child = history("codex")
+        child[0]["payload"]["id"] = "child-native-session"
+        saved = {**native_claim("upstream/x", 7), "issue": {"repo": "upstream/x", "number": 7}}
+        child[-2:-2] = [
+            {"payload": {"type": "function_call", "name": "write_stdin", "call_id": "child-poll", "arguments": '{"session_id":123}'}},
+            output(saved, "codex", "child-poll"),
+        ]
+        for row in root + child:
+            row["timestamp"] = SOURCE["claimed_at"]
+        nodes = [{"session_id": native_session, "harness": "codex", "records": root},
+                 {"session_id": "child-native-session", "harness": "codex", "records": child,
+                  "transcript": "/fixture/child.jsonl", "digest": helper.claim_history.fingerprint(child)}]
+        entry = {"session_id": native_session, "harness": "codex", "_claim_histories": nodes,
+                 "_transcript_records": root + child}
+        self.comments = [comment(10, helper.claim.marker({**SOURCE, "session": native_session})),
+                         comment(11, "Released claim 10\nSession: " + native_session, at="2026-01-01T00:02:00Z")]
+        foreign_reader = Mock(side_effect=AssertionError("a different node's process cannot supply a receipt"))
+        with patch.object(helper.sessions, "discover", return_value=({(REPO, 1)}, [REPO])):
+            report = helper.check(self.reader, [], entry, ACTOR, reader_for_repo=foreign_reader)
+        self.assertTrue(report["claims_clear"], report)
+        self.assertEqual(report["coverage"]["repositories"], [REPO])
+        foreign_reader.assert_not_called()
+
+
+
+    def test_child_canonical_receipt_may_use_the_inherited_parent_session(self):
+        from test_claim_receipts import history, claim as native_claim, SESSION as native_session
+        root = history("codex")
+        child = history("codex", native_claim(REPO))
+        child[0]["payload"]["id"] = "child-native-session"
+        for row in root + child:
+            row["timestamp"] = SOURCE["claimed_at"]
+        nodes = [{"session_id": native_session, "harness": "codex", "records": root},
+                 {"session_id": "child-native-session", "harness": "codex", "records": child,
+                  "transcript": "/fixture/child.jsonl", "digest": helper.claim_history.fingerprint(child)}]
+        entry = {"session_id": native_session, "harness": "codex", "_claim_histories": nodes,
+                 "_transcript_records": root + child}
+        self.comments = [comment(10, helper.claim.marker({**SOURCE, "session": native_session}))]
+        with patch.object(helper.sessions, "discover", return_value=({(REPO, 1)}, [REPO])):
+            self.assertFalse(helper.check(self.reader, [], entry, ACTOR)["claims_clear"])
+            self.comments.append(comment(11, "Released claim 10\nSession: " + native_session, at="2026-01-01T00:02:00Z"))
+            report = helper.check(self.reader, [], entry, ACTOR)
+        self.assertTrue(report["claims_clear"], report)
+        self.assertTrue(report["coverage"]["complete"], report)
+
+    def test_dynamic_issue_cannot_use_a_default_repository_as_destination_proof(self):
+        from test_claim_receipts import history, output, SESSION as native_session
+        for harness in ("codex", "claude"):
+            with self.subTest(harness=harness):
+                rows = history(harness, {})
+                command = "uv run gh-plan.py --repo test/a claim \"$ISSUE\" > claim.json"
+                if harness == "codex":
+                    rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                else:
+                    rows[1]["message"]["content"][0]["input"] = {"command": command}
+                rows[2] = output({"exit_code": 0, "output": ""}, harness, "tool-0")
+                for row in rows:
+                    row["timestamp"] = SOURCE["claimed_at"]
+                entry = {"session_id": native_session, "harness": harness, "_transcript_records": rows,
+                         "_extra_repositories": [REPO]}
+                self.comments = [comment(10, helper.claim.marker({**SOURCE, "session": native_session})),
+                                 comment(11, "Released claim 10\nSession: " + native_session, at="2026-01-01T00:02:00Z")]
+                with patch.object(helper.sessions, "discover", return_value=({(REPO, 1)}, [REPO])):
+                    report = helper.check(self.reader, [], entry, ACTOR)
+                self.assertFalse(report["claims_clear"], report)
+                self.assertFalse(report["coverage"]["complete"], report)
 
 
 if __name__ == "__main__":

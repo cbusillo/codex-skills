@@ -166,20 +166,22 @@ def check(reader, owner, entry, actor, *, reader_for_repo=None):
             found, missing = claim_receipts.sources(node["records"], node["harness"], native)
             expected.extend(found)
             errors.extend(missing)
-    records = entry.get("_transcript_records", [])
     native_repos = {r["repository"] for r in expected}
     native_issues = {(r["repository"], r["record"]) for r in expected}
-    for _, value in claim_receipts.outputs(records, entry["harness"]):
-        if value.get("operation") == claim_receipts.CLAIM_OPERATION:
-            repo = (value.get("issue") or {}).get("repo")
-            if isinstance(repo, str) and sessions.REPO.fullmatch(repo):
-                native_repos.add(repo)
-                number = (value.get("issue") or {}).get("number")
-                if type(number) is int and number > 0:
-                    native_issues.add((repo, number))
+    for node in histories:
+        # Native process handles are local to their transcript, even when two
+        # delegated histories happen to reuse the same numeric ID.
+        for _, value in claim_receipts.outputs(node["records"], node["harness"]):
+            if value.get("operation") == claim_receipts.CLAIM_OPERATION:
+                repo = (value.get("issue") or {}).get("repo")
+                if isinstance(repo, str) and sessions.REPO.fullmatch(repo):
+                    native_repos.add(repo)
+                    number = (value.get("issue") or {}).get("number")
+                    if type(number) is int and number > 0:
+                        native_issues.add((repo, number))
+        native_repos.update(claim_receipts.target_repositories(node["records"], node["harness"], allowed_sessions=native_sessions))
     native_repos.update(entry.get("_extra_repositories", []))
-    native_repos.update(claim_receipts.target_repositories(records, entry["harness"]))
-    targets = [t for node in histories for t in claim_receipts.claim_targets(node["records"], node["harness"])]
+    targets = [t for node in histories for t in claim_receipts.claim_targets(node["records"], node["harness"], allowed_sessions=native_sessions)]
     unresolved = [t for t in targets if t["repository"] is None]
     if unresolved and not entry.get("_extra_repositories"):
         raise ValueError("claim invocation lacks canonical command scope; --repository may add inventory but cannot prove its destination; use conditional/no")
@@ -200,7 +202,8 @@ def check(reader, owner, entry, actor, *, reader_for_repo=None):
         raise ValueError("default installation repository inventory is empty")
     owners = {owner} if isinstance(owner, str) else set(owner)
     owners.update(r.split("/")[0] for r in default_repos | native_repos)
-    if (errors or not expected and list(claim_receipts.ownership_activity(records, entry["harness"]))) and not native_repos:
+    activity = any(list(claim_receipts.ownership_activity(node["records"], node["harness"])) for node in histories)
+    if (errors or not expected and activity) and not native_repos:
         raise ValueError("claim receipt lacks repository context; add its exact --repository before reconciliation")
     # Renewal/uncertain-write receipts can refer to a source older than this
     # transcript prefix. Their canonical record must be read independently of
