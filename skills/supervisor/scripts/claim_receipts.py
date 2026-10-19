@@ -227,6 +227,21 @@ def javascript_projection(native):
     string_token = re.compile(JS_STRING)
     regex = re.compile(r"/(?:\\[^\r\n\u2028\u2029]|\[(?:\\[^\r\n\u2028\u2029]|[^\]\\\r\n\u2028\u2029])*\]|[^/\\[\r\n\u2028\u2029])+/[A-Za-z]*")
     complete = True
+    parentheses, control_ends = [], set()
+
+    def previous(cursor):
+        # Only the preceding token and punctuation matter here. Reading the
+        # whole projected prefix at every slash was quadratic in cell length.
+        end = cursor
+        while end and code[end - 1].isspace():
+            end -= 1
+        begin = end
+        while begin and (code[begin - 1].isalnum() or code[begin - 1] in "_$"):
+            begin -= 1
+        before = begin
+        while before and code[before - 1].isspace():
+            before -= 1
+        return end, "".join(code[begin:end]), code[before - 1] if before else ""
 
     def mask(start, end):
         atom = re.compile(r"[\s\S]{" + str(end - start) + "}").match(native, start)
@@ -277,14 +292,30 @@ def javascript_projection(native):
             elif char == "`":
                 cursor = template(cursor)
             elif char == "/":
-                prefix = "".join(code[:cursor]).rstrip()
-                keyword = re.search(r"(?:^|[ \t\r\n\u2028\u2029;{}(=,:!?&|~+\-*/%])(?P<keyword>return|throw|case|delete|typeof|void|yield|await|in|else|do)$", prefix)
-                keyword_prefix = keyword is not None and not prefix[:keyword.start("keyword")].rstrip().endswith(".")
-                expression_start = not prefix or prefix[-1] in "=(:,[!&|?{;" or keyword_prefix
-                atom = regex.match(native, cursor) if expression_start else None
+                end, word, before = previous(cursor)
+                keyword_prefix = word in {"return", "throw", "case", "delete", "typeof", "void", "yield", "await", "in", "else", "do"} and before != "."
+                expression_start = (not end or code[end - 1] in "=(:,[!&|?{;" or keyword_prefix
+                                    or end >= 2 and code[end - 2:end] == ["=", ">"]
+                                    or end - 1 in control_ends)
+                possible = regex.match(native, cursor)
+                atom = possible if expression_start else None
+                if (possible is not None and atom is None and not word and end and code[end - 1] not in ")]"
+                        and (any(c in possible[0] for c in "\"'`") or "//" in possible[0] or "/*" in possible[0])):
+                    # In an ambiguous grammar position, a possible regex must
+                    # not let its internal quotes/slashes erase a real suffix.
+                    complete = False
                 cursor = atom.end() if atom is not None else cursor + 1
                 if atom is not None:
                     mask(start, cursor)
+            elif char == "(":
+                end, word, before = previous(cursor)
+                for_await = word == "await" and previous(end - len(word))[1] == "for"
+                parentheses.append((word in {"if", "while", "for", "with", "switch", "catch"} or for_await) and before != ".")
+                cursor += 1
+            elif char == ")":
+                if parentheses and parentheses.pop():
+                    control_ends.add(cursor)
+                cursor += 1
             elif char == "}":
                 if interpolation and braces == 0:
                     return cursor + 1
@@ -339,39 +370,216 @@ def javascript_projection(native):
 
 
 def javascript_generated_sources(value):
-    """Discover literal source only through projected source-call arguments."""
-    pending, seen = [value], {value}
+    """Discover generated code once, carrying only reached literal bindings.
+
+    This is source discovery, never execution or command/result binding. The
+    shared projection separates source arguments from inert fixtures and the
+    existing delimiter splitter joins known literal source fragments. Unknown
+    computation keeps its selected operands as possible command input.
+    """
+    pending, seen, queued = [(value, {}, {}, False)], set(), {(value, (), ())}
     while pending:
-        current = pending.pop()
+        current, inherited, inherited_globals, generated = pending.pop()
         current_atoms, current_code, regions, _ = javascript_projection(current)
-        bindings = {m[1]: (m.start(2), m.end(2))
-                    for m in re.finditer(r"\b(?:const|let|var)\s+(\w+)\s*=([^;\n]*)", current_code)}
-        selected, visited = list(regions), set()
-        while selected:
-            start, end = selected.pop()
-            if (start, end) in visited:
-                continue
-            visited.add((start, end))
-            selected.extend(bindings[word] for word in re.findall(r"\b\w+\b", current_code[start:end])
-                            if word in bindings)
-            for literal in current_atoms:
-                if not start <= literal.start() < end:
-                    continue
-                try:
-                    text = javascript_string(literal[0])
-                except ValueError:
-                    raw = literal[0]
-                    if raw[:1] not in {"`", "}"} or not raw.endswith(("${", "`")):
-                        continue
-                    part = raw[1:-2] if raw.endswith("${") else raw[1:-1]
+        bindings = dict(inherited)
+        declarations = {}
+        for declaration in re.finditer(r"\b(?:const|let|var)\s+", current_code):
+            end = node_expression_parts(current_code, declaration.end(), len(current_code), ";\n")[0][1]
+            for begin, finish in node_expression_parts(current_code, declaration.end(), end):
+                binding = re.match(r"\s*(\w+)\s*=", current_code[begin:finish])
+                if binding:
+                    declarations[binding[1]] = (begin + binding.end(), finish)
+
+        def literal(expression, active=()):
+            expression = expression.strip()
+            # Declaration aliases are a worklist walk, not Python recursion:
+            # a long but finite source alias chain must remain inspectable.
+            while expression in declarations:
+                if expression in active:
+                    return None
+                start, end = declarations[expression]
+                active = (*active, expression)
+                expression = current[start:end].strip()
+            if expression in active:
+                return None
+            if expression in bindings:
+                return bindings[expression]
+            try:
+                return javascript_string(expression)
+            except ValueError:
+                pass
+            stringify = re.fullmatch(r"JSON\.stringify\(\s*(\w+)\s*\)", expression)
+            if stringify:
+                operand = literal(stringify[1], active)
+                return json.dumps(operand, ensure_ascii=False) if operand is not None else None
+            if expression.startswith("`") and expression.endswith("`"):
+                substitutions = list(re.finditer(r"\$\{([^{}]*)\}", expression))
+                if substitutions:
+                    pieces, start = [], 1
+                    for match in substitutions:
+                        operand = literal(match[1], active)
+                        if operand is None:
+                            return None
+                        try:
+                            pieces.append(javascript_string("`" + expression[start:match.start()] + "`"))
+                        except ValueError:
+                            return None
+                        pieces.append(operand)
+                        start = match.end()
                     try:
-                        text = javascript_string("`" + part + "`")
+                        pieces.append(javascript_string("`" + expression[start:-1] + "`"))
                     except ValueError:
+                        return None
+                    return "".join(pieces)
+            _, projected, _, _ = javascript_projection(expression)
+            parts = node_expression_parts(projected, 0, len(projected), "+")
+            if len(parts) > 1:
+                values = [literal(expression[start:end], active) for start, end in parts]
+                if all(value is not None for value in values):
+                    return "".join(values)
+            return None
+
+        for name in declarations:
+            text = literal(name)
+            if text is not None:
+                bindings[name] = text
+        globals_ = dict(inherited_globals)
+        for match in re.finditer(r"\b(?:globalThis|global|window|self)\s*\.\s*(\w+)\s*=([^;\n]*)", current_code):
+            text = literal(current[match.start(2):match.end(2)])
+            if text is not None:
+                globals_[match[1]] = text
+        global_context = tuple(sorted(globals_.items()))
+        context = tuple(sorted(bindings.items()))
+        key = current, context, global_context
+        if key in seen:
+            continue
+        seen.add(key)
+        if generated:
+            text, projected = current, current_code
+            replacements = []
+            command_regions = [(call.end(), node_expression_parts(projected, call.end(), len(projected))[0][1])
+                               for call in javascript_call_starts(text, r"\btools\.exec_command\s*\(")]
+            for match in re.finditer(r"(\b(?:cmd|command)\s*:\s*|\btools\.apply_patch\s*\(\s*)((?:(?:globalThis|global|window|self)\s*\.\s*)?(\w+))\b", projected):
+                command_position = any(begin <= match.start() < finish for begin, finish in command_regions)
+                if not command_position and "apply_patch" not in match[1]:
+                    continue
+                operands = globals_ if "." in match[2] else bindings
+                end = node_expression_parts(projected, match.start(2), len(projected))[0][1]
+                operand = literal(current[match.start(2):end])
+                if operand is not None:
+                    replacements.append((match.start(2), end, json.dumps(operand)))
+                elif match[3] in operands:
+                    replacements.append((match.start(2), match.end(2), json.dumps(operands[match[3]])))
+            for match in re.finditer(r"([\"'])(cmd|command)\1\s*:\s*((?:(?:globalThis|global|window|self)\s*\.\s*)?(\w+))\b", text):
+                if (not any(begin <= match.start() < finish for begin, finish in command_regions)
+                        or projected[match.start(3):match.end(3)] != match[3]):
+                    continue
+                operands = globals_ if "." in match[3] else bindings
+                end = node_expression_parts(projected, match.start(3), len(projected))[0][1]
+                operand = literal(current[match.start(3):end])
+                if operand is not None:
+                    replacements.append((match.start(3), end, json.dumps(operand)))
+                elif match[4] in operands:
+                    replacements.append((match.start(3), match.end(3), json.dumps(operands[match[4]])))
+            for match in re.finditer(r"[{,]\s*(cmd|command)\s*(?=[,}])", projected):
+                if (match[1] in bindings
+                        and any(begin <= match.start() < finish for begin, finish in command_regions)):
+                    replacements.append((match.start(1), match.end(1), match[1] + ":" + json.dumps(bindings[match[1]])))
+            for start, end, replacement in sorted(replacements, reverse=True):
+                text = text[:start] + replacement + text[end:]
+            yield text
+        selected, visited, sources = [], set(), []
+        for start, end in regions:
+            call = re.search(r"\b(\w+)\s*\(\s*$", current_code[:start])
+            name = call[1] if call else "constructor"
+            direct = name == "eval" and not current_code[:call.start()].rstrip().endswith(".")
+            aliases = set()
+            while name in declarations and name not in aliases:
+                aliases.add(name)
+                begin, finish = declarations[name]
+                name = current_code[begin:finish].strip()
+            constructor = name not in {"eval", "import"}
+            child_bindings = {**globals_, **bindings} if direct else dict(globals_)
+            parts = node_expression_parts(current_code, start, end)
+            if constructor:
+                # Function constructors have their global scope and explicit
+                # parameters, never the enclosing module's lexical bindings.
+                following = end + 1
+                while following < len(current_code) and current_code[following].isspace():
+                    following += 1
+                actuals = []
+                if following < len(current_code) and current_code[following] == "(":
+                    actuals = [(begin, finish) for begin, finish in node_expression_parts(current_code, following + 1, len(current_code))
+                               if current[begin:finish].strip()]
+                parameters = [literal(current[begin:finish]) for begin, finish in parts[:-1]]
+                parameter_parts = []
+                for parameter in parameters:
+                    if parameter is None:
                         continue
-                if text not in seen:
-                    seen.add(text)
-                    yield text
-                    pending.append(text)
+                    _, parameter_code, _, _ = javascript_projection(parameter)
+                    parameter_parts.extend(parameter[begin:finish].strip()
+                                           for begin, finish in node_expression_parts(parameter_code, 0, len(parameter)))
+                for parameter in parameter_parts:
+                    for parameter_name in re.findall(r"\b[A-Za-z_$][\w$]*\b", parameter):
+                        child_bindings.pop(parameter_name, None)
+                for index, parameter in enumerate(parameter_parts):
+                    named = re.fullmatch(r"([A-Za-z_$][\w$]*)(?:\s*=\s*([\s\S]*))?", parameter)
+                    if named is None:
+                        continue
+                    expression = current[slice(*actuals[index])].strip() if index < len(actuals) else "undefined"
+                    operand = literal(expression)
+                    if expression == "undefined" and named[2] is not None:
+                        try:
+                            operand = javascript_string(named[2])
+                        except ValueError:
+                            operand = globals_.get(named[2].strip())
+                    if operand is not None:
+                        child_bindings[named[1]] = operand
+                parts = parts[-1:]
+            else:
+                parts = parts[:1]
+            selected.extend((begin, finish, child_bindings) for begin, finish in parts)
+        while selected:
+            start, end, child_bindings = selected.pop()
+            selected_key = start, end, tuple(sorted(child_bindings.items()))
+            if selected_key in visited:
+                continue
+            visited.add(selected_key)
+            parts = node_expression_parts(current_code, start, end)
+            for begin, finish in parts:
+                expression = current[begin:finish]
+                text = literal(expression)
+                if text is not None:
+                    sources.append((text, False, child_bindings))
+                    continue
+                # An unresolved source expression may concatenate or transform
+                # selected literals. Preserve those inputs, not unrelated data.
+                reached = [declarations[word] for word in re.findall(r"\b\w+\b", current_code[begin:finish])
+                           if word in declarations]
+                selected.extend((begin, finish, child_bindings) for begin, finish in reached)
+                for word in re.findall(r"\b\w+\b", current_code[begin:finish]):
+                    if word in bindings:
+                        sources.append((bindings[word], True, child_bindings))
+                for atom in current_atoms:
+                    if begin <= atom.start() < finish:
+                        try:
+                            sources.append((javascript_string(atom[0]), True, child_bindings))
+                        except ValueError:
+                            pass
+        for text, uncertain, child_bindings in sources:
+            child_context = tuple(sorted(child_bindings.items()))
+            nested_key = text, child_context, global_context
+            if nested_key not in queued:
+                queued.add(nested_key)
+                pending.append((text, child_bindings, globals_, True))
+            if uncertain:
+                # Computed source may turn a selected literal into shell or
+                # patch input. These alternatives affect discovery only; they
+                # cannot bind a native result or attest completion.
+                carrier = "tools.apply_patch(" + json.dumps(text) + ")" if text.startswith("*** Begin Patch") else "tools.exec_command({cmd:" + json.dumps(text) + "})"
+                if (carrier, child_context, global_context) not in queued:
+                    queued.add((carrier, child_context, global_context))
+                    yield carrier
 
 
 def javascript_call_starts(native, pattern):
@@ -2062,7 +2270,7 @@ def shell_effect_order(tokens, events):
     return list(walk(0, len(tokens)))
 
 
-def unparsed_command_text(value):
+def unparsed_command_text(value, *, generated_sources=True):
     """Keep command expressions and referenced declarations, excluding JS prose.
 
     This is conservative command discovery, not evaluation or completion proof.
@@ -2078,7 +2286,7 @@ def unparsed_command_text(value):
     value = "".join(unparsed)
     atoms, code, _, complete = javascript_projection(value)
     literals = [atom for atom in atoms if not atom[0].lstrip(" \t").startswith(("//", "/*"))]
-    generated = list(javascript_generated_sources(value))
+    generated = list(javascript_generated_sources(value)) if generated_sources else []
     def region(start, delimiter):
         start += len(re.match(r"\s*", value[start:])[0])
         end = re.search(delimiter, code[start:])
@@ -2087,15 +2295,28 @@ def unparsed_command_text(value):
                     for m in re.finditer(r"\b(?:const|let|var)\s+(\w+)\s*=", code)}
     pending = [region(m.end(), r"[,};\n]") for m in re.finditer(r"\b(?:cmd|command)\s*:", code)]
     pending += [(m.start(1), m.end(1)) for m in re.finditer(r"[{,]\s*(cmd|command)\s*(?=[,}])", code)]
+    command_regions = [(call.end(), node_expression_parts(code, call.end(), len(code))[0][1])
+                       for call in javascript_call_starts(value, r"\btools\.exec_command\s*\(")]
+    for match in re.finditer(r"([\"'])(cmd|command)\1\s*:", value):
+        key_end = match.start() + len(match[2]) + 2
+        if (any(atom.start() == match.start() and atom.end() == key_end for atom in atoms)
+                and any(begin <= match.start() < end for begin, end in command_regions)):
+            pending.append(region(match.end(), r"[,};\n]"))
+
     seen, pieces, unresolved = set(), [], False
     if not complete:
         # Truncated/invalid native source is never proof that a command ended
         # before its unparsed suffix. Preserve it conservatively.
         pieces.append(value)
     for text in generated:
-        pieces.extend(shlex.join(argv) for argv in shell_commands("functions.exec", text)
-                      if ownership_command(argv))
-        pieces.append(unparsed_command_text(text))
+        for match in composed_shell_fields(text):
+            try:
+                command = composed_string(match[1], text)
+            except ValueError:
+                continue
+            pieces.extend(shlex.join(argv) for argv in shell_commands("exec_command", {"cmd": command})
+                          if ownership_command(argv))
+        pieces.append(unparsed_command_text(text, generated_sources=False))
     def literal_writers():
         for literal in literals:
             try:

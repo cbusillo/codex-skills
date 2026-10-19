@@ -3017,6 +3017,130 @@ os.system(get())
                 with self.subTest(harness=harness, body=body):
                     self.assertEqual(receipts.ownership_state(rows, harness)["pending"], expected)
 
+    def test_regex_after_arrow_and_control_header_preserves_tool_suffixes(self):
+        writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 5 > claim.json'
+        prefixes = (
+            r'const lines=["https://x"]; lines.filter(s => /^https?:\/\//.test(s)); ',
+            "const lines=['x']; lines.filter(s => /'/ .test(s)); ",
+            "if(true) /'/.test('x'); ", 'if((true)) /"/.test("x"); ',
+            'let n=0; while(n++ < 1) /`/.test("x"); ',
+            'for(let n=0;n<1;n++) /[/*]/.test("x"); ',
+            "for await(const line of ['x']) /'/ .test(line); ",
+        )
+        for command, owning in ((writer, True), (writer + ' &', True), ('echo safe', False)):
+            call = 'text(await tools.exec_command({cmd:' + json.dumps(command) + '}));'
+            generated = 'await eval(' + json.dumps('(async()=>{' + call + '})()') + ');'
+            for prefix in prefixes:
+                for suffix in (call, generated):
+                    rows = history('codex', {})
+                    rows[1]['payload'].update(name='functions.exec', arguments=prefix + suffix)
+                    rows[2] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-0')
+                    with self.subTest(prefix=prefix, suffix=suffix):
+                        self.assertEqual(receipts.ownership_state(rows, 'codex')['pending'], owning)
+                        self.assertEqual(list(receipts.shell_texts('functions.exec', prefix + suffix)), [command])
+            patch = '*** Begin Patch\n*** Add File: /repo/claim.sh\n+' + command + '\n*** End Patch'
+            for prefix in prefixes:
+                cell = prefix + 'text(await tools.apply_patch(' + json.dumps(patch) + '));'
+                with self.subTest(patch=cell):
+                    self.assertEqual(list(receipts.native_file_effects('functions.exec', cell)),
+                                     list(receipts.native_file_effects('apply_patch', patch)))
+        cell = 'const a=4,b=2; const ratio=a / b // ' + call + '\ntext(ratio);'
+        self.assertEqual(list(receipts.shell_texts('functions.exec', cell)), [])
+        self.assertFalse(receipts.opaque_ownership('functions.exec', cell))
+
+    def test_generated_sources_keep_enclosing_command_bindings_and_computed_operands(self):
+        writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 5 > claim.json'
+        for command, owning in ((writer, True), (writer + ' &', True), ('echo safe', False),
+                                ('echo ' + shlex.quote(writer), False)):
+            binding = 'const c=' + json.dumps(command) + '; '
+            cells = (
+                binding + 'await eval("(async()=>{text(await tools.exec_command({cmd:c}));})()");',
+                binding + 'await eval(' + json.dumps('(async()=>{text(await tools.exec_command({"cmd":c}));})()') + ');',
+                binding + 'await eval(' + json.dumps("(async()=>{text(await tools.exec_command({'command':c}));})()") + ');',
+                binding + 'await eval(' + json.dumps('(async()=>{text(await tools.exec_command({"cmd":c + " && echo done"}));})()') + ');',
+                'const a="safe", c=' + json.dumps(command) + '; await eval("(async()=>{text(await tools.exec_command({cmd:c}));})()");',
+                binding + 'await eval(`(async()=>{text(await tools.exec_command({cmd:${JSON.stringify(c)}}));})()`);',
+                binding + 'await eval("(async()=>{text(await tools.exec_command({cmd:" + JSON.stringify(c) + "}));})()");',
+                'const cmd=' + json.dumps(command) + '; await eval("(async()=>{text(await tools.exec_command({cmd}));})()");',
+                binding + 'const encode=x=>JSON.stringify(x); await eval("(async()=>{text(await tools.exec_command({cmd:" + encode(c) + "}));})()");',
+            )
+            for cell in cells:
+                rows = history('codex', {})
+                rows[1]['payload'].update(name='functions.exec', arguments=cell)
+                rows[2] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-0')
+                with self.subTest(cell=cell):
+                    self.assertEqual(receipts.ownership_state(rows, 'codex')['pending'], owning)
+            inert = binding + 'await eval("text(c)");'
+            self.assertEqual(list(receipts.shell_texts('functions.exec', inert)), [])
+            self.assertFalse(receipts.opaque_ownership('functions.exec', inert))
+
+    def test_generated_bound_file_writes_reach_only_later_execution(self):
+        writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 5'
+        for program, owning in (('import os\nos.system(' + repr(writer) + ')\n', True),
+                                ('print(' + repr(writer) + ')\n', False)):
+            shell = "cat > /repo/run.py <<'PY'\n" + program + 'PY'
+            patch = '*** Begin Patch\n*** Add File: /repo/run.py\n' + ''.join('+' + line + '\n' for line in program.splitlines()) + '*** End Patch'
+            cells = (
+                'const c=' + json.dumps(shell) + '; await eval("(async()=>{text(await tools.exec_command({cmd:c}));})()");',
+                'const c=' + json.dumps(shell) + '; await eval(' + json.dumps('(async()=>{text(await tools.exec_command({"cmd":c}));})()') + ');',
+                'const c=' + json.dumps(shell) + '; await Function("c",' + json.dumps('return tools.exec_command({cmd:c});') + ')(c);',
+                'const c=' + json.dumps(shell) + '; await eval(`(async()=>{text(await tools.exec_command({cmd:${JSON.stringify(c)}}));})()`);',
+                'const c=' + json.dumps(shell) + '; const encode=x=>JSON.stringify(x); await eval("(async()=>{text(await tools.exec_command({cmd:" + encode(c) + "}));})()");',
+                'const p=' + json.dumps(patch) + '; await eval("(async()=>{text(await tools.apply_patch(p));})()");',
+            )
+            for cell in cells:
+                for command, executes in (('python3 /repo/run.py', True), ('cat /repo/run.py', False)):
+                    rows = history('codex', {}, {})
+                    rows[1]['payload'].update(name='functions.exec', arguments=cell)
+                    rows[2] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-0')
+                    rows[3]['payload']['arguments'] = json.dumps({'cmd': command})
+                    rows[4] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-1')
+                    with self.subTest(cell=cell, command=command):
+                        self.assertEqual(receipts.ownership_state(rows, 'codex')['pending'], owning and executes)
+
+    def test_nested_generated_sources_are_discovered_once(self):
+        writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 5'
+        for depth in (6, 12):
+            cell = 'text(await tools.exec_command({cmd:' + json.dumps(writer) + '}));'
+            for _ in range(depth):
+                cell = 'await eval(' + json.dumps('(async()=>{' + cell + '})()') + ');'
+            visited = []
+            original = receipts.javascript_generated_sources
+            def discover(source):
+                visited.append(source)
+                yield from original(source)
+            with patch.object(receipts, 'javascript_generated_sources', side_effect=discover):
+                text = receipts.unparsed_command_text(cell)
+            self.assertIn(writer, text)
+            self.assertEqual(len(visited), len(set(visited)), 'generated descendants were repeatedly rediscovered')
+
+    def test_generated_source_bindings_respect_eval_and_constructor_scope(self):
+        writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 5'
+        source = 'return tools.exec_command({cmd:c});'
+        async_source = '(async()=>{await tools.exec_command({cmd:c});})()'
+        cells = [
+            ('const c=' + json.dumps(writer) + '; try{await Function(' + json.dumps(source) + ')();}catch{}', False),
+            ('const c=' + json.dumps(writer) + '; try{await (async()=>{}).constructor(' + json.dumps(source) + ')();}catch{}', False),
+            ('const c=' + json.dumps(writer) + '; const indirect=eval; try{await indirect(' + json.dumps(async_source) + ');}catch{}', False),
+            ('const c=' + json.dumps(writer) + '; await eval(' + json.dumps(async_source) + ');', True),
+            ('const c=' + json.dumps(writer) + '; await Function("c",' + json.dumps(source) + ')(c);', True),
+            ('const c=' + json.dumps(writer) + '; await Function("c",' + json.dumps(source) + ')("echo safe");', False),
+            ('globalThis.c=' + json.dumps(writer) + '; await Function(' + json.dumps(source) + ')();', True),
+            ('globalThis.c=' + json.dumps(writer) + '; const c="echo safe"; await eval(' + json.dumps(async_source) + ');', False),
+            ('globalThis.c=' + json.dumps(writer) + '; const c="echo safe"; await Function(' + json.dumps(source) + ')();', True),
+            ('await Function(' + json.dumps('c=' + json.dumps(writer)) + ',' + json.dumps(source) + ')();', True),
+            ('const c=' + json.dumps(writer) + '; await eval(' + json.dumps('(async()=>{const c="echo safe";await tools.exec_command({cmd:c});})()') + ');', False),
+            ('const c=' + json.dumps(writer) + '; await eval("text({cmd:c})");', False),
+            ('const c=' + json.dumps(writer) + '; await eval(' + json.dumps('text({"cmd":c})') + ');', False),
+            ('const cmd=' + json.dumps(writer) + '; await eval("const object={cmd};text(object.cmd)");', False),
+        ]
+        for cell, owning in cells:
+            rows = history('codex', {})
+            rows[1]['payload'].update(name='functions.exec', arguments=cell)
+            rows[2] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-0')
+            with self.subTest(cell=cell):
+                self.assertEqual(receipts.ownership_state(rows, 'codex')['pending'], owning)
+
     def test_composed_regex_and_nested_templates_keep_executable_calls_visible(self):
         writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 5 > claim.json'
         for command, owning in ((writer, True), (writer + ' &', True), ('echo safe', False)):

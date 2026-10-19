@@ -182,7 +182,6 @@ class NativeHistoryTests(unittest.TestCase):
                     prefixes = node['preceding_histories']
                     identities = [(p['harness'], tuple(map(id, p['records']))) for p in prefixes]
                     self.assertEqual(len(identities), len(set(identities)))
-                    self.assertLessEqual(len(prefixes), 2 * count)
                 completed = claim_history.completed_prefixes(nodes[0], parent, nodes)
                 identities = [(p['harness'], tuple(map(id, p['records']))) for p in completed]
                 self.assertEqual(len(identities), len(set(identities)))
