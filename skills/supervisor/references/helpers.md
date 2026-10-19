@@ -1912,9 +1912,11 @@ caller's account home. Optional receipt enrichment failures do not stop ordinary
 closure or claim release. The mandatory source-action barrier described below
 still applies, and legacy logs are never upgraded by assumption.
 
-An idle-loaded thread can be ended only with that matching receipt, exact
-authored releases of its recorded claims, unchanged transcript copies around a
-second native idle read, fresh process checks and complete native coverage.
+An idle-loaded thread needs either that matching receipt or full current
+native recovery proof with validated source ownership, unchanged authenticated
+source copies around the native reads, fresh process checks and complete current
+work coverage. Ending native work does not release ownership; its recorded
+claims still need exact validated worker or Supervisor releases.
 Any active thread, source PID (including reuse), old worker on the source TTY,
 resume process, unknown client, changed generation or unavailable evidence keeps
 it live. A proven new TTY occupant born after closure is not the old worker.
@@ -1974,11 +1976,13 @@ operation still refuses those sends; capacity retry defers without spending an
 attempt. Queue never joins or bypasses a busy source lease. Native action
 requests need a request ID so ownership can span acknowledgement.
 
-Observation skips source leases when a durable action barrier already refuses
-end proof, or the recorded worker's exit cannot be verified. Live workers keep
-receiving their own actions and approvals during native inventory and later
-claim round trips. Sources that can contribute end proof still retain ownership
-through final claim publication, so resume cannot race a successful handoff.
+Observation reads native state and checks source process exit before taking a
+pending source's ownership lease or scanning its transcripts. Live workers keep
+receiving actions and approvals while inventory waits.
+When a source can contribute end proof, observation acquires its lease,
+rechecks identity and current work, and retains successful proof through final
+claim publication. Busy or unsuccessful sources supply no end proof and retain
+no new lease through later claim round trips.
 
 The parent ingress and its native client register PID/birth, selected home,
 private socket identity and a digest of the immutable option prefix before
@@ -1993,35 +1997,63 @@ depends on that text check for managed clients.
 
 Close, supported resume/queue and admission share a nonblocking per-thread
 ownership lease. Claim retains it through final readback and freezes the source
-before its first external write. Slow closure verification holds only its source
-lease, then compares that source's current record under a brief shared-log lock
-before publication. Other launches and new-thread first turns can continue;
-a thread with no receipt does not take the store lock to invalidate nothing.
-Before forwarding any action, the lease file stores a durable invalidation,
-including when no closure record exists yet. Busy leases and invalidations also
-defeat authored-release/unloaded recovery. Native acknowledgement alone cannot
-clear this barrier: a successful verified closure in the shared log needs a
-fresh final safe verdict after the latest guarded action, including overlapping
-actions, acknowledgements (including native errors) and approval answers, and
-clears it while holding source ownership. Each action acknowledgement refreshes
-the barrier while its lease is still held; it does not prove an accepted queue
-or turn completed. An older
-safe message followed only by a newer task-complete record is insufficient.
-Pending queued submissions, malformed queue
-pages or missing queue evidence still refuse native end proof, including when
-the daemon says notLoaded. Queued work must drain or be cancelled, then the
-Supervisor verifies closure normally; never clear the lease file by hand.
-If a guarded send fails without producing a turn, an empty queue does not clear
-the barrier. The ordinary shared-log finish/release route also refuses until a
-fresh final safe verdict exists. Use `codex-session.py resume --session-id ID
---codex-home HOME` for that exact source, have it complete a fresh safe turn,
-then exit it and retry Supervisor finish with the new launch metadata from
-`codex-session.py status --session-id ID`. This also applies after a native
-error acknowledgement or an unrecognized per-thread action after the last
-verdict. A nonzero child exit alone cannot prove no native work was accepted.
-Preserve claims and artifacts while recovering; do not delete the marker or
-reuse the old verdict. A frozen predecessor still refuses resume: start a new
-thread and claim through gh-plan.py instead.
+before its first external write. Each native action invalidates old end proof
+before forwarding and keeps its lease through acknowledgement. A busy lease,
+an acknowledgement or a nonzero client exit is not proof that work ended.
+
+For recovery, preserve the original Supervisor ledger, exact native ID,
+transcript, source account and verified process/terminal identity. Retry normal
+claim observation or `finish` preview/apply with that validated source context.
+An invalidated or partial record alone is not end proof; missing or unowned
+source identity stays unknown. Do not invent launch metadata or delete the
+ownership file. A recovery ledger's native terminal coordinates apply only
+when its actual launch generation matches; an IDs-only observer cannot guess
+a replacement pane.
+
+The shared end check verifies source process exit, the native TTY exit cutoff
+when a TTY has been reused, authenticated final safe output in relevant source
+copies, empty native queues and no current execution, background work, scheduled
+jobs or active loaded native goal. It reads the original/effective account,
+accounts touched by guarded actions and every authenticated relevant copy's
+account. Retained original accounts may supply recovery reads without becoming
+eligible for configured resume. Missing required current-work coverage refuses.
+If a pending source's required daemon is unavailable, verify that it is stopped,
+restore it on that exact home with `env CODEX_HOME="<source-home>" codex app-server daemon start`
+as described below, then retry observation or `finish`. Repeat for each required
+home that is stopped. A safe transcript cannot replace missing native coverage;
+do not clear the barrier or restart a running or draining daemon.
+Loaded idle proof binds actual native turns to completed source history. A
+known older database projection may lag the authenticated source completion;
+unanchored or conflicting actual turn order refuses. For an unloaded source,
+persisted history is supplementary: an empty, stale or unavailable index alone
+does not defeat authenticated completed source history. Positively later native
+work still refuses.
+
+Loaded proofs use the same complete current-work reader for ordinary closure
+receipts and pending-action recovery. The existing paginated history read also
+flushes pending canonical events before responding; a failed read cannot prove
+durability. Its response is bounded at 64 MiB and five seconds. The final
+canonical scan follows the last persistence read. Canonical realtime start and
+close records supplement the rebuildable realtime index, which can lag. An
+active or unrecognized canonical realtime lifecycle refuses loaded proof; old
+unclosed realtime history alone does not defeat current NotLoaded evidence.
+
+Successful end proof can resolve an invalidation during claim observation or
+applied finish; another closure publication is not required just to clear it.
+It does not release ownership: an exact validated worker or Supervisor release
+is still required. Known queue, turn and exact-resume acknowledgements do not
+require another safe message merely because they arrive after the actual turn
+completed. Pending queued work and in-flight requests still refuse. Approval
+answers and unknown actions remain conservative: a loaded source needs an
+actual safe message and turn completion after their opaque-action floor. A
+completion alone cannot refresh an older safe message. Complete unloaded-source
+proof can recover an aborted or uncertain send without starting another turn.
+A new scoped action cannot erase an earlier unknown action's floor or scope.
+
+If end proof fails, preserve claims and artifacts and address the reported live
+work or missing evidence. Resume when the source needs more work, using its
+configured account and the supported guarded route below. A frozen predecessor
+still refuses resume: start a new thread and claim through `gh-plan.py` instead.
 
 From the Supervisor's terminal tooling, use `new --resume-session-id` on
 either backend. First verify that the original client has exited. Preserve
@@ -2116,11 +2148,13 @@ refuses any record newer than closure. Unchanged transcripts permit
 finish retry; an mtime-only change invalidates idle proof but does not itself
 prevent ordinary finish. Metadata
 updates store preferences; they do not select a turn's access or grant it.
-For an already closed source invalidated by queue, fork or archive, start a
-guarded resume to obtain its real new launch metadata;
-`status` then supplies that metadata for the native ledger. Optional idle-proof
-fingerprints are checked only by admission, so an older boot/account fingerprint
-cannot prevent retrying ordinary verified release with the original closure time.
+Queue, fork and archive invalidations do not create a new worker generation
+by themselves. Retry the shared end check with the original validated source
+identity. If a real guarded resume occurred, `codex-session.py status` supplies
+its actual new launch metadata for the recovery ledger. A failed prelaunch is
+not a new generation. Optional idle-proof fingerprints belong to admission;
+an older boot/account fingerprint does not prevent ordinary verified release
+with the original actual closure time.
 
 Default is a read-only inventory preview of claim IDs, retained PRs and attestation bodies.
 For `finish`, discovery also checks original claim comments after their release.

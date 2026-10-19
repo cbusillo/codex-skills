@@ -11,6 +11,14 @@ matching contract grants runtime authority. Contract freshness does not establis
 See the [private ingress caller contract](write-action-helper-contract.md#application-testing-private-ingress)
 for its installed service API bindings.
 
+The `disposable-lane-*` commands are installed service API bindings for
+`record_disposable_lane_safety` in its inspect, collect and record modes. Its
+`prepare-rebuild` mode stays with the producer's own client. Its `clear` mode
+has no binding until Launchplane itself checks a current observation binding
+and lane ownership before clearing. See the
+[disposable lane contract](write-action-helper-contract.md#disposable-lane-observations)
+for the reviewed inspect binding and readback limits.
+
 Run the offline conformance gate from the `launchplane` skill directory with:
 
 ```bash

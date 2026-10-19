@@ -82,6 +82,16 @@ class WaitRecordTests(unittest.TestCase):
             waiting_for="Client's pricing decision", ends_when="Client records chosen price")["waits"])
         self.assertEqual(wait_record.records(wait_record.marker(wait)), [wait])
 
+    def test_resolver_tells_a_trusted_review_record_from_no_record(self):
+        review = {"version": 1, "state": "review", "evidence": "", "waits": []}
+        issue = {"user": {"login": "bot"}, "body": wait_record.marker(self.hold)}
+        trusted_review = {"user": {"login": "owner"}, "body": wait_record.marker(review)}
+        foreign_review = {"user": {"login": "outsider"}, "body": wait_record.marker(review)}
+        self.assertEqual(wait_record.resolve({}, [], {"owner"}), (review, False))
+        self.assertEqual(wait_record.resolve(issue, [trusted_review], {"bot", "owner"}), (review, True))
+        self.assertEqual(wait_record.resolve(issue, [foreign_review], {"bot", "owner"}), (self.hold, True))
+        self.assertEqual(wait_record.resolve({}, [foreign_review], {"owner"}), (review, False))
+
     def test_packaged_resolver_uses_managed_wait_and_preserves_original_request(self):
         original = {"user": {"login": "owner"}, "body": wait_record.marker(self.clear)}
         issue = {**original, "body": github_plan_body.wrap_contributor_plan(

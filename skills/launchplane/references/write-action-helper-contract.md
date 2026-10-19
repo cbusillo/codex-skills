@@ -92,6 +92,77 @@ remote tailnet reachability or runtime health. The returned
 limits. Actual qualification belongs to the operational issue after supported
 source and caller delivery.
 
+## Disposable lane observations
+
+`disposable-lane-inspect`, `disposable-lane-collect` and
+`disposable-lane-record` call the vendored `record_disposable_lane_safety`
+service API with the existing Director-agent identity. They add no permission
+or provider fallback. The `prepare-rebuild` mode is not wrapped. An observation
+is short-lived safety evidence for one lane. It is never an access grant.
+
+Clearing an observation is not offered. The service's clear mode checks
+neither a current observation binding nor lane ownership, so a local check of
+saved inspect output cannot stop it from deleting a protective observation.
+The helper adds clear only after Launchplane enforces both before it clears
+([launchplane#4111](https://github.com/cbusillo/launchplane/issues/4111)).
+
+Each command requires `--payload-file /absolute/private/request.json` outside
+the repository. Its fields are `product`, `context`, `instance` and an optional
+`preview_id`. Collect and record also accept `lifetime_seconds` (1 to 900,
+default 300). Record also accepts `usage` (`unknown`, `unused`, `in_use`),
+`data` (`unknown`, `reproducible`, `only_copy`), `production_resources`
+(`unknown`, `isolated`, `separation_ready`, `shared`) and the evidence
+references `usage_evidence`, `data_evidence` and `isolation_evidence`. Any
+other field is refused. The helper refuses these before reading configuration:
+instance `prod`; an instance other than `testing` without a `preview_id`; a
+known fact without its evidence reference; and any known fact on a testing
+lane. The service collects testing facts itself and would store them as
+`unknown`.
+
+Run inspect first and save its JSON output privately. It returns the lane's
+`binding_sha256`, with every fact `unknown`. Collect and record each require
+`--expected-binding-sha256` (that value), `--inspect-evidence-file` (the saved
+output) and `--reviewed-inspect`. The evidence must match the private request
+scope, the configured service and the digest. The helper never runs inspect
+inside a mutation for you. The service rechecks the binding and refuses a
+changed lane with a 409.
+
+Output never echoes the product, context, instance, preview ID, evidence
+references or the observing identity. The request shows only the mode, the
+payload source and, for record, the count of known facts. Collect reports each
+fact, the usage diagnostics and, for each evidence reference, only whether it is
+present and its source kind. Coverage sources, evidence kinds and usage
+diagnostics are closed vocabularies copied from the producer. A usage
+diagnostic the helper does not know is reported as `diagnostics_unrecognized`,
+as the producer's own client does. On a preview, a fact kept from an earlier
+recorded observation reports the kind `recorded`.
+
+A receipt that fails these checks reports no facts and carries an
+`invalid_response` warning: a wrong binding, `provider_mutation` other than
+`false`, an unknown fact value, unknown coverage sources, an evidence reference
+the producer does not build for that fact, a positive fact returned for a
+testing record, preview facts that differ from those submitted, collect usage
+evidence that contradicts itself, or a collect window that is not current. The
+window must have started no later than now (5 seconds of clock skew allowed),
+must not have expired, and must last no longer than the requested lifetime. For
+inspect this is `invalid`. For collect and record the service has already
+answered, so it is `outcome_unknown` with the recovery below.
+
+There is no automatic retry and no `Idempotency-Key`. Transport loss, a
+malformed receipt or a 5xx after a mutating call begins returns
+`outcome_unknown`. Inspect the lane, then re-run the command explicitly if it
+is still needed. A 403, 404 or 409 keeps its trace and stops; never change
+identity or route. A collect 409 can follow publication, so inspect again
+before relying on any stored fact.
+
+After an accepted collect or record, the helper sends one separate inspect
+POST. It reports `binding_readback_matches`. `effect_readback` is always
+`unavailable`, because no route reads stored observations back. A mismatch or
+failed readback returns `accepted_unverified` and exits nonzero.
+
+Recording facts for a preview also requests a preview reconcile, reported as
+`reconcile_requested=true`.
+
 ## Read budgets and timeout diagnostics
 
 `dokploy-inventory-read` and `product-promotion-status-read` default to a bounded 30-second HTTP socket

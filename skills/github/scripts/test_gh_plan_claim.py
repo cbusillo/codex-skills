@@ -17,6 +17,7 @@ import tempfile
 import unittest
 from argparse import Namespace
 from itertools import product
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 from unittest.mock import Mock, patch
@@ -839,13 +840,13 @@ class ClaimTests(unittest.TestCase):
         self.inventory["worktrees"] = [{"branch": OTHER["branch"], "path": "/retained/other-42"}]
         self.inventory["local_branches"] = self.inventory["remote_branches"] = [OTHER["branch"]]
 
-    def test_native_finished_handoff_needs_no_release_write(self):
+    def test_native_finished_handoff_still_requires_an_exact_release(self):
         self.ended_holder_fixture(released=False)
         self.inventory["session_states"] = {OTHER["session"]: {"state": "ended", "ended_at": "2026-10-01T02:00:00Z"}}
-        self.run_claim()
-        self.assertEqual(self.emitted.call_args.args[0]["retained_artifacts"][0]["evidence"], "native_session_ended")
-        self.assertEqual(len(self.comments), 2)  # Only the successor claim was written.
-        self.assertIsNone(CLAIM.released_claim_id(self.comments[-1]["body"]))
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_claim()
+        self.assertEqual(caught.exception.code, "claim_conflict")
+        self.assert_no_writes()
 
     def test_idle_loaded_released_source_can_be_claimed_and_cannot_resume_after_handoff(self):
         from test_github_plan_sessions import ReceiptFixture
@@ -1389,7 +1390,7 @@ class ClaimTests(unittest.TestCase):
                     self.observe_inventory = lambda inv, observed_comments: ({**inv, "session_coverage": {
                         "codex_claims": {"observed_source_incomplete": True}}}
                         if any(c.get("id") == 92 for c in observed_comments) else inv)
-                if state in {"released", "native_ended"}:
+                if state == "released":
                     self.run_claim()
                     self.assertTrue(self.emitted.call_args.args[0]["ok"])
                 else:
@@ -1664,7 +1665,7 @@ class ClaimTests(unittest.TestCase):
                         self.inventory["sessions"] = [{"sessionId": resumed["session"], "cwd": "/another-host"}]
                 if phase == "preflight": successor()
                 else: setattr(self, phase, successor)
-                if state in {"released", "native_ended"}:
+                if state == "released":
                     self.run_claim()
                     self.assertTrue(self.emitted.call_args.args[0]["ok"])
                 else:
@@ -2067,7 +2068,7 @@ class ClaimTests(unittest.TestCase):
                     self.observe_inventory = lambda inv, observed_comments: ({**inv, "session_coverage": {
                         "codex_claims": {"observed_source_incomplete": True}}}
                         if any(c.get("id") == 88 for c in observed_comments) else inv)
-                if state in {"released", "native_ended", "unrelated", "closed_released"}:
+                if state in {"released", "unrelated", "closed_released"}:
                     self.run_claim()
                     self.assertTrue(self.emitted.call_args.args[0]["ok"])
                 else:
@@ -2075,7 +2076,7 @@ class ClaimTests(unittest.TestCase):
                         self.run_claim()
                     self.assertEqual(caught.exception.code, "claim_conflict")
                     expected = ("native_session_inventory" if state == "incomplete" else
-                                "current_status" if state == "closed_unreleased" else "native_child_session")
+                                "current_status" if state in {"closed_unreleased", "native_ended"} else "native_child_session")
                     self.assertIn(expected, [entry["source"] for entry in caught.exception.payload["competing_evidence"]])
                     self.assert_no_writes()
 
@@ -2121,8 +2122,14 @@ class ClaimTests(unittest.TestCase):
                 self.inventory["remote_branches"].append(earlier["branch"])
                 self.inventory["worktrees"].append({"branch": earlier["branch"], "path": "/old-source"})
                 before = copy.deepcopy(self.inventory)
-                self.run_claim()
-                self.assertTrue(self.emitted.call_args.args[0]["ok"])
+                if proof == "release":
+                    self.run_claim()
+                    self.assertTrue(self.emitted.call_args.args[0]["ok"])
+                else:
+                    with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                        self.run_claim()
+                    self.assertEqual(caught.exception.code, "claim_conflict")
+                    self.assert_no_writes()
                 self.assertEqual(self.inventory, before)
 
     def test_native_parent_resume_does_not_expand_conflict_only_refresh(self):
@@ -3560,26 +3567,161 @@ class ClaimTests(unittest.TestCase):
         self.assertTrue(output["claim"]["retained_handoff"].endswith("#issuecomment-2"))
 
     def test_admission_freezes_sources_proven_only_by_retained_pr_comments(self):
-        self.retained_pr_fixture()
-        target = {**OTHER, "session": "pr-only-source", "branch": "work/retained-42"}
-        self.target_comments["/repos/owner/repo/issues/99/comments"] = [
-            {"id": 77, "body": CLAIM.marker(target), "user": {"login": TEST_BOT}, "created_at": OTHER["claimed_at"]},
-            {"id": 78, "body": "Released claim 77", "user": {"login": TEST_BOT}, "created_at": "2026-10-01T01:00:00Z"}]
-        def observe(inventory, comments):
-            if any(target["session"] in c.get("body", "") for c in comments):
-                inventory["session_states"] = {target["session"]: {"state": "ended", "leased_closure": True}}
-            return inventory
-        self.observe_inventory = observe
-        with patch.object(PLAN.github_plan_closure, "admit_sources") as freeze:
-            self.run_claim()
-        self.assertIn(target["session"], freeze.call_args.args[0])
+        import uuid
+        from test_github_plan_sessions import ReceiptFixture
+        observe = CLAIM.observe_sessions
+        closure = PLAN.github_plan_closure
+        admit = closure.admit_sources
+        for phase in ("preflight", "after_post", "after_status"):
+            with self.subTest(phase=phase), ReceiptFixture(str(uuid.uuid4())) as f:
+                self.setUp()
+                self.retained_pr_fixture()
+                f.native_state = "notLoaded"
+                target = {**OTHER, "session": f.session, "branch": "work/retained-42"}
+                def appear():
+                    self.target_comments["/repos/owner/repo/issues/99/comments"] = [
+                        {"id": 77, "body": CLAIM.marker(target), "user": {"login": TEST_BOT}, "created_at": target["claimed_at"]},
+                        {"id": 78, "body": "Released claim 77", "user": {"login": TEST_BOT}, "created_at": "2026-10-01T01:00:00Z"}]
+                if phase == "preflight": appear()
+                else: setattr(self, phase, appear)
+                self.observe_inventory = observe
+                admitted = []
+                def freeze(sessions):
+                    if f.session in sessions and not admitted:
+                        if phase == "preflight": self.assertNotIn("post", self.events)
+                        elif phase == "after_post": self.assertNotIn("status", self.events)
+                        else: self.assertIn("status", self.events)
+                        admitted.append(f.session)
+                    return admit(sessions)
+                with patch.object(closure, "admit_sources", side_effect=freeze): self.run_claim()
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
+                self.assertIn(f.session, admitted)
+                with self.assertRaises(ValueError):
+                    with closure.resume_guard(f.session): pass
+                self.assertFalse(f.mutations)
+
+    def test_exact_released_source_is_frozen_without_an_optional_idle_receipt(self):
+        import uuid
+        from test_github_plan_sessions import ReceiptFixture
+        closure = PLAN.github_plan_closure
+        observe = CLAIM.observe_sessions
+        for native, receipt in (("notLoaded", True), ("notLoaded", False), ("idle", True)):
+            with self.subTest(native=native, receipt=receipt), ReceiptFixture(str(uuid.uuid4())) as f:
+                self.setUp()
+                if not receipt:
+                    closure.replace_rows([])
+                f.native_state = native
+                source = {**OTHER, "session": f.session}
+                unrelated = {**OTHER, "session": "unrelated-source", "branch": "work/unrelated"}
+                self.comments = [
+                    {"id": 1, "body": CLAIM.marker(source), "user": {"login": TEST_BOT}, "created_at": source["claimed_at"]},
+                    {"id": 2, "body": "Released claim 1", "user": {"login": TEST_BOT}, "created_at": "2026-10-01T00:02:00Z"},
+                    {"id": 3, "body": CLAIM.marker(unrelated), "user": {"login": TEST_BOT}, "created_at": unrelated["claimed_at"]},
+                    {"id": 4, "body": "Released claim 3", "user": {"login": TEST_BOT}, "created_at": "2026-10-01T00:02:00Z"}]
+                self.observe_inventory = observe
+                for session in (OWNER["session"], unrelated["session"]):
+                    with closure.ownership(session, create=True): pass
+                def probe():
+                    with self.assertRaises(closure.LeaseBusy):
+                        with closure.ownership(f.session): pass
+                    for session in (OWNER["session"], unrelated["session"]):
+                        with closure.ownership(session) as available:
+                            self.assertTrue(available)
+                def during_post():
+                    with ThreadPoolExecutor(max_workers=1) as pool:
+                        pool.submit(probe).result(2)
+                self.after_post = during_post
+                self.run_claim()
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
+                with self.assertRaises(ValueError):
+                    with closure.resume_guard(f.session): pass
+                for session in (OWNER["session"], unrelated["session"]):
+                    with closure.resume_guard(session): pass
+                self.assertFalse(f.mutations)
+
+    def test_real_released_source_with_current_or_unknown_work_refuses_without_lease_contention(self):
+        import uuid
+        from test_github_plan_sessions import ReceiptFixture
+        observe = CLAIM.observe_sessions
+        closure = PLAN.github_plan_closure
+        for obstruction in ("process", "queue", "queue_unavailable", "pending", "busy"):
+            with self.subTest(obstruction=obstruction), ReceiptFixture(str(uuid.uuid4())) as f:
+                self.setUp()
+                f.native_state = "notLoaded"
+                if obstruction == "process":
+                    f.process_rows = [(f.entry["pid"], f.entry["tty"], "codex resume " + f.session)]
+                    f.commands = str(f.entry["pid"]) + " codex resume " + f.session
+                elif obstruction == "queue": f.queue_items = [{"id": "queued"}]
+                elif obstruction == "queue_unavailable": f.rpc_results["thread/queue/list"] = ValueError("fixture queue unavailable")
+                elif obstruction == "pending":
+                    with closure.resume_guard(f.session, method="turn/start", home=f.home): pass
+                    f.native_state = "active"
+                source = {**OTHER, "session": f.session}
+                self.comments = [
+                    {"id": 1, "body": CLAIM.marker(source), "user": {"login": TEST_BOT}, "created_at": source["claimed_at"]},
+                    {"id": 2, "body": "Released claim 1", "user": {"login": TEST_BOT}, "created_at": "2026-10-01T00:02:00Z"}]
+                self.observe_inventory = observe
+                def claim():
+                    with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+                if obstruction == "busy":
+                    with closure.ownership(f.session), ThreadPoolExecutor(max_workers=1) as pool:
+                        pool.submit(claim).result(3)
+                else:
+                    claim()
+                self.assert_no_writes()
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    def available():
+                        with closure.ownership(f.session) as acquired: return acquired
+                    self.assertTrue(pool.submit(available).result(2))
+                self.assertFalse(f.mutations)
+
+    def test_released_claude_closed_row_allows_reused_tty_but_preserves_live_peer_veto(self):
+        import uuid
+        from datetime import datetime, timedelta, timezone
+        from test_github_plan_sessions import ReceiptFixture
+        observe = CLAIM.observe_sessions
+        closure = PLAN.github_plan_closure
+        for live in (False, True):
+            with self.subTest(live=live), ReceiptFixture(str(uuid.uuid4())) as f:
+                self.setUp()
+                f.transcript.write_text(json.dumps({"sessionId": f.session, "type": "assistant",
+                    "timestamp": "2026-10-01T02:00:00Z", "message": {"stop_reason": "end_turn",
+                    "content": [{"type": "text", "text": "Safe to exit: yes"}]}}) + "\n")
+                closure.replace_rows([])
+                closed = f.release.record_closure(f.log, {**f.entry, "harness": "claude"}, "supervisor")
+                born = datetime.fromisoformat(closed["ended_at"]) + timedelta(microseconds=1)
+                f.process_rows = [(456, f.entry["tty"], "claude")]
+                f.commands = "456 claude"
+                f.rpc_results["thread/loaded/list"] = {"data": [], "nextCursor": None}
+                f.rpc_results["thread/read"] = ValueError("fixture has no Codex thread for this Claude ID")
+                source = {**OTHER, "session": f.session}
+                self.comments = [
+                    {"id": 1, "body": CLAIM.marker(source), "user": {"login": TEST_BOT}, "created_at": source["claimed_at"]},
+                    {"id": 2, "body": "Released claim 1", "user": {"login": TEST_BOT}, "created_at": "2026-10-01T03:00:00Z"}]
+                self.observe_inventory = observe
+                if live: self.inventory["sessions"] = [{"sessionId": f.session, "source": "claude_session"}]
+                with patch.object(closure, "process_started_at", return_value=min(born, datetime.now(timezone.utc))):
+                    if live:
+                        with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+                        self.assert_no_writes()
+                    else:
+                        self.run_claim()
+                        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+                        with closure.resume_guard(f.session): pass
+                self.assertFalse(f.mutations)
 
     def test_admission_freezes_leased_ownership_observed_only_on_family_peer(self):
+        import uuid
+        from test_github_plan_sessions import ReceiptFixture
+        observe = CLAIM.observe_sessions
+        closure = PLAN.github_plan_closure
+        admit = closure.admit_sources
         for busy, phase in product((False, True), ("preflight", "after_post", "after_status")):
-            with self.subTest(busy=busy, phase=phase):
+            with self.subTest(busy=busy, phase=phase), ReceiptFixture(str(uuid.uuid4())) as f:
                 self.setUp()
                 self.parent_handoff_fixture()
-                peer = {**OTHER, "session": "family-idle-source", "branch": "work/family-idle-source", "resume_from": "1",
+                f.native_state = "notLoaded"
+                peer = {**OTHER, "session": f.session, "branch": "work/family-idle-source", "resume_from": "1",
                         "retained_handoff": "https://github.com/owner/repo/issues/41#issuecomment-3"}
                 self.targets["43"] = {**copy.deepcopy(self.issue), "number": 43,
                                       "body": "## Current Status\n\n" + CLAIM.marker(peer)}
@@ -3590,23 +3732,18 @@ class ClaimTests(unittest.TestCase):
                         {"id": 89, "body": "Released claim 88", "user": {"login": TEST_BOT}, "created_at": "2026-10-02T00:00:00Z"}]
                 if phase == "preflight": appear()
                 else: setattr(self, phase, appear)
-                def observed(inv, comments):
-                    if any(c.get("id") == 88 for c in comments):
-                        inv["session_states"] = {peer["session"]: {"state": "ended", "leased_closure": True}}
-                    return inv
-                self.observe_inventory = observed
+                self.observe_inventory = observe
                 admitted = []
                 def freeze(sessions):
-                    if peer["session"] not in sessions:
-                        return
-                    if not admitted:
-                        if phase == "preflight": self.assertNotIn("post", self.events)
-                        elif phase == "after_post": self.assertNotIn("status", self.events)
-                        else: self.assertIn("status", self.events)
-                    admitted.append(peer["session"])
-                    if busy:
-                        raise PLAN.github_plan_closure.LeaseBusy("held")
-                with patch.object(PLAN.github_plan_closure, "admit_sources", side_effect=freeze):
+                    if peer["session"] in sessions:
+                        if not admitted:
+                            if phase == "preflight": self.assertNotIn("post", self.events)
+                            elif phase == "after_post": self.assertNotIn("status", self.events)
+                            else: self.assertIn("status", self.events)
+                        admitted.append(peer["session"])
+                        if busy: raise closure.LeaseBusy("fixture publication held")
+                    return admit(sessions)
+                with patch.object(closure, "admit_sources", side_effect=freeze):
                     if busy:
                         with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
                         self.assertEqual(caught.exception.code, "claim_closure_unavailable")
@@ -3616,6 +3753,10 @@ class ClaimTests(unittest.TestCase):
                         self.run_claim()
                         self.assertTrue(self.emitted.call_args.args[0]["ok"])
                         self.assertIn(peer["session"], admitted)
+                if not busy:
+                    with self.assertRaises(ValueError):
+                        with closure.resume_guard(f.session): pass
+                self.assertFalse(f.mutations)
 
     def test_busy_closure_publication_is_classified_before_claim_writes(self):
         with patch.object(PLAN.github_plan_closure, "admit_sources", side_effect=PLAN.github_plan_closure.LeaseBusy("held")):
