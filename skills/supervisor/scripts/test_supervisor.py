@@ -1450,6 +1450,9 @@ class ProcessArgumentsTests(unittest.TestCase):
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
         cases = ((["claude", "--mcp-config", "--", "--resume", self.source], True),
                  (["claude", "--append-system-prompt", "keep -- terse", "--resume", self.source], False),
+                 (["claude", "-pr", self.source], False),
+                 (["claude", "-cr", self.source], False),
+                 (["claude", "-pcr", self.source], False),
                  (["codex", "-c", 'key="a -- b"', "resume", self.source], False))
         for argv, available in cases:
             kwargs = {"return_value": argv} if available else {"side_effect": OSError("argv unavailable")}

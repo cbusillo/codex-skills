@@ -231,7 +231,8 @@ def uncertain_invocation(argv):
     # With lost boundaries or unknown arities, a standalone '--' may be an
     # option value or part of quoted text. It cannot truncate veto candidates.
     words = argv
-    markers = [i for i, arg in enumerate(words) if arg in {"--resume", "-r"} or family == "codex" and arg == "resume"]
+    markers = [i for i, arg in enumerate(words) if arg in {"--resume", "-r"} or family == "codex" and arg == "resume"
+               or family == "claude" and re.fullmatch(r"-[pc]*r", arg)]
     candidates = [value for i in markers for value in words[i + 1:] if value and not value.startswith("-")]
     candidates.extend(arg.split("=", 1)[1] for arg in words if arg.startswith("--resume=") and arg.split("=", 1)[1])
     if family == "claude":
