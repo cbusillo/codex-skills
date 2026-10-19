@@ -346,7 +346,6 @@ class Terminal:
             {**entry, "_terminal_pid": row["pid"]}, rows=rows,
             ended_at=datetime.fromisoformat(row["exited_at"]) if row["exited_at"] else None,
             replacement_owner=replacement)
-        row = {**row, "transcript_snapshot": session_liveness.closed_transcript(entry)}
         # A dead pane has no input consumer. Never kill a live shell to clear it.
         return row
 

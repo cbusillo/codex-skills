@@ -414,8 +414,37 @@ class IdleReceiptIntegrationTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 with CLOSURE.resume_guard(f.session): pass
 
+    def test_native_uuid_alias_cannot_select_another_lease_or_frozen_generation(self):
+        with ReceiptFixture("01a1514c-fa7f-7be3-95ba-4d25df73d07e") as f:
+            with CLOSURE.ownership(f.session):
+                CLOSURE.admit_sources({f.session})
+            before = f.log.read_bytes()
+            leases = set(CLOSURE.lease_path(f.session).parent.iterdir())
+            for alias in (f.session.upper(), f.session.replace("-", ""), "{" + f.session + "}", "urn:uuid:" + f.session):
+                with self.subTest(alias=alias):
+                    with self.assertRaises(ValueError):
+                        CLOSURE.resume_record(alias, CLOSURE.log_rows())
+                    with self.assertRaises(ValueError):
+                        with CLOSURE.resume_guard(alias):
+                            self.fail("an alias acquired authority over the native source")
+                    self.assertEqual(set(CLOSURE.lease_path(f.session).parent.iterdir()), leases)
+                    self.assertEqual(f.log.read_bytes(), before)
+
 
 class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
+    def test_native_uuid_alias_processes_report_the_requested_source_identity(self):
+        source = "01a1514c-fa7f-7be3-95ba-4d25df73d07e"
+        for alias in (source.upper(), source.replace("-", ""), "{" + source + "}", "urn:uuid:" + source.upper()):
+            with self.subTest(alias=alias):
+                peers = SESSIONS.process_sessions("456 codex resume " + alias, {source})
+                self.assertEqual([peer["sessionId"] for peer in peers], [source])
+
+    def test_repository_codex_scripts_do_not_hide_process_absence(self):
+        for command in ("456 python /repo/codex_idle_watch.py", "456 sh /repo/codex-watch.sh"):
+            with self.subTest(command=command):
+                self.assertTrue(SESSIONS.process_absence_known(command))
+                self.assertEqual(SESSIONS.process_sessions(command, {"holder"}), [])
+
     def test_release_binary_resume_identifies_the_source(self):
         command = "456 /opt/bin/codex-aarch64-apple-darwin exec resume holder"
         self.assertEqual([row["sessionId"] for row in SESSIONS.process_sessions(command, {"holder"})], ["holder"])

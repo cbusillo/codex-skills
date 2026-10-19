@@ -195,6 +195,7 @@ class ReleaseTests(unittest.TestCase):
         ledger, log = self.root / "ledger.json", self.root / "closed.json"
         ledger.write_text(json.dumps([{**self.entry, "handoff_url": None}]))
         log.write_text(json.dumps([{**self.entry, "handoff_url": None}]))
+        log.chmod(0o600)
         records = helper.session_record.read_jsonl(self.transcript)
         records[1]["payload"]["message"] = "Finished.\n" + verdict
         self.transcript.write_text("\n".join(json.dumps(r) for r in records) + "\n")
@@ -242,14 +243,20 @@ class ReleaseTests(unittest.TestCase):
     def test_finish_retry_uses_original_closure_to_distinguish_tty_reuse(self):
         ended = helper.release.stamp(self.entry["ended_at"])
         for apply in (False, True):
-            for command in ("python gh_pr_watch.py", "codex exec fresh-job", "codex resume 11111111-1111-4111-8111-111111111111", "claude -c",
-                            "python codex-session.py launch -- codex --remote unix:///new-client"):
+            wrapper = "python codex-session.py launch -- codex --remote unix:///new-client"
+            for command, guarded in (("python gh_pr_watch.py", False), ("codex exec fresh-job", False),
+                                     ("codex resume 11111111-1111-4111-8111-111111111111", False), ("claude -c", False),
+                                     (wrapper, False), (wrapper, True)):
                 for born, expected in ((ended - timedelta(seconds=1), 1), (ended, 1),
                                        (ended + timedelta(seconds=22), 0),
                                        (datetime.now(timezone.utc) + timedelta(days=1), 1)):
-                    with self.subTest(apply=apply, command=command, born=born), \
+                    if command == wrapper and not guarded:
+                        expected = 1
+                    with self.subTest(apply=apply, command=command, born=born, guarded=guarded), \
                             patch.object(helper, "inventory", return_value=[(456, self.entry["tty"], command)]), \
-                            patch.object(helper.closure, "process_started_at", return_value=born):
+                            patch.object(helper.closure, "process_started_at", return_value=born), \
+                            patch.object(helper.closure, "closed_log", return_value=self.root / "closed.json"), \
+                            patch.object(helper.closure, "guarded_launch_endpoint", return_value="/new-client" if guarded else None):
                         result, report = self.finish_thread([self.source, self.own_release()], apply=apply)
                         self.assertEqual(result, expected, report)
                         saved = json.loads((self.root / "closed.json").read_text())[0]

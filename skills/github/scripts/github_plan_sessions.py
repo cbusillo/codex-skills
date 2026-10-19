@@ -241,7 +241,10 @@ def process_sessions(text: str, sessions: set[str]) -> list[dict]:
         if not argv or shared.harness_family(argv[0]) != "codex":
             continue
         resumed, _kind = shared.invocation(argv)
-        for session in set(resumed) & sessions:
+        identities = {shared.native_uuid(value) or value for value in resumed}
+        for session in sorted(sessions):
+            if (shared.native_uuid(session) or session) not in identities:
+                continue
             peers.append({"sessionId": session, "source": "codex_process", "state": "live"})
     return peers
 
@@ -253,7 +256,8 @@ def process_absence_known(text: str, observed_sockets: set[str] | None = None) -
         pid = int(fields[0]) if fields and fields[0].isdigit() else None
         command = fields[1] if pid is not None and len(fields) == 2 else line
         argv = shared.harness_arguments(command)
-        if argv and Path(argv[0]).name.casefold().startswith("codex"):
+        if argv and (shared.harness_family(argv[0]) == "codex"
+                     or Path(argv[0]).name in {"codex-session.py", "codex_session_proxy.py"}):
             if pid is not None and github_plan_closure.managed_launch(pid, argv, observed_sockets or set()):
                 continue
             # A fresh noninteractive exec cannot attach to a pre-existing

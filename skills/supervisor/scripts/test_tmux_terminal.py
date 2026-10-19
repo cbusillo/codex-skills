@@ -334,31 +334,18 @@ class PaneParserTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.terminal.list()
 
-    def test_relative_transcript_uses_ledger_directory_not_competing_cwd(self):
-        from contextlib import chdir
+    def test_interrupted_terminal_cleanup_retains_physical_close_contract(self):
         entry = {"supervisor_owned": True, "tmux_session_id": self.identity, "pid": 789,
                  "tty": "ttys987", "window_id": "$1", "tab_id": "@1", "tmux_socket": "fixture",
-                 "session_id": "source", "harness": "claude", "transcript": "native.jsonl"}
+                 "session_id": "source", "harness": "claude", "transcript": "interrupted.jsonl"}
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
-            other = root / "other"
-            other.mkdir()
+            (root / "interrupted.jsonl").write_text(json.dumps({"sessionId": "source", "type": "user", "message": {"content": "interrupted"}}) + "\n")
             ledger = root / "ledger.json"
             ledger.write_text(json.dumps([entry]))
-            for safe in (False, True):
-                with self.subTest(safe=safe):
-                    for directory, verdict in ((root, safe), (other, not safe)):
-                        record = {"sessionId": "source", "type": "assistant", "message": {
-                            "content": [{"type": "text", "text": "Safe to exit: yes" if verdict else "Still working"}], "stop_reason": "end_turn"}}
-                        (directory / "native.jsonl").write_text(json.dumps(record) + "\n")
-                    with chdir(other), patch.object(self.terminal, "run", return_value=SimpleNamespace(
-                            returncode=0, stdout=self.dead)) as calls, patch.object(session_liveness, "inventory", return_value=[]):
-                        if safe:
-                            self.assertTrue(self.terminal.close(self.identity, ledger)["close_requested"])
-                        else:
-                            with self.assertRaisesRegex(ValueError, "unqualified"):
-                                self.terminal.close(self.identity, ledger)
-                            self.assertFalse(any(c.args[0] == "if-shell" for c in calls.call_args_list))
+            with patch.object(self.terminal, "run", return_value=SimpleNamespace(returncode=0, stdout=self.dead)) as calls, patch.object(session_liveness, "inventory", return_value=[]):
+                self.assertTrue(self.terminal.close(self.identity, ledger)["close_requested"])
+            self.assertTrue(any(call.args[0] == "if-shell" for call in calls.call_args_list))
 
     def test_empty_dead_pid_close_still_checks_ledger_pid_tty_and_siblings(self):
         entry = {"supervisor_owned": True, "tmux_session_id": self.identity, "pid": 789,
@@ -1075,17 +1062,9 @@ for line in sys.stdin:
                  "transcript": str(transcript), "handoff_url": "https://github.com/example/repo/issues/1#issuecomment-2"}
         self.ledger.write_text(json.dumps([entry]))
         self.assertTrue(self.terminal.select(row["session_id"])["dead"])
-        records[1]["payload"]["message"] = "still working"
-        transcript.write_text("".join(json.dumps(r) + "\n" for r in records))
-        with self.assertRaises(ValueError) as expected:
-            session_liveness.require_safe_status({"safe_verdict": False})
-        # The host may immediately reuse this disposable PTY. Control only the
-        # process snapshot; the exact native identity and conditional kill stay real.
-        with patch.object(session_liveness, "inventory", return_value=[]), self.assertRaises(ValueError) as refused:
-            self.terminal.close(row["session_id"], self.ledger)
-        self.assertEqual(refused.exception.args, expected.exception.args)
-        self.assertTrue(self.terminal.select(row["session_id"])["dead"])
-        records[1]["payload"]["message"] = "Safe to exit: yes"
+        # Physical cleanup supports an interrupted source. Normal finish owns
+        # the verdict gate; this primitive still proves the exact dead pane.
+        records[1]["payload"]["message"] = "interrupted before a final verdict"
         transcript.write_text("".join(json.dumps(r) + "\n" for r in records))
         with patch.object(session_liveness, "inventory", return_value=[]):
             applied = self.terminal.close(row["session_id"], self.ledger)

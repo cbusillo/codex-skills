@@ -29,18 +29,27 @@ class LeaseBusy(ValueError):
     pass
 
 
+def require_canonical_identity(session: str) -> None:
+    """Native aliases cannot select another freeze or lease; legacy opaque IDs remain readable."""
+    from github_plan_sessions import process_liveness
+    canonical = process_liveness().native_uuid(session)
+    if canonical is not None and canonical != session:
+        raise ValueError("use the canonical native thread UUID")
+
+
 def lease_path(session: str) -> Path:
+    require_canonical_identity(session)
     return closed_log().parent / "session-ownership" / (hashlib.sha256(session.encode()).hexdigest() + ".lock")
 
 
 @contextmanager
 def ownership(session: str, *, create: bool = False):
     """Nonblocking per-thread lease, shared by closure, resume and admission."""
+    path = lease_path(session)
     held = _LEASES.get()
     if held is not None and session in held:
         yield True
         return
-    path = lease_path(session)
     if create:
         path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -340,6 +349,7 @@ def replace_rows(rows: list[dict]) -> None:
 
 def resume_record(session: str, rows: list[dict]) -> dict | None:
     """Check known source refusals without leases, invalidation or publication."""
+    require_canonical_identity(session)
     matches = [r for r in rows if r.get("session_id") == session]
     if len(matches) > 1:
         raise ValueError("duplicate closed generations; preserve the source")
@@ -373,6 +383,8 @@ def resume_guard(session: str):
 
 def admit_sources(sessions: set[str]) -> None:
     """Freeze selected sources before a claim writes, with their leases held."""
+    for session in sessions:
+        require_canonical_identity(session)
     if not sessions or not closed_log().exists():
         return
     with store_lock(closed_log(), create=True):

@@ -1283,13 +1283,12 @@ async def close_session(app, session_id, ledger):
         rows = session_liveness.inventory()
         jobs = [row for row in rows if row[1] == tty]
         session_liveness.verify_process_exit(entry, rows=rows, require_tty=True)
-        transcript = session_liveness.closed_transcript(entry)
         prompt = await iterm2.async_get_last_prompt(app.connection, session_id)
         if prompt is None or prompt.state != iterm2.PromptState.EDITING:
             raise ValueError("empty input cannot be proved; shell integration must report an editing prompt")
         if prompt.command != "":
             raise ValueError("input line is not empty; tab kept")
-        return session, (window.window_id, tab.tab_id, tty, jobs, prompt.unique_id, transcript)
+        return session, (window.window_id, tab.tab_id, tty, jobs, prompt.unique_id)
 
     _, before = await verify()
     closing_session, after = await verify()

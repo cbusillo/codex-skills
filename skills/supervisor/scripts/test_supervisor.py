@@ -7,7 +7,6 @@
 
 import argparse
 import asyncio
-from contextlib import chdir
 import errno
 import json
 import subprocess
@@ -1396,6 +1395,7 @@ class TabCloseTests(unittest.TestCase):
         self.rows = [(20, "ttys001", "-zsh"), (21, "ttys001", "/usr/bin/login -fpl user")]
         self.addCleanup(patch.stopall)
         patch.dict("sys.modules", {"iterm2": self.api}).start()
+        self.real_inventory = session_liveness.inventory
         self.inventory = patch.object(session_liveness, "inventory", return_value=self.rows).start()
 
     def close(self, identity="owned"):
@@ -1407,60 +1407,12 @@ class TabCloseTests(unittest.TestCase):
         self.assertEqual(self.inventory.call_count, 2)
         self.assertEqual(self.api.async_get_last_prompt.await_count, 2)
 
-    def test_transcript_change_between_native_close_probes_keeps_tab(self):
-        transcript = self.ledger.parent / "native.jsonl"
-        transcript.write_text("fixture")
-        self.ledger.write_text(json.dumps([{**self.entry, "transcript": str(transcript), "session_id": "source", "harness": "claude"}]))
-        with patch.object(session_record, "session_status", side_effect=[
-            {"safe_verdict": True}, {"safe_verdict": False}
-        ]), self.assertRaises(ValueError):
-            self.close()
-        self.session.async_close.assert_not_awaited()
-
-    def test_safe_transcript_change_between_native_close_probes_keeps_tab(self):
-        transcript = self.ledger.parent / "native.jsonl"
-        transcript.write_text("fixture")
-        self.ledger.write_text(json.dumps([{**self.entry, "transcript": str(transcript), "session_id": "source", "harness": "claude"}]))
-        with patch.object(session_record, "session_status", side_effect=[
-            {"safe_verdict": True, "last_text": "First.\nSafe to exit: yes"},
-            {"safe_verdict": True, "last_text": "New turn.\nSafe to exit: yes"},
-        ]), self.assertRaisesRegex(ValueError, "changed"):
-            self.close()
-        self.session.async_close.assert_not_awaited()
-
-    def test_transcript_replacement_with_identical_content_and_time_keeps_tab(self):
-        transcript = self.ledger.parent / "native.jsonl"
-        transcript.write_text(json.dumps({**claude("Safe to exit: yes"), "sessionId": "source"}) + "\n")
-        self.ledger.write_text(json.dumps([{**self.entry, "transcript": str(transcript), "session_id": "source", "harness": "claude"}]))
-        original = session_record.session_status
-        def replaced(entry):
-            result = original(entry)
-            at = transcript.stat()
-            replacement = transcript.with_suffix(".replacement")
-            replacement.write_bytes(transcript.read_bytes())
-            os.utime(replacement, ns=(at.st_atime_ns, at.st_mtime_ns))
-            replacement.replace(transcript)
-            return result
-        with patch.object(session_record, "session_status", side_effect=replaced), self.assertRaisesRegex(ValueError, "changed"):
-            self.close()
-        self.session.async_close.assert_not_awaited()
-
-    def test_relative_transcript_uses_ledger_directory_not_competing_cwd(self):
-        root = self.ledger.parent
-        other = root / "other"
-        other.mkdir()
-        entry = {**self.entry, "transcript": "native.jsonl", "session_id": "source", "harness": "claude"}
-        self.ledger.write_text(json.dumps([entry]))
-        for safe in (False, True):
-            with self.subTest(safe=safe):
-                for folder, verdict in ((root, safe), (other, not safe)):
-                    (folder / "native.jsonl").write_text(json.dumps({**claude("Safe to exit: yes" if verdict else "Still working"), "sessionId": "source"}) + "\n")
-                with chdir(other):
-                    if safe:
-                        self.assertTrue(self.close()["close_requested"])
-                    else:
-                        with self.assertRaisesRegex(ValueError, "unqualified"):
-                            self.close()
+    def test_interrupted_terminal_cleanup_retains_physical_close_contract(self):
+        transcript = self.ledger.parent / "interrupted.jsonl"
+        transcript.write_text(json.dumps({"sessionId": "source", "type": "user", "message": {"content": "interrupted"}}) + "\n")
+        self.ledger.write_text(json.dumps([{**self.entry, "session_id": "source", "harness": "claude", "transcript": "interrupted.jsonl"}]))
+        self.assertTrue(self.close()["close_requested"])
+        self.session.async_close.assert_awaited_once_with(force=False)
 
     def test_resume_candidates_do_not_prove_an_unrelated_session(self):
         entry = {**self.entry, "pid": 123, "session_id": "source", "harness": "codex"}
@@ -1474,6 +1426,61 @@ class TabCloseTests(unittest.TestCase):
         for command in ("codex-aarch64-apple-darwin resume source", "codex-aarch64-apple-darwin exec resume source"):
             with self.subTest(command=command), self.assertRaisesRegex(ValueError, "resumed harness"):
                 session_liveness.verify_process_exit(entry, rows=[(456, "other", command)])
+
+    def test_native_uuid_alias_resumes_are_the_source_on_every_tty(self):
+        source = "01a1514c-fa7f-7be3-95ba-4d25df73d07e"
+        entry = {**self.entry, "session_id": source, "harness": "codex"}
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
+        for alias in (source.upper(), source.replace("-", ""), "{" + source.upper() + "}", "urn:uuid:" + source.upper()):
+            for tty in (entry["tty"], "other"):
+                with self.subTest(alias=alias, tty=tty), self.assertRaisesRegex(ValueError, "resumed harness"):
+                    session_liveness.verify_process_exit(entry, rows=[(456, tty, "codex resume " + alias)],
+                        ended_at=cutoff, started_at=lambda _pid: cutoff + timedelta(seconds=1))
+
+    def test_repository_codex_scripts_are_unrelated_replacement_work(self):
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
+        for command in ("python /repo/codex_idle_watch.py", "sh /repo/codex-watch.sh"):
+            with self.subTest(command=command):
+                session_liveness.verify_process_exit({**self.entry, "harness": "codex"},
+                    rows=[(456, self.entry["tty"], command)], ended_at=cutoff,
+                    started_at=lambda _pid: cutoff + timedelta(seconds=1))
+
+    def test_managed_wrapper_needs_its_guard_on_the_source_tty(self):
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
+        for name in ("codex-session.py", "codex_session_proxy.py"):
+            for guarded in (False, True):
+                with self.subTest(name=name, guarded=guarded):
+                    probe = lambda: session_liveness.verify_process_exit({**self.entry, "harness": "codex"},
+                        rows=[(456, self.entry["tty"], "python /repo/" + name + " launch")], ended_at=cutoff,
+                        started_at=lambda _pid: cutoff + timedelta(seconds=1), independent_harness=lambda *_args: guarded)
+                    if guarded:
+                        probe()
+                    else:
+                        with self.assertRaisesRegex(ValueError, "unidentified harness"):
+                            probe()
+
+    def test_inventory_keeps_long_resume_operands(self):
+        source = "01a1514c-fa7f-7be3-95ba-4d25df73d07e"
+        self.inventory.side_effect = self.real_inventory
+        def ps(argv, **_kwargs):
+            # Model ps's truncated command column unless unlimited width is requested.
+            command = "/" + "long-vendor-path/" * 8 + "codex resume " + source
+            return SimpleNamespace(stdout="456 other " + (command if "-ww" in argv else command[:79]))
+        with patch.object(session_liveness.subprocess, "run", side_effect=ps), self.assertRaisesRegex(ValueError, "resumed harness"):
+            session_liveness.verify_process_exit({**self.entry, "session_id": source})
+
+    def test_malformed_native_cutoff_falls_back_to_strict_process_proof(self):
+        import tmux_terminal
+        entry = {**self.entry, "tmux_socket": "fixture", "tmux_session_id": "tmux:fixture:" + "a" * 32,
+                 "launch_started_at": 5}
+        pane = {"session_id": entry["tmux_session_id"], "pane_id": "%1", "pid": 789,
+                "tmux_socket": "fixture", "window_id": entry["window_id"], "tab_id": entry["tab_id"],
+                "tty": entry["tty"], "dead": True, "exited_at": "2026-10-01T02:00:00Z"}
+        for row in (pane, {key: value for key, value in pane.items() if key != "tab_id"}):
+            with self.subTest(row=row), patch.object(tmux_terminal.Terminal, "list", return_value=[row]):
+                self.assertIsNone(session_liveness.native_exit_cutoff(entry))
+                with self.assertRaises(ValueError):
+                    session_liveness.verify_process_exit(entry, rows=[(456, entry["tty"], "codex exec -- new task")])
 
     def test_unknown_peers_on_other_ttys_remain_the_callers_confirmation(self):
         entry = {**self.entry, "pid": 123, "session_id": "source"}

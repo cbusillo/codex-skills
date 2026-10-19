@@ -11,6 +11,17 @@ from pathlib import Path
 import shlex
 import subprocess
 import re
+import uuid
+
+
+def native_uuid(value):
+    """Canonical identity for the UUID forms accepted by native ThreadId parsing."""
+    if not isinstance(value, str):
+        return None
+    hyphenated = r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}"
+    if not re.fullmatch(r"[0-9a-fA-F]{32}|" + hyphenated + r"|\{" + hyphenated + r"\}|urn:uuid:" + hyphenated, value):
+        return None
+    return str(uuid.UUID(value))
 
 
 def process_rows(output):
@@ -25,7 +36,7 @@ def process_rows(output):
 
 def inventory():
     return process_rows(subprocess.run(
-        ["ps", "-axo", "pid=,tty=,command="], check=True, capture_output=True,
+        ["ps", "-ww", "-axo", "pid=,tty=,command="], check=True, capture_output=True,
         text=True, timeout=10).stdout)
 
 
@@ -52,6 +63,10 @@ def harness_family(executable):
     name = Path(executable).name.casefold()
     if name in {"codex-session.py", "codex_session_proxy.py"}:
         return None  # Managed wrappers need their own launch binding.
+    if name == "codex.js":
+        return "codex"
+    if name.endswith((".py", ".sh")):
+        return None  # Repository utilities are not native harness executables.
     if name.startswith("codex"):
         return "codex"
     return "claude" if name in {"claude", "claude.js"} else None
@@ -113,12 +128,14 @@ def verify_process_exit(entry, *, rows=None, ended_at=None, started_at=None,
     same_tty = [row for row in rows if row[1] == tty]
     if require_tty and not same_tty:
         raise ValueError("no process rows match the terminal TTY; inventory is uncertain")
+    source = native_uuid(entry.get("session_id")) or entry.get("session_id")
     for pid, process_tty, command in rows:
         if pid in pids:
             raise ValueError("source PID (possibly reused) or work on its TTY remains; preserve claims and verify native identity")
         argv = harness_arguments(command)
         resumed, command_kind = invocation(argv)
-        if entry.get("session_id") in resumed:
+        identities = [native_uuid(value) or value for value in resumed]
+        if source in identities:
             raise ValueError("source native session is visible in a resumed harness process")
         if process_tty != tty or idle_terminal_command(command):
             continue
@@ -133,9 +150,9 @@ def verify_process_exit(entry, *, rows=None, ended_at=None, started_at=None,
         owner_known = replacement_owner is not None and replacement_owner(pid)
         if replacement_owner is not None and not owner_known:
             raise ValueError("process belongs to no verified new TTY owner; terminal kept")
-        if argv and harness_family(argv[0]) in ({entry["harness"]} if entry.get("harness") else {"codex", "claude"}):
-            explicit_other = len(resumed) == 1 and re.fullmatch(
-                r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", resumed[0]) is not None
+        if argv and (harness_family(argv[0]) in ({entry["harness"]} if entry.get("harness") else {"codex", "claude"})
+                     or Path(argv[0]).name in {"codex-session.py", "codex_session_proxy.py"}):
+            explicit_other = len(resumed) == 1 and native_uuid(resumed[0]) is not None
             noninteractive = command_kind == "exec"
             guarded = independent_harness is not None and independent_harness(pid, argv)
             if not (explicit_other or noninteractive or guarded):
@@ -149,22 +166,6 @@ def require_safe_status(status):
         raise ValueError("latest transcript lacks an unqualified Safe to exit: yes")
 
 
-def closed_transcript(entry):
-    """Keep native transcript changes visible across terminal-close probes."""
-    if not entry.get("transcript"):
-        return None
-    import session_record
-    path = Path(entry["transcript"])
-    identity = lambda info: (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
-    before = identity(path.stat())
-    status = session_record.session_status(entry)
-    require_safe_status(status)
-    if identity(path.stat()) != before:
-        raise ValueError("native transcript changed during terminal verification; terminal kept")
-    return before, tuple(status.get(key) for key in (
-        "session_id", "transcript", "timestamp", "last_text", "at_turn_end", "turn_end"))
-
-
 def native_exit_cutoff(entry):
     """Read an exact dead pane, never a caller's proposed ledger timestamp."""
     if not entry.get("tmux_session_id"):
@@ -174,7 +175,7 @@ def native_exit_cutoff(entry):
         terminal = Terminal(entry.get("tmux_socket", "supervisor"))
         row = terminal.dead_pane(entry["tmux_session_id"], entry)
         return datetime.fromisoformat(row["exited_at"]) if row.get("exited_at") else None
-    except (OSError, ValueError, subprocess.SubprocessError):
+    except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError):
         # A cutoff only permits verified replacement work on a reused TTY.
         # Its absence retains the stricter PID/TTY path; it is not exit proof.
         return None
