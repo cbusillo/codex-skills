@@ -20,6 +20,7 @@ import importlib.util
 import sys
 import builtins
 from functools import lru_cache
+from itertools import product
 from contextlib import redirect_stdout
 from datetime import datetime
 import posixpath
@@ -2297,6 +2298,11 @@ def python_ownership(content, *, partial=False):
     factored_sources = set()
     started_patches = {}
     mock_types = {"unittest.mock." + name for name in ("Mock", "MagicMock", "AsyncMock", "NonCallableMock", "NonCallableMagicMock")}
+    async_calls = {"asyncio.run": "main", "asyncio.create_task": "coro", "asyncio.ensure_future": "coro_or_future",
+                   "asyncio.wait_for": "fut", "asyncio.AbstractEventLoop.run_until_complete": "future"}
+    loop_factories = {"asyncio.new_event_loop", "asyncio.get_event_loop", "asyncio.get_running_loop"}
+    async_consumers = set(async_calls) | {"asyncio.gather"}
+    async_names = async_consumers | loop_factories
     exception_types = {"builtins." + name for name, kind in vars(builtins).items()
                        if isinstance(kind, type) and issubclass(kind, BaseException)} | {
                            "subprocess.SubprocessError", "subprocess.CalledProcessError", "subprocess.TimeoutExpired"}
@@ -2419,10 +2425,12 @@ def python_ownership(content, *, partial=False):
             self.source = source
 
     class PatchContext:
-        def __init__(self, target, replacement, inject=False, children=()):
+        def __init__(self, target, replacement, inject=False, children=(), attribute_owner=None, create=False):
             self.target, self.replacement, self.previous = target, replacement, []
             self.inject = inject
             self.children = children
+            self.attribute_owner = attribute_owner
+            self.create = create
 
     class ExceptionValue:
         def __init__(self, name):
@@ -2513,18 +2521,46 @@ def python_ownership(content, *, partial=False):
             return prefix + marker + suffix
         return marker
 
+    def literal_choice_key(item, seen=()):
+        if item is unknown:
+            return ("unknown",)
+        if type(item) in (str, bytes, int, bool, float, complex, type(None)):
+            return ("literal", item) if item == item else None
+        if type(item) in (list, tuple) and id(item) not in seen:
+            children = tuple(literal_choice_key(child, (*seen, id(item))) for child in item)
+            if all(child is not None for child in children):
+                return type(item), children
+        return None
+
     def choices(items, *, source_values=True):
-        unique, strings = [], set()
+        unique, strings, literals = [], set(), set()
         for item in items:
             if isinstance(item, str):
                 if item in strings:
                     continue
                 strings.add(item)
                 unique.append(item)
-            elif not any(same(item, prior) for prior in unique):
-                unique.append(item)
+            else:
+                key = literal_choice_key(item)
+                if key is not None:
+                    if key not in literals:
+                        literals.add(key)
+                        unique.append(item)
+                elif not any(same(item, prior) for prior in unique):
+                    unique.append(item)
         if len(unique) <= 8 or any(isinstance(item, (ast.AST, Function, Descriptor, Bound, Instance, Partial, Registry, Deferred, Keywords, Sequence, Generator, CompiledCode, PatchContext)) for item in unique):
             return tuple(unique)
+        if source_values:
+            groups, other = {}, []
+            for item in unique:
+                prefix = python_source_prefix(item)
+                if prefix is None:
+                    other.append(item)
+                else:
+                    groups.setdefault(prefix, []).append(item)
+            if groups:
+                return (*[item for group in groups.values() for item in choices(group, source_values=False)],
+                        *choices(other))
         # Executable Python fixtures must reach exec/eval as concrete sources;
         # the shell-argv widening marker would bypass their dynamic patches.
         def python_source(item):
@@ -2542,9 +2578,8 @@ def python_ownership(content, *, partial=False):
             return embedded is not None and any(isinstance(node, (ast.Call, ast.Import, ast.ImportFrom)) for node in ast.walk(embedded))
         sources = [item for item in unique if python_source(item)] if source_values else []
         if sources:
-            strings = {item for item in sources if isinstance(item, str)}
-            return (*sources, *choices(item for item in unique if (
-                item not in strings if isinstance(item, str) else not any(same(item, source) for source in sources))))
+            source_ids = {id(item) for item in sources}
+            return (*sources, *choices(item for item in unique if id(item) not in source_ids))
         # Keep canonical helper/action witnesses concrete. Widening known
         # read-only actions would invent a dynamic action and a false refusal.
         witnesses, remaining = {}, []
@@ -2571,10 +2606,22 @@ def python_ownership(content, *, partial=False):
                 parsed_sources[key] = None
         return parsed_sources[key]
 
+    def python_source_prefix(row):
+        if not isinstance(row, (list, tuple)) or not all(isinstance(word, str) for word in row):
+            return None
+        child = unwrapped_command(row, unwrap_code=False)
+        if not child or not re.fullmatch(r"python[0-9.]*", Path(child[0]).name) or "-c" not in child:
+            return None
+        position = child.index("-c") + 1
+        if position >= len(child) or parsed_source(child[position], "exec") is None:
+            return None
+        positions = [index + 1 for index, word in enumerate(row[:-1])
+                     if word == "-c" and row[index + 1] == child[position]]
+        return tuple(row[:positions[0] + 1]) if len(positions) == 1 else None
+
     def source_alternative(sources):
         """Keep complete source choices as branches instead of a string product."""
         if len(sources) == 1:
-            factored_sources.add(sources[0])
             return sources[0]
         def bodies(modules):
             if len(modules) == 1:
@@ -2599,7 +2646,7 @@ def python_ownership(content, *, partial=False):
                         sources = [item for item in part if isinstance(item, str) and parsed_source(item, "exec") is not None]
                         strings = set(sources)
                         compact = ([source_alternative(sources), *(item for item in part if not isinstance(item, str) or item not in strings)]
-                                   if sources else part)
+                                   if len(sources) > 8 else part)
                     operands = compact
                 elif child and re.fullmatch(r"python[0-9.]*", Path(child[0]).name) and "-c" in child:
                     # Later argv words are data to the selected Python source.
@@ -2632,13 +2679,13 @@ def python_ownership(content, *, partial=False):
         if id(kind) in seen:
             return ()
         assigned = class_bindings.get(id(kind), {}).get(name, ())
-        if assigned:
+        if assigned and not any(item is unknown for item in assigned):
             return assigned
         for base in class_bases.get(id(kind), ()):
-            assigned = class_member(base, name, (*seen, id(kind)))
-            if assigned:
-                return assigned
-        return ()
+            inherited = class_member(base, name, (*seen, id(kind)))
+            if inherited:
+                return choices((*assigned, *inherited))
+        return assigned
 
     def class_names(kind, seen=()):
         if id(kind) in seen:
@@ -2663,13 +2710,18 @@ def python_ownership(content, *, partial=False):
             return (owner.function,) if name == "fget" else owner.setter if name == "fset" else owner.deleter
         receiver = owner.receiver if isinstance(owner, Super) else owner
         kind = receiver.kind if isinstance(receiver, Instance) else receiver
+        if (isinstance(owner, Instance) and isinstance(kind, ast.alias) and kind.name in mock_types
+                and name not in owner.attributes and unknown in owner.attributes):
+            return choices((unknown, *owner.attributes[unknown]))
         assigned = class_member(kind, name)
         if isinstance(owner, Super):
             assigned = next((matched for base in class_bases.get(id(owner.kind), ()) if (matched := class_member(base, name))), ())
         properties = tuple(item for item in assigned if isinstance(item, Descriptor) and item.kind == "property")
         shadowed = ()
         if isinstance(owner, Instance) and name in owner.attributes and not properties:
-            return owner.attributes[name]
+            if not any(item is unknown for item in owner.attributes[name]):
+                return owner.attributes[name]
+            shadowed = owner.attributes[name]
         if properties and isinstance(owner, Instance) and name in owner.attributes:
             if len(properties) != len(assigned):
                 shadowed = owner.attributes[name]
@@ -2776,11 +2828,92 @@ def python_ownership(content, *, partial=False):
             paths = combined
         return paths
 
+    def is_value_iterator(item):
+        return isinstance(item, Instance) and isinstance(item.kind, ast.alias) and item.kind.name in {"ownership.iter", "ownership.cycle"}
+
+    def make_iterator(source, cycle=False):
+        iterator = Instance(ast.alias(name="ownership.cycle" if cycle else "ownership.iter"))
+        iterator.attributes.update(source=source, states=(Sequence(((0, (), False),)),))
+        return iterator
+
+    def iterator_rows(iterator, scope):
+        source = iterator.attributes["source"]
+        if all(isinstance(item, (Sequence, list, tuple, str, Keywords)) for item in source):
+            return [list(item) if isinstance(item, str) else list(item.items) if isinstance(item, Keywords) else list(row)
+                    for item in source for row in (sequence_rows(item) if isinstance(item, (Sequence, list, tuple)) else (item,))]
+        if "materialized" not in iterator.attributes:
+            rows = iterable_rows(source, scope)
+            observe(iterator.attributes)
+            iterator.attributes["materialized"] = (Sequence(rows),)
+        return [list(row) for sequence in iterator.attributes["materialized"] for row in sequence_rows(sequence)]
+
+    def consume_iterator(iterator, scope):
+        nonlocal attribute_mutations
+        states = [row for assigned in iterator.attributes["states"] for row in sequence_rows(assigned)]
+        results, updated = [], []
+        cycle = iterator.kind.name == "ownership.cycle"
+        source = iterator.attributes["source"]
+        if len(source) == 1 and is_value_iterator(source[0]):
+            operands = consume_iterator(source[0], scope) if any(len(state) == 3 and not state[2] for state in states) else ()
+            for state in states:
+                if len(state) != 3 or not isinstance(state[0], int) or not isinstance(state[1], tuple):
+                    results.append(unknown)
+                    continue
+                index, saved, cycling = state
+                if not cycling and operands:
+                    results.extend(operands)
+                    updated.extend((index + 1, (*saved, item) if cycle else (), False) for item in operands)
+                elif cycle and saved:
+                    position = index if cycling else 0
+                    results.append(saved[position % len(saved)])
+                    updated.append((position + 1, saved, True))
+                else:
+                    updated.append(state)
+            attribute_mutations += 1
+            observe(iterator.attributes)
+            iterator.attributes["states"] = (Sequence(updated),)
+            return choices(results)
+        rows = iterator_rows(iterator, scope)
+        for row in rows:
+            for state in states:
+                if len(state) != 3 or not isinstance(state[0], int) or not isinstance(state[1], tuple):
+                    results.append(unknown)
+                    continue
+                index, saved, cycling = state
+                if not cycling and index < len(row):
+                    results.append(row[index])
+                    updated.append((index + 1, (*saved, row[index]) if cycle else (), False))
+                elif cycle and saved:
+                    position = index if cycling else 0
+                    results.append(saved[position % len(saved)])
+                    updated.append((position + 1, saved, True))
+                else:
+                    updated.append((index, saved, cycling))
+        attribute_mutations += 1
+        observe(iterator.attributes)
+        iterator.attributes["states"] = (Sequence(updated),)
+        return choices(results)
+
+    def remaining_iterator_rows(iterator, scope):
+        nonlocal attribute_mutations
+        rows = iterator_rows(iterator, scope)
+        states = [row for assigned in iterator.attributes["states"] for row in sequence_rows(assigned)]
+        remaining = [list(state[1]) if state[2] else row[state[0]:]
+                     for row in rows for state in states if len(state) == 3 and isinstance(state[0], int)]
+        observe(iterator.attributes)
+        attribute_mutations += 1
+        iterator.attributes["states"] = (Sequence(((max(map(len, rows), default=0), (), False),)),)
+        return remaining
+
     def iterate_values(sequences, scope):
         nonlocal recursion_skips
         result = []
         for sequence in sequences:
-            if isinstance(sequence, Generator):
+            if is_value_iterator(sequence):
+                # Whole-iterable consumers inspect one finite pass even for a
+                # cycle. Mock/next consumers advance individual positions.
+                result.extend(item for row in remaining_iterator_rows(sequence, scope) for item in row)
+            elif isinstance(sequence, Generator):
                 identity = id(sequence)
                 if identity in active_iterators:
                     recursion_skips += 1
@@ -2818,6 +2951,9 @@ def python_ownership(content, *, partial=False):
         """Retain ordered argv rows when a consumer copies or renders them."""
         rows = []
         for sequence in assigned:
+            if is_value_iterator(sequence):
+                rows.extend(remaining_iterator_rows(sequence, scope))
+                continue
             if isinstance(sequence, (Sequence, list, tuple)):
                 rows.extend(list(row) for row in sequence_rows(sequence))
                 continue
@@ -2876,6 +3012,18 @@ def python_ownership(content, *, partial=False):
         mock = Instance(ast.alias(name=kind))
         mock.attributes.update({"_mock_wraps" if name == "wraps" else name: assigned
                                 for name, assigned in keywords.items()})
+        wildcard = mock.attributes.get(unknown, ())
+        if wildcard:
+            # Construction takes a snapshot. Later explicit assignments replace
+            # these possibilities instead of resurrecting constructor values.
+            for name in tuple(mock.attributes):
+                if name is not unknown:
+                    mock.attributes[name] = choices((*mock.attributes[name], *wildcard))
+            for name, default in (("side_effect", (None,)),
+                                  ("return_value", (ast.alias(name="unittest.mock.DEFAULT"),)),
+                                  ("_mock_wraps", (None,))):
+                if name not in mock.attributes:
+                    mock.attributes[name] = choices((*default, *wildcard))
         return mock
 
     def patch_replacement(replacement, keywords, scope):
@@ -2891,6 +3039,132 @@ def python_ownership(content, *, partial=False):
                                                                  if name in {"side_effect", "return_value", "wraps"}}),)
         return replacement, inject
 
+    def consume_deferred(assigned, scope, memo=None):
+        # Async functions already expose completion values in this model.
+        # Preserve those values alongside callbacks that have not run yet.
+        memo = {} if memo is None else memo
+        results = []
+        for operand in assigned:
+            if isinstance(operand, Deferred):
+                if id(operand) not in memo:
+                    memo[id(operand)] = (operand, invoke(operand.callback, scope, evaluated=True, consumed=True))
+                results.extend(memo[id(operand)][1])
+            else:
+                results.append(operand)
+        return choices(results) or (None,)
+
+    def deferred_operands(assigned, seen=None):
+        seen = set() if seen is None else seen
+        for operand in assigned:
+            if id(operand) in seen:
+                continue
+            seen.add(id(operand))
+            if isinstance(operand, Deferred):
+                yield operand
+            elif isinstance(operand, Keywords):
+                for child in operand.items.values():
+                    yield from deferred_operands(child, seen)
+            elif isinstance(operand, Sequence):
+                for row in sequence_rows(operand):
+                    yield from deferred_operands(row, seen)
+            elif isinstance(operand, (list, tuple)):
+                yield from deferred_operands(operand, seen)
+
+    def async_result(name, arguments, keywords, scope):
+        if name == "asyncio.gather":
+            memo = {}
+            return (Sequence(combinations([consume_deferred(assigned, scope, memo) for assigned in arguments])),)
+        parameter = async_calls[name]
+        return consume_deferred(arguments[0] if arguments else keywords.get(parameter, ()), scope)
+
+    def object_patch_context(parent, attribute, replacement, inject, create=False):
+        if not isinstance(attribute, str):
+            return PatchContext(computed, replacement, inject, attribute_owner=unknown, create=create)
+        if isinstance(parent, (ast.alias, str)):
+            return PatchContext((parent.name if isinstance(parent, ast.alias) else parent) + "." + attribute, replacement, inject, create=create)
+        return PatchContext(attribute, replacement, inject, attribute_owner=parent, create=create)
+
+    def patch_binding(context):
+        if isinstance(context.attribute_owner, ast.ClassDef):
+            return class_bindings.setdefault(id(context.attribute_owner), {}), context.target
+        if isinstance(context.attribute_owner, Instance):
+            return context.attribute_owner.attributes, context.target
+        if context.attribute_owner is not None:
+            return None, context.target
+        return patched_attributes, context.target
+
+    def string_transform(node, scope, names):
+        methods = {"strip", "lstrip", "rstrip", "replace", "format"}
+        dedent = "textwrap.dedent" in names
+        method = node.func.attr if isinstance(node.func, ast.Attribute) and node.func.attr in methods else None
+        if not dedent and method is None:
+            return None
+        for argument in node.args:
+            if isinstance(argument, ast.Starred):
+                sequences = value(argument.value, scope)
+                if not sequences or any(not isinstance(sequence, (Sequence, list, tuple)) for sequence in sequences):
+                    return None
+                rows = [row for sequence in sequences for row in sequence_rows(sequence)]
+                if any(not isinstance(row, (list, tuple)) for row in rows) or len({len(row) for row in rows}) != 1:
+                    return None
+        for keyword in node.keywords:
+            if keyword.arg is None:
+                mappings = value(keyword.value, scope)
+                if not mappings or any(not isinstance(mapping, Keywords)
+                        or any(not isinstance(key, str) for key in mapping.items) for mapping in mappings):
+                    return None
+        arguments = expanded_arguments(node.args, scope)
+        keywords = call_keywords(node.keywords, scope)
+        if any(not isinstance(name, str) for name in keywords):
+            return None
+        if dedent:
+            receivers = (None,)
+        elif names & {"str." + method, "builtins.str." + method}:
+            if not arguments:
+                return None
+            receivers, arguments = arguments[0], arguments[1:]
+        else:
+            receivers = value(node.func.value, scope)
+        if not dedent and any(not isinstance(item, str) and item is not unknown for item in receivers):
+            return None
+        operands = [receivers, *arguments, *keywords.values()]
+        known = [tuple(item for item in assigned if type(item) in (str, int, float, bool, type(None)))
+                 for assigned in operands]
+        uncertain = [index for index, (literals, assigned) in enumerate(zip(known, operands))
+                     if len(literals) != len(assigned)]
+        results = []
+        if uncertain:
+            # Keep code from another operand when the unresolved operation
+            # could return it; finite unary source tables remain concrete.
+            results.append(overflow if any(isinstance(item, str) and executable_operand(item)
+                for index in uncertain for other, assigned in enumerate(known) if other != index
+                for item in assigned) else unknown)
+        combinations_count = 1
+        for assigned in known:
+            combinations_count *= len(assigned)
+        if combinations_count > 8 and sum(len(assigned) > 1 for assigned in known) > 1:
+            return choices((*results, overflow))
+        for row in product(*known):
+            receiver, positional = row[0], row[1:1 + len(arguments)]
+            named = dict(zip(keywords, row[1 + len(arguments):]))
+            if not dedent and not isinstance(receiver, str):
+                results.append(unknown)
+                continue
+            try:
+                rendered = textwrap.dedent(*positional, **named) if dedent else getattr(receiver, method)(*positional, **named)
+            except (TypeError, ValueError, KeyError, IndexError, AttributeError):
+                results.append(overflow if any(isinstance(item, str) and item in factored_sources for item in row) else unknown)
+                continue
+            sources = [item for item in row if isinstance(item, str) and item in factored_sources]
+            if sources:
+                parsed = parsed_source(rendered, "exec")
+                if parsed is None or any(ast.dump(parsed) != ast.dump(parsed_source(source, "exec")) for source in sources):
+                    results.append(overflow)
+                    continue
+                factored_sources.add(rendered)
+            results.append(rendered)
+        return choices(results) or (unknown,)
+
     def value(node, scope):
         if isinstance(node, ast.Name):
             if scope.owner(node.id) is None and "builtins." + node.id in exception_types:
@@ -2901,9 +3175,7 @@ def python_ownership(content, *, partial=False):
             cached = expression_values.get((id(scope), id(node)))
             if cached is not None:
                 return cached
-            result = choices(item for operand in value(node.value, scope)
-                             for item in (invoke(operand.callback, scope, evaluated=True, consumed=True) if isinstance(operand, Deferred) else (operand,)))
-            result = result or (None,)
+            result = consume_deferred(value(node.value, scope), scope)
             expression_values[id(scope), id(node)] = result
             return result
         if isinstance(node, ast.Constant):
@@ -2939,7 +3211,7 @@ def python_ownership(content, *, partial=False):
             replaced = [item for target in targets if target in patched_attributes for item in patched_attributes[target]]
             resolved = [*replaced, *(ExceptionValue(name) if name in exception_types else ast.alias(name=name)
                                    for name in function_names(node, scope)
-                                   if name in launches | external_mutations | pure_data_calls | descriptor_names | mock_types | exception_types | {"unittest.mock.DEFAULT"})]
+                                   if name in launches | external_mutations | pure_data_calls | descriptor_names | mock_types | exception_types | async_names | {"unittest.mock.DEFAULT"})]
             if "unittest.mock.patch.stopall" in function_names(node, scope):
                 resolved.append(Bound(ast.alias(name="patch.stopall"), None))
             for owner in value(node.value, scope):
@@ -2951,6 +3223,8 @@ def python_ownership(content, *, partial=False):
                     resolved.append(Bound(ast.alias(name="methodcaller." + node.attr), owner))
                 if isinstance(owner, PatchContext) and node.attr in {"start", "stop"}:
                     resolved.append(Bound(ast.alias(name="patch." + node.attr), owner))
+                if is_value_iterator(owner) and node.attr in {"__next__", "__iter__"}:
+                    resolved.append(Bound(ast.alias(name="iterator." + node.attr), owner))
                 resolved.extend(member(owner, node.attr, scope))
             result = choices(resolved) or (unknown,)
             expression_values[id(scope), id(node)] = result
@@ -3007,6 +3281,10 @@ def python_ownership(content, *, partial=False):
             if cached is not None:
                 return cached
             names = function_names(node.func, scope)
+            transformed = string_transform(node, scope, names)
+            if transformed is not None:
+                expression_values[id(scope), id(node)] = transformed
+                return transformed
             mutated = mutate(node, scope)
             if mutated is not None:
                 expression_values[id(scope), id(node)] = mutated
@@ -3033,9 +3311,28 @@ def python_ownership(content, *, partial=False):
                 return result
             if names & exception_types or any(isinstance(item, ExceptionValue) for item in value(node.func, scope)):
                 return tuple(ExceptionValue(name) for name in names & exception_types) or value(node.func, scope)
-            if "asyncio.run" in names and node.args:
-                return choices(result for item in value(node.args[0], scope) if isinstance(item, Deferred)
-                               for result in invoke(item.callback, scope, evaluated=True, consumed=True)) or (None,)
+            if names & loop_factories:
+                result = (ast.alias(name="asyncio.AbstractEventLoop"),)
+                expression_values[id(scope), id(node)] = result
+                return result
+            if names & async_consumers:
+                arguments, keywords = expanded_arguments(node.args, scope), call_keywords(node.keywords, scope)
+                result = choices(item for name in names & async_consumers
+                                 for item in async_result(name, arguments, keywords, scope))
+                expression_values[id(scope), id(node)] = result
+                return result
+            if names & {"iter", "builtins.iter", "itertools.cycle"} and len(node.args) == 1 and not node.keywords:
+                result = choices(item if is_value_iterator(item) and name != "itertools.cycle" else make_iterator((item,), name == "itertools.cycle")
+                                 for item in value(node.args[0], scope) for name in names & {"iter", "builtins.iter", "itertools.cycle"})
+                expression_values[id(scope), id(node)] = result
+                return result
+            if names & {"next", "builtins.next"} and node.args:
+                operands = value(node.args[0], scope)
+                if any(is_value_iterator(item) for item in operands):
+                    result = choices(value for item in operands for value in (consume_iterator(item, scope) if is_value_iterator(item) else iterate_values((item,), scope)))
+                    result = result or (value(node.args[1], scope) if len(node.args) > 1 else (unknown,))
+                    expression_values[id(scope), id(node)] = result
+                    return result
             if names & {"unittest.mock.patch", "unittest.mock.patch.object", "unittest.mock.patch.multiple"}:
                 arguments = expanded_arguments(node.args, scope)
                 keywords = call_keywords(node.keywords, scope)
@@ -3045,24 +3342,22 @@ def python_ownership(content, *, partial=False):
                     children = []
                     options = {name: assigned for name, assigned in keywords.items() if name in {"new_callable", "spec", "spec_set", "create", "autospec"}}
                     for name, assigned in keywords.items():
-                        if name in options:
+                        if name in options or name == "target":
                             continue
                         replacement, inject = patch_replacement(assigned, options, scope)
-                        children.extend(PatchContext((parent.name if isinstance(parent, ast.alias) else parent) + "." + name, replacement, inject)
-                                        for parent in target if isinstance(parent, (ast.alias, str)))
+                        children.extend(object_patch_context(parent, name, replacement, inject, options.get("create") == (True,)) for parent in target if isinstance(name, str))
                     result = (PatchContext(None, (), children=tuple(children)),)
                     expression_values[id(scope), id(node)] = result
                     return result
                 attribute = arguments[1] if len(arguments) > 1 else keywords.get("attribute", ())
-                targets = (choices(parent.name + "." + attr for parent in target if isinstance(parent, ast.alias)
-                                   for attr in attribute if isinstance(attr, str)) if object_patch
-                           else target)
                 offset = 2 if object_patch else 1
                 replacement = arguments[offset] if len(arguments) > offset else keywords.get("new", ())
                 replacement, inject = patch_replacement(replacement, keywords, scope)
                 # An unresolved replacement can still retain the original sink.
                 if replacement:
-                    result = choices(PatchContext(target, replacement, inject) for target in targets if isinstance(target, str))
+                    result = (choices(object_patch_context(parent, attr, replacement, inject, keywords.get("create") == (True,)) for parent in target for attr in attribute)
+                              if object_patch else choices(PatchContext(parent, replacement, inject) if isinstance(parent, str) else
+                                                           PatchContext(computed, replacement, inject, attribute_owner=unknown) for parent in target))
                     expression_values[id(scope), id(node)] = result
                     return result
             if "compile" in names and node.args:
@@ -3113,6 +3408,8 @@ def python_ownership(content, *, partial=False):
                             if isinstance(entry, (list, tuple)) and len(entry) == 2:
                                 key = entry[0] if isinstance(entry[0], (str, int)) else unknown
                                 put_mapping(mapping, key, (entry[1],))
+                            else:
+                                put_mapping(mapping, unknown, (entry,))
                 update_mapping(mapping, call_keywords(node.keywords, scope))
                 return (Keywords(mapping),)
             if not node.args and names & {"list", "set", "frozenset", "tuple"}:
@@ -3240,7 +3537,7 @@ def python_ownership(content, *, partial=False):
         source_left = [item for item in left if isinstance(item, str) and parsed_source(item, "exec") is not None]
         source_right = [item for item in right if isinstance(item, str) and parsed_source(item, "exec") is not None]
         factored = None
-        if source_left and source_right and (len(source_left) > 1 or len(source_right) > 1):
+        if source_left and source_right and len(source_left) * len(source_right) > 8:
             if (all(not item or item.endswith("\n") for item in source_left)
                     or all(not item or item.startswith("\n") for item in source_right)):
                 factored = source_alternative(source_left) + source_alternative(source_right)
@@ -3312,7 +3609,7 @@ def python_ownership(content, *, partial=False):
             elif isinstance(item, Bound):
                 key = ("bound", child(item.function), child(item.receiver))
             elif isinstance(item, Instance):
-                key = ("instance", identity, child(item.kind), tuple(sorted((name, child(assigned)) for name, assigned in item.attributes.items())))
+                key = ("instance", identity, child(item.kind), tuple(sorted((child(name), child(assigned)) for name, assigned in item.attributes.items())))
             elif isinstance(item, Registry):
                 key = ("registry", identity, child(item.handlers))
             elif isinstance(item, Partial):
@@ -3320,7 +3617,7 @@ def python_ownership(content, *, partial=False):
             elif isinstance(item, CompiledCode):
                 key = ("code", item.source)
             elif isinstance(item, PatchContext):
-                key = ("patch", item.target, child(item.replacement), item.inject, child(item.children))
+                key = ("patch", item.target, child(item.replacement), item.inject, child(item.children), child(item.attribute_owner), item.create)
             elif isinstance(item, ExceptionValue):
                 key = ("exception", item.name)
             elif isinstance(item, Sequence):
@@ -3399,7 +3696,7 @@ def python_ownership(content, *, partial=False):
         elif isinstance(item, Descriptor):
             result = any(effectful(callback, descendants, memo) for callback in (item.function, *item.setter, *item.deleter))
         elif isinstance(item, Bound):
-            if isinstance(item.function, ast.alias) and item.function.name.startswith(("methodcaller.", "patch.")):
+            if isinstance(item.function, ast.alias) and item.function.name.startswith(("methodcaller.", "patch.", "iterator.")):
                 return True
             result = effectful(item.function, descendants, memo)
             if not isinstance(item.function, Function):
@@ -3439,7 +3736,7 @@ def python_ownership(content, *, partial=False):
         elif isinstance(item, Bound):
             children = [item.function, item.receiver]
         elif isinstance(item, PatchContext):
-            children = [item.replacement, item.children]
+            children = [item.replacement, item.children, item.attribute_owner]
         elif isinstance(item, Instance):
             children = [item.kind, *item.attributes.values()]
         elif isinstance(item, ast.ClassDef):
@@ -3497,6 +3794,8 @@ def python_ownership(content, *, partial=False):
         nonlocal found, recursion_skips, expression_values
         argument_values = list(arguments) if evaluated else expanded_arguments(arguments, caller)
         keyword_values = dict(keywords) if evaluated else call_keywords(keywords, caller)
+        if isinstance(wrapper, ast.alias) and wrapper.name in async_consumers:
+            return async_result(wrapper.name, argument_values, keyword_values, caller)
         if isinstance(wrapper, ast.alias) and wrapper.name in mock_types:
             return (make_mock(wrapper.name, keyword_values),)
         if isinstance(wrapper, Bound) and isinstance(wrapper.function, PatchContext):
@@ -3521,6 +3820,8 @@ def python_ownership(content, *, partial=False):
                         close_context(context, caller)
             return patched_call(wrapper, [])
         if isinstance(wrapper, Bound) and isinstance(wrapper.function, ast.alias):
+            if wrapper.function.name.startswith("iterator.") and is_value_iterator(wrapper.receiver):
+                return (wrapper.receiver,) if wrapper.function.name == "iterator.__iter__" else consume_iterator(wrapper.receiver, caller)
             if wrapper.function.name == "patch.stopall":
                 for assigned in reversed(tuple(started_patches.values())):
                     for patch in assigned:
@@ -3571,6 +3872,9 @@ def python_ownership(content, *, partial=False):
                     if (isinstance(callback, Bound) and isinstance(callback.function, ast.alias)
                             and callback.function.name.startswith("methodcaller.") and isinstance(callback.receiver, (Sequence, Keywords))):
                         return False
+                    if (isinstance(callback, Bound) and isinstance(callback.function, ast.alias)
+                            and callback.function.name.startswith("iterator.") and is_value_iterator(callback.receiver)):
+                        return False
                     return (callback is unknown or isinstance(callback, ast.alias) and callback.name not in launches | pure_data_calls | exception_types | {"unittest.mock.DEFAULT"}
                             or isinstance(callback, Bound) and unresolved_callback(callback.function))
                 def call_mock_callback(callback):
@@ -3581,11 +3885,15 @@ def python_ownership(content, *, partial=False):
                         found |= any(executable_value(command) for assigned in [*argument_values, *keyword_values.values()] for command in assigned)
                     return invoke(callback, caller, argument_values, keyword_values, evaluated=True, unknown_effect=unknown_effect)
                 side_effects = wrapper.attributes.get("side_effect", ())
+                if any(isinstance(item, (Sequence, Keywords, Generator, list, tuple)) for item in side_effects):
+                    side_effects = choices(make_iterator((item,)) if isinstance(item, (Sequence, Keywords, Generator, list, tuple)) else item for item in side_effects)
+                    observe(wrapper.attributes)
+                    wrapper.attributes["side_effect"] = side_effects
                 results, fallback = [], not side_effects or any(item is None for item in side_effects)
                 for callback in side_effects:
                     if callback is None or isinstance(callback, ExceptionValue) or isinstance(callback, ast.alias) and callback.name in exception_types:
                         continue
-                    returned = (iterate_values((callback,), caller) if isinstance(callback, (Sequence, Generator, list, tuple)) else call_mock_callback(callback))
+                    returned = consume_iterator(callback, caller) if is_value_iterator(callback) else call_mock_callback(callback)
                     results.extend(item for item in returned if not (isinstance(item, ast.alias) and item.name == "unittest.mock.DEFAULT"))
                     fallback |= any(isinstance(item, ast.alias) and item.name == "unittest.mock.DEFAULT" for item in returned)
                 if fallback:
@@ -3619,8 +3927,12 @@ def python_ownership(content, *, partial=False):
         if isinstance(wrapper, Bound):
             wrapper, receiver = wrapper.function, wrapper.receiver
         if not isinstance(wrapper, Function):
-            if unknown_effect and not (isinstance(wrapper, ast.alias) and wrapper.name in pure_data_calls):
-                escape_mutables([*argument_values, *keyword_values.values()])
+            if not (isinstance(wrapper, ast.alias) and wrapper.name in pure_data_calls):
+                deferred = tuple(deferred_operands([*argument_values, *keyword_values.values()]))
+                if unknown_effect:
+                    escape_mutables([*argument_values, *keyword_values.values()])
+                if deferred:
+                    return choices((*consume_deferred(deferred, caller), unknown))
             return ()
         node = wrapper.node
         if not consumed and wrapper.generator:
@@ -3698,6 +4010,7 @@ def python_ownership(content, *, partial=False):
         "list", "tuple", "set", "frozenset", "dict", "iter", "next", "all", "any", "sum", "min", "max", "sorted", "enumerate", "zip", "map", "range",
         "getattr", "hasattr", "vars", "dir", "inspect.signature", "pprint.pprint", "pprint.pformat", "json.dumps", "json.loads",
         "shlex.quote", "shlex.split", "shlex.join", "functools.partial", "operator.methodcaller", "atexit.register", "atexit.unregister",
+        "builtins.iter", "builtins.next", "itertools.cycle",
         "threading.Thread", "threading.Timer", "multiprocessing.Process", "collections.deque", "contextlib.ExitStack", "contextlib.AsyncExitStack",
     }
 
@@ -3743,11 +4056,22 @@ def python_ownership(content, *, partial=False):
                     if child.previous:
                         close_context(child, scope)
                 return
-            observe(patched_attributes)
-            if previous is None:
-                patched_attributes.pop(owner.target, None)
-            else:
-                patched_attributes[owner.target] = previous
+            mapping, attribute = patch_binding(owner)
+            if isinstance(owner.attribute_owner, Instance) and isinstance(previous, dict):
+                if previous["local"] is not None:
+                    assign_attribute(owner.attribute_owner, attribute, previous["local"], scope)
+                else:
+                    delete_attribute(owner.attribute_owner, attribute, scope)
+                    if not owner.create:
+                        present = member(owner.attribute_owner, attribute, scope)
+                        if not present or any(item is unknown for item in present):
+                            assign_attribute(owner.attribute_owner, attribute, previous["original"], scope)
+            elif mapping is not None:
+                observe(mapping)
+                if previous is None:
+                    mapping.pop(attribute, None)
+                else:
+                    mapping[attribute] = previous
             expression_values.clear()
             return
         callbacks = owner.attributes.get("_context_exits", ())
@@ -3775,12 +4099,23 @@ def python_ownership(content, *, partial=False):
                     results.append(Keywords(injected))
                     exits.append(owner)
                     continue
-                owner.previous.append(patched_attributes.get(owner.target))
-                observe(patched_attributes)
+                mapping, attribute = patch_binding(owner)
+                previous = mapping.get(attribute) if mapping is not None else None
+                if isinstance(owner.attribute_owner, Instance):
+                    original = previous if previous is not None else member(owner.attribute_owner, attribute, scope)
+                    owner.previous.append({"local": previous, "original": original})
+                else:
+                    owner.previous.append(previous)
+                    original = (mapping.get(attribute, (ast.alias(name=attribute),)) if owner.attribute_owner is None else
+                                member(owner.attribute_owner, attribute, scope))
                 replacement = owner.replacement
                 if any(item is unknown or isinstance(item, ast.alias) and item.name not in pure_data_calls for item in replacement):
-                    replacement = choices((*replacement, *patched_attributes.get(owner.target, (ast.alias(name=owner.target),))))
-                patched_attributes[owner.target] = replacement
+                    replacement = choices((*replacement, *original))
+                if isinstance(owner.attribute_owner, Instance):
+                    assign_attribute(owner.attribute_owner, attribute, replacement, scope)
+                elif mapping is not None:
+                    observe(mapping)
+                    mapping[attribute] = replacement
                 expression_values.clear()
                 results.extend(replacement)
                 exits.append(owner)
@@ -3840,7 +4175,7 @@ def python_ownership(content, *, partial=False):
                                             key = pair[0] if isinstance(pair[0], (str, int)) else unknown
                                             put_mapping(alternative, key, (pair[1],))
                                         else:
-                                            alternative[unknown] = choices((*alternative.get(unknown, ()), unknown))
+                                            put_mapping(alternative, unknown, tuple(pair) or (unknown,))
                                         possible.append(alternative)
                                     if len(possible) > 1:
                                         merged = merge(*possible)
@@ -3935,7 +4270,10 @@ def python_ownership(content, *, partial=False):
         if isinstance(node, ast.Call):
             names = function_names(node.func, scope)
             functions = value(node.func, scope)
-            if (names & external_mutations or isinstance(node.func, ast.Attribute) and (node.func.attr in mutation_methods
+            iterator_next = bool(names & {"next", "builtins.next"} and node.args and any(is_value_iterator(item) for item in value(node.args[0], scope)))
+            if iterator_next:
+                value(node, scope)
+            if (names & (external_mutations | async_names) or isinstance(node.func, ast.Attribute) and (node.func.attr in mutation_methods
                     or any(is_exit_stack(owner) for owner in value(node.func.value, scope)))):
                 value(node, scope)
             # Unknown data callees still expand starred operands. Known launch
@@ -4004,7 +4342,7 @@ def python_ownership(content, *, partial=False):
                 for callback, arguments, keywords in callbacks:
                     for function in value(callback, scope):
                         invoke(function, scope, arguments, keywords, evaluated=True)
-                if node.args and (names & {"list", "tuple", "set", "frozenset", "next", "sum", "any", "all", "sorted", "dict", "min", "max", "collections.deque", "contextlib.ExitStack.enter_context", "contextlib.AsyncExitStack.enter_context", "contextlib.AsyncExitStack.enter_async_context"} or any(name.endswith(".join") for name in names)):
+                if node.args and not iterator_next and (names & {"list", "tuple", "set", "frozenset", "next", "sum", "any", "all", "sorted", "dict", "min", "max", "collections.deque", "contextlib.ExitStack.enter_context", "contextlib.AsyncExitStack.enter_context", "contextlib.AsyncExitStack.enter_async_context"} or any(name.endswith(".join") for name in names)):
                     iterated(node.args[0], scope)
                 if isinstance(node.func, ast.Attribute) and node.func.attr in {"set_defaults", "add_command"}:
                     for registry in value(node.func.value, scope):
@@ -4018,7 +4356,10 @@ def python_ownership(content, *, partial=False):
                     or any(is_exit_stack(owner) or isinstance(owner, (Registry, Deferred)) for owner in receiver)
                     or all(isinstance(owner, str) for owner in receiver) and bool(receiver))
                 if not (names & (launches | pure_data_calls | external_mutations) or callbacks or modeled_method):
-                    escape_mutables([*expanded_arguments(node.args, scope), *call_keywords(node.keywords, scope).values(), receiver])
+                    arguments = [*expanded_arguments(node.args, scope), *call_keywords(node.keywords, scope).values(), receiver]
+                    if tuple(deferred_operands(arguments)):
+                        value(node, scope)
+                    escape_mutables(arguments)
 
         for child in ast.iter_child_nodes(node):
             if not isinstance(child, ast.stmt):
@@ -4054,34 +4395,62 @@ def python_ownership(content, *, partial=False):
             target.update(updates)
         return merged(states)
 
+    def assign_attribute(owner, name, assigned, scope):
+        nonlocal attribute_mutations
+        if isinstance(owner, ast.alias):
+            attribute_mutations += 1
+            observe(patched_attributes)
+            name = owner.name + "." + name
+            patched_attributes[name] = assigned
+            expression_values.clear()
+        elif isinstance(owner, Instance):
+            members = class_member(owner.kind, name)
+            properties = [item for item in members if isinstance(item, Descriptor) and item.kind == "property"]
+            if properties:
+                for descriptor in properties:
+                    for setter in descriptor.setter:
+                        invoke(Bound(setter, owner), scope, [assigned], evaluated=True)
+                if len(properties) == len(members):
+                    return
+            attribute_mutations += 1
+            observe(owner.attributes)
+            owner.attributes[name] = assigned
+        elif isinstance(owner, ast.ClassDef):
+            attribute_mutations += 1
+            observe(class_bindings.setdefault(id(owner), {}))
+            class_bindings.setdefault(id(owner), {})[name] = assigned
+        expression_values.clear()
+
+    def delete_attribute(owner, name, scope):
+        nonlocal attribute_mutations
+        if isinstance(owner, Instance):
+            members = class_member(owner.kind, name)
+            properties = [item for item in members if isinstance(item, Descriptor) and item.kind == "property"]
+            for descriptor in properties:
+                for deleter in descriptor.deleter:
+                    invoke(Bound(deleter, owner), scope, evaluated=True)
+            if properties and len(properties) == len(members):
+                expression_values.clear()
+                return
+            mapping = owner.attributes
+        elif isinstance(owner, ast.ClassDef):
+            mapping = class_bindings.setdefault(id(owner), {})
+        elif isinstance(owner, ast.alias):
+            mapping, name = patched_attributes, owner.name + "." + name
+        else:
+            return
+        attribute_mutations += 1
+        observe(mapping)
+        mapping.pop(name, None)
+        expression_values.clear()
+
     def bind(target, assigned, scope):
         nonlocal attribute_mutations
         if isinstance(target, ast.Name):
             scope[target.id] = assigned
         elif isinstance(target, ast.Attribute):
             for owner in value(target.value, scope):
-                if isinstance(owner, ast.alias):
-                    attribute_mutations += 1
-                    observe(patched_attributes)
-                    name = owner.name + "." + target.attr
-                    patched_attributes[name] = assigned
-                    expression_values.clear()
-                elif isinstance(owner, Instance):
-                    members = class_member(owner.kind, target.attr)
-                    properties = [item for item in members if isinstance(item, Descriptor) and item.kind == "property"]
-                    if properties:
-                        for descriptor in properties:
-                            for setter in descriptor.setter:
-                                invoke(Bound(setter, owner), scope, [assigned], evaluated=True)
-                        if len(properties) == len(members):
-                            continue
-                    attribute_mutations += 1
-                    observe(owner.attributes)
-                    owner.attributes[target.attr] = assigned
-                elif isinstance(owner, ast.ClassDef):
-                    attribute_mutations += 1
-                    observe(class_bindings.setdefault(id(owner), {}))
-                    class_bindings.setdefault(id(owner), {})[target.attr] = assigned
+                assign_attribute(owner, target.attr, assigned, scope)
         elif isinstance(target, ast.Subscript):
             for owner in value(target.value, scope):
                 for key in value(target.slice, scope):
@@ -4110,7 +4479,7 @@ def python_ownership(content, *, partial=False):
                 bind(child, choices(item[index] if isinstance(item, (list, tuple)) and len(item) == len(target.elts) else unknown
                                     for entry in assigned for item in sequence_rows(entry)), scope)
 
-    def branch(statements, scope, initial=None):
+    def branch(statements, scope, initial=None, executor=None):
         previous = scope.state
         scope.state = dict(previous if initial is None else initial)
         parents, owner = {}, scope.parent
@@ -4125,7 +4494,10 @@ def python_ownership(content, *, partial=False):
                 observe(target)
                 target.clear()
                 target.update(assigned)
-            walk(statements, scope)
+            if executor is None:
+                walk(statements, scope)
+            else:
+                executor(scope)
             return Branch(scope.state, {owner: owner.state for owner in parents},
                           {identity: (target, dict(target)) for identity, (target, _) in changes.items()})
         finally:
@@ -4194,6 +4566,166 @@ def python_ownership(content, *, partial=False):
                 decorated = replacements
         return decorated
 
+    class InexactDataLoop(Exception):
+        pass
+
+    def data_conversion(operation, literal):
+        try:
+            return operation(literal)
+        except (ValueError, TypeError, OverflowError):
+            raise InexactDataLoop() from None
+
+    def data_literal(item, seen=()):
+        if type(item) in (str, bytes, int, float, complex, bool, type(None)):
+            return item
+        if id(item) in seen:
+            raise InexactDataLoop()
+        descendants = (*seen, id(item))
+        if isinstance(item, Sequence) and not item.unique:
+            rows = item.state["rows"]
+            if len(rows) == 1 and isinstance(rows[0], (list, tuple)):
+                return [data_literal(child, descendants) for child in rows[0]]
+        elif type(item) in (list, tuple):
+            return type(item)(data_literal(child, descendants) for child in item)
+        elif isinstance(item, Keywords):
+            result = {}
+            for key, assigned in item.items.items():
+                if type(key) not in (str, bytes, int, float, complex, bool, type(None), tuple) or len(assigned) != 1:
+                    raise InexactDataLoop()
+                literal_key = data_literal(key, descendants)
+                try:
+                    hash(literal_key)
+                except TypeError:
+                    raise InexactDataLoop() from None
+                result[literal_key] = data_literal(assigned[0], descendants)
+            return result
+        raise InexactDataLoop()
+
+    def data_expression(node, scope):
+        if isinstance(node, ast.Constant):
+            data_literal(node.value)
+            return node.value
+        if isinstance(node, ast.Name):
+            assigned = scope.get(node.id, ())
+            if len(assigned) != 1:
+                raise InexactDataLoop()
+            data_literal(assigned[0])
+            return assigned[0]
+        if isinstance(node, (ast.List, ast.Tuple)):
+            items = [data_expression(child, scope) for child in node.elts]
+            return Sequence((items,)) if isinstance(node, ast.List) else tuple(items)
+        if isinstance(node, ast.Dict) and all(key is not None for key in node.keys):
+            result = {}
+            for key, child in zip(node.keys, node.values):
+                key = data_expression(key, scope)
+                if type(key) not in (str, int):
+                    raise InexactDataLoop()
+                result[key] = (data_expression(child, scope),)
+            return Keywords(result)
+        if isinstance(node, ast.JoinedStr):
+            parts = []
+            for child in node.values:
+                if isinstance(child, ast.Constant) and type(child.value) is str:
+                    parts.append(child.value)
+                elif isinstance(child, ast.FormattedValue) and child.format_spec is None:
+                    literal = data_literal(data_expression(child.value, scope))
+                    operation = {-1: builtins.str, 115: builtins.str, 114: builtins.repr, 97: builtins.ascii}.get(child.conversion)
+                    if operation is None:
+                        raise InexactDataLoop()
+                    parts.append(data_conversion(operation, literal))
+                else:
+                    raise InexactDataLoop()
+            return "".join(parts)
+        if isinstance(node, ast.IfExp):
+            condition = data_literal(data_expression(node.test, scope))
+            if type(condition) not in (str, bytes, int, float, complex, bool, type(None)):
+                raise InexactDataLoop()
+            return data_expression(node.body if condition else node.orelse, scope)
+        if isinstance(node, ast.Compare) and len(node.ops) == 1 and isinstance(node.ops[0], (ast.Eq, ast.NotEq)):
+            left, right = (data_literal(data_expression(child, scope)) for child in (node.left, node.comparators[0]))
+            if type(left) not in (str, bytes, int, float, complex, bool, type(None)) or type(right) not in (str, bytes, int, float, complex, bool, type(None)):
+                raise InexactDataLoop()
+            return left == right if isinstance(node.ops[0], ast.Eq) else left != right
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            left, right = data_expression(node.left, scope), data_expression(node.right, scope)
+            first, second = data_literal(left), data_literal(right)
+            if type(first) is not type(second) or type(first) not in (str, bytes, list, tuple):
+                raise InexactDataLoop()
+            if type(first) is list:
+                return Sequence(([*sequence_rows(left)[0], *sequence_rows(right)[0]],))
+            if type(first) is tuple:
+                return left + right
+            return first + second
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and len(node.args) == 1 and not node.keywords:
+            assigned = scope.get(node.func.id)
+            if assigned is None:
+                name = node.func.id
+                if "builtins." + name in patched_attributes:
+                    raise InexactDataLoop()
+            elif len(assigned) == 1 and isinstance(assigned[0], ast.alias) and assigned[0].name in {
+                    "repr", "str", "ascii", "builtins.repr", "builtins.str", "builtins.ascii"}:
+                name = assigned[0].name.rsplit(".", 1)[-1]
+            else:
+                raise InexactDataLoop()
+            operation = {"repr": builtins.repr, "str": builtins.str, "ascii": builtins.ascii}.get(name)
+            if operation is not None:
+                return data_conversion(operation, data_literal(data_expression(node.args[0], scope)))
+        raise InexactDataLoop()
+
+    def data_target(target, item):
+        if isinstance(target, ast.Name):
+            return
+        if isinstance(target, (ast.List, ast.Tuple)):
+            row = sequence_rows(item)[0] if isinstance(item, Sequence) and len(item.state["rows"]) == 1 else item
+            if type(row) in (list, tuple) and len(row) == len(target.elts):
+                for child, value in zip(target.elts, row):
+                    data_target(child, value)
+                return
+        raise InexactDataLoop()
+
+    def data_statement(statement, scope, source):
+        if isinstance(statement, ast.Assign) and all(isinstance(target, ast.Name) for target in statement.targets):
+            assigned = data_expression(statement.value, scope)
+            for target in statement.targets:
+                bind(target, (assigned,), scope)
+            return
+        if isinstance(statement, ast.AugAssign) and isinstance(statement.target, ast.Name) and isinstance(statement.op, ast.Add):
+            owners = scope.get(statement.target.id, ())
+            extension = data_expression(statement.value, scope)
+            if (len(owners) == 1 and isinstance(owners[0], Sequence) and not owners[0].unique and owners[0] is not source and len(owners[0].state["rows"]) == 1
+                    and isinstance(extension, (Sequence, list, tuple))):
+                data_literal(extension)
+                mutate_values(owners, "extend", [(extension,)], {}, scope)
+                return
+        if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call):
+            call = statement.value
+            if isinstance(call.func, ast.Attribute) and isinstance(call.func.value, ast.Name) and not call.keywords:
+                owners = scope.get(call.func.value.id, ())
+                if len(owners) != 1 or not isinstance(owners[0], Sequence) or owners[0].unique or owners[0] is source or len(owners[0].state["rows"]) != 1:
+                    raise InexactDataLoop()
+                if call.func.attr in {"clear", "reverse"} and not call.args:
+                    mutate_values(owners, call.func.attr, [], {}, scope)
+                    return
+                if call.func.attr in {"append", "extend"} and len(call.args) == 1:
+                    operand = data_expression(call.args[0], scope)
+                    if call.func.attr == "extend" and not isinstance(operand, (Sequence, list, tuple)):
+                        raise InexactDataLoop()
+                    data_literal(operand)
+                    mutate_values(owners, call.func.attr, [(operand,)], {}, scope)
+                    return
+            data_expression(call, scope)
+            return
+        if isinstance(statement, ast.If):
+            condition = data_literal(data_expression(statement.test, scope))
+            if type(condition) not in (str, bytes, int, float, complex, bool, type(None)):
+                raise InexactDataLoop()
+            for child in statement.body if condition else statement.orelse:
+                data_statement(child, scope, source)
+            return
+        if isinstance(statement, ast.Pass):
+            return
+        raise InexactDataLoop()
+
     def walk(statements, scope, *, methods=False):
         nonlocal attribute_mutations
         for statement in statements:
@@ -4233,17 +4765,7 @@ def python_ownership(content, *, partial=False):
                 for target in statement.targets:
                     if isinstance(target, ast.Attribute):
                         for owner in value(target.value, scope):
-                            if isinstance(owner, Instance):
-                                members = class_member(owner.kind, target.attr)
-                                properties = [item for item in members if isinstance(item, Descriptor) and item.kind == "property"]
-                                if properties:
-                                    for descriptor in properties:
-                                        for deleter in descriptor.deleter:
-                                            invoke(Bound(deleter, owner), scope, evaluated=True)
-                                if len(properties) != len(members) or not properties:
-                                    attribute_mutations += 1
-                                    observe(owner.attributes)
-                                    owner.attributes.pop(target.attr, None)
+                            delete_attribute(owner, target.attr, scope)
             elif isinstance(statement, ast.Import):
                 for imported in statement.names:
                     scope[imported.asname or imported.name.split(".")[0]] = (ast.alias(name=imported.name if imported.asname else imported.name.split(".")[0]),)
@@ -4257,6 +4779,29 @@ def python_ownership(content, *, partial=False):
                     bodies = (bodies[0] if statement.test.value else bodies[1],)
                 scope.state = merge(*(branch(body, scope) for body in bodies))
             elif isinstance(statement, (ast.For, ast.AsyncFor, ast.While)):
+                if isinstance(statement, ast.For):
+                    assigned = value(statement.iter, scope)
+                    source = assigned[0] if len(assigned) == 1 else None
+                    rows = source.state["rows"] if isinstance(source, Sequence) and not source.unique else (source,) if type(source) in (list, tuple) else ()
+                    if len(rows) == 1 and type(rows[0]) in (list, tuple):
+                        original_rows = source.state["rows"] if isinstance(source, Sequence) else None
+                        def run_exact(local):
+                            for item in rows[0]:
+                                data_literal(item)
+                                data_target(statement.target, item)
+                                bind(statement.target, (item,), local)
+                                for child in statement.body:
+                                    data_statement(child, local, source)
+                                    if isinstance(source, Sequence) and source.state["rows"] is not original_rows:
+                                        raise InexactDataLoop()
+                        try:
+                            exact = branch((), scope, executor=run_exact)
+                        except InexactDataLoop:
+                            pass
+                        else:
+                            scope.state = merge(exact)
+                            walk(statement.orelse, scope)
+                            continue
                 iteration = dict(scope.state)
                 if isinstance(statement, (ast.For, ast.AsyncFor)):
                     items = iterated(statement.iter, scope)

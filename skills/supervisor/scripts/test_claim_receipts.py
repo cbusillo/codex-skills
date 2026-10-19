@@ -856,6 +856,73 @@ class ReceiptTests(unittest.TestCase):
         # Immutable historical command input; analyze it without executing it.
         program = 'import sys,types,json\nfrom unittest.mock import patch\nfrom pathlib import Path\nsys.path.insert(0,str(Path.cwd()/\'skills/supervisor/scripts\'))\nimport claim_receipts\nclaim=\'uv run /catalog/gh-plan.py --repo client/repo claim 12\'\nreport=[]\nfor wrapped in (\'(q,)\',\'{"pack": (q,)}\'):\n module=types.ModuleType(\'fill_fixture\')\n def fill(argument):\n  (argument[\'pack\'][0] if isinstance(argument,dict) else argument[0]).append(\'item\')\n module.fill=fill\n program=\'from fill_fixture import fill\\nimport os\\nq=[]\\nfill(\'+wrapped+\')\\nfor item in q: os.system(\'+repr(claim)+\')\'\n called=[]\n with patch.dict(sys.modules,{\'fill_fixture\':module}),patch(\'os.system\',side_effect=called.append):exec(program,{})\n report.append({\'wrapper\':wrapped,\'actual_commands\':called,\'classified\':claim_receipts.python_ownership(program)})\np=Path(\'/Volumes/Developer-Artifacts/task-evidence/codex-skills/claimrel-native-regression\')\n(p/\'r7-wrapped-escape-before.json\').write_text(json.dumps(report,indent=2)+\'\\n\')\nprint(json.dumps(report))\n'
         self.assert_python_patch_ownership(program, False)
+        # Preserve the recorded uv/heredoc routing as well as the source bytes.
+        command = "uv run --python 3.12 python - <<'PY'\n" + program + "PY"
+        for harness in ("codex", "claude"):
+            rows = history(harness, {})
+            if harness == "codex":
+                rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+            else:
+                rows[1]["message"]["content"][0]["input"] = {"command": command}
+            with self.subTest(harness=harness):
+                state = receipts.ownership_state(rows, harness)
+                self.assertFalse(state["indices"])
+                self.assertFalse(state["pending"])
+
+
+    def test_python_async_completion_preserves_return_values(self):
+        setup = "import asyncio,os,subprocess\nfrom unittest.mock import AsyncMock\nWRITER='uv run /catalog/gh-plan.py --repo o/r claim 12'\n"
+        programs = (
+            ("async def main():\n seen=[]\n r=AsyncMock(side_effect=lambda: seen.append(WRITER))\n pending=r()\n jobs=[pending,r()]\n await asyncio.gather(*jobs)\n return seen[1] if len(seen)>1 else 'echo safe'\nos.system(asyncio.run(main()))", True),
+            ("async def main():\n seen=[]\n r=AsyncMock(side_effect=lambda: seen.append(WRITER))\n pending=r()\n jobs=[pending,pending]\n await asyncio.gather(*jobs)\n return seen[1] if len(seen)>1 else 'echo safe'\nos.system(asyncio.run(main()))", False),
+            ('async def main(): return WRITER\nos.system(asyncio.run(main()))', True),
+            ('async def main():\n r=AsyncMock(return_value=WRITER)\n return await r()\nos.system(asyncio.run(main()))', True),
+            ('async def main():\n r=AsyncMock(return_value=WRITER)\n values=await asyncio.gather(r())\n return values[0]\nos.system(asyncio.run(main()))', True),
+            ("async def main():\n first=AsyncMock(return_value='echo safe')\n second=AsyncMock(return_value=WRITER)\n values=await asyncio.gather(first(),second())\n return values[1]\nos.system(asyncio.run(main()))", True),
+            ("async def main():\n first=AsyncMock(return_value='echo safe')\n second=AsyncMock(return_value=WRITER)\n values=await asyncio.gather(first(),second())\n return values[0]\nos.system(asyncio.run(main()))", False),
+            ('async def main():\n r=AsyncMock(return_value=WRITER)\n return await asyncio.create_task(r())\nos.system(asyncio.run(main()))', True),
+            ('async def main():\n r=AsyncMock(return_value=WRITER)\n return await asyncio.ensure_future(r())\nos.system(asyncio.run(main()))', True),
+            ('async def main():\n r=AsyncMock(return_value=WRITER)\n return await asyncio.wait_for(r(),timeout=1)\nos.system(asyncio.run(main()))', True),
+            ('loop=asyncio.new_event_loop()\ntry:\n r=AsyncMock(return_value=WRITER)\n os.system(loop.run_until_complete(r()))\nfinally: loop.close()', True),
+        )
+        for body, expected in programs:
+            self.assert_python_patch_ownership(setup + body, expected)
+            if expected:
+                self.assert_python_patch_ownership((setup + body).replace("uv run /catalog/gh-plan.py --repo o/r claim 12", "echo safe"), False)
+
+    def test_python_deferred_callbacks_reach_async_consumers(self):
+        setup = "import asyncio,os,subprocess\nfrom unittest.mock import AsyncMock\nWRITER='uv run /catalog/gh-plan.py --repo o/r claim 12'\n"
+        programs = (
+            ('async def main():\n r=AsyncMock(side_effect=lambda c: subprocess.run(c,shell=True))\n await asyncio.gather(r(WRITER))\nasyncio.run(main())', True),
+            ('async def main():\n r=AsyncMock(side_effect=lambda c: subprocess.run(c,shell=True))\n await asyncio.create_task(r(WRITER))\nasyncio.run(main())', True),
+            ('async def main():\n r=AsyncMock(side_effect=lambda c: subprocess.run(c,shell=True))\n await asyncio.ensure_future(r(WRITER))\nasyncio.run(main())', True),
+            ('async def main():\n r=AsyncMock(side_effect=lambda c: subprocess.run(c,shell=True))\n await asyncio.wait_for(r(WRITER),timeout=1)\nasyncio.run(main())', True),
+            ('async def main():\n r=AsyncMock(side_effect=lambda c: subprocess.run(c,shell=True))\n await asyncio.wait_for(fut=r(WRITER),timeout=1)\nasyncio.run(main())', True),
+            ('from asyncio import run as run_async\nr=AsyncMock(side_effect=lambda c: subprocess.run(c,shell=True))\nrun_async(r(WRITER))', True),
+            ('loop=asyncio.new_event_loop()\ntry:\n r=AsyncMock(side_effect=lambda c: subprocess.run(c,shell=True))\n loop.run_until_complete(r(WRITER))\nfinally: loop.close()', True),
+        )
+        for body, expected in programs:
+            self.assert_python_patch_ownership(setup + body, expected)
+            if expected:
+                self.assert_python_patch_ownership((setup + body).replace("uv run /catalog/gh-plan.py --repo o/r claim 12", "echo safe"), False)
+
+    def test_python_deferred_escape_keeps_data_boundaries(self):
+        setup = "import asyncio,os,subprocess\nfrom unittest.mock import AsyncMock\nWRITER='uv run /catalog/gh-plan.py --repo o/r claim 12'\n"
+        programs = (
+            ("from n_async_fixture import consume\nr=AsyncMock(side_effect=lambda c: os.system(c))\nconsume((r(WRITER),))", True),
+            ("from n_async_fixture import consume\nr=AsyncMock(side_effect=lambda c: os.system(c))\nconsume([r(WRITER)])", True),
+            ('r=AsyncMock(side_effect=lambda c: os.system(c))\nr(WRITER)', False),
+            ('r=AsyncMock(side_effect=lambda c: os.system(c))\nprint(r(WRITER))', False),
+            ('def ignore(x): return None\nr=AsyncMock(side_effect=lambda c: os.system(c))\nignore(r(WRITER))', False),
+            ('from n_async_fixture import consume\nr=AsyncMock(side_effect=lambda c: os.system(c))\nconsume(r(WRITER))', True),
+            ("from n_async_fixture import consume\nr=AsyncMock(side_effect=lambda c: os.system(c))\nconsume({'job':r(WRITER)})", True),
+            ('from n_async_fixture import consume\nr=AsyncMock(return_value=WRITER)\nos.system(consume(r()))', True),
+            ('from n_async_fixture import ignore\nignore(WRITER)', False),
+        )
+        for body, expected in programs:
+            self.assert_python_patch_ownership(setup + body, expected)
+            if expected:
+                self.assert_python_patch_ownership((setup + body).replace("uv run /catalog/gh-plan.py --repo o/r claim 12", "echo safe"), False)
 
     def test_python_fixture_tables_keep_sources_under_patch(self):
         writer = "uv run /catalog/gh-plan.py --repo o/r claim 12"
@@ -901,7 +968,7 @@ class ReceiptTests(unittest.TestCase):
                 program += ('with patch("os.system", record):\n' + '\n'.join('    ' + line for line in body.splitlines())) if mocked else body
                 calls = []
                 def profile(frame, event, _argument):
-                    if event == 'call' and frame.f_code.co_filename == receipts.__file__ and frame.f_code.co_name in {'walk', 'scan'}:
+                    if event == 'call' and frame.f_code.co_filename == receipts.__file__:
                         calls.append(None)
                 previous = sys.getprofile()
                 try:
@@ -911,6 +978,7 @@ class ReceiptTests(unittest.TestCase):
                     sys.setprofile(previous)
                 counts.append(len(calls))
             with self.subTest(mocked=mocked):
+                self.assertGreater(counts[0], 0)
                 self.assertLessEqual(counts[1], counts[0] * 3)
 
     def test_python_source_products_preserve_consumers_and_large_fixture_tables(self):
@@ -942,13 +1010,13 @@ class ReceiptTests(unittest.TestCase):
 
     def test_python_argv_source_products_bound_repeated_analysis(self):
         counts = []
-        for size in (2, 4):
+        for size in (9, 18):
             program = ('import subprocess\nC=' + repr([f'print({index})' for index in range(size)])
                        + '\nA=' + repr([f'print({index})' for index in range(size)])
                        + '\nfor code in C:\n    for first in A:\n        for second in A: subprocess.run(["python","-c",code,first,second])')
             calls = []
             def profile(frame, event, _argument):
-                if event == 'call' and frame.f_code.co_filename == receipts.__file__ and frame.f_code.co_name == 'python_ownership':
+                if event == 'call' and frame.f_code.co_filename == receipts.__file__:
                     calls.append(None)
             previous = sys.getprofile()
             try:
@@ -957,9 +1025,238 @@ class ReceiptTests(unittest.TestCase):
             finally:
                 sys.setprofile(previous)
             counts.append(len(calls))
-        # Two independent data columns can grow quadratically before their
-        # existing value bound; the source choices must add no third factor.
-        self.assertLessEqual(counts[1], counts[0] * 4)
+        self.assertGreater(counts[0], 0)
+        self.assertLessEqual(counts[1], counts[0] * 3)
+
+    def test_small_python_source_products_keep_patch_correlation(self):
+        writer = 'uv run /catalog/gh-plan.py --repo o/r claim 12'
+        sources = ['import os\nos.system=print\ncmd=' + repr(writer) + '\n',
+                   'import os\ncmd="echo safe"\n']
+        program = 'S=' + repr(sources) + '\nfor source in S: exec(source+"os.system(cmd)\\n",{})'
+        self.assertFalse(receipts.python_ownership(program))
+        self.assertTrue(receipts.python_ownership(program.replace('os.system=print', 'pass')))
+        sources = [source.replace('import os\n', 'import os,atexit\n')
+                   + 'atexit.register(lambda: os.system(cmd))' for source in sources]
+        program = 'import subprocess\nS=' + repr(sources) + '\nfor source in S: subprocess.run(["python","-c",source])'
+        self.assertFalse(receipts.python_ownership(program))
+        self.assertTrue(receipts.python_ownership(program.replace('os.system=print', 'pass')))
+
+    def test_python_source_transforms_keep_the_current_patch_context(self):
+        writer = 'uv run /catalog/gh-plan.py --repo o/r claim 12'
+        core = 'import os\nos.system(' + repr(writer) + ')\n'
+        forms = (('\n    ' + core.replace('\n', '\n    '), 'textwrap.dedent(PROGRAM)'),
+                 (' \n' + core + ' \n', 'PROGRAM.strip()'),
+                 (' \n' + core, 'PROGRAM.lstrip()'),
+                 (core + ' \n', 'PROGRAM.rstrip()'),
+                 (' \n' + core + ' \n', 'str.strip(PROGRAM)'),
+                 (core.replace(writer, 'TOKEN'), "PROGRAM.replace('TOKEN',WRITER)"),
+                 ('import os\nos.system({command!r})\n', 'PROGRAM.format(command=WRITER)'),
+                 ('import os\nos.system({0!r})\n', 'PROGRAM.format(*[WRITER])'),
+                 ('import os\nos.system({command!r})\n', "PROGRAM.format(**{'command':WRITER})"))
+        for source, expression in forms:
+            setup = ('import os,textwrap\nfrom unittest.mock import patch\nWRITER=' + repr(writer)
+                     + '\nPROGRAM=' + repr(source) + '\ndef record(*a): return 0\n')
+            for mocked in (False, True):
+                body = 'exec(' + expression + ',{})'
+                program = setup + ('with patch("os.system",record): ' + body if mocked else body)
+                with self.subTest(expression=expression, mocked=mocked):
+                    self.assertEqual(receipts.python_ownership(program), not mocked)
+        sources = [' \n' + core + 'marker=' + repr(index) + '\n' for index in range(65)]
+        setup = 'from unittest.mock import patch\nS=' + repr(sources) + '\ndef record(*a): return 0\n'
+        self.assertFalse(receipts.python_ownership(setup + 'with patch("os.system",record):\n    for source in S: exec(source.strip(),{})'))
+        self.assertTrue(receipts.python_ownership(setup + 'for source in S: exec(source.strip(),{})'))
+        starts = [f'import os\nmarker={index}\n' for index in range(12)]
+        ends = [core, 'print("safe")\n']
+        setup = 'A=' + repr(starts) + '\nB=' + repr(ends) + '\n'
+        self.assertTrue(receipts.python_ownership(setup + "for first in A:\n    for second in B: exec((first+second).replace('if ','if False: #'),{})"))
+        setup = 'PROGRAM=' + repr(core) + '\nWRITER=' + repr(writer) + '\nTAILS=' + repr([f'marker={index}\n' for index in range(12)]) + '\n'
+        self.assertFalse(receipts.python_ownership(setup + "for tail in TAILS: unused=PROGRAM+tail\nexec(PROGRAM.replace(WRITER,'echo safe'),{})"))
+        for action in ('claim', 'show'):
+            template = 'uv run /catalog/gh-plan.py --repo {} ' + action + ' {}'
+            for arguments, owning in (('*map(str,[repo,n])', action == 'claim'),
+                                      ("*['o/r',12]", action == 'claim'), ('*[]', False)):
+                program = 'import os\nTEMPLATE=' + repr(template) + '\nos.system(TEMPLATE.format(' + arguments + '))'
+                with self.subTest(action=action, arguments=arguments):
+                    self.assertEqual(receipts.python_ownership(program), owning)
+            template = 'uv run /catalog/gh-plan.py --repo {repo} ' + action + ' {n}'
+            for arguments, owning in (('**supplied', action == 'claim'), ('**{}', False)):
+                program = 'import os\nTEMPLATE=' + repr(template) + '\nos.system(TEMPLATE.format(' + arguments + '))'
+                with self.subTest(action=action, arguments=arguments):
+                    self.assertEqual(receipts.python_ownership(program), owning)
+
+    def test_python_mutable_source_carriers_bound_comparison_work(self):
+        writer = 'uv run /catalog/gh-plan.py --repo o/r claim 12'
+        for operation in ('programs.append(source)', 'programs.extend([source])',
+                          'programs.append((1,source))', 'programs += [(1,source)]', 'paired sources'):
+            counts = []
+            for size in ((1, 2) if operation == 'paired sources' else (4, 8)):
+                sources = ['import os\nos.system(' + repr(writer) + ')\nmarker=' + repr(index) for index in range(size)]
+                body = 'for source in S: ' + operation + '\n'
+                body += ('for label,source in programs: exec(source,{})' if '(1,source)' in operation
+                         else 'for source in programs: exec(source,{})')
+                program = ('from unittest.mock import patch\nS=' + repr(sources)
+                           + '\nprograms=[]\ndef record(*a): return 0\nwith patch("os.system",record):\n'
+                           + '\n'.join('    ' + line for line in body.splitlines()))
+                if operation == 'paired sources':
+                    pairs = [(writer if index == 0 else 'echo safe', index == 0) for index in range(size)]
+                    body = ("for command,expected in S:\n"
+                            "    programs += [(f'import os\\nos.system({command!r})\\nmarker=0',expected),"
+                            "(f'import os\\nos.system({command!r})\\nmarker=1',expected)]\n"
+                            "for source,expected in programs: exec(source,{})")
+                    program = ('from unittest.mock import patch\nS=' + repr(pairs)
+                               + '\nprograms=[]\ndef record(*a): return 0\nwith patch("os.system",record):\n'
+                               + '\n'.join('    ' + line for line in body.splitlines()))
+                calls = []
+                def profile(frame, event, _argument):
+                    if event == 'call' and frame.f_code.co_filename == receipts.__file__:
+                        calls.append(None)
+                previous = sys.getprofile()
+                try:
+                    sys.setprofile(profile)
+                    self.assertFalse(receipts.python_ownership(program))
+                finally:
+                    sys.setprofile(previous)
+                counts.append(len(calls))
+                self.assertTrue(receipts.python_ownership(program.replace('with patch("os.system",record):', 'if True:')))
+            with self.subTest(operation=operation):
+                self.assertGreater(counts[0], 0)
+                self.assertLessEqual(counts[1], counts[0] * 4)
+
+        setup = "import os\nWRITER='uv run /catalog/gh-plan.py --repo o/r claim 12'\n"
+        programs = (
+            ('break', "for cmd in [WRITER,'echo safe']:\n break\nos.system(cmd)", True),
+            ('continue', "cmd=WRITER\nfor item in [1]:\n continue\n cmd='echo safe'\nos.system(cmd)", True),
+            ('raise', "try:\n for cmd in [WRITER,'echo safe']:\n  raise RuntimeError('stop')\nexcept RuntimeError: pass\nos.system(cmd)", True),
+            ('return', "def choose():\n for cmd in [WRITER,'echo safe']:\n  return cmd\nos.system(choose())", True),
+            ('mutation', "source=[WRITER,'echo safe']\nfor cmd in source:\n source.clear()\nos.system(cmd)", True),
+            ('alias_mutation', "source=[WRITER,'echo safe']\nalias=[]\nfor cmd in source:\n alias=source\n alias.clear()\nos.system(cmd)", True),
+            ('opaque_escape', "from n_data_fixture import noop\nsource=[WRITER,'echo safe']\nfor cmd in source:\n noop(source)\n break\nos.system(cmd)", True),
+            ('rollback_after_prefix', "source=[0,1]\nalias=[]\nprograms=[]\nfor item in source:\n programs.append(WRITER if item==0 else 'echo safe')\n if item==1:\n  alias=source\n  alias.clear()\nfor cmd in programs: os.system(cmd)", True),
+            ('safe_builder', "programs=[]\nfor cmd,active in [('echo one',True),('echo two',False)]:\n programs.append(cmd if active else 'echo safe')\nfor cmd in programs: os.system(cmd)", False),
+            ('writer_builder', "programs=[]\nfor cmd,active in [(WRITER,True),('echo two',False)]:\n programs.append(cmd if active else 'echo safe')\nfor cmd in programs: os.system(cmd)", True),
+            ('implicit_int', "cmd='echo safe'\ntry:\n cmd=WRITER\n for item in [1]:\n  int('bad')\n  cmd='echo safe'\nexcept Exception: pass\nos.system(cmd)", True),
+            ('implicit_index', "cmd='echo safe'\ntry:\n cmd=WRITER\n for item in [1]:\n  [][0]\n  cmd='echo safe'\nexcept Exception: pass\nos.system(cmd)", True),
+            ('implicit_format', "cmd='echo safe'\ntry:\n cmd=WRITER\n for item in [1]:\n  f'{1:bad}'\n  cmd='echo safe'\nexcept Exception: pass\nos.system(cmd)", True),
+            ('bad_unpack', "cmd='echo safe'\ntry:\n cmd=WRITER\n for a,b in [1]:\n  pass\n  cmd='echo safe'\nexcept Exception: pass\nos.system(cmd)", True),
+            ('mixed_add', "cmd='echo safe'\ntry:\n cmd=WRITER\n for item in [1]:\n  'echo '+[]\n  cmd='echo safe'\nexcept Exception: pass\nos.system(cmd)", True),
+            ('property_False', 'class Probe:\n @property\n def item(self):\n  os.system(WRITER)\n  return []\nobj=Probe()\nfor item in [1]:\n if False: len(obj.item)', False),
+            ('property_True', 'class Probe:\n @property\n def item(self):\n  os.system(WRITER)\n  return []\nobj=Probe()\nfor item in [1]:\n if True: len(obj.item)', True),
+            ('repr_list', "for item in [1]:\n row=[WRITER]\n program='import os\\nos.system('+repr(row)+'[0])'\nexec(program,{})", True),
+            ('repr_tuple', "for item in [1]:\n row=(WRITER,)\n program='import os\\nos.system('+repr(row)+'[0])'\nexec(program,{})", True),
+            ('repr_mapping', "for item in [1]:\n row={'command':WRITER}\n program='import os\\nos.system('+repr(row)+'.get('+repr('command')+'))'\nexec(program,{})", True),
+            ('fstring_list', "for item in [1]:\n row=[WRITER]\n program=f'import os\\nos.system({row}[0])'\nexec(program,{})", True),
+            ('tuple_alias', "inner=[]\nfor item in [1]: row=(inner,)+('echo safe',)\ninner.append(WRITER)\nfor cmd in row[0]: os.system(cmd)", True),
+            ('list_alias', "inner=[]\nfor item in [1]: row=[inner]+['echo safe']\ninner.append(WRITER)\nfor cmd in row[0]: os.system(cmd)", True),
+            ('extend_tuple', 'rows=[]\nfor item in [1]: rows += (WRITER,)\nfor cmd in rows: os.system(cmd)', True),
+        )
+        for name, body, expected in programs:
+            with self.subTest(control=name):
+                self.assert_python_patch_ownership(setup + body, expected)
+                if expected:
+                    self.assert_python_patch_ownership((setup + body).replace(writer, "echo safe"), False)
+
+        previous_limit = sys.get_int_max_str_digits()
+        try:
+            sys.set_int_max_str_digits(sys.int_info.default_max_str_digits)
+            huge = '0x' + 'f' * sys.int_info.default_max_str_digits
+            for expression in ('str(' + huge + ')', 'repr([' + huge + '])',
+                               'ascii([' + huge + '])', "f'{[" + huge + "]}'"):
+                program = (setup + "cmd='echo safe'\ntry:\n cmd=WRITER\n for item in [1]:\n  "
+                           + expression + "\n  cmd='echo safe'\nexcept Exception: pass\nos.system(cmd)")
+                with self.subTest(control='conversion raises', operation=expression.split('(')[0]):
+                    self.assert_python_patch_ownership(program, True)
+                    self.assert_python_patch_ownership(program.replace(writer, 'echo safe'), False)
+        finally:
+            sys.set_int_max_str_digits(previous_limit)
+
+    def test_python_object_patches_and_iterated_mock_values(self):
+        writer = "uv run /catalog/gh-plan.py --repo o/r claim 12"
+        setup = ("import os, subprocess, itertools\nfrom unittest.mock import patch, Mock, DEFAULT\nWRITER=" + repr(writer)
+                 + "\ndef record(*a,**k): return 0\nclass Runner:\n    x=None\n    def run(self,command): os.system(command)\n")
+        forms = (
+            ('class-object', "with patch.object(Runner,'run',record): Runner().run(WRITER)", False),
+            ('instance-object', "runner=Runner()\nwith patch.object(runner,'run',record): runner.run(WRITER)", False),
+            ('class-multiple', 'with patch.multiple(Runner,run=record): Runner().run(WRITER)', False),
+            ('instance-multiple', 'runner=Runner()\nwith patch.multiple(runner,run=record): runner.run(WRITER)', False),
+            ('object-injection', "@patch('os.system')\n@patch.object(Runner,'x')\ndef run(mock_x,mock_system):\n    mock_system.return_value=WRITER\n    return os.system('echo safe')\nos.system(run())", True),
+            ('multiple-injection', '@patch.multiple(Runner,x=DEFAULT)\ndef run(x):\n    x.return_value=WRITER\n    return Runner.x()\nos.system(run())', True),
+            ('class-restored', "with patch.object(Runner,'run',record): pass\nRunner().run(WRITER)", True),
+            ('instance-restored', "runner=Runner()\nwith patch.object(runner,'run',record): pass\nrunner.run(WRITER)", True),
+            ('iter-clear', "with patch('subprocess.run',side_effect=iter([0,0])): subprocess.run(WRITER,shell=True)", False),
+            ('cycle-clear', "with patch('subprocess.run',side_effect=itertools.cycle([0,0])): subprocess.run(WRITER,shell=True)", False),
+            ('iter-returned-writer', "mock=Mock(side_effect=iter([WRITER]))\nos.system(mock('echo safe'))", True),
+            ('cycle-returned-writer', "mock=Mock(side_effect=itertools.cycle([WRITER]))\nos.system(mock('echo safe'))", True),
+            ('iter-second-safe', "mock=Mock(side_effect=iter([WRITER,'echo safe']))\nmock('ignored')\nos.system(mock('echo safe'))", False),
+            ('cycle-second-safe', "mock=Mock(side_effect=itertools.cycle([WRITER,'echo safe']))\nmock('ignored')\nos.system(mock('echo safe'))", False),
+            ('cycle-third-writer', "mock=Mock(side_effect=itertools.cycle([WRITER,'echo safe']))\nmock('ignored')\nmock('ignored')\nos.system(mock('echo safe'))", True),
+            ('iter-delayed-body', 'def values():\n    os.system(WRITER)\n    yield 0\nmock=Mock(side_effect=iter(values()))', False),
+            ('iter-consumed-body', "def values():\n    os.system(WRITER)\n    yield 0\nmock=Mock(side_effect=iter(values()))\nmock('echo safe')", True),
+            ('iter-next-clear', "source=iter([WRITER,'echo safe'])\nnext(source)\nos.system(next(iter(source)))", False),
+            ('cycle-next-writer', "source=itertools.cycle([WRITER,'echo safe'])\nnext(source)\nnext(source)\nos.system(next(iter(source)))", True),
+            ('list-second-safe', "mock=Mock(side_effect=[WRITER,'echo safe'])\nmock('ignored')\nos.system(mock('echo safe'))", False),
+            ('cycle-retains-consumed-prefix', "items=[WRITER]\nmock=Mock(side_effect=itertools.cycle(items))\nmock('ignored')\nitems.clear()\nos.system(mock('ignored'))", True),
+            ('cycle-preserves-underlying-position', "source=iter(['echo safe',WRITER])\nmock=Mock(side_effect=itertools.cycle(source))\nmock('ignored')\nos.system(next(source))", True),
+            ('list-iterator-preserves-duplicate-order', "source=iter(['echo safe',WRITER,'echo safe'])\nmock=Mock(side_effect=list(source))\nmock('ignored')\nmock('ignored')\nos.system(mock('ignored'))", False),
+            ('iter-reads-appended-source', "items=['echo safe']\nmock=Mock(side_effect=iter(items))\nmock('ignored')\nitems.append(WRITER)\nos.system(mock('ignored'))", True),
+            ('cycle-closed-source-stays-closed', "items=['echo safe']\nmock=Mock(side_effect=itertools.cycle(items))\nmock('ignored')\nmock('ignored')\nitems.append(WRITER)\nos.system(mock('ignored'))", False),
+            ('Child-conditional-inherited', "import contextlib,sys\nclass Child(Runner):pass\nrunner=Child()\nwith contextlib.ExitStack() as stack:\n    if '--dry-run' in sys.argv:stack.enter_context(patch.object(Child,'run',record))\n    runner.run(WRITER)", True),
+            ('Child-unconditional-inherited', "import contextlib,sys\nclass Child(Runner):pass\nrunner=Child()\nwith patch.object(Child,'run',record):runner.run(WRITER)", False),
+            ('runner-conditional-inherited', "import contextlib,sys\nclass Child(Runner):pass\nrunner=Child()\nwith contextlib.ExitStack() as stack:\n    if '--dry-run' in sys.argv:stack.enter_context(patch.object(runner,'run',record))\n    runner.run(WRITER)", True),
+            ('runner-unconditional-inherited', "import contextlib,sys\nclass Child(Runner):pass\nrunner=Child()\nwith patch.object(runner,'run',record):runner.run(WRITER)", False),
+            ('iterator-next-method', 'source=iter([WRITER])\nos.system(source.__iter__().__next__())', True),
+            ('iterator-bound-next-callback', "source=iter([WRITER])\nmock=Mock(side_effect=source.__next__)\nos.system(mock())", True),
+        )
+        for name, body, expected in forms:
+            for safe in (False, True):
+                program = setup + body
+                if safe:
+                    program = program.replace(writer, 'echo safe')
+                owning = expected and not safe
+                with self.subTest(name=name, safe=safe):
+                    self.assertEqual(receipts.python_ownership(program), owning)
+                for harness in ('codex', 'claude'):
+                    rows = history(harness, {})
+                    command = 'python3 -c ' + shlex.quote(program)
+                    if harness == 'codex':
+                        rows[1]['payload']['arguments'] = json.dumps({'cmd': command})
+                    else:
+                        rows[1]['message']['content'][0]['input'] = {'command': command}
+                    rows[2] = output({'exit_code': 0, 'output': ''}, harness, 'tool-1')
+                    with self.subTest(name=name, safe=safe, harness=harness):
+                        self.assertEqual(receipts.ownership_state(rows, harness)['pending'], owning)
+
+    def test_python_instance_patch_uses_attribute_protocol(self):
+        writer = "uv run /catalog/gh-plan.py --repo o/r claim 12"
+        forms = []
+        for callback in ('getter', 'setter', 'deleter'):
+            definition = ("class C:\n    @property\n    def run(self):\n        " + ("os.system(WRITER)" if callback == 'getter' else "pass")
+                          + "\n        return lambda *a:None\n    @run.setter\n    def run(self,value):\n        " + ("os.system(WRITER)" if callback == 'setter' else "pass")
+                          + "\n    @run.deleter\n    def run(self):\n        " + ("os.system(WRITER)" if callback == 'deleter' else "pass") + "\nobj=C()\n")
+            forms.append((callback, definition + "with patch.object(obj,'run',lambda *a:None):pass", True))
+            forms.append((callback+'-class-control', definition + "with patch.object(C,'run',lambda *a:None):pass", False))
+        forms.append(('cached-property', "from functools import cached_property\nclass C:\n    @cached_property\n    def run(self):\n        os.system(WRITER)\n        return lambda *a:None\nobj=C()\nwith patch.object(obj,'run',lambda *a:None):pass", True))
+        definition = "class C:\n    command='echo safe'\n    @property\n    def run(self):\n        os.system(self.command)\n        return lambda *a:None\n    @run.setter\n    def run(self,value):self.command=WRITER\n    @run.deleter\n    def run(self):pass\nobj=C()\n"
+        for create in (False, True):
+            forms.append(('create-'+str(create), definition + "with patch.object(obj,'run',lambda *a:None,create=" + repr(create) + "):pass", not create))
+        forms.append(('restored-instance-value', "class C:\n    def __init__(self):self._value=WRITER\n    @property\n    def run(self):return self._value\n    @run.setter\n    def run(self,value):self._value=value\n    @run.deleter\n    def run(self):del self._value\nobj=C()\nwith patch.object(obj,'run','echo safe'):pass\nos.system(obj.run)", True))
+        for name, body, expected in forms:
+            for safe in (False, True):
+                program = "import os\nfrom unittest.mock import patch\nWRITER=" + repr(writer) + "\n" + body
+                if safe:
+                    program = program.replace(writer, 'echo safe')
+                owning = expected and not safe
+                with self.subTest(name=name, safe=safe):
+                    self.assertEqual(receipts.python_ownership(program), owning)
+                for harness in ('codex', 'claude'):
+                    rows = history(harness, {})
+                    command = 'python3 -c ' + shlex.quote(program)
+                    if harness == 'codex':
+                        rows[1]['payload']['arguments'] = json.dumps({'cmd': command})
+                    else:
+                        rows[1]['message']['content'][0]['input'] = {'command': command}
+                    rows[2] = output({'exit_code': 0, 'output': ''}, harness, 'tool-1')
+                    with self.subTest(name=name, safe=safe, harness=harness):
+                        self.assertEqual(receipts.ownership_state(rows, harness)['pending'], owning)
 
     def test_python_recreated_classes_keep_independent_bindings(self):
         writer = "uv run /catalog/gh-plan.py --repo o/r claim 12"
@@ -3446,6 +3743,39 @@ class ReceiptTests(unittest.TestCase):
                         else:
                             rows[1]["message"]["content"][0]["input"] = {"command": shell}
                         self.assertEqual(receipts.ownership_state(rows, harness)["pending"], owning)
+
+    def test_dictionary_unknown_iterators_preserve_command_values(self):
+        writer = "uv run gh-plan.py --repo example/a claim 1"
+        operands = ("zip(['a','b'], [COMMAND, 'echo safe'])",
+                    "reversed([('a', COMMAND), ('b', 'echo safe')])",
+                    "filter(lambda pair: True, [('a', COMMAND), ('b', 'echo safe')])",
+                    "itertools.zip_longest(['a','b'], [COMMAND, 'echo safe'])")
+        for operand in operands:
+            for build in ("d=dict(OPERAND)", "d={}\nd.update(OPERAND)"):
+                for command, owning in ((writer, True), ("echo safe", False)):
+                    program = ("import os,itertools\n" + build.replace("OPERAND", operand).replace("COMMAND", repr(command))
+                               + "\nfor command in d.values(): os.system(command)")
+                    self.assert_python_patch_ownership(program, owning)
+
+    def test_mock_unknown_keyword_values_keep_snapshot_and_cache_state(self):
+        setup = ("import os,sys\nfrom unittest.mock import patch,MagicMock\n"
+                 "WRITER='uv run gh-plan.py --repo example/a claim 1'\n"
+                 "PROGRAM='import os\\nos.system('+repr(WRITER)+')'\n"
+                 "def record(*a,**k): return 0\n")
+        programs = (
+            ("opts={sys.argv[1]:0,'return_value':0}\nwith patch('os.system',MagicMock(**opts)):\n def f(): return 1\n f()\n exec(PROGRAM,{})", False),
+            ("opts={sys.argv[1]:os.system}\nwith patch('os.system',MagicMock(**opts)): exec(PROGRAM,{})", True),
+            ("m=MagicMock(**{sys.argv[1]:WRITER})\nos.system(m.payload)", True),
+            ("opts={sys.argv[1]:0}\nwith patch('os.system',MagicMock(wraps=os.system,**opts)): exec(PROGRAM,{})", True),
+            ("opts={sys.argv[1]:0}\nwith patch('os.system',MagicMock(wraps=os.system,return_value=0,**opts)): exec(PROGRAM,{})", False),
+            ("m=MagicMock(**{sys.argv[1]:os.system})\nm.side_effect=record\nm._mock_wraps=None\nm.return_value=0\nwith patch('os.system',m): exec(PROGRAM,{})", False),
+            ("m=MagicMock(**{sys.argv[1]:WRITER})\nm.payload='echo safe'\nos.system(m.payload)", False),
+            ("opts={'return_value':0}\nconfigure(opts)\nwith patch('os.system',MagicMock(**opts)):\n def f(): return 1\n f()\n exec(PROGRAM,{})", True),
+        )
+        for body, expected in programs:
+            self.assert_python_patch_ownership(setup + body, expected)
+            if expected:
+                self.assert_python_patch_ownership((setup + body).replace("uv run gh-plan.py --repo example/a claim 1", "echo safe"), False)
 
     def test_dynamic_dictionary_constructor_and_keywords_keep_values(self):
         writer = "uv run gh-plan.py --repo example/a claim 1"
