@@ -321,18 +321,18 @@ do not stamp a turn just because direction was discussed.
 
 A `--weekly` receipt lists `repos` audited, `unread` (each with its reason),
 `held` and `weekly_recorded`, with every repository's own audit under
-`audits`. A repository counts as read when its run was recorded and none of
-its required reads failed. A page cap still counts as read, including one that
-held its evidence window open. A repository is unread when a read failed, even
-if it held the window; when its stale-wait report, active-unadopted report or
-milestone outcomes did not finish; when its archive state is unknown; or when
-its `DIRECTION.md` could not be read as present or absent. Its audit names the
-failed reads in `unavailable_reads`, and `unread` repeats them. A repository listing cut at its page
+`audits`. A repository counts as audited when its run was recorded. A held
+repository counts as audited too. Its window stays open, so the next audit
+rereads what failed or was capped. `held` lists each held repository and its
+reasons. A repository is unread when its audit failed before its run was
+recorded, when its archive state is unknown, or when its `DIRECTION.md` could
+not be read as present or absent. A repository listing cut at its page
 limit or an App installed on selected repositories only also stops the record;
 `discovery` names the gap. Exit 1 means the weekly audit was not recorded, or
 `marker_error` reports a local write failure, and nothing is shared. Exit 2 means it was recorded on
 this machine but its shared record failed; report `shared.error`. Exit 3 means
-it was recorded and there are findings, and 0 means recorded and clean. When
+it was recorded and there are findings or held repositories, and 0 means
+recorded and clean. When
 the App sees only selected repositories, run it with `--gh gh` on the
 Director's own login.
 
@@ -378,7 +378,8 @@ The audit line shows only for an account with direction set up, and it names
 no repository. The account is the owner of the direction repository named by
 the marker's newest turn or weekly audit. Only when the marker records no
 account does the hook fall back to the folder's origin owner, and only when that owner's `OWNER/direction` has been audited here or
-is checked out beside the folder. While either local stamp is stale, the hook
+is checked out beside the folder. A local turn or weekly audit counts only
+when it names that account. While either local stamp is stale, the hook
 reads the open issues in `OWNER/direction` once and uses the newest stamp
 across every record it finds. When it cannot read them all, the line says
 unconfirmed rather than overdue. A

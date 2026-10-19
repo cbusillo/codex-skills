@@ -522,12 +522,26 @@ def local_weekly(marker: dict[str, object], owner: str | None) -> dt.datetime | 
     return weekly if record.split("/", 1)[0].casefold() == owner.casefold() else None
 
 
+def local_turn(marker: dict[str, object], owner: str | None) -> dt.datetime | None:
+    """This machine's last daily turn, when it was of the same account.
+
+    With no account selected, the turn counts as recorded. Otherwise a turn that
+    names another account's direction repository, or names none, does not count.
+    """
+    turn, repo = marker.get("turn"), marker.get("turn_repo")
+    if not isinstance(turn, dt.datetime):
+        return None
+    if not owner:
+        return turn
+    return turn if isinstance(repo, str) and repo.split("/", 1)[0].casefold() == owner.casefold() else None
+
+
 def with_shared_records(marker: dict[str, object], now: dt.datetime, owner: str | None) -> dict[str, object]:
     """The marker with newer stamps from the shared records, read only when a local stamp is stale."""
     if not owner:
         return marker
-    turn, weekly = marker.get("turn"), local_weekly(marker, owner)
-    turn_stale = not isinstance(turn, dt.datetime) or now - turn > TURN_STALE
+    turn, weekly = local_turn(marker, owner), local_weekly(marker, owner)
+    turn_stale = turn is None or now - turn > TURN_STALE
     weekly_stale = weekly is None or now - weekly > AUDIT_STALE
     if not turn_stale and not weekly_stale:
         return marker
@@ -538,7 +552,7 @@ def with_shared_records(marker: dict[str, object], now: dt.datetime, owner: str 
         result["shared_error"] = error
         return result
     shared_turn = shared.get("turn")
-    if isinstance(shared_turn, tuple) and (not isinstance(turn, dt.datetime) or shared_turn[0] > turn):
+    if isinstance(shared_turn, tuple) and (turn is None or shared_turn[0] > turn):
         result["turn"], result["turn_repo"] = shared_turn
     shared_weekly = shared.get("weekly")
     if isinstance(shared_weekly, dt.datetime) and (weekly is None or shared_weekly > weekly):
@@ -549,8 +563,8 @@ def with_shared_records(marker: dict[str, object], now: dt.datetime, owner: str 
 def reminder_states(marker: dict[str, object], now: dt.datetime, owner: str | None) -> dict[str, str | None]:
     """Each check as current, due or unconfirmed; the audit is None for an account without direction."""
     unreadable = isinstance(marker.get("shared_error"), str)
-    turn = marker.get("turn")
-    turn_state = ("current" if isinstance(turn, dt.datetime) and now - turn <= TURN_STALE
+    turn = local_turn(marker, owner)
+    turn_state = ("current" if turn is not None and now - turn <= TURN_STALE
                   else "unconfirmed" if unreadable else "due")
     audit_state = None
     if owner:
@@ -568,8 +582,8 @@ def reminder(marker: dict[str, object], now: dt.datetime, path: Path, owner: str
     record = shared_record if isinstance(shared_record, str) else f"{owner}/{OVERALL_REPO}"
     error = shared_error if isinstance(shared_error, str) else "no reason given"
     after = f"Do not run the marking helpers yourself; the marker is {path}."
-    turn = marker.get("turn")
-    turn_local = ("has recorded no direction turn" if not isinstance(turn, dt.datetime)
+    turn = local_turn(marker, owner)
+    turn_local = ("has recorded no direction turn" if turn is None
                   else f"last recorded a direction turn {(now - turn).days} days ago")
     if states["turn"] == "unconfirmed":
         lines.append(
@@ -579,7 +593,7 @@ def reminder(marker: dict[str, object], now: dt.datetime, path: Path, owner: str
             f"no machine has taken today's turn. {after}"
         )
     elif states["turn"] == "due":
-        detail = ("no direction turn has been recorded" if not isinstance(turn, dt.datetime)
+        detail = ("no direction turn has been recorded" if turn is None
                   else f"the last direction turn was {(now - turn).days} days ago")
         lines.append(
             f"{REMINDER_LINES['turn', 'due']}: {detail}. Tell the owner once at the start of the session to open Claude Code "

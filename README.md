@@ -663,7 +663,8 @@ Audits of single repositories never clear the weekly line. The account is the
 owner of the direction repository named by the marker's newest turn or weekly
 audit. Only when the marker records no account does it fall back to the
 folder's origin owner, and only when that owner has `OWNER/direction` set up
-as above. While either local stamp is stale it reads
+as above. A local turn or weekly audit counts only when it names that
+account. While either local stamp is stale it reads
 the shared turn and weekly-audit records in `OWNER/direction` once (see the
 `direction` skill), so a turn or audit on another machine counts. When it
 cannot read every open issue there, the line says unconfirmed instead of

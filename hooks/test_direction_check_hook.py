@@ -239,7 +239,7 @@ class ReminderTests(IsolatedDirectionHookTests):
         self.assertIn(hook.REMINDER_LINES["turn", "due"], output.getvalue())
 
     def test_current_checks_print_nothing(self) -> None:
-        m = {**marker(ago(hours=3)), "weekly": ago(days=6), "weekly_record": "owner/direction"}
+        m = {**marker(ago(hours=3)), "turn_repo": "owner/direction", "weekly": ago(days=6), "weekly_record": "owner/direction"}
         self.assertEqual(hook.reminder(m, NOW, MARKER, "owner"), "")
         self.assertEqual(hook.reminder_states(m, NOW, "owner"), {"turn": "current", "audit": "current"})
 
@@ -256,8 +256,8 @@ class ReminderTests(IsolatedDirectionHookTests):
                          "fresh single-repository audits never stand in for the weekly audit")
 
     def test_mixed_freshness_shows_only_the_due_check(self) -> None:
-        fresh_turn = {**marker(ago(hours=2)), "weekly": ago(days=8), "weekly_record": "owner/direction"}
-        fresh_audit = {**marker(ago(days=2)), "weekly": ago(days=2), "weekly_record": "owner/direction"}
+        fresh_turn = {**marker(ago(hours=2)), "turn_repo": "owner/direction", "weekly": ago(days=8), "weekly_record": "owner/direction"}
+        fresh_audit = {**marker(ago(days=2)), "turn_repo": "owner/direction", "weekly": ago(days=2), "weekly_record": "owner/direction"}
         self.assertEqual(hook.reminder_states(fresh_turn, NOW, "owner"), {"turn": "current", "audit": "due"})
         self.assertEqual(hook.reminder_states(fresh_audit, NOW, "owner"), {"turn": "due", "audit": "current"})
         self.assertEqual(len(hook.reminder(fresh_turn, NOW, MARKER, "owner").splitlines()), 1)
@@ -306,7 +306,7 @@ class ReminderTests(IsolatedDirectionHookTests):
             self.assertEqual(list(audits), ["o/r"])
             self.assertEqual(hook.reminder_states(read, NOW, None)["turn"], "due",
                              "the audit must not replace an unparseable turn stamp")
-            path.write_text(json.dumps({"turn": "2026-09-22T10:00:00", "weekly_audit": {"ran": "2026-09-20T10:00:00", "record": "o/direction"}}))
+            path.write_text(json.dumps({"turn": "2026-09-22T10:00:00", "turn_repo": "o/direction", "weekly_audit": {"ran": "2026-09-20T10:00:00", "record": "o/direction"}}))
             self.assertEqual(hook.reminder_states(hook.read_marker(path), NOW, "o"), {"turn": "current", "audit": "current"},
                              "naive stamps are read as UTC, not a crash")
 
@@ -402,7 +402,7 @@ class OverallDirectionTests(IsolatedDirectionHookTests):
 
     def audit(self, *repos: str) -> None:
         now = dt.datetime.now(dt.timezone.utc).isoformat()
-        self.marker.write_text(json.dumps({"turn": now, "audits": {repo: now for repo in repos},
+        self.marker.write_text(json.dumps({"turn": now, "turn_repo": "owner/direction", "audits": {repo: now for repo in repos},
                                            "weekly_audit": {"ran": now, "record": "owner/direction"}}))
 
     def reader(self, *, body: str | None = None, error: str = "gh: Not Found (HTTP 404)") -> Path:
@@ -546,7 +546,7 @@ class SharedRecordTests(IsolatedDirectionHookTests):
         forged = self.record("2026-09-22T11:00:00Z", author_association="NONE")
         forged_weekly = self.weekly_record("2026-09-22T11:00:00Z", user={"type": "User"})
         older = self.record("2026-09-19T11:00:00Z", number=3)
-        seen = self.seen(marker(ago(days=2)), self.reader([forged, forged_weekly, older]))
+        seen = self.seen({**marker(ago(days=2)), "turn_repo": "owner/direction"}, self.reader([forged, forged_weekly, older]))
         self.assertEqual(seen["turn"], ago(days=2))
         self.assertEqual(hook.reminder_states(seen, NOW, "owner"), {"turn": "due", "audit": "due"})
 
@@ -566,6 +566,28 @@ class SharedRecordTests(IsolatedDirectionHookTests):
         self.assertEqual(len(hook.reminder(seen, NOW, MARKER, "owner").splitlines()), 2)
         stale_audit_only = self.seen(self.fresh() | {"weekly": ago(days=8)}, self.reader(error="gh: HTTP 502"))
         self.assertEqual(hook.reminder_states(stale_audit_only, NOW, "owner"), {"turn": "current", "audit": "unconfirmed"})
+
+    def test_another_accounts_turn_does_not_count_for_the_selected_account(self) -> None:
+        local = {**marker(ago(hours=2)), "turn_repo": "first/direction", "weekly": ago(hours=1), "weekly_record": "second/direction"}
+        owner = hook.resolve_account(local, None)
+        self.assertEqual(owner, "second")
+        seen = self.seen(local, self.reader([]), owner)
+        self.assertIn("repos/second/direction/issues", self.calls.read_text(), "first's turn must not skip second's shared read")
+        self.assertEqual(hook.reminder_states(seen, NOW, owner), {"turn": "due", "audit": "current"})
+        text = hook.reminder(seen, NOW, MARKER, owner)
+        self.assertIn(hook.REMINDER_LINES["turn", "due"], text)
+        self.assertIn("no direction turn has been recorded", text)
+        unreadable = self.seen(local, self.reader(error="gh: HTTP 502"), owner)
+        self.assertEqual(hook.reminder_states(unreadable, NOW, owner)["turn"], "unconfirmed")
+        self.assertIn("has recorded no direction turn", hook.reminder(unreadable, NOW, MARKER, owner))
+
+    def test_a_newer_turn_of_another_account_does_not_override_the_shared_turn(self) -> None:
+        local = {**marker(ago(hours=1)), "turn_repo": "first/direction", "weekly": ago(days=1), "weekly_record": "second/direction"}
+        shared = self.record("2026-09-21T20:00:00Z", body=f"{hook.TURN_RECORD_TAG}\nLast daily turn: 2026-09-21T20:00:00Z covering second/direction\n")
+        seen = self.seen(local, self.reader([shared]), "second")
+        self.assertEqual(seen["turn"], dt.datetime(2026, 9, 21, 20, tzinfo=dt.timezone.utc), "the shared turn of second wins")
+        self.assertEqual(seen["turn_repo"], "second/direction")
+        self.assertEqual(hook.reminder_states(seen, NOW, "second"), {"turn": "current", "audit": "current"})
 
 
 class AccountResolutionTests(IsolatedDirectionHookTests):
