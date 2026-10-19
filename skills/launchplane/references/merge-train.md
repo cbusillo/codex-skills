@@ -159,8 +159,13 @@ authority, mutation gate, and exact landing-SHA checkout handoff requirements.
   To recover, rerun the same driver command with `--recover-controller`.
   It reads the saved PR and runs a read-only controller pass, then replays the
   saved mutating request with its original key. Read-only evidence alone does
-  not clear the pending request. Only a projected accepted replay clears it;
+  not clear the pending request. Only an accepted replay clears it;
   an unavailable read, lease refusal or denial keeps the file and stops.
+  When Launchplane accepted the pass but the helper cannot project its reply
+  (`controller_reply_unreadable`, with the helper's `unrecognized_key` when it
+  has one), the pass happened, so the driver releases the request file and
+  stops. Read the PR and controller state for its effect, and fix the helper's
+  projection before relying on that reply shape.
   A verified PR landing is still reported as landed with unresolved controller
   recovery attached, and recovery works after that PR has landed.
   At the deadline, final read-back has one fixed 15-second grace window;

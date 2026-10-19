@@ -208,6 +208,7 @@ MERGE_TRAIN_RESULT_FIELDS = {
     "heartbeat_at",
     "landing_plan",
     "landing_plan_record_id",
+    "landing_progress",
     "landing_sha",
     "last_action",
     "last_controller_result",
@@ -231,6 +232,7 @@ MERGE_TRAIN_RESULT_FIELDS = {
     "release_error_type",
     "replacement_candidate_record_id",
     "repository",
+    "retired_merge_train_batch_candidate_record_id",
     "root_merge_commit",
     "root_merge_commit_sha",
     "source_of_truth_url",
@@ -1628,9 +1630,12 @@ def _project_merge_train_result(result: object) -> dict[str, object]:
     for key in (
         "active_action", "active_phase", "active_record_id",
         "landing_plan_record_id", "merge_train_batch_landing_plan_record_id",
+        "retired_merge_train_batch_candidate_record_id",
     ):
         if key in source:
             projected[key] = _optional_public_identifier(source[key])
+    if "landing_progress" in source:
+        projected["landing_progress"] = public_code(source["landing_progress"])
     if "mutate" in source:
         projected["mutate"] = _optional_bool(source["mutate"])
     if "candidate_ref_cleanup_github_status_code" in source:
@@ -4093,6 +4098,7 @@ def _project_success_output(
                 "merge_train_landing_plan_record_id",
                 "merge_train_stack_collapse_record_id",
                 "merge_train_feedback_record_id",
+                "retired_merge_train_batch_candidate_record_id",
             },
         )
         return records, _project_merge_train_result(provider_payload.get("result"))
@@ -7027,6 +7033,13 @@ def execute_post(
                 summary = cast(dict[str, object], payload["summary"])
                 summary.update(_controller_error_diagnostics(provider_payload))
                 summary["projection_error_code"] = exc.code
+                http_status = getattr(provider_payload, "http_status", None)
+                if (
+                    provider_payload.get("status") == "accepted"
+                    and type(http_status) is int and 200 <= http_status < 300
+                ):
+                    # Launchplane completed this request; only its reply is unreadable here.
+                    summary["launchplane_status"] = "accepted"
                 if isinstance(exc, _UnknownResponseField) and exc.unrecognized_key:
                     summary["unrecognized_key"] = exc.unrecognized_key
                 summary["recommendation"] = (
