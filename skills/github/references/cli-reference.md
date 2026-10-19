@@ -1552,7 +1552,12 @@ competitor's record.
   denied write through another identity or a new grant. Classified read denials
   have the same repository-local authority receipt; unclassified read failures
   remain failures. Unknown write outcomes and identity failures stop all writes.
-  The pure `github_plan_status` package in `skills/github/scripts` supplies the
+  The pure `github_plan_status` package in `skills/github/scripts` also exports
+  `workflow_runs.current_workflow_runs` and `workflow_execution_identity` for
+  consumers that must distinguish superseded workflow executions from independent
+  check suites. Selection requires complete workflow/event/branch/repository/PR
+  target identity; incomplete evidence stays current. Dispatches stay independent.
+  The package supplies the
   same derivation, trusted wait resolver, label diff and pure outcome/failure
   classification to native consumers. Provider requests, snapshot comparisons
   and authority remain adapter work. The workstation comment radar is an

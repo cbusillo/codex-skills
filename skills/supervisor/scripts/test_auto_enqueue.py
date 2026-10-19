@@ -182,6 +182,8 @@ class Fake:
         return [self.get(path) for path in paths]
 
     def pages(self, path, **_params):
+        if path.endswith('/comments'):
+            return [comment()]
         if path.endswith("/labels"):
             return self.pulls[int(path.split("/")[-2])]["labels"]
         if path.endswith("/files"):
@@ -250,6 +252,55 @@ class EnqueueTests(unittest.TestCase):
 
         fake.train = train
         return fake
+
+    def test_ready_handoffs_are_named_when_no_enqueue_is_possible(self):
+        for condition in ('held', 'busy', 'ineligible', 'batch_limit', 'dry_run'):
+            with self.subTest(condition=condition):
+                self.events = []
+                self.holds['paused_repositories'] = [REPO] if condition == 'held' else []
+                self.save()
+                self.args.apply = condition != 'dry_run'
+                fake = Fake()
+                if condition == 'busy':
+                    fake.train = lambda _: {
+                        'status': 'accepted', 'result': {
+                            'mode': 'dry-run', 'controller_action': 'resume_reconciliation',
+                            'dry_run_result': {'queue': [], 'queue_order': []},
+                        },
+                    }
+                if condition == 'ineligible':
+                    fake.ineligible = {n: ['current-head required checks are fail']
+                                       for n in fake.pulls}
+                self.run_pass(fake)
+                named = {payload['pr'] for event, payload in self.events
+                         if event in {'skipped', 'enqueued'}}
+                self.assertEqual(named, set(fake.pulls))
+                skipped = [p for event, p in self.events if event == 'skipped']
+                self.assertTrue(all(p.get('reason') for p in skipped))
+                if condition == 'ineligible':
+                    self.assertTrue(all(p.get('ineligible_reasons') == fake.ineligible[p['pr']]
+                                        for p in skipped))
+                if condition in {'held', 'busy', 'ineligible', 'dry_run'}:
+                    self.assertEqual(fake.writes, [])
+
+    def test_skip_inventory_respects_current_trusted_handoffs(self):
+        fake = Fake(count=3)
+        self.holds['paused_repositories'] = [REPO]
+        self.save()
+        pages = fake.pages
+        def comments(path, **params):
+            if path.endswith('/comments'):
+                number = int(path.split('/')[-2])
+                if number == 1:
+                    return [comment(login='untrusted')]
+                if number == 2:
+                    return [comment(), comment(body=WAITING, number=2)]
+                return [comment(body=f"{READY}\n\nHead: {'b' * 40}.")]
+            return pages(path, **params)
+        fake.pages = comments
+        self.run_pass(fake)
+        self.assertFalse(any(event == 'skipped' for event, _ in self.events))
+        self.assertEqual(fake.writes, [])
 
     def test_staging_qualifies_next_batch_without_changing_published_candidate(self):
         fake = self.staging_fake()
