@@ -222,6 +222,14 @@ class ReceiptTests(unittest.TestCase):
                 self.assertTrue(receipts.ownership_state(rows, "codex")["pending"])
             rows[1]["payload"]["arguments"] = json.dumps({"cmd": "uv run " + helper})
             self.assertFalse(receipts.ownership_state(rows, "codex")["pending"])
+            for harness in ("codex", "claude"):
+                command = "uv run --with fixture python3 - <<'PY'\nimport os\nos.system(" + repr("uv run " + helper) + ")\nPY"
+                native = history(harness, {})
+                if harness == "codex":
+                    native[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                else:
+                    native[1]["message"]["content"][0]["input"] = {"command": command}
+                self.assertTrue(receipts.ownership_state(native, harness)["pending"])
 
     def test_codex_native_shell_surfaces_enforce_and_accept_claim_checks(self):
         for tool in ("shell_command", "shell", "local_shell_call"):
@@ -1041,6 +1049,36 @@ class ReceiptTests(unittest.TestCase):
             self.assertTrue(receipts.ownership_state(rows, harness)["pending"])
             self.assertFalse(session_record.summarize(rows, harness)["safe_verdict"])
 
+    def test_shell_file_provenance_stays_with_its_own_command_and_body(self):
+        writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 12 --resume-from 2'
+        commands = (
+            ("gh issue comment 1 --body-file - <<'A'\n" + writer + "\nA\nprintf 'echo ok\\n' > check.sh", False),
+            ("cat > handoff.md <<'A'\n" + writer + "\nA\ncat > check.sh <<'B'\necho ok\nB", False),
+            ("cat > check.sh <<'B'\necho ok\nB\ncat > handoff.md <<'A'\n" + writer + "\nA", False),
+            ("cat > check.sh <<'B'\necho ok\nB\ngh issue comment 1 --body-file - <<'A'\n" + writer + "\nA", False),
+            ("cat > handoff.md <<'A'\necho ok\nA\nprintf '%s%s\\n' 'echo ' '" + writer + "' > check.sh", False),
+            ("cat > handoff.md <<'A'\necho ok\nA\necho echo '" + writer + "' > check.sh", False),
+            ("printf 'echo ok\\n' > check.sh <<'A'\n" + writer + "\nA", False),
+            ("cat > check.sh <<'A' <<'B'\n" + writer + "\nA\necho ok\nB", False),
+            ("cat > check.sh > handoff.md <<'A'\n" + writer + "\nA", False),
+            ("cat > handoff.md <<'A'\necho ok\nA\ncat > check.sh <<'B'\n" + writer + "\nB", True),
+            ("cat > handoff.md <<'A'\necho ok\nA\nprintf '%s\\n' '" + writer + "' > check.sh", True),
+            ("printf '%s\\n' '" + writer + "' > check.sh <<'A'\necho ok\nA", True),
+            ("cat <<'A' | cat > check.sh\n" + writer + "\nA", True),
+            ("cat <<'A' | cat > check.sh <<'B'\n" + writer + "\nA\necho ok\nB", False),
+        )
+        for harness in ("codex", "claude"):
+            for command, pending in commands:
+                with self.subTest(harness=harness, command=command):
+                    rows = history(harness, claim(), claim())
+                    for index, text in ((1, command), (3, "bash check.sh")):
+                        if harness == "codex":
+                            rows[index]["payload"]["arguments"] = json.dumps({"cmd": text})
+                        else:
+                            rows[index]["message"]["content"][0]["input"] = {"command": text}
+                    rows[2], rows[4] = output({}, harness, "tool-0"), output({}, harness, "tool-1")
+                    self.assertEqual(receipts.ownership_state(rows, harness)["pending"], pending)
+
     def test_executable_wrappers_cannot_turn_hidden_ownership_into_no_write(self):
         writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 12 > claim.json'
         for harness in ("codex", "claude"):
@@ -1086,6 +1124,19 @@ class ReceiptTests(unittest.TestCase):
         python_writer = 'import os\nos.system(' + repr(writer) + ')'
         node_writer = 'require("child_process").execSync(' + json.dumps(writer) + ')'
         executing = (
+            ("{ bash; } <<'EOF'", writer),
+            ("(bash) <<'EOF'", writer),
+            ("cat <<'EOF' | (cd /repo && bash)", writer),
+            ("while read -r l; do eval \"$l\"; done <<'EOF'", writer),
+            ("sudo bash <<'EOF'", writer),
+            ("sudo -u deploy sh -s <<'EOF'", writer),
+            ("doas sh -s <<'EOF'", writer),
+            ("flock /tmp/l bash <<'EOF'", writer),
+            ("ssh host bash -s <<'EOF'", writer),
+            ("ssh host <<'EOF'", writer),
+            ("uv run - <<'EOF'", python_writer),
+            ("node <<'EOF'", "const {execSync} = require('child_process'); const cmd = " + json.dumps(writer) + "; execSync(cmd)"),
+            ("node <<'EOF'", "const {execSync} = require('child_process'); const n = 1; execSync(`" + writer.rsplit(" ", 1)[0] + " ${n}`)"),
             ("env FLAG=value timeout 60 bash -s -- arg <<'EOF'", writer),
             ("cat <<'EOF' | env FLAG=value bash -s", writer),
             ("cat <<'EOF' | cat | sh", writer),
@@ -1110,6 +1161,14 @@ class ReceiptTests(unittest.TestCase):
             ("\"$INTERPRETER\" <<'EOF'", writer),
         )
         data = (
+            ("uv run - <<'EOF'", "fixture = " + repr(writer) + "; print(fixture)"),
+            ("sudo gh issue comment 1 --body-file - <<'EOF'", writer),
+            ("flock /tmp/l gh issue comment 1 --body-file - <<'EOF'", writer),
+            ("ssh host cat <<'EOF'", writer),
+            ("{ gh issue comment 1 --body-file -; } <<'EOF'", writer),
+            ("(gh issue comment 1 --body-file -) <<'EOF'", writer),
+            ("cat <<'EOF' | (cd /repo && gh issue comment 1 --body-file -)", writer),
+            ("node <<'EOF'", "const {execSync} = require('child_process'); const fixture = " + json.dumps(writer) + "; const cmd = 'echo done'; execSync(cmd)"),
             ("bash script.sh <<'EOF'", writer),
             ("bash -c 'printf done' <<'EOF'", writer),
             ("bash -o errexit script.sh <<'EOF'", writer),

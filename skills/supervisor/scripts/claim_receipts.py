@@ -183,10 +183,24 @@ def shell_commands(name, value, *, depth=0):
 
 def stdin_language(argv):
     """Identify interpreters that read code from stdin, rather than a script argv."""
+    original = list(argv)
     argv = unwrapped_command(argv)
     if not argv:
-        return None
+        return "argv" if original and Path(original[0]).name == "uv" and "run" in original else None
     name, words = Path(argv[0]).name, argv[1:]
+    if argv == ["-"] and original and Path(original[0]).name == "uv":
+        return "python"
+    if name == "uv":
+        return "argv" if words[:1] == ["run"] or words and words[0].startswith("-") and "run" in words else None
+    if name in {"sudo", "doas", "flock", "ssh"}:
+        children = list(executor_commands(argv))
+        languages = {stdin_language(shlex.split(command)) for command in children}
+        languages.discard(None)
+        if languages:
+            return next(iter(languages)) if len(languages) == 1 else "argv"
+        if name == "ssh" and not children and len(argv) > 1 and not any(word in {"-V", "-G", "-Q", "-N", "-O"} for word in words):
+            return "shell"
+        return None
     stdin_paths = {"/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"}
     if name.startswith("$"):
         return "shell"
@@ -261,6 +275,10 @@ def node_ownership(content):
             literals[atom.start()] = atom
         code[atom.start():atom.end()] = " " * len(atom[0])
     code = "".join(code)
+    declarations = {}
+    for definition in re.finditer(r"\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=", code):
+        start = definition.end() + len(re.match(r"\s*", content[definition.end():])[0])
+        declarations.setdefault(definition[1], []).append((definition.end(), literals.get(start)))
     module = r"['\"](?:node:)?child_process['\"]"
     require = rf"\brequire\s*\(\s*{module}\s*\)"
     namespaces, functions = set(), {}
@@ -287,10 +305,20 @@ def node_ownership(content):
         start = call.end() + len(re.match(r"\s*", content[call.end():])[0])
         literal = literals.get(start)
         if literal is None:
+            identifier = re.match(r"[A-Za-z_$][\w$]*", content[start:])
+            definitions = declarations.get(identifier[0], []) if identifier else []
+            preceding = [value for position, value in definitions if position < call.start()]
+            if preceding:
+                literal = preceding[-1]
+        if literal is None:
+            if OWNERSHIP_TEXT.search(content):
+                return True
             continue
         try:
-            command = ast.literal_eval(literal[0])
+            command = literal[0][1:-1] if literal[0].startswith("`") else ast.literal_eval(literal[0])
         except (ValueError, SyntaxError):
+            if OWNERSHIP_TEXT.search(literal[0]):
+                return True
             continue
         if kind in {"exec", "execSync"}:
             if executable_content(command) or opaque_ownership("exec_command", {"cmd": command}):
@@ -308,7 +336,50 @@ def node_ownership(content):
     return False
 
 
-def heredoc_languages(tokens, source):
+def compound_stdin_language(tokens, source, at, spans, heredocs):
+    """Read a group's actual commands, rather than treating its closing word as argv."""
+    opens = {"(": ")", "{": "}", "while": "done", "until": "done", "for": "done",
+             "select": "done", "if": "fi", "case": "esac"}
+    stack, bounds = [], None
+    command_start = True
+    for index, token in enumerate(tokens):
+        if token in opens and (token in {"(", "{"} or command_start):
+            stack.append((index, opens[token]))
+        elif stack and token == stack[-1][1]:
+            begin, _ = stack.pop()
+            if index == at or begin == at:
+                bounds = (begin, index)
+                break
+        command_start = bool(token and all(c in ";&|\n" for c in token) or token in {"do", "then", "else"})
+    if bounds is None:
+        return None
+    begin, end = bounds
+    if begin == at and heredocs and end > min(heredocs):
+        return None  # The redirection belongs to an inner command, not the group.
+    if begin + 1 >= end or spans[begin + 1][0] is None or spans[end][0] is None:
+        return None
+    inner = source[spans[begin + 1][0]:spans[end][0]]
+    lexer = shell_lexer(inner, posix=False)
+    lexer.whitespace_split = True
+    commands = []
+    heredoc_languages(list(lexer), lexer.instream.getvalue(), command_kinds=commands)
+    kinds = {kind for kind, _ in commands if kind}
+    words = [unwrapped_command(argv) for _, argv in commands]
+    # A read/eval loop executes the stream line by line, even though eval
+    # itself does not read stdin. Ordinary data commands in groups stay data.
+    if any(argv[:1] == ["read"] for argv in words) and any(
+            argv[:1] == ["eval"] or shell_c_body(argv) and "$" in shell_c_body(argv) for argv in words):
+        kinds.add("shell")
+    if tokens[begin] == "case":
+        for argv in words:
+            if ")" in argv:
+                kind = stdin_language(argv[argv.index(")") + 1:])
+                if kind:
+                    kinds.add(kind)
+    return next(iter(kinds)) if len(kinds) == 1 else "argv" if kinds else None
+
+
+def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None):
     """Bind each heredoc to its owning command and the pipeline's stdin readers.
 
     Redirections belong to one simple command. Later sequential commands cannot
@@ -350,6 +421,11 @@ def heredoc_languages(tokens, source):
                     descriptors[fd] = index
                 elif token in {"<&", ">&"} and operand.isdigit():
                     descriptors[fd] = descriptors.get(int(operand))
+                elif token in {">", ">>", ">|", "&>", "&>>"}:
+                    target = shlex.split(operand, comments=False)
+                    descriptors[fd] = ("file", target[0]) if len(target) == 1 else None
+                    if token.startswith("&>"):
+                        descriptors[2] = descriptors[fd]
                 else:
                     descriptors[fd] = None
                     if token.startswith("&>"):
@@ -359,8 +435,26 @@ def heredoc_languages(tokens, source):
             argv.extend(shlex.split(token, comments=False))
             last_word = index
             cursor += 1
-        commands.append((stdin_language(argv), heredocs, descriptors[0], separator,
+        if file_commands is not None and isinstance(descriptors[1], tuple):
+            file_commands.append({"target": descriptors[1][1], "input": descriptors[0],
+                                  "heredocs": heredocs, "argv": argv,
+                                  "position": len(commands),
+                                  "source": " ".join(token for _, token in segment)})
+        language = stdin_language(argv)
+        if segment and (tokens[segment[0][0]] in {"(", "{", "}", ")", "done", "fi", "esac"}):
+            language = compound_stdin_language(tokens, source, segment[0][0], spans, heredocs) or language
+        if command_kinds is not None:
+            command_kinds.append((language, argv))
+        commands.append((language, heredocs, descriptors[0], separator,
                          descriptors[1] == "pipe-out" and forwards_stdin(argv)))
+    if file_commands is not None:
+        stream, sources = None, {}
+        for position, (_, _, input_source, separator, piped_output) in enumerate(commands):
+            source = stream if input_source == "pipe-in" else input_source
+            sources[position] = source if isinstance(source, int) else None
+            stream = source if piped_output and separator in {"|", "|&"} else None
+        for command in file_commands:
+            command["body"] = sources[command["position"]]
     languages = {}
     for position, (language, heredocs, input_source, separator, piped_output) in enumerate(commands):
         for index in heredocs:
@@ -376,16 +470,41 @@ def heredoc_languages(tokens, source):
     return languages
 
 
-def shell_code(text, *, bodies=None):
+def literal_producer_output(argv, fallback):
+    """Resolve plain literal producers without executing a shell or format code."""
+    argv = unwrapped_command(argv)
+    if not argv:
+        return fallback
+    if Path(argv[0]).name == "echo" and (len(argv) == 1 or not argv[1].startswith("-")):
+        return " ".join(argv[1:]) + "\n"
+    if Path(argv[0]).name != "printf" or len(argv) < 2:
+        return fallback
+    format = argv[1]
+    conversions = list(re.finditer(r"%%|%s", format))
+    if "%" in re.sub(r"%%|%s", "", format) or re.search(r"\\[^\\abfnrtv]", format):
+        return fallback
+    escapes = dict(zip("\\abfnrtv", "\\\a\b\f\n\r\t\v"))
+    format = re.sub(r"\\([\\abfnrtv])", lambda match: escapes[match[1]], format)
+    count = sum(match[0] == "%s" for match in conversions)
+    operands = argv[2:]
+    if not count:
+        return format % ()
+    # Shell printf reuses its format and supplies empty missing string operands.
+    groups = [operands[index:index + count] for index in range(0, len(operands), count)] or [[]]
+    return "".join(format % tuple(group + [""] * (count - len(group))) for group in groups)
+
+
+def shell_code(text, *, writes=None):
     """Exclude heredoc bodies, retaining commands on both sides of them."""
     # Quoted cat substitutions are a common CLI body argument. Their literal
     # contents must never participate in either shell lexing or '&' detection.
     substitution = re.compile(r"\$\(cat[ \t]+<<(-?)(['\"])([\w-]+)\2[ \t]*\n([\s\S]*?)\n[\t]*\3\r?\n\s*\)")
     text = substitution.sub("inert-heredoc-body", text)
     code, pending, header = [], [], ""
+    file_commands, file_bodies = [], {}
     for line in text.splitlines(keepends=True):
         if pending:
-            delimiter, tabs, expands, language, body = pending[0]
+            delimiter, tabs, expands, language, body, body_key = pending[0]
             if (line.lstrip("\t") if tabs else line).rstrip("\r\n") == delimiter:
                 content = "".join(body)
                 if expands:
@@ -396,17 +515,16 @@ def shell_code(text, *, bodies=None):
                     # shell's expansion, then disappear before the stdin reader.
                     content = re.sub(r"\\([\\$`\n])", lambda match: "" if match[1] == "\n" else match[1], content)
                 if language == "shell":
-                    writes = executable_content(content) or opaque_ownership("exec_command", {"cmd": content})
+                    owns = executable_content(content) or opaque_ownership("exec_command", {"cmd": content})
                 elif language == "python":
-                    writes = python_ownership(content)
+                    owns = python_ownership(content)
                 elif language == "node":
-                    writes = node_ownership(content)
+                    owns = node_ownership(content)
                 else:
-                    writes = language is not None and OWNERSHIP_TEXT.search(content)
-                if writes:
+                    owns = language is not None and OWNERSHIP_TEXT.search(content)
+                if owns:
                     raise ValueError("unparsed executable heredoc")
-                if bodies is not None:
-                    bodies.append("".join(body))
+                file_bodies[body_key] = content
                 pending.pop(0)
             else:
                 body.append(line)
@@ -420,7 +538,11 @@ def shell_code(text, *, bodies=None):
             continue  # A quoted word may span several physical lines.
         if len(line.rstrip("\r\n")) - len(line.rstrip("\r\n").rstrip("\\")) & 1:
             continue  # Complete an escaped newline before reading delimiters.
-        languages = heredoc_languages(tokens, lexer.instream.getvalue()) if "<<" in tokens else {}
+        header_files = [] if writes is not None else None
+        languages = heredoc_languages(tokens, lexer.instream.getvalue(), file_commands=header_files) if "<<" in tokens or writes is not None else {}
+        group = len(code)
+        if header_files is not None:
+            file_commands.extend((group, command) for command in header_files)
         for index, token in enumerate(tokens):
             if token != "<<":
                 continue
@@ -431,11 +553,22 @@ def shell_code(text, *, bodies=None):
             delimiter = shlex.split(raw[1:] if tabs else raw, comments=False)
             if len(delimiter) != 1:
                 raise ValueError("unparsed heredoc delimiter")
-            pending.append((delimiter[0], tabs, not any(c in raw for c in "'\"\\"), languages.get(index), []))
+            pending.append((delimiter[0], tabs, not any(c in raw for c in "'\"\\"), languages.get(index), [], (group, index)))
         code.append(header)
         header = ""
     if pending or header:
         raise ValueError("unparsed heredoc body")
+    if writes is not None:
+        for group, command in file_commands:
+            input_source = command["body"]
+            if input_source is not None and forwards_stdin(command["argv"]):
+                content = file_bodies[(group, input_source)]
+            else:
+                # Literal producers write their operands, rather than the
+                # shell command that quoted those operands as data. A replaced
+                # or unused stdin cannot lend a heredoc body to that output.
+                content = literal_producer_output(command["argv"], command["source"])
+            writes.append((command["target"], content))
     return "".join(code)
 
 
@@ -766,6 +899,8 @@ def uv_run_argv(argv):
     words = list(argv[1:])
     def consume(words):
         while words and words[0].startswith("-"):
+            if words[0] == "-":
+                return words
             if words[0] == "--":
                 return words[1:]
             options = uv_run_options()
@@ -1035,16 +1170,12 @@ def file_writes(name, value):
     for text in shell_texts(name, value):
         if not OWNERSHIP_TEXT.search(text):
             continue
-        bodies = []
+        writes = []
         try:
-            lexer = shell_lexer(shell_code(text, bodies=bodies))
-            lexer.whitespace_split = True
-            tokens = list(lexer)
+            shell_code(text, writes=writes)
         except ValueError:
             continue  # Existing opaque ownership handles unparsed shell text.
-        for index, token in enumerate(tokens[:-1]):
-            if token in {">", ">>"}:
-                yield tokens[index + 1], "\n".join(bodies) if bodies else text
+        yield from writes
 
 
 def native_calls(records, harness):
