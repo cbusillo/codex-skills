@@ -217,8 +217,9 @@ class ReceiptTests(unittest.TestCase):
             self.assertEqual(probe.call_count, 1)
         receipts.uv_run_options.cache_clear()
         with patch.object(receipts, "runtime_uv_help", return_value=None):
-            rows[1]["payload"]["arguments"] = json.dumps({"cmd": "uv run --fixture-option value " + helper})
-            self.assertTrue(receipts.ownership_state(rows, "codex")["pending"])
+            for prefix in ("uv run --fixture-option value ", "uv --quiet run "):
+                rows[1]["payload"]["arguments"] = json.dumps({"cmd": prefix + helper})
+                self.assertTrue(receipts.ownership_state(rows, "codex")["pending"])
             rows[1]["payload"]["arguments"] = json.dumps({"cmd": "uv run " + helper})
             self.assertFalse(receipts.ownership_state(rows, "codex")["pending"])
 
@@ -814,7 +815,10 @@ class ReceiptTests(unittest.TestCase):
             for command in ('uv run gh-plan.py claim --help', 'uv run gh-plan.py claim 7 --help',
                             'uv run gh-plan.py claim --worker w --help', 'uv run gh-plan.py claim --worker --help',
                             'uv run gh-plan.py claim 7 --next-action "uv run gh-plan.py claim 1" --help',
-                            'uv run gh-pr.py create --help', 'gh pr create --help'):
+                            'uv run gh-pr.py create --help', 'gh pr create --help',
+                            'uv run gh-pr.py create --title --help',
+                            'uv run gh-pr.py create --body-file --help',
+                            'printf start; uv run gh-pr.py create --head --help; printf end'):
                 rows = history(harness, {})
                 if harness == "codex": rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
                 else: rows[1]["message"]["content"][0]["input"] = {"command": command}
@@ -830,7 +834,15 @@ class ReceiptTests(unittest.TestCase):
         helper = "uv run /catalog/gh-plan.py --repo example/a claim 1"
         for harness in ("codex", "claude"):
             for command in ("sudo -u me bash -c " + shlex.quote(helper),
+                            "sudo -iu me bash -c " + shlex.quote(helper),
+                            "sudo -uME bash -c " + shlex.quote(helper),
                             "flock /tmp/claim-lock -c " + shlex.quote(helper),
+                            "flock --command=" + shlex.quote(helper) + " /tmp/claim-lock",
+                            "flock /tmp/claim-lock --command=" + shlex.quote(helper),
+                            "ssh -p 22 host " + shlex.quote(helper),
+                            "ssh -p22 host " + shlex.quote(helper),
+                            "ssh -vp 22 host " + shlex.quote(helper),
+                            '"$PY" gh-plan.py --repo example/a claim 1',
                             "zsh --emulate sh -c " + shlex.quote(helper)):
                 rows = history(harness, {}, {**proof(), "harness": harness})
                 if harness == "codex":
@@ -842,9 +854,23 @@ class ReceiptTests(unittest.TestCase):
                     self.assertTrue(receipts.ownership_state(rows, harness)["indices"])
                     self.assertTrue(receipts.ownership_state(rows, harness)["pending"])
                     self.assertFalse(receipts.acceptance(rows, harness, SESSION)["clear"])
+            handoff = "Handoff.\n" + helper + " --resume-from 10"
             for command in ("printf '%s' " + shlex.quote(helper), "rg " + shlex.quote(helper) + " source.py",
                             "git grep " + shlex.quote(helper),
                             "uv run gh-plan.py search " + shlex.quote(helper),
+                            "gh issue comment 1 --body " + shlex.quote(handoff),
+                            "git commit -m " + shlex.quote(handoff),
+                            "gh pr edit 1 --body " + shlex.quote(handoff),
+                            "jq --arg command " + shlex.quote(handoff) + " .",
+                            "tee " + shlex.quote(handoff),
+                            "gh api repos/example/a -f " + shlex.quote("note=" + handoff),
+                            "git commit -m gh-plan.py claim",
+                            "uv pip show gh-plan.py claim",
+                            "sudo -u me gh issue comment 1 --body " + shlex.quote(handoff),
+                            "sudo -p " + shlex.quote(handoff) + " -u me printf x",
+                            "flock /tmp/claim-lock gh pr edit 1 --body " + shlex.quote(handoff),
+                            "sudo -u me bash -c " + shlex.quote("printf '%s' " + shlex.quote(handoff)),
+                            "ssh -p 22 host " + shlex.quote(shlex.join(["gh", "issue", "comment", "1", "--body", handoff])),
                             "zsh --emulate sh -c " + shlex.quote("printf '%s' " + shlex.quote(helper)),
                             "python3 -c " + shlex.quote("fixture=" + repr(helper) + "; print(fixture)")):
                 rows = history(harness, {})
@@ -854,6 +880,30 @@ class ReceiptTests(unittest.TestCase):
                     rows[1]["message"]["content"][0]["input"] = {"command": command}
                 with self.subTest(harness=harness, read=command):
                     self.assertFalse(receipts.ownership_state(rows, harness)["indices"])
+
+    def test_helper_creation_parse_errors_are_no_write_without_changing_native_gh(self):
+        parser = receipts.helper_parser("gh-pr.py")
+        parsing_error = receipts.sys.modules["github_api"].ArgumentParsingError
+        for arguments in (["--title", "--help"], ["--body-file", "--help"],
+                          ["--head", "--help"], ["--title"], ["--draft=unexpected"]):
+            with self.subTest(arguments=arguments), self.assertRaises(parsing_error):
+                parser.parse_known_args(["create", *arguments])
+            for harness in ("codex", "claude"):
+                with self.subTest(harness=harness, arguments=arguments):
+                    rows = history(harness, {})
+                    command = "printf start; " + shlex.join(["uv", "run", "gh-pr.py", "create", *arguments]) + "; printf end"
+                    if harness == "codex":
+                        rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                    else:
+                        rows[1]["message"]["content"][0]["input"] = {"command": command}
+                    self.assertFalse(receipts.ownership_state(rows, harness)["indices"])
+                    self.assertFalse(receipts.created_pr_targets(rows, harness))
+                    self.assertTrue(receipts.acceptance(rows, harness, SESSION)["clear"])
+        # This is a literal option value, so the helper can still create a PR.
+        self.assertTrue(receipts.ownership_command(["gh-pr.py", "create", "--title=--help"]))
+        # Native gh uses a different option parser. Its help-shaped value is
+        # deliberately not proof that a write was avoided.
+        self.assertTrue(receipts.ownership_command(["gh", "pr", "create", "--title", "--help"]))
 
     def test_literal_helpers_with_variable_actions_cannot_become_known_reads(self):
         for harness in ("codex", "claude"):

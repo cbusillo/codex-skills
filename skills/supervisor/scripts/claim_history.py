@@ -210,6 +210,78 @@ def spawn_prefix(records, harness, child, *, agent_path=None):
     return records[:min(matches)] if matches else []
 
 
+def completed_prefixes(parent, records, nodes):
+    """Return child prefixes linked to an observed native completion boundary.
+
+    A quiet child can have resumed after an earlier completion. Match the
+    completed turn or returned handback, never the child's current full file.
+    """
+    prefixes = []
+    for child in nodes:
+        if not child.get("parent_transcript") or child["parent_transcript"] != parent.get("transcript"):
+            continue
+        rows, harness = child["records"], child["harness"]
+        ends = []
+        if harness == "codex":
+            for record in records:
+                payload = record.get("payload") or {}
+                item = payload.get("item") or {}
+                if (record.get("type") != "event_msg" or payload.get("type") != "item_completed"
+                        or payload.get("thread_id") != parent["session_id"]
+                        or item.get("type") != "SubAgentActivity" or item.get("kind") != "completed"
+                        or item.get("agent_thread_id") != child["session_id"]):
+                    continue
+                identifier = item.get("id", "")
+                if not isinstance(identifier, str) or not identifier.startswith("subagent-completed-"):
+                    continue
+                turn = identifier.removeprefix("subagent-completed-")
+                matches = [index + 1 for index, row in enumerate(rows)
+                           if row.get("type") == "event_msg" and (row.get("payload") or {}).get("type") == "task_complete"
+                           and (row.get("payload") or {}).get("turn_id") == turn]
+                if len(matches) == 1:
+                    ends.extend(matches)
+        else:
+            calls = {}
+            key = Path(child["transcript"]).stem.removeprefix("agent-")
+            for record in records:
+                invocations, results = claim_receipts.calls_and_results(record, harness)
+                for identifier, name, value in invocations:
+                    args = claim_receipts.arguments(value)
+                    if name in {"Agent", "Task"} and isinstance(args, dict) and not args.get("run_in_background"):
+                        calls[identifier] = args
+                report = record.get("toolUseResult")
+                blocks = (record.get("message") or {}).get("content") or []
+                if (not isinstance(report, dict) or report.get("agentId") != key
+                        or report.get("status") != "completed" or report.get("isAsync")
+                        or len(results) != 1 or results[0] not in calls
+                        or any(b.get("is_error") for b in blocks if isinstance(b, dict))):
+                    continue
+                handback = (report.get("handbackReport") or {}).get("text")
+                answer = report.get("content")
+                matches, handbacks = [], {}
+                for index, row in enumerate(rows):
+                    uses, returned = claim_receipts.calls_and_results(row, harness)
+                    for identifier, name, value in uses:
+                        args = claim_receipts.arguments(value)
+                        if name == "SubagentHandback" and isinstance(args, dict) and handback and args.get("message") == handback:
+                            handbacks[identifier] = index
+                    if (handback and row.get("toolEndsTurn") is True and len(returned) == 1 and returned[0] in handbacks
+                            and not any(b.get("is_error") for b in (row.get("message") or {}).get("content", []) if isinstance(b, dict))):
+                        matches.append(index + 1)
+                    message = row.get("message") or {}
+                    if (answer and row.get("type") == "assistant" and message.get("stop_reason") == "end_turn"
+                            and message.get("content") == answer):
+                        matches.append(index + 1)
+                if len(set(matches)) == 1:
+                    ends.extend(matches)
+        if ends:
+            end = max(ends)
+            prefixes.extend(child.get("preceding_histories", []))
+            prefixes.append({"harness": harness, "records": rows[:end]})
+            prefixes.extend(completed_prefixes(child, rows[:end], nodes))
+    return prefixes
+
+
 def collect(path, harness, session, records, read, *, homes=None):
     """Return root and quiet child snapshots; missing child evidence refuses.
 
@@ -285,7 +357,7 @@ def collect(path, harness, session, records, read, *, homes=None):
         if not activity["at_turn_end"] or activity["background_tasks"]:
             raise ValueError(f"native child {child_id} still has unfinished work")
         parent_node = (next(node for node in nodes if node["session_id"] == parent) if parent is not None else nodes[0])
-        preceding = list(parent_node.get("preceding_histories", []))
+        preceding = []
         if harness == "codex" and inline_history(raw_records):
             boundary = raw_records[0]["payload"]["subagent_history_start_ordinal"]
             inherited = raw_records[1:boundary]
@@ -305,5 +377,12 @@ def collect(path, harness, session, records, read, *, homes=None):
         if prefix:
             preceding.append({"harness": harness, "records": prefix})
         nodes.append({"session_id": child_id, "harness": harness, "transcript": str(child),
-                      "records": logical_records, "digest": fingerprint(raw_records), "preceding_histories": preceding})
+                      "records": logical_records, "digest": fingerprint(raw_records), "preceding_histories": preceding,
+                      "parent_transcript": parent_node["transcript"], "launch_prefix": prefix})
+    # All sibling snapshots must be available before binding a later child's
+    # launch prefix to a previously completed child's exact returned turn.
+    for node in nodes[1:]:
+        parent = next(n for n in nodes if n["transcript"] == node["parent_transcript"])
+        node["preceding_histories"] = [*parent.get("preceding_histories", []),
+            *node["preceding_histories"], *completed_prefixes(parent, node.pop("launch_prefix"), nodes)]
     return nodes

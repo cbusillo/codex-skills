@@ -330,19 +330,8 @@ def opaque_ownership(name, value):
                     and (action[:1] in (["claim"], ["create"]) or action[:2] == ["pr", "create"])):
                 return True
             if not ownership_command(argv):
-                inspected = child
-                while inspected and inspected[0] in {"do", "then", "else"}:
-                    inspected = unwrapped_command(inspected[1:])
-                inspected_name = Path(inspected[0]).name if inspected else ""
-                known_read = (inspected_name in {"echo", "printf", "cat", "rg", "grep", "sed", "head", "tail", "ls"}
-                              or inspected_name == "git" and inspected[1:2] in (
-                                  ["show"], ["log"], ["grep"], ["diff"], ["status"], ["rev-parse"], ["ls-files"])
-                              or script(argv) in {"gh-plan.py", "gh-pr.py"})
-                if inspected and not known_read:
-                    if any(ownership_command(argv[i:]) for i, word in enumerate(argv)
-                           if Path(word).name in {"gh-plan.py", "gh-pr.py", "gh"}):
-                        return True
-                    if any(executable_content(word) for word in argv[1:]):
+                for command in executor_commands(child):
+                    if executable_content(command) or opaque_ownership("exec_command", {"cmd": command}):
                         return True
             if child and Path(child[0]).name in {"bash", "sh", "zsh", "dash", "ksh"}:
                 body = shell_c_body(child)
@@ -359,6 +348,81 @@ def opaque_ownership(name, value):
         return bool(re.search(r"gh-plan\.py", unparsed) and re.search(r"\bclaim\b", unparsed)
                     or re.search(r"gh-pr\.py|\bgh\s+pr\b", unparsed) and re.search(r"\bcreate\b", unparsed))
     return False
+
+
+def executor_commands(argv):
+    """Inspect only operands that a process launcher actually executes.
+
+    Body/message/config arguments are data, even when they contain complete
+    ownership commands. Unknown executable variables remain uncertain.
+    """
+    if not argv:
+        return
+    name, cursor = Path(argv[0]).name, 1
+    if name == "uv" and len(argv) > 1 and not argv[1].startswith("-") and argv[1] != "run":
+        return
+    if name.startswith("$") or name == "uv":
+        # An unresolved interpreter or uv launcher can still expose a literal
+        # helper argv. Do not interpret arbitrary multiword argument text.
+        for index, word in enumerate(argv[1:], 1):
+            if Path(word).name in {"gh-plan.py", "gh-pr.py", "gh"}:
+                yield shlex.join(argv[index:])
+        if name.startswith("$"):
+            for index, word in enumerate(argv[:-1]):
+                if word in {"-c", "--command"}:
+                    yield argv[index + 1]
+        return
+    if name in {"bash", "sh", "zsh", "dash", "ksh"}:
+        # --emulate is a zsh value option not accepted by the foreground
+        # normalizer. Its -c operand still contains executable shell code.
+        if name == "zsh" and argv[1:2] == ["--emulate"] and len(argv) > 2:
+            body = shell_c_body([argv[0], *argv[3:]])
+            if body is not None:
+                yield body
+        return
+    value_options = {
+        "sudo": {"-u", "--user", "-g", "--group", "-h", "--host", "-p", "--prompt", "-C", "--close-from", "-R", "--chroot", "-D", "--chdir", "-r", "--role", "-t", "--type"},
+        "doas": {"-u", "-C"},
+        "flock": {"-E", "--conflict-exit-code", "-w", "--timeout"},
+        "ssh": {"-B", "-b", "-c", "-D", "-E", "-e", "-F", "-I", "-i", "-J", "-L", "-l", "-m", "-O", "-o", "-p", "-Q", "-R", "-S", "-W", "-w"},
+    }.get(name)
+    if value_options is None:
+        return
+    while cursor < len(argv):
+        option, equal, _ = argv[cursor].partition("=")
+        if name == "flock" and option in {"-c", "--command"}:
+            if equal:
+                yield argv[cursor].partition("=")[2]
+            elif cursor + 1 < len(argv):
+                yield argv[cursor + 1]
+            return
+        if option == "--":
+            cursor += 1
+            break
+        if not option.startswith("-"):
+            break
+        cursor += 1
+        takes_next = option in value_options
+        if not option.startswith("--") and not takes_next:
+            cluster = option[1:]
+            for index, letter in enumerate(cluster):
+                if "-" + letter in value_options:
+                    takes_next = index == len(cluster) - 1
+                    break
+        if takes_next and not equal:
+            cursor += 1
+    if name in {"ssh", "flock"}:
+        cursor += 1  # Remote host or lock file precedes the command.
+    if cursor < len(argv):
+        remaining = argv[cursor:]
+        option, equal, inline = remaining[0].partition("=")
+        if name == "flock" and option in {"-c", "--command"}:
+            if equal:
+                yield inline
+            elif len(remaining) > 1:
+                yield remaining[1]
+        else:
+            yield " ".join(remaining) if name == "ssh" else shlex.join(remaining)
 
 
 def shell_expansions(text):
@@ -1155,7 +1219,7 @@ def ownership_command(argv):
     help_only = action[-2:] in ([verb, "--help"], [verb, "-h"]) and action.count(verb) == 1
     if owning and name == "gh-plan.py":
         help_only = help_only or claim_read_only_help(argv)
-    if owning and name in {"gh", "gh-pr.py"} and any(word in {"--help", "-h"} for word in action):
+    if owning and (name == "gh-pr.py" or name == "gh" and any(word in {"--help", "-h"} for word in action)):
         parsed = creation_arguments(argv)
         help_only = help_only or parsed is not None and getattr(parsed, "help_only", False)
     return owning and not help_only
@@ -1538,7 +1602,10 @@ def creation_arguments(argv):
             args, _ = helper_parser("gh-pr.py").parse_known_args(words)
     except SystemExit as error:
         return argparse.Namespace(help_only=True) if error.code == 0 else None
-    except Exception:
+    except Exception as error:
+        parsing_error = getattr(sys.modules.get("github_api"), "ArgumentParsingError", ())
+        if name == "gh-pr.py" and isinstance(error, parsing_error):
+            return argparse.Namespace(help_only=True)
         return None
     return args
 

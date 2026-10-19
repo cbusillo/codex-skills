@@ -196,7 +196,8 @@ def check(reader, owner, entry, actor, *, reader_for_repo=None):
             records, _ = claim_receipts.serial_ownership_records(records)
         for target in claim_receipts.created_pr_targets(records, node["harness"]):
             prefixes = [*node.get("preceding_histories", []),
-                        {"harness": node["harness"], "records": records[:target["index"]]}]
+                        {"harness": node["harness"], "records": records[:target["index"]]},
+                        *claim_history.completed_prefixes(node, records[:target["index"]], histories)]
             target["preceding_sources"] = {
                 (source["repository"].casefold(), source["record"], source["claim_comment"])
                 for prefix in prefixes

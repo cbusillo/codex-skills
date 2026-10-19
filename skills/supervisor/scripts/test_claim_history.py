@@ -38,6 +38,23 @@ def records(harness, session, *values, parent=None, delegate=False):
     return rows
 
 
+def completed_child_records(harness, repo="example/a"):
+    """Native completion formats bind an exact child turn, not its later file."""
+    source = claim(repo)
+    source["claim"]["session"] = "child" if harness == "codex" else "root"
+    child = records(harness, source["claim"]["session"], source, parent="root" if harness == "codex" else None)
+    parent = records(harness, "root", delegate=True)
+    if harness == "codex":
+        child[-1]["payload"]["turn_id"] = "completed-turn"
+        parent[-2:-2] = [{"type": "event_msg", "payload": {"type": "item_completed", "thread_id": "root",
+            "item": {"type": "SubAgentActivity", "kind": "completed", "agent_thread_id": "child",
+                     "id": "subagent-completed-completed-turn"}}}]
+    else:
+        parent[2]["toolUseResult"] = {"agentId": "child", "status": "completed",
+                                     "content": child[-1]["message"]["content"]}
+    return parent, child
+
+
 class NativeHistoryTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -77,6 +94,102 @@ class NativeHistoryTests(unittest.TestCase):
                 for segment in node.get('preceding_histories', [])
                 for session in sessions
                 for source in claim_history.claim_receipts.sources(segment['records'], segment['harness'], session)[0]}
+
+    def test_completed_child_prefix_excludes_claims_from_later_resumed_turns(self):
+        for harness in ("codex", "claude"):
+            with self.subTest(harness=harness):
+                parent, child = completed_child_records(harness)
+                later = claim("example/b", 2, 20)
+                later["claim"]["session"] = "child" if harness == "codex" else "root"
+                resumed = records(harness, later["claim"]["session"], later, parent="root" if harness == "codex" else None)
+                if harness == "claude":
+                    resumed[-1]["message"]["content"] = [{"type": "text", "text": "Later turn finished"}]
+                child.extend(resumed[1:])
+                root = self.root if harness == "codex" else self.home / "claude" / "root.jsonl"
+                path = self.child if harness == "codex" else root.parent / "root" / "subagents" / "agent-child.jsonl"
+                self.write(root, parent)
+                self.write(path, child)
+                nodes = claim_history.collect(root, harness, "root", parent, lambda p, *_: session_record.read_jsonl(p))
+                segments = claim_history.completed_prefixes(nodes[0], parent, nodes)
+                self.assertEqual(self.preceding_claims({"preceding_histories": segments}, sessions=("root", "child")),
+                                 {("example/a", 1, 10)})
+                # A completion with an unrelated turn/child/call cannot supply
+                # the otherwise quiet child's records as an earlier prefix.
+                if harness == "codex":
+                    parent[-3]["payload"]["item"]["id"] = "subagent-completed-unrelated-turn"
+                else:
+                    parent[2]["message"]["content"][0]["tool_use_id"] = "unrelated-call"
+                self.assertFalse(claim_history.completed_prefixes(nodes[0], parent, nodes))
+
+    def test_later_sibling_inherits_only_natively_completed_child_claims(self):
+        for harness in ("codex", "claude"):
+            with self.subTest(harness=harness):
+                parent, child = completed_child_records(harness)
+                launch = records(harness, "root", delegate=True)[1:3]
+                if harness == "codex":
+                    launch[0]["payload"]["call_id"] = "spawn-sibling"
+                    launch[1]["payload"].update(call_id="spawn-sibling", output='{"agent_id":"sibling"}')
+                    sibling = self.home / "sessions" / "sibling.jsonl"
+                    with sqlite3.connect(self.database) as db:
+                        self.edge(db, "root", "sibling", sibling)
+                else:
+                    launch[0]["message"]["content"][0]["id"] = "spawn-sibling"
+                    launch[1]["message"]["content"][0]["tool_use_id"] = "spawn-sibling"
+                    launch[1]["toolUseResult"] = {"agentId": "sibling"}
+                    sibling = self.home / "claude" / "root" / "subagents" / "agent-sibling.jsonl"
+                end = 2 if harness == "codex" else 1
+                parent[-end:-end] = launch
+                root = self.root if harness == "codex" else self.home / "claude" / "root.jsonl"
+                path = self.child if harness == "codex" else root.parent / "root" / "subagents" / "agent-child.jsonl"
+                self.write(root, parent)
+                self.write(path, child)
+                self.write(sibling, records(harness, "sibling" if harness == "codex" else "root",
+                                            parent="root" if harness == "codex" else None))
+                nodes = claim_history.collect(root, harness, "root", parent, lambda p, *_: session_record.read_jsonl(p))
+                node = next(n for n in nodes if n["transcript"] == str(sibling.resolve()))
+                self.assertEqual(self.preceding_claims(node, sessions=("root", "child")), {("example/a", 1, 10)})
+
+    def test_claude_completed_handback_binds_its_terminal_tool_result(self):
+        parent, child = completed_child_records("claude")
+        use = {"type": "assistant", "sessionId": "root", "message": {"content": [
+            {"type": "tool_use", "id": "handback", "name": "SubagentHandback", "input": {"message": "Finished child work"}}]}}
+        returned = {"type": "user", "sessionId": "root", "toolEndsTurn": True, "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "handback", "content": "returned"}]}}
+        child[-1:-1] = [use, returned]
+        parent[2]["toolUseResult"].pop("content")
+        parent[2]["toolUseResult"]["handbackReport"] = {"text": "Finished child work"}
+        root = self.home / "claude" / "root.jsonl"
+        path = root.parent / "root" / "subagents" / "agent-child.jsonl"
+        self.write(root, parent)
+        self.write(path, child)
+        nodes = claim_history.collect(root, "claude", "root", parent, lambda p, *_: session_record.read_jsonl(p))
+        prefixes = claim_history.completed_prefixes(nodes[0], parent, nodes)
+        self.assertEqual(self.preceding_claims({"preceding_histories": prefixes}), {("example/a", 1, 10)})
+        returned["message"]["content"][0]["tool_use_id"] = "unrelated-handback"
+        nodes[1]["records"] = child
+        self.assertFalse(claim_history.completed_prefixes(nodes[0], parent, nodes))
+
+    def test_completed_child_includes_only_its_bound_completed_grandchild_prefix(self):
+        parent, child = completed_child_records("codex")
+        child = records("codex", "child", parent="root")
+        child[-1]["payload"]["turn_id"] = "completed-turn"
+        value = claim("example/b", 2, 20)
+        value["claim"]["session"] = "grand"
+        grand = records("codex", "grand", value, parent="child")
+        grand[-1]["payload"]["turn_id"] = "grand-turn"
+        child[-2:-2] = [{"type": "event_msg", "payload": {"type": "item_completed", "thread_id": "child",
+            "item": {"type": "SubAgentActivity", "kind": "completed", "agent_thread_id": "grand",
+                     "id": "subagent-completed-grand-turn"}}}]
+        path = self.home / "sessions" / "grand.jsonl"
+        self.write(self.root, parent)
+        self.write(self.child, child)
+        self.write(path, grand)
+        with sqlite3.connect(self.database) as db:
+            self.edge(db, "child", "grand", path)
+        nodes = self.nodes()
+        prefixes = claim_history.completed_prefixes(nodes[0], parent, nodes)
+        self.assertEqual(self.preceding_claims({"preceding_histories": prefixes}, sessions=("root", "child", "grand")),
+                         {("example/b", 2, 20)})
 
     def test_plain_spawn_precedence_ends_at_the_bound_launch_not_its_result(self):
         early, late = claim(), claim('example/b', 2, 20)

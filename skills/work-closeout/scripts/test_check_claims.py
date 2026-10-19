@@ -34,6 +34,56 @@ def pull(number=2, branch=SOURCE["branch"], **changes):
 
 
 class ClaimCloseoutTests(unittest.TestCase):
+    def test_creation_after_completed_child_claim_uses_only_returned_prefix(self):
+        from test_claim_history import completed_child_records, records
+        from test_claim_receipts import claim as native_claim
+        for harness in ("codex", "claude"):
+            for location in ("parent", "sibling"):
+                for before in (False, True):
+                    for late_claim in (False, True):
+                        with self.subTest(harness=harness, location=location, before=before, late_claim=late_claim):
+                            parent, child = completed_child_records(harness, REPO)
+                            child_session = "child" if harness == "codex" else "root"
+                            create = self.creation_history(harness, "git push && gh pr create --fill --head earlier-worker")
+                            launch = create["_transcript_records"][3:5]
+                            if late_claim:
+                                child = records(harness, child_session, parent="root" if harness == "codex" else None)
+                                if harness == "codex":
+                                    child[-1]["payload"]["turn_id"] = "completed-turn"
+                                value = native_claim(REPO)
+                                value["claim"]["session"] = child_session
+                                later = records(harness, child_session, value, parent="root" if harness == "codex" else None)
+                                if harness == "claude":
+                                    parent[2]["toolUseResult"]["content"] = child[-1]["message"]["content"]
+                                    later[-1]["message"]["content"] = [{"type": "text", "text": "Later completion"}]
+                                child.extend(later[1:])
+                            root_node = {"session_id": "root", "harness": harness, "transcript": "/fixture/root.jsonl", "records": parent}
+                            child_node = {"session_id": child_session, "harness": harness,
+                                "transcript": "/fixture/root/subagents/agent-child.jsonl", "records": child,
+                                "parent_transcript": root_node["transcript"]}
+                            nodes = [root_node, child_node]
+                            end = 2 if harness == "codex" else 1
+                            boundary = 1 if before else len(parent) - end
+                            if location == "parent":
+                                parent[boundary:boundary] = launch
+                            else:
+                                sibling = records(harness, "sibling" if harness == "codex" else "root",
+                                                  parent="root" if harness == "codex" else None)
+                                sibling[-end:-end] = launch
+                                nodes.append({"session_id": "sibling" if harness == "codex" else "root", "harness": harness,
+                                    "transcript": "/fixture/sibling.jsonl", "records": sibling,
+                                    "preceding_histories": helper.claim_history.completed_prefixes(root_node, parent[:boundary], nodes)})
+                            self.comments = [comment(10, helper.claim.marker({**SOURCE, "session": child_session})),
+                                             comment(11, "Released claim 10\nSession: " + child_session, at="2026-01-01T00:02:00Z")]
+                            for node in nodes:
+                                node["digest"] = helper.claim_history.fingerprint(node["records"])
+                            self.pulls = [pull(3, branch="earlier-worker", created_at="2025-12-31T23:59:00Z")]
+                            entry = {"session_id": "root", "harness": harness, "_transcript_records": parent,
+                                     "_claim_histories": nodes}
+                            with patch.object(helper.sessions, "discover", return_value=({(REPO, 1)}, [REPO])):
+                                report = helper.check(self.reader, [], entry, ACTOR)
+                            self.assertEqual(report["claims_clear"], not before and not late_claim, report)
+
     def test_child_creation_uses_only_verified_earlier_parent_claim_prefixes(self):
         from test_claim_receipts import history, claim as native_claim, SESSION as native_session
         for harness in ("codex", "claude"):
