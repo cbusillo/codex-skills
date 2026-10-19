@@ -8491,6 +8491,8 @@ def test_runtime_sync_review_persistence_and_boundaries() -> None:
         for http_status, service_code, expected_status in (
             (403, "authorization_denied", "denied"),
             (400, "dokploy_target_verification_failed", "accepted_unverified"),
+            (502, "service_timeout", "accepted_unverified"),
+            (408, "service_timeout", "accepted_unverified"),
         ):
             error = urllib.error.HTTPError("https://example.invalid", http_status, "Refused", Message(), io.BytesIO(json.dumps({
                 "error": {"code": service_code}, "trace_id": "launchplane_req_apply_error"
@@ -8500,6 +8502,7 @@ def test_runtime_sync_review_persistence_and_boundaries() -> None:
             assert refused["summary"]["error_code"] == service_code
             assert refused["summary"]["trace_id"] == "launchplane_req_apply_error"
             assert refused_transport.call_count == 2
+            assert refused["summary"]["http_status"] == error.code
         assert [call.kwargs["body"]["mode"] for call in transport.call_args_list] == ["dry-run", "apply", "dry-run"]
         assert [call.kwargs["idempotency_key"] for call in transport.call_args_list] == ["", "example-sync", ""]
         code, result, transport = _run_runtime_sync(apply_argv, [_runtime_sync_response(changed=False)])
@@ -8518,18 +8521,23 @@ def test_runtime_sync_review_persistence_and_boundaries() -> None:
         assert code == 2 and transport.call_count == 0
         code, result, transport = _run_runtime_sync(apply_argv, [_runtime_sync_response(), TimeoutError()])
         assert code == 1 and result["status"] == "accepted_unverified" and transport.call_count == 2
-        denied_readback = urllib.error.HTTPError(
-            "https://example.invalid", 401, "Expired", Message(), io.BytesIO(json.dumps({
-                "error": {"code": "authorization_denied"}, "trace_id": "launchplane_req_expired"
-            }).encode())
-        )
-        code, result, _ = _run_runtime_sync(apply_argv, [
-            _runtime_sync_response(), _runtime_sync_response(mode="apply"), denied_readback,
-        ])
-        assert code == 1 and result["status"] == "accepted_unverified"
-        assert result["summary"]["trace_id"] == "launchplane_req_runtime_sync"
-        assert result["summary"]["read_back_trace_id"] == "launchplane_req_expired"
-        assert result["summary"]["read_back_error_code"] == "authorization_denied"
+        for http_status, service_code in ((401, "authorization_denied"), (502, "service_timeout"), (408, "service_timeout")):
+            failed_readback = urllib.error.HTTPError(
+                "https://example.invalid", http_status, "PRIVATE_SENTINEL", Message(), io.BytesIO(json.dumps({
+                    "error": {"code": service_code, "message": "PRIVATE_SENTINEL"},
+                    "trace_id": "launchplane_req_failed_readback",
+                }).encode())
+            )
+            code, result, readback_transport = _run_runtime_sync(apply_argv, [
+                _runtime_sync_response(), _runtime_sync_response(mode="apply"), failed_readback,
+            ])
+            assert code == 1 and result["status"] == "accepted_unverified"
+            assert readback_transport.call_count == 3
+            assert result["summary"]["trace_id"] == "launchplane_req_runtime_sync"
+            assert result["summary"]["read_back_trace_id"] == "launchplane_req_failed_readback"
+            assert result["summary"]["read_back_error_code"] == service_code
+            assert result["summary"]["read_back_http_status"] == failed_readback.code
+            assert "PRIVATE_SENTINEL" not in json.dumps(result)
         code, result, _ = _run_runtime_sync(apply_argv, [
             _runtime_sync_response(), http.client.IncompleteRead(b"private-provider-response", 10),
         ])
@@ -9913,7 +9921,7 @@ def test_interrupted_http_admin_reads_emit_bounded_json(argv: list[str], kind: s
     assert "private-provider" not in json.dumps(payload)
 
 
-@pytest.mark.parametrize("kind,phase", [('incomplete', 'preflight'), ('incomplete', 'post'), ('incomplete', 'readback'), ('disconnected', 'preflight'), ('disconnected', 'post'), ('disconnected', 'readback'), ('decoding', 'preflight')])
+@pytest.mark.parametrize("kind,phase", [('incomplete', 'preflight'), ('incomplete', 'post'), ('incomplete', 'readback'), ('disconnected', 'preflight'), ('disconnected', 'post'), ('disconnected', 'readback'), ('decoding', 'preflight'), ('gateway', 'preflight'), ('gateway', 'post'), ('gateway', 'readback'), ('http_timeout', 'preflight'), ('http_timeout', 'post'), ('http_timeout', 'readback')])
 def test_interrupted_http_verified_apply_preserves_failure_phase(kind: str, phase: str) -> None:
     with TemporaryDirectory(dir=Path.home()) as directory:
         evidence = _saved_dry_run_output("product-owner-dry-run", _owner_response(_owner_plan()))
@@ -9922,6 +9930,13 @@ def test_interrupted_http_verified_apply_preserves_failure_phase(kind: str, phas
                 *_reviewed_apply_argv(evidence["result"]["plan_sha256"], path)]
         fault = (write_action.ServiceResponseError({"http_status": 202})
              if kind == "decoding" else _interrupted_http(kind))
+        if kind in {"gateway", "http_timeout"}:
+            fault = urllib.error.HTTPError("https://private.invalid", 502 if kind == "gateway" else 408,
+                "PRIVATE_SENTINEL", Message(), io.BytesIO(json.dumps({
+                    "trace_id": "launchplane_req_failed_exchange", "error": {
+                        "code": "service_timeout", "message": "PRIVATE_SENTINEL",
+                    },
+                }).encode()))
         reads = iter([fault] if phase == "preflight" else [_profile_response(), fault])
         applied = _owner_response(_owner_plan(mode="apply", applied=True))
         code, payload, posts, gets = _run_main(
@@ -9940,7 +9955,12 @@ def test_interrupted_http_verified_apply_preserves_failure_phase(kind: str, phas
         assert payload["summary"]["trace_id"] == applied["trace_id"]
     assert "private-provider" not in json.dumps(payload)
 
-    assert payload["summary"]["read_back_http_status" if phase == "readback" else "http_status"] == 202
+    expected_http_status = fault.code if isinstance(fault, urllib.error.HTTPError) else 202
+    assert payload["summary"]["read_back_http_status" if phase == "readback" else "http_status"] == expected_http_status
+    if kind in {"gateway", "http_timeout"} and phase == "post":
+        assert payload["summary"]["trace_id"] == "launchplane_req_failed_exchange"
+        assert payload["summary"]["error_code"] == "service_timeout"
+    assert "PRIVATE_SENTINEL" not in json.dumps(payload)
 
 
 @pytest.mark.parametrize("kind", ["incomplete", "disconnected", "gateway", "denial", "projection"])
@@ -10190,7 +10210,7 @@ def test_record_reader_preserves_request_failure_type(error, reader, kwargs):
 
 @pytest.mark.parametrize("mode", ["dry-run", "apply"])
 @pytest.mark.parametrize("phase", ["preflight", "post"])
-@pytest.mark.parametrize("failure", ["projection", "decoding", "redirect", "transport"])
+@pytest.mark.parametrize("failure", ["projection", "decoding", "redirect", "transport", "gateway", "http_timeout", "denial"])
 def test_policy_import_failure_diagnostics_belong_to_the_failing_exchange(mode, phase, failure):
     preflight = write_action._ServiceResponse(_merge_train_policy_targets_payload(), 201)
     preflight["trace_id"] = "launchplane_req_preflight"
@@ -10203,6 +10223,12 @@ def test_policy_import_failure_diagnostics_belong_to_the_failing_exchange(mode, 
         fault = write_action.ServiceResponseError({"http_status": current.http_status})
     elif failure == "redirect":
         fault = write_action.LaunchplaneSafetyError("unsafe_redirect")
+    elif failure in {"gateway", "http_timeout", "denial"}:
+        fault = urllib.error.HTTPError("https://private.invalid",
+            {"gateway": 502, "http_timeout": 408, "denial": 403}[failure],
+            "PRIVATE_SENTINEL", Message(), io.BytesIO(json.dumps({
+                "trace_id": current["trace_id"], "error": {"code": "service_timeout", "message": "PRIVATE_SENTINEL"},
+            }).encode()))
     else:
         fault = http.client.IncompleteRead(b"PRIVATE_SENTINEL")
         setattr(fault, "http_status", current.http_status)
@@ -10224,18 +10250,21 @@ def test_policy_import_failure_diagnostics_belong_to_the_failing_exchange(mode, 
     assert get.call_count == 1 and post.call_count == (phase == "post")
     mutating = mode == "apply" and phase == "post"
     if mutating:
-        assert payload["status"] == ("accepted_unverified" if failure in {"projection", "decoding"} else "outcome_unknown")
+        assert payload["status"] == ("accepted_unverified" if failure in {"projection", "decoding"} else "denied" if failure == "denial" else "outcome_unknown")
+        if failure in {"gateway", "http_timeout"}:
+            assert "active" in payload["summary"]["recommendation"].lower()
+            assert "before" in payload["summary"]["recommendation"].lower()
         assert code == (0 if failure in {"projection", "decoding"} else 1)
     else:
         assert code == 1
-        assert payload["status"] == ("unavailable" if failure in {"redirect", "transport"} else "invalid")
+        assert payload["status"] == ("unavailable" if failure in {"redirect", "transport", "gateway", "http_timeout"} else "denied" if failure == "denial" else "invalid")
     if failure == "redirect":
         assert "trace_id" not in payload["summary"] and "http_status" not in payload["summary"]
         if not mutating:
             assert payload["warnings"][0]["code"] == fault.code
     else:
-        assert payload["summary"]["http_status"] == current.http_status
-        if failure == "projection":
+        assert payload["summary"]["http_status"] == (fault.code if isinstance(fault, urllib.error.HTTPError) else current.http_status)
+        if failure in {"projection", "gateway", "http_timeout", "denial"}:
             assert payload["summary"]["trace_id"] == current["trace_id"]
     if phase == "post":
         assert preflight["trace_id"] not in json.dumps(payload["summary"])

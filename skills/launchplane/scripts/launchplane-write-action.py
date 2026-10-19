@@ -6749,22 +6749,9 @@ def execute_runtime_sync(args: argparse.Namespace) -> int:
                 "recommendation": "Run live-target-runtime-sync-dry-run for the same lane and compare target_sha256; zero changed_keys proves current provider persistence. Inspect the trace before retrying under any key; sync does not restart containers.",
             }
             if isinstance(exc, urllib.error.HTTPError):
-                try:
-                    error_payload = _error_payload_from_http(exc)
-                except (http.client.HTTPException, OSError):
-                    error_payload = {}
-                try:
-                    error_trace = public_trace_id(error_payload.get("trace_id"))
-                    if apply_received:
-                        summary["read_back_trace_id"] = error_trace
-                    elif error_trace:
-                        summary["trace_id"] = error_trace
-                    error = error_payload.get("error")
-                    if isinstance(error, dict):
-                        code_field = "read_back_error_code" if apply_received else "error_code"
-                        summary[code_field] = public_code(error.get("code"))
-                except LaunchplaneSafetyError:
-                    pass
+                diagnostics = service_response_diagnostics(_error_payload_from_http(exc))
+                summary.update({("read_back_" if apply_received else "") + key: value
+                                for key, value in diagnostics.items()})
             payload["summary"] = summary
             emit(payload)
         elif isinstance(exc, urllib.error.HTTPError):
@@ -7251,6 +7238,11 @@ def execute_merge_train_policy_import(
             emit(payload)
         return 0
     except urllib.error.HTTPError as exc:
+        if operation == "merge-train-policy-import-apply" and post_attempted and (exc.code >= 500 or exc.code == 408):
+            payload = _apply_outcome_unknown(operation=operation, request=request, label="active merge-train policy")
+            _require_dict(payload["summary"]).update(service_response_diagnostics(_error_payload_from_http(exc)))
+            emit(payload)
+            return 1
         emit_http_error_payload(operation=operation, request=request, exc=exc)
         return 1
     except LaunchplaneSafetyError as exc:
@@ -8424,8 +8416,9 @@ def attach_read_back(
     try:
         observed = read()
     except (OSError, TimeoutError, http.client.HTTPException, ValueError, LaunchplaneSafetyError) as exc:
+        diagnostics_source = _error_payload_from_http(exc) if isinstance(exc, urllib.error.HTTPError) else exc
         payload["summary"].update({"read_back_" + key: value
-                                   for key, value in service_response_diagnostics(exc).items()})
+                                   for key, value in service_response_diagnostics(diagnostics_source).items()})
         payload["warnings"].append(
             warning(
                 "read_back_unavailable",
@@ -8517,9 +8510,12 @@ def execute_verified_apply(
         # A gateway error after the POST began may follow a write Launchplane completed.
         if post_attempted and (exc.code >= 500 or exc.code == 408):
             unknown = _apply_outcome_unknown(operation=operation, request=request, label=label)
+            error_payload = _error_payload_from_http(exc)
+            _require_dict(unknown["summary"]).update(service_response_diagnostics(error_payload))
             if operation.startswith("dokploy-target-"):
                 try:
-                    error = summarize_http_error(operation=operation, request=request, exc=exc)
+                    error = summarize_http_error(operation=operation, request=request, exc=exc,
+                                                 provider_payload=error_payload)
                     unknown_summary = _require_dict(unknown["summary"])
                     error_summary = _require_dict(error["summary"])
                     unknown_summary.update({field: error_summary[field] for field in (
