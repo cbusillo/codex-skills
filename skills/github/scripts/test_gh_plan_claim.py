@@ -3302,8 +3302,9 @@ class ClaimTests(unittest.TestCase):
 
     def test_open_native_blocker_is_preserved(self):
         self.blockers = [{"number": 1, "state": "open"}]
-        with self.assertRaisesRegex(PLAN.PlanError, "resolved native blockers"):
+        with self.assertRaises(PLAN.PlanError) as caught:
             self.run_claim()
+        self.assertEqual(caught.exception.code, "claim_native_blockers_unresolved")
         self.assert_no_writes()
 
     def released_note_fixture(self):
@@ -4585,7 +4586,12 @@ class ClaimTests(unittest.TestCase):
 
     def test_comment_admission_preserves_ownership_and_wait_refusals(self):
         link = "https://github.com/owner/repo/issues/5#issuecomment-123"
-        for blocked in ("ownership", "wait", "blocker", "human_claim"):
+        for blocked, code in (
+            ("ownership", "claim_conflict"),
+            ("wait", "claim_wait_unresolved"),
+            ("blocker", "claim_native_blockers_unresolved"),
+            ("human_claim", "claim_conflict"),
+        ):
             with self.subTest(blocked=blocked):
                 self.setUp()
                 if blocked == "ownership":
@@ -4600,10 +4606,7 @@ class ClaimTests(unittest.TestCase):
                                                      ends_when="Device acceptance recorded")
                 with self.assertRaises(PLAN.PlanError) as caught:
                     self.admit("milestone", (link,))
-                if blocked == "blocker":
-                    self.assertIn("resolved native blockers", str(caught.exception))
-                else:
-                    self.assertEqual(caught.exception.code, "claim_conflict" if blocked in {"ownership", "human_claim"} else "claim_wait_unresolved")
+                self.assertEqual(caught.exception.code, code)
                 self.assert_no_writes()
 
 
