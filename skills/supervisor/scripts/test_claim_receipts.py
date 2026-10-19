@@ -3389,6 +3389,42 @@ os.system(get())
                 for source in (call, 'await eval(' + json.dumps('(async()=>{' + call + '})()') + ');',
                                'await Function("p",' + json.dumps('return (async()=>{' + call + '})()') + ')(p);'):
                     cells += ('const p=' + json.dumps(patch) + ';' + source,)
+            setup = 'const P=' + json.dumps(patch) + ';'
+            possible_inputs = (
+                'const ps=[P];for(const p of ps)await tools.apply_patch(p);',
+                'const ps=[P];ps.forEach(p=>tools.apply_patch(p));',
+                'let p;p=P;await tools.apply_patch(p);',
+                'let p=P;p+="";const ap=tools.apply_patch;await ap(p);',
+                'const o={};o.patch=P;await tools.apply_patch(o.patch);',
+                'const o={patch:P};await tools.apply_patch(o.patch);',
+                'const o={};o["patch"]=P;const ap=tools.apply_patch;await ap(o["patch"]);',
+                'globalThis.P=P;const ap=tools.apply_patch;await ap(globalThis.P);',
+                'globalThis["P"]=P;const ap=tools.apply_patch;await ap(globalThis["P"]);',
+                'const key="P";globalThis[key]=P;const ap=tools.apply_patch;await ap(globalThis[key]);',
+                'globalThis.P=P;const p=globalThis.P;const ap=tools.apply_patch;await ap(p);',
+                'globalThis.P=P;const g=globalThis;const ap=tools.apply_patch;await ap(g.P);',
+            )
+            for body in possible_inputs:
+                source = setup + body
+                cells += (source, 'await eval(' + json.dumps('(async()=>{' + source + '})()') + ');',
+                          'await Function(' + json.dumps('return (async()=>{' + source + '})()') + ')();')
+            cells += (setup + 'globalThis.text=tools.apply_patch;await eval("text(P)");',)
+            safe_patch = '*** Begin Patch\n*** Add File: /repo/run.py\n+print("safe")\n*** End Patch'
+            # A later assignment is not the value of an earlier write.
+            cells += (setup + 'globalThis.P=P;await Function("return tools.apply_patch(globalThis.P)")();globalThis.P='
+                      + json.dumps(safe_patch) + ';',
+                      setup + 'let p=P;const ap=tools.apply_patch;await ap(p);p=' + json.dumps(safe_patch) + ';')
+            header, body = patch.split('\n', 1)
+            fragments = 'const h=' + json.dumps(header + '\n') + ';const b=' + json.dumps(body) + ';'
+            for operand in ('h+b', '`${h}${b}`'):
+                call = 'tools.apply_patch(' + operand + ')'
+                for source in (fragments + 'await eval(' + json.dumps(call) + ');',
+                               'await Function(' + json.dumps(fragments + call) + ')();'):
+                    effects = list(receipts.native_file_effects('functions.exec', source))
+                    with self.subTest(generated_patch=source):
+                        self.assertTrue(any(program.strip() in content for effect in effects
+                                            if effect['kind'] == 'write' for content in effect['contents']))
+                    cells += (source,)
             for cell in cells:
                 for command, executes in (('python3 /repo/run.py', True), ('cat /repo/run.py', False)):
                     rows = history('codex', {}, {})
@@ -3509,6 +3545,20 @@ os.system(get())
                 text = receipts.unparsed_command_text(cell)
             self.assertIn(writer, text)
             self.assertEqual(len(visited), len(set(visited)), 'generated descendants were repeatedly rediscovered')
+        data = 'const data={' + ','.join('k' + str(index) + ':"safe"' for index in range(1000)) + '};'
+        totals = []
+        original_projection = receipts.javascript_projection
+        for count in (16, 64):
+            source = data + 'const ap=tools.apply_patch;' + 'text(data.k0);' * count
+            processed = []
+            def project(value):
+                processed.append(len(value))
+                return original_projection(value)
+            with patch.object(receipts, 'javascript_projection', side_effect=project):
+                self.assertEqual(list(receipts.javascript_possible_patches(source)), [])
+            totals.append(sum(processed))
+        # Extra tiny call operands must not each re-project the large data RHS.
+        self.assertLess(totals[1] - totals[0], len(data))
 
     def test_javascript_command_discovery_covers_noncanonical_tool_callees(self):
         writer = 'uv run /catalog/gh-plan.py --repo o/r claim 5'
@@ -3629,6 +3679,21 @@ os.system(get())
                           (setup + child, False),
                           (setup + 'await eval("globalThis.text=tools.exec_command");' + child, owning),
                           (setup + 'await eval(' + json.dumps('(async()=>{globalThis.text=tools.exec_command;' + child + '})()') + ');', owning)))
+        for command, owning in ((writer, True), ('echo safe', False)):
+            assigned = json.dumps(command)
+            eval_assignment = 'cmd=' + assigned
+            sloppy = ('const cmd="echo safe";function run(){eval('
+                      + json.dumps('var cmd=' + assigned) + ');return tools.exec_command({cmd});}return run();')
+            cells.extend((
+                ('let cmd="echo safe";eval(' + json.dumps(eval_assignment) + ');await tools.exec_command({cmd});', owning),
+                ('await Function("c",' + json.dumps('eval(' + json.dumps('c=' + assigned)
+                    + ');return tools.exec_command({cmd:c});') + ')("echo safe");', owning),
+                ('await Function(' + json.dumps(sloppy) + ')();', owning),
+                ('await Function(' + json.dumps('return this["to"+"ols"]["exec_"+"command"]({cmd:' + assigned + '})') + ')();', owning),
+                ('await Function(' + json.dumps('"use strict";' + sloppy) + ')();', False),
+                ('const cmd="echo safe";function run(){eval(' + json.dumps('var cmd=' + assigned)
+                    + ');return tools.exec_command({cmd});}await run();', False),
+            ))
         for cell, owning in cells:
             rows = history('codex', {})
             rows[1]['payload'].update(name='functions.exec', arguments=cell)
@@ -3768,14 +3833,19 @@ os.system(get())
         writer = 'uv run /catalog/gh-plan.py --repo o/r claim 5'
         patch = '*** Begin Patch\n*** Add File: /repo/run.py\n+import os\n+os.system(' + repr(writer) + ')\n*** End Patch'
         for cell in ('const p=' + json.dumps(patch) + ';text(p);',
-                     'const unused=' + json.dumps(patch) + ';await tools.exec_command({cmd:"echo safe"});'):
+                     'const unused=' + json.dumps(patch) + ';await tools.exec_command({cmd:"echo safe"});',
+                     'globalThis.P=' + json.dumps(patch) + ';text(globalThis.P);',
+                     'globalThis["P"]=' + json.dumps(patch) + ';text(globalThis["P"]);',
+                     'globalThis.P=' + json.dumps(patch) + ';await tools.exec_command({cmd:"echo safe"});',
+                     'globalThis.P=' + json.dumps(patch) + ';const P=' + json.dumps(patch.replace("import os\n+os.system(" + repr(writer) + ")", "print(\"safe\")")) + ';const ap=tools.apply_patch;await ap(P);'):
             rows = history('codex', {}, {})
             rows[1]['payload'].update(name='functions.exec', arguments=cell)
             rows[2] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-0')
             rows[3]['payload']['arguments'] = json.dumps({'cmd': 'python3 /repo/run.py'})
             rows[4] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-1')
             with self.subTest(inert_patch=cell):
-                self.assertFalse(any(effect['kind'] == 'write' for effect in receipts.native_file_effects('functions.exec', cell)))
+                if 'const ap=' not in cell:
+                    self.assertFalse(any(effect['kind'] == 'write' for effect in receipts.native_file_effects('functions.exec', cell)))
                 self.assertFalse(receipts.ownership_state(rows, 'codex')['pending'])
 
     def test_composed_fixture_strings_and_comments_are_not_tool_invocations(self):

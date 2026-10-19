@@ -21,6 +21,7 @@ import importlib.util
 import sys
 import builtins
 import pprint
+from bisect import bisect_left
 from functools import lru_cache
 from itertools import product
 from contextlib import redirect_stdout
@@ -369,7 +370,7 @@ def javascript_projection(native):
     return atoms, code, regions, complete
 
 
-def javascript_bindings(code):
+def javascript_bindings(code, *, sloppy=False):
     """Resolve only a single declaration site, never a reused lexical name.
 
     This projection deliberately does not guess which block/function owns a
@@ -443,12 +444,12 @@ def javascript_bindings(code):
         while opening >= 0 and depth:
             depth += (code[opening] in "]}") - (code[opening] in "[{")
             opening -= 1
-        if not depth:
+        if not depth and (opening < 0 or not re.match(r"[\w$)\]]", code[opening])):
             bind(opening + 1, finish)
     # A direct eval can assign an enclosing mutable binding. Its masked source
     # is never proof that a let/var initializer remains the command value.
     if re.search(r"(?<![\w.$])eval\s*\(", code):
-        for name in mutable:
+        for name in sites if sloppy else mutable:
             sites[name].add(len(code))
     # Method parameters share the same lexical rule as named functions.
     for method in re.finditer(r"\b([A-Za-z_$][\w$]*)\s*\(", code):
@@ -524,8 +525,26 @@ def javascript_literal(expression, current, declarations, bindings, active=()):
     return None
 
 
-def javascript_output_only(code, bound, capabilities=False):
-    capabilities |= bool(re.search(r"\b(?:tools|exec_command|apply_patch|globalThis|global|window|self)\b", code))
+def javascript_capabilities(code, native=None):
+    # Static data properties do not replace the output primitive. Computed
+    # global access, receiver aliases and a text member remain unknown.
+    data = list(code)
+    member = re.compile(r"\b(globalThis|global|window|self)\s*(?:\.\s*([A-Za-z_$][\w$]*)|\[\s*(" + JS_STRING + r")\s*\])")
+    for match in member.finditer(native if native is not None else code):
+        if code[match.start(1):match.end(1)] != match[1]:
+            continue
+        try:
+            name = match[2] or javascript_string(match[3])
+        except ValueError:
+            continue
+        if name != "text":
+            data[match.start():match.end()] = name.ljust(match.end() - match.start())
+    return bool(re.search(r"\b(?:tools|exec_command|apply_patch|globalThis|global|window|self)\b", "".join(data)))
+
+
+def javascript_output_only(code, bound, capabilities=None):
+    if capabilities is None:
+        capabilities = javascript_capabilities(code)
     return (not capabilities and "text" not in bound
             and all(call[1] == "text" and not code[:call.start()].rstrip().endswith(".")
                     for call in re.finditer(r"([A-Za-z_$][\w$]*)\s*\(", code)))
@@ -538,13 +557,96 @@ def javascript_call_inputs(code, regions):
         if call.end() in source_starts or call[1] in {"if", "for", "while", "switch", "catch", "with"}:
             continue
         yield from node_expression_parts(code, call.end(), len(code))
+        # Collection methods consume their receiver as well as their actuals.
+        receiver = re.search(r"([A-Za-z_$][\w$]*)\s*\.\s*$", code[:call.start()])
+        if receiver:
+            yield receiver.start(1), receiver.end(1)
+    for loop in re.finditer(r"\bfor\s*(?:await\s*)?\(", code):
+        begin, end = node_expression_parts(code, loop.end(), len(code), ";")[0]
+        iterable = re.search(r"\bof\b", code[begin:end])
+        if iterable:
+            yield begin + iterable.end(), end
 
 
-def javascript_possible_patches(native):
+def javascript_inputs(native, atoms, code, declarations):
+    """Possible RHS inputs are separate from single-site literal proof."""
+    member = r"[A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*|\s*\[[^]\n]*\])*"
+    references = re.compile(r"(?<![\w.$])(" + member + r")")
+    assignments = re.compile(r"(?<![\w.$])(" + member + r")\s*(?:=(?!=|>)|[+*/%&|^-]=|\?\?=|&&=|\|\|=)")
+    sources, globals_ = {}, {}
+    starts = [atom.start() for atom in atoms]
+    memo = {}
+
+    def literal(begin, end):
+        key = begin, end
+        if key not in memo:
+            memo[key] = javascript_literal(native[begin:end], native, declarations, {})
+        return memo[key]
+
+    def key(begin, end):
+        raw = native[begin:end].strip()
+        bare = re.fullmatch(r"[A-Za-z_$][\w$]*", raw)
+        if bare:
+            return "local", raw
+        final = re.search(r"\.\s*([A-Za-z_$][\w$]*)\s*$", raw)
+        if final:
+            return "member", final[1]
+        bracket = re.search(r"\[([^]\n]*)\]\s*$", raw)
+        if bracket:
+            value = javascript_literal(bracket[1], native, declarations, {})
+            if value is not None:
+                return "member", value
+        return None
+
+    for assignment in assignments.finditer(code):
+        selected = key(assignment.start(1), assignment.end(1))
+        if selected is None:
+            continue
+        rhs = node_expression_parts(code, assignment.end(), len(code), ",;\n")[0]
+        sources.setdefault(selected, []).append(rhs)
+        receiver = native[assignment.start(1):assignment.end(1)].strip()
+        global_receiver = re.match(r"(?:globalThis|global|window|self)(?=\s*[.[])", receiver)
+        if not global_receiver and selected[0] == "member":
+            first = re.match(r"[A-Za-z_$][\w$]*", receiver)
+            if first and first[0] in declarations:
+                begin, end = declarations[first[0]]
+                global_receiver = native[begin:end].strip() in {"globalThis", "global", "window", "self"}
+        if global_receiver:
+            globals_.setdefault(selected[1], []).append(rhs)
+
+    def reached(inputs):
+        pending, visited = list(inputs), set()
+        while pending:
+            begin, end = pending.pop()
+            if (begin, end) in visited:
+                continue
+            visited.add((begin, end))
+            value = literal(begin, end)
+            if value is not None:
+                yield begin, value
+            for atom in atoms[bisect_left(starts, begin):bisect_left(starts, end)]:
+                try:
+                    yield atom.start(), javascript_string(atom[0])
+                except ValueError:
+                    pass
+            for reference in references.finditer(code, begin, end):
+                selected = key(reference.start(1), reference.end(1))
+                pending.extend(sources.get(selected, ()))
+                # A member can come from its receiver's aggregate initializer;
+                # its property name is never a bare local reference.
+                receiver = re.match(r"[A-Za-z_$][\w$]*", reference[1])
+                if receiver and reference[1].strip() != receiver[0]:
+                    pending.extend(sources.get(("local", receiver[0]), ()))
+        return
+
+    return reached, globals_, literal
+
+
+def javascript_possible_patches(native, *, capabilities=False):
     """Unbound call targets may consume their patch inputs, as partial writes."""
     atoms, code, regions, _ = javascript_projection(native)
     declarations, bound = javascript_bindings(code)
-    if javascript_output_only(code, bound):
+    if javascript_output_only(code, bound, capabilities or javascript_capabilities(code, native)):
         return
     seen = set()
     for _, raw in composed_patch_fields(native):
@@ -552,25 +654,11 @@ def javascript_possible_patches(native):
             seen.add(composed_string(raw, native))
         except (SyntaxError, ValueError):
             pass
-    for begin, finish in javascript_call_inputs(code, regions):
-        reached = [(begin, finish)]
-        visited = set()
-        while reached:
-            begin, finish = reached.pop()
-            if (begin, finish) in visited:
-                continue
-            visited.add((begin, finish))
-            inputs = list(javascript_source_literals(atom for atom in atoms if begin <= atom.start() < finish))
-            resolved = javascript_literal(native[begin:finish], native, declarations, {})
-            if resolved is not None:
-                inputs.append(resolved)
-            for word in re.findall(r"\b[A-Za-z_$][\w$]*\b", code[begin:finish]):
-                if word in declarations:
-                    reached.append(declarations[word])
-            for value in inputs:
-                if value.startswith("*** Begin Patch") and value not in seen:
-                    seen.add(value)
-                    yield begin, value
+    reached, _, _ = javascript_inputs(native, atoms, code, declarations)
+    for begin, value in reached(javascript_call_inputs(code, regions)):
+        if value.startswith("*** Begin Patch") and value not in seen:
+            seen.add(value)
+            yield begin, value
 
 
 def javascript_generated_sources(value):
@@ -581,15 +669,18 @@ def javascript_generated_sources(value):
     existing delimiter splitter joins known literal source fragments. Unknown
     computation keeps its selected operands as possible command input.
     """
-    root_capabilities = bool(re.search(r"\b(?:tools|exec_command|apply_patch|globalThis|global|window|self)\b", javascript_projection(value)[1]))
+    root_capabilities = javascript_capabilities(javascript_projection(value)[1], value)
     deferred = []
-    pending, seen, queued = [(value, {}, {}, False, ())], set(), {(value, (), (), ())}
+    pending, seen, queued = [(value, {}, {}, False, (), False)], set(), {(value, (), (), (), False)}
+    generated_literals = []
     while pending:
-        current, inherited, inherited_globals, generated, fallback = pending.pop()
+        current, inherited, inherited_globals, generated, fallback, sloppy = pending.pop()
         current_atoms, current_code, regions, _ = javascript_projection(current)
-        root_capabilities |= bool(re.search(r"\b(?:tools|exec_command|apply_patch|globalThis|global|window|self)\b", current_code))
-        declarations, bound = javascript_bindings(current_code)
-        bindings = {name: text for name, text in inherited.items() if name not in bound}
+        local_capabilities = javascript_capabilities(current_code, current) or sloppy and bool(re.search(r"\bthis\b", current_code))
+        root_capabilities |= local_capabilities
+        declarations, bound = javascript_bindings(current_code, sloppy=sloppy)
+        direct_eval = bool(re.search(r"(?<![\w.$])eval\s*\(", current_code))
+        bindings = {name: text for name, text in inherited.items() if name not in bound and not direct_eval}
 
         def literal(expression, active=()):
             return javascript_literal(expression, current, declarations, bindings, active)
@@ -598,18 +689,25 @@ def javascript_generated_sources(value):
             text = literal(name)
             if text is not None:
                 bindings[name] = text
-        globals_ = dict(inherited_globals)
-        for match in re.finditer(r"\b(?:globalThis|global|window|self)\s*\.\s*(\w+)\s*=([^;\n]*)", current_code):
-            text = literal(current[match.start(2):match.end(2)])
-            if text is not None:
-                globals_[match[1]] = text
-        global_context = tuple(sorted(globals_.items()))
+        reached_inputs, global_ranges, input_literal = javascript_inputs(current, current_atoms, current_code, declarations)
+        global_values = {name: list(values) for name, values in inherited_globals.items()}
+        for name, ranges in global_ranges.items():
+            values = global_values.setdefault(name, [])
+            for begin, end in ranges:
+                # None prevents a guessed value from becoming exact proof.
+                values.append(input_literal(begin, end))
+            values.extend(text for _, text in reached_inputs(ranges))
+        global_values = {name: tuple(dict.fromkeys(values)) for name, values in global_values.items()}
+        globals_ = {name: values[0] for name, values in global_values.items()
+                    if values and values[0] is not None and len(values) == 1}
+        global_context = tuple(sorted(global_values.items()))
         context = tuple(sorted(bindings.items()))
-        key = current, context, global_context, fallback
+        key = current, context, global_context, fallback, sloppy
         if key in seen:
             continue
         seen.add(key)
         if generated:
+            generated_literals.extend(javascript_source_literals(current_atoms))
             text, projected = current, current_code
             replacements = []
             for match in re.finditer(r"(\b(?:cmd|command)\s*:\s*|\btools\.apply_patch\s*\(\s*)((?:(?:globalThis|global|window|self)\s*\.\s*)?(\w+))\b", projected):
@@ -634,13 +732,23 @@ def javascript_generated_sources(value):
                 if match[1] in bindings:
                     replacements.append((match.start(1), match.end(1), match[1] + ":" + json.dumps(bindings[match[1]])))
             for begin, finish in javascript_call_inputs(projected, regions):
+                operand = literal(current[begin:finish])
+                if operand is not None and operand.startswith("*** Begin Patch"):
+                    replacements.append((begin, finish, json.dumps(operand)))
+                    continue
                 for match in re.finditer(r"(?<![\w.$])([A-Za-z_$][\w$]*)(?![\w$]|\s*:)", projected[begin:finish]):
                     start, end = begin + match.start(), begin + match.end()
                     operand = literal(current[start:end])
                     if operand is not None and operand.startswith("*** Begin Patch"):
                         replacements.append((start, end, json.dumps(operand)))
-            replacements = list(dict.fromkeys(replacements))
-            for start, end, replacement in sorted(replacements, reverse=True):
+            # All spans refer to the original source. A containing operand wins
+            # over an identifier within it, before any replacement is applied.
+            accepted = []
+            for replacement in sorted(set(replacements), key=lambda item: (item[0], -item[1])):
+                start, end, _ = replacement
+                if not accepted or start >= accepted[-1][1]:
+                    accepted.append(replacement)
+            for start, end, replacement in sorted(accepted, reverse=True):
                 text = text[:start] + replacement + text[end:]
             yield text
             parsed_patches = {position for position, _ in composed_patch_fields(text)}
@@ -648,7 +756,7 @@ def javascript_generated_sources(value):
                                 for call in javascript_call_starts(text, r"\btools\.apply_patch\s*\("))
             unknown_inputs = any(current[begin:finish].strip() and literal(current[begin:finish]) is None
                                  for begin, finish in javascript_call_inputs(projected, regions))
-            deferred.append((text, projected, bound, unknown_patch, unknown_inputs, fallback))
+            deferred.append((text, projected, bound, unknown_patch, unknown_inputs, fallback, sloppy))
         selected, visited, sources = [], set(), []
         for start, end in regions:
             call = re.search(r"\b(\w+)\s*\(\s*$", current_code[:start])
@@ -661,7 +769,7 @@ def javascript_generated_sources(value):
                 name = current_code[begin:finish].strip()
             constructor = name not in {"eval", "import"}
             child_bindings = {**globals_, **bindings} if direct else dict(globals_)
-            child_fallback = list(dict.fromkeys((*fallback, *javascript_source_literals(current_atoms)))) if direct else list(globals_.values())
+            child_fallback = list(dict.fromkeys((*fallback, *javascript_source_literals(current_atoms)))) if direct else [text for values in global_values.values() for text in values if text is not None]
             parts = node_expression_parts(current_code, start, end)
             if constructor:
                 # Function constructors have their global scope and explicit
@@ -752,10 +860,10 @@ def javascript_generated_sources(value):
                 parts = parts[-1:]
             else:
                 parts = parts[:1]
-            selected.extend((begin, finish, child_bindings, tuple(dict.fromkeys(child_fallback))) for begin, finish in parts)
+            selected.extend((begin, finish, child_bindings, tuple(dict.fromkeys(child_fallback)), not direct and constructor or direct and sloppy) for begin, finish in parts)
         while selected:
-            start, end, child_bindings, child_fallback = selected.pop()
-            selected_key = start, end, tuple(sorted(child_bindings.items())), child_fallback
+            start, end, child_bindings, child_fallback, child_sloppy = selected.pop()
+            selected_key = start, end, tuple(sorted(child_bindings.items())), child_fallback, child_sloppy
             if selected_key in visited:
                 continue
             visited.add(selected_key)
@@ -764,28 +872,30 @@ def javascript_generated_sources(value):
                 expression = current[begin:finish]
                 text = literal(expression)
                 if text is not None:
-                    sources.append((text, False, child_bindings, child_fallback))
+                    sources.append((text, False, child_bindings, child_fallback, child_sloppy))
                     continue
                 # An unresolved source expression may concatenate or transform
                 # selected literals. Preserve those inputs, not unrelated data.
                 reached = [declarations[word] for word in re.findall(r"\b\w+\b", current_code[begin:finish])
                            if word in declarations]
-                selected.extend((begin, finish, child_bindings, child_fallback) for begin, finish in reached)
+                selected.extend((begin, finish, child_bindings, child_fallback, child_sloppy) for begin, finish in reached)
                 for word in re.findall(r"\b\w+\b", current_code[begin:finish]):
                     if word in bindings:
-                        sources.append((bindings[word], True, child_bindings, child_fallback))
+                        sources.append((bindings[word], True, child_bindings, child_fallback, child_sloppy))
                 for atom in current_atoms:
                     if begin <= atom.start() < finish:
                         try:
-                            sources.append((javascript_string(atom[0]), True, child_bindings, child_fallback))
+                            sources.append((javascript_string(atom[0]), True, child_bindings, child_fallback, child_sloppy))
                         except ValueError:
                             pass
-        for text, uncertain, child_bindings, child_fallback in sources:
+        for text, uncertain, child_bindings, child_fallback, child_sloppy in sources:
+            if re.match(r"\s*([\"'])use strict\1\s*(?:;|$)", text):
+                child_sloppy = False
             child_context = tuple(sorted(child_bindings.items()))
-            nested_key = text, child_context, global_context, child_fallback
+            nested_key = text, child_context, global_context, child_fallback, child_sloppy
             if nested_key not in queued:
                 queued.add(nested_key)
-                pending.append((text, child_bindings, globals_, True, child_fallback))
+                pending.append((text, child_bindings, global_values, True, child_fallback, child_sloppy))
             if uncertain:
                 # Computed source may turn a selected literal into shell or
                 # patch input. These alternatives affect discovery only; they
@@ -797,14 +907,23 @@ def javascript_generated_sources(value):
 
     # Output purity belongs to the whole reachable cell. Evaluate it only after
     # every parent and sibling source has contributed its possible capability.
-    for text, projected, bound, unknown_patch, unknown_inputs, fallback in deferred:
-        unknown_patch |= not javascript_output_only(projected, bound, root_capabilities) and unknown_inputs
-        unknown_command = _unparsed_command_text(text, generated_sources=False, capabilities=root_capabilities)[1]
+    for text, projected, bound, unknown_patch, unknown_inputs, fallback, sloppy in deferred:
+        capabilities = root_capabilities or sloppy and bool(re.search(r"\bthis\b", projected))
+        if not fallback and not sloppy:
+            continue
+        unknown_patch |= not javascript_output_only(projected, bound, capabilities) and unknown_inputs
+        command, unknown_command = _unparsed_command_text(text, generated_sources=False, capabilities=capabilities,
+                                                         sloppy=sloppy, possible_writers=generated_literals)
+        commands = [command] if executable_content(command) else []
+        if sloppy and unknown_command:
+            commands.extend(value for value in generated_literals if executable_content(value))
+        for command in dict.fromkeys(commands if sloppy else ()):
+            # Context-sensitive uncertainty must survive the public string-only
+            # generated-source API. This is discovery, never a native receipt.
+            yield "tools.exec_command({cmd:" + json.dumps(command) + "})"
         for operand in fallback:
             patch = operand.startswith("*** Begin Patch")
             if (unknown_patch if patch else unknown_command):
-                # A possible patch call is partial provenance, never an exact
-                # native apply_patch invocation or completion receipt.
                 yield ("apply_patch(" + json.dumps(operand) + ")" if patch
                        else "tools.exec_command({cmd:" + json.dumps(operand) + "})")
 
@@ -2497,7 +2616,7 @@ def shell_effect_order(tokens, events):
     return list(walk(0, len(tokens)))
 
 
-def _unparsed_command_text(value, *, generated_sources=True, capabilities=False):
+def _unparsed_command_text(value, *, generated_sources=True, capabilities=False, sloppy=False, possible_writers=()):
     """Keep command expressions and referenced declarations, excluding JS prose.
 
     This is conservative command discovery, not evaluation or completion proof.
@@ -2518,10 +2637,13 @@ def _unparsed_command_text(value, *, generated_sources=True, capabilities=False)
         start += len(re.match(r"\s*", value[start:])[0])
         end = re.search(delimiter, code[start:])
         return start, start + end.start() if end else len(code)
-    declarations, bound = javascript_bindings(code)
-    projected = [code, *(javascript_projection(text)[1] for text in generated)]
-    capabilities |= any(re.search(r"\b(?:tools|exec_command|apply_patch|globalThis|global|window|self)\b", text)
-                        for text in projected)
+    declarations, bound = javascript_bindings(code, sloppy=sloppy)
+    projections = [javascript_projection(text) for text in generated]
+    projected = [code, *(projection[1] for projection in projections)]
+    capabilities |= javascript_capabilities(code, value) or any(javascript_capabilities(projection[1], text)
+                        for text, projection in zip(generated, projections))
+    generated_writers = [*possible_writers, *(text for projection in projections
+                                             for text in javascript_source_literals(projection[0]))]
     output_only = javascript_output_only(code, bound, capabilities)
     pending = [] if output_only else [region(m.end(), r"[,};\n]") for m in re.finditer(r"\b(?:cmd|command)\s*:", code)]
     if not output_only:
@@ -2544,7 +2666,7 @@ def _unparsed_command_text(value, *, generated_sources=True, capabilities=False)
                 continue
             pieces.extend(shlex.join(argv) for argv in shell_commands("exec_command", {"cmd": command})
                           if ownership_command(argv))
-        nested, _ = _unparsed_command_text(text, generated_sources=False, capabilities=capabilities)
+        nested, _ = _unparsed_command_text(text, generated_sources=False, capabilities=capabilities, possible_writers=generated_writers)
         pieces.append(nested)
     def literal_writers():
         for literal in literals:
@@ -2554,7 +2676,7 @@ def _unparsed_command_text(value, *, generated_sources=True, capabilities=False)
                 continue
             if isinstance(text, str) and executable_content(text):
                 yield text
-    writers = list(literal_writers())
+    writers = [*literal_writers(), *(text for text in generated_writers if executable_content(text))]
     while pending:
         start, end = pending.pop()
         if (start, end) in seen:
@@ -7000,13 +7122,15 @@ def file_writes(name, value, *, replacements=None):
     if name in {"apply_patch", "functions.apply_patch"} and isinstance(value, str):
         patches.append(value)
     if name in {"exec", "functions.exec"} and isinstance(value, str):
-        for current in (value, *javascript_generated_sources(value)):
+        sources = (value, *javascript_generated_sources(value))
+        capabilities = any(javascript_capabilities(javascript_projection(current)[1], current) for current in sources)
+        for current in sources:
             for _, raw in composed_patch_fields(current):
                 try:
                     patches.append(composed_string(raw, current))
                 except (SyntaxError, ValueError):
                     pass
-            for _, patch in javascript_possible_patches(current):
+            for _, patch in javascript_possible_patches(current, capabilities=capabilities):
                 for effect in native_file_effects("apply_patch", patch):
                     for content in effect["contents"]:
                         yield effect["path"], content
@@ -7087,10 +7211,12 @@ def native_file_effects(name, value):
                 yield effect
         return
     if name in {"exec", "functions.exec"} and isinstance(native, str):
+        sources = (native, *javascript_generated_sources(native))
+        capabilities = any(javascript_capabilities(javascript_projection(current)[1], current) for current in sources)
         def direct_effects(current):
             patches = list(composed_patch_fields(current))
             calls = [(position, "apply_patch", raw, None) for position, raw in patches]
-            for _, patch in javascript_possible_patches(current):
+            for _, patch in javascript_possible_patches(current, capabilities=capabilities):
                 for effect in native_file_effects("apply_patch", patch):
                     yield dict(effect, replaces=False, partial=True)
             for match in composed_shell_fields(current):
@@ -7107,8 +7233,7 @@ def native_file_effects(name, value):
                 for effect in native_file_effects(method, {"cmd": content} if method == "exec_command" else content):
                     yield dict(effect, cwd=cwd) if cwd else effect
         direct = list(direct_effects(native))
-        generated = [effect for current in javascript_generated_sources(native)
-                     for effect in direct_effects(current)]
+        generated = [effect for current in sources[1:] for effect in direct_effects(current)]
         if generated:
             # Source calls are discovered without evaluating JS control flow.
             # Keep all full-source writes as alternatives before any possible
