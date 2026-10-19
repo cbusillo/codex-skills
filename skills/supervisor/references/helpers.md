@@ -93,14 +93,28 @@ other sessions; a malformed ledger itself ends the watch. Transcript errors
 include malformed nested payload, message, content and identity fields; they
 supply no completion proof for that session.
 Status output includes the latest response and can be private; keep it
-out of public comments. For Claude, `background_tasks` lists the Bash
-background and Monitor tasks that have not yet sent a terminal notice or been
-stopped. At a turn end, an empty list means nothing will resume the session:
-a "waiting" message there is a stall to nudge. A listed task is a live wait;
+out of public comments. For Claude, `background_tasks` lists unresolved Bash
+background and Monitor tasks plus native scheduled jobs. Before exit, these
+tasks block finished-session candidates, including jobs waiting for a future
+wakeup. A "waiting" message at a turn end with no tasks is a stall to nudge.
+A listed task is a live wait;
 check that its condition can still end it, for example CI already settled
 under a `--watch` that never exits on green, before waiting on it. Context
 counts may be absent and are not a reason to hand off. For Claude, the count
-includes cached input.
+includes cached input. After independently verified process exit, closure
+retains its final-verdict and process checks; a leftover task record adds no
+new closure condition. Review notifications may reach an idle empty Claude
+prompt with scheduled jobs, while an active firing turn or Bash/Monitor task
+still prevents the notification.
+
+For an unknown `cron-create:<tool-id>` placeholder or a scheduled job that
+native CronDelete reports absent, ask that worker to run native CronList.
+A successful matched list result replaces the recorded schedule inventory,
+including clearing placeholders; a failed, replay-only or ambiguous result
+does not. Stop only jobs the worker confirms are obsolete, then request a
+fresh verdict. Native schedule-error, recurring-job expiry, restart and
+durable-job receipt shapes have not been observed; do not infer them from time
+or transcript age.
 
 For tmux entries, replace `iterm_session_id` with `tmux_session_id` from launch
 output and record `backend: "tmux"`, `tmux_socket`, `window_id`, `tab_id`, `tty`
@@ -1101,6 +1115,10 @@ uv run skills/supervisor/scripts/codex-session.py resume --session-id <native-id
 uv run skills/supervisor/scripts/codex-session.py status --session-id <native-id>
 ```
 
+Use the canonical lowercase, hyphenated UUID from the native thread record.
+The managed RPC ingress requires that same spelling for every action, so another
+spelling cannot select a different source freeze or ownership lease. Process
+observation recognizes all UUID spellings the native CLI accepts as the same thread.
 The helper invalidates the old receipt before sending or launching. `status`
 returns the resumed generation's metadata for the ledger; preserve the native
 thread and verified handoff when updating it. A later `finish` accepts that new
@@ -1311,17 +1329,16 @@ input if needed, then read back that the entire agent input is empty. Send
 `/quit` for Codex or `/exit` for Claude with `send --verified-target`. Wait at
 most 60 seconds, reading `read` for `dead: true` and checking that the matched
 agent PID and processes belonging to that pane have exited. If its TTY was
-reused, use the close preview's ownership proof below. Preserve a running or
+reused, use the native close command's ownership proof below. Preserve a running or
 uncertain pane. Record/release native session claims under the existing
 finished-session procedure before removing the terminal.
 
 ```sh
-uv run skills/supervisor/scripts/close_ttys.py --backend tmux --ledger <private-ledger.json> --session-id <native-id> --verified-handoff --verified-input
 uv run skills/supervisor/scripts/iterm_tab.py --backend tmux close --session-id <tmux-session-id> --ledger <private-ledger.json>
 uv run skills/supervisor/scripts/iterm_tab.py --backend tmux list
 ```
 
-The preview verifies the native transcript and handoff. Terminal closure
+Finish verifies the native transcript and handoff. Terminal closure
 rechecks the owned launch nonce, container, window, server and TTY, rejects
 splits or linked windows, and proves that both the recorded PID and the pane
 process are absent. It checks twice, then asks tmux to remove only that dead
@@ -1631,8 +1648,8 @@ and split tabs refuse. Never add a Director's tab to the Supervisor ledger.
 
 The close command requires iTerm's native shell integration to report an
 editing prompt whose entire command is empty. Missing/unknown input refuses;
-screen appearance and `--verified-input` are not substitutes for the close
-command's native proof. A successful final `exec` normally ends the terminal;
+screen appearance is not a substitute for the close command's native proof.
+A successful final `exec` normally ends the terminal;
 after the exit wait, use `list` and record closure if the exact session is gone.
 Native prompt proof is needed only for a surviving idle outer shell, such as
 an older returning launch or a failed `exec`. On Chris-Studio's zsh shells,
@@ -1712,6 +1729,13 @@ The record has this shape (values are illustrative):
   ]
 }
 ```
+
+When the original launch ledger includes `supervisor_owned`, `window_id` and
+`tab_id`, copy those fields unchanged into this private record too, along with
+`launch_started_at` when available. They bind the original dead pane so the
+shared process check can use its native exit time to distinguish a later TTY
+occupant. Do not invent these fields. A minimal historical record, a missing
+pane or a mismatched identity uses the stricter path without that cutoff.
 
 Supply all known source-account transcript directories on that host, including
 resumed and archived transcripts. Unavailable original identity, host,
@@ -1843,7 +1867,24 @@ Any active thread, source PID (including reuse), old worker on the source TTY,
 resume process, unknown client, changed generation or unavailable evidence keeps
 it live. A proven new TTY occupant born after closure is not the old worker.
 Unidentified interactive clients, pickers, stdio servers and unobserved daemons
-still refuse. Fresh noninteractive execs cannot attach to the predecessor.
+still refuse. Fresh noninteractive execs cannot attach to the predecessor;
+`exec resume`, its `e` alias, and resume pickers can. Process checks share one
+native invocation classifier. The OS argument reader preserves quoted prompt
+boundaries and recognizes session operands after `resume --`. It parses only argc
+and argv, never decoding or reporting environment values. A different UUID operand or fresh noninteractive
+exec supplies unrelated-session proof only with those actual boundaries; flattened
+`ps` text supplies conservative veto candidates. If argv is unavailable, use the
+guarded launcher or the existing manual release route. `--last` leaves the target
+unknown, even when its prompt is UUID-shaped. Keep initial managed prompts after
+`--`; launch bindings hash only the preceding option prefix.
+An arbitrary word after `resume` does not prove another session. Claude
+`--continue`/`-c` and ID-less resume pickers leave the native target unknown.
+On the source TTY, a replacement pane's ancestry alone does not establish a
+different native session. Use the guarded launcher or verify the native target
+through the documented manual release route. Unknown-ID clients on other TTYs
+remain part of the caller's `--confirm-session-ended` responsibility described
+above; they do not identify this source. Unattended native observation has no
+such manual attestation and remains conservative.
 The supported daemon-routed fresh and resume launchers run each TUI through a
 private local RPC ingress, connected to the existing selected-home daemon. Each
 action holds its targets' ownership leases until its matching native response;
@@ -1910,7 +1951,9 @@ defeat authored-release/unloaded recovery. Native acknowledgement alone cannot
 clear this barrier: a successful verified closure in the shared log needs a
 fresh final safe verdict after the latest guarded action, including overlapping
 actions, acknowledgements (including native errors) and approval answers, and
-clears it while holding source ownership. An older
+clears it while holding source ownership. Each action acknowledgement refreshes
+the barrier while its lease is still held; it does not prove an accepted queue
+or turn completed. An older
 safe message followed only by a newer task-complete record is insufficient.
 Pending queued submissions, malformed queue
 pages or missing queue evidence still refuse native end proof, including when
@@ -2211,20 +2254,19 @@ Then perform the guarded tab-close
 step below.
 
 ```sh
-uv run skills/supervisor/scripts/close_ttys.py --ledger <private-ledger.json> --session-id <native-id> --verified-handoff --verified-input
 uv run skills/supervisor/scripts/iterm_tab.py close --session-id <exact-iterm-id> --ledger <private-ledger.json>
 ```
 
-The dry-run helper's two flags attest the Supervisor checked the issue handoff and empty input
-(or recorded the Director's text). Default is a dry run. This helper never
-answers prompts or sends exit commands: it checks transcript, ownership, exact
-iTerm id and TTY, then proves the recorded PID is absent and only `login` and idle login/interactive shell processes
-remain on that TTY. Other jobs, including prompt helpers and shell scripts, preserve the tab.
-Process arguments are inspected privately and never emitted. Its existing
-`--apply` adapter remains available and rechecks transcript activity and processes.
-The procedure above uses that dry run for the transcript/handoff gate, then
-`iterm_tab.py close` for current process and native input proof; neither command
-alone replaces the full shutdown procedure. The close command performs one
+Normal completion runs verified finish/release before native close. Interrupted
+work uses the termination-release procedure before physical cleanup. The native
+close command rechecks the exact owned terminal, source PID and TTY, and actual
+empty shell input. Finish owns the native verdict and issue handoff proof;
+termination recovery owns the interrupted-source proof. Physical cleanup of an
+old dead pane preserves a verified replacement worker and a source resumed in
+another terminal; source-session closure still checks resumed work. Only `login` and idle login/interactive
+shell processes can remain on an iTerm TTY; prompt helpers and shell scripts
+preserve the tab. Process arguments are inspected privately and never emitted.
+The close command performs one
 non-force close request and has no dry-run mode. An uncertain inventory or remaining/reused PID preserves
 the tab. Read back `iterm_tab.py list` to confirm closure; never force or retry
 an uncertain close. Other terminal applications use the same skill procedure

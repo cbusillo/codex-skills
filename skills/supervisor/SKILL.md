@@ -43,9 +43,6 @@ resources:
   - path: scripts/finished_map.py
     kind: script
     description: Find transcript close-out candidates for Supervisor verification.
-  - path: scripts/close_ttys.py
-    kind: script
-    description: Dry-run closing an exact tab after its agent process has exited.
   - path: scripts/release_session_claims.py
     kind: script
     description: Record verified closure, discover remaining claims across Director repositories and release them through the planning helper; includes closed-log backfill.
@@ -119,11 +116,6 @@ commands:
     resource_path: scripts/release_session_claims.py
     example_argv: ["uv", "run", "scripts/release_session_claims.py", "finish", "--ledger", "<ledger.json>", "--session-id", "<native-id>", "--supervisor-session", "<native-id>", "--owner", "OWNER", "--checkout-root", "<checkouts>", "--confirm-session-ended", "--verified-handoff"]
     purpose: Preview remaining claims after transcript, issue handoff and actual process exit verification.
-  - name: supervisor-close-ttys
-    source: skill
-    resource_path: scripts/close_ttys.py
-    example_argv: ["uv", "run", "scripts/close_ttys.py", "--ledger", "<ledger.json>", "--session-id", "<id>", "--verified-handoff", "--verified-input"]
-    purpose: Preview closing a tab after its agent process exited.
   - name: supervisor-codex-session-queue
     source: skill
     resource_path: scripts/codex-session.py
@@ -718,12 +710,19 @@ report the ambiguity and keep it open. A malformed ledger is a fleet-wide
 read blocker: report the invalid entry and reconcile it against its original
 launch receipt before retrying; never guess or skip identity checks.
 
-When `closeout_blockers` lists background tasks, report their ids and keep the
-session open. Nudge that exact worker to check each task's completion condition
-and stop a finished or obsolete task through its own TaskStop, then give a
-fresh close-out verdict. A still-needed task remains a wait. A missing terminal
+Before exit, when `closeout_blockers` lists background tasks or scheduled jobs,
+report their ids and keep the session open. Nudge that exact worker to check
+each task's completion condition and stop an obsolete task through its native
+TaskStop or CronDelete route, then give a fresh close-out verdict. For an unknown
+schedule id or a job that is already absent, have the worker run native CronList
+to reconcile the list before deciding what to delete. A still-needed
+task remains a wait. A missing terminal
 notice is uncertainty, not proof that a task ended; never send exit keys or
 stop another session's tasks to clear the list.
+Once process exit is independently proven, use the established final-verdict
+and process closure checks. Scheduled jobs alone do not suppress a review
+notification to an idle empty Claude prompt; an active turn or Bash/Monitor
+task still does.
 
 Aim to finish verification and shutdown within two minutes of the worker's
 verdict. If a check fails, keep the session open and report the exact missing
@@ -799,8 +798,7 @@ others. A missed target remains visible in the next check and handoff.
    write a fixed "safe-exit yes" just because a close command was attempted.
 
 6. After the process-exit wait, read `list`. If the exact session is gone,
-   record that the tab already closed. For a surviving idle shell, preview `close_ttys.py` with the verified
-   handoff and input flags, then use `iterm_tab.py close --session-id <exact-iterm-id>
+   record that the tab already closed. For a surviving idle shell, use `iterm_tab.py close --session-id <exact-iterm-id>
    --ledger <private-ledger.json>`. It checks the launch ledger, rejects split
    tabs, and rechecks the TTY processes and native shell prompt twice before
    one non-force close. Read `list` once to confirm disappearance; preserve an

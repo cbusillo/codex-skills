@@ -18,13 +18,51 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
-from test_github_plan_sessions import ReceiptFixture
+from test_github_plan_sessions import ReceiptFixture as HistoricalReceiptFixture
 import github_plan_closure as closure
 import github_plan_sessions
 import codex_session_proxy as proxy
 
 
+OTHER_THREAD = "01970242-7941-7f0c-b461-16aa5723fb51"
+
+
+class ReceiptFixture(HistoricalReceiptFixture):
+    """Native RPC fixtures use native UUIDs; historical receipt tests keep opaque IDs."""
+    def __init__(self, session=None, **kwargs):
+        super().__init__(str(uuid.uuid4()) if session is None else session, **kwargs)
+
+
 class IngressTests(unittest.IsolatedAsyncioTestCase):
+    async def test_alias_actions_refuse_before_forwarding_or_creating_another_lease(self):
+        with ReceiptFixture("01a1514c-fa7f-7be3-95ba-4d25df73d07e") as f:
+            forwarded = []
+            def receive(request):
+                forwarded.append(request)
+                return {}
+            f.rpc_results.update({"thread/batch": receive, "thread/action": receive})
+            with closure.ownership(f.session):
+                closure.admit_sources({f.session})
+            task, request, response, _ = await self.start_client(f)
+            try:
+                before = f.log.read_bytes()
+                leases = set(closure.lease_path(f.session).parent.iterdir())
+                for alias in (f.session.upper(), f.session.replace("-", ""), "{" + f.session + "}", "urn:uuid:" + f.session):
+                    for method, params in (("thread/resume", {"threadId": alias}),
+                                           ("turn/start", {"threadId": alias}),
+                                           ("thread/batch", {"threadIds": [alias]}),
+                                           ("thread/action", {"conversationId": alias})):
+                        with self.subTest(alias=alias, method=method):
+                            result = await self.send(task, request, response, method, None, **params)
+                            self.assertIn("error", result)
+                            self.assertFalse(f.mutations)
+                            self.assertFalse(forwarded)
+                            self.assertEqual(set(closure.lease_path(f.session).parent.iterdir()), leases)
+                            self.assertEqual(f.log.read_bytes(), before)
+            finally:
+                (f.root / "stop").touch()
+                await asyncio.wait_for(task, 8)
+
     async def test_clock_request_then_client_shutdown_preserves_only_a_fresh_verdict(self):
         from websockets.asyncio.client import unix_connect
         for action in (None, "thread/queue/add", "thread/resume", "turn/start", "item/commandExecution/requestApproval"):
@@ -283,15 +321,15 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                     return False
             try:
                 async with unix_connect(endpoint) as ws:
-                    for number, target in ((10, f.session), (11, "other-worker"), (12, f.session)):
+                    for number, target in ((10, f.session), (11, OTHER_THREAD), (12, f.session)):
                         await ws.send(json.dumps({"id": number, "method": "turn/interrupt", "params": {"threadId": target}}))
                     for event in seen.values():
                         self.assertTrue(await asyncio.to_thread(event.wait, 3))
                     self.assertFalse(await asyncio.to_thread(available, f.session))
-                    self.assertFalse(await asyncio.to_thread(available, "other-worker"))
+                    self.assertFalse(await asyncio.to_thread(available, OTHER_THREAD))
                     gates[11].set()
                     self.assertEqual(json.loads(await ws.recv())["id"], 11)
-                    self.assertTrue(await asyncio.to_thread(available, "other-worker"))
+                    self.assertTrue(await asyncio.to_thread(available, OTHER_THREAD))
                     self.assertFalse(await asyncio.to_thread(available, f.session))
                     gates[10].set()
                     self.assertEqual(json.loads(await ws.recv())["id"], 10)
@@ -358,7 +396,7 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
         with ReceiptFixture() as f:
             task, _, _, _ = await self.start_client(f)
             endpoint = next(r["endpoint"] for r in closure.log_rows() if r.get("record_kind") == "managed_proxy")
-            f.approval_target = "other-worker"
+            f.approval_target = OTHER_THREAD
             def available():
                 try:
                     with closure.ownership(f.approval_target, create=True):
@@ -398,7 +436,7 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
             endpoint = next(r["endpoint"] for r in closure.log_rows() if r.get("record_kind") == "managed_proxy")
             try:
                 async with unix_connect(endpoint) as ws:
-                    for identity, method, target in ((10, "turn/interrupt", f.session), (11, "thread/resume", "other-worker")):
+                    for identity, method, target in ((10, "turn/interrupt", f.session), (11, "thread/resume", OTHER_THREAD)):
                         await ws.send(json.dumps({"id": identity, "method": method, "params": {"threadId": target}}))
                     for event in seen.values():
                         self.assertTrue(await asyncio.to_thread(event.wait, 3))
@@ -406,7 +444,7 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                     self.assertIn("result", json.loads(await ws.recv()))
                     gates[11].set()
                     self.assertIn("result", json.loads(await ws.recv()))
-                    row = next(r for r in closure.log_rows() if r.get("session_id") == "other-worker")
+                    row = next(r for r in closure.log_rows() if r.get("session_id") == OTHER_THREAD)
                     self.assertTrue(row["resumed_generation"]["launch_generation"])
             finally:
                 for gate in gates.values(): gate.set()
@@ -546,7 +584,7 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                 try:
                     self.assertTrue(await asyncio.to_thread(verifying.wait, 3))
                     task, request, response, _ = await self.start_client(f)
-                    result = await self.send(task, request, response, "turn/start", "brand-new-thread")
+                    result = await self.send(task, request, response, "turn/start", OTHER_THREAD)
                     self.assertIn("result", result)
                     self.assertFalse(finish.done())
                 finally:
@@ -568,7 +606,7 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
             mutation = pool.submit(mutate)
             try:
                 self.assertTrue(await asyncio.to_thread(held.wait, 3))
-                result = await self.send(task, request, response, "turn/start", "brand-new-thread")
+                result = await self.send(task, request, response, "turn/start", OTHER_THREAD)
                 self.assertIn("result", result)
             finally:
                 release.set()
@@ -913,9 +951,9 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_guarded_resume_on_another_thread_does_not_block_idle_proof(self):
         with ReceiptFixture() as f:
-            task, request, response, _ = await self.start_client(f, resume="other-thread")
+            task, request, response, _ = await self.start_client(f, resume=OTHER_THREAD)
             try:
-                result = await self.send(task, request, response, "thread/resume", "other-thread")
+                result = await self.send(task, request, response, "thread/resume", OTHER_THREAD)
                 self.assertIn("result", result)
                 _, states, coverage = await asyncio.to_thread(f.observe)
                 self.assertEqual(coverage["process_coverage"], "complete")
@@ -936,14 +974,14 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.wait_for(task, 8)
 
     async def test_real_cli_proxy_wrapper_and_native_process_lines_are_all_observed(self):
-        from github_plan_sessions import codex_argv_start
+        from session_liveness import harness_arguments
         with ReceiptFixture() as f:
             task, _, _, _ = await self.start_client(f, wrapper=True, external=True)
             try:
                 lines = [line.split() for line in f.commands.splitlines() if line.split() and line.split()[0].isdigit()]
                 self.assertEqual(len(lines), 3)  # Owned proxy, waiting wrapper, native client.
                 for line in lines:
-                    self.assertIsNotNone(codex_argv_start(line[1:]), "real client/helper line was ignored: " + " ".join(line[1:3]))
+                    self.assertTrue(harness_arguments(" ".join(line[1:])), "real client/helper line was ignored: " + " ".join(line[1:3]))
                 _, states, coverage = await asyncio.to_thread(f.observe)
                 self.assertEqual(coverage["process_coverage"], "complete")
                 self.assertEqual(states[f.session]["state"], "ended")
@@ -997,7 +1035,7 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
             try:
                 for method in ("thread/resume", "thread/fork"):
                     for extra in ({"path": str(f.transcript)}, {"history": []}):
-                        result = await self.send(task, request, response, method, "other-thread", **extra)
+                        result = await self.send(task, request, response, method, OTHER_THREAD, **extra)
                         self.assertIn("error", result)
                 self.assertFalse(f.mutations)
                 result = await self.send(task, request, response, "thread/resume", f.session, path=str(f.transcript))
