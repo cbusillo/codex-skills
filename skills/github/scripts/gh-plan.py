@@ -5988,10 +5988,12 @@ def cmd_close(args: argparse.Namespace) -> None:
     try:
         dependents = (github_plan_landing.reconcile_dependents(
                           argparse.Namespace(**globals()), issue_repo, number, apply=True,
-                          denied_repositories=denied_repositories, stopped_reason=stopped_reason)
+                          denied_repositories=denied_repositories, stopped_reason=stopped_reason,
+                          **({"planning_checkout": planning_checkout} if planning_checkout else {}))
                       if getattr(args, "reconcile_dependents", True) else {"ok": True, "issues": []})
-    except (PlanError, ValueError, TypeError, OSError, subprocess.SubprocessError) as exc:
-        dependents = {"ok": False, "error": {"message": str(exc), **getattr(exc, "payload", {})}, "issues": []}
+    except (PlanError, ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError) as exc:
+        dependents = github_plan_landing.discovery_failure(argparse.Namespace(**globals()),
+            issue_repo, number, exc, planning_checkout=planning_checkout)
     if source_error is not None:
         source_error.payload.update(closed=closed_result, source_projection=source_projection,
                                     dependents=dependents, completed_steps=completed_steps,

@@ -1224,6 +1224,12 @@ class MutationProjectionTests(unittest.TestCase):
         self.assert_labels(7, "plan", "done")
 
     def test_status_recovery_uses_verified_checkout_for_every_same_repo_snapshot(self):
+        self.check_verified_checkout("reconcile-status")
+
+    def test_close_uses_verified_checkout_for_every_same_repo_snapshot(self):
+        self.check_verified_checkout("close")
+
+    def check_verified_checkout(self, command):
         self.config["labels"] = {key: "target:" + key for key in self.config["labels"]}
         self.add_issue(7)
         self.add_issue(8, label_keys=("plan", "blocked"))
@@ -1241,14 +1247,17 @@ class MutationProjectionTests(unittest.TestCase):
                     discovery.update(status="discovered")
                 return copy.deepcopy(self.config if repo == REPO else other)
             with patch.object(PLAN, "repo_from_git", return_value="fixture/wrong"), self.assertRaises(PLAN.PlanError):
-                self.command("reconcile-status", "7", "--planning-checkout=" + checkout, "--apply")
+                self.command(command, "7", "--planning-checkout=" + checkout)
             self.assert_labels(7, "plan", "active")
             with patch.object(PLAN, "repo_from_git", return_value=REPO), patch.object(PLAN, "load_config", side_effect=config):
-                result = self.command("reconcile-status", "7", "--planning-checkout=" + checkout,
-                                      "--include-dependents", "--apply")
-                resume = PLAN.build_parser().parse_args(shlex.split(result["recovery"]["next_action"])[1:])
-                with contextlib.redirect_stdout(io.StringIO()):
-                    resume.func(resume)
+                argv = [command, "7", "--planning-checkout=" + checkout]
+                if command == "reconcile-status":
+                    argv.extend(["--include-dependents", "--apply"])
+                result = self.command(*argv)
+                if command == "reconcile-status":
+                    resume = PLAN.build_parser().parse_args(shlex.split(result["recovery"]["next_action"])[1:])
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        resume.func(resume)
             self.assertTrue(all(path == checkout for repo, path in observations if repo == REPO), observations)
             self.assertTrue(any(repo == "fixture/other" for repo, _ in observations), observations)
             self.assertTrue(all(path is None for repo, path in observations if repo == "fixture/other"), observations)
@@ -1256,6 +1265,31 @@ class MutationProjectionTests(unittest.TestCase):
         self.assert_labels(8, "plan", "active")
         self.assertEqual(set(PLAN.normalize_labels(self.records[9]["labels"])), {other["labels"][key] for key in ("plan", "active")})
         self.assertEqual(self.fact_writes, [])
+
+    def test_planning_close_discovery_failure_preserves_classified_row_and_close_evidence(self):
+        failure = PLAN.github_api_core.FailureDetail(cause="permission_denied", message="Source neighborhood denied",
+            retryable=False, fallback_eligible=False, disposition="stop", request_id="fixture-close-neighborhood")
+        errors = [PLAN.PlanError(failure.message, failure=failure), KeyError("state")]
+        for error in errors:
+            with self.subTest(error=type(error).__name__):
+                self.add_issue(7)
+                note = "Source completion evidence"
+                with patch.object(landing, "neighborhood", side_effect=error), self.assertRaises(PLAN.PlanError) as caught:
+                    self.command("close", "7", "--comment", note)
+                payload = caught.exception.payload
+                self.assertEqual(payload["closed"]["number"], 7)
+                self.assertEqual(self.records[7]["state"], "closed")
+                self.assertEqual([comment["body"] for comment in self.discussion[7]], [note])
+                row = payload["dependents"]["issues"][0]
+                self.assertEqual((row["repo"], row["number"]), (REPO, 7))
+                self.assertTrue(row["required"])
+                self.assertFalse(row["ok"])
+                if isinstance(error, PLAN.PlanError):
+                    self.assertEqual(row["error"]["failure"], failure.as_dict())
+                    self.assertEqual(row["status"], "review_posting_authority")
+                    self.assertTrue(row["next_action"])
+                else:
+                    self.assertEqual(row["status"], "reconciliation_failed")
 
     def test_pending_close_comment_option_shaped_body_can_resume(self):
         note = "-capture"

@@ -43,12 +43,7 @@ def reconcile(*, repo: str, number: int, request: Callable[..., tuple[str | None
             return plan.refresh_planning_targets([(repo, number)], apply=apply,
                 include_dependents=include_dependents, config_optional_unless_planning=True)
         except (plan.PlanError, ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError) as error:
-            entry: dict[str, Any] = {"repo": repo, "number": number, "role": "related", "required": True}
-            plan.github_plan_landing.reconciliation_error(entry, error)
-            entry.update(plan.github_plan_status.classify_outcome(entry["status"], required=True))
-            entry["recovery"] = {"issue": {"repo": repo, "number": number},
-                "next_action": "Run reconciliation from an existing authorized target session; preserve the provider failure and do not switch identity or grant access"}
-            return {**plan.github_plan_status.receipt_summary([entry]), "issues": [entry]}
+            return plan.github_plan_landing.discovery_failure(plan, repo, number, error)
 
     finally:
         if previous is None:

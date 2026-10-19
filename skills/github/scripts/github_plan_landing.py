@@ -326,13 +326,27 @@ def run_reconciliation_tasks(plan: Any, tasks: list[dict[str, Any]], *, apply: b
     return {**github_plan_status.receipt_summary(tasks), "issues": tasks}
 
 
+def discovery_failure(plan: Any, repo: str, number: int, error: Exception, *,
+                      planning_checkout: str | None = None) -> dict[str, Any]:
+    """Retain the explicit root when its native neighborhood cannot be read."""
+    entry: dict[str, Any] = {"repo": repo, "number": number, "role": "related", "required": True,
+                             "phase": "neighborhood_discovery"}
+    if planning_checkout:
+        entry["planning_checkout"] = planning_checkout
+    reconciliation_error(entry, error)
+    return run_reconciliation_tasks(plan, [entry], apply=False)
+
+
 def reconcile_dependents(plan: Any, repo: str, number: int, *, apply: bool,
+                         planning_checkout: str | None = None,
                          denied_repositories: dict[str, Any] | None = None,
                          stopped_reason: dict[str, Any] | None = None) -> dict[str, Any]:
     """The same direct native neighborhood refresh for issue closes and landings."""
     tasks = []
     for target_repo, target_number in neighborhood(plan, repo, [(repo, number)]):
         entry = {"repo": target_repo, "number": target_number, "role": "related", "automatic": True}
+        if planning_checkout and target_repo.casefold() == repo.casefold():
+            entry["planning_checkout"] = planning_checkout
         if target_repo.split("/")[0].casefold() != repo.split("/")[0].casefold():
             entry.update(status="review_cross_repository", informational=True)
         tasks.append(entry)
