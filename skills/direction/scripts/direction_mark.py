@@ -145,7 +145,8 @@ def mark_weekly(path: Path, owner: str, now: dt.datetime) -> dict[str, object]:
     return current
 
 
-def mark_audit(path: Path, repo: str, now: dt.datetime, held: str | None = None) -> dict[str, object]:
+def mark_audit(path: Path, repo: str, now: dt.datetime, held: str | None = None,
+               since: dt.datetime | None = None) -> dict[str, object]:
     """Record this repository's audit without changing daily-turn evidence.
 
     A held audit ran but keeps its window open for a rerun: it records the run
@@ -161,6 +162,9 @@ def mark_audit(path: Path, repo: str, now: dt.datetime, held: str | None = None)
             runs[repo] = {"ran": stamp}
         else:
             runs[repo] = {"ran": stamp, "held": held}
+            if since is not None:
+                # A first held run keeps its own window start, so the next audit rereads it.
+                audits.setdefault(repo, utc_stamp(since))
         save(path, current)
     return current
 

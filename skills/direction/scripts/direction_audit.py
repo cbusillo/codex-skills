@@ -478,7 +478,8 @@ def git_root(start: pathlib.Path) -> pathlib.Path:
     return pathlib.Path(proc.stdout.strip()) if proc.returncode == 0 and proc.stdout.strip() else start
 
 
-def record_audit(repo: str, started_at: dt.datetime, direction_text: str | None, held: str | None = None) -> str | None:
+def record_audit(repo: str, started_at: dt.datetime, direction_text: str | None, held: str | None = None,
+                 since: dt.datetime | None = None) -> str | None:
     """Stamp this repository's audit in the local marker the session-start hook reads.
 
     The stamp is written here, not by hand, so an audit stamp means an audit ran.
@@ -492,7 +493,7 @@ def record_audit(repo: str, started_at: dt.datetime, direction_text: str | None,
         path = direction_mark.marker_path()
         # Retain closures that happen while listings are being fetched for the
         # next audit instead of skipping ahead to the completion time.
-        direction_mark.mark_audit(path, repo, started_at, held)
+        direction_mark.mark_audit(path, repo, started_at, held, since)
         return str(path)
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         raise AuditError(f"Could not record direction audit marker at {path}: {exc}") from exc
@@ -2120,7 +2121,7 @@ def audit_one(
     try:
         result["marked"] = None if result["marked_skipped"] else record_audit(repo, now, direction_text)
         # A held window still records that this audit ran, so it is not read as missed.
-        result["run_recorded"] = (record_audit(repo, now, direction_text, ", ".join(held))
+        result["run_recorded"] = (record_audit(repo, now, direction_text, ", ".join(held), audit_since)
                                   if held and archived is False else result["marked"])
         result["dropped"] = drop_archived(repo) if archived is True else None
     except AuditError as exc:

@@ -576,10 +576,9 @@ class SharedRecordTests(IsolatedDirectionHookTests):
         self.assertEqual(hook.reminder_states(seen, NOW, owner), {"turn": "due", "audit": "current"})
         text = hook.reminder(seen, NOW, MARKER, owner)
         self.assertIn(hook.REMINDER_LINES["turn", "due"], text)
-        self.assertIn("no direction turn has been recorded", text)
         unreadable = self.seen(local, self.reader(error="gh: HTTP 502"), owner)
         self.assertEqual(hook.reminder_states(unreadable, NOW, owner)["turn"], "unconfirmed")
-        self.assertIn("has recorded no direction turn", hook.reminder(unreadable, NOW, MARKER, owner))
+        self.assertIn(hook.REMINDER_LINES["turn", "unconfirmed"], hook.reminder(unreadable, NOW, MARKER, owner))
 
     def test_a_newer_turn_of_another_account_does_not_override_the_shared_turn(self) -> None:
         local = {**marker(ago(hours=1)), "turn_repo": "first/direction", "weekly": ago(days=1), "weekly_record": "second/direction"}

@@ -52,6 +52,18 @@ def test_turn_records_repository_and_audit_preserves_daily_evidence() -> None:
         assert json.loads(path.read_text()) == other
 
 
+def test_a_first_held_audit_keeps_its_own_window_start_for_the_reread() -> None:
+    mark = load(SCRIPT, "direction_mark_under_test")
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "direction-last-check.json"
+        since = NOW - dt.timedelta(days=7)
+        first = mark.mark_audit(path, "owner/repo", NOW, "capacity_reads:owner/repo", since)
+        assert first["audits"] == {"owner/repo": mark.utc_stamp(since)}, "a first held run must keep a window start"
+        later = mark.mark_audit(path, "owner/repo", NOW + dt.timedelta(days=8), "capacity_reads:owner/repo",
+                                NOW + dt.timedelta(days=1))
+        assert later["audits"] == first["audits"], "a later held run must not move the start forward"
+
+
 def test_hook_reads_what_the_marker_writes() -> None:
     mark = load(SCRIPT, "direction_mark_under_test2")
     hook = load(HOOK, "direction_check_hook_under_test")
