@@ -9816,9 +9816,10 @@ def test_event_recovery_product_whitespace_is_normalized_before_review() -> None
     assert posts[0]["body"]["product"] == receipt["request"]["product"] == "example-product"
 
 def _interrupted_http(kind: str) -> Exception:
-    if kind == "incomplete":
-        return http.client.IncompleteRead(b"private-provider-body", 100)
-    return http.client.RemoteDisconnected("private-provider-message")
+    error = (http.client.IncompleteRead(b"private-provider-body", 100) if kind == "incomplete"
+             else http.client.RemoteDisconnected("private-provider-message"))
+    setattr(error, "http_status", 202)
+    return error
 
 
 @pytest.mark.parametrize("kind", ["incomplete", "disconnected"])
@@ -9862,10 +9863,11 @@ def test_interrupted_http_verified_apply_preserves_failure_phase(kind: str, phas
     if phase != "preflight":
         assert "read" in payload["summary"]["recommendation"].lower()
         assert posts[0]["idempotency_key"] == "apply-1"
+    if phase == "readback":
+        assert payload["summary"]["trace_id"] == applied["trace_id"]
     assert "private-provider" not in json.dumps(payload)
 
-    if kind == "decoding":
-        assert payload["summary"]["http_status"] == 202
+    assert payload["summary"]["read_back_http_status" if phase == "readback" else "http_status"] == 202
 
 
 @pytest.mark.parametrize("kind", ["incomplete", "disconnected", "gateway", "denial"])
@@ -9947,15 +9949,17 @@ def test_interrupted_http_error_body_keeps_admin_refusal_bounded(kind: str, stat
     assert "private-" not in json.dumps(payload)
 
 
-@pytest.mark.parametrize("kind,phase", [('incomplete', 'preflight'), ('incomplete', 'post'), ('disconnected', 'preflight'), ('disconnected', 'post'), ('decoding', 'preflight')])
+@pytest.mark.parametrize("kind,phase", [('incomplete', 'preflight'), ('incomplete', 'post'), ('disconnected', 'preflight'), ('disconnected', 'post'), ('decoding', 'preflight'), ('projection', 'preflight')])
 def test_interrupted_http_policy_import_preserves_failure_phase(kind: str, phase: str) -> None:
     fault = (write_action.ServiceResponseError({"http_status": 202})
              if kind == "decoding" else _interrupted_http(kind))
+    if kind == "projection":
+        fault = write_action._ServiceResponse({"trace_id": "launchplane_req_preflight"}, 202)
     output = io.StringIO()
     with (
         patch.object(write_action, "prepare_operator_settings", return_value=SETTINGS),
-        patch.object(write_action, "request_launchplane_read", side_effect=fault if phase == "preflight" else None,
-                     return_value=_merge_train_policy_targets_payload()),
+        patch.object(write_action, "request_launchplane_read", side_effect=fault if phase == "preflight" and kind != "projection" else None,
+                     return_value=fault if kind == "projection" else _merge_train_policy_targets_payload()),
         patch.object(write_action, "request_launchplane", side_effect=fault) as post,
         redirect_stdout(output),
     ):
@@ -9966,12 +9970,14 @@ def test_interrupted_http_policy_import_preserves_failure_phase(kind: str, phase
             expected_current_policy_digest="a" * 64, expected_candidate_policy_digest="c" * 64,
         )
     payload = json.loads(output.getvalue())
-    assert code == 1 and payload["status"] == ("invalid" if kind == "decoding" else "unavailable" if phase == "preflight" else "outcome_unknown")
+    assert code == 1 and payload["status"] == ("invalid" if kind in {"decoding", "projection"} else "unavailable" if phase == "preflight" else "outcome_unknown")
     assert post.call_count == (0 if phase == "preflight" else 1)
     assert "private-provider" not in output.getvalue()
 
-    if kind == "decoding":
-        assert payload["summary"]["http_status"] == 202
+    assert payload["summary"]["read_back_http_status" if phase == "readback" else "http_status"] == 202
+
+    if kind == "projection":
+        assert payload["summary"]["trace_id"] == fault["trace_id"]
 
 
 @pytest.mark.parametrize("service_url", ["https://private.example.invalid", "https://private.example.invalid/launchplane/"])
@@ -10067,6 +10073,34 @@ def test_legacy_read_failure_keeps_safe_exchange_diagnostics(argv, decoding_fail
     assert payload["summary"]["trace_id"] == response["trace_id"]
     assert "PRIVATE_SENTINEL" not in json.dumps(payload)
 
+
+
+@pytest.mark.parametrize("reader,kwargs", [
+    (write_action.read_product_owner, {"product": "example-product"}),
+    (write_action.read_product_image_repository, {"product": "example-product"}),
+    (write_action.read_production_backup_authority, {"query": {}}),
+    (write_action.read_dokploy_target, {"context": "example", "instance": "testing"}),
+    (write_action.read_health_monitoring, {"body": {"product": "example-product"}}),
+    (write_action.read_private_health_endpoint, {"endpoint": {"endpoint_key": "health", "product": "example-product", "context": "example", "instance": "testing"}}),
+])
+@pytest.mark.parametrize("safe_trace", [False, True])
+def test_record_projection_failures_carry_only_their_safe_exchange_diagnostics(reader, kwargs, safe_trace):
+    response = write_action._ServiceResponse({"trace_id": "launchplane_req_preflight" if safe_trace else {"private": "PRIVATE_SENTINEL"}}, 202)
+    with patch.object(write_action, "request_launchplane_read", return_value=response):
+        with pytest.raises(write_action.ServiceResponseError) as caught:
+            reader(settings=SETTINGS, timeout=3, **kwargs)
+    diagnostics = write_action.service_response_diagnostics(caught.value)
+    assert diagnostics["http_status"] == response.http_status
+    assert diagnostics.get("trace_id") == (response["trace_id"] if safe_trace else None)
+    assert "PRIVATE_SENTINEL" not in json.dumps(diagnostics)
+
+
+@pytest.mark.parametrize("error", [write_action.LaunchplaneSafetyError("unsafe_redirect"), _interrupted_http("incomplete")])
+def test_record_reader_preserves_request_failure_type(error):
+    with patch.object(write_action, "request_launchplane_read", side_effect=error):
+        with pytest.raises(type(error)) as caught:
+            write_action.read_product_owner(settings=SETTINGS, product="example-product", timeout=3)
+    assert caught.value is error
 
 
 if __name__ == "__main__":
