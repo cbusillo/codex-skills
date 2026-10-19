@@ -5,7 +5,9 @@
 # ///
 """Lifecycle/privacy fixtures and a real Unix websocket observer exercise."""
 import asyncio
+import contextlib
 import datetime as dt
+import io
 import json
 import os
 import subprocess
@@ -18,8 +20,9 @@ from types import SimpleNamespace
 
 from aiohttp import web, WSMsgType
 
-from agent_activity import FIELDS, PRUNE_STAMP, ActivityStore, atomic_json, home_key, hook_activity, uuid7
-from observe_agent_activity import CodexObserver, project_claude, claude_poll, durable_cli, observe
+from agent_activity import (FIELDS, LEASE_SECONDS, PRUNE_STAMP, RETENTION_SECONDS, ActivityStore, atomic_json,
+                            home_key, hook_activity, inbox_records, renewal_report, timestamp, uuid7)
+from observe_agent_activity import CodexObserver, project_claude, claude_poll, durable_cli, main, observe
 
 SESSION = str(uuid.uuid4())
 RUN = str(uuid.uuid4())
@@ -544,6 +547,127 @@ class ObserverTests(unittest.IsolatedAsyncioTestCase):
             records = [json.loads(p.read_text()) for p in store.events.glob('*.json')]
             self.assertEqual({r['state'] for r in records}, {'failed', 'cancelled'})
             self.assertNotIn(SECRET, json.dumps(records))
+
+
+class RenewalCheckTests(unittest.TestCase):
+    """Fixtures come from the real writer, so they follow its schema and lease."""
+    CADENCE = LEASE_SECONDS // 3
+    CODEX = "openai-0123456789abcdef"
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.code = Path(temporary.name).resolve() / 'code'
+        self.store = ActivityStore(self.code)
+        self.now = dt.datetime.now(dt.timezone.utc)
+
+    def renewals(self, start, seconds, *, harness='claude', session=None):
+        """A run renewed every CADENCE seconds for the given span."""
+        account, source = (ACCOUNT, 'claude-inventory') if harness == 'claude' else (self.CODEX, 'codex-status')
+        session = session or str(uuid.uuid4())
+        records = [self.store.emit(account, harness, session, 'working', source, start=offset == 0,
+                                   now=start + dt.timedelta(seconds=offset))
+                   for offset in range(0, seconds + 1, self.CADENCE)]
+        self.assertTrue(all(records))
+        return records
+
+    def forge(self, record, **changes):
+        """A hand-written record the writer would refuse, in the writer's own field order."""
+        forged = {**record, 'eventID': uuid7(self.now), **changes}
+        self.assertEqual(tuple(forged), FIELDS)
+        atomic_json(self.store.events / f"codex-skills-{forged['eventID']}.json", forged)
+
+    def report(self, harnesses=('claude',)):
+        records, _files = inbox_records(self.store.events)
+        return renewal_report(records, self.now, RETENTION_SECONDS, harnesses)
+
+    def check(self, *arguments):
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            code = main(['renewal-check', '--state-root', str(self.code), *arguments])
+        return code, json.loads(stdout.getvalue())
+
+    def test_renewals_inside_the_lease_pass_and_an_open_expired_run_is_not_a_failure(self):
+        span = 2 * LEASE_SECONDS
+        start = self.now - dt.timedelta(seconds=span + LEASE_SECONDS + self.CADENCE)
+        self.renewals(start, span)
+        window = 3 * span
+        self.renewals(self.now - dt.timedelta(seconds=window + span + LEASE_SECONDS), span)  # Wholly before the window.
+        code, report = self.check('--window', str(window), '--harness', 'claude')
+        self.assertEqual((code, report['verdict']), (0, 'pass'))
+        counts = report['harnesses']['claude']
+        self.assertEqual((counts['runs'], counts['qualifyingRuns'], counts['lapses'], counts['expiredOpen']), (1, 1, 0, 1))
+        self.assertEqual(counts['liveRecords'], span // self.CADENCE + 1)
+        self.assertEqual((counts['maxGapSeconds'], counts['maxLiveSpanSeconds']), (self.CADENCE, span))
+        self.assertGreater(report['files']['outOfWindow'], 0)
+
+    def test_a_gap_past_the_lease_between_live_records_fails(self):
+        first = self.renewals(self.now - dt.timedelta(seconds=4 * LEASE_SECONDS), LEASE_SECONDS)[-1]
+        late = dt.datetime.fromisoformat(first['leaseExpiresAt'].replace('Z', '+00:00')) + dt.timedelta(seconds=1)
+        self.assertTrue(self.store.emit(ACCOUNT, 'claude', first['sessionID'], 'working', 'claude-inventory', now=late))
+        code, report = self.check('--harness', 'claude')
+        self.assertEqual((code, report['verdict']), (3, 'fail'))
+        self.assertEqual(report['harnesses']['claude']['lapses'], 1)
+
+    def test_empty_inbox_and_short_runs_are_inconclusive(self):
+        code, report = self.check()
+        self.assertEqual((code, report['verdict']), (4, 'inconclusive'))
+        self.renewals(self.now - dt.timedelta(seconds=LEASE_SECONDS), LEASE_SECONDS - self.CADENCE)
+        code, report = self.check('--harness', 'claude')
+        self.assertEqual((code, report['verdict']), (4, 'inconclusive'))
+        self.assertEqual(report['harnesses']['claude']['qualifyingRuns'], 0)
+
+    def test_both_harnesses_must_pass(self):
+        self.renewals(self.now - dt.timedelta(seconds=3 * LEASE_SECONDS), 2 * LEASE_SECONDS)
+        self.renewals(self.now - dt.timedelta(seconds=LEASE_SECONDS), self.CADENCE, harness='codex')
+        code, report = self.check()
+        self.assertEqual((code, report['verdict']), (4, 'inconclusive'))
+        self.assertEqual({h: c['verdict'] for h, c in report['harnesses'].items()},
+                         {'claude': 'pass', 'codex': 'inconclusive'})
+        self.assertEqual(self.check('--harness', 'claude')[0], 0)
+
+    def test_a_lease_mismatch_fails(self):
+        last = self.renewals(self.now - dt.timedelta(seconds=4 * LEASE_SECONDS), 2 * LEASE_SECONDS)[-1]
+        observed = dt.datetime.fromisoformat(last['observedAt'].replace('Z', '+00:00')) + dt.timedelta(seconds=1)
+        self.forge(last, observedAt=timestamp(observed),
+                   leaseExpiresAt=timestamp(observed + dt.timedelta(seconds=LEASE_SECONDS - 1)))
+        report = self.report()
+        self.assertEqual(report['verdict'], 'fail')
+        self.assertEqual(report['harnesses']['claude']['leaseMismatches'], 1)
+
+    def test_quiet_long_after_a_terminal_record_is_not_a_lapse(self):
+        start = self.now - dt.timedelta(seconds=10 * LEASE_SECONDS)
+        last = self.renewals(start, 2 * LEASE_SECONDS)[-1]
+        ended = dt.datetime.fromisoformat(last['observedAt'].replace('Z', '+00:00')) + dt.timedelta(seconds=self.CADENCE)
+        done = self.store.emit(ACCOUNT, 'claude', last['sessionID'], 'completed', 'claude-inventory', now=ended)
+        later = ended + dt.timedelta(seconds=5 * LEASE_SECONDS)
+        self.forge(done, state='quiet', observedAt=timestamp(later),
+                   leaseExpiresAt=timestamp(later + dt.timedelta(seconds=LEASE_SECONDS)))
+        report = self.report()
+        self.assertEqual(report['verdict'], 'pass')
+        self.assertEqual((report['harnesses']['claude']['lapses'], report['harnesses']['claude']['expiredOpen']), (0, 0))
+
+    def test_cli_output_holds_no_ids_or_file_content(self):
+        records = self.renewals(self.now - dt.timedelta(seconds=3 * LEASE_SECONDS), 2 * LEASE_SECONDS, session=SESSION)
+        (self.store.events / f'codex-skills-{uuid.uuid4()}.json').write_text(SECRET)
+        (self.store.events / 'foreign.json').write_text(json.dumps({'note': SECRET}))
+        script = Path(__file__).resolve().with_name('observe_agent_activity.py')
+        result = subprocess.run([sys.executable, str(script), 'renewal-check', '--harness', 'claude',
+                                 '--state-root', str(self.code)], capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = result.stdout + result.stderr
+        identities = {SECRET, ACCOUNT, str(self.code)}
+        for record in records:
+            identities.update(record[name] for name in ('eventID', 'sessionID', 'runID'))
+        self.assertEqual([value for value in identities if value in output], [])
+        self.assertEqual(json.loads(result.stdout)['files'], {'outOfWindow': 0, 'ignored': 1, 'malformed': 1})
+
+    def test_window_bounds_are_usage_errors(self):
+        for window in (LEASE_SECONDS, RETENTION_SECONDS + 1):
+            with self.subTest(window=window), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as raised:
+                    main(['renewal-check', '--state-root', str(self.code), '--window', str(window)])
+                self.assertEqual(raised.exception.code, 2)
 
 
 if __name__ == '__main__':
