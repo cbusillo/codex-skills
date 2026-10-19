@@ -344,6 +344,46 @@ class IdleReceiptIntegrationTests(unittest.TestCase):
                     release.set()
                 self.assertTrue(future.result(2))
 
+    def test_recovering_moved_account_observes_original_unconfigured_daemon(self):
+        with ReceiptFixture() as f:
+            resumed_home = f.root / "resumed-account"
+            resumed_transcript = f.add_home(resumed_home)
+            metadata = {"codex_home": str(resumed_home), "launch_pid": 456,
+                        "launch_generation": "moved-account", "launch_started_at": f.entry["launch_started_at"]}
+            with CLOSURE.resume_guard(f.session, method="thread/resume", home=resumed_home):
+                CLOSURE.resumed_launch(f.session, metadata, str(resumed_transcript), "resumed-tty")
+            before = CLOSURE.source_records({f.session})[f.session]
+            f.native_state = "notLoaded"
+            f.commands = "789 codex app-server --listen unix://" + str(CLOSURE.daemon_endpoint(f.home))
+            with patch.object(SESSIONS, "codex_homes", return_value=[resumed_home]), CLOSURE.admission():
+                for _ in range(2):
+                    _, states, coverage = f.observe()
+                    self.assertEqual(coverage["process_coverage"], "complete")
+                    self.assertEqual(coverage["source_count"], 2)
+                    self.assertEqual(states[f.session]["state"], "ended")
+            self.assertEqual(CLOSURE.source_records({f.session})[f.session], before)
+
+    def test_bad_recovery_home_does_not_hide_the_other_known_home(self):
+        for broken in ("original", "generation"):
+            with self.subTest(broken=broken), ReceiptFixture() as f:
+                resumed_home = f.root / "resumed-account"
+                resumed_transcript = f.add_home(resumed_home)
+                metadata = {"codex_home": str(resumed_home), "launch_pid": 456,
+                            "launch_generation": "moved-account", "launch_started_at": f.entry["launch_started_at"]}
+                with CLOSURE.resume_guard(f.session, method="thread/resume", home=resumed_home):
+                    CLOSURE.resumed_launch(f.session, metadata, str(resumed_transcript), "resumed-tty")
+                rows = CLOSURE.log_rows()
+                if broken == "original": rows[0]["codex_home"] = ["invalid"]
+                else: rows[0]["resumed_generation"]["codex_home"] = ["invalid"]
+                CLOSURE.replace_rows(rows)
+                good_home = resumed_home if broken == "original" else f.home
+                f.native_state = "active"
+                with patch.object(SESSIONS, "codex_homes", return_value=[]):
+                    peers, states, _ = f.observe()
+                self.assertTrue(any(peer.get("home") == str(good_home) for peer in peers))
+                self.assertEqual(states[f.session]["state"], "live")
+                self.assertTrue(CLOSURE.action_pending(f.session))
+
     def test_short_mutation_contention_waits_without_failing_the_second_launch(self):
         import fcntl
         with ReceiptFixture() as f, ThreadPoolExecutor(max_workers=1) as pool:

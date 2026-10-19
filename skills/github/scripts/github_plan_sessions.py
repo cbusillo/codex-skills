@@ -419,10 +419,18 @@ def _observe(sessions: set[str], proof_sessions: set[str] | None = None):
         # this does not change configured-only resume or idle admission.
         for row in github_plan_closure.RECEIPTS.get().values():
             try:
-                if row.get("resumed_at") or github_plan_closure.action_pending(row["session_id"]):
-                    homes.add(_source_home(row))
+                recovering = row.get("resumed_at") or github_plan_closure.action_pending(row["session_id"])
             except (OSError, ValueError, KeyError, TypeError):
                 continue
+            if recovering:
+                for identity in (row, row.get("resumed_generation")):
+                    if not isinstance(identity, dict):
+                        continue
+                    try:
+                        if identity.get("codex_home"):
+                            homes.add(Path(identity["codex_home"]).resolve())
+                    except (OSError, ValueError, TypeError):
+                        continue
         return await asyncio.gather(*(observe_home(home, sessions, proof_sessions) for home in sorted(homes)), return_exceptions=True)
 
     peers, states, resolutions = [], {}, {}

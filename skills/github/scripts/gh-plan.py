@@ -2955,18 +2955,6 @@ def _claim_once(args: argparse.Namespace) -> None:
                          owner_repo or issue_repo, number if owner_number is None else owner_number)},
         )
 
-    def check_status_peers(status_comments: list[dict[str, Any]]) -> None:
-        sessions = {record["session"] for _, record, _ in github_plan_claim.exact_released_sources(status_comments)}
-        if not sessions:
-            return
-        fresh_inventory = inventory
-        peers = [{"source": "claude_session", "session": peer.get("sessionId"),
-                  "certainty": "visible_in_native_inventory"}
-                 for peer in fresh_inventory["sessions"]
-                 if peer.get("sessionId") in sessions and peer.get("sessionId") != claim["session"]]
-        if peers:
-            refuse(peers)
-
     def admission_line() -> str:
         if not admission:
             return ""
@@ -3108,7 +3096,6 @@ def _claim_once(args: argparse.Namespace) -> None:
         conflicts, observed = ownership_snapshot(status, comments)
         if conflicts:
             refuse(conflicts)
-        check_status_peers(comments)
         check_pr_artifacts(status, comments)
         check_wait(issue, status)
         check_issue_holds(issue)
@@ -3162,7 +3149,6 @@ def _claim_once(args: argparse.Namespace) -> None:
         conflicts, observed = ownership_snapshot(final_status, final_comments)
         if conflicts:
             refuse(conflicts)
-        check_status_peers(final_comments)
         check_pr_artifacts(final_status, final_comments)
         check_wait(final, final_status)
         check_issue_holds(final)
