@@ -428,6 +428,7 @@ def run_raw(
     graphql_operation: github_api_core.GraphQLOperation | None = None,
     completed_steps: list[str] | None = None,
     failed_step: str = "gh_invocation",
+    repository: str | None = None,
 ) -> tuple[str, str, str]:
     """Run gh through the configured actor without implicit identity fallback."""
     tried: list[tuple[str, subprocess.CompletedProcess[str]]] = []
@@ -476,6 +477,8 @@ def run_raw(
     resolved_bucket = bucket or inferred.bucket
     resolved_graphql_operation = graphql_operation or inferred.graphql_operation
     resolved_operation = operation or CURRENT_OPERATION
+    request_repository = repository if repository is not None else github_api_core.github_http_cache.repository_from_command(args)
+    request_env = {**os.environ, "GH_REPO": repository} if repository is not None else None
     initial_retry_actor = route_actor if route_actor == "active-gh-user" else EXPECTED_ACTOR
     initial_expected_actor = None if route_actor == "active-gh-user" else EXPECTED_ACTOR
     retry_rule, _ = github_api_core.operation_retry_rule(resolved_operation)
@@ -485,7 +488,7 @@ def run_raw(
                 operation=resolved_operation, is_write=resolved_is_write or inferred.is_write,
                 gh_cmd=command[0], gh_prefix_args=[], actor=initial_retry_actor,
                 expected_actor=initial_expected_actor,
-                repository=github_api_core.github_http_cache.repository_from_command(args),
+                repository=request_repository,
                 preserve_identity=bool(prefer_active and retry_rule and
                                        retry_rule.actor_policy == "automation_required_with_explicit_project_override"),
             )
@@ -511,6 +514,7 @@ def run_raw(
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                env=request_env,
                 timeout=unchecked_timeout,
             )
         except subprocess.TimeoutExpired:
@@ -530,6 +534,7 @@ def run_raw(
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                env=request_env,
                 timeout=timeout_seconds,
             )
         except subprocess.TimeoutExpired as exc:
@@ -646,7 +651,7 @@ def run_raw(
         expected_actor=initial_expected_actor,
         bucket=resolved_bucket,
         attempt_with_timeout=lambda timeout: attempt(timeout),
-        repository=github_api_core.github_http_cache.repository_from_command(args),
+        repository=request_repository,
         retry_runtime=NEXT_READS.retry_runtime if NEXT_READS is not None and not resolved_is_write else None,
     )
     record_retry_fields(retried)
@@ -911,6 +916,7 @@ def api_json_uncached(
     graphql_operation: github_api_core.GraphQLOperation | None = None,
     completed_steps: list[str] | None = None,
     failed_step: str | None = None,
+    repository: str | None = None,
 ) -> tuple[str, Any]:
     resolved_graphql_operation = graphql_operation
     if github_api_core.is_graphql_path(path) and resolved_graphql_operation is None:
@@ -949,7 +955,7 @@ def api_json_uncached(
             # Transport selects the App from the request path, so a wait or
             # blocker in another owner's repository is checked against that
             # owner's App rather than the command repository's.
-            repository=github_api_core.github_http_cache.repository_from_path(path),
+            repository=repository or github_api_core.github_http_cache.repository_from_path(path),
         )
         reader.completed_steps = list(completed_steps or [])
         try:
@@ -980,6 +986,7 @@ def api_json_uncached(
         graphql_operation=resolved_graphql_operation,
         completed_steps=completed_steps,
         failed_step=failed_step or "gh_invocation",
+        repository=repository,
     )
     status, headers, body = github_api_core.parse_gh_include_output(stdout)
     if status == 0:
@@ -1406,6 +1413,38 @@ def compact_relationship_issue(issue: dict[str, Any], relationship: str) -> dict
         "state": state.casefold(),
         "url": issue.get("html_url") or f"https://github.com/{repo}/issues/{number}",
     }
+
+
+def read_handoff_history_child(event: dict[str, Any], source_repo: str) -> dict[str, Any]:
+    """Resolve a REST timeline's omitted child through that exact event node."""
+    child = event.get("sub_issue")
+    if isinstance(child, dict):
+        return child
+    node_id = event.get("node_id")
+    if child is not None or not isinstance(node_id, str) or not node_id.strip():
+        raise ClassifiedPlanError("claim_child_history_invalid", "Native child history omitted its issue record")
+    _, response = api_json(
+        "POST", "/graphql", is_write=False, bucket="graphql", failed_step="claim_handoff_child_history_node",
+        repository=source_repo,
+        payload={"query": "query($id:ID!){node(id:$id){id __typename ... on SubIssueAddedEvent{subIssue{id number state title url repository{nameWithOwner}}}}}",
+                 "variables": {"id": node_id}})
+    data = response.get("data") if isinstance(response, dict) else None
+    node = data.get("node") if isinstance(data, dict) else None
+    if (not isinstance(node, dict) or response.get("errors") or node.get("id") != node_id
+            or node.get("__typename") != "SubIssueAddedEvent"):
+        raise ClassifiedPlanError("claim_child_history_invalid", "Native child history event could not be resolved")
+    child = node.get("subIssue")
+    repository = child.get("repository") if isinstance(child, dict) else None
+    repo = repository.get("nameWithOwner") if isinstance(repository, dict) else None
+    if (not isinstance(child, dict) or not isinstance(child.get("id"), str) or not child["id"].strip()
+            or not isinstance(repo, str) or not re.fullmatch(r"[^/\s]+/[^/\s]+", repo)):
+        raise ClassifiedPlanError("claim_child_history_invalid", "Native child history omitted its issue record")
+    related = {"node_id": child["id"], "number": child.get("number"), "state": child.get("state"),
+               "title": child.get("title"), "html_url": child.get("url"), "repository": {"full_name": repo}}
+    compact_relationship_issue(related, "handoff history child")
+    if related["html_url"] != f"https://github.com/{repo}/issues/{related['number']}":
+        raise ClassifiedPlanError("claim_child_history_invalid", "Native child history returned an inconsistent issue identity")
+    return related
 
 
 def read_issue_relationships(
@@ -2580,9 +2619,7 @@ def _claim_once(args: argparse.Namespace) -> None:
         for event in history:
             if event.get("event") != "sub_issue_added":
                 continue
-            if not isinstance(event.get("sub_issue"), dict):
-                raise ClassifiedPlanError("claim_child_history_invalid", "Native child history omitted its issue record")
-            children.append(event["sub_issue"])
+            children.append(read_handoff_history_child(event, source_repo))
         source_ids = ({str(source_claim_id)} if source_claim_id is not None else set()) | {
             str(comment["id"]) for comment in source_comments or []
             if type(comment.get("id")) is int and comment["id"] > 0
@@ -4067,7 +4104,8 @@ def next_source_delivery(item: dict[str, Any], trusted: set[str], *, repositorie
             def read_edit() -> tuple[str, Any]:
                 return api_json("POST", "/graphql", bucket="graphql", failed_step="next_delivery_body_edit",
                     payload={"query": "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){createdAt lastEditedAt}}}",
-                             "variables": {"owner": owner, "name": name, "number": item["number"]}}, is_write=False)
+                             "variables": {"owner": owner, "name": name, "number": item["number"]}}, is_write=False,
+                    repository=item["repo"])
             try:
                 _, edited = (NEXT_READS.observe(f"graphql:delivery_body_edit:{item['repo']}#{item['number']}", read_edit)
                              if NEXT_READS is not None else read_edit())
@@ -6088,7 +6126,7 @@ query($id: ID!) {
 """
 
 
-def unedited_owner_decision(comment: dict[str, Any]) -> bool:
+def unedited_owner_decision(comment: dict[str, Any], *, repository: str) -> bool:
     """Require explicit edit-history evidence matching the recorded comment."""
     node_id = comment.get("node_id")
     if not isinstance(node_id, str) or not node_id:
@@ -6096,7 +6134,7 @@ def unedited_owner_decision(comment: dict[str, Any]) -> bool:
     _, data = api_json(
         "POST", "/graphql",
         {"query": OWNER_DECISION_COMMENT_QUERY, "variables": {"id": node_id}},
-        is_write=False, failed_step="read_owner_decision_edit_history",
+        is_write=False, failed_step="read_owner_decision_edit_history", repository=repository,
     )
     node = (data.get("data") or {}).get("node")
     if data.get("errors") or not isinstance(node, dict) or "lastEditedAt" not in node:
@@ -6122,7 +6160,7 @@ def owner_reaction_decision(
     comment_id = comment.get("id")
     if not isinstance(comment_id, int) or isinstance(comment_id, bool):
         return None
-    if not unedited_owner_decision(comment):
+    if not unedited_owner_decision(comment, repository=issue_repo):
         return None
     _, reactions = collect_paged_rest_items(
         f"/repos/{issue_repo}/issues/comments/{comment_id}/reactions",
@@ -6144,7 +6182,7 @@ def owner_reaction_decision(
             and isinstance(login, str) and login.casefold() == issue_repo.split("/", 1)[0].casefold()
             and isinstance(reacted_at, str) and isinstance(created_at, str)
             and times[0] > times[2] and times[0] >= times[1]
-            and unedited_owner_decision(comment)
+            and unedited_owner_decision(comment, repository=issue_repo)
         ):
             return {
                 "approval": "owner_reaction", "comment_url": comment.get("html_url"),
@@ -6180,6 +6218,7 @@ def check_owner_decides_not_planned(issue_repo: str, number: int, issue: dict[st
             },
             is_write=False,
             failed_step="read_issue_last_edited",
+            repository=issue_repo,
         )
         last_edited = data["data"]["repository"]["issue"]["lastEditedAt"]
     except (PlanError, KeyError, TypeError) as exc:

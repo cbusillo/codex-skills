@@ -1275,7 +1275,10 @@ The child's own waits and blockers and the retained PRs' holds still apply.
 Without `--handoff-comment`, resume stays on the claimed record.
 Both same-record and child successors also read the source issue's current
 native children and native child history from its timeline. A detached or
-reparented child remains visible through that history. The parent's structured
+reparented child remains visible through that history. When REST omits a
+historical child, the helper reads that exact event's GraphQL node through the
+same configured identity. Unresolved events or children still refuse the claim.
+The parent's structured
 claim history and every handoff naming that exact parent identify one ownership
 family. Resuming a different claim in the parent's own chain does not hide an
 earlier child holder. These checks follow recorded source lineage upward and

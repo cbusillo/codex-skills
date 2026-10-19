@@ -91,6 +91,8 @@ class ClaimTests(unittest.TestCase):
         self.parent = None
         self.children = {}
         self.timelines = {}
+        self.history_nodes = {}
+        self.history_reads = []
         self.api_failure = None
         self.configs = {}
         self.planning_inventory = None
@@ -115,7 +117,13 @@ class ClaimTests(unittest.TestCase):
         issue["repo"], issue["number"] = PLAN.issue_ref(ref, repo)
         return "bot", issue
 
-    def read_api(self, _method, path, **_):
+    def read_api(self, _method, path, payload=None, **options):
+        if path == "/graphql":
+            self.history_reads.append((_method, copy.deepcopy(payload), options))
+            response = self.history_nodes[payload["variables"]["id"]]
+            if isinstance(response, Exception):
+                raise response
+            return "bot", copy.deepcopy(response)
         if path.endswith("/parent"):
             if self.api_failure:
                 raise PLAN.PlanError("Unavailable", api_result=self.api_failure)
@@ -1089,6 +1097,105 @@ class ClaimTests(unittest.TestCase):
         self.run_claim()
         self.assertTrue(self.emitted.call_args.args[0]["ok"])
         self.assertEqual(len(self.comments), 1)  # Same-session recovery reuses its claim.
+
+    def omitted_history_child(self, child):
+        node_id = "fixture-sub-issue-added-event"
+        event = {"event": "sub_issue_added", "node_id": node_id, "sub_issue": None}
+        self.history_nodes[node_id] = {"data": {"node": {
+            "id": node_id, "__typename": "SubIssueAddedEvent", "subIssue": {
+                "id": f"fixture-issue-{child['number']}", "number": child["number"],
+                "state": child["state"].upper(), "title": child["title"],
+                "url": f"https://github.com/owner/repo/issues/{child['number']}",
+                "repository": {"nameWithOwner": "owner/repo"}}}}}
+        self.timelines["/repos/owner/repo/issues/41/timeline"] = [event]
+        return event, self.history_nodes[node_id]
+
+    def test_native_child_resolves_omitted_rest_history_through_exact_event(self):
+        for missing_key in (False, True):
+            with self.subTest(missing_key=missing_key):
+                self.setUp()
+                self.parent_handoff_fixture()
+                parent_before = copy.deepcopy((self.targets, self.target_comments))
+                event, _ = self.omitted_history_child(self.issue)
+                if missing_key:
+                    event.pop("sub_issue")
+                self.run_claim()
+                self.assertTrue(self.emitted.call_args.args[0]["ok"])
+                self.assertEqual(parent_before, (self.targets, self.target_comments))
+                self.assertTrue(self.history_reads)
+                for _, payload, _ in self.history_reads:
+                    self.assertEqual(payload["variables"]["id"], event["node_id"])
+
+    def test_hydrated_history_keeps_detached_live_child_ownership(self):
+        for phase in ("preflight", "after_post", "after_status"):
+            with self.subTest(phase=phase):
+                self.setUp()
+                self.parent_handoff_fixture()
+                successor = {**OTHER, "session": "detached-child-session", "branch": "work/detached-source",
+                             "resume_from": str(self.args.resume_from),
+                             "retained_handoff": f"{self.parent['html_url']}#issuecomment-{self.args.handoff_comment}"}
+                sibling = {**copy.deepcopy(self.issue), "number": 43,
+                           "body": "## Current Status\n\n" + CLAIM.marker(successor)}
+                self.targets["43"] = sibling
+                self.target_comments["/repos/owner/repo/issues/43/comments"] = [
+                    {"id": 88, "body": CLAIM.marker(successor), "user": {"login": TEST_BOT},
+                     "created_at": successor["claimed_at"]}]
+                def detached():
+                    self.omitted_history_child(sibling)
+                if phase == "preflight":
+                    detached()
+                else:
+                    setattr(self, phase, detached)
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.run_claim()
+                self.assertEqual(caught.exception.code, "claim_conflict")
+                self.assertEqual(caught.exception.payload["competing_evidence"][0]["record"], successor)
+                self.assertTrue(self.history_reads)
+                if phase == "preflight":
+                    self.assert_no_writes()
+                else:
+                    self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
+
+    def test_unresolved_history_event_refuses_without_claim_writes(self):
+        for failure in ("unreadable", "errors", "wrong_id", "wrong_type", "missing_child",
+                        "missing_issue_id", "repository", "number", "state", "url"):
+            with self.subTest(failure=failure):
+                self.setUp()
+                self.parent_handoff_fixture()
+                event, response = self.omitted_history_child(self.issue)
+                node = response["data"]["node"]
+                if failure == "unreadable":
+                    self.history_nodes[event["node_id"]] = PLAN.PlanError("History unavailable", api_result={"status": 403})
+                elif failure == "errors":
+                    response["errors"] = [{"message": "History unavailable"}]
+                elif failure == "wrong_id":
+                    node["id"] = "another-event"
+                elif failure == "wrong_type":
+                    node["__typename"] = "IssueComment"
+                elif failure == "missing_child":
+                    node["subIssue"] = None
+                else:
+                    node["subIssue"][{"missing_issue_id": "id", "repository": "repository"}.get(failure, failure)] = None
+                with self.assertRaises(PLAN.PlanError):
+                    self.run_claim()
+                self.assert_no_writes()
+
+    def test_unresolved_history_after_claim_write_requires_exact_release(self):
+        for phase, failure in product(("after_post", "after_status"), ("unreadable", "missing_child")):
+            with self.subTest(phase=phase, failure=failure):
+                self.setUp()
+                self.parent_handoff_fixture()
+                event, response = self.omitted_history_child(self.issue)
+                def unavailable():
+                    if failure == "unreadable":
+                        self.history_nodes[event["node_id"]] = PLAN.PlanError("History unavailable", api_result={"status": 403})
+                    else:
+                        response["data"]["node"]["subIssue"] = None
+                setattr(self, phase, unavailable)
+                with self.assertRaises(PLAN.PlanError) as caught:
+                    self.run_claim()
+                self.assertIn("post_claim", caught.exception.payload["completed_steps"])
+                self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
 
     def nested_handoff_fixture(self):
         self.parent_handoff_fixture()
@@ -4733,6 +4840,80 @@ class ClaimTests(unittest.TestCase):
                     self.admit("spare-capacity", (link,))
                 self.assertEqual(caught.exception.code, "claim_conflict" if blocked == "ownership" else "claim_wait_unresolved")
                 self.assert_no_writes()
+
+
+class GraphQLRepositoryIdentityTests(unittest.TestCase):
+    def test_source_node_reads_select_its_app_independently_of_command_repository(self):
+        for read, source_repo, command_repo in product(
+                ("history", "owner_decision", "delivery"), ("client/data", "owner/repo"), ("client/command", "owner/command")):
+            with self.subTest(read=read, source_repo=source_repo, command_repo=command_repo), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                environment = {"HOME": folder, "PATH": os.environ["PATH"], "GH_REPO": command_repo,
+                               "CODEX_SKILLS_ENV_FILE": str(root / "missing.env"),
+                               "CODEX_AUTOMATION_LOGIN": TEST_BOT, "GITHUB_CLIENT_APP_OWNERS": "client",
+                               "GITHUB_RETRY_STATE_DIR": str(root / "retry"),
+                               "GITHUB_REQUEST_USAGE_DIR": str(root / "usage")}
+                client_actor = "fixture-client-app[bot]"
+                expected_actor = client_actor if source_repo.startswith("client/") else TEST_BOT
+                event = {"event": "sub_issue_added", "node_id": "fixture-event", "sub_issue": None}
+                child = {"id": "fixture-child", "number": 43, "state": "OPEN", "title": "Child",
+                         "url": f"https://github.com/{source_repo}/issues/43",
+                         "repository": {"nameWithOwner": source_repo}}
+                comment = {"id": 7, "node_id": "fixture-comment",
+                           "body": "Director decision: Close #42 as not planned.",
+                           "created_at": "2026-10-02T00:00:00Z", "user": {"login": TEST_BOT}}
+                node = ({"id": event["node_id"], "__typename": "SubIssueAddedEvent", "subIssue": child}
+                        if read == "history" else
+                        {"databaseId": comment["id"], "body": comment["body"],
+                         "createdAt": comment["created_at"], "lastEditedAt": None})
+                authentications, executions = [], []
+
+                def authenticate(_config, *, repository=None, **_):
+                    authentications.append(repository)
+                    actor = client_actor if github_identity.github_app_prefix(repository) == "GITHUB_CLIENT_APP" else TEST_BOT
+                    return "synthetic-token", actor
+
+                def execute(command, **kwargs):
+                    # Exercise the wrapper's repository/App selection at the process boundary.
+                    with patch.dict(os.environ, kwargs.get("env") or os.environ.copy(), clear=True):
+                        repository = github_identity.repository_context()
+                        actor = (client_actor if github_identity.github_app_prefix(repository) == "GITHUB_CLIENT_APP"
+                                 else TEST_BOT)
+                    executions.append((repository, actor))
+                    body = ({"data": {"node": node, "repository": {"issue": {
+                        "createdAt": "2026-10-01T00:00:00Z", "lastEditedAt": None}}}}
+                            if actor == expected_actor else {"errors": [{"message": "Wrong App"}]})
+                    return subprocess.CompletedProcess(command, 0, "HTTP/2.0 200\n\n" + json.dumps(body), f"acting as {actor}")
+
+                reactions = [{"id": 8, "content": "+1", "created_at": "2026-10-03T00:00:00Z",
+                              "user": {"login": source_repo.split("/")[0]}}]
+                with patch.dict(os.environ, environment, clear=True), \
+                        patch.multiple(PLAN, BOT_GH=Path(__file__).with_name("gh-with-env-token"),
+                                       EXPECTED_ACTOR=TEST_BOT, CURRENT_OPERATION="github.plan.claim", NEXT_READS=None), \
+                        patch.object(github_identity, "github_app_config", return_value=object()), \
+                        patch.object(github_identity, "github_app_auth", side_effect=authenticate), \
+                        patch.object(PLAN.subprocess, "run", side_effect=execute), \
+                        patch.object(PLAN, "load_direction", return_value="## Milestones\n- `Inventory` proves the trial."), \
+                        patch.object(PLAN, "collect_paged_rest_items", side_effect=lambda path, **_: (
+                            "bot", reactions if path.endswith("/reactions") else [comment])):
+                    if read == "history":
+                        result = PLAN.read_handoff_history_child(event, source_repo)
+                        self.assertEqual(result["html_url"], child["url"])
+                    elif read == "owner_decision":
+                        result = PLAN.check_owner_decides_not_planned(source_repo, 42, {
+                            "milestone": {"title": "Inventory"}, "created_at": "2026-10-01T00:00:00Z"})
+                        self.assertEqual(result["reaction_id"], reactions[0]["id"])
+                    else:
+                        result = PLAN.next_source_delivery({"repo": source_repo, "number": 42, "discussion": {
+                            "body": "## Current Status\n\nState: Open.", "comments": [{"author": TEST_BOT,
+                                "body": "## Current Status\n\nState: Waiting.", "created_at": "2026-10-02T00:00:00Z"}]}},
+                            {TEST_BOT})
+                        self.assertTrue(result["complete"])
+                        self.assertEqual(result["body_recorded_at"], "2026-10-01T00:00:00Z")
+                    self.assertTrue(executions)
+                    self.assertTrue(all(execution == (source_repo, expected_actor) for execution in executions))
+                    self.assertTrue(all(repository == source_repo for repository in authentications))
+                    self.assertEqual(os.environ["GH_REPO"], command_repo)
 
 
 if __name__ == "__main__":
