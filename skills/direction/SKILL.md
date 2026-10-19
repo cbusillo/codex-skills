@@ -722,9 +722,9 @@ against it. The direction session drafts those pull requests with the Director.
    findings. Once its `DIRECTION.md` is on the default branch, `--weekly`
    finds and audits it every week.
 
-For repositories adopted before this step existed, check GitHub for the step-4
-backlog reconciliation's completion record. If it is missing, run step 4 once
-and record completion there.
+For repositories adopted before this step existed, finish any missing step-4
+reconciliation using the existing GitHub dispositions and current
+implementation evidence.
 
 Format chat and GitHub writes under
 [talking with the Director](../references/talking-with-the-director.md).

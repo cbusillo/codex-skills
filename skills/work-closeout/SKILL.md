@@ -216,12 +216,13 @@ preserved, or intentionally left in place.
    authorization evidence.
 7. Do not remove user artifacts, broad system caches, unrelated untracked files
    or unrelated remote resources without explicit approval. Use `github` for
-   task-owned branch cleanup. For task-owned disposable testing or preview
-   resources, use [launchplane](../launchplane/SKILL.md) when managed there or
-   [infra-ops](../infra-ops/SKILL.md#workflow) for documented provider lifecycle
-   operations, under current overall and repository direction and existing task
-   authority. Those paths retain direction's in-use, only-copy,
-   production-isolation and live-data safeguards.
+   task-owned branch cleanup. Before deleting task-owned testing or preview
+   resources, establish disposability under current overall and repository
+   direction, including their in-use, only-copy, production-isolation and
+   live-data safeguards. For Launchplane-managed resources, use
+   [contract-backed lifecycle routing](../launchplane/SKILL.md#contract-backed-lifecycle-and-repair-routing).
+   For other resources, use [infra-ops](../infra-ops/SKILL.md#workflow) for
+   documented provider lifecycle operations under existing task authority.
 8. Report final state concisely.
 
 ## Consuming Readiness Evidence
