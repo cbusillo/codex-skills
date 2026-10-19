@@ -2324,6 +2324,13 @@ def python_ownership(content, *, partial=False):
                 return default
             return self.parent.get(name, default) if self.parent is not None else default
 
+        def owner(self, name):
+            if name in self.declarations:
+                return self.declarations[name].owner(name)
+            if name in self.state or self.local_names is not None and name in self.local_names:
+                return self
+            return self.parent.owner(name) if self.parent is not None else None
+
         def __setitem__(self, name, assigned):
             self.declarations.get(name, self).state[name] = assigned
 
@@ -2716,6 +2723,10 @@ def python_ownership(content, *, partial=False):
             rows.append(list(iterate_values((sequence,), scope)))
         return rows
 
+    @lru_cache(maxsize=512)
+    def executable_operand(text):
+        return overflow in text or executable_content(text) or opaque_ownership("exec_command", {"cmd": text})
+
     def value(node, scope):
         if isinstance(node, ast.Name):
             return scope.get(node.id, (ast.alias(name=node.id),) if node.id in pure_data_calls else (unknown,))
@@ -2966,7 +2977,7 @@ def python_ownership(content, *, partial=False):
                 descendants = (*seen, id(item))
                 children = item.items.values() if isinstance(item, Keywords) else sequence_rows(item) if isinstance(item, Sequence) else item
                 return any(possible_code(child, descendants) for child in children)
-            return isinstance(item, str) and (overflow in item or executable_content(item) or opaque_ownership("exec_command", {"cmd": item}))
+            return isinstance(item, str) and executable_operand(item)
         if node is not None:
             operands = [item for child in ast.iter_child_nodes(node) for item in value(child, scope)]
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
@@ -3023,7 +3034,13 @@ def python_ownership(content, *, partial=False):
             def child(assigned):
                 return binding_key(assigned, descendants, memo)
             if isinstance(item, Function):
-                key = ("function", id(item.node), tuple(sorted((name, child(item.scope.get(name, (unknown,)))) for name in item.free)))
+                # Equal current values do not identify live closure cells from
+                # distinct calls. Keep the owning frame itself, including an
+                # unassigned local, alongside its current value fingerprint.
+                key = ("function", id(item.node), tuple(sorted(
+                    (name, owner if owner is not None and owner.local_names is not None else None,
+                     child(item.scope.get(name, (unknown,))))
+                    for name in item.free for owner in (item.scope.owner(name),))))
             elif isinstance(item, Bound):
                 key = ("bound", child(item.function), child(item.receiver))
             elif isinstance(item, Instance):
@@ -3198,6 +3215,10 @@ def python_ownership(content, *, partial=False):
             return choices(item for function in wrapper.functions for item in invoke(function, caller, [*wrapper.arguments, *argument_values], dict(wrapper.keywords, **keyword_values), evaluated=True, consumed=consumed, yielded=yielded, created_active=created_active))
         if isinstance(wrapper, ast.ClassDef):
             return (construct(wrapper, caller, argument_values, keyword_values),)
+        if isinstance(wrapper, Instance):
+            return choices(item for callback in member(wrapper, "__call__")
+                           for item in invoke(callback, caller, argument_values, keyword_values, evaluated=True,
+                                              consumed=consumed, yielded=yielded, unknown_effect=unknown_effect, created_active=created_active))
         if isinstance(wrapper, ast.alias) and wrapper.name in launches:
             parameter = "args" if wrapper.name.startswith("subprocess.") else "cmd" if wrapper.name == "os.popen" else "command"
             commands = argument_values[0] if argument_values else keyword_values.get(parameter, ())
@@ -3277,7 +3298,7 @@ def python_ownership(content, *, partial=False):
                 yielded.update(collected)
             expression_values = expressions
             active.pop()
-        owning, result = found, choices(returned) or (unknown,)
+        owning, result = found, choices(returned) or (None,)
         found |= previous
         if (cacheable and recursion_skips == generation and attribute_mutations == mutation_start
                 and reusable_result(result) and all(reusable_result(assigned) for assigned in collected.values())):
@@ -3476,7 +3497,7 @@ def python_ownership(content, *, partial=False):
                     found |= any(executable_value(command) for command in commands)
             called = False
             for function in functions:
-                if isinstance(function, (Function, Bound, Partial)):
+                if isinstance(function, (Function, Bound, Partial, Instance)):
                     called = True
                     value(node, scope)
                 elif isinstance(function, ast.ClassDef):
@@ -3619,6 +3640,30 @@ def python_ownership(content, *, partial=False):
                 target.clear()
                 target.update(previous_state)
 
+    def apply_decorators(decorated, expressions, decorators, scope):
+        for expression, assigned in reversed(list(zip(expressions, decorators))):
+            call = expression.func if isinstance(expression, ast.Call) else expression
+            names = function_names(call, scope)
+            if isinstance(call, ast.Attribute) and call.attr in {"command", "group"}:
+                for registry in value(call.value, scope):
+                    if isinstance(registry, Registry):
+                        registry.handlers.extend(decorated)
+            if "click.group" in names:
+                registry = Registry()
+                registry.handlers.extend(decorated)
+                decorated = (registry,)
+            elif "atexit.register" in names:
+                exit_callbacks.append(Partial(decorated, [], {}))
+            else:
+                replacements = choices(item for wrapper in assigned if isinstance(wrapper, (Function, Bound, Partial, Instance, ast.ClassDef))
+                                       for item in invoke(wrapper, scope, [decorated], evaluated=True))
+                # An unmodeled wrapper can still call its input later. Preserve
+                # that possibility without eagerly invoking the original body.
+                if not replacements or any(item is unknown or isinstance(item, ast.alias) for item in replacements):
+                    replacements = choices((*replacements, *decorated))
+                decorated = replacements
+        return decorated
+
     def walk(statements, scope, *, methods=False):
         nonlocal attribute_mutations
         for statement in statements:
@@ -3698,28 +3743,11 @@ def python_ownership(content, *, partial=False):
                 decorators = [value(decorator, scope) for decorator in statement.decorator_list]
                 function = Function(statement, scope.parent if methods else scope)
                 scope[statement.name] = (function,)
-                for decorator in statement.decorator_list:
-                    call = decorator.func if isinstance(decorator, ast.Call) else decorator
-                    if isinstance(call, ast.Attribute) and call.attr in {"command", "group"}:
-                        for registry in value(call.value, scope):
-                            if isinstance(registry, Registry):
-                                registry.handlers.append(function)
-                    if function_names(call, scope) & {"click.group"}:
-                        registry = Registry()
-                        registry.handlers.append(function)
-                        scope[statement.name] = (registry,)
-                    if function_names(call, scope) & {"atexit.register"}:
-                        exit_callbacks.append(Partial((function,), [], {}))
-                decorated = (function,)
-                for assigned in reversed(decorators):
-                    replacements = choices(item for wrapper in assigned if isinstance(wrapper, (Function, Bound, Partial))
-                                           for item in invoke(wrapper, scope, [decorated], evaluated=True))
-                    decorated = replacements or decorated
-                if decorated != (function,):
-                    scope[statement.name] = decorated
+                scope[statement.name] = apply_decorators((function,), statement.decorator_list, decorators, scope)
                 if partial:
                     invoke(function, scope)
             elif isinstance(statement, ast.ClassDef):
+                decorators = [value(decorator, scope) for decorator in statement.decorator_list]
                 scope[statement.name] = (statement,)
                 local = Scope(scope)
                 walk(statement.body, local, methods=True)
@@ -3729,6 +3757,7 @@ def python_ownership(content, *, partial=False):
                         if isinstance(function, Function):
                             method_classes[id(function.node)] = statement
                 class_bases[id(statement)] = choices(base for expression in statement.bases for base in value(expression, scope) if isinstance(base, ast.ClassDef))
+                scope[statement.name] = apply_decorators((statement,), statement.decorator_list, decorators, scope)
             elif isinstance(statement, ast.Match):
                 scope.state = merge(scope.state, *(branch(case.body, scope) for case in statement.cases))
         return scope.state
@@ -3819,10 +3848,11 @@ def python_fragment_ownership(content, *, partial=True):
     return False
 
 
-def executable_file_content(path, content, *, partial=False):
+def executable_file_content(path, content, *, partial=False, python_check=None):
     if isinstance(content, UnresolvedStream):
         return content.possible_ownership
-    return python_fragment_ownership(content, partial=partial) if Path(path).suffix == ".py" else executable_content(content)
+    checker = python_fragment_ownership if python_check is None else python_check
+    return checker(content, partial=partial) if Path(path).suffix == ".py" else executable_content(content)
 
 
 def executable_content(content):
@@ -4022,7 +4052,7 @@ def file_source_context(effect, previous):
     return {"contents": tuple(dict.fromkeys(result)), "definite": definite}, exact
 
 
-def apply_file_effect(effect, cwd, candidates, sources=None):
+def apply_file_effect(effect, cwd, candidates, sources=None, *, python_checks=None):
     if effect["kind"] != "write":
         return
     path = native_path(effect["path"], native_cwd(effect.get("cwd"), cwd)) if effect["path"] else None
@@ -4063,7 +4093,7 @@ def apply_file_effect(effect, cwd, candidates, sources=None):
                         destination = posixpath.normpath(root if relative == "." else posixpath.join(root, relative))
                         transferred = {"kind": "write", "path": destination, "contents": contents,
                                        "replaces": effect["replaces"] and certain and not speculative, "partial": False}
-                        result = apply_file_effect(transferred, None, candidates, sources)
+                        result = apply_file_effect(transferred, None, candidates, sources, python_checks=python_checks)
                         if not certain:
                             result |= destination in previous_candidates
                         if original in previous_candidates:
@@ -4078,13 +4108,15 @@ def apply_file_effect(effect, cwd, candidates, sources=None):
                     if existing == path or effect.get("recursive") and existing.startswith(path.rstrip('/') + '/'):
                         sources[existing] = dict(sources[existing], definite=False)
             return False
-        owning = any(executable_file_content(effect["path"], content, partial=effect.get("partial", not effect["replaces"])) for content in effect["contents"])
+        fragment_check, full_check = python_checks or (python_fragment_ownership, python_ownership)
+        owning = any(executable_file_content(effect["path"], content, partial=effect.get("partial", not effect["replaces"]),
+                                             python_check=fragment_check) for content in effect["contents"])
         if sources is not None and Path(path).suffix == ".py":
             sources[path], exact = file_source_context(effect, sources.get(path, {}))
             full = not effect.get("partial", not effect["replaces"])
             contents = effect["contents"] if full else sources[path]["contents"]
             composed = any(content.possible_ownership if isinstance(content, UnresolvedStream)
-                           else python_ownership(content) for content in contents)
+                           else full_check(content) for content in contents)
             owning = composed if exact else owning or composed
         elif sources is not None:
             # A recorded harmless source can replace an owning destination.
@@ -4125,6 +4157,7 @@ def ownership_file_candidates(histories):
     possible from launch; only a completed replacement can erase that evidence.
     """
     candidates = {}
+    python_checks = (lru_cache(maxsize=256)(python_fragment_ownership), lru_cache(maxsize=256)(python_ownership))
     for node in histories:
         origin = id(node["records"][0]) if node["records"] else None
         launches = {identifier: index for index, record in enumerate(node["records"])
@@ -4139,7 +4172,7 @@ def ownership_file_candidates(histories):
             path = native_path(effect["path"], native_cwd(effect.get("cwd"), cwd)) if effect["path"] else None
             if path:
                 entry = by_call.setdefault((identifier, path), {"at": timestamp, "owns": False, "final": None, "context": []})
-                owning = apply_file_effect(effect, cwd, local_candidates, sources)
+                owning = apply_file_effect(effect, cwd, local_candidates, sources, python_checks=python_checks)
                 entry["context"].append(dict(effect, path=path, cwd=native_cwd(effect.get("cwd"), cwd)))
                 entry["owns"] |= owning
                 if owning or effect["replaces"]:
@@ -4180,6 +4213,7 @@ def execution_targets(argv):
 
 def file_ownership_executions(records, harness, *, file_candidates=()):
     """Link actual script reads to the contents preceding them in native time."""
+    python_checks = (lru_cache(maxsize=256)(python_fragment_ownership), lru_cache(maxsize=256)(python_ownership))
     origin = id(records[0]) if records else None
     calls = [(identifier, name, value, cwd, stamp, list(native_file_effects(name, value)))
              for identifier, name, value, cwd, stamp in native_calls(records, harness, with_timestamp=True)]
@@ -4243,7 +4277,7 @@ def file_ownership_executions(records, harness, *, file_candidates=()):
         for effect in context:
             if possible and effect["replaces"]:
                 effect = dict(effect, replaces=False, partial=False)
-            apply_file_effect(effect, None, target_candidates, target_sources)
+            apply_file_effect(effect, None, target_candidates, target_sources, python_checks=python_checks)
 
     def replay(events, target_candidates, target_sources):
         nonlocal generation
@@ -4333,9 +4367,9 @@ def file_ownership_executions(records, harness, *, file_candidates=()):
             if effect["kind"] == "write":
                 generation += 1
                 path = native_path(effect["path"], native_cwd(effect.get("cwd"), cwd)) if effect["path"] else None
-                owning = apply_file_effect(effect, cwd, local_candidates, local_sources)
+                owning = apply_file_effect(effect, cwd, local_candidates, local_sources, python_checks=python_checks)
                 possible = dict(effect, replaces=False, partial=False) if effect["replaces"] else effect
-                apply_file_effect(possible, cwd, candidates, sources)
+                apply_file_effect(possible, cwd, candidates, sources, python_checks=python_checks)
                 if path:
                     if effect["replaces"]:
                         replacements[path] = []

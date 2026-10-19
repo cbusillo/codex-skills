@@ -2937,6 +2937,33 @@ class ReceiptTests(unittest.TestCase):
             with self.subTest(program=program):
                 self.assertEqual(receipts.python_ownership("import os\nCLAIM=" + repr(writer) + "\n" + program), expected)
 
+    def test_repeated_python_operands_do_not_repeat_lexical_analysis(self):
+        counts = []
+        for repeats in (4, 16):
+            program = "text='echo safe'\n" + "result=transform(text)\n" * repeats
+            with patch.object(receipts, "opaque_ownership", wraps=receipts.opaque_ownership) as classify:
+                self.assertFalse(receipts.python_ownership(program))
+                counts.append(classify.call_count)
+        self.assertLessEqual(counts[1], counts[0] * 2)
+
+    def test_repeated_file_bytes_do_not_repeat_python_analysis(self):
+        for harness in ("codex", "claude"):
+            counts = []
+            for repeats in (4, 16):
+                rows = history(harness, *({} for _ in range(repeats)))
+                for index in range(repeats):
+                    command = "cat > run.py <<'EOF'\nprint('safe data')\nEOF"
+                    if harness == "codex":
+                        rows[2 * index + 1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                    else:
+                        rows[2 * index + 1]["message"]["content"][0]["input"] = {"command": command}
+                with patch.object(receipts, "python_ownership", wraps=receipts.python_ownership) as classify:
+                    candidates = receipts.ownership_file_candidates([{"harness": harness, "records": rows}])
+                    self.assertFalse(receipts.ownership_state(rows, harness, file_candidates=candidates)["pending"])
+                    counts.append(classify.call_count)
+            with self.subTest(harness=harness):
+                self.assertLessEqual(counts[1], counts[0] * 2)
+
     def test_python_branch_cost_depends_on_mutations_not_prior_allocations(self):
         for style in ("list", "dict", "instance", "class"):
             counts = []
@@ -3033,6 +3060,45 @@ class ReceiptTests(unittest.TestCase):
     def test_python_process_launches_resolve_only_literal_concatenation(self):
         writer = "uv run /catalog/gh-plan.py --repo client/repo claim 12"
         programs = (
+            *[("import os\ndef deco(fn):\n    " + body + "\n@deco\ndef command(): os.system(" + repr(writer) + ")\ntry: command()\nexcept TypeError: pass", False)
+              for body in ("pass", "return None", "yield fn", "return 'data'", "return []")],
+            *[("import os\nclass Wrapper:\n    def __init__(self,fn): self.fn=fn\n    def __call__(self): os.system(" + repr(command) + ")\ndef deco(fn): return Wrapper(fn)\n@deco\ndef command(): pass\ncommand()", owning)
+              for command, owning in ((writer, True), ("echo safe", False))],
+            *[("import os\nclass Decorate:\n    def __call__(self,fn):\n        os.system(" + repr(command) + ")\n        return fn\n@Decorate()\ndef command(): pass\nprint(command)", owning)
+              for command, owning in ((writer, True), ("echo safe", False))],
+            *[("import os,functools\n" + setup + "\ndef deco(fn):\n    def wrapped(*a, **k): return fn(*a, **k)\n    return " + replacement + "\n@deco\ndef command(): os.system(" + repr(command) + ")\ncommand()", owning)
+              for setup, replacement in (
+                  ("", "functools.update_wrapper(wrapped,fn)"),
+                  ("", "functools.wraps(fn)(wrapped)"),
+                  ("", "functools.lru_cache()(fn)"),
+                  ("import supplied_module", "supplied_module.wrap(fn)"),
+                  ("class Wrapper:\n    def __init__(self,fn): self.fn=fn\n    def __call__(self): return self.fn()", "Wrapper(fn)"),
+              ) for command, owning in ((writer, True), ("echo safe", False))],
+            ("import os,functools\ndef deco(fn):\n    def wrapped(): return fn()\n    return functools.update_wrapper(wrapped,fn)\n@deco\ndef command(): os.system(" + repr(writer) + ")\nprint(command)", False),
+            *[("import os\ndef decorate(fn):\n    def wrapped(): return fn()\n    return wrapped\ndef run(c):\n" + initial + "    def inner(): return x\n" + decoration + "    x=c\n    return inner()\nprint(run('echo safe'))\nos.system(run(" + repr(command) + "))", owning)
+              for initial, decoration in (
+                  ("    @decorate\n", ""),
+                  ("", "    inner=decorate(inner)\n"),
+                  ("    x='echo safe'\n    @decorate\n", ""),
+              ) for command, owning in ((writer, True), ("echo safe", False))],
+            *[("import os\ndef handler(fn): return lambda: fn()\ndef make(c):\n    def inner(): return x\n    get=handler(inner)\n    x=c\n    return get\nprint(make('echo safe')())\nos.system(make(" + repr(command) + ")())", owning)
+              for command, owning in ((writer, True), ("echo safe", False))],
+            *[("import os\ndef register(cls):\n    os.system(" + repr(command) + ")\n    return cls\n@register\nclass C: pass", owning)
+              for command, owning in ((writer, True), ("echo safe", False))],
+            *[("import os\ndef register(cls):\n    cls().run()\n    return cls\n@register\nclass C:\n    def run(self): os.system(" + repr(command) + ")", owning)
+              for command, owning in ((writer, True), ("echo safe", False))],
+            ("import os\ndef identity(cls): return cls\n@identity\nclass C:\n    def run(self): os.system(" + repr(writer) + ")\nprint(C)", False),
+            ("import os\ndef execute(cls):\n    os.system(cls.command)\n    return cls\ndef arm(cls):\n    cls.command=" + repr(writer) + "\n    return cls\n@execute\n@arm\nclass C: command='echo safe'", True),
+            *[("import click,os\ndef decorate(fn): return fn\n@decorate\n@click.group()\ndef cli(): pass\n@cli.command()\ndef claim(): os.system(" + repr(writer) + ")\n" + consumer, owning)
+              for consumer, owning in (("cli(['claim'])", True), ("print(cli)", False))],
+            *[("import click,functools,os\ndef decorate(fn): return functools.update_wrapper(fn,fn)\n@decorate\n@click.group()\ndef cli(): pass\n@cli.command()\ndef claim(): os.system(" + repr(writer) + ")\n" + consumer, owning)
+              for consumer, owning in (("cli(['claim'])", True), ("print(cli)", False))],
+            ("import os\ndef identity(fn): return lambda: fn()\ndef run():\n    x='echo safe'\n    def inner(): return x\n    wrapped=identity(inner)\n    print(wrapped())\n    x=" + repr(writer) + "\n    os.system(wrapped())\nrun()", True),
+            ("import os\ndef identity(fn): return lambda: fn()\ndef run():\n    x=" + repr(writer) + "\n    def inner(): return x\n    wrapped=identity(inner)\n    print(wrapped())\n    x='echo safe'\n    os.system(wrapped())\nrun()", False),
+            *[("import os\nimport supplied_module as supplied\ndef unknown(cls): return supplied.wrap(cls)\n@unknown\nclass C:\n    def run(self): os.system(" + repr(command) + ")\nC().run()", owning)
+              for command, owning in ((writer, True), ("echo safe", False))],
+            *[("import os\nfrom dataclasses import dataclass as record\ndef identity(cls): return cls\n@identity\n@record\nclass C:\n    command: str\n    def run(self): os.system(self.command)\nC(" + repr(command) + ").run()", owning)
+              for command, owning in ((writer, True), ("echo safe", False))],
             *[("import os\ndef decorate(fn):\n    def wrapped(): os.system(" + repr(writer) + ")\n    return wrapped\ndef factory(): return decorate\n@factory()\ndef command(): pass\n" + consumer, owning)
               for consumer, owning in (("print(command)", False), ("command()", True))],
             ("import os\ndef decorate(fn):\n    def wrapped(): return " + repr(writer) + "\n    return wrapped\ndef safe(fn): return lambda: 'echo safe'\n@safe\n@decorate\ndef command(): pass\nos.system(command())", False),
