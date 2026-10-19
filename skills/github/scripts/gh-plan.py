@@ -3204,6 +3204,14 @@ def _claim_once(args: argparse.Namespace) -> None:
           "completed_steps": completed})
 
 
+def automatic_planning_writes_allowed() -> bool:
+    """An exact personal command approval never authorizes discovered targets."""
+    return not (os.environ.get("GH_PLAN_SKIP_BOT") == "1"
+                or os.environ.get("GH_PLAN_ALLOW_ACTIVE_FIRST") == "1"
+                or github_identity.active_auth_fallback_allowed()
+                or github_identity.own_user_opted_in())
+
+
 def refresh_planning_targets(targets: list[tuple[str, int]], *, apply: bool = True,
                              include_dependents: bool = False, required: bool = False) -> dict[str, Any]:
     """A confirmed fact write and its label projection have separate receipts."""
@@ -3215,7 +3223,7 @@ def refresh_planning_targets(targets: list[tuple[str, int]], *, apply: bool = Tr
                     argparse.Namespace(**globals()), repo, [(repo, number)]):
                 if (target_repo, target_number) in targets:
                     continue
-                entry = {"repo": target_repo, "number": target_number, "role": "related"}
+                entry = {"repo": target_repo, "number": target_number, "role": "related", "automatic": True}
                 if target_repo.split("/")[0].casefold() != repo.split("/")[0].casefold():
                     entry["status"] = "review_cross_repository"
                 if not any(item["repo"] == target_repo and item["number"] == target_number for item in tasks):
@@ -5829,14 +5837,38 @@ def cmd_close(args: argparse.Namespace) -> None:
             actor = close_result.get("actor") or actor
             completed_steps.append("close_issue")
 
+    source_error: PlanError | None = None
+    denied_repositories: dict[str, Any] = {}
+    stopped_reason: dict[str, Any] | None = None
+    source_projection: dict[str, Any] = {"repo": issue_repo, "number": number}
+
+    def record_source_error(error: PlanError, metadata_state: str, *, writes_started: bool) -> None:
+        nonlocal source_error, stopped_reason
+        wrapped = close_error_with_recovery(error, issue_repo=issue_repo, number=number, close_reason=close_reason,
+            relationship_preflight=relationship_preflight, project_result=project_result, issue_closed=True,
+            metadata_state=metadata_state, planning_config=planning_config)
+        if source_error is None:
+            source_error = wrapped
+        source_projection["writes_started"] = writes_started
+        denied, stop = github_plan_landing.reconciliation_error(source_projection, wrapped)
+        reason = {"repo": issue_repo, "number": number, "error": source_projection["error"]}
+        if denied:
+            denied_repositories[issue_repo.casefold()] = reason
+        if stop:
+            stopped_reason = reason
+
     label_source = close_result if isinstance(close_result.get("labels"), list) else issue
     try:
         _, wait_comments = collect_paged_rest_items(
             f"/repos/{issue_repo}/issues/{number}/comments", query={}, bucket="rest_core", step_prefix="close_wait_comments")
+        close_wait = current_wait(issue, wait_comments, issue_repo)
+    except (PlanError, ValueError) as error:
         try:
-            close_wait = current_wait(issue, wait_comments, issue_repo)
-        except ValueError as error:
-            close_wait = {"version": 1, "state": "review", "evidence": str(error), "waits": []}
+            close_wait = github_plan_landing.unread_wait(argparse.Namespace(**globals()), error)
+        except PlanError as denied_error:
+            record_source_error(denied_error, "wait_read_incomplete", writes_started=False)
+            close_wait = {"version": 1, "state": "review", "evidence": str(denied_error), "waits": []}
+    try:
         closed_projection = github_plan_status.derive(
             {**issue, "state": "closed", "labels": label_source.get("labels", [])},
             {"blocked_by": relationship_preflight.get("blocked_by", [])}, close_wait, label_names=plan_labels)
@@ -5847,7 +5879,7 @@ def cmd_close(args: argparse.Namespace) -> None:
             relationship_preflight=relationship_preflight, project_result=project_result, issue_closed=True,
             metadata_state="wait_read_incomplete", planning_config=planning_config) from error
     add_labels, remove_labels = label_diff["add"] or None, label_diff["remove"] or None
-    if add_labels or remove_labels:
+    if (add_labels or remove_labels) and not denied_repositories and stopped_reason is None:
         try:
             label_result = github_issue_core.edit_issue(
                 number,
@@ -5859,28 +5891,21 @@ def cmd_close(args: argparse.Namespace) -> None:
                 operation=CURRENT_OPERATION,
             )
         except github_issue_core.IssueError as exc:
-            raise close_error_with_recovery(
-                plan_error_from_issue(exc, completed_steps=completed_steps),
-                issue_repo=issue_repo,
-                number=number,
-                close_reason=close_reason,
-                relationship_preflight=relationship_preflight,
-                project_result=project_result,
-                issue_closed=True,
-                metadata_state="labels_incomplete",
-                planning_config=planning_config,
-            ) from exc
-        actor = label_result.get("actor") or route_actor
-        completed_steps.append("update_labels")
-    else:
+            record_source_error(plan_error_from_issue(exc, completed_steps=completed_steps),
+                                "labels_incomplete", writes_started=True)
+        else:
+            actor = label_result.get("actor") or route_actor
+            completed_steps.append("update_labels")
+    elif not add_labels and not remove_labels:
         completed_steps.append("labels_already_complete")
-    source_projection = {"derived": closed_projection, "changes": label_diff,
-                         **github_plan_status.projection_outcome(
-                             closed_projection, "reconciled" if add_labels or remove_labels else "unchanged")}
-    if closed_projection["wait_review_required"]:
+    source_projection.update(derived=closed_projection, changes=label_diff)
+    if source_error is None:
+        source_projection.update(github_plan_status.projection_outcome(
+            closed_projection, "reconciled" if add_labels or remove_labels else "unchanged"))
+    if closed_projection["wait_review_required"] and source_error is None:
         source_projection["next_action"] = f"gh-plan.py --repo {issue_repo} wait {number}"
 
-    if close_comment:
+    if close_comment and source_error is None:
         try:
             comment_result = github_comment_core.comment(
                 "issue",
@@ -5900,17 +5925,8 @@ def cmd_close(args: argparse.Namespace) -> None:
                 comment_result.get("completed_steps"),
             )
         except github_comment_core.CommentError as exc:
-            raise close_error_with_recovery(
-                plan_error_from_comment(exc, completed_steps=completed_steps),
-                issue_repo=issue_repo,
-                number=number,
-                close_reason=close_reason,
-                relationship_preflight=relationship_preflight,
-                project_result=project_result,
-                issue_closed=True,
-                metadata_state="comment_incomplete",
-                planning_config=planning_config,
-            ) from exc
+            record_source_error(plan_error_from_comment(exc, completed_steps=completed_steps),
+                                "comment_incomplete", writes_started=True)
 
     public_comment = {key: value for key, value in comment_result.items() if key != "completed_steps"}
     output_expected_actor = (
@@ -5934,10 +5950,17 @@ def cmd_close(args: argparse.Namespace) -> None:
         closed_result["owner_decision"] = owner_decision
 
     try:
-        dependents = (github_plan_landing.reconcile_dependents(argparse.Namespace(**globals()), issue_repo, number, apply=True)
+        dependents = (github_plan_landing.reconcile_dependents(
+                          argparse.Namespace(**globals()), issue_repo, number, apply=True,
+                          denied_repositories=denied_repositories, stopped_reason=stopped_reason)
                       if getattr(args, "reconcile_dependents", True) else {"ok": True, "issues": []})
     except (PlanError, ValueError, TypeError, OSError, subprocess.SubprocessError) as exc:
         dependents = {"ok": False, "error": {"message": str(exc), **getattr(exc, "payload", {})}, "issues": []}
+    if source_error is not None:
+        source_error.payload.update(closed=closed_result, source_projection=source_projection,
+                                    dependents=dependents, completed_steps=completed_steps,
+                                    comment=public_comment or None)
+        raise source_error
     if not dependents["ok"]:
         raise PlanError("Issue is closed; dependent planning reconciliation is incomplete", payload={
             "closed": closed_result, "source_projection": source_projection,

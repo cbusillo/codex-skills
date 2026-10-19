@@ -1548,7 +1548,10 @@ competitor's record.
   `--include-dependents` also refreshes direct native parents and blocking
   dependents, with automatic neighbors limited to the source account. An
   explicit target remains subject to its existing posting authority; a local
-  checkout proves configuration, never permission.
+  checkout proves configuration, never permission. Personal or active-identity
+  opt-ins authorize only the explicit target. Automatic neighbors, including
+  all issues discovered by `reconcile-landing`, return review receipts for
+  existing authorized target sessions; preview remains available.
 - `create <title>`: Create a new plan issue. Exact-title dedupe uses REST issue
   search, labels are ensured through REST, and the shared issue helper creates
   the issue with reconciliation evidence for unknown write outcomes. Supports
@@ -1615,8 +1618,12 @@ competitor's record.
   rerunning the same command reconciles missing metadata without duplicating
   evidence. A real structured wait retains `waiting` alongside `done`.
   Unread wait evidence preserves recorded `waiting`, projects the known closed
-  lifecycle, and reports partial source wait coverage. It does not prevent the
-  requested close comment or dependent refresh. Metadata recovery uses the
+  lifecycle, and reports partial source wait coverage. A recoverable wait read
+  does not prevent the requested close comment or dependent refresh. A source
+  metadata failure defers its remaining comment; a known authority denial skips
+  further writes in that repository while independent repositories continue.
+  Unknown write outcomes stop all later writes and list unattempted targets.
+  Metadata recovery uses the
   reported `reconcile-status` targets without replaying closure or comments.
 - Every successful `close`, including an idempotent repair of a confirmed close,
   refreshes direct native parents and `blocking` dependents through that same

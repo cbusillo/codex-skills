@@ -12,6 +12,7 @@ import io
 import json
 import os
 import pathlib
+import shlex
 import sys
 import tempfile
 import threading
@@ -1443,8 +1444,8 @@ def generic_close_fixture(*, reject_labels: bool = False):
             comments[number].append(item)
             comment_writes.append(number)
             return success(copy.deepcopy(item), status=201)
-        if number == 43 and parts[1] == "labels":
-            if reject_labels:
+        if number in (42, 43) and parts[1] == "labels":
+            if callback.reject_labels and number == 43:
                 return failure(422, {"message": "Fixture label operation rejected"}, is_write=True)
             labels = {item["name"] for item in issue["labels"]}
             if method == "DELETE":
@@ -1455,6 +1456,7 @@ def generic_close_fixture(*, reject_labels: bool = False):
             issue["labels"] = [{"name": value} for value in sorted(labels)]
             return success(copy.deepcopy(issue["labels"]))
         raise AssertionError((method, path, body))
+    callback.reject_labels = reject_labels
     with tempfile.TemporaryDirectory() as directory:
         checkout = pathlib.Path(directory)
         metadata = checkout / ".github/github.json"
@@ -1502,13 +1504,59 @@ def test_generic_cli_projection_failure_preserves_confirmed_close_and_metadata_r
             assert code != 0 and not payload["ok"], payload
             assert payload["state"] == "closed", payload
             assert payload["recovery"]["issue_closed"] is True, payload
-            recovery = payload["recovery"]["next_action"]
-            assert "reconcile-status" in recovery and "--include-dependents" in recovery and "--apply" in recovery
             assert payload["projection"]["coverage"] == "partial", payload
+            import test_github_plan_graph
+            plan = test_github_plan_graph.load_plan()
+            def request(method, path, body=None, **kwargs):
+                try:
+                    result = github_issue._call_api(method, path, body, gh_cmd=github_issue.DEFAULT_GH,
+                        operation="github.plan.reconcile_status", actor="fixture-automation",
+                        expected_actor="fixture-automation", completed_steps=[],
+                        failed_step=kwargs.get("failed_step") or "fixture_recovery", is_write=method != "GET",
+                        retry_summaries=[])
+                except github_issue.IssueError as error:
+                    raise plan.PlanError(str(error), failure=error.failure,
+                                         api_result=error.api_result, payload=error.payload) from error
+                return result.actor or "fixture-automation", result.body
+            plan.api_json = request
+            plan.comment_route = lambda: ("fixture-automation", github_issue.DEFAULT_GH, "fixture-automation")
+            plan.planning_comment_attention = lambda *_: False
+            callback.reject_labels = False
+            args = plan.build_parser().parse_args(shlex.split(payload["recovery"]["next_action"])[1:])
+            with contextlib.redirect_stdout(io.StringIO()):
+                args.func(args)
+            names = github_plan_status.DEFAULT_STATUS_LABELS
+            assert {item["name"] for item in records[43]["labels"]} == {names[key] for key in ("plan", "active")}
         with_call_stub(callback, run)
         assert records[42]["state"] == "closed"
         assert records[43]["state"] == "open"
         assert states == [(42, "closed")] and posts == [42], (states, posts)
+
+
+def test_generic_closed_source_transient_comment_read_repairs_lifecycle_and_keeps_wait_review() -> None:
+    with generic_close_fixture() as (callback, records, comments, states, posts):
+        names = github_plan_status.DEFAULT_STATUS_LABELS
+        records[42]["labels"] = [{"name": names[key]} for key in ("plan", "active", "waiting")]
+        failures = []
+        def transient(method, path, body, **kwargs):
+            if method == "GET" and "/issues/42/comments" in path and records[42]["state"] == "closed":
+                result = failure(503, {"message": "Fixture discussion transient failure"}, is_write=False)
+                result.failure.request_id = "fixture-generic-discussion"
+                failures.append(result.failure)
+                return result
+            return callback(method, path, body, **kwargs)
+        def run(calls):
+            code, payload = _run_cli(["close", "owner/repo#42", "--comment", "Source delivered."], io.StringIO(""), timeout=10, planning=True)
+            assert code == 0 and payload["projection"]["coverage"] == "partial", payload
+            source = next(row for row in payload["projection"]["issues"] if row["number"] == 42)
+            assert source["status"] == "review_wait_record", source
+            evidence = json.loads(source["wait"]["evidence"])
+            assert evidence["failure"] == failures[-1].as_dict(), evidence
+        with_call_stub(transient, run)
+        assert {item["name"] for item in records[42]["labels"]} == {names[key] for key in ("plan", "done", "waiting")}
+        assert {item["name"] for item in records[43]["labels"]} == {names[key] for key in ("plan", "active")}
+        assert states == [(42, "closed")] and posts == [42], (states, posts)
+        assert comments[43] == []
 
 
 def test_exact_personal_close_optin_never_fans_out_when_later_identity_lookup_disagrees() -> None:
@@ -1566,6 +1614,7 @@ TESTS = [
     test_close_rejects_comment_with_comment_file,
     test_generic_cli_close_refreshes_a_nonplan_blockers_dependent_without_fact_edits,
     test_generic_cli_projection_failure_preserves_confirmed_close_and_metadata_recovery,
+    test_generic_closed_source_transient_comment_read_repairs_lifecycle_and_keeps_wait_review,
     test_exact_personal_close_optin_never_fans_out_when_later_identity_lookup_disagrees,
 ]
 

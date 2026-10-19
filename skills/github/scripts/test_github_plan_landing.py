@@ -11,6 +11,7 @@ import copy
 import importlib.util
 import io
 import json
+import os
 import shlex
 import subprocess
 import sys
@@ -29,6 +30,16 @@ PLAN = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = PLAN
 SPEC.loader.exec_module(PLAN)
 REPO = "fixture/catalog"
+
+
+@contextlib.contextmanager
+def exact_personal_route(route):
+    with patch.dict(os.environ, {"GH_PLAN_SKIP_BOT": "1" if route == "skip_bot" else "0",
+                                "GH_PLAN_ALLOW_ACTIVE_FIRST": "1" if route == "active_first" else "0"}), \
+            patch.object(PLAN.github_identity, "own_user_opted_in", return_value=route == "own_user"), \
+            patch.object(PLAN.github_identity, "active_auth_fallback_allowed", return_value=route == "active_fallback"), \
+            patch.object(PLAN.github_identity, "acts_as_own_user", side_effect=AssertionError("No provider identity lookup")):
+        yield
 
 
 def graph(*numbers: int, merged: bool = True, after: str | None = None) -> dict:
@@ -757,12 +768,12 @@ class MutationProjectionTests(unittest.TestCase):
             context.start()
             self.addCleanup(context.stop)
 
-    def add_issue(self, number, *, label_keys=("plan", "active"), wait=None):
+    def add_issue(self, number, *, label_keys=("plan", "active"), wait=None, repo=REPO):
         record = wait or github_plan_wait.reviewed(evidence="Full fixture discussion reviewed")
         self.records[number] = {
-            "repo": REPO, "id": number + 100, "number": number, "state": "open",
+            "repo": repo, "id": number + 100, "number": number, "state": "open",
             "title": "Fixture plan", "user": {"login": "fixture-bot"},
-            "html_url": f"https://github.com/{REPO}/issues/{number}",
+            "html_url": f"https://github.com/{repo}/issues/{number}",
             "body": PLAN.PLAN_MANAGED_PROVENANCE_MARKER + "\n" + github_plan_wait.marker(record),
             "labels": [{"name": self.config["labels"][key]} for key in label_keys] + [{"name": "bug"}],
         }
@@ -776,19 +787,21 @@ class MutationProjectionTests(unittest.TestCase):
 
     def get_issue(self, ref, repo):
         issue_repo, number = PLAN.issue_ref(str(ref), repo)
-        assert issue_repo == REPO
+        assert issue_repo == self.records[number]["repo"]
         return "fixture-bot", copy.deepcopy(self.records[number])
 
     def read_comments(self, path, **_kwargs):
         number = int(path.split("/issues/")[1].split("/")[0])
+        if path.endswith("/timeline"):
+            return "fixture-bot", []
         assert path.endswith("/comments"), path
         return "fixture-bot", copy.deepcopy(self.discussion[number])
 
     def relationships(self, repo, number, **_kwargs):
-        assert repo == REPO
+        assert repo == self.records[number]["repo"]
         def reference(target):
             issue = self.records[target]
-            return {"repo": REPO, "number": target, "state": issue["state"]}
+            return {"repo": issue["repo"], "number": target, "state": issue["state"]}
         return "fixture-bot", {"blocked_by": [reference(n) for n in sorted(self.blockers[number])],
             "blocking": [reference(n) for n, blockers in self.blockers.items() if number in blockers],
             "sub_issues": []}
@@ -811,7 +824,7 @@ class MutationProjectionTests(unittest.TestCase):
         return "fixture-bot", {}
 
     def edit_labels(self, number, *, repo, add_labels=None, remove_labels=None, **_kwargs):
-        assert repo == REPO
+        assert repo == self.records[number]["repo"]
         names = set(PLAN.normalize_labels(self.records[number]["labels"]))
         names.difference_update(remove_labels or [])
         names.update(add_labels or [])
@@ -819,12 +832,12 @@ class MutationProjectionTests(unittest.TestCase):
         return {"actor": "fixture-bot"}
 
     def set_state(self, number, *, repo, state, state_reason, **_kwargs):
-        assert repo == REPO
+        assert repo == self.records[number]["repo"]
         self.records[number].update(state=state, state_reason=state_reason)
         return {"actor": "fixture-bot"}
 
     def comment(self, _kind, number, body, *, repo, **_kwargs):
-        assert repo == REPO
+        assert repo == self.records[number]["repo"]
         self.discussion[number].append({"id": len(self.discussion[number]) + 1,
             "user": {"login": "fixture-bot"}, "body": body})
         return {"actor": "fixture-bot"}
@@ -989,6 +1002,160 @@ class MutationProjectionTests(unittest.TestCase):
         command = PLAN.build_parser().parse_args(shlex.split(recovery["projection_command"])[1:])
         self.assertEqual(command.command, "reconcile-status")
         self.assertTrue(command.include_dependents and command.apply)
+
+    def test_exact_personal_routes_repair_explicit_source_but_hold_automatic_dependents(self):
+        for route in ("own_user", "active_fallback", "skip_bot", "active_first"):
+            with self.subTest(route=route), exact_personal_route(route):
+                self.add_issue(7)
+                self.add_issue(8, label_keys=("plan", "blocked"))
+                self.blockers[8].add(7)
+                result = self.command("close", "7")
+                self.assert_labels(7, "plan", "done")
+                self.assert_labels(8, "plan", "blocked")
+                self.assertEqual(result["dependents"]["issues"][0]["status"], "review_posting_authority")
+                self.records[7]["labels"] = [{"name": self.config["labels"][key]} for key in ("plan", "active")]
+                before = copy.deepcopy((self.records, self.discussion, self.blockers))
+                preview = self.command("reconcile-status", "7", "--include-dependents")
+                self.assertEqual((self.records, self.discussion, self.blockers), before)
+                self.assertTrue(all(row["projection_status"] == "would_reconcile" for row in preview["issues"]))
+                applied = self.command("reconcile-status", "7", "--include-dependents", "--apply")
+                self.assert_labels(7, "plan", "done", extras=())
+                self.assert_labels(8, "plan", "blocked")
+                self.assertEqual(next(row for row in applied["issues"] if row["number"] == 8)["status"],
+                                 "review_posting_authority")
+
+    def test_landing_personal_routes_hold_all_discovered_tasks_but_allow_preview(self):
+        for route in ("own_user", "active_fallback", "skip_bot", "active_first"):
+            with self.subTest(route=route), exact_personal_route(route):
+                self.add_issue(7)
+                self.records[7].update(state="closed", state_reason="completed")
+                self.add_issue(8, label_keys=("plan", "blocked"))
+                self.blockers[8].add(7)
+                reader = Mock()
+                reader.graphql_json.return_value = SimpleNamespace(ok=True, body=graph(7))
+                before = copy.deepcopy((self.records, self.discussion, self.blockers))
+                applied = landing.reconcile(PLAN, reader, REPO, 9, apply=True)
+                self.assertEqual({row["role"] for row in applied["issues"]}, {"source", "related"})
+                self.assertTrue(all(row["status"] == "review_posting_authority" for row in applied["issues"]))
+                preview = landing.reconcile(PLAN, reader, REPO, 9, apply=False)
+                self.assertTrue(all(row["status"] == "would_reconcile" for row in preview["issues"]))
+                self.assertEqual((self.records, self.discussion, self.blockers), before)
+
+    def test_waiting_source_keeps_the_actual_projection_reason_and_preview(self):
+        held = github_plan_wait.reviewed(evidence="Client still tests the completed delivery",
+            waiting_for="Client acceptance", ends_when="Client accepts")
+        for wait in (held, None):
+            for reason in ("config", "radar", "preview"):
+                with self.subTest(wait=wait, reason=reason):
+                    self.add_issue(7, label_keys=("plan", "active", "waiting"), wait=held)
+                    self.records[7].update(state="closed", state_reason="completed")
+                    if wait is None:
+                        self.records[7]["body"] = github_plan_wait.without_records(self.records[7]["body"])
+                    before = copy.deepcopy((self.records[7], self.discussion))
+                    def config(repo, *, discovery=None, **kwargs):
+                        if discovery is not None:
+                            discovery.update(status="unavailable" if reason == "config" else "discovered")
+                        return copy.deepcopy(self.config)
+                    entry = {}
+                    with patch.object(PLAN, "load_config", side_effect=config), \
+                            patch.object(landing, "comment_attention", return_value=reason == "radar"):
+                        landing.reconcile_issue(PLAN, REPO, 7, graph(7)["data"]["repository"]["pullRequest"],
+                                                apply=reason != "preview", entry=entry)
+                    self.assertTrue(entry["wait_review_required"])
+                    self.assertEqual(entry["status"], {"config": "review_planning_config",
+                        "radar": "review_comments_or_coverage", "preview": "review_wait_record"}[reason])
+                    if reason == "preview":
+                        self.assertEqual(entry["projection_status"], "would_reconcile")
+                    self.assertEqual((self.records[7], self.discussion), before)
+
+    def independent_dependents(self):
+        self.add_issue(8, label_keys=("plan", "blocked"))
+        self.add_issue(9, label_keys=("plan", "blocked"), repo="fixture/independent")
+        self.blockers[8].add(7)
+        self.blockers[9].add(7)
+
+    def read_error(self, cause, *, outcome=None):
+        return PLAN.PlanError("Fixture source discussion read failed",
+            failure=PLAN.github_api_core.FailureDetail(cause=cause, message="Fixture exact discussion read failure",
+                retryable=False, fallback_eligible=False, disposition="stop", write_outcome=outcome,
+                request_id="fixture-discussion-request"), payload={"trace_id": "fixture-discussion-trace"})
+
+    def test_transient_source_wait_read_repairs_lifecycle_posts_comment_and_refreshes_dependents(self):
+        self.add_issue(7, label_keys=("plan", "active", "waiting"))
+        self.independent_dependents()
+        error = self.read_error("network_provider_failure")
+        def comments(path, **kwargs):
+            if "/issues/7/comments" in path:
+                raise error
+            return self.read_comments(path, **kwargs)
+        with patch.object(PLAN, "collect_paged_rest_items", side_effect=comments):
+            result = self.command("close", "7", "--comment", "Requested completion evidence.")
+        self.assert_labels(7, "plan", "done", "waiting")
+        self.assert_labels(8, "plan", "active")
+        self.assert_labels(9, "plan", "active")
+        self.assertEqual(self.discussion[7][0]["body"], "Requested completion evidence.")
+        evidence = json.loads(result["source_projection"]["derived"]["structured_wait"]["evidence"])
+        self.assertEqual(evidence["failure"], error.failure.as_dict())
+        self.assertEqual(evidence["trace_id"], error.payload["trace_id"])
+        self.assertEqual(result["coverage"], "partial")
+
+    def test_closed_related_transient_wait_read_repairs_labels_and_keeps_exact_failure(self):
+        self.add_issue(7, label_keys=("plan", "active", "waiting"))
+        self.records[7]["state"] = "closed"
+        error = self.read_error("network_provider_failure")
+        with patch.object(PLAN, "collect_paged_rest_items", side_effect=error), self.assertRaises(PLAN.PlanError) as caught:
+            self.command("reconcile-status", "7", "--apply")
+        self.assert_labels(7, "plan", "done", "waiting")
+        row = caught.exception.payload["issues"][0]
+        self.assertEqual(row["projection_status"], "reconciled")
+        self.assertEqual(json.loads(row["wait"]["evidence"])["failure"], error.failure.as_dict())
+        self.assertEqual(self.discussion[7], [])
+
+    def test_source_comment_read_denial_skips_same_repo_and_continues_independent_repo(self):
+        self.independent_dependents()
+        before = copy.deepcopy(self.records[7]["labels"])
+        error = self.read_error("permission_denied", outcome="rejected")
+        def comments(path, **kwargs):
+            if "/issues/7/comments" in path:
+                raise error
+            return self.read_comments(path, **kwargs)
+        with patch.object(PLAN, "collect_paged_rest_items", side_effect=comments), self.assertRaises(PLAN.PlanError) as caught:
+            self.command("close", "7", "--comment", "Evidence must not post after denial.")
+        self.assertEqual(self.records[7]["state"], "closed")
+        self.assertEqual(self.records[7]["labels"], before)
+        self.assertEqual(self.discussion[7], [])
+        self.assert_labels(8, "plan", "blocked")
+        self.assert_labels(9, "plan", "active")
+        result = caught.exception.payload
+        self.assertEqual(result["source_projection"]["status"], "review_posting_authority")
+        self.assertEqual(result["source_projection"]["error"]["failure"], error.failure.as_dict())
+        self.assertFalse(result["recovery"]["retry_safe"])
+        self.assertEqual(result["recovery"]["next_action"], "existing_authorized_target_session")
+        self.assertEqual(next(row for row in result["dependents"]["issues"] if row["number"] == 8)["status"],
+                         "not_attempted")
+
+    def test_source_label_denial_continues_independent_repo_but_unknown_write_stops_every_target(self):
+        for cause, outcome in (("permission_denied", "rejected"), ("permission_denied", "unknown")):
+            with self.subTest(outcome=outcome):
+                self.add_issue(7)
+                self.independent_dependents()
+                failure = PLAN.github_api_core.FailureDetail(cause=cause, message="Fixture source label failure",
+                    retryable=False, fallback_eligible=False, disposition="stop", write_outcome=outcome)
+                def edit(number, **kwargs):
+                    if number == 7:
+                        raise PLAN.github_issue_core.IssueError(failure.message, failure=failure)
+                    return self.edit_labels(number, **kwargs)
+                with patch.object(PLAN.github_issue_core, "edit_issue", side_effect=edit), self.assertRaises(PLAN.PlanError) as caught:
+                    self.command("close", "7", "--comment", "No comment after source write refusal.")
+                self.assertEqual(self.records[7]["state"], "closed")
+                self.assertEqual(self.discussion[7], [])
+                self.assert_labels(8, "plan", "blocked")
+                self.assert_labels(9, "plan", "active" if outcome == "rejected" else "blocked")
+                rows = {row["number"]: row for row in caught.exception.payload["dependents"]["issues"]}
+                self.assertEqual(set(rows), {8, 9})
+                self.assertEqual(rows[8]["status"], "not_attempted")
+                if outcome == "unknown":
+                    self.assertEqual(rows[9]["status"], "not_attempted")
 
 
 if __name__ == "__main__":

@@ -138,22 +138,43 @@ def neighborhood(plan: Any, landing_repo: str, sources: list[tuple[str, int]]) -
     return related
 
 
+def unread_wait(plan: Any, error: Exception) -> dict[str, Any]:
+    """Keep classified read evidence; a denial never authorizes another write."""
+    failure = getattr(error, "failure", None)
+    disposition = github_plan_status.failure_disposition(
+        failure.cause if failure else None, failure.write_outcome if failure else None,
+        writes_started=False)
+    if disposition["repository_denied"] or disposition["stop_writes"]:
+        raise error
+    evidence = {"message": str(error), **getattr(error, "payload", {})}
+    if failure is not None:
+        evidence["failure"] = failure.as_dict()
+    return {"version": 1, "state": "review", "evidence": json.dumps(evidence, sort_keys=True), "waits": []}
+
+
 def snapshot(plan: Any, repo: str, number: int) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     _, issue = plan.get_issue(str(number), repo)
     config = plan.load_config(repo)
     if not planning_issue(plan, issue, config):
         return issue, config, {"version": 1, "state": "review", "evidence": "Not a planning issue", "waits": []}
-    _, comments = plan.collect_paged_rest_items(
-        f"/repos/{repo}/issues/{number}/comments", query={}, bucket="rest_core", step_prefix="landing_comments")
     try:
+        _, comments = plan.collect_paged_rest_items(
+            f"/repos/{repo}/issues/{number}/comments", query={}, bucket="rest_core", step_prefix="landing_comments")
         wait = plan.current_wait(issue, comments, repo)
     except (ValueError, plan.PlanError) as error:
-        wait = {"version": 1, "state": "review", "evidence": str(error), "waits": []}
+        wait = unread_wait(plan, error)
     return issue, config, wait
 
 
 def planning_issue(plan: Any, issue: dict[str, Any], config: dict[str, Any]) -> bool:
     return github_plan_status.is_planning_issue(issue, config["labels"])
+
+
+def same_wait_projection(issue: dict[str, Any], first: dict[str, Any], second: dict[str, Any]) -> bool:
+    # Unknown history authorizes only closed lifecycle cleanup preserving waiting.
+    # Request IDs and retry diagnostics can change without changing that narrow
+    # projection. A newly readable clear/actual wait still requires a fresh run.
+    return first == second or (issue.get("state") == "closed" and first["state"] == second["state"] == "review")
 
 
 def comment_attention(repo: str, number: int) -> bool:
@@ -208,7 +229,8 @@ def reconcile_related(plan: Any, repo: str, number: int, *, apply: bool, entry: 
     # Re-run the observation immediately before a label write; never edit wait records or prose.
     fresh, fresh_config, fresh_wait = snapshot(plan, repo, number)
     _, fresh_relationships = plan.read_issue_relationships(repo, number, include_blocking=False)
-    if fresh != issue or fresh_wait != wait or fresh_relationships != relationships or fresh_config != config:
+    if (fresh != issue or not same_wait_projection(issue, fresh_wait, wait)
+            or fresh_relationships != relationships or fresh_config != config):
         raise ValueError("Related planning state changed before reconciliation")
     _, gh_cmd, expected = plan.comment_route()
     entry["writes_started"] = True
@@ -223,7 +245,7 @@ def reconcile_related(plan: Any, repo: str, number: int, *, apply: bool, entry: 
     expected_names = set(changes["result"])
     if (set(plan.normalize_labels(verified.get("labels"))) != expected_names
             or verified.get("state") != issue["state"] or verified.get("body") != issue.get("body")
-            or verified_wait != wait or verified_relationships != relationships):
+            or not same_wait_projection(issue, verified_wait, wait) or verified_relationships != relationships):
         raise ValueError("Related planning readback did not match")
     entry.update(github_plan_status.projection_outcome(derived, "reconciled"))
 
@@ -245,10 +267,12 @@ def reconciliation_error(entry: dict[str, Any], error: Exception) -> tuple[bool,
 
 
 def run_reconciliation_tasks(plan: Any, tasks: list[dict[str, Any]], *, apply: bool,
-                             pull: dict[str, Any] | None = None) -> dict[str, Any]:
+                             pull: dict[str, Any] | None = None,
+                             denied_repositories: dict[str, Any] | None = None,
+                             stopped_reason: dict[str, Any] | None = None) -> dict[str, Any]:
     """One partial-success/denial contract for close and landing adapters."""
-    stopped = None
-    denied: dict[str, Any] = {}
+    stopped = stopped_reason
+    denied: dict[str, Any] = dict(denied_repositories or {})
     for entry in tasks:
         if "status" in entry:
             continue
@@ -259,6 +283,10 @@ def run_reconciliation_tasks(plan: Any, tasks: list[dict[str, Any]], *, apply: b
         if repo.casefold() in denied:
             entry.update(status="not_attempted", reason=denied[repo.casefold()], informational=True,
                          next_action="Existing target authority must reconcile; this session will not repeat the denied write")
+            continue
+        if apply and entry.get("automatic") and not plan.automatic_planning_writes_allowed():
+            entry.update(status="review_posting_authority",
+                         reason="Exact personal command approval does not authorize automatic planning writes")
             continue
         try:
             if entry["role"] == "source":
@@ -288,15 +316,18 @@ def run_reconciliation_tasks(plan: Any, tasks: list[dict[str, Any]], *, apply: b
     return {**github_plan_status.receipt_summary(tasks), "issues": tasks}
 
 
-def reconcile_dependents(plan: Any, repo: str, number: int, *, apply: bool) -> dict[str, Any]:
+def reconcile_dependents(plan: Any, repo: str, number: int, *, apply: bool,
+                         denied_repositories: dict[str, Any] | None = None,
+                         stopped_reason: dict[str, Any] | None = None) -> dict[str, Any]:
     """The same direct native neighborhood refresh for issue closes and landings."""
     tasks = []
     for target_repo, target_number in neighborhood(plan, repo, [(repo, number)]):
-        entry = {"repo": target_repo, "number": target_number, "role": "related"}
+        entry = {"repo": target_repo, "number": target_number, "role": "related", "automatic": True}
         if target_repo.split("/")[0].casefold() != repo.split("/")[0].casefold():
             entry.update(status="review_cross_repository", informational=True)
         tasks.append(entry)
-    return run_reconciliation_tasks(plan, tasks, apply=apply)
+    return run_reconciliation_tasks(plan, tasks, apply=apply, denied_repositories=denied_repositories,
+                                    stopped_reason=stopped_reason)
 
 
 def reconcile(plan: Any, reader: github_read.GitHubReader, repo: str, number: int, *, apply: bool) -> dict[str, Any]:
@@ -310,6 +341,7 @@ def reconcile(plan: Any, reader: github_read.GitHubReader, repo: str, number: in
     roles.extend((key, False) for key in related)
     for (issue_repo, issue_number), is_source in roles:
         entry = {"repo": issue_repo, "number": issue_number,
+                 "automatic": True,
                  "role": "source" if is_source else "related",
                  "closing_reference": (issue_repo, issue_number) in references}
         if (issue_repo, issue_number) not in roots and (issue_repo, issue_number) not in related:
@@ -342,8 +374,10 @@ def reconcile_issue(plan: Any, repo: str, issue_number: int, pull: dict[str, Any
         # Closure is already confirmed. Repair only its lifecycle label view;
         # a held/unread wait does not authorize a completion note or body edit.
         reconcile_related(plan, repo, issue_number, apply=apply, entry=entry)
-        entry.update(status="review_wait_record", verified=False, wait=wait,
-                     next_action="Preserve the wait; owning agent reviews full completion metadata")
+        entry.update(wait_review_required=True, wait=wait,
+                     completion_review="Preserve the wait; owning agent reviews full completion metadata")
+        if entry["status"] in {"reconciled", "unchanged", "would_reconcile"}:
+            entry.update(projection_status=entry["status"], status="review_wait_record", verified=False)
         return
     # Use the existing closure's native relationship preflight even in preview.
     plan.close_relationship_preflight(repo, issue_number, "completed")
