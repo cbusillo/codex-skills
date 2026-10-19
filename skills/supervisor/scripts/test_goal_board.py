@@ -12,7 +12,7 @@ from unittest.mock import Mock, patch
 
 import goal_board
 from skills.github.scripts.github_api import ApiResult
-from skills.github.scripts import github_plan_wait
+from skills.github.scripts import github_plan_wait, github_plan_status
 
 BOT = {"__typename": "Bot", "login": "shiny-code-app"}
 TRUSTED = {"owner", "shiny-code-app[bot]"}
@@ -101,7 +101,8 @@ class GoalBoardTests(unittest.TestCase):
         board = self.replay(listing([{"number": 1, "title": "Track: One"}]),
                             details(t1=track(1, children=rows)))
         observed = board["tracks"][0]["children"]
-        self.assertEqual([row["status"] for row in observed], ["plan:active", "plan:blocked", "plan:waiting"])
+        self.assertEqual([row["status"] for row in observed],
+                         [github_plan_status.DEFAULT_STATUS_LABELS[key] for key in ("active", "blocked", "waiting")])
         self.assertEqual(observed[0]["blocked_by"], [])
         self.assertEqual([(row["repo"], row["number"]) for row in observed[1]["blocked_by"]], [("owner/other", 2)])
         self.assertEqual(observed[2]["waits"], held["waits"])
@@ -119,7 +120,7 @@ class GoalBoardTests(unittest.TestCase):
         original = row["body"]
         board = self.replay(listing([{"number": 1, "title": "Track: One"}]), details(t1=track(1, children=[row])))
         observed = board["tracks"][0]["children"][0]
-        self.assertEqual(observed["status"], "plan:blocked")
+        self.assertEqual(observed["status"], github_plan_status.DEFAULT_STATUS_LABELS["blocked"])
         self.assertEqual(observed["waits"], held["waits"])
         self.assertEqual(observed["labels"], ["blocked", "waiting"])
         self.assertEqual(row["body"], original)
@@ -167,7 +168,7 @@ class GoalBoardTests(unittest.TestCase):
         self.assertEqual([row["number"] for row in board["tracks"]], [1, 3])
         one = board["tracks"][0]
         self.assertEqual(one["latest_decision"], decision["url"])
-        self.assertEqual(one["status"], "plan:active")
+        self.assertEqual(one["status"], github_plan_status.DEFAULT_STATUS_LABELS["active"])
         self.assertEqual([(row["url"].rsplit("/", 1)[1], row["handoff"]) for row in one["children"][0]["open_prs"]],
                          [("100", "ready"), ("101", "ready for an older head"),
                           ("103", "engineering ready, waiting"), ("104", "no handoff")])
@@ -202,7 +203,7 @@ class GoalBoardTests(unittest.TestCase):
                             details(t1=track(1, children=[many_labels, child(12, prs=[long_pr])])))
         self.assertFalse(board["coverage"]["complete"])
         rows = board["tracks"][0]["children"]
-        self.assertEqual(rows[0]["status"], "plan:active")
+        self.assertEqual(rows[0]["status"], github_plan_status.DEFAULT_STATUS_LABELS["active"])
         self.assertEqual(rows[1]["open_prs"][0]["handoff"], goal_board.UNKNOWN)
         board = self.replay(listing([{"number": 1, "title": "Track: One"}]), details(t1=long_track))
         self.assertFalse(board["coverage"]["complete"])
