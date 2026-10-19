@@ -18,34 +18,42 @@ import github_plan_closure as closure
 
 
 @asynccontextmanager
-async def connection(home: Path, *, max_msg_size: int = 1024 * 1024):
+async def connection(home: Path, *, max_msg_size: int = 64 * 1024 * 1024):
     import aiohttp
     endpoint = closure.daemon_endpoint(home).resolve(strict=True)
     info = endpoint.stat()
     if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
         raise ValueError("native socket ownership is unavailable")
     sequence = 0
-    async with asyncio.timeout(5):
-        async with aiohttp.ClientSession(connector=aiohttp.UnixConnector(path=str(endpoint))) as client:
-            async with client.ws_connect("http://localhost/", max_msg_size=max_msg_size) as ws:
-                async def request(method, params):
-                    nonlocal sequence
-                    sequence += 1
-                    await ws.send_json({"id": sequence, "method": method, "params": params})
-                    while True:
-                        message = await ws.receive_json()
-                        if not isinstance(message, dict):
-                            raise ValueError("native response is unavailable")
-                        if message.get("id") == sequence and "method" not in message:
-                            if "error" in message or "result" not in message:
-                                raise ValueError("native request rejected")
-                            return message["result"]
-                initialized = await request("initialize", {"clientInfo": {"name": "codex_skills_claim", "version": "1"},
-                                                           "capabilities": {"experimentalApi": True}})
-                native_home = initialized.get("codexHome") if isinstance(initialized, dict) else None
-                request.codex_home = str(Path(native_home).resolve()) if isinstance(native_home, str) and Path(native_home).is_absolute() else None
-                await ws.send_json({"method": "initialized"})
-                yield request
+    try:
+        async with asyncio.timeout(5):
+            async with aiohttp.ClientSession(connector=aiohttp.UnixConnector(path=str(endpoint))) as client:
+                async with client.ws_connect("http://localhost/", max_msg_size=max_msg_size) as ws:
+                    async def request(method, params):
+                        nonlocal sequence
+                        sequence += 1
+                        await ws.send_json({"id": sequence, "method": method, "params": params})
+                        while True:
+                            try:
+                                message = await ws.receive_json()
+                            except aiohttp.WSMessageTypeError as error:
+                                raise ValueError("native response is unavailable; preserve the uncertain operation and do not replay") from error
+                            if not isinstance(message, dict):
+                                raise ValueError("native response is unavailable")
+                            if message.get("id") == sequence and "method" not in message:
+                                if "error" in message or "result" not in message:
+                                    raise ValueError("native request rejected")
+                                return message["result"]
+                    initialized = await request("initialize", {"clientInfo": {"name": "codex_skills_claim", "version": "1"},
+                                                               "capabilities": {"experimentalApi": True}})
+                    native_home = initialized.get("codexHome") if isinstance(initialized, dict) else None
+                    request.codex_home = str(Path(native_home).resolve()) if isinstance(native_home, str) and Path(native_home).is_absolute() else None
+                    await ws.send_json({"method": "initialized"})
+                    yield request
+    except aiohttp.ClientError as error:
+        if isinstance(error, (OSError, ValueError)):
+            raise  # Preserve existing known-absence and ordinary refusal handling.
+        raise ValueError("native transport failed; preserve the uncertain operation and do not replay") from error
 
 
 async def pages(request, method, session, **params):
@@ -147,15 +155,16 @@ async def optional_turns(request, session):
     return turns, complete
 
 
-async def read_thread(request, session):
-    result = await request("thread/read", {"threadId": session, "includeTurns": False})
+async def read_thread(request, session, *, include_turns=False):
+    result = await request("thread/read", {"threadId": session, "includeTurns": include_turns})
     thread = result.get("thread") if isinstance(result, dict) else None
     status = thread.get("status") if isinstance(thread, dict) else None
     if (not isinstance(thread, dict) or thread.get("id") != session or not isinstance(thread.get("path"), str)
             or not Path(thread["path"]).is_absolute() or not isinstance(status, dict) or status.get("type") not in {
                 "idle", "notLoaded", "active", "systemError"}):
         raise ValueError("native thread identity or state is unavailable")
-    return {"id": session, "path": str(Path(thread["path"]).resolve()), "state": thread["status"]["type"]}
+    return {"id": session, "path": str(Path(thread["path"]).resolve()), "state": thread["status"]["type"],
+            "history_mode": thread.get("historyMode", "legacy")}
 
 
 async def read_thread_facts(request, session):
@@ -171,6 +180,13 @@ async def read_thread_facts(request, session):
         # NotLoaded does not turn that history into running execution evidence.
         facts["turns"], facts["history_complete"] = await optional_turns(request, session)
         return facts
+    # Loaded paginated history supports the item/timeline reads required below.
+    # Its full-history read also awaits pending canonical writes and propagates
+    # persistence errors before replying. Metadata-only reads do not do so.
+    if thread["history_mode"] != "paginated":
+        raise ValueError("loaded native history does not support required paginated reads")
+    if await read_thread(request, session, include_turns=True) != thread:
+        raise ValueError("native source changed during its canonical persistence read")
     facts["turns"] = await read_turns(request, session)
     facts["history_complete"] = True
     facts["executions"] = await read_executions(request, session)
@@ -249,23 +265,49 @@ async def queue_input(home: Path, session: str, text: str, *, transcript: Path |
             return {"queuedSubmissionId": entry["id"], "clientUserMessageId": client_id}
 
 
-def source_snapshot(entry):
-    """Only file/process reads; safe to await in a cancellable worker thread."""
-    from github_plan_sessions import native_helpers, codex_homes, process_liveness
+def verify_source_process(entry):
+    """Cheap shared process proof; caller timestamps never supply an exit cutoff."""
+    from github_plan_sessions import native_helpers, process_liveness
     from github_plan_release import stamp
     native_helpers()
     import release_session_claims
     session = entry["session_id"]
     saved = closure.source_records({session}).get(session)
-    # A minimal resume row is identity metadata, not ownership. An explicitly
-    # owned caller may supply its original launch provenance; observation cannot.
     source = {**entry, **(saved or {})}
-    if source.get("harness") != "codex" or source.get("supervisor_owned") is not True:
-        raise ValueError("native end proof requires the original owned source identity")
     generation = source.get("resumed_generation")
     if generation is not None and (not isinstance(generation, dict) or not generation):
         raise ValueError("native resumed generation is unavailable")
     effective = {**source, **(generation or {})}
+    effective.pop("tty_exited_at", None)
+    if generation:
+        launch_keys = ("launch_pid", "launch_generation", "launch_started_at", "pid", "tty", "codex_home")
+        if all(entry.get(key) == generation.get(key) for key in launch_keys):
+            # Fresh terminal coordinates belong only to an owned matching
+            # recovery ledger; an IDs-only observer cannot guess them.
+            for key in ("tmux_session_id", "tmux_socket", "window_id", "tab_id", "iterm_session_id"):
+                if key in entry:
+                    effective[key] = entry[key]
+    if not generation and saved and saved.get("process_exit_verified") is True and saved.get("ended_at"):
+        ended = stamp(saved["ended_at"])
+        cutoff = stamp(saved["tty_exited_at"]) if saved.get("tty_exited_at") else ended
+        if cutoff > ended:
+            raise ValueError("native TTY exit cutoff is newer than closure")
+    else:
+        cutoff = process_liveness().native_exit_cutoff(effective)
+    release_session_claims.verify_process_exit(effective, ended_at=cutoff)
+    return source, saved, effective
+
+
+def source_snapshot(entry):
+    """Only file/process reads; safe to await in a cancellable worker thread."""
+    from github_plan_sessions import codex_homes
+    source, saved, effective = verify_source_process(entry)
+    session = entry["session_id"]
+    # A minimal resume row is identity metadata, not ownership. An explicitly
+    # owned caller may supply its original launch provenance; observation cannot.
+    if source.get("harness") != "codex" or source.get("supervisor_owned") is not True:
+        raise ValueError("native end proof requires the original owned source identity")
+    generation = source.get("resumed_generation")
     home = Path(effective["codex_home"]).expanduser().resolve(strict=True)
     original_home = Path(source["codex_home"]).expanduser().resolve(strict=True)
     primary = Path(effective["transcript"]).resolve(strict=True)
@@ -286,17 +328,6 @@ def source_snapshot(entry):
     # Relevant authenticated copies remain current-work coverage even if an old
     # buggy finish already cleared the marker that originally touched that home.
     homes.update(Path(value) for value in paths)
-    if generation:
-        effective.pop("tty_exited_at", None)
-        launch_keys = ("launch_pid", "launch_generation", "launch_started_at", "pid", "tty", "codex_home")
-        if all(entry.get(key) == generation.get(key) for key in launch_keys):
-            # Only an independently owned matching recovery ledger can supply
-            # fresh terminal coordinates. An IDs-only observer cannot guess them.
-            for key in ("tmux_session_id", "tmux_socket", "window_id", "tab_id", "iterm_session_id"):
-                if key in entry:
-                    effective[key] = entry[key]
-    cutoff = process_liveness().native_exit_cutoff(effective) if generation else stamp(source["ended_at"]) if source.get("ended_at") else None
-    release_session_claims.verify_process_exit(effective, ended_at=cutoff)
     if any(snapshot["status"]["background_tasks"] for snapshot in snapshots.values()):
         raise ValueError("source background work remains")
     return {"source": saved, "entry": source, "home": str(home), "path": str(primary),
@@ -323,6 +354,8 @@ def require_quiet(facts, snapshot, action):
         if position is not None and position > 0:
             raise ValueError("native actual turn is later than the source verdict")
         return
+    if status.get("active_realtime_sessions") or status.get("realtime_coverage") is False:
+        raise ValueError("canonical realtime work remains or its lifecycle is unavailable")
     if (not facts["executions"]["ended"] or facts["background"] or facts["realtime"]
             or facts["goal"] == "active"):
         raise ValueError("native execution or scheduled work remains")
@@ -377,14 +410,17 @@ async def prove_end(entry, request=None):
             facts = await read_thread_facts(native, session)
             require_quiet(facts, local_snapshot(before, facts, home), home_action(action, home))
             first[home] = facts
-        after = await asyncio.to_thread(source_snapshot, entry)
         final = {}
         for home, native in readers.items():
             facts = await read_thread_facts(native, session)
-            require_quiet(facts, local_snapshot(after, facts, home), home_action(action, home))
             if current_facts(first[home]) != current_facts(facts):
                 raise ValueError("native source changed during end proof")
             final[home] = facts
+        # The last native persistence read can commit buffered events. Read the
+        # canonical source after that fence, never accept an earlier snapshot.
+        after = await asyncio.to_thread(source_snapshot, entry)
+        for home, facts in final.items():
+            require_quiet(facts, local_snapshot(after, facts, home), home_action(action, home))
         if before != after:
             raise ValueError("native source changed during end proof")
     return {"snapshot": after, "facts": final[after["home"]], "homes": final, "action": action}

@@ -220,25 +220,14 @@ def observation(sessions: set[str], *, retain: set[str] | None = None):
                 if action_pending(session) or candidates.get(session, {}).get("resumed_at"):
                     continue
                 if session in candidates:
-                    from github_plan_sessions import native_helpers
-                    native_helpers()
-                    from release_session_claims import verify_process_exit
-                    from github_plan_release import stamp
-                    entry = candidates[session]
-                    generation = entry.get("resumed_generation")
-                    if generation:
-                        entry = {k: v for k, v in {**entry, **generation}.items() if k != "tty_exited_at"}
-                        from github_plan_sessions import process_liveness
-                        cutoff = process_liveness().native_exit_cutoff(entry)
-                    else:
-                        cutoff = stamp(entry["ended_at"]) if entry.get("ended_at") else None
-                    verify_process_exit(entry, ended_at=cutoff)
+                    from github_plan_native import verify_source_process
+                    verify_source_process(candidates[session])
                 with ExitStack() as attempt:
                     if not attempt.enter_context(ownership(session, create=group is not None)):
                         continue
                     # An action may have completed between the unleased read
                     # above and acquisition. Release immediately in that case.
-                    if action_pending(session) and session not in candidates:
+                    if action_pending(session):
                         continue
                     owned = attempt.pop_all()
                     stack.callback(owned.close)
@@ -284,6 +273,11 @@ def inherit_observed_leases():
     group = _OBSERVATION.get()
     if group is not None:
         _LEASES.set({*(_LEASES.get() or set()), *group[2]})
+
+
+def held_sources() -> set[str]:
+    """Current owner's retained native source leases, independent of proof format."""
+    return set(_LEASES.get() or set())
 
 
 def log_rows() -> list[dict]:
@@ -580,7 +574,8 @@ def transcripts(session: str, primary: str, *, include_status: bool = False, add
                                 "sha256": digest.hexdigest(), "latest": latest}
         if include_status:
             snapshots[str(path)]["status"] = {key: status[key] for key in (
-                "safe_verdict", "timestamp", "turn_id", "turn_started_at", "turn_completed_at", "message_at", "actual_turn_ids", "background_tasks")}
+                "safe_verdict", "timestamp", "turn_id", "turn_started_at", "turn_completed_at", "message_at", "actual_turn_ids", "background_tasks",
+                "active_realtime_sessions", "realtime_coverage")}
     return snapshots
 
 

@@ -2493,11 +2493,15 @@ def _claim_once(args: argparse.Namespace) -> None:
     planning_checkout = getattr(args, "planning_checkout", None)
     config = load_config(issue_repo, checkout=planning_checkout) if planning_checkout else load_config(issue_repo)
 
+    def retain_released_sources(sessions) -> None:
+        retained_ended_sources.update((set(sessions) & github_plan_closure.held_sources()) - {claim["session"]})
+
     def ownership_snapshot(current_status: str, current_comments: list[dict[str, Any]]):
         nonlocal inventory, ended_owners
         inventory = github_plan_claim.observe_sessions(
             github_plan_claim.local_inventory(target_repo, number), current_comments)
         ended_owners = github_plan_claim.ended_ownership(current_comments, inventory)
+        retain_released_sources(entry["session"] for entry in ended_owners)
         branches = set(inventory["local_branches"]) | set(inventory["remote_branches"]) | {t["branch"] for t in inventory["worktrees"]}
         if any(entry["branch"] == claim["branch"] and entry["branch"] in branches and entry["claim_id"] != args.resume_from for entry in ended_owners):
             raise PlanError("Ended ownership requires a new task branch; preserve the retained source branch and worktree")
@@ -2591,13 +2595,11 @@ def _claim_once(args: argparse.Namespace) -> None:
                              for branch in sorted(branches & present))
         if competing:
             refuse(competing, owner_comments=peer_comments, owner_repo=peer_repo, owner_number=peer_number)
-        retained_ended_sources.update(session for session, state in peer_inventory.get("session_states", {}).items()
-                                     if state.get("state") == "ended" and state.get("leased_closure"))
+        retain_released_sources(entry["session"] for entry in ended)
 
     def admit_observed_sources() -> None:
         try:
-            github_plan_closure.admit_sources(retained_ended_sources | {session for session, state in inventory.get("session_states", {}).items()
-                                              if state.get("state") == "ended" and state.get("leased_closure")})
+            github_plan_closure.admit_sources(retained_ended_sources)
         except (OSError, ValueError) as error:
             raise ClassifiedPlanError("claim_closure_unavailable",
                 "Source ownership could not be committed; preserve it and retry this claim after the owning operation ends",
@@ -2851,8 +2853,7 @@ def _claim_once(args: argparse.Namespace) -> None:
         if live_sources:
             owner_comments, owner_repo, owner_number = session_owners[live_sources[0]["session"]]
             refuse(live_sources, owner_comments=owner_comments, owner_repo=owner_repo, owner_number=owner_number)
-        retained_ended_sources.update(session for session, state in target_inventory.get("session_states", {}).items()
-                                     if state.get("state") == "ended" and state.get("leased_closure"))
+        retain_released_sources(released_target_sessions)
         check_inherited_sources(current_comments, current_status, source_inventory=target_inventory)
         check_handoff_successors(source_number, target_inventory, source_comments=source_comments)
         _, own_comments = github_plan_claim.discussion_evidence("", current_comments, claim)

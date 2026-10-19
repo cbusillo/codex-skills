@@ -67,13 +67,6 @@ async def observe_home(home: Path, sessions: set[str], proof_sessions: set[str] 
     peers, states = [], {}
     coverage = {"status": "incomplete", "peer_complete": False, "socket": str(socket_path)}
     proof_sessions = sessions if proof_sessions is None else proof_sessions
-    async def executions_ended(session):
-        queued = await request("thread/queue/list", {"threadId": session, "limit": 1})
-        if (not isinstance(queued, dict) or not isinstance(queued.get("data"), list)
-                or queued["data"] or queued.get("nextCursor") is not None):
-            return False
-        return (await github_plan_native.read_executions(request, session))["ended"]
-
     active_seen = set()
 
     def live(session, thread):
@@ -85,6 +78,8 @@ async def observe_home(home: Path, sessions: set[str], proof_sessions: set[str] 
         thread = (await request("thread/read", {"threadId": session, "includeTurns": False}))["thread"]
         if thread.get("id") != session:
             raise ValueError("native session identity mismatch")
+        if isinstance(thread.get("path"), str) and Path(thread["path"]).is_absolute():
+            thread = {**thread, "path": str(Path(thread["path"]).resolve())}
         state = thread.get("status", {}).get("type")
         source = github_plan_closure.RECEIPTS.get().get(session)
         recovering = source and (github_plan_closure.action_pending(session) or source.get("resumed_at"))
@@ -92,6 +87,7 @@ async def observe_home(home: Path, sessions: set[str], proof_sessions: set[str] 
             if state not in {"idle", "notLoaded"}:
                 live(session, thread)
                 return
+            await asyncio.to_thread(github_plan_native.verify_source_process, source)
             with github_plan_closure.pending_observation(session) as acquired:
                 if not acquired:
                     return
@@ -137,7 +133,8 @@ async def observe_home(home: Path, sessions: set[str], proof_sessions: set[str] 
                       and github_plan_closure.idle_eligible(receipt) and session not in active_seen)
         if idle_proof and prove:
             receipt = await asyncio.to_thread(github_plan_closure.verified_record, session, home)
-            idle_proof = receipt is not None and await executions_ended(session)
+            idle_proof = receipt is not None
+            initial_facts = await github_plan_native.read_thread_facts(request, session) if idle_proof else None
             if not idle_proof:
                 receipt = None
         else:
@@ -155,11 +152,21 @@ async def observe_home(home: Path, sessions: set[str], proof_sessions: set[str] 
         # the other daemons' native reads. The source lease spans this sandwich.
         snapshot = github_plan_closure.transcripts if receipt else transcript_snapshot
         before = receipt["closure_evidence"]["transcripts"] if receipt else await asyncio.to_thread(snapshot, session, thread["path"])
-        after = (await request("thread/read", {"threadId": session, "includeTurns": False}))["thread"]
-        verified = await asyncio.to_thread(snapshot, session, thread["path"])
-        same = before == verified and after.get("id") == session and after.get("path") == thread.get("path")
+        final_facts = await github_plan_native.read_thread_facts(request, session) if receipt else None
+        after = ({"id": final_facts["id"], "path": final_facts["path"], "status": {"type": final_facts["state"]}}
+                 if receipt else (await request("thread/read", {"threadId": session, "includeTurns": False}))["thread"])
+        verified = await asyncio.to_thread(snapshot, session, thread["path"], **({"include_status": True} if receipt else {}))
+        # Status is transient metadata from this same authenticated parse. The
+        # persisted receipt still binds every source byte through its hash.
+        fingerprints = {path: {key: value for key, value in item.items() if key != "status"}
+                        for path, item in verified.items()} if receipt else verified
+        same = before == fingerprints and after.get("id") == session and after.get("path") == thread.get("path")
         final_state = after.get("status", {}).get("type")
         if receipt:
+            source = {"path": thread["path"], "transcripts": verified}
+            github_plan_native.require_quiet(initial_facts, source, {})
+            github_plan_native.require_quiet(final_facts, source, {})
+            same = same and github_plan_native.current_facts(initial_facts) == github_plan_native.current_facts(final_facts)
             current = await asyncio.to_thread(github_plan_closure.receipt_current, receipt)
             valid = same and before == receipt["closure_evidence"]["transcripts"] and current
             ended_at = receipt["ended_at"]

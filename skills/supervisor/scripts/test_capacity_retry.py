@@ -24,12 +24,26 @@ import status
 import github_plan_native
 import github_plan_sessions
 
+NATIVE_CONNECTION = github_plan_native.connection
+
 FIXTURE = Path(__file__).parent / "fixtures" / "codex-capacity-stop.jsonl"
 # The records Codex writes when `codex queue` delivers a message to an idle thread.
 QUEUED_CONTINUE = Path(__file__).parent / "fixtures" / "codex-queued-continue.jsonl"
 
 
 class CapacityTests(unittest.TestCase):
+    def test_native_transport_failure_records_uncertain_and_never_replays(self):
+        import aiohttp
+        with patch.object(github_plan_native, "connection", NATIVE_CONNECTION), \
+                patch.object(aiohttp.ClientSession, "ws_connect", side_effect=aiohttp.ClientConnectionError("synthetic transport failure")) as connect:
+            result = capacity_retry.resume(self.entry, session_record.session_status(self.entry), {}, self.state_path, self.now + 100000)
+            self.assertEqual(result["state"], "reconciliation_required")
+            stored = capacity_retry.load_state(self.state_path)
+            self.assertEqual(stored[self.native_id]["phase"], "uncertain")
+            capacity_retry.resume(self.entry, session_record.session_status(self.entry), stored, self.state_path, self.now + 200000)
+            self.assertEqual(connect.call_count, 1)
+            self.assertTrue(capacity_retry.github_plan_closure.action_pending(self.native_id))
+
     def test_ownership_busy_before_send_does_not_spend_or_uncertainly_record_an_attempt(self):
         state = {}
         now = self.now + 100000

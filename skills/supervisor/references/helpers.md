@@ -1924,8 +1924,9 @@ operation still refuses those sends; capacity retry defers without spending an
 attempt. Queue never joins or bypasses a busy source lease. Native action
 requests need a request ID so ownership can span acknowledgement.
 
-Observation reads native state before taking a pending source's ownership
-lease. Live workers keep receiving actions and approvals while inventory waits.
+Observation reads native state and checks source process exit before taking a
+pending source's ownership lease or scanning its transcripts. Live workers keep
+receiving actions and approvals while inventory waits.
 When a source can contribute end proof, observation acquires its lease,
 rechecks identity and current work, and retains successful proof through final
 claim publication. Busy or unsuccessful sources supply no end proof and retain
@@ -1970,6 +1971,15 @@ unanchored or conflicting actual turn order refuses. For an unloaded source,
 persisted history is supplementary: an empty, stale or unavailable index alone
 does not defeat authenticated completed source history. Positively later native
 work still refuses.
+
+Loaded proofs use the same complete current-work reader for ordinary closure
+receipts and pending-action recovery. The existing paginated history read also
+flushes pending canonical events before responding; a failed read cannot prove
+durability. Its response is bounded at 64 MiB and five seconds. The final
+canonical scan follows the last persistence read. Canonical realtime start and
+close records supplement the rebuildable realtime index, which can lag. An
+active or unrecognized canonical realtime lifecycle refuses loaded proof; old
+unclosed realtime history alone does not defeat current NotLoaded evidence.
 
 Successful end proof can resolve an invalidation during claim observation or
 applied finish; another closure publication is not required just to clear it.

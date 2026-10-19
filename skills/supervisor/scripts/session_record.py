@@ -321,10 +321,13 @@ def summarize(records: list[dict], harness: str) -> dict:
         "turn_completed_at": None,
         "message_at": None,
         "actual_turn_ids": [],
+        "active_realtime_sessions": [],
+        "realtime_coverage": True,
     }
     running_tasks: dict = {}
     scheduled_jobs: dict = {}
     scheduled_tools: dict = {}
+    active_realtime: set[str] = set()
     if harness == "claude":
         records = strip_claude_exit_tail(records)
     previous: dict = {}
@@ -365,6 +368,17 @@ def summarize(records: list[dict], harness: str) -> dict:
                     at_turn_end=message.get("stop_reason") == "end_turn" and not tool_use,
                 )
         else:
+            if record.get("type") == "realtime_item":
+                identity = payload.get("realtime_session_id")
+                if (not isinstance(payload.get("id"), str) or not payload["id"]
+                        or not isinstance(identity, str) or not identity
+                        or kind not in {"realtime_session_started", "realtime_session_closed", "transcript_segment", "bem_item_promoted"}
+                        or kind == "realtime_session_closed" and payload.get("outcome") not in {"ended", "failed"}):
+                    result["realtime_coverage"] = False
+                elif kind == "realtime_session_started":
+                    active_realtime.add(identity)
+                elif kind == "realtime_session_closed":
+                    active_realtime.discard(identity)
             if kind in {"task_started", "task_complete", "turn_aborted"}:
                 turn_id = payload.get("turn_id")
                 if isinstance(turn_id, str) and turn_id:
@@ -418,6 +432,9 @@ def summarize(records: list[dict], harness: str) -> dict:
                         "timestamp": record.get("timestamp"),
                         "turn_id": payload.get("turn_id"),
                     }
+    # Historical RTC can survive a crash. Only loaded native proof interprets
+    # this canonical lifecycle as current work; it is not a background-task veto.
+    result["active_realtime_sessions"] = sorted(active_realtime)
     # Citation metadata may follow the verdict; retain the raw response for readers.
     verdict_text = MEMORY_CITATION_TAIL.sub("", result["last_text"])
     lines = verdict_text.rstrip().splitlines()

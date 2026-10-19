@@ -3576,9 +3576,35 @@ class ClaimTests(unittest.TestCase):
                 inventory["session_states"] = {target["session"]: {"state": "ended", "leased_closure": True}}
             return inventory
         self.observe_inventory = observe
-        with patch.object(PLAN.github_plan_closure, "admit_sources") as freeze:
+        with patch.object(PLAN.github_plan_closure, "admit_sources") as freeze, \
+                patch.object(PLAN.github_plan_closure, "held_sources", return_value={target["session"]}):
             self.run_claim()
         self.assertIn(target["session"], freeze.call_args.args[0])
+
+    def test_exact_released_source_is_frozen_without_an_optional_idle_receipt(self):
+        closure = PLAN.github_plan_closure
+        for state in ({"state": "ended", "leased_closure": True},
+                      {"state": "ended", "leased_closure": False, "source": "native_resolution"},
+                      {"state": "ended", "leased_closure": False, "native_state": "notLoaded"}, {}):
+            with self.subTest(state=state):
+                self.setUp()
+                self.comments = [
+                    {"id": 1, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}, "created_at": OTHER["claimed_at"]},
+                    {"id": 2, "body": "Released claim 1", "user": {"login": TEST_BOT}, "created_at": "2026-10-01T00:02:00Z"}]
+                self.inventory["session_states"] = {OTHER["session"]: state,
+                    "unrelated-source": {"state": "ended", "leased_closure": True}}
+                with tempfile.TemporaryDirectory() as directory, \
+                        patch.object(closure, "closed_log", return_value=Path(directory) / "closed.json"):
+                    with closure.ownership(OTHER["session"], create=True), \
+                            closure.ownership(OWNER["session"], create=True), \
+                            closure.ownership("unrelated-source", create=True):
+                        self.run_claim()
+                        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+                        with self.assertRaisesRegex(ValueError, "handed off"):
+                            with closure.resume_guard(OTHER["session"]):
+                                self.fail("released predecessor remained writable after successor claim")
+                        for untouched in (OWNER["session"], "unrelated-source"):
+                            with closure.resume_guard(untouched): pass
 
     def test_admission_freezes_leased_ownership_observed_only_on_family_peer(self):
         for busy, phase in product((False, True), ("preflight", "after_post", "after_status")):
@@ -3612,7 +3638,8 @@ class ClaimTests(unittest.TestCase):
                     admitted.append(peer["session"])
                     if busy:
                         raise PLAN.github_plan_closure.LeaseBusy("held")
-                with patch.object(PLAN.github_plan_closure, "admit_sources", side_effect=freeze):
+                with patch.object(PLAN.github_plan_closure, "admit_sources", side_effect=freeze), \
+                        patch.object(PLAN.github_plan_closure, "held_sources", return_value={peer["session"]}):
                     if busy:
                         with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
                         self.assertEqual(caught.exception.code, "claim_closure_unavailable")

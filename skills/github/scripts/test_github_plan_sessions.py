@@ -113,7 +113,7 @@ class ReceiptFixture:
                         result = {"data": [], "nextCursor": None}
                     elif method == "thread/goal/get": result = {"goal": None}
                     elif method == "thread/read": result = {"thread": {
-                        "id": self.session, "cwd": "/retained/source", "path": str(native_path), "status": {"type": self.home_states.get(str(native_home), self.native_state)}}}
+                        "id": self.session, "cwd": "/retained/source", "path": str(native_path), "historyMode": "paginated", "status": {"type": self.home_states.get(str(native_home), self.native_state)}}}
                     elif method in {"thread/resume", "thread/fork", "turn/start", "thread/archive", "thread/queue/add"}:
                         self.mutations.append(request)
                         target = request["params"]["threadId"]
@@ -693,7 +693,7 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
 
     async def observe(self, state, *, safe=True, after=None, changed=False, mismatch=False, with_peer=False, unsafe=False,
                       receipt=None, proof_sessions=None, receipt_changed=False):
-        thread = {"id": "holder", "cwd": "/retained/issue-42", "path": "/fixture/transcript", "status": {"type": state}}
+        thread = {"id": "holder", "cwd": "/retained/issue-42", "path": "/fixture/transcript", "historyMode": "paginated", "status": {"type": state}}
         if mismatch: thread["id"] = "another-session"
         reads, calls, unexpected, observed_ids = 0, 0, [], set()
         async def handler(request):
@@ -705,7 +705,9 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
                 method = request["method"]
                 if method == "initialized": continue
                 if method == "initialize": result = {}
-                elif method in {"thread/items/list", "thread/queue/list"}: result = {"data": [], "nextCursor": None}
+                elif method in {"thread/items/list", "thread/queue/list", "thread/backgroundTerminals/list", "thread/timeline/list"}: result = {"data": [], "nextCursor": None}
+                elif method == "thread/turns/list": result = {"data": [{"id": "actual-turn", "status": "completed"}], "nextCursor": None}
+                elif method == "thread/goal/get": result = {"goal": None}
                 elif method == "thread/loaded/list": result = {"data": ["holder", "peer"] if with_peer else ["holder"], "nextCursor": None}
                 elif method == "thread/read":
                     reads += 1
@@ -720,12 +722,15 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
                     break
                 await ws.send_json({"id": request["id"], "result": result})
             return ws
-        def status(_entry):
+        def status(_entry, *, include_status=False):
             nonlocal calls
             calls += 1
             if with_peer: self.assertIn("peer", observed_ids)
-            return {"/fixture/transcript": {"safe_verdict": safe, "timestamp": "2026-10-01T02:00:00Z",
-                                             "size": calls + int(bool(receipt)) if changed else 1}}
+            result = {"/fixture/transcript": {"safe_verdict": safe, "timestamp": "2026-10-01T02:00:00Z",
+                                              "size": calls + int(bool(receipt)) if changed else 1}}
+            if include_status:
+                result["/fixture/transcript"]["status"] = {"turn_id": "actual-turn", "actual_turn_ids": ["actual-turn"]}
+            return result
         # AF_UNIX paths are short on macOS; /var/folders can exceed that limit.
         with tempfile.TemporaryDirectory(prefix="claim-", dir="/tmp") as folder:
             home = Path(folder)
@@ -746,7 +751,7 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
                               "codex_home": str(home.resolve()), "transcripts": fingerprint}} if receipt else None
                 token = CLOSURE.RECEIPTS.set({"holder": record} if record else {})
                 with patch.object(SESSIONS, "transcript_snapshot", side_effect=lambda *_args: status(None)), \
-                        patch.object(CLOSURE, "transcripts", side_effect=lambda *_args: status(None)), \
+                        patch.object(CLOSURE, "transcripts", side_effect=lambda *_args, **kw: status(None, **kw)), \
                         patch.object(CLOSURE, "verified_record", return_value=record), \
                         patch.object(CLOSURE, "receipt_current", return_value=not receipt_changed):
                     peers, states, coverage = await SESSIONS.observe_home(home, {"holder"}, proof_sessions)
