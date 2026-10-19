@@ -112,7 +112,8 @@ def derived_status(node, trusted, unread):
     comments = [{"body": comment.get("body") or "", "user": {"login": login(comment.get("author"))}}
                 for comment in node["comments"]["nodes"]]
     source = {"body": node.get("body") or "", "state": node["state"],
-              "user": {"login": login(node.get("author"))}}
+              "user": {"login": login(node.get("author"))},
+              "labels": [item["name"] for item in node["labels"]["nodes"]]}
     try:
         # The shared resolver validates historical trusted records too. A clear
         # tail record cannot prove that unread history contains no malformed one.

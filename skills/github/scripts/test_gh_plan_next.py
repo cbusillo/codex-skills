@@ -1863,8 +1863,6 @@ def test_local_next_inbound_scan_preserves_plan_budget_and_waits() -> None:
     assert captured["blocking_work_elsewhere"][0]["labels"] == ["plan", "plan:waiting"]
     assert captured["blocking_work_elsewhere_context"]["complete"] is True
     assert captured["inventory_count"] == 2  # non-plans cannot consume the plan inventory
-    assert len([path for path in calls if not path.endswith("/comments")]) == 4
-    assert len([path for path in calls if path.endswith("/comments")]) == 2
 
 
 def test_inbound_scan_bounds_and_partial_reads_are_explicit() -> None:

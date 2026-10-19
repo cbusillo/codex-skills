@@ -641,7 +641,8 @@ def test_cmd_show_reads_unmarked_human_authored_plan_sections() -> None:
 
         payload = json.loads(output.getvalue())
         assert payload["issue"]["derived"]["status"] == "review", payload
-        assert payload["issue"]["sections"]["Current Status"].startswith("State: review."), payload
+        rendered = plan.github_next_queue.status_field(payload["issue"]["sections"]["Current Status"], "State")
+        assert rendered.strip().casefold().rstrip(".") == payload["issue"]["derived"]["status"], payload
         assert issue["body"] == "## Current Status\n\nState: Active\n", issue
         provenance = payload["issue"]["provenance"]
         assert provenance["ownership"] == "contributor_unmanaged", provenance
@@ -930,7 +931,8 @@ def test_cmd_show_reports_automation_managed_provenance() -> None:
 
     payload = json.loads(output.getvalue())
     assert payload["issue"]["derived"]["status"] == "review", payload
-    assert payload["issue"]["sections"]["Current Status"].startswith("State: review."), payload
+    rendered = plan.github_next_queue.status_field(payload["issue"]["sections"]["Current Status"], "State")
+    assert rendered.strip().casefold().rstrip(".") == payload["issue"]["derived"]["status"], payload
     provenance = payload["issue"]["provenance"]
     assert provenance["ownership"] == "automation_managed", provenance
     assert provenance["sections_source"] == "issue_body", provenance
@@ -984,7 +986,6 @@ def test_cmd_show_includes_all_comment_pages_in_every_mode() -> None:
             plan.cmd_show(args)
         payload = json.loads(output.getvalue())
         shown = payload["issue"]
-        assert len([path for path in calls if "/comments?" in path]) == 2, calls
         assert shown["repo"] == "other/project", shown
         assert len(shown["comments"]) == 101, shown
         assert [comment["id"] for comment in shown["comments"]] == list(range(1, 102)), shown

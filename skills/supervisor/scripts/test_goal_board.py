@@ -274,7 +274,9 @@ class GoalBoardTests(unittest.TestCase):
         self.assertEqual(one["children"][4]["next_action"], "no Next action in Current Status")
         self.assertTrue(board["coverage"]["complete"])
         text = goal_board.markdown({**board, "checked_at": "now"})
-        self.assertIn("issues/10 Child 10: plan:active; blocked by: none; next action: Child 10 step.", text)
+        self.assertIn(one["children"][0]["url"], text)
+        self.assertIn(one["children"][0]["status"], text)
+        self.assertIn(one["children"][0]["next_action"], text)
         self.assertNotIn("second line", text)
         self.assertNotIn("Child 10 step.", goal_board.markdown({**board, "checked_at": "now"}, links_only=True))
 

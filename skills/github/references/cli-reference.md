@@ -1492,9 +1492,10 @@ competitor's record.
   Concurrent structured waits and open native blockers retain both label views.
   A clear reviewed wait record supersedes an old waiting label. Record real waits
   through `wait`; missing or malformed records still require review.
-  Closed related plans get `done` labels without changing their state or body.
-  On reviewed open plans, prior status
-  labels, including absent or stale labels, are replaced by the derived view.
+  Closed related plans get `done` labels and retain `waiting` for an actual
+  structured wait, without changing their state or body. Deliberate `stale`,
+  `done` and unstatused open planning scopes require finish-line review and are
+  preserved. Reviewed `active`, `blocked` and `waiting` views are recomputed.
   Unverified target planning configuration refuses writes.
   Cross-repository source closures, another account's
   records and source reporter acceptance remain owning-agent review work. Each outcome
@@ -1505,7 +1506,18 @@ competitor's record.
   Related review work that is preserved without writes is also informational;
   it is never reported as reconciled. Explicit source references retain their
   finish-line review even when they are also native parents or dependents.
-  Unavailable reads and partial reconciliation remain failures.
+  Unavailable reads and uncertain writes remain failures. Receipts list every
+  discovered target, including `not_attempted` targets after a stopped write
+  sequence, with partial coverage. A posting denial preserves its exact classified
+  failure and leaves that repository to an existing authorized owning session;
+  independent authorized repositories can still be reconciled. Never repeat a
+  denied write through another identity or a new grant.
+  The pure `github_plan_status` package in `skills/github/scripts` supplies the
+  same derivation, trusted wait resolver and label diff to native consumers.
+  Adapters supply their own existing trust and repository-scoped posting
+  authority; the package contains no identity or credential discovery. Consumers
+  pin an immutable catalog source revision and validate compatibility before
+  upgrading it; the package version alone does not select a live source revision.
   The train driver includes separate planning receipts for every confirmed
   landed batch member. A failed planning receipt does not undo a landing;
   rerun this command after resolving its reported blocker.

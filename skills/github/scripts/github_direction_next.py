@@ -290,6 +290,10 @@ def evaluate_next_plan(
     }
     static_exclusion = next_static_exclusion(issue, config=config, focus=focus)
     if static_exclusion is not None:
+        if structured_wait is not None and relationships is not None and relationship_error is None:
+            derived = github_plan_status.derive(issue, relationships, structured_wait, label_names=config["labels"])
+            static_exclusion.update(plan_status=derived["status"], derived=derived,
+                                    blocked_by=derived["blocked_by"])
         return "excluded", static_exclusion
     if relationship_error is not None or relationships is None:
         return "excluded", {
@@ -301,7 +305,7 @@ def evaluate_next_plan(
 
     summary = next_relationship_summary(relationships)
     if structured_wait is not None:
-        derived = github_plan_status.derive(issue, relationships, structured_wait)
+        derived = github_plan_status.derive(issue, relationships, structured_wait, label_names=config["labels"])
         status = derived["status"]
         base.update(plan_status=status, derived=derived, blocked_by=derived["blocked_by"])
         base["recorded_labels"] = base["labels"]

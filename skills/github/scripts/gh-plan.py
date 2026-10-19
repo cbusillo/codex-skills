@@ -125,12 +125,7 @@ PLAN_COMMAND_CONTEXT: dict[str, tuple[str, str, bool]] = {
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "labels": {
-        "plan": "plan",
-        "active": "plan:active",
-        "blocked": "plan:blocked",
-        "waiting": "plan:waiting",
-        "stale": "plan:stale",
-        "done": "plan:done",
+        **github_plan_status.DEFAULT_STATUS_LABELS,
         "audit": "audit",
         "own_project": "own-project",
     },
@@ -2003,7 +1998,8 @@ def read_planning_graph(repo: str, **kwargs: Any) -> list[dict[str, Any]] | None
 
 def cmd_show(args: argparse.Namespace) -> None:
     repo = default_repo(args.repo)
-    config = load_config(repo)
+    issue_repo, number = issue_ref(args.issue, repo)
+    config = load_config(issue_repo)
     graph = None
     if getattr(args, "batch_read", False):
         issue_repo, number = issue_ref(args.issue, repo)
@@ -2049,21 +2045,29 @@ def cmd_show(args: argparse.Namespace) -> None:
         }
         for comment in comments
     ]
-    relationships = issue.get("_graph_relationships")
-    if relationships is None:
-        _, relationships = read_issue_relationships(issue["repo"], issue["number"], include_blocking=False)
-    else:
-        relationships = {key: [compact_relationship_issue(row, key) for row in rows]
-                         for key, rows in relationships.items()}
     try:
         wait = current_wait(issue, comments, issue["repo"])
     except (PlanError, ValueError) as exc:
         wait = {"version": 1, "state": "review", "evidence": str(exc), "waits": []}
-    derived = github_plan_status.derive(issue, relationships, wait)
+    try:
+        relationships = issue.get("_graph_relationships")
+        if relationships is None:
+            _, relationships = read_issue_relationships(issue["repo"], issue["number"], include_blocking=False)
+        else:
+            relationships = {key: [compact_relationship_issue(row, key) for row in rows]
+                             for key, rows in relationships.items()}
+        derived = github_plan_status.derive(issue, relationships, wait, label_names=config["labels"])
+        derived["relationships_complete"] = True
+    except (PlanError, ValueError, TypeError, KeyError) as exc:
+        derived = {"status": "review", "blocked_by": [], "waits": wait["waits"],
+                   "structured_wait": wait, "labels": [], "relationships_complete": False,
+                   "error": {"message": str(exc), **getattr(exc, "payload", {})}}
     result["derived"] = derived
     result["recorded_labels"] = result["labels"]
-    result["labels"] = github_plan_status.project_labels(result["labels"], config.get("labels", DEFAULT_CONFIG["labels"]), derived)
+    if derived["relationships_complete"]:
+        result["labels"] = github_plan_status.project_labels(result["labels"], config["labels"], derived)
     if not args.full and "Current Status" in result["sections"]:
+        result["recorded_current_status"] = result["sections"]["Current Status"]
         result["sections"]["Current Status"] = github_plan_status.render_status(result["sections"]["Current Status"], derived)
     emit({"ok": True, "actor": actor, "issue": result,
           **({"batch_read": BATCH_READ_CONTEXT} if getattr(args, "batch_read", False) else {})})

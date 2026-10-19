@@ -300,6 +300,134 @@ class LandingTests(unittest.TestCase):
         self.body.assert_not_called()
         self.state.assert_not_called()
 
+    def test_related_scope_holds_are_not_activated_by_a_neighbor_landing(self) -> None:
+        for hold in ("stale", "done", None):
+            with self.subTest(hold=hold):
+                self.issue.update(state="open", labels=[{"name": self.config["labels"]["plan"]},
+                    *([{ "name": self.config["labels"][hold]}] if hold else [])])
+                before = copy.deepcopy(self.issue)
+                self.labels.reset_mock()
+                entry = {}
+                landing.reconcile_related(PLAN, REPO, 7, apply=True, entry=entry)
+                self.assertEqual(self.issue, before)
+                self.assertTrue(entry["status"].startswith("review_"), entry)
+                self.labels.assert_not_called()
+        self.body.assert_not_called()
+        self.state.assert_not_called()
+
+    def test_closed_related_wait_remains_visible_after_metadata_reconciliation(self) -> None:
+        held = github_plan_wait.reviewed(evidence="Closed source retains its actual acceptance wait",
+            waiting_for="Client acceptance", ends_when="Client records acceptance")
+        self.issue["body"] = PLAN.PLAN_MANAGED_PROVENANCE_MARKER + "\n" + github_plan_wait.marker(held)
+        body = self.issue["body"]
+        landing.reconcile_related(PLAN, REPO, 7, apply=True, entry={})
+        self.assertEqual(set(PLAN.normalize_labels(self.issue["labels"])),
+                         {self.config["labels"][key] for key in ("plan", "done", "waiting")})
+        self.assertEqual(self.issue["body"], body)
+        self.assertEqual(self.issue["state"], "closed")
+        self.body.assert_not_called()
+        self.state.assert_not_called()
+
+    def test_write_failure_receipt_accounts_for_every_native_target(self) -> None:
+        targets = [(REPO, number) for number in (8, 9, 10)]
+        attempted = []
+        def reconcile_target(_plan, repo, number, *, apply, entry):
+            attempted.append((repo, number))
+            if number == 8:
+                entry["writes_started"] = True
+                raise PLAN.PlanError("Target label write denied", failure=PLAN.github_api_core.FailureDetail(
+                    cause="permission_denied", message="Fixture target posting authority unavailable",
+                    retryable=False, fallback_eligible=False, disposition="stop", write_outcome="rejected"))
+            entry["status"] = "unchanged"
+        with patch.object(landing, "neighborhood", return_value=targets), \
+                patch.object(landing, "reconcile_related", side_effect=reconcile_target):
+            receipt = landing.reconcile_dependents(PLAN, REPO, 7, apply=True)
+        rows = {(row["repo"], row["number"]): row for row in receipt["issues"]}
+        self.assertEqual(set(rows), set(targets))
+        skipped = set(targets) - set(attempted)
+        for target in skipped:
+            self.assertEqual(rows[target]["status"], "not_attempted")
+        self.assertEqual(receipt["coverage"], "partial" if skipped else "complete")
+
+    def native_receipt(self, mode, targets, reconcile_target):
+        with patch.object(landing, "neighborhood", return_value=targets), \
+                patch.object(landing, "reconcile_related", side_effect=reconcile_target), \
+                patch.object(landing, "reconcile_issue", side_effect=lambda *_args, entry, **_kwargs: entry.update(status="unchanged")):
+            if mode == "close":
+                return landing.reconcile_dependents(PLAN, REPO, 7, apply=True)
+            return self.run_landing()
+
+    def test_denied_target_preserves_failure_skips_its_repo_and_continues_other_authority(self) -> None:
+        targets = [("fixture/restricted", 8), ("FIXTURE/RESTRICTED", 9), ("fixture/authorized", 10)]
+        failure = PLAN.github_api_core.FailureDetail(cause="permission_denied",
+            message="Fixture target rejects label writes", retryable=False, fallback_eligible=False,
+            disposition="stop", write_outcome="rejected")
+        for mode in ("close", "landing"):
+            with self.subTest(mode=mode):
+                attempted = []
+                def reconcile_target(_plan, repo, number, *, apply, entry):
+                    self.assertNotIn((repo, number), attempted, "A denied target must not be retried")
+                    attempted.append((repo, number))
+                    if number == 8:
+                        entry["writes_started"] = True
+                        raise PLAN.PlanError("Target label write denied", failure=failure,
+                                             payload={"trace_id": "fixture-denial-trace"})
+                    entry["status"] = "unchanged"
+                receipt = self.native_receipt(mode, targets, reconcile_target)
+                rows = {(row["repo"], row["number"]): row for row in receipt["issues"] if row["role"] == "related"}
+                self.assertEqual(set(rows), set(targets))
+                self.assertEqual(rows[targets[0]]["status"], "review_posting_authority")
+                self.assertEqual(rows[targets[0]]["error"]["failure"], failure.as_dict())
+                self.assertEqual(rows[targets[0]]["error"]["trace_id"], "fixture-denial-trace")
+                self.assertEqual(rows[targets[1]]["status"], "not_attempted")
+                self.assertNotIn(targets[1], attempted)
+                self.assertIn(targets[2], attempted)
+                self.assertEqual(rows[targets[2]]["status"], "unchanged")
+                self.assertTrue(receipt["ok"])
+                self.assertEqual(receipt["coverage"], "partial")
+
+    def test_unknown_write_outcome_stops_and_lists_every_remaining_target(self) -> None:
+        targets = [(REPO, 8), (REPO, 9), ("fixture/authorized", 10)]
+        failure = PLAN.github_api_core.FailureDetail(cause="transport_error",
+            message="Fixture write acknowledgement was lost", retryable=False, fallback_eligible=False,
+            disposition="stop", write_outcome="unknown")
+        for mode in ("close", "landing"):
+            with self.subTest(mode=mode):
+                attempted = []
+                def reconcile_target(_plan, repo, number, *, apply, entry):
+                    self.assertNotIn((repo, number), attempted, "An unknown write outcome must not be retried")
+                    attempted.append((repo, number))
+                    entry["writes_started"] = True
+                    raise PLAN.PlanError("Label write outcome unknown", failure=failure)
+                receipt = self.native_receipt(mode, targets, reconcile_target)
+                rows = {(row["repo"], row["number"]): row for row in receipt["issues"] if row["role"] == "related"}
+                self.assertEqual(set(rows), set(targets))
+                self.assertEqual(set(attempted), {targets[0]})
+                self.assertEqual(rows[targets[0]]["error"]["failure"], failure.as_dict())
+                for target in targets[1:]:
+                    self.assertEqual(rows[target]["status"], "not_attempted")
+                self.assertFalse(receipt["ok"])
+                self.assertEqual(receipt["coverage"], "partial")
+
+    def test_readback_conflict_is_local_to_its_target(self) -> None:
+        targets = [(REPO, 8), (REPO, 9), ("fixture/authorized", 10)]
+        for mode in ("close", "landing"):
+            with self.subTest(mode=mode):
+                attempted = []
+                def reconcile_target(_plan, repo, number, *, apply, entry):
+                    attempted.append((repo, number))
+                    if number == 8:
+                        entry["writes_started"] = True
+                        raise ValueError("Fixture changed while checking label readback")
+                    entry["status"] = "unchanged"
+                receipt = self.native_receipt(mode, targets, reconcile_target)
+                rows = {(row["repo"], row["number"]): row for row in receipt["issues"] if row["role"] == "related"}
+                self.assertEqual(set(attempted), set(targets))
+                self.assertEqual(rows[targets[0]]["status"], "reconciliation_failed")
+                self.assertTrue(all(rows[target]["status"] == "unchanged" for target in targets[1:]))
+                self.assertFalse(receipt["ok"])
+                self.assertEqual(receipt["coverage"], "complete")
+
     def test_remaining_blocker_is_the_only_derived_blocker(self) -> None:
         self.issue["state"] = "open"
         self.issue["labels"] = [{"name": self.config["labels"][key]} for key in ("plan", "active")]
@@ -362,15 +490,14 @@ class LandingTests(unittest.TestCase):
                              {self.config["labels"][name] for name in ("plan", "active")})
         self.assertEqual({key: record["body"] for key, record in records.items()}, original_bodies)
 
-    def test_closed_plan_stays_closed_and_open_plan_gets_derived_status(self) -> None:
+    def test_malformed_closed_wait_and_unstatused_open_plan_require_review(self) -> None:
         original = copy.deepcopy(self.issue)
         self.issue["body"] += "\n" + github_plan_wait.PREFIX + "malformed -->"
         closed_body = self.issue["body"]
         entry = {}
         landing.reconcile_related(PLAN, REPO, 7, apply=True, entry=entry)
-        self.assertEqual(entry["status"], "reconciled")
-        self.assertEqual(set(PLAN.normalize_labels(self.issue["labels"])),
-                         {self.config["labels"][key] for key in ("plan", "done")})
+        self.assertEqual(entry["status"], "review_wait_record")
+        self.assertEqual(self.issue["labels"], original["labels"])
         self.assertEqual(self.issue["body"], closed_body)
         self.issue.update(original)
         self.issue["state"] = "open"
@@ -378,11 +505,8 @@ class LandingTests(unittest.TestCase):
         original = copy.deepcopy(self.issue)
         entry = {}
         landing.reconcile_related(PLAN, REPO, 7, apply=True, entry=entry)
-        self.assertEqual(entry["status"], "reconciled")
-        self.assertEqual(entry["derived_status"], "active")
-        self.assertEqual(self.issue["body"], original["body"])
-        self.assertEqual(set(PLAN.normalize_labels(self.issue["labels"])),
-                         {self.config["labels"][key] for key in ("plan", "active")})
+        self.assertTrue(entry["status"].startswith("review_"), entry)
+        self.assertEqual(self.issue, original)
         self.state.assert_not_called()
 
     def test_keyword_closure_retains_custody_and_other_status_fields(self) -> None:
@@ -440,7 +564,8 @@ class LandingTests(unittest.TestCase):
 
     def test_human_parent_preserves_body_and_derives_labels_from_trusted_wait(self) -> None:
         parent = copy.deepcopy(self.issue)
-        parent.update(number=8, state="open", state_reason=None, user={"login": "reporter"})
+        parent.update(number=8, state="open", state_reason=None, user={"login": "reporter"},
+                      labels=[{"name": self.config["labels"][key]} for key in ("plan", "blocked")])
         PLAN.get_issue.side_effect = lambda number, repo: ("fixture-bot", copy.deepcopy(
             parent if int(number) == 8 else self.issue))
         PLAN.read_next_parent.return_value = {"repo": REPO, "number": 8, "state": "open"}
