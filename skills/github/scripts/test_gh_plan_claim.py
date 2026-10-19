@@ -1640,6 +1640,57 @@ class ClaimTests(unittest.TestCase):
             self.args.issue, self.args.resume_from = "41", 71
         return evidence, parent, child
 
+    def test_rejected_native_children_cannot_supply_shared_end_authority(self):
+        from test_github_plan_sessions import ReceiptFixture
+        import github_plan_release as release
+        import github_plan_closure as closure
+        import github_plan_native as native
+        for route in ("direct", "historical", "withdrawn_with_valid_family"):
+            with self.subTest(route=route):
+                self.setUp()
+                with ReceiptFixture("11111111-2222-4333-8444-555555555555") as fixture:
+                    evidence, _, child = self.shared_native_family_fixture(fixture, current="parent", end_on="child")
+                    unrelated = CLAIM.records(child[0]["body"])[0]
+                    unrelated.pop("resume_from")
+                    unrelated.pop("retained_handoff")
+                    unrelated["branch"] = "work/unrelated"
+                    original = {**child[0], "id": 501, "body": CLAIM.marker(unrelated)}
+                    comments = [original, {"id": 502, "body": "Released claim 501", "user": {"login": TEST_BOT},
+                                           "created_at": "2026-10-01T02:00:30Z"}]
+                    body = release.prepare_release(original, evidence, comments, self.inventory,
+                        actor=TEST_BOT, role="supervisor", releaser_session="supervisor-native",
+                        evidence_url="https://github.com/owner/control/issues/884#issuecomment-88", retained_prs=[], related=[])
+                    comments.append({"id": 503, "body": body, "user": {"login": TEST_BOT},
+                                     "created_at": "2026-10-01T02:03:00Z"})
+                    sibling = {**copy.deepcopy(self.issue), "number": 43,
+                               "body": "## Current Status\n\n" + CLAIM.marker(unrelated)}
+                    self.targets["43"] = sibling
+                    self.target_comments["/repos/owner/repo/issues/43/comments"] = comments
+                    if route == "direct":
+                        self.children["/repos/owner/repo/issues/41/sub_issues"] = [sibling]
+                    elif route == "historical":
+                        self.children["/repos/owner/repo/issues/41/sub_issues"] = []
+                        self.timelines["/repos/owner/repo/issues/41/timeline"] = [
+                            {"event": "sub_issue_added", "sub_issue": sibling}]
+                    else:
+                        self.children["/repos/owner/repo/issues/41/sub_issues"].insert(0, sibling)
+                    prove = native.prove_end
+                    async def withdraw_unrelated(*args, **kwargs):
+                        proof = await prove(*args, **kwargs)
+                        comments[:] = comments[:2]
+                        return proof
+                    with patch.object(native, "prove_end", side_effect=withdraw_unrelated if route.startswith("withdrawn") else prove):
+                        if route.startswith("withdrawn"):
+                            self.run_claim()
+                            self.assertTrue(self.emitted.call_args.args[0]["ok"])
+                            self.assertFalse(closure.action_pending(fixture.session))
+                        else:
+                            with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                                self.run_claim()
+                            self.assertEqual(caught.exception.code, "claim_conflict")
+                            self.assert_no_writes()
+                            self.assertTrue(closure.action_pending(fixture.session))
+
     def test_native_end_is_shared_across_existing_family_in_each_direction(self):
         from test_github_plan_sessions import ReceiptFixture
         import github_plan_closure as closure

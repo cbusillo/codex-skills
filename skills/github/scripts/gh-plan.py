@@ -2481,6 +2481,7 @@ def _claim_once(args: argparse.Namespace) -> None:
     config = load_config(issue_repo, checkout=planning_checkout) if planning_checkout else load_config(issue_repo)
     phase_records = {}
     phase_peers = []
+    phase_owners = set()
     phase_family_error = None
 
     def read_record(record_number, record_repo, *, allow_closed=False):
@@ -2502,7 +2503,8 @@ def _claim_once(args: argparse.Namespace) -> None:
     def observe_claim_sources(source_inventory, source_comments):
         import github_plan_sessions
         owners = [(snapshot[0].get("repo", owner_repo), owner_number, snapshot[2])
-                  for (owner_repo, owner_number), snapshot in phase_records.items()]
+                  for (owner_repo, owner_number), snapshot in phase_records.items()
+                  if (owner_repo, owner_number) in phase_owners]
         contexts = tuple(context for _, _, discussion in owners
                          for context in github_plan_release._released_source_contexts(discussion))
         def readback(context):
@@ -2702,6 +2704,7 @@ def _claim_once(args: argparse.Namespace) -> None:
             # Inspect its existing descendants now, before any claim write.
             if not claimed_node and not any(uses_source(record) for record in peer_records):
                 continue
+            phase_owners.add(child_key)
             # Same-record resumes need not repeat the original handoff metadata,
             # and can move to a fresh branch. Once this issue holds the source,
             # its full ownership must end before a sibling can take the source.
@@ -2763,6 +2766,7 @@ def _claim_once(args: argparse.Namespace) -> None:
                 continue
             checked.add(key)
             parent_issue, parent_status, parent_comments, _ = read_record(str(parent_number), parent_repo, allow_closed=True)
+            phase_owners.add((parent_repo.casefold(), parent_number))
             if (parent_repo.casefold(), parent_number) != (issue_repo.casefold(), number):
                 phase_peers.append((parent_repo, parent_number, parent_status, parent_comments))
             check_handoff_successors(parent_number, source_claim_id=int(source_id),
@@ -2787,6 +2791,7 @@ def _claim_once(args: argparse.Namespace) -> None:
             )
             target_comments = github_plan_release.verified_comments(target_comments, _claim_release_evidence)
             phase_records[key] = (target, sections.get("Current Status", ""), target_comments, False)
+        phase_owners.add(key)
         return target, sections, target_comments
 
     def prepare_handoff(source_info):
@@ -2838,10 +2843,12 @@ def _claim_once(args: argparse.Namespace) -> None:
         nonlocal phase_family_error
         phase_records.clear()
         phase_peers.clear()
+        phase_owners.clear()
         phase_family_error = None
         phase_records[(issue_repo.casefold(), number)] = snapshot
         current_issue, current_status, current_comments, _ = snapshot
         source_info = resume_source(current_comments, current_status) if args.resume_from else (number, current_comments, current_status)
+        phase_owners.update(((issue_repo.casefold(), number), (issue_repo.casefold(), source_info[0])))
         prepared = prepare_handoff(source_info)
         if record_kind == "issue":
             traversal = {}
