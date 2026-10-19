@@ -81,7 +81,9 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
             ("app/read", {"appIds": ["fixture-app"], "includeTools": True}, {"apps": [], "missingAppIds": []}),
             ("app/list", {"forceRefetch": True}, {"data": [], "nextCursor": None}),
         ):
-            for later in (None, "thread/queue/add", "thread/resume", "turn/start", "execCommandApproval"):
+            # Each read needs classification/timing coverage; later actions share one path.
+            later_actions = (None, "thread/queue/add", "thread/resume", "turn/start", "execCommandApproval") if method == "app/installed" else (None,)
+            for later in later_actions:
                 with self.subTest(method=method, later=later), ReceiptFixture(str(uuid.uuid4())) as f:
                     closure.replace_rows([])
                     task, request, response, _ = await self.start_client(f)
