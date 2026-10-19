@@ -55,6 +55,7 @@ import github_plan_wait
 import github_plan_trigger
 import github_plan_release
 import github_plan_landing
+import github_plan_status
 import github_agent
 from github_direction_next import (
     normalize_labels,
@@ -1725,7 +1726,6 @@ point is captured.
 
 State: Active
 Next action: Decide the first concrete implementation step.
-Blocked by: None.
 Last verified: Not yet verified.
 
 ## Scope
@@ -2049,6 +2049,22 @@ def cmd_show(args: argparse.Namespace) -> None:
         }
         for comment in comments
     ]
+    relationships = issue.get("_graph_relationships")
+    if relationships is None:
+        _, relationships = read_issue_relationships(issue["repo"], issue["number"], include_blocking=False)
+    else:
+        relationships = {key: [compact_relationship_issue(row, key) for row in rows]
+                         for key, rows in relationships.items()}
+    try:
+        wait = current_wait(issue, comments, issue["repo"])
+    except (PlanError, ValueError) as exc:
+        wait = {"version": 1, "state": "review", "evidence": str(exc), "waits": []}
+    derived = github_plan_status.derive(issue, relationships, wait)
+    result["derived"] = derived
+    result["recorded_labels"] = result["labels"]
+    result["labels"] = github_plan_status.project_labels(result["labels"], config.get("labels", DEFAULT_CONFIG["labels"]), derived)
+    if not args.full and "Current Status" in result["sections"]:
+        result["sections"]["Current Status"] = github_plan_status.render_status(result["sections"]["Current Status"], derived)
     emit({"ok": True, "actor": actor, "issue": result,
           **({"batch_read": BATCH_READ_CONTEXT} if getattr(args, "batch_read", False) else {})})
 
@@ -2454,7 +2470,7 @@ def _claim_once(args: argparse.Namespace) -> None:
     def check_wait(waiting_issue: dict[str, Any], waiting_status: str, *, target: bool = False) -> bool:
         wait = waiting_issue["claim_wait"]
         status_state = next_plan_status(waiting_issue, load_config(target_repo) if target else config)
-        has_wait = bool(wait["state"] != "clear" or status_state in {"waiting", "blocked", "stale", "done"})
+        has_wait = bool(wait["state"] != "clear" or status_state in {"stale", "done"})
         if has_wait and not args.wait_resolved:
             raise ClassifiedPlanError("claim_wait_unresolved",
                 "Review the structured wait with gh-plan.py wait. For a missing legacy record, read the full "
@@ -3092,7 +3108,6 @@ def _claim_once(args: argparse.Namespace) -> None:
         status_text = (
             f"State: Active; owned by {claim['worker']}.\nSession: {claim['session']}\n"
             f"Branch: {claim['branch']}\nNext action: {args.next_action}\n"
-            + "Blocked by: None.\nWaiting for: See the structured wait record below.\n"
             + f"Last verified: {claim['claimed_at']}\n\n"
             + (f"Wait resolution: {args.wait_resolved}\n\n" if handoff_id and not refresh_pr and args.wait_resolved else "")
             + github_plan_claim.marker(claim)
@@ -3921,6 +3936,7 @@ def cmd_next(args: argparse.Namespace) -> None:
     candidates: list[dict[str, Any]] = []
     excluded: list[dict[str, Any]] = routing_excluded
     dependency_degraded_count = 0
+    structured_waits: dict[tuple[str, int], dict[str, Any]] = {}
     for issue in issues:
         issue_url = issue.get("html_url") or issue.get("url")
         focus = focus_by_url.get(issue_url) if isinstance(issue_url, str) else None
@@ -3930,6 +3946,7 @@ def cmd_next(args: argparse.Namespace) -> None:
             continue
         relationship_error = None
         relationships = None
+        wait = {"version": 1, "state": "review", "evidence": "", "waits": []}
         truncated_relationships: list[str] = []
         try:
             relation_actor, relationships, truncated_relationships = read_next_issue_relationships(
@@ -3938,6 +3955,18 @@ def cmd_next(args: argparse.Namespace) -> None:
                 issue,
             )
             actor = relation_actor or actor
+            if "_graph_comments" in issue:
+                comments = issue["_graph_comments"]
+            else:
+                _, comments = collect_paged_rest_items(
+                    f"/repos/{repo}/issues/{issue['number']}/comments", query={},
+                    bucket="rest_core", step_prefix="next_issue_comments")
+            try:
+                wait = current_wait(issue, comments, repo)
+            except (ValueError, PlanError) as exc:
+                if isinstance(exc, PlanError) and exc.failure is not None:
+                    raise
+                wait = {"version": 1, "state": "review", "evidence": str(exc), "waits": []}
         except PlanError as exc:
             relationship_error = next_source_error(exc)
         if truncated_relationships:
@@ -3946,12 +3975,14 @@ def cmd_next(args: argparse.Namespace) -> None:
                 f"of {NEXT_RELATIONSHIP_LIMIT}"
             )
             relationships = None
+        structured_waits[(repo.casefold(), int(issue["number"]))] = wait
         disposition, evaluated = evaluate_next_plan(
             issue,
             config=config,
             focus=focus,
             relationships=relationships,
             relationship_error=relationship_error,
+            structured_wait=wait,
         )
         if relationship_error is not None:
             dependency_degraded_count += 1
@@ -3960,7 +3991,8 @@ def cmd_next(args: argparse.Namespace) -> None:
         (candidates if disposition == "candidate" else excluded).append(evaluated)
 
     wait_context = next_wait_context(issues, scan_limit=args.scan_limit,
-                                     inventory_complete=not inventory_truncated and not scan_truncated)
+                                     inventory_complete=not inventory_truncated and not scan_truncated,
+                                     structured_waits=structured_waits)
     exclude_landed_candidates(candidates, excluded, wait_context)
     rank_next_candidates(candidates, direction_milestones=direction_milestones)
     if direction_milestones is not None:
@@ -4735,7 +4767,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
         item = node["item"]
         reason = item.get("exclusion")
         wait = github_direction_next.milestone_wait_evidence(item, node.get("status_text") or "", titles)
-        listed_wait = reason == "waiting" and ((item.get("milestone") or {}).get("title") in titles or not wait["valid"])
+        listed_wait = reason in {"waiting", "wait_review_required"} and ((item.get("milestone") or {}).get("title") in titles or not wait["valid"])
         if ((not reason or capacity_evidence or listed_wait)
                 and reason not in {"completed", "pull_request", "unknown_dependencies"}):
             parent_observation(key)
@@ -4940,11 +4972,11 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
             held = github_direction_next.repository_hold(selection_context, item["repo"])
             status_text = node.get("status_text") or ""
             wait_evidence = github_direction_next.milestone_wait_evidence(item, status_text, titles)
-            listed_wait = original_exclusion == "waiting" and ((item.get("milestone") or {}).get("title") in titles or not wait_evidence["valid"])
+            listed_wait = original_exclusion in {"waiting", "wait_review_required"} and ((item.get("milestone") or {}).get("title") in titles or not wait_evidence["valid"])
             if (not original_exclusion or capacity_evidence or listed_wait) and item.get("exclusion") not in {"completed", "pull_request", "unknown_dependencies"}:
                 exclusion = item.get("exclusion")
                 item = with_ancestry(item)
-                preserve_ancestry = exclusion == "waiting" and (
+                preserve_ancestry = exclusion in {"waiting", "wait_review_required"} and (
                     item.get("exclusion") == "parent_waiting"
                     or (item.get("exclusion") == "unknown_ancestry" and not wait_evidence["valid"])
                 )
@@ -4973,7 +5005,7 @@ def direction_next(args: argparse.Namespace, repo: str) -> None:
                     })
                 if item["exclusion"] in {"unknown_dependencies", "unknown_ancestry"}:
                     discovery["capacity_complete"] = False
-                    if not held and (original_exclusion != "waiting" or not ordinary_discussion_complete
+                    if not held and (original_exclusion not in {"waiting", "wait_review_required"} or not ordinary_discussion_complete
                                      or (item.get("milestone") or {}).get("title") in titles):
                         discovery["complete"] = False
             else:
@@ -5800,11 +5832,21 @@ def cmd_close(args: argparse.Namespace) -> None:
     if owner_decision is not None:
         closed_result["owner_decision"] = owner_decision
 
+    try:
+        dependents = (github_plan_landing.reconcile_dependents(argparse.Namespace(**globals()), issue_repo, number, apply=True)
+                      if getattr(args, "reconcile_dependents", True) else {"ok": True, "issues": []})
+    except (PlanError, ValueError, TypeError, OSError, subprocess.SubprocessError) as exc:
+        dependents = {"ok": False, "error": {"message": str(exc), **getattr(exc, "payload", {})}, "issues": []}
+    if not dependents["ok"]:
+        raise PlanError("Issue is closed; dependent planning reconciliation is incomplete", payload={
+            "closed": closed_result, "dependents": dependents, "completed_steps": completed_steps,
+            "recovery": "Rerun close to reconcile the confirmed closure and remaining dependent metadata"})
     emit({
         "ok": True,
         "actor": actor,
         "expected_actor": output_expected_actor,
         "closed": closed_result,
+        "dependents": dependents,
         "comment": public_comment or None,
         "project": project_result,
         "relationship_preflight": relationship_preflight,

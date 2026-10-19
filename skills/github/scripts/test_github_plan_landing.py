@@ -272,26 +272,105 @@ class LandingTests(unittest.TestCase):
             self.assertEqual(self.issue["state"], "open")
         self.state.assert_not_called()
 
-    def test_clear_record_does_not_clear_legacy_waiting_label(self) -> None:
+    def test_last_blocker_closure_replaces_stale_blocked_and_waiting_labels(self) -> None:
         self.issue["state"] = "open"
-        self.issue["labels"] = [{"name": self.config["labels"][key]} for key in ("plan", "waiting")]
-        self.issue["body"] += "\nWaiting for: Director's hands-on test\n"
-        original = copy.deepcopy(self.issue)
+        self.issue["labels"] = [{"name": self.config["labels"][key]} for key in ("plan", "blocked", "waiting")]
+        self.issue["body"] += "\nBlocked by: #6\nWaiting for: old test, resolved in structured evidence\n"
+        original_body = self.issue["body"]
+        PLAN.read_issue_relationships.return_value = ("fixture-bot", {
+            "blocked_by": [{"repo": REPO, "number": 6, "state": "closed"}], "sub_issues": []})
         entry = {}
         landing.reconcile_related(PLAN, REPO, 7, apply=True, entry=entry)
-        self.assertEqual(entry["status"], "review_wait_record")
-        self.assertIn("next_action", entry)
-        self.assertEqual(self.issue, original)
-        self.labels.assert_not_called()
+        self.assertEqual(entry["derived_status"], "active")
+        self.assertEqual(entry["open_blockers"], [])
+        self.assertEqual(set(PLAN.normalize_labels(self.issue["labels"])),
+                         {self.config["labels"][key] for key in ("plan", "active")})
+        self.assertEqual(self.issue["body"], original_body)
         self.state.assert_not_called()
 
-    def test_closed_and_deliberately_unstatused_related_plans_stay_unchanged(self) -> None:
+    def test_closed_dependent_gets_done_labels_without_body_or_state_writes(self) -> None:
+        self.issue["labels"] = [{"name": self.config["labels"][key]} for key in ("plan", "active", "blocked")]
+        before_body = self.issue["body"]
+        entry = {}
+        landing.reconcile_related(PLAN, REPO, 7, apply=True, entry=entry)
+        self.assertEqual(set(PLAN.normalize_labels(self.issue["labels"])),
+                         {self.config["labels"][key] for key in ("plan", "done")})
+        self.assertEqual(self.issue["state"], "closed")
+        self.assertEqual(self.issue["body"], before_body)
+        self.body.assert_not_called()
+        self.state.assert_not_called()
+
+    def test_remaining_blocker_is_the_only_derived_blocker(self) -> None:
+        self.issue["state"] = "open"
+        self.issue["labels"] = [{"name": self.config["labels"][key]} for key in ("plan", "active")]
+        closed = {"repo": REPO, "number": 5, "state": "closed"}
+        remaining = {"repo": "fixture/product", "number": 6, "state": "open"}
+        PLAN.read_issue_relationships.return_value = ("fixture-bot", {
+            "blocked_by": [closed, remaining], "sub_issues": []})
+        entry = {}
+        original_body = self.issue["body"]
+        landing.reconcile_related(PLAN, REPO, 7, apply=True, entry=entry)
+        self.assertEqual(entry["derived_status"], "blocked")
+        self.assertEqual(entry["open_blockers"], [remaining])
+        self.assertEqual(set(PLAN.normalize_labels(self.issue["labels"])),
+                         {self.config["labels"][key] for key in ("plan", "blocked")})
+        self.assertEqual(self.issue["body"], original_body)
+        self.state.assert_not_called()
+
+    def test_close_entrypoint_recomputes_native_parent_and_cross_repo_dependent(self) -> None:
+        product = "fixture/product"
+        self.issue.update(state="open", state_reason=None)
+        records = {(REPO, 7): self.issue}
+        for repo, number in ((REPO, 8), (product, 9)):
+            record = copy.deepcopy(self.issue)
+            record.update(repo=repo, number=number, html_url=f"https://github.com/{repo}/issues/{number}",
+                          labels=[{"name": self.config["labels"][key]} for key in ("plan", "blocked")])
+            records[repo, number] = record
+        original_bodies = {key: record["body"] for key, record in records.items()}
+        PLAN.get_issue.side_effect = lambda number, repo: ("fixture-bot", copy.deepcopy(records[repo, int(number)]))
+        PLAN.read_next_parent.side_effect = lambda repo, number: (
+            {"repo": REPO, "number": 8, "state": "open"} if (repo, number) == (REPO, 7) else None)
+
+        def relationships(repo, number, **_kwargs):
+            return "fixture-bot", {
+                "blocked_by": ([] if (repo, number) == (REPO, 7) else [
+                    {"repo": REPO, "number": 7, "state": records[REPO, 7]["state"]}]),
+                "blocking": ([{"repo": product, "number": 9, "state": "open"}]
+                             if (repo, number) == (REPO, 7) else []), "sub_issues": []}
+
+        def labels(number, **kwargs):
+            record = records[kwargs["repo"], number]
+            names = set(PLAN.normalize_labels(record["labels"])) - set(kwargs["remove_labels"] or [])
+            record["labels"] = [{"name": name} for name in names | set(kwargs["add_labels"] or [])]
+            return {"actor": "fixture-bot"}
+
+        def close(number, **kwargs):
+            record = records[kwargs["repo"], number]
+            record.update(state=kwargs["state"], state_reason=kwargs["state_reason"])
+            return {"actor": "fixture-bot"}
+
+        PLAN.read_issue_relationships.side_effect = relationships
+        self.labels.side_effect = labels
+        self.state.side_effect = close
+        with contextlib.redirect_stdout(io.StringIO()):
+            PLAN.cmd_close(SimpleNamespace(repo=REPO, issue="7", reason="completed", body=None,
+                                           body_file=None, project=None, owner=None))
+        self.assertEqual(records[REPO, 7]["state"], "closed")
+        for key in ((REPO, 8), (product, 9)):
+            self.assertEqual(records[key]["state"], "open")
+            self.assertEqual(set(PLAN.normalize_labels(records[key]["labels"])),
+                             {self.config["labels"][name] for name in ("plan", "active")})
+        self.assertEqual({key: record["body"] for key, record in records.items()}, original_bodies)
+
+    def test_closed_plan_stays_closed_and_open_plan_gets_derived_status(self) -> None:
         original = copy.deepcopy(self.issue)
         self.issue["body"] += "\n" + github_plan_wait.PREFIX + "malformed -->"
         closed_body = self.issue["body"]
         entry = {}
         landing.reconcile_related(PLAN, REPO, 7, apply=True, entry=entry)
-        self.assertEqual(entry["status"], "unchanged")
+        self.assertEqual(entry["status"], "reconciled")
+        self.assertEqual(set(PLAN.normalize_labels(self.issue["labels"])),
+                         {self.config["labels"][key] for key in ("plan", "done")})
         self.assertEqual(self.issue["body"], closed_body)
         self.issue.update(original)
         self.issue["state"] = "open"
@@ -299,9 +378,11 @@ class LandingTests(unittest.TestCase):
         original = copy.deepcopy(self.issue)
         entry = {}
         landing.reconcile_related(PLAN, REPO, 7, apply=True, entry=entry)
-        self.assertTrue(entry["informational"])
-        self.assertEqual(self.issue, original)
-        self.labels.assert_not_called()
+        self.assertEqual(entry["status"], "reconciled")
+        self.assertEqual(entry["derived_status"], "active")
+        self.assertEqual(self.issue["body"], original["body"])
+        self.assertEqual(set(PLAN.normalize_labels(self.issue["labels"])),
+                         {self.config["labels"][key] for key in ("plan", "active")})
         self.state.assert_not_called()
 
     def test_keyword_closure_retains_custody_and_other_status_fields(self) -> None:
@@ -357,20 +438,30 @@ class LandingTests(unittest.TestCase):
         self.assertEqual(dependent["state"], "open")
         self.state.assert_not_called()
 
-    def test_human_parent_is_preserved_review_work_without_failed_write_receipt(self) -> None:
+    def test_human_parent_preserves_body_and_derives_labels_from_trusted_wait(self) -> None:
         parent = copy.deepcopy(self.issue)
         parent.update(number=8, state="open", state_reason=None, user={"login": "reporter"})
         PLAN.get_issue.side_effect = lambda number, repo: ("fixture-bot", copy.deepcopy(
             parent if int(number) == 8 else self.issue))
         PLAN.read_next_parent.return_value = {"repo": REPO, "number": 8, "state": "open"}
+        PLAN.collect_paged_rest_items.side_effect = lambda path, **_: ("fixture-bot", [{
+            "user": {"login": "fixture-bot"}, "body": github_plan_wait.marker(
+                github_plan_wait.reviewed(evidence="Parent discussion reviewed; no unresolved person/event hold"))}]
+            if path.endswith("comments") else [])
+        def edit_parent(number, **kwargs):
+            if number != 8:
+                return self.edit_labels(number, **kwargs)
+            names = set(PLAN.normalize_labels(parent["labels"])) - set(kwargs["remove_labels"] or [])
+            parent["labels"] = [{"name": name} for name in names | set(kwargs["add_labels"] or [])]
+            return {"actor": "fixture-bot"}
+        self.labels.side_effect = edit_parent
         before = copy.deepcopy(parent)
         result = self.run_landing()
         entry = next(entry for entry in result["issues"] if entry["number"] == 8)
-        self.assertEqual(entry["status"], "review_reporter_acceptance")
-        self.assertTrue(entry["informational"])
+        self.assertEqual(entry["status"], "reconciled")
         self.assertTrue(result["ok"])
-        self.assertTrue(result["review_required"])
-        self.assertEqual(parent, before)
+        self.assertEqual(parent["body"], before["body"])
+        self.assertEqual(parent["state"], "open")
 
     def test_related_readback_mismatch_and_concurrent_wait_fail(self) -> None:
         self.issue["state"] = "open"

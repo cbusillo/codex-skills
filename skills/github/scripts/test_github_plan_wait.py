@@ -9,11 +9,24 @@ from __future__ import annotations
 
 import copy
 import unittest
+import subprocess
+import sys
+from pathlib import Path
 
 import github_plan_wait as wait_record
 
 
 class WaitRecordTests(unittest.TestCase):
+    def test_catalog_namespace_consumer_can_validate_waits(self):
+        result = subprocess.run([
+            sys.executable, "-I", "-c",
+            "import sys; sys.path.insert(0, sys.argv[1]); "
+            "from skills.github.scripts import github_plan_wait; "
+            "github_plan_wait.reviewed(evidence='Namespace consumer')",
+            str(Path(__file__).resolve().parents[3]),
+        ], capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def setUp(self):
         self.clear = wait_record.reviewed(evidence="Full issue and discussion reviewed; no hold remains")
         self.hold = wait_record.reviewed(evidence="Director requested testing", waiting_for="Director's test",

@@ -98,6 +98,9 @@ def close_args(*, reason: str = "completed", body: str | None = None) -> types.S
         body_file=None,
         owner=None,
         project=None,
+        # These fixtures isolate closure safety and metadata. Native-neighborhood
+        # propagation has complete behavioral fixtures in test_github_plan_landing.
+        reconcile_dependents=False,
     )
 
 
@@ -637,7 +640,9 @@ def test_cmd_show_reads_unmarked_human_authored_plan_sections() -> None:
             plan.cmd_show(types.SimpleNamespace(repo="owner/repo", issue="1", full=False, sections=None))
 
         payload = json.loads(output.getvalue())
-        assert payload["issue"]["sections"] == {"Current Status": "State: Active"}, payload
+        assert payload["issue"]["derived"]["status"] == "review", payload
+        assert payload["issue"]["sections"]["Current Status"].startswith("State: review."), payload
+        assert issue["body"] == "## Current Status\n\nState: Active\n", issue
         provenance = payload["issue"]["provenance"]
         assert provenance["ownership"] == "contributor_unmanaged", provenance
         assert provenance["author_association"] == association, provenance
@@ -899,7 +904,8 @@ def test_cmd_show_reads_only_managed_contributor_sections() -> None:
         plan.cmd_show(types.SimpleNamespace(repo="owner/repo", issue="1", full=False, sections=None))
 
     payload = json.loads(output.getvalue())
-    assert payload["issue"]["sections"] == {"Current Status": "Managed status"}, payload
+    assert payload["issue"]["derived"]["status"] == "review", payload
+    assert "Managed status" in payload["issue"]["sections"]["Current Status"], payload
     provenance = payload["issue"]["provenance"]
     assert provenance["ownership"] == "contributor_envelope", provenance
     assert provenance["sections_source"] == "managed_block", provenance
@@ -923,7 +929,8 @@ def test_cmd_show_reports_automation_managed_provenance() -> None:
         plan.cmd_show(types.SimpleNamespace(repo="owner/repo", issue="1", full=False, sections=None))
 
     payload = json.loads(output.getvalue())
-    assert payload["issue"]["sections"] == {"Current Status": "State: Active"}, payload
+    assert payload["issue"]["derived"]["status"] == "review", payload
+    assert payload["issue"]["sections"]["Current Status"].startswith("State: review."), payload
     provenance = payload["issue"]["provenance"]
     assert provenance["ownership"] == "automation_managed", provenance
     assert provenance["sections_source"] == "issue_body", provenance
@@ -961,6 +968,8 @@ def test_cmd_show_includes_all_comment_pages_in_every_mode() -> None:
             if path == "/repos/other/project/issues/23":
                 return "automation-gh", dict(issue)
             parsed = urllib.parse.urlparse(path)
+            if parsed.path.endswith(("/dependencies/blocked_by", "/sub_issues")):
+                return "automation-gh", []
             assert parsed.path == "/repos/other/project/issues/23/comments", path
             query = urllib.parse.parse_qs(parsed.query)
             assert query["per_page"] == ["100"], query
@@ -975,7 +984,7 @@ def test_cmd_show_includes_all_comment_pages_in_every_mode() -> None:
             plan.cmd_show(args)
         payload = json.loads(output.getvalue())
         shown = payload["issue"]
-        assert len(calls) == 3, calls
+        assert len([path for path in calls if "/comments?" in path]) == 2, calls
         assert shown["repo"] == "other/project", shown
         assert len(shown["comments"]) == 101, shown
         assert [comment["id"] for comment in shown["comments"]] == list(range(1, 102)), shown
@@ -992,8 +1001,12 @@ def test_cmd_show_includes_all_comment_pages_in_every_mode() -> None:
         if "--full" in options:
             assert shown["body"] == body and "sections" not in shown, shown
         else:
-            expected = {"Scope": "Original request."} if options else {"Current Status": "Ready."}
-            assert shown["sections"] == expected and "body" not in shown, shown
+            if options:
+                assert shown["sections"] == {"Scope": "Original request."}, shown
+            else:
+                assert shown["derived"]["status"] == "review", shown
+                assert "Ready." in shown["sections"]["Current Status"], shown
+            assert "body" not in shown, shown
         assert shown["provenance"]["section_updates_allowed"] is False, shown
 
 
@@ -2977,7 +2990,7 @@ def test_close_reports_stale_project_as_non_blocking_warning() -> None:
                 body_file=None,
                 owner=None,
                 project=None,
-            ))
+                reconcile_dependents=False))
 
     payload = json.loads(output.getvalue())
     assert payload["ok"] is True, payload
@@ -3049,7 +3062,7 @@ def test_close_delegates_comment_to_shared_rest_helper() -> None:
                     body_file=None,
                     owner=None,
                     project=None,
-                ))
+                    reconcile_dependents=False))
     finally:
         plan.github_comment_core.comment = original_comment
 
@@ -3174,7 +3187,7 @@ def test_close_preserves_comment_reconciliation_after_partial_failure() -> None:
                     body_file=None,
                     owner=None,
                     project=None,
-                ))
+                    reconcile_dependents=False))
             except plan.PlanError as exc:
                 assert exc.payload["comment_action"] == "create", exc.payload
                 assert exc.payload["reconciliation"]["strategy"] == "list_actor_comments_and_compare_body", exc.payload
@@ -3253,7 +3266,7 @@ def test_close_state_failure_preserves_compound_steps() -> None:
                 body_file=None,
                 owner=None,
                 project=None,
-            ))
+                reconcile_dependents=False))
         except plan.PlanError as exc:
             assert exc.failure is failure
             assert exc.failure.completed_steps == ["resolve_actor"], exc.failure.completed_steps
@@ -3303,7 +3316,7 @@ def test_close_already_reconciled_skips_redundant_label_write() -> None:
                 body_file=None,
                 owner=None,
                 project=None,
-            ))
+                reconcile_dependents=False))
 
     payload = json.loads(output.getvalue())
     assert payload["closed"]["reason"] == "not_planned", payload
@@ -3325,7 +3338,7 @@ def test_close_rejects_invalid_reason_before_remote_reads_or_writes() -> None:
             body_file=None,
             owner=None,
             project=None,
-        ))
+            reconcile_dependents=False))
     except plan.PlanError as exc:
         assert "completed or not planned" in str(exc), exc
     else:
@@ -3383,7 +3396,7 @@ def test_close_reports_project_auth_denied_as_non_blocking_warning() -> None:
                 body_file=None,
                 owner=None,
                 project=None,
-            ))
+                reconcile_dependents=False))
 
     payload = json.loads(output.getvalue())
     assert payload["ok"] is True, payload
@@ -3461,7 +3474,7 @@ def test_close_syncs_project_before_closing_issue() -> None:
                 body_file=None,
                 owner=None,
                 project=None,
-            ))
+                reconcile_dependents=False))
 
     payload = json.loads(output.getvalue())
     assert payload["ok"] is True, payload
@@ -4468,7 +4481,7 @@ def test_plan_cli_emits_shared_terminal_envelope() -> None:
         gh_path.write_text(
             "#!/usr/bin/env bash\n"
             "set -euo pipefail\n"
-            "if [[ \"${1:-}\" == \"api\" && \"$*\" == *'repos/owner/repo/issues/1/comments?'* ]]; then\n"
+            "if [[ \"${1:-}\" == \"api\" && ( \"$*\" == *'repos/owner/repo/issues/1/comments?'* || \"$*\" == *'/dependencies/blocked_by?'* || \"$*\" == *'/sub_issues?'* ) ]]; then\n"
             "  printf '[]\\n'\n"
             "  exit 0\n"
             "fi\n"

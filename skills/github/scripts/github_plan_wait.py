@@ -13,8 +13,9 @@ from typing import Any
 
 try:
     import github_identity
+    import github_plan_status
 except ModuleNotFoundError:
-    from skills.github.scripts import github_identity
+    from skills.github.scripts import github_identity, github_plan_status
 
 
 PREFIX = "<!-- github-plan:wait "
@@ -44,19 +45,7 @@ def reviewed(*, evidence: str, waiting_for: str | list[str] | None = None,
 
 
 def validate(record: Any) -> None:
-    if (not isinstance(record, dict) or set(record) != {"version", "state", "evidence", "waits"}
-            or type(record["version"]) is not int or record["version"] != 1
-            or not isinstance(record["state"], str) or record["state"] not in {"clear", "waiting", "review"}
-            or not isinstance(record["evidence"], str) or not isinstance(record["waits"], list)):
-        raise ValueError("Malformed structured wait record; review with gh-plan.py wait")
-    if record["state"] != "review" and not record["evidence"].strip():
-        raise ValueError("Structured wait record lacks review evidence")
-    if bool(record["waits"]) != (record["state"] == "waiting"):
-        raise ValueError("Structured wait state and entries disagree")
-    for wait in record["waits"]:
-        if (not isinstance(wait, dict) or set(wait) != {"waiting_for", "ends_when"}
-                or any(not isinstance(value, str) or not value.strip() for value in wait.values())):
-            raise ValueError("A structured wait needs its actor/event and ending condition")
+    github_plan_status.validate_wait(record)
 
 
 def live_lines(text: str, *, prefix: str = PREFIX) -> list[tuple[int, str]]:

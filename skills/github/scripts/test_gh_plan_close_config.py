@@ -27,6 +27,13 @@ SPEC.loader.exec_module(PLAN)
 
 
 class CloseConfigTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # These routing fixtures have no dependents; native propagation is
+        # exercised with a real graph in test_github_plan_landing.py.
+        context = patch.object(PLAN.github_plan_landing, "neighborhood", return_value=[])
+        context.start()
+        self.addCleanup(context.stop)
+
     def test_public_close_uses_resolved_target_config_and_keeps_overrides(self) -> None:
         for ref, caller in (("fixture/target#7", "fixture/local"),
                             ("https://github.com/fixture/target/issues/7", "fixture/local"),

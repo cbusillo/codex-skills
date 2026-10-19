@@ -742,6 +742,13 @@ selection is unchanged.
   selected body sections. An empty discussion returns `comments: []`; an
   unreadable comment page fails the command instead of returning a partial
   thread as success.
+  `derived` reports status, open `blocked_by`, structured waits and semantic
+  status labels from the current native graph and authoritative wait record.
+  Selected Current Status fields display that projection; `--full` preserves
+  the original body as evidence alongside it. Hand-written status and labels
+  cannot override the projection. Missing or malformed wait evidence needs review.
+  `labels` is the projected view; `recorded_labels` preserves the observed labels
+  for diagnosis without making them status authority.
 - `deps <issue>`: Page and show validated native `blocked_by`, `blocking`, and
   sub-issue relationships, preserving cross-repository issue references.
 
@@ -1477,20 +1484,20 @@ competitor's record.
   `wait` command to record existing evidence, never a hand-applied status label.
   Single-issue `wait` can review and record waits on closed issues without
   reopening or claiming them; a real wait is never automatically cleared.
-  For open automation-owned native parents/dependents in the same repository
+  For open native planning parents/dependents in the same repository
   owner's account, apply derives `blocked`, `waiting` or `active` labels from
   all current native blockers and the authoritative structured wait. It preserves
-  their body, finish line, wait records and relationship edges, and reports that
-  any prose naming an old blocker needs review against the new observation.
+  their body, finish line, wait records and relationship edges. Readers project
+  the current blockers instead of treating old status prose as another source.
   Concurrent structured waits and open native blockers retain both label views.
-  A waiting label beside a clear record is an ambiguous legacy hold; reconciliation
-  preserves it for review. Record real waits through `wait`; after verifying a
-  resolution, an authorized execution uses `claim --wait-resolved` with its evidence.
-  Deliberately unstatused plans and closed related issues stay unchanged.
-  Unverified target planning configuration refuses writes. Stale/done labels
-  on open records require scope review before that same explicit claim recovery.
+  A clear reviewed wait record supersedes an old waiting label. Record real waits
+  through `wait`; missing or malformed records still require review.
+  Closed related plans get `done` labels without changing their state or body.
+  On reviewed open plans, prior status
+  labels, including absent or stale labels, are replaced by the derived view.
+  Unverified target planning configuration refuses writes.
   Cross-repository source closures, another account's
-  records and reporter acceptance remain owning-agent review work. Each outcome
+  records and source reporter acceptance remain owning-agent review work. Each outcome
   identifies its source/related role and whether it was a closing reference;
   Informational reference-only open sources and timeline-only mentions set `review_required: true` without
   failing an otherwise successful receipt; closing-reference or related metadata
@@ -1564,6 +1571,13 @@ competitor's record.
   reused on retry, and failures return deterministic `recovery` state so
   rerunning the same command reconciles missing metadata without duplicating
   evidence.
+- Every successful `close`, including an idempotent repair of a confirmed close,
+  refreshes direct native parents and `blocking` dependents through that same
+  derivation and label readback. Related issues remain open; their own finish
+  lines are not inferred. Same-owner cross-repository targets require verified
+  planning configuration and the existing posting identity. A failure preserves
+  the confirmed source close and returns recovery evidence for the remaining
+  dependents; it never retries the issue-state write.
 - `ensure-labels`: Page through repository labels and create documented missing
   planning labels through REST. Concurrent-create conflicts are reconciled by
   reading the requested label instead of blindly retrying the write.

@@ -2061,7 +2061,9 @@ class ClaimTests(unittest.TestCase):
                 if change == "child_blocker": self.blockers = [{"state": "open"}]
                 if change == "child_wait": self.wait = wait_record.reviewed(evidence="Child needs acceptance", waiting_for="Client", ends_when="Client accepts")
                 if change == "parent_status": self.targets["41"]["body"] += "\n" + CLAIM.marker({**OTHER, "session": "third"})
-                if change == "retained_pr_wait": self.targets["99"]["labels"] = [{"name": PLAN.DEFAULT_CONFIG["labels"]["waiting"]}]
+                if change == "retained_pr_wait":
+                    self.targets["99"]["labels"] = [{"name": PLAN.DEFAULT_CONFIG["labels"]["waiting"]}]
+                    self.record_wait(target="99")
                 with self.assertRaises(PLAN.PlanError) as caught:
                     self.run_claim()
                 if change in conflicts:
@@ -2158,6 +2160,7 @@ class ClaimTests(unittest.TestCase):
         self.ordinary_handoff_fixture()
         self.run_claim()
         self.targets["99"]["labels"] = [{"name": PLAN.DEFAULT_CONFIG["labels"]["waiting"]}]
+        self.record_wait(target="99")
         self.args.wait_resolved = "Fresh authorization for this step; preserve the new PR hold."
         self.run_claim()
         self.assertEqual(self.events.count("post"), 1)
@@ -4116,6 +4119,7 @@ class ClaimTests(unittest.TestCase):
             self.assertEqual([item["number"] for item in result["candidates"]], [42])
         self.issue.update(leaf)
         self.issue["user"] = {"login": TEST_BOT}
+        self.wait = None  # The legacy issue has not received its structured review.
         with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
             self.run_claim()
         self.assertEqual(caught.exception.code, "claim_wait_unresolved")
@@ -4137,12 +4141,8 @@ class ClaimTests(unittest.TestCase):
             self.run_claim()
         self.assert_no_writes()
 
-    def test_wait_labels_refuse_until_existing_resolution_recorded(self):
+    def test_stale_wait_label_does_not_override_reviewed_clear_record(self):
         self.issue["labels"] = [{"name": PLAN.DEFAULT_CONFIG["labels"]["waiting"]}]
-        with self.assertRaises(PLAN.ClassifiedPlanError):
-            self.run_claim()
-        self.assert_no_writes()
-        self.args.wait_resolved = "Recorded owner release on this issue"
         self.run_claim()
         self.assertEqual(PLAN.normalize_labels(self.issue["labels"]), [PLAN.DEFAULT_CONFIG["labels"]["active"]])
 

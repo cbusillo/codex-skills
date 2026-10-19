@@ -19,7 +19,7 @@ import time
 CATALOG = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(CATALOG))
 sys.path.insert(0, str(CATALOG / "skills/github/scripts"))
-from skills.github.scripts import github_direction_next, github_next_queue, github_read
+from skills.github.scripts import github_direction_next, github_next_queue, github_plan_status, github_plan_wait, github_read
 from skills.github.scripts.github_identity import automation_login
 from skills.github.scripts.ready_handoff import HEAD, READY, WAITING, handoff_line, timestamp
 
@@ -29,6 +29,7 @@ CHILD_LIMIT = 50
 TRACK_COMMENTS = 100
 CHILD_COMMENTS = 100
 LABEL_LIMIT = 50
+BLOCKER_LIMIT = 100
 PR_LIMIT = 5
 PR_COMMENTS = 30
 TRACKS_PER_QUERY = 10
@@ -46,7 +47,11 @@ LIST_QUERY = """query SupervisorGoalBoardList($owner: String!, $name: String!, $
 }"""
 
 COMMENT = "url createdAt updatedAt databaseId body author { __typename login }"
+BLOCKERS = f"""blockedBy(first: {BLOCKER_LIMIT}) {{ totalCount nodes {{
+    number state url repository {{ nameWithOwner }} }} }}"""
 TRACK_FIELDS = f"""number title url state body createdAt lastEditedAt
+      author {{ __typename login }}
+      {BLOCKERS}
       milestone {{ title }}
       labels(first: {LABEL_LIMIT}) {{ totalCount nodes {{ name }} }}
       comments(last: {TRACK_COMMENTS}) {{ totalCount nodes {{ {COMMENT} }} }}
@@ -54,6 +59,8 @@ TRACK_FIELDS = f"""number title url state body createdAt lastEditedAt
         totalCount
         nodes {{
           number title url state body createdAt lastEditedAt
+          author {{ __typename login }}
+          {BLOCKERS}
           repository {{ nameWithOwner }}
           labels(first: {LABEL_LIMIT}) {{ totalCount nodes {{ name }} }}
           subIssuesSummary {{ total completed }}
@@ -93,6 +100,36 @@ def status_label(labels, unread):
         unread.append("status label")
         return UNKNOWN
     return found
+
+
+def derived_status(node, trusted, unread):
+    """Native blockers and the last trusted structured wait own current status."""
+    unknown = {"status": UNKNOWN, "blocked_by": [], "waits": [], "structured_wait": None}
+    blockers = node.get("blockedBy")
+    if not isinstance(blockers, dict) or truncated(blockers):
+        unread.append("native blockers")
+        return unknown
+    comments = [{"body": comment.get("body") or "", "user": {"login": login(comment.get("author"))}}
+                for comment in node["comments"]["nodes"]]
+    source = {"body": node.get("body") or "", "state": node["state"],
+              "user": {"login": login(node.get("author"))}}
+    try:
+        # The shared resolver validates historical trusted records too. A clear
+        # tail record cannot prove that unread history contains no malformed one.
+        if truncated(node["comments"]):
+            unread.append("structured wait")
+            return unknown
+        wait = github_plan_wait.current(source, comments, trusted)
+        relationships = {"blocked_by": [{"repo": item["repository"]["nameWithOwner"],
+            "number": item["number"], "state": item["state"].lower(), "html_url": item["url"]}
+            for item in blockers["nodes"]]}
+        derived = github_plan_status.derive(source, relationships, wait)
+    except (ValueError, KeyError, TypeError, AttributeError):
+        unread.append("structured wait or native blockers")
+        return unknown
+    if derived["status"] == "review":
+        unread.append("structured wait")
+    return {**derived, "status": f"plan:{derived['status']}" if derived["status"] != "review" else UNKNOWN}
 
 
 def latest_decision(comments, trusted, unread):
@@ -139,7 +176,7 @@ def child_state(child):
     """A closed child is closed whatever its label says; an open label is noted as stale."""
     if child["state"] != "closed":
         return child["status"] or child["state"]
-    label = child["status"]
+    label = child["recorded_status"]
     return f"closed (label {label} is stale)" if label in OPEN_LABELS else "closed"
 
 
@@ -172,7 +209,8 @@ def child_row(node, trusted):
         unread.append(f"closing PRs beyond {PR_LIMIT}")
     return {"repository": node["repository"]["nameWithOwner"], "number": node["number"],
         "title": node["title"], "url": node["url"], "state": node["state"].lower(),
-        "status": status_label(node["labels"], unread), "sub_issues": node["subIssuesSummary"],
+        **derived_status(node, trusted, unread), "recorded_status": status_label(node["labels"], []),
+        "sub_issues": node["subIssuesSummary"],
         "next_action": next_action(node, trusted, unread),
         "latest_decision": latest_decision(node["comments"], trusted, unread),
         "open_prs": [{"url": pr["url"], "head": pr["headRefOid"], "draft": pr["isDraft"],
@@ -188,7 +226,7 @@ def track_row(node, trusted):
         unread.append(f"children beyond {CHILD_LIMIT}")
     return {"number": node["number"], "title": node["title"], "url": node["url"],
         "milestone": (node.get("milestone") or {}).get("title"),
-        "status": status_label(node["labels"], unread),
+        **derived_status(node, trusted, unread),
         "next_action": next_action(node, trusted, unread),
         "latest_decision": latest_decision(node["comments"], trusted, unread),
         "children": [child_row(child, trusted) for child in children["nodes"]],
@@ -270,6 +308,14 @@ def action_text(row, links_only):
     return f"; next action: {row['next_action']}"
 
 
+def blocking_text(row, links_only):
+    refs = ", ".join(item["html_url"] for item in row["blocked_by"])
+    result = f"; blocked by: {refs or ('unknown' if row['status'] == UNKNOWN else 'none')}"
+    if row["waits"] and not links_only:
+        result += "; waiting for: " + "; ".join(wait["waiting_for"] for wait in row["waits"])
+    return result
+
+
 def markdown(board, *, links_only=False):
     discovered = board["coverage"]["discovered"]
     lines = [f"Goal board, checked at {board['checked_at']}. Tracks discovered: "
@@ -282,14 +328,14 @@ def markdown(board, *, links_only=False):
             continue
         decision = f"; decision {track['latest_decision']}" if track["latest_decision"] else ""
         lines.append(f"\n- {track['url']}{name}: {track['status'] or 'no status label'}"
-                     f"{action_text(track, links_only)}{decision}{unread_text(track)}")
+                     f"{blocking_text(track, links_only)}{action_text(track, links_only)}{decision}{unread_text(track)}")
         for child in track["children"]:
             title = "" if links_only else f" {child['title']}"
             decision = f"; decision {child['latest_decision']}" if child["latest_decision"] else ""
             prs = "".join(f"; PR {pr['url']} {'draft, ' if pr['draft'] else ''}{pr['handoff']}, mergeable {pr['mergeable']}"
                           for pr in child["open_prs"])
             lines.append(f"  - {child['url']}{title}: {child_state(child)}"
-                         f"{action_text(child, links_only)}{decision}{prs}{unread_text(child)}")
+                         f"{blocking_text(child, links_only)}{action_text(child, links_only)}{decision}{prs}{unread_text(child)}")
     for error in board["errors"]:
         lines.append(f"\nError: {error}")
     return "\n".join(lines)

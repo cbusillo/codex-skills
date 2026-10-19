@@ -349,6 +349,9 @@ def test_recorded_rest_show_provenance_and_fallback():
                 "collect_paged_rest_items",
                 return_value=("fixture-reader", record["comments"]),
             ),
+            mock_attribute(plan, "read_issue_relationships", return_value=("fixture-reader", {
+                key: [plan.compact_relationship_issue(row, key) for row in values]
+                for key, values in rows[0]["_graph_relationships"].items()})),
         ):
             plan.cmd_show(args)
         assert output.call_args.args[0]["issue"] == batched

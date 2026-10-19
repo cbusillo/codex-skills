@@ -449,6 +449,15 @@ new waypoints through `direction`.
 
 Use status labels narrowly:
 
+Status labels are views of native issue state, open `blocked-by` edges and the
+authoritative structured wait record. `show`, `next` and the Supervisor goal
+board derive those values; old prose or hand-applied blocked/waiting labels do
+not override reviewed graph evidence. Maintain waits with `wait` and
+dependencies with `link`/`unlink`, rather than copying blocker lists into
+Current Status. Missing or malformed wait evidence still requires review.
+Landing reconciliation and issue closure refresh native parents and dependents
+without inferring their finish lines or changing human-authored bodies.
+
 - `plan:active`: actionable now, including work whose next actor is any agent.
   Keep actionable unstarted follow-ups, capacity/selection queues, and Supervisor
   handoffs active. Put the agent's next step in `Next action:`; record
@@ -464,8 +473,8 @@ Use status labels narrowly:
 
 Separate independent actionable work from an unresolved person or event wait
 into its own issue, so it can be selected and claimed without clearing that wait.
-For `plan:waiting` without a native issue blocker, say `Blocked by: No native
-issue blocker; waiting for ...`.
+For `plan:waiting`, the structured record names the actor/event and ending
+condition; the derived blocker list contains native open issue blockers only.
 
 During an authorized planning update, reconcile `label_blocked_without_native_edge`:
 verify and link an open prerequisite with

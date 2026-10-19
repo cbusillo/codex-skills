@@ -20,6 +20,7 @@ import subprocess
 from typing import Any
 
 import github_read
+import github_plan_status
 
 QUERY = """
 query($owner: String!, $name: String!, $number: Int!, $after: String) {
@@ -141,7 +142,14 @@ def snapshot(plan: Any, repo: str, number: int) -> tuple[dict[str, Any], dict[st
     _, issue = plan.get_issue(str(number), repo)
     _, comments = plan.collect_paged_rest_items(
         f"/repos/{repo}/issues/{number}/comments", query={}, bucket="rest_core", step_prefix="landing_comments")
-    wait = plan.current_wait(issue, comments, repo)
+    try:
+        wait = plan.current_wait(issue, comments, repo)
+    except (ValueError, plan.PlanError):
+        if issue.get("state") != "closed":
+            raise
+        # A closed native state cannot be activated by unknown wait evidence.
+        # Preserve the record; only its label view is derived here.
+        wait = {"version": 1, "state": "review", "evidence": "", "waits": []}
     return issue, plan.load_config(repo), wait
 
 
@@ -162,10 +170,6 @@ def comment_attention(repo: str, number: int) -> bool:
 
 
 def reconcile_related(plan: Any, repo: str, number: int, *, apply: bool, entry: dict[str, Any]) -> None:
-    _, initial = plan.get_issue(str(number), repo)
-    if initial.get("state") == "closed":
-        entry["status"] = "unchanged"
-        return
     discovery: dict[str, Any] = {}
     plan.load_config(repo, discovery=discovery)
     entry["planning_config"] = discovery
@@ -176,38 +180,23 @@ def reconcile_related(plan: Any, repo: str, number: int, *, apply: bool, entry: 
     if not planning_issue(plan, issue, config):
         entry["status"] = "not_planning_issue"
         return
-    if not plan.issue_body_is_fully_managed(issue):
-        entry["status"] = "review_reporter_acceptance"
+    if issue.get("state") not in {"open", "closed"}:
+        entry["status"] = "review_related_finish_line"
         return
-    if issue.get("state") != "open":
-        entry["status"] = "unchanged" if issue.get("state") == "closed" else "review_related_finish_line"
-        return
-    if wait["state"] == "review":
+    if wait["state"] == "review" and issue["state"] == "open":
         entry.update(status="review_wait_record", next_action="Review full discussion and record actual waits or verified absence through gh-plan.py wait, then rerun")
         return
     _, relationships = plan.read_issue_relationships(repo, number, include_blocking=False)
-    blockers = [item for item in relationships["blocked_by"] if item["state"] == "open"]
-    key = "blocked" if blockers else "waiting" if wait["state"] == "waiting" else "active"
+    derived = github_plan_status.derive(issue, relationships, wait)
+    blockers = derived["blocked_by"]
+    key = derived["status"]
     entry.update(derived_status=key, wait=wait, open_blockers=blockers,
-                 finish_line="preserved; related landing does not prove completion",
-                 current_status_review="Body preserved; review any prose naming the old blocker against these current machine observations")
+                 blocked_by=blockers, derived=derived,
+                 finish_line="preserved; related landing does not prove completion")
     names = set(plan.normalize_labels(issue.get("labels")))
-    if wait["state"] == "clear" and config["labels"]["waiting"] in names:
-        entry.update(status="review_wait_record", next_action="Review the legacy waiting label and full discussion. Record any real hold with wait; after verified resolution use claim --wait-resolved with that evidence. Reconciliation never clears this ambiguous hold.")
-        return
-    if not names.intersection(config["labels"][key] for key in ("active", "blocked", "waiting", "stale", "done")):
-        entry.update(status="review_related_finish_line", informational=True,
-                     next_action="Preserve deliberate absence of a status; owning agent reviews whether this plan should be activated")
-        return
-    # Stale/done on an open issue needs scope review, not automatic activation.
-    if names.intersection(config["labels"][key] for key in ("stale", "done")):
-        entry.update(status="review_related_finish_line", next_action="Review remaining scope; an authorized new execution can use claim --wait-resolved with verified resolution evidence")
-        return
-    wanted = {config["labels"][key]}
-    if blockers and wait["state"] == "waiting":
-        wanted.add(config["labels"]["waiting"])
+    wanted = {config["labels"][key] for key in derived["labels"]}
     entry["derived_labels"] = sorted(wanted)
-    remove = [config["labels"][key] for key in ("active", "blocked", "waiting")
+    remove = [config["labels"][key] for key in ("active", "blocked", "waiting", "stale", "done")
               if config["labels"][key] not in wanted and config["labels"][key] in names]
     if wanted <= names and not remove:
         entry["status"] = "unchanged"
@@ -225,17 +214,42 @@ def reconcile_related(plan: Any, repo: str, number: int, *, apply: bool, entry: 
         raise ValueError("Related planning state changed before reconciliation")
     _, gh_cmd, expected = plan.comment_route()
     entry["writes_started"] = True
-    entry["labels"] = plan.github_issue_core.edit_issue(
-        number, repo=repo, add_labels=sorted(wanted - names) or None, remove_labels=remove or None,
-        gh_cmd=gh_cmd, expected_actor=expected, operation=plan.CURRENT_OPERATION)
+    try:
+        entry["labels"] = plan.github_issue_core.edit_issue(
+            number, repo=repo, add_labels=sorted(wanted - names) or None, remove_labels=remove or None,
+            gh_cmd=gh_cmd, expected_actor=expected, operation=plan.CURRENT_OPERATION)
+    except plan.github_issue_core.IssueError as exc:
+        raise plan.plan_error_from_issue(exc) from exc
     verified, _, verified_wait = snapshot(plan, repo, number)
     _, verified_relationships = plan.read_issue_relationships(repo, number, include_blocking=False)
     expected_names = (names - set(remove)) | wanted
     if (set(plan.normalize_labels(verified.get("labels"))) != expected_names
-            or verified.get("state") != "open" or verified.get("body") != issue.get("body")
+            or verified.get("state") != issue["state"] or verified.get("body") != issue.get("body")
             or verified_wait != wait or verified_relationships != relationships):
         raise ValueError("Related planning readback did not match")
     entry["status"] = "reconciled"
+
+
+def reconcile_dependents(plan: Any, repo: str, number: int, *, apply: bool) -> dict[str, Any]:
+    """The same native neighborhood refresh for issue closes and train landings."""
+    outcomes = []
+    for target_repo, target_number in neighborhood(plan, repo, [(repo, number)]):
+        entry = {"repo": target_repo, "number": target_number, "role": "related"}
+        outcomes.append(entry)
+        if target_repo.split("/")[0].casefold() != repo.split("/")[0].casefold():
+            entry.update(status="review_cross_repository", informational=True)
+            continue
+        try:
+            reconcile_related(plan, target_repo, target_number, apply=apply, entry=entry)
+        except (plan.PlanError, ValueError, TypeError, OSError, subprocess.SubprocessError) as error:
+            entry.update(status="reconciliation_failed", error={"message": str(error), **getattr(error, "payload", {})})
+            # A real authorization refusal stops this write sequence.
+            if entry.get("writes_started"):
+                break
+        if entry["status"].startswith("review_"):
+            entry["informational"] = True
+    return {"ok": all(item["status"] in {"reconciled", "unchanged", "not_planning_issue"} or item.get("informational")
+                      for item in outcomes), "issues": outcomes}
 
 
 def reconcile(plan: Any, reader: github_read.GitHubReader, repo: str, number: int, *, apply: bool) -> dict[str, Any]:
@@ -281,6 +295,8 @@ def reconcile(plan: Any, reader: github_read.GitHubReader, repo: str, number: in
             # Report preserved, unmodified review work without turning every
             # child landing into a failed write receipt on a human-owned epic.
             entry["informational"] = True
+        if entry["status"] == "reconciliation_failed" and entry.get("writes_started"):
+            break
     return {"ok": all(item.get("informational") or item["status"] in {"reconciled", "would_reconcile", "not_planning_issue", "unchanged"} for item in outcomes),
             "coverage": "complete", "review_required": any(item["status"].startswith(("review_", "reconciliation_")) for item in outcomes),
             "pr": number, "landing_sha": pull["mergeCommit"]["oid"], "apply": apply, "issues": outcomes}
@@ -320,7 +336,8 @@ def reconcile_issue(plan: Any, repo: str, issue_number: int, pull: dict[str, Any
     entry["writes_started"] = True
     result = captured(plan.cmd_close, argparse.Namespace(
         repo=repo, issue=str(issue_number), planning_checkout=None, reason="completed",
-        body=evidence, body_file=None, owner=None, project=None, only_closed=True))
+        body=evidence, body_file=None, owner=None, project=None, only_closed=True,
+        reconcile_dependents=False))
     entry["close"] = result
     if not result.get("ok") or (result.get("project") or {}).get("warning"):
         entry["status"] = "reconciliation_incomplete"
