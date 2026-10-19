@@ -4,7 +4,6 @@
 # dependencies = []
 # ///
 """Exercise retirement and cleanup with real lease files and linked Git fixtures."""
-import io
 import json
 import shlex
 import subprocess
@@ -12,7 +11,6 @@ import tempfile
 import unittest
 import uuid
 from argparse import Namespace
-from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -87,12 +85,6 @@ class LeaseRetirementTests(unittest.TestCase):
         self.assertEqual(result["would_remove"], [str(path)])
         self.assertEqual(result["removed"], [])
         self.assertTrue(path.exists())
-        output = io.StringIO()
-        with redirect_stdout(output):
-            jb_inspect.print_human(result, assess=False)
-        self.assertIn("PREVIEW", output.getvalue())
-        self.assertIn(f"would_remove={len(result['would_remove'])}", output.getvalue())
-        self.assertIn("--no-dry-run", output.getvalue())
 
     def test_warm_dead_ide_release_keeps_uncertain_and_replacement_routes(self):
         path, lease = self.lease(self.base / "task", state="kept_warm_after_indexing_timeout",

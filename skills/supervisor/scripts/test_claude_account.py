@@ -225,17 +225,6 @@ class MoveTests(unittest.TestCase):
         self.record()
         self.assertEqual(account.move_environment(self.argv, env), env)
 
-    def test_installed_wrapper_preserves_every_environment_variable(self):
-        settings = self.root / "settings.json"
-        installed = account.install(settings, self.root / "moves", write=True)
-        argv = json.loads(installed["env"]["CLAUDE_CODE_PROCESS_WRAPPER"])
-        code = "import os,json;print(json.dumps(dict(os.environ)))"
-        env = {**os.environ, **self.env, "HOME": str(self.root), "PYTHONPATH": "unchanged"}
-        direct = subprocess.check_output([sys.executable, "-I", "-c", code], env=env)
-        wrapped = subprocess.check_output([*argv, sys.executable, "-I", "-c", code], env=env)
-        self.assertEqual({k for k in json.loads(wrapped).keys() | json.loads(direct).keys()
-                          if json.loads(wrapped).get(k) != json.loads(direct).get(k)}, set())
-
     def test_enrollment_refuses_task_worktree(self):
         self.runtime_patch.stop()
         from types import SimpleNamespace

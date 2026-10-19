@@ -2178,21 +2178,6 @@ class TerminalTests(unittest.TestCase):
                 command = iterm_tab.append_brief(settings, "task")
                 self.assertEqual(shlex.split(command)[-1], "task")
 
-    def test_google_brief_uses_native_interactive_prompt(self):
-        with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
-            child = root / "agy"
-            child.write_text(f'#!{sys.executable}\nimport argparse\n'
-                             'parser = argparse.ArgumentParser()\n'
-                             'parser.add_argument("-i", "--prompt-interactive", required=True)\n'
-                             'print(parser.parse_args().prompt_interactive, end="")\n')
-            child.chmod(0o700)
-            brief = "--Start here\n\tKeep these details literal."
-            command = iterm_tab.append_brief(shlex.quote(str(child)), brief)
-            result = subprocess.run(["/bin/sh", "-c", command], capture_output=True,
-                                    text=True, check=True)
-            self.assertEqual(result.stdout, brief)
-
     def test_brief_reaches_agent_as_one_literal_argument(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

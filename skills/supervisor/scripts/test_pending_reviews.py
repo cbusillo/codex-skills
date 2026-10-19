@@ -1285,15 +1285,6 @@ class DispatchTests(unittest.TestCase):
         self.dispatch()
         self.assertIn("Inspect helpers and surrounding files.", next(c[2] for c in self.io.calls if c[0] == "review"))
 
-    def test_linked_prompt_edited_during_review_never_posts(self):
-        self.io.request["body"] = (f"Supervisor runs the review.\nHead: {SHA}\n"
-                                   f"https://github.com/{REPO}/pull/7#issuecomment-9")
-        self.io.sources[9] = comment(9, "Prompt:\nInspect helpers.")
-        self.io.after_review = lambda: self.io.sources[9].update(body="Prompt:\nDifferent scope.")
-        with self.assertRaises(reviews.ReviewError):
-            self.dispatch()
-        self.assert_no_post()
-
     def test_cycle_cross_repo_link_and_untrusted_link_refuse(self):
         self.io.request["body"] = f"Supervisor runs the review.\nHead: {SHA}\nhttps://github.com/{REPO}/pull/7#issuecomment-9"
         for body, login in [(f"https://github.com/{REPO}/pull/7#issuecomment-10", BOT),

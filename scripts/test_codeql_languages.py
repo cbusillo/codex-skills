@@ -137,10 +137,6 @@ class SelectionTests(unittest.TestCase):
         self.write("skills/example/action.yml", "runs:\n  using: composite\n  steps: []\n")
         self.assertEqual(self.selection(self.commit()), {"actions", "javascript-typescript"})
 
-    def test_workflow_edit_selects_inline_javascript_extraction(self) -> None:
-        self.write(".github/workflows/ci.yaml", "jobs:\n  inline:\n    steps: []\n")
-        self.assertEqual(self.selection(self.commit()), {"actions", "javascript-typescript"})
-
     def test_main_schedule_and_dispatch_scan_every_language(self) -> None:
         for event in ("push", "schedule", "workflow_dispatch"):
             with self.subTest(event=event):

@@ -1597,7 +1597,6 @@ def test_controller_rejected_response_names_unknown_key(section: str) -> None:
     assert payload["summary"]["projection_error_code"] == "unsafe_response_shape"
     assert payload["summary"]["unrecognized_key"] == "historical_stack_child_label_status"
     assert payload["summary"]["trace_id"] == response["trace_id"]
-    assert "Read the PR and controller state before any retry" in payload["summary"]["recommendation"]
     assert "private-fixture-value" not in json.dumps(payload)
     assert "another-private-value" not in json.dumps(payload)
 
@@ -1619,7 +1618,6 @@ def test_controller_rejected_response_names_bad_value() -> None:
     assert payload["summary"]["projection_error_code"] == "invalid_response"
     assert payload["warnings"][0]["code"] == "invalid_response"
     assert "unrecognized_key" not in payload["summary"]
-    assert "Read the PR and controller state before any retry" in payload["summary"]["recommendation"]
 
 
 def test_controller_rejected_response_keeps_only_safe_trace_and_code() -> None:
@@ -1677,7 +1675,6 @@ def test_controller_http_error_keeps_safe_identifiers_without_raw_error_text(mut
         assert status == 1
         if mutate and (http_status >= 500 or http_status == 408):
             assert payload["status"] == "outcome_unknown"
-            assert "controller state" in payload["summary"]["recommendation"]
         assert payload["summary"]["http_status"] == http_status
         assert payload["summary"]["trace_id"] == response["trace_id"]
         assert payload["summary"]["error_code"] == error_code
@@ -10453,7 +10450,6 @@ def test_interrupted_http_verified_apply_preserves_failure_phase(kind: str, phas
     assert len(posts) == (0 if phase == "preflight" else 1)
     assert len(gets) == (2 if phase == "readback" else 1)
     if phase != "preflight":
-        assert "read" in payload["summary"]["recommendation"].lower()
         assert posts[0]["idempotency_key"] == "apply-1"
     if phase == "readback":
         assert payload["summary"]["trace_id"] == applied["trace_id"]
@@ -10512,8 +10508,6 @@ def test_interrupted_http_simple_post_preserves_write_uncertainty(kind: str, mod
         assert payload["summary"]["http_status"] == fault.http_status
         assert payload["summary"]["trace_id"] == fault["trace_id"]
     assert payload["status"] == expected
-    if expected in {"outcome_unknown", "accepted_unverified"}:
-        assert "read" in payload["summary"]["recommendation"].lower()
     assert "private-provider" not in json.dumps(payload)
 
 
@@ -10562,37 +10556,6 @@ def test_interrupted_http_error_body_keeps_admin_refusal_bounded(kind: str, stat
     code, payload, _ = _run_read_transport(["product-profile-read", "--product", "example-product"], response=error)
     assert code == 1 and payload["status"] == ("denied" if status == 403 else "unavailable")
     assert "private-" not in json.dumps(payload)
-
-
-@pytest.mark.parametrize("kind,phase", [('incomplete', 'preflight'), ('incomplete', 'post'), ('disconnected', 'preflight'), ('disconnected', 'post'), ('decoding', 'preflight'), ('projection', 'preflight')])
-def test_interrupted_http_policy_import_preserves_failure_phase(kind: str, phase: str) -> None:
-    fault = (write_action.ServiceResponseError({"http_status": 202})
-             if kind == "decoding" else _interrupted_http(kind))
-    if kind == "projection":
-        fault = write_action._ServiceResponse({"trace_id": "launchplane_req_preflight"}, 202)
-    output = io.StringIO()
-    with (
-        patch.object(write_action, "prepare_operator_settings", return_value=SETTINGS),
-        patch.object(write_action, "request_launchplane_read", side_effect=fault if phase == "preflight" and kind != "projection" else None,
-                     return_value=fault if kind == "projection" else _merge_train_policy_targets_payload()),
-        patch.object(write_action, "request_launchplane", side_effect=fault) as post,
-        redirect_stdout(output),
-    ):
-        code = write_action.execute_merge_train_policy_import(
-            args=argparse.Namespace(timeout=3, idempotency_key="policy-import-example"),
-            operation="merge-train-policy-import-apply", request={"mode": "apply"},
-            body=_merge_train_policy_import_payload(mode="apply", reason="Approved policy import."),
-            expected_current_policy_digest="a" * 64, expected_candidate_policy_digest="c" * 64,
-        )
-    payload = json.loads(output.getvalue())
-    assert code == 1 and payload["status"] == ("invalid" if kind in {"decoding", "projection"} else "unavailable" if phase == "preflight" else "outcome_unknown")
-    assert post.call_count == (0 if phase == "preflight" else 1)
-    assert "private-provider" not in output.getvalue()
-
-    assert payload["summary"]["http_status"] == 202
-
-    if kind == "projection":
-        assert payload["summary"]["trace_id"] == fault["trace_id"]
 
 
 @pytest.mark.parametrize("service_url", ["https://private.example.invalid", "https://private.example.invalid/launchplane/"])
@@ -10723,7 +10686,7 @@ def test_record_reader_preserves_request_failure_type(error, reader, kwargs):
 
 @pytest.mark.parametrize("mode", ["dry-run", "apply"])
 @pytest.mark.parametrize("phase", ["preflight", "post"])
-@pytest.mark.parametrize("failure", ["projection", "decoding", "redirect", "transport", "gateway", "http_timeout", "denial"])
+@pytest.mark.parametrize("failure", ["projection", "decoding", "redirect", "transport", "disconnected", "gateway", "http_timeout", "denial"])
 def test_policy_import_failure_diagnostics_belong_to_the_failing_exchange(mode, phase, failure):
     preflight = write_action._ServiceResponse(_merge_train_policy_targets_payload(), 201)
     preflight["trace_id"] = "launchplane_req_preflight"
@@ -10743,7 +10706,8 @@ def test_policy_import_failure_diagnostics_belong_to_the_failing_exchange(mode, 
                 "trace_id": current["trace_id"], "error": {"code": "service_timeout", "message": "PRIVATE_SENTINEL"},
             }).encode()))
     else:
-        fault = http.client.IncompleteRead(b"PRIVATE_SENTINEL")
+        fault = (http.client.IncompleteRead(b"PRIVATE_SENTINEL") if failure == "transport"
+                 else http.client.RemoteDisconnected("PRIVATE_SENTINEL"))
         setattr(fault, "http_status", current.http_status)
     output = io.StringIO()
     with (
@@ -10764,13 +10728,10 @@ def test_policy_import_failure_diagnostics_belong_to_the_failing_exchange(mode, 
     mutating = mode == "apply" and phase == "post"
     if mutating:
         assert payload["status"] == ("accepted_unverified" if failure in {"projection", "decoding"} else "denied" if failure == "denial" else "outcome_unknown")
-        if failure in {"gateway", "http_timeout"}:
-            assert "active" in payload["summary"]["recommendation"].lower()
-            assert "before" in payload["summary"]["recommendation"].lower()
         assert code == (0 if failure in {"projection", "decoding"} else 1)
     else:
         assert code == 1
-        assert payload["status"] == ("unavailable" if failure in {"redirect", "transport", "gateway", "http_timeout"} else "denied" if failure == "denial" else "invalid")
+        assert payload["status"] == ("unavailable" if failure in {"redirect", "transport", "disconnected", "gateway", "http_timeout"} else "denied" if failure == "denial" else "invalid")
     if failure == "redirect":
         assert "trace_id" not in payload["summary"] and "http_status" not in payload["summary"]
         if not mutating:

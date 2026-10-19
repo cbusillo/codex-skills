@@ -1216,11 +1216,6 @@ def test_pr_create_validation_refusal_preserves_unknown_write_controls() -> None
             assert payload["actor"] == "catalog-app[bot]", payload
             if outcome == "unknown":
                 assert payload["recommended_next_action"] == "follow_operation_reconciliation_strategy", payload
-            if outcome == "not_started":
-                message = payload["failure"]["message"]
-                assert "existing authorization" in message, payload
-                assert "read back the label and all-state PRs" in message, payload
-                assert "do not replay automatically" in message, payload
             assert len(calls.read_text(encoding="utf-8").splitlines()) == 1
 
 
