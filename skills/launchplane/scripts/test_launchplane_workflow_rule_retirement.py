@@ -207,6 +207,11 @@ def _extra_rule(reply):
     (INSPECT, lambda reply: reply["result"].update(plan_sha256="f" * 64)),
     (INSPECT, lambda reply: reply.update(status="accepted")),
     (INSPECT, lambda reply: reply.update(records={"PRIVATE_SENTINEL": 1})),
+    (INSPECT, lambda reply: reply["result"]["selected_rules"][1]["scope"].pop("workflow_refs")),
+    (INSPECT, lambda reply: reply["result"]["selected_rules"][0]["scope"].pop("repository_id")),
+    (INSPECT, lambda reply: reply["result"]["selected_rules"][0]["scope"].update(repository=None)),
+    (INSPECT, lambda reply: reply["result"]["selected_rules"][1]["scope"].update(actions="deploy.write")),
+    (INSPECT, lambda reply: reply["result"].update(dependency_verification="verified")),
     (PLAN, lambda reply: reply["result"].pop("plan_sha256")),
     (PLAN, lambda reply: reply["result"].update(surviving_workflow_rule_count=True)),
 ])

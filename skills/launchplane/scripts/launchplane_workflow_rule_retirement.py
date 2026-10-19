@@ -131,9 +131,12 @@ def _project_scope(h: Any, value: object, selection: dict[str, Any], drops: Any)
             raise h.LaunchplaneSafetyError("invalid_response")
         if selection[key] is not None:
             projected[key] = selection[key]
+    # Launchplane dumps every rule field except null managed ids: text fields
+    # default to "" and selector lists to [], so a missing one is drift, not
+    # an unconstrained rule.
     for key in SCOPE_TEXT_FIELDS:
-        if key not in scope:
-            continue
+        if not isinstance(scope.get(key), str):
+            raise h.LaunchplaneSafetyError("invalid_response")
         path = f"selected_rules[].scope.{key}"
         if scope[key] == "":
             projected[key] = ""
@@ -143,13 +146,10 @@ def _project_scope(h: Any, value: object, selection: dict[str, Any], drops: Any)
         if kept:
             projected[key] = kept
     for key in SCOPE_LIST_FIELDS:
-        if key not in scope:
-            continue
         path = f"selected_rules[].scope.{key}"
-        items = scope[key]
+        items = scope.get(key)
         if not isinstance(items, list):
-            drops.drop(path)
-            continue
+            raise h.LaunchplaneSafetyError("invalid_response")
         kept_items: list[str] = []
         for item in items:
             kept = drops.keep(path, lambda entry: _selector(h, entry), item)
@@ -158,10 +158,20 @@ def _project_scope(h: Any, value: object, selection: dict[str, Any], drops: Any)
             elif item in (None, ""):
                 drops.drop(path)
         projected[key] = kept_items
-    for key, item in scope.items():
-        if key not in SCOPE_FIELDS and item not in (None, "", [], {}):
+    for key, value in scope.items():
+        if key not in SCOPE_FIELDS and value not in (None, "", [], {}):
             drops.drop("selected_rules[].scope.<unlisted field>")
     return projected, drops.count == before
+
+
+# The service cannot prove which workflows use a rule; any other value is drift.
+SOURCE_REVIEW_REQUIRED = "unknown_requires_source_review"
+
+
+def _dependency_verification(h: Any, value: object) -> str:
+    if value != SOURCE_REVIEW_REQUIRED:
+        raise h.LaunchplaneSafetyError("invalid_response")
+    return SOURCE_REVIEW_REQUIRED
 
 
 def _project_rules(h: Any, value: object, body: dict[str, Any], drops: Any) -> list[dict[str, object]]:
@@ -223,7 +233,7 @@ def project(h: Any, response: object, body: dict[str, Any]) -> tuple[dict[str, o
         "policy_revision": body["policy_revision"],
         "policy_sha256": body["policy_sha256"],
         "apply_supported": False,
-        "dependency_verification": h.public_code(result.get("dependency_verification")),
+        "dependency_verification": _dependency_verification(h, result.get("dependency_verification")),
         "blockers": [h.public_code(code) for code in blockers],
         "selected_rules": rules,
     }
