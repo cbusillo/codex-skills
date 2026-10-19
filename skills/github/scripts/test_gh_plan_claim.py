@@ -11,7 +11,8 @@ import copy
 import importlib.util
 import json
 import os
-import shutil
+import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -1067,118 +1068,61 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(before, (self.inventory, self.pulls, self.closed_pulls))
         self.assertEqual(output["session_coverage"]["codex"]["status"], "unavailable")
 
-    def pushed_handoff_fixture(self):
+    def no_pr_resume_fixture(self):
         self.ordinary_handoff_fixture()
         source = CLAIM.records(self.comments[0]["body"])[0]
         self.pulls, self.closed_pulls = [], {}
         self.inventory.update(local_branches=[source["branch"]], remote_branches=[source["branch"]],
                               worktrees=[{"branch": source["branch"], "path": "/retained"}])
-        self.pushed_head = "a" * 40
-        self.local_head = self.remote_head = self.pushed_head
-        self.dirty = False
         self.comments[-1]["body"] = (
             f"Released claim {self.args.resume_from}\n\n"
-            f"Preserved WIP: remote `{source['branch']}` at "
-            f"[{self.pushed_head}](https://github.com/owner/repo/commit/{self.pushed_head}). No PR opened.")
-        def verify_branch(branch, head, repo):
-            if (branch != source["branch"] or head != self.pushed_head or repo != self.args.repo
-                    or self.remote_head != head or self.local_head not in (None, head) or self.dirty):
-                raise CLAIM.ClaimProofError("claim_handoff_branch_unverified", "Retained source changed")
-        self.enterContext(patch.object(CLAIM, "verify_pushed_handoff", side_effect=verify_branch))
+            f"Preserved pushed WIP on `{source['branch']}`. No PR opened.")
+        self.comments[0]["created_at"] = source["claimed_at"]
+        self.comments[-1]["created_at"] = "2026-10-02T01:00:00Z"
+        return source
 
-    def test_pushed_branch_handoff_without_pr_completes_claim(self):
-        self.pushed_handoff_fixture()
+    def test_no_pr_handoff_refusal_supplies_executable_existing_resume_options(self):
+        source = self.no_pr_resume_fixture()
         before = copy.deepcopy(self.inventory)
+        with self.assertRaises(PLAN.PlanError) as caught:
+            self.run_claim()
+        self.assert_no_writes()
+        options = [shlex.split(span) for span in re.findall(r"`([^`]+)`", str(caught.exception))
+                   if span.startswith("--resume-from ")]
+        self.assertEqual(len(options), 1)
+        resumed = PLAN.build_parser().parse_args([
+            "claim", self.args.issue, "--worker", self.args.worker, "--session", self.args.session,
+            "--next-action", self.args.next_action, *options[0]])
+        self.assertEqual(resumed.resume_from, self.args.resume_from)
+        self.assertEqual(resumed.branch, source["branch"])
+        self.assertIsNone(resumed.handoff_comment)
+        self.assertIsNone(resumed.refresh_pr)
+        self.args = resumed
         self.run_claim()
         self.assertIn("metadata_readback", self.emitted.call_args.args[0]["completed_steps"])
         self.assertEqual(before, self.inventory)
-        branch = CLAIM.records(self.comments[0]["body"])[0]["branch"]
-        self.assertEqual(self.emitted.call_args.args[0]["retained_branch_heads"], {branch: self.pushed_head})
 
-    def test_pushed_handoff_freezes_head_even_if_author_and_remote_move_together(self):
-        for phase in ("after_post", "after_status"):
-            with self.subTest(phase=phase):
-                self.setUp()
-                self.pushed_handoff_fixture()
-                def move():
-                    old = self.pushed_head
-                    self.pushed_head = self.local_head = self.remote_head = "b" * 40
-                    self.comments[2]["body"] = self.comments[2]["body"].replace(old, self.pushed_head)
-                setattr(self, phase, move)
-                with self.assertRaises(PLAN.PlanError) as caught: self.run_claim()
-                self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
-
-    def test_pushed_handoff_accepts_normal_prose_and_markdown_links(self):
-        for style in ("bare", "origin", "autolink", "code"):
-            with self.subTest(style=style):
-                self.setUp()
-                self.pushed_handoff_fixture()
-                source = CLAIM.records(self.comments[0]["body"])[0]
-                url = f"https://github.com/{self.args.repo}/commit/{self.pushed_head}"
-                branch = "origin/" + source["branch"] if style == "origin" else source["branch"]
-                if style == "autolink": url = f"<{url}>"
-                if style == "code": url = f"`{url}`"
-                self.comments[-1]["body"] = f"Released claim {self.args.resume_from}\n\nWIP at {url}, on {branch}."
-                self.run_claim()
-                self.assertTrue(self.emitted.call_args.args[0]["ok"])
-
-    def test_pushed_handoff_rechecks_remote_and_unpublished_local_state(self):
+    def test_no_pr_resume_rechecks_rivals_holds_and_other_artifacts(self):
         for phase, change in product(("preflight", "after_post", "after_status"),
-                                     ("missing", "moved", "local", "dirty")):
+                                     ("source", "peer", "claim", "branch", "blocker", "wait")):
             with self.subTest(phase=phase, change=change):
                 self.setUp()
-                self.pushed_handoff_fixture()
+                source = self.no_pr_resume_fixture()
+                self.args.handoff_comment = None
+                self.args.branch = source["branch"]
                 def invalidate():
-                    if change == "missing": self.remote_head = None
-                    if change == "moved": self.remote_head = "b" * 40
-                    if change == "local": self.local_head = "b" * 40
-                    if change == "dirty": self.dirty = True
+                    if change == "source": self.inventory["sessions"] = [{"sessionId": source["session"], "cwd": "/elsewhere"}]
+                    if change == "peer": self.inventory["sessions"] = [{"sessionId": "peer", "cwd": "/retained/subdir"}]
+                    if change == "claim": self.compete({**OTHER, "session": "rival"})
+                    if change == "branch": self.inventory["remote_branches"].append("work/issue-42-extra")
+                    if change == "blocker": self.blockers = [{"state": "open"}]
+                    if change == "wait": self.record_wait()
                 if phase == "preflight": invalidate()
                 else: setattr(self, phase, invalidate)
-                with self.assertRaises(PLAN.PlanError) as caught: self.run_claim()
-                self.assertEqual(caught.exception.code, "claim_handoff_branch_unverified")
+                with self.assertRaises(PLAN.PlanError) as caught:
+                    self.run_claim()
                 if phase == "preflight": self.assert_no_writes()
                 else: self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
-
-    def test_pushed_handoff_keeps_source_identity_and_competing_work_checks(self):
-        for change in ("foreign", "unreleased", "no_branch", "foreign_commit", "short_sha",
-                       "live_source", "live_tree", "other_claim", "extra_branch", "open_pr", "open_pr_named_unlinked", "blocker", "wait"):
-            with self.subTest(change=change):
-                self.setUp()
-                self.pushed_handoff_fixture()
-                source = CLAIM.records(self.comments[0]["body"])[0]
-                if change == "foreign": self.comments[-1]["user"]["login"] = "stranger"
-                if change == "unreleased": self.comments[-1]["body"] = self.comments[-1]["body"].replace("Released claim", "Old claim")
-                if change == "no_branch": self.comments[-1]["body"] = self.comments[-1]["body"].replace(source["branch"], "work/different")
-                if change == "foreign_commit": self.comments[-1]["body"] = self.comments[-1]["body"].replace("owner/repo/commit", "other/repo/commit")
-                if change == "short_sha": self.comments[-1]["body"] = self.comments[-1]["body"].replace(self.pushed_head, self.pushed_head[:8])
-                if change == "live_source": self.inventory["sessions"] = [{"sessionId": source["session"], "cwd": "/elsewhere"}]
-                if change == "live_tree": self.inventory["sessions"] = [{"sessionId": "peer", "cwd": "/retained/subdir"}]
-                if change == "other_claim": self.comments.append({"id": 90, "body": CLAIM.marker({**OTHER, "session": "third"}), "user": {"login": TEST_BOT}})
-                if change == "extra_branch": self.inventory["remote_branches"].append("work/issue-42-other")
-                if change == "open_pr": self.pulls = [{"number": 99, "state": "open", "head": {"ref": source["branch"]}, "user": {"login": TEST_BOT}}]
-                if change == "open_pr_named_unlinked":
-                    self.pulls = [{"number": 99, "state": "open", "title": "Unrelated", "body": "Unrelated",
-                                   "head": {"ref": source["branch"], "repo": {"full_name": "owner/repo"}},
-                                   "base": {"repo": {"full_name": "owner/repo"}}, "user": {"login": TEST_BOT}}]
-                    self.comments[-1]["body"] += " Retained PR #99."
-                if change == "blocker": self.blockers = [{"state": "open"}]
-                if change == "wait": self.wait = wait_record.reviewed(evidence="Acceptance requested", waiting_for="Client", ends_when="Client accepts")
-                with self.assertRaises(PLAN.PlanError): self.run_claim()
-                self.assert_no_writes()
-
-    def test_pushed_handoff_can_resume_remote_only_work_and_preserves_pr_refresh_contract(self):
-        self.pushed_handoff_fixture()
-        self.inventory.update(local_branches=[], worktrees=[])
-        self.local_head = None
-        self.run_claim()
-        self.assertTrue(self.emitted.call_args.args[0]["ok"])
-        self.assertIn(self.pushed_head, self.emitted.call_args.args[0]["retained_branch_heads"].values())
-        self.setUp()
-        self.pushed_handoff_fixture()
-        self.args.refresh_pr = "https://github.com/owner/repo/pull/99"
-        with self.assertRaises(PLAN.PlanError): self.run_claim()
-        self.assert_no_writes()
 
     def parent_handoff_fixture(self):
         self.ordinary_handoff_fixture()
@@ -4869,68 +4813,6 @@ class ClaimTests(unittest.TestCase):
                     self.admit("milestone", (link,))
                 self.assertEqual(caught.exception.code, code)
                 self.assert_no_writes()
-
-
-class PushedHandoffGitTests(unittest.TestCase):
-    def test_live_git_readback_preserves_unpublished_or_changed_source(self):
-        for state in ("pushed", "remote_only", "missing", "moved", "ahead", "behind", "dirty", "untracked", "rebasing", "stale_detached", "missing_source"):
-            with self.subTest(state=state), tempfile.TemporaryDirectory() as folder:
-                root = Path(folder)
-                checkout, remote = root / "source with space é", root / "remote.git"
-                env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
-                env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1",
-                           GIT_TEMPLATE_DIR=str(root / "empty-template"))
-                (root / "empty-template").mkdir()
-                def git(*args, cwd=checkout, check=True):
-                    return subprocess.run(["git", *args], cwd=cwd, env=env, check=check,
-                                          capture_output=True, text=True).stdout.strip()
-                git("init", "--bare", str(remote), cwd=root)
-                git("init", str(checkout), cwd=root)
-                git("config", "user.name", "Fixture")
-                git("config", "user.email", "fixture@example.invalid")
-                git("checkout", "-b", "work/source")
-                path = checkout / "source.txt"
-                path.write_text("initial\n")
-                git("add", ".")
-                git("commit", "-m", "initial")
-                first = git("rev-parse", "HEAD")
-                path.write_text("checkpoint\n")
-                git("commit", "-am", "checkpoint")
-                head = git("rev-parse", "HEAD")
-                git("remote", "add", "origin", str(remote))
-                if state != "missing": git("push", "origin", "work/source")
-                if state == "remote_only":
-                    git("checkout", "-b", "independent")
-                    git("branch", "-d", "work/source")
-                if state in {"ahead", "moved"}:
-                    path.write_text("later\n")
-                    git("commit", "-am", "later")
-                    if state == "moved": git("push", "origin", "work/source")
-                if state == "behind": git("checkout", "-B", "work/source", first)
-                if state == "dirty": path.write_text("uncommitted\n")
-                if state == "untracked": (checkout / "only-copy.txt").write_text("unpublished\n")
-                if state == "rebasing": git("rebase", "--exec", "exit 1", first, check=False)
-                if state in {"stale_detached", "missing_source"}:
-                    stale = root / "missing worktree"
-                    if state == "stale_detached": git("worktree", "add", "--detach", str(stale), "HEAD")
-                    else:
-                        git("checkout", "-b", "independent")
-                        git("worktree", "add", str(stale), "work/source")
-                    shutil.rmtree(stale)
-                original_read = CLAIM.run_read
-                def fixture_origin(argv, **kwargs):
-                    if argv[1:4] == ["remote", "get-url", "origin"]:
-                        return "https://github.com/owner/repo.git\n"
-                    with patch.dict(os.environ, env, clear=True):
-                        return original_read(argv, **kwargs)
-                before = git("status", "--porcelain")
-                with patch.object(CLAIM, "run_read", side_effect=fixture_origin):
-                    if state in {"pushed", "remote_only", "stale_detached"}:
-                        CLAIM.verify_pushed_handoff("work/source", head, "owner/repo", cwd=checkout)
-                    else:
-                        with self.assertRaises(CLAIM.ClaimProofError):
-                            CLAIM.verify_pushed_handoff("work/source", head, "owner/repo", cwd=checkout)
-                self.assertEqual(git("status", "--porcelain"), before)
 
 
 class GraphQLRepositoryIdentityTests(unittest.TestCase):

@@ -2484,7 +2484,6 @@ def _claim_once(args: argparse.Namespace) -> None:
     previous_status = ""
     record_kind = "issue"
     retained_waits: dict[int, str] | None = None
-    retained_branch_heads: dict[str, str] | None = None
     previous_wait_labels: set[str] = set()
     previous_wait = ""
     planned_wait = ""
@@ -2750,7 +2749,7 @@ def _claim_once(args: argparse.Namespace) -> None:
                                      traversal=traversal)
 
     def handoff_preflight(current_comments: list[dict[str, Any]], current_status: str) -> set[str]:
-        nonlocal retained_waits, retained_branch_heads
+        nonlocal retained_waits
         if not handoff_id:
             if record_kind == "issue":
                 check_inherited_sources(current_comments, current_status)
@@ -2777,15 +2776,10 @@ def _claim_once(args: argparse.Namespace) -> None:
                     raise
                 continue
             target_pulls.append(retained_pull)
-        verified_heads: dict[str, str] = {}
         permitted = github_plan_claim.retained_handoff(
             source_comments, args.resume_from, handoff_id, target_pulls, target_number if refresh_pr else None,
             issue_repo=issue_repo, issue_number=source_number, target_repo=target_repo,
-            verified_heads=verified_heads,
         )
-        if retained_branch_heads is not None and verified_heads != retained_branch_heads:
-            raise PlanError("Retained branch heads changed during claim readback; verify the new evidence before recovery")
-        retained_branch_heads = verified_heads
         for ended in ended_owners:
             ended["pull_requests"] = [f"https://github.com/{target_repo}/pull/{p['number']}" for p in target_pulls
                                       if (p.get("head") or {}).get("ref") == ended["branch"]]
@@ -3197,7 +3191,6 @@ def _claim_once(args: argparse.Namespace) -> None:
     emit({"ok": True, "actor": actor, "record_kind": record_kind, "claim": claim, "claim_comment": claim_comment, "issue": compact_issue(final),
           "current_status_location": "issue_body" if can_update else "claim_comment",
           "previous_current_status": previous_status,
-          "retained_branch_heads": retained_branch_heads or {},
           "retained_artifacts": [entry for entry in ended_owners if entry.get("worktrees") or entry.get("pull_requests")
                                  or entry["branch"] in inventory["local_branches"] or entry["branch"] in inventory["remote_branches"]],
           "session_coverage": inventory["session_coverage"], "exclusive_lock": False,

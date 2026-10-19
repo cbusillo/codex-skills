@@ -1228,6 +1228,18 @@ cannot select a source record.
 This flag supplies no cleanup or takeover authority: apply Choose Work's
 verified-handoff and preservation rules before passing it.
 
+For pushed WIP **without a PR**, use that existing same-record resume-only
+route. Verify the source session has finished, its exact authored release,
+and the preserved branch's live remote head and local state before claiming.
+Keep unpublished changes intact. Pass the source claim's exact branch as
+`--branch` and its released claim ID as `--resume-from`; omit both
+`--handoff-comment` and `--refresh-pr`. After confirmed success, continue the
+preserved linked worktree under the host's worktree policy. Do not create a
+fresh task branch or fabricate a PR to meet the retained-PR contract.
+This uses the existing source-recovery exception, not a second adoption path.
+Ownership, live peers, issue waits, native blockers and other retained artifacts
+keep their checks; a refusal stops the action for reconciliation.
+
 For an authorized **ordinary successor** whose next step precedes PR refresh,
 use the canonical open planning issue in the PRs' repository:
 
@@ -1263,29 +1275,6 @@ binds its source and handoff so recovery cannot silently discard that proof or
 become conflict-only refresh. Create a new linked worktree only after confirmed
 success; preserve the original checkouts. This route grants no live-operation,
 PR-change, cleanup, access, or takeover authority.
-
-A handoff without a PR may instead name the released claim's exact source
-branch beside a full same-repository commit link in one paragraph, for example:
-`Preserved WIP: remote work/task at https://github.com/OWNER/REPO/commit/FULL_SHA`.
-Use the full 40-character head SHA. The helper reads that exact branch on
-`origin` and requires its live head to match. An existing local source branch
-and registered worktrees of this clone on that branch must match too, with no
-unpublished changes. A detached rebase or bisect identifying the source branch
-also refuses. Separate clones and stashes are outside this check and remain
-preserved; this route adopts only the pushed branch. Missing,
-unreadable, moved, unpushed or diverged state refuses, including on both claim
-readbacks. The source author, exact release, ownership, waits, native blockers,
-peer and other artifact checks remain the same. Open PRs on the source branch
-still need their own attestation. The successor uses a new task branch and
-preserves the source checkout. The claim result's `retained_branch_heads` maps
-the source branch to its verified SHA, fixed across both readbacks. Start the
-new worktree at that exact SHA. If the object is absent locally, fetch that
-exact SHA from origin first; if unavailable, stop without substituting a moving
-branch tip. This branch route cannot authorize a
-conflict-only PR refresh or cross-repository handoff.
-If an earlier handoff gives only a short SHA or no commit link, its original
-author posts a fresh handoff identifying the released claim and session under
-the existing `Handoff from WORKER` format, with this full branch/head evidence.
 
 When actionable source work is split from a waiting parent, use its native child
 as `<canonical-issue>` with the parent's original `--resume-from` and
