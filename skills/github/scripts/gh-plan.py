@@ -478,7 +478,7 @@ def run_raw(
     resolved_graphql_operation = graphql_operation or inferred.graphql_operation
     resolved_operation = operation or CURRENT_OPERATION
     request_repository = repository if repository is not None else github_api_core.github_http_cache.repository_from_command(args)
-    request_env = {**os.environ, "GH_REPO": request_repository} if repository is not None else None
+    request_env = {**os.environ, "GH_REPO": repository} if repository is not None else None
     initial_retry_actor = route_actor if route_actor == "active-gh-user" else EXPECTED_ACTOR
     initial_expected_actor = None if route_actor == "active-gh-user" else EXPECTED_ACTOR
     retry_rule, _ = github_api_core.operation_retry_rule(resolved_operation)
