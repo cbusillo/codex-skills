@@ -7808,6 +7808,200 @@ def test_application_target_apply_reuses_the_reviewed_storage_plan() -> None:
         assert (status, posts) == (2, [])
 
 
+STATE_CUSTODY_SHA256 = "c" * 64
+
+
+def _state_volume_readback_response(**result: object) -> dict[str, Any]:
+    response = _state_volume_response()
+    response["result"].update(
+        operation_state="reconcile_required",
+        provider_effect_phase=json.dumps(
+            {"project": "project-private-1", "environment": "environment-private-1",
+             "pending": "/api/application.create"},
+            sort_keys=True,
+        ),
+        configuration_matches=False,
+        configuration_evidence="unavailable",
+        custody_sha256=STATE_CUSTODY_SHA256,
+        allocation_state="reconcile_required",
+    )
+    response["result"].update(result)
+    return response
+
+
+def _state_volume_refusal(code: str) -> urllib.error.HTTPError:
+    return urllib.error.HTTPError(
+        "https://launchplane.example.invalid", 409, "Conflict", Message(),
+        io.BytesIO(json.dumps({"status": "error", "trace_id": "launchplane_req_refused",
+                              "error": {"code": code, "message": "private detail"}}).encode()),
+    )
+
+
+def _saved_state_volume_dry_run(directory: str) -> tuple[str, dict[str, Any], str]:
+    payload_path = _write_json(directory, "application.json", _application_payload())
+    status, evidence, _posts, _reads = _run_main(
+        ["dokploy-target-create-application-dry-run", "--payload-file", payload_path],
+        post=_state_volume_response(),
+    )
+    assert status == 0, evidence
+    return payload_path, evidence, _write_json(directory, "application-dry-run.json", evidence)
+
+
+def test_application_storage_readback_uses_saved_plan_and_original_key() -> None:
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        payload_path, evidence, evidence_path = _saved_state_volume_dry_run(directory)
+        digest = evidence["result"]["plan_sha256"]
+        argv = [
+            "dokploy-target-create-application-readback", "--payload-file", payload_path,
+            "--idempotency-key", "original-key", "--expected-plan-digest", digest,
+            "--dry-run-evidence-file", evidence_path,
+        ]
+        status, readback, posts, _reads = _run_main(argv, post=_state_volume_readback_response())
+        assert status == 0, readback
+        body = posts[0]["body"]
+        assert posts[0]["idempotency_key"] == "original-key"
+        assert (body["mode"], body["state_volume_plan_id"], body["expected_plan_sha256"]) == (
+            "readback", STATE_PLAN_ID, STATE_PLAN_SHA256,
+        )
+        # Readback observes only: no apply confirmation and no retention request.
+        assert "confirmation" not in body and "retain_state_volume_allocation" not in body
+        result = readback["result"]
+        assert result["plan_sha256"] == digest
+        assert (result["operation_state"], result["configuration_evidence"], result["custody_sha256"]) == (
+            "reconcile_required", "unavailable", STATE_CUSTODY_SHA256,
+        )
+        assert result["configuration_matches"] is False
+        assert result["provider_effect_phase"] == {
+            "recorded": True, "created": ["project", "environment"],
+            "mount_verified": False, "pending": "application",
+        }
+        printed = json.dumps(readback)
+        for private in ("project-private-1", "environment-private-1", "server-private-1", "lp-testing-", "/srv/state"):
+            assert private not in printed, private
+
+        # A response for another plan is never reported as this plan's custody.
+        other_plan = _state_volume_readback_response(state_volume_plan_id="a" * 32)
+        status, refused, _posts, _reads = _run_main(argv, post=other_plan)
+        assert status == 1 and "custody_sha256" not in json.dumps(refused["result"])
+
+        # Missing or edited evidence, a different digest or no key never reach the service.
+        edited = copy.deepcopy(evidence)
+        edited["result"]["state_volume"]["plan_id"] = "a" * 32
+        edited_path = _write_json(directory, "edited-dry-run.json", edited)
+        for changed in (
+            [edited_path if value == evidence_path else value for value in argv],
+            [str(Path(directory) / "missing.json") if value == evidence_path else value for value in argv],
+            ["e" * 64 if value == digest else value for value in argv],
+            [" " if value == "original-key" else value for value in argv],
+        ):
+            status, refused, posts, _reads = _run_main(changed, post=_state_volume_readback_response())
+            assert (status, posts) == (2, []), refused
+
+        # The service refuses another key by code; the next step comes from that code.
+        status, refused, _posts, _reads = _run_main(
+            argv, post=_state_volume_refusal("application_state_volume_unqualified")
+        )
+        assert status == 1
+        assert refused["summary"]["error_code"] == "application_state_volume_unqualified"
+        assert refused["summary"]["recommendation"] == write_action.APPLICATION_STATE_VOLUME_NEXT_STEPS[
+            "application_state_volume_unqualified"
+        ]
+        assert "private detail" not in json.dumps(refused)
+
+
+def test_application_storage_retention_requires_original_key_readback_custody() -> None:
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        payload_path, evidence, evidence_path = _saved_state_volume_dry_run(directory)
+        digest = evidence["result"]["plan_sha256"]
+
+        def readback_evidence(key: str, name: str) -> str:
+            readback_status, readback, *_ = _run_main(
+                [
+                    "dokploy-target-create-application-readback", "--payload-file", payload_path,
+                    "--idempotency-key", key, "--expected-plan-digest", digest,
+                    "--dry-run-evidence-file", evidence_path,
+                ],
+                post=_state_volume_readback_response(),
+            )
+            assert readback_status == 0, readback
+            return _write_json(directory, name, readback)
+
+        readback_path = readback_evidence("original-key", "readback.json")
+        argv = [
+            "dokploy-target-create-application-retain", "--payload-file", payload_path,
+            *_reviewed_apply_argv(digest, evidence_path, "original-key"),
+            "--readback-evidence-file", readback_path,
+            "--expected-custody-digest", STATE_CUSTODY_SHA256,
+        ]
+        receipt_result = {
+            "applied": False, "allocation_state": "retained_uncertain", "original_key": "original-key",
+            "plan_id": STATE_PLAN_ID, "deployment_performed": False, "resources_retained": True,
+            "reviewed_custody_sha256": STATE_CUSTODY_SHA256,
+            "retained_provider_effect_phase": '{"project": "project-private-1"}',
+        }
+        retained = {"status": "accepted", "trace_id": "launchplane_req_retained", "records": {}, "result": receipt_result}
+        status, receipt, posts, reads = _run_main(argv, post=retained)
+        assert status == 0, receipt
+        assert reads == [] and posts[0]["idempotency_key"] == "original-key"
+        body = posts[0]["body"]
+        assert body["retain_state_volume_allocation"] is True
+        assert body["expected_state_volume_custody_sha256"] == STATE_CUSTODY_SHA256
+        assert (body["mode"], body["state_volume_plan_id"], body["expected_plan_sha256"]) == (
+            "apply", STATE_PLAN_ID, STATE_PLAN_SHA256,
+        )
+        assert body["confirmation"] == write_action.DOKPLOY_TARGET_SETUP_CONFIRMATION
+        assert receipt["result"]["allocation_state"] == "retained_uncertain"
+        assert receipt["result"]["reviewed_custody_sha256"] == STATE_CUSTODY_SHA256
+        assert "project-private-1" not in json.dumps(receipt)
+
+        # A receipt that differs from the reviewed retention in any binding is not it.
+        for field, value in (
+            ("reviewed_custody_sha256", "d" * 64),
+            ("plan_id", "a" * 32),
+            ("original_key", "other-key"),
+            ("allocation_state", "adopted"),
+            ("applied", True),
+            ("deployment_performed", True),
+            ("resources_retained", False),
+        ):
+            other = {**retained, "result": {**receipt_result, field: value}}
+            status, receipt, _posts, _reads = _run_main(argv, post=other)
+            assert (status, receipt["status"]) == (1, "accepted_unverified"), field
+
+        # Without readback custody from the original key, payload and plan, nothing is sent.
+        other_key_readback = readback_evidence("other-key", "other-readback.json")
+        saved_readback = json.loads(Path(readback_path).read_text(encoding="utf-8"))
+        edited_readbacks = []
+        for section, field, value in (
+            ("result", "custody_sha256", "d" * 64),
+            ("result", "plan_sha256", "e" * 64),
+            ("result", "state_volume", {"plan_id": "a" * 32, "service_plan_sha256": STATE_PLAN_SHA256}),
+            ("request", "payload_digest", "f" * 64),
+        ):
+            edited = copy.deepcopy(saved_readback)
+            edited[section][field] = value
+            edited_readbacks.append(_write_json(directory, f"edited-readback-{field}.json", edited))
+        for changed in (
+            ["d" * 64 if value == STATE_CUSTODY_SHA256 else value for value in argv],
+            [other_key_readback if value == readback_path else value for value in argv],
+            *([edited_path if value == readback_path else value for value in argv] for edited_path in edited_readbacks),
+            [str(Path(directory) / "missing.json") if value == readback_path else value for value in argv],
+            ["other-key" if value == "original-key" else value for value in argv],
+            [value for value in argv if value != "--reviewed-dry-run"],
+        ):
+            status, refused, posts, _reads = _run_main(changed, post=retained)
+            assert (status, posts) == (2, []), refused
+
+        # A service refusal is answered by its code's next step.
+        status, refused, _posts, _reads = _run_main(
+            argv, post=_state_volume_refusal("application_state_volume_custody_changed")
+        )
+        assert status == 1
+        assert refused["summary"]["recommendation"] == write_action.APPLICATION_STATE_VOLUME_NEXT_STEPS[
+            "application_state_volume_custody_changed"
+        ]
+
+
 def _application_response(mode: str = "dry-run", target_id: str = "app-private-9") -> dict[str, Any]:
     response = _compose_response(mode, target_id)
     result = response["result"]
