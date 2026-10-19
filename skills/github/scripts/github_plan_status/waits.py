@@ -118,11 +118,23 @@ def current_record(issue: dict[str, Any], comments: list[dict[str, Any]], truste
     return selected
 
 
-def current(issue: dict[str, Any], comments: list[dict[str, Any]], trusted: set[str] | Callable[[dict[str, Any]], bool]) -> dict[str, Any]:
+def resolve(issue: dict[str, Any], comments: list[dict[str, Any]],
+            trusted: set[str] | Callable[[dict[str, Any]], bool]) -> tuple[dict[str, Any], bool]:
+    """Return the current wait and whether a trusted record set it.
+
+    With no trusted record the wait is an implied review. A trusted record can
+    also ask for review, so readers use the flag to tell the two apart.
+    """
     managed = contributor_plan_body(issue)
     source = {**issue, "body": managed} if managed is not None else issue
-    return current_record(source, comments, trusted, prefix=PREFIX, validator=validate) or {
-        "version": 1, "state": "review", "evidence": "", "waits": []}
+    record = current_record(source, comments, trusted, prefix=PREFIX, validator=validate)
+    if record is None:
+        return {"version": 1, "state": "review", "evidence": "", "waits": []}, False
+    return record, True
+
+
+def current(issue: dict[str, Any], comments: list[dict[str, Any]], trusted: set[str] | Callable[[dict[str, Any]], bool]) -> dict[str, Any]:
+    return resolve(issue, comments, trusted)[0]
 
 
 def without_records(text: str) -> str:

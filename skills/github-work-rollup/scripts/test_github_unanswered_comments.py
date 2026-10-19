@@ -1692,6 +1692,42 @@ def test_unreadable_trusted_record_keeps_a_comment_hold_as_unresolved(monkeypatc
     assert all(row["url"] in rendered for row in payload["unasked_director_waits"]), "the unresolved wait is shown"
 
 
+REVIEW_WAIT = '<!-- github-plan:wait {"evidence": "", "state": "review", "version": 1, "waits": []} -->'
+
+
+@pytest.mark.parametrize("reviewer", ["example", "outside-contributor", None])
+def test_trusted_review_record_after_a_hold_is_an_unresolved_wait(monkeypatch, tmp_path: Path, reviewer: str | None) -> None:
+    # No prose records a wait; only the comments do.
+    quiet = {**waiting_issue("Nothing.", number=52), "labels": [], "state": "open",
+             "repository_url": "https://api.github.com/repos/example/repo", "body": "Plain issue."}
+    comments = [wait_record_comment(52, 5, "example", "Pat's approval of the release.")]
+    if reviewer:
+        comments.append(wait_record_comment(52, 6, reviewer, marker=REVIEW_WAIT))
+    payload = structured_wait_rows(monkeypatch, tmp_path, {
+        "search/issues": {"items": [quiet], "total_count": 1, "incomplete_results": False},
+        "repos/example/repo/issues/52/comments": comments,
+    })
+
+    assert payload["coverage"]["errors"] == []
+    expected = {"example": (52, "unresolved", "unresolved_structured_wait", True),
+                "outside-contributor": (52, "decision", "structured_wait", False),
+                None: (52, "decision", "structured_wait", False)}[reviewer]
+    assert [(row["number"], row["wait_kind"], row["wait_source"], row["wait_review_required"])
+            for row in payload["unasked_director_waits"]] == [expected]
+
+
+def test_issue_with_no_wait_record_or_prose_is_not_a_wait(monkeypatch, tmp_path: Path) -> None:
+    quiet = {**waiting_issue("Nothing.", number=52), "labels": [], "state": "open",
+             "repository_url": "https://api.github.com/repos/example/repo", "body": "Plain issue."}
+    payload = structured_wait_rows(monkeypatch, tmp_path, {
+        "search/issues": {"items": [quiet], "total_count": 1, "incomplete_results": False},
+        "repos/example/repo/issues/52/comments": [],
+    })
+
+    assert payload["coverage"]["errors"] == []
+    assert payload["unasked_director_waits"] == []
+
+
 def test_labeled_wait_reads_a_new_comment_hold_before_search_indexes_it(monkeypatch, tmp_path: Path) -> None:
     # Search has not indexed the new comment yet, and the prose names someone else.
     issue = waiting_issue("Client's testing of the build.")
