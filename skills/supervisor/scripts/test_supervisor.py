@@ -2872,10 +2872,17 @@ class TerminalTests(unittest.TestCase):
                 patch.object(iterm_tab, "check_codex_daemon") as daemon,
             ):
                 rules = iterm_tab.brief_rules_block()
+                middle = len(rules) // 2
+                edited = rules[:middle] + " edited " + rules[middle:]
+                copy = root / "old" / "skills" / "supervisor" / "references" / "brief-rules.md"
+                copy.parent.mkdir(parents=True)
+                copy.write_text(f"<!-- brief-rules:start -->\n{edited}\n<!-- brief-rules:end -->\n")
                 stale = (None, "", "   \n", "Do the task.",
                          "Rules: https://github.com/o/r/blob/0a1b2c3/skills/supervisor/references/brief-rules.md",
+                         f"Rules: {iterm_tab.BRIEF_RULES_URL}.old",
                          "Rules: skills/supervisor/references/brief-rules.md",
-                         "Do the task.\n" + rules.replace("Never", "Avoid", 1))
+                         f"Rules: {copy}", f"Rules: {root / 'missing' / copy.relative_to(root / 'old')}",
+                         "Do the task.\n" + edited)
                 for content in stale:
                     if content is not None:
                         brief.write_text(content)

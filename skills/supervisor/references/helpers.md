@@ -1078,9 +1078,9 @@ For an exact-source recovery without command/brief files, use the documented
 Empty, whitespace-only, missing or unreadable briefs
 refuse before account selection, daemon startup, tabs or launch receipts.
 So does a brief that neither links the [brief rules](brief-rules.md), as a
-GitHub `blob/main` URL or the absolute path in a catalog checkout, nor
-includes their rules block unchanged. A link pinned to a commit, a relative
-path or an edited copy refuses; link the reference again.
+GitHub `blob/main` URL or an absolute path to a file holding the current
+rules block, nor includes that block unchanged. A link pinned to a commit, a
+relative path or an edited copy refuses; link the reference again.
 Tabs in briefs are allowed and sent through bracketed paste. Other terminal
 control characters refuse. For a batch, repeat both file options in matching launch order; every brief
 is checked before the first launch. Do not put a shell text substitution in the

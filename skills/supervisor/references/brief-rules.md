@@ -34,13 +34,14 @@ Rules for this brief (every Supervisor brief carries them):
   Supervisor sends "continue"; just resume
   ([capacity stops](helpers.md#codex-provider-capacity-stops)).
 - At a repository's PR cap: count open agent PRs there first; at about 8, do
-  not open another.
+  not open another ([the Pattern](../SKILL.md#the-pattern), step 1).
 - Pace (Director, October 18, 2026): never open PRs faster than they can land.
   Finish and hand off what you open before starting anything new.
 - Never use Chris's own Chrome (the ChatGPT for Chrome extension, Claude in
   Chrome, or any automation of his browser) unless the brief is a GUI task
   that names it. Browser and page checks run headless (Playwright or the
-  repository's own browser harness). Close anything you open.
+  repository's own browser harness). Close anything you open
+  ([browser preflight](helpers.md#browser-and-computer-use-preflight)).
 - Read the item in full first, every comment and linked issue, then re-check
   it against current code before starting (overall DIRECTION.md Issue trial,
   [direction#96](https://github.com/cbusillo/direction/issues/96)). If the
@@ -66,9 +67,9 @@ Rules for this brief (every Supervisor brief carries them):
 - PRs land only through the merge train. When a PR is green and reviewed,
   hand off with `uv run /Users/cbusillo/Developer/codex-skills/skills/github/scripts/gh-pr.py --repo OWNER/REPO ready <pr>`
   under the [ready handoff contract](../../github/references/cli-reference.md#ready-handoffs);
-  a later push needs a fresh `ready`. Add `--waiting-for-client` ("Engineering
-  ready; waiting for the Client's acceptance") until the Client accepts the
-  current head. Every PR in a repository that feeds a Client release carries
+  a later push needs a fresh `ready`. A PR that needs the Client's acceptance
+  hands off with `--waiting-for-client` ("Engineering ready; waiting for the
+  Client's acceptance") until the Client accepts its current head. Every PR in a repository that feeds a Client release carries
   a `## Client test notes` section. Launchplane and codex-skills have no
   Client.
 - Scope ([approved scope rule](https://github.com/cbusillo/codex-skills/issues/1043#issuecomment-6091977127)):
@@ -85,7 +86,8 @@ Rules for this brief (every Supervisor brief carries them):
 - Never grant, copy or invent access or credentials, and never switch
   identity or use a workflow to carry a call Launchplane denied. Record a
   denial with its trace on the item and the owning authorization issue.
-  Reading is never a stop.
+  Reading is never a stop ([launchplane](../../launchplane/SKILL.md),
+  [task scope](../../references/execution-scope.md)).
 - Never copy, export or move any license or credential file
   ([codex-skills#2232](https://github.com/cbusillo/codex-skills/issues/2232)).
 - Reviews: run your own review of record through the
@@ -119,10 +121,11 @@ Rules for this brief (every Supervisor brief carries them):
 - When you need Chris, post a comment on the item starting with "Owner
   question:" quoting the exact stop-boundary line from the overall or
   repository DIRECTION.md, then continue with what you can. Only a reply from
-  cbusillo or a recorded "Director decision" counts.
+  cbusillo or a recorded "Director decision" counts
+  ([talking with the Director](../../references/talking-with-the-director.md)).
 - Keep the item's Current Status current. When the item is done or handed
-  off, close out with work-closeout and end with a standalone, unqualified
-  final line: Safe to exit: yes
+  off, close out with [work-closeout](../../work-closeout/SKILL.md) and end
+  with a standalone, unqualified final line: Safe to exit: yes
 <!-- brief-rules:end -->
 
 ## Milestone lead briefs
@@ -147,7 +150,7 @@ How a lead works:
 6. People waits: when an item needs a person (Chris, a Client, an outside party), record the wait on the item, post an "Owner question:" there if it is Chris's, and move to the next item. Never wait idle on a person.
 7. Stop working only when no item on the Track is actionable by an agent, or you need the Director. Then post a lead handoff on the Track issue (what moved, what waits on whom, next item), close out with work-closeout, and end with a standalone final line: Safe to exit: yes
 
-At a repository's PR cap (about 8 open agent PRs), do not open another. Instead:
+At a repository's PR cap, instead of opening another PR:
 1. Help land what is already open there: fix a failing check, resolve a conflict, or answer review findings on the oldest stuck PR.
 2. If nothing open there is agent-fixable, finish your change on its branch, leave it unopened, and move to work in a repository under the cap. Note the held branch in your Track handoff.
 3. Report "nothing actionable" only when no repository you may work in has actionable work.
