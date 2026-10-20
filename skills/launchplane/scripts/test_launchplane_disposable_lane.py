@@ -10,6 +10,7 @@ import json
 import urllib.error
 from contextlib import redirect_stdout
 from datetime import UTC, datetime, timedelta
+from email.message import Message
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -115,7 +116,7 @@ def invoke(mode="inspect", *, body=None, inspect_body=None, responses=None, edit
 
 def http_error(status, code):
     body = {"trace_id": "launchplane_req_refusal", "error": {"code": code, "message": "PRIVATE_SENTINEL"}}
-    return urllib.error.HTTPError(SERVICE, status, "PRIVATE_SENTINEL", {}, io.BytesIO(json.dumps(body).encode()))
+    return urllib.error.HTTPError(SERVICE, status, "PRIVATE_SENTINEL", Message(), io.BytesIO(json.dumps(body).encode()))
 
 
 @pytest.mark.parametrize("mode", lane.MODES)
