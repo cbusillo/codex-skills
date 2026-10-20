@@ -4744,6 +4744,8 @@ os.system(get())
                 ('const o={};o.run=text;const {run}=o;o.run=eval;', 'run', False),
                 ('const o={};o.run=eval;const run=o.run;o.run=text;', 'run', owning),
                 ('const o={};o.run=text;const p=o;', 'p.run', False),
+                ('let a={},b={};b.run=eval;function swap(){a=b;b=a}swap();', 'a.run', owning),
+                ('let a={},b={};b.run=text;function swap(){a=b;b=a}swap();', 'a.run', False),
                 ('let e=globalThis.eval;e=text;', 'e', False),
                 ('let e=text;e=globalThis.eval;', 'e', owning),
                 ('let e=globalThis.eval;if(flag)e=text;', 'e', owning),
@@ -6500,6 +6502,40 @@ os.system(get())
             ('malformed_child_keeps_prior_reader', ['bash run.sh; bash -c "echo it\'s" || true'], True),
             ('malformed_heredoc_keeps_prior_reader', ["bash run.sh; sh -c 'cat <<EOF'"], True),
             ('malformed_eval_alone', ['eval "echo it\'s" || true'], False),
+            ('malformed_eval_prefix', ['eval "bash run.sh\necho it\'s" || true'], True),
+            ('malformed_bash_child_prefix', ['/bin/bash -c "bash run.sh\necho it\'s" || true'], True),
+            ('malformed_zsh_child_prefix', ['/bin/zsh -c "bash run.sh\necho it\'s" || true'], False),
+            ('malformed_eval_later_heredoc', ["eval 'bash run.sh\ncat <<EOF'"], True),
+            ('eof_heredoc_same_line', ["eval 'bash run.sh; cat <<EOF'"], True),
+            ('eof_heredoc_zsh_same_line', ["/bin/zsh -c 'bash run.sh; cat <<EOF'"], True),
+            ('eof_heredoc_code_reader', ["eval 'bash <<EOF\nbash run.sh'"], True),
+            ('literal_stdin_terminated_reader', ["bash <<'EOF'\nbash run.sh\nEOF"], True),
+            ('literal_stdin_here_string_reader', ["bash <<< 'bash run.sh'"], True),
+            ('literal_stdin_overridden', ["bash <<'EOF' </dev/null\nbash run.sh\nEOF"], False),
+            ('literal_stdin_written_before_read', ["bash <<'EOF'\nprintf '%s\\n' " + shlex.quote(writer) + " > generated.sh\nbash generated.sh\nEOF"], True),
+            ('literal_stdin_replaced_before_read', ["bash <<'EOF'\nprintf safe > run.sh && bash run.sh\nEOF"], False),
+            ('literal_stdin_fresh_function_scope', ["gen() { bash run.sh; }; bash <<'EOF'\ngen\nEOF"], False),
+            ('literal_stdin_eval_source_scope', ["gen() { bash run.sh; }; eval 'source /dev/stdin' <<'EOF'\ngen\nEOF"], True),
+            ('literal_stdin_dot_scope', ["gen() { bash run.sh; }; . /dev/stdin <<'EOF'\ngen\nEOF"], True),
+            ('literal_stdin_consumed_once', ["bash <<'EOF'\nbash\nEOF"], False),
+            ('literal_zsh_stdin_malformed_eval', ['zsh <<\'EOF\'\neval "bash run.sh\necho it\'s" || true\nEOF'], False),
+            ('eof_heredoc_direct_writer', ['eval ' + shlex.quote('bash <<EOF\n' + writer)], True),
+            ('eof_heredoc_data', ["eval 'cat <<EOF\nbash run.sh'"], False),
+            ('eof_heredoc_incomplete_compound', ["eval 'if true; then\nbash run.sh; cat <<EOF'"], False),
+            ('malformed_eval_same_line', ['eval "bash run.sh; echo it\'s" || true'], False),
+            ('malformed_eval_if', ['eval "if true; then\nbash run.sh\necho it\'s" || true'], False),
+            ('malformed_eval_function', ['eval "gen() {\nbash run.sh\necho it\'s" || true'], False),
+            ('malformed_eval_and', ['eval "bash run.sh &&\necho it\'s" || true'], False),
+            ('malformed_eval_pipe', ['eval "bash run.sh |\necho it\'s" || true'], False),
+            ('malformed_eval_quote', ['eval "printf \'data\nbash run.sh\necho it\'s" || true'], False),
+            ('malformed_eval_complete_if', ['eval "if true; then\nbash run.sh\nfi\necho it\'s" || true'], True),
+            ('malformed_eval_after_prefix', ['eval "bash run.sh\nif true; then\necho it\'s" || true'], True),
+            ('malformed_eval_heredoc_data', ['eval "cat <<EOF\nbash run.sh\nEOF\necho it\'s" || true'], False),
+            ('malformed_eval_and_skip', ['eval "echo it\'s" && bash run.sh'], False),
+            ('malformed_zsh_eval', ["/bin/zsh -c " + shlex.quote('eval "bash run.sh\necho it\'s" || true')], False),
+            ('malformed_zsh_eval_function', ["/bin/zsh -c " + shlex.quote('gen() { bash run.sh; }; eval "gen\necho it\'s" || true')], False),
+            ('malformed_replacement_keeps_owner', ['eval "printf safe > run.sh\necho it\'s" || true', 'bash run.sh'], True),
+            ('malformed_replacement_guard_keeps_proof', ['eval "printf safe > run.sh && bash run.sh\necho it\'s" || true'], False),
             ('computed_function_word', ['gen() { bash run.sh; }; f=gen; $f'], True),
             ('forwarded_function_word', ['run() { "$@"; }; gen() { bash run.sh; }; run gen'], True),
             ('computed_word_without_function', ['f=true; $f'], False),
@@ -6508,21 +6544,47 @@ os.system(get())
             ('zsh_disable_invalid_in_bash', ["/bin/bash -c 'hash echo=$PWD/run.sh; disable echo; echo safe'"], False),
             ('zsh_explicit_disable', ["/bin/zsh -c 'hash echo=$PWD/run.sh; builtin disable echo; echo safe'"], True),
             ('zsh_enable_restores_builtin', ["/bin/zsh -c 'hash echo=$PWD/run.sh; disable echo; enable echo; echo safe'"], False),
+            ('zsh_pattern_disable_exact', ["/bin/zsh -c 'hash echo=./run.sh; disable -m echo; echo safe'"], True),
+            ('zsh_pattern_disable', ["/bin/zsh -c " + shlex.quote("hash echo=./run.sh; disable -m 'ec*'; echo safe")], True),
+            ('zsh_pattern_restore', ["/bin/zsh -c " + shlex.quote("hash echo=./run.sh; disable echo; enable -m 'ec*'; echo safe")], False),
+            ('bash_invalid_pattern_restore', ["/bin/bash -c 'hash -p ./run.sh echo; enable -n echo; enable -m echo || true; echo safe'"], True),
+            ('zsh_pattern_alias_domain', ["/bin/zsh -c 'hash echo=./run.sh; disable -ma echo; echo safe'"], False),
+            ('zsh_pattern_function_domain', ["/bin/zsh -c 'hash echo=./run.sh; disable -mf echo; echo safe'"], False),
+            ('zsh_pattern_reserved_domain', ["/bin/zsh -c 'hash echo=./run.sh; disable -mr echo; echo safe'"], False),
+            ('zsh_pattern_pattern_domain', ["/bin/zsh -c 'hash echo=./run.sh; disable -mp echo; echo safe'"], False),
+            ('zsh_pattern_suffix_domain', ["/bin/zsh -c 'hash echo=./run.sh; disable -ms echo; echo safe'"], False),
+            ('zsh_uncertain_pattern_disable', ["/bin/zsh -c " + shlex.quote("hash echo=./run.sh; disable -m 'e(ch)o'; echo safe")], True),
+            ('zsh_uncertain_pattern_restore', ["/bin/zsh -c " + shlex.quote("hash echo=./run.sh; disable echo; enable -m 'e(ch)o'; echo safe")], True),
         ]
         for harness in ("codex", "claude"):
             for label, commands, pending in hash_cases:
                 with self.subTest(harness=harness, hash_dispatch=label):
                     self.assertEqual(receipts.ownership_state(scripts(harness, [hash_owner, *commands]), harness)["pending"], pending)
 
+        for harness in ("codex", "claude"):
+            for commands in (("bash run.sh\necho it's",), ("printf safe > run.sh\necho it's", "bash run.sh")):
+                with self.subTest(harness=harness, malformed_root=commands):
+                    rows = scripts(harness, [hash_owner, *commands])
+                    result = terminal(rows, harness, "tool-1")
+                    result.clear()
+                    result.update(shell_result({"exit_code": 2}, harness, "tool-1"))
+                    self.assertTrue(receipts.ownership_state(rows, harness)["pending"])
+
 
         for harness in ("codex", "claude"):
             for shell, body, expected in (("/bin/bash", "hash echo=$PWD/run.sh; command echo safe", False),
+                                          ("/bin/bash", "bash run.sh\necho it's", True),
+                                          ("/bin/zsh", "bash run.sh\necho it's", False),
                                           ("/bin/bash", "hash shopt=$PWD/run.sh; shopt", False),
                                           ("/bin/zsh", "hash echo=$PWD/run.sh; command echo safe", True),
                                           (None, "hash echo=$PWD/run.sh; command echo safe", True),
                                           ({"untrusted": "bash"}, "hash echo=$PWD/run.sh; command echo safe", True)):
                 with self.subTest(harness=harness, recorded_shell=shell):
                     rows = scripts(harness, [hash_owner, body])
+                    if "\n" in body:
+                        result = terminal(rows, harness, "tool-1")
+                        result.clear()
+                        result.update(shell_result({"exit_code": 2}, harness, "tool-1"))
                     if harness == "codex":
                         rows[3]["payload"]["arguments"] = json.dumps({"cmd": body, "shell": shell})
                     else:

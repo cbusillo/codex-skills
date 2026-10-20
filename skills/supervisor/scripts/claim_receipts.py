@@ -380,6 +380,7 @@ def javascript_source_calls(native, code, *, global_this=False):
     pairs, owners, parents, bound = (facts[name] for name in ("pairs", "owners", "parents", "bound"))
     reference = re.compile(r"(?<![\w.$])([A-Za-z_$][\w$]*(?:\s*(?:\?\.|\.)\s*[A-Za-z_$][\w$]*|\s*(?:\?\.\s*)?\[[^]\n]*\])*)")
     visible, assignments, descendants, member_cache, member_indexes, reference_cache = {}, {}, {}, {}, {}, {}
+    cuts = 0
 
     def canonical(raw):
         def member(match):
@@ -452,11 +453,14 @@ def javascript_source_calls(native, code, *, global_this=False):
                 descendants.setdefault((owner, selected[:dot.start()]), []).append(event)
 
     def members(begin, end, active=()):
+        nonlocal cuts
         key = begin, end
         if key in member_cache:
             return member_cache[key]
         if key in active:
+            cuts += 1
             return {}
+        started = cuts
         active = (*active, key)
         begin, end = unwrapped_span(begin, end)
         values = {}
@@ -466,7 +470,8 @@ def javascript_source_calls(native, code, *, global_this=False):
             suffix = native[close:end].strip()
             if suffix and reference.fullmatch("receiver" + code[close:end].strip()):
                 values.update(selected_members((begin, close), canonical("receiver" + suffix).removeprefix("receiver"), active, end))
-                member_cache[key] = values
+                if cuts == started:
+                    member_cache[key] = values
                 return values
             # An unknown transformation may preserve the literal receiver's
             # source handles. This is possible capability, not exact projection.
@@ -484,11 +489,14 @@ def javascript_source_calls(native, code, *, global_this=False):
                 values[""] = "constructor"
             elif re.fullmatch(JS_STRING, raw.strip()) or re.fullmatch(r"\s*(?:\d+(?:\.\d+)?|undefined|null|true|false)\s*", raw):
                 values[""] = None
-        member_cache[key] = values
+        if cuts == started:
+            member_cache[key] = values
         return values
 
     def selected_members(rhs, suffix, active, position=None):
+        nonlocal cuts
         if rhs in active:
+            cuts += 1
             return {}
         index = member_indexes.setdefault(rhs, {})
         # Access through an object alias follows its current member writes;
@@ -521,6 +529,10 @@ def javascript_source_calls(native, code, *, global_this=False):
         return index.get(suffix, {})
 
     def reference_members(selected, position, active=()):
+        cache_key = selected, position
+        if cache_key in reference_cache:
+            return reference_cache[cache_key]
+        started = cuts
         base, _, _ = selected.partition(".")
         owner = binding(base, position)
         scope = owners[position]
@@ -545,10 +557,6 @@ def javascript_source_calls(native, code, *, global_this=False):
         last = max((event[2] for event in candidates if event[3] == scope and event[4]
                     and "" in resolved[event[2]]), default=-1)
         candidates = [event for event in candidates if event[3] != scope or event[2] >= last]
-        signature = tuple(event[2] for event in candidates)
-        cache_key = owner, selected, signature, last, position
-        if cache_key in reference_cache:
-            return reference_cache[cache_key]
         values = {}
         # Intrinsics remain an initial alternative until a definite known
         # replacement at this call's scope retires them. A conditional or
@@ -574,7 +582,8 @@ def javascript_source_calls(native, code, *, global_this=False):
         if not values and selected.rsplit(".", 1)[-1] in {"call", "apply", "bind"}:
             parent = selected.rsplit(".", 1)[0]
             values.update((name, kind) for name, kind in reference_members(parent, position, active).items() if not name)
-        reference_cache[cache_key] = values
+        if cuts == started:
+            reference_cache[cache_key] = values
         return values
 
     def source_kind(expression, raw=None, position=0):
@@ -1708,7 +1717,7 @@ def shell_commands(name, value, *, depth=0):
         child = unwrapped_command(argv)
         body = shell_c_body(child)
         if depth < 16 and body is not None and foreground_shell_text(body):
-            yield from shell_commands("exec_command", {"cmd": body}, depth=depth + 1)
+            yield from shell_commands("exec_command", {"cmd": body, "shell": child[0]}, depth=depth + 1)
         else:
             yield argv[1:] if argv[0] == "nohup" else argv
     for text in shell_texts("exec_command" if name == "functions.exec_command" else name, value):
@@ -2344,7 +2353,7 @@ def node_ownership(content):
     return False
 
 
-def compound_bounds(tokens):
+def compound_bounds(tokens, *, completion=False):
     """Pair existing shell grouping tokens once for parsing and flow analysis."""
     opens = {"(": ")", "{": "}", "while": "done", "until": "done", "for": "done",
              "select": "done", "if": "fi", "case": "esac"}
@@ -2357,6 +2366,11 @@ def compound_bounds(tokens):
             begin, _ = stack.pop()
             bounds[begin] = index
         command_start = bool(token and all(c in ";&|\n" for c in token) or token in {"do", "then", "else"})
+    if completion:
+        # A physical newline inside a compound or after a pipeline/and-or
+        # operator does not finish the shell's current input unit.
+        tail = next((token for token in reversed(tokens) if token.strip("\n")), "")
+        return bounds, not stack and tail not in {"&&", "||", "|", "|&", "<", ">", "<<", ">>", "<<<", "<>", "<&", ">&", ">|", "&>", "&>>"}
     return bounds
 
 
@@ -2515,7 +2529,7 @@ def shell_literal_status(words):
 
 def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None, inline_inputs=None,
                       stream_sources=None, output_sources=None, execution_events=None, stdin_kinds=None,
-                      success_facts=None, source_bodies=None, source_shell=None):
+                      success_facts=None, source_bodies=None, source_shell=None, literal_source=None):
     """Parse command descriptors once and carry each stdin source through groups.
 
     A balanced group is one outer pipeline node. Its children share the same
@@ -2562,9 +2576,9 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
     stream_sources = {} if stream_sources is None else stream_sources
     languages = {}
 
-    def embedded(body):
+    def embedded(body, shell, incremental):
         try:
-            code, child_tokens, bodies = shell_source(body)
+            code, child_tokens, bodies, complete = shell_source(body, incremental=incremental)
         except ValueError:
             return None  # A malformed nested body cannot discard its caller.
         # One position domain, but embedded roots are entered only by their caller.
@@ -2588,9 +2602,9 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
         bounds.update((begin + left, begin + right) for left, right in compound_bounds(child_tokens).items())
         source_bodies.update((begin + at, value) for at, value in bodies.items())
         register_definitions(begin, stop)
-        return scope, begin, stop, parse(begin, stop)
+        return scope, begin, stop, parse(begin, stop, shell), complete
 
-    def parse(begin, end):
+    def parse(begin, end, shell):
         segments, current, index = [], [], begin
         while index < end:
             token = tokens[index]
@@ -2627,14 +2641,14 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                     opening = segment[cursor + 1]
                     close = bounds[opening]
                     placeholder = f"PROCESS_SUBSTITUTION_{index}"
-                    substitutions[placeholder] = (token, parse(opening + 1, close))
+                    substitutions[placeholder] = (token, parse(opening + 1, close, shell))
                     argv.append(placeholder)
                     word_literals.append(False)
                     cursor = segment.index(close) + 1
                     continue
                 if token in {"(", "{"} and index in bounds and bounds[index] in segment:
                     close = bounds[index]
-                    children, child_scope = parse(index + 1, close), token
+                    children, child_scope = parse(index + 1, close, shell), token
                     cursor = segment.index(close) + 1
                     continue
                 if token in {"<", ">", "<<", ">>", "<<<", "<>", "<&", ">&", ">|", "&>", "&>>"}:
@@ -2651,7 +2665,7 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                             and spans[segment[cursor + 1]][1] == spans[segment[cursor + 2]][0]):
                         opening = segment[cursor + 2]
                         close = bounds[opening]
-                        descriptors[fd] = ("process-input" if fd == 0 else "process-output", parse(opening + 1, close))
+                        descriptors[fd] = ("process-input" if fd == 0 else "process-output", parse(opening + 1, close, shell))
                         cursor = segment.index(close) + 1
                         continue
                     if token in {"<<", "<<<"}:
@@ -2684,7 +2698,7 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
             definition = definitions.get(segment[0])
             if definition is not None:
                 name, body, stop = definition
-                argv, children, child_scope = [name], parse(body, stop), None
+                argv, children, child_scope = [name], parse(body, stop, shell), None
                 word_literals = [True]
                 descriptors = {0: "pipe-in", 1: "pipe-out", 2: None}
             if any(tokens[opening] == "case" and opening <= segment[0] < closing for opening, closing in bounds.items()):
@@ -2702,6 +2716,7 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                         word_literals = word_literals[len(prefix):]
             inline_body, body_scope, fresh_shell, child_shell = None, None, False, None
             malformed_body = False
+            body_complete = True
             if children is None and definition is None:
                 action, _, _, _ = shell_command_action(argv)
                 child = unwrapped_command(action, unwrap_code=False)
@@ -2718,12 +2733,14 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                     if word_literals[len(argv) - len(child) + child.index(child_body, 1)]:
                         body, fresh_shell, child_shell = child_body, True, Path(child[0]).name
                 if body is not None:
-                    parsed = embedded(body)
+                    context = child_shell if fresh_shell else shell
+                    parsed = embedded(body, context, context != "zsh")
                     if parsed is not None:
-                        body_scope, child_begin, child_end, children = parsed
+                        body_scope, child_begin, child_end, children, body_complete = parsed
                         inline_body = (child_begin, child_end, body_scope)
                     else:
-                        malformed_body = True
+                        body_complete = False
+                    malformed_body = not body_complete
             language = None if malformed_body else stdin_language(argv)
             input_positions = None
             redirection_owner = segment[0]
@@ -2745,6 +2762,8 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
             nodes.append({"argv": argv, "children": children, "child_scope": child_scope, "definition": definition,
                           "language": language, "index": segment[0], "stop": segment[-1] + 1,
                           "inline_body": inline_body, "body_scope": body_scope, "fresh_shell": fresh_shell, "child_shell": child_shell, "input_positions": input_positions, "redirection_owner": redirection_owner,
+                          "body_complete": body_complete,
+                          "shell_context": shell, "stdin_body": False,
                           "descriptors": descriptors, "heredocs": heredocs,
                           "substitutions": substitutions,
                           "separator": separator, "source": " ".join(tokens[index] for index in segment)})
@@ -2808,16 +2827,9 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
         stream_sources[identifier] = {"kind": "concat", "parts": parts}
         return {identifier}
 
-    def flow(nodes, inherited):
+    def flow(nodes, inherited, *, literal_stdin=False):
         output, pipe, previous = set(), set(), ""
         for node in nodes:
-            if execution_events is not None:
-                execution_events.append({"kind": "command", "position": node["index"],
-                                         "argv": node["argv"], "inline_body": node["inline_body"] is not None,
-                                         "command_effect": True})
-                execution_events.extend({"kind": "input_expansion", "position": identifier,
-                                         "owner_position": node["redirection_owner"], "source": identifier}
-                                        for identifier in node["heredocs"])
             descriptors = node["descriptors"]
             incoming = pipe if previous in {"|", "|&"} else inherited
             input_source = descriptors[0]
@@ -2827,11 +2839,37 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                 stream_sources[identifier] = {"kind": "file", "path": input_source[1]}
                 inputs.add(identifier)
             if isinstance(input_source, tuple) and input_source[0] == "process-input":
-                inputs = flow(input_source[1], inherited)
+                inputs = flow(input_source[1], inherited, literal_stdin=literal_stdin)
+            if node["children"] is None and node["language"] == "shell" and literal_source is not None and len(inputs) == 1:
+                child = unwrapped_command(node["argv"], unwrap_code=False)
+                name = ("." if child[0] == "." else Path(child[0]).name) if child else None
+                fresh = name in {"bash", "sh", "zsh", "dash", "ksh"}
+                if fresh and shell_c_body(child) is None or name in {"source", "."}:
+                    body = literal_source(next(iter(inputs)))
+                    if body is not None:
+                        context = name if fresh else node["shell_context"]
+                        parsed = embedded(body, context, True)
+                        if parsed is not None:
+                            scope, begin, stop, children, complete = parsed
+                            node.update(children=children, inline_body=(begin, stop, scope), body_scope=scope,
+                                        fresh_shell=fresh, child_shell=context, body_complete=complete, stdin_body=True)
+                            echo_scopes(children, ("stdin", source, node["index"]) if fresh else node["echo_scope"])
+            if execution_events is not None:
+                execution_events.append({"kind": "command", "position": node["index"],
+                                         "argv": node["argv"], "inline_body": node["inline_body"] is not None or not node["body_complete"],
+                                         "source": node["source"],
+                                         "literal_stdin": literal_stdin,
+                                         "command_effect": True})
+                execution_events.extend({"kind": "input_expansion", "position": identifier,
+                                         "owner_position": node["redirection_owner"], "source": identifier}
+                                        for identifier in node["heredocs"])
             if node["children"] is not None:
                 if execution_events is not None and node["inline_body"] is not None:
                     execution_events.append({"kind": "read", "position": node["index"], "paths": [], "command_effect": True})
-                produced = flow(node["children"], inputs)
+                # A stdin program is consumed by its interpreter; its children
+                # cannot replay the same complete input as a new program.
+                produced = flow(node["children"], set() if node["stdin_body"] else inputs,
+                                literal_stdin=literal_stdin or node["stdin_body"])
                 forwards = bool(produced)
             else:
                 for position in node["input_positions"] if node["input_positions"] is not None else (node["index"],):
@@ -2845,7 +2883,7 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                 substitution_outputs = {}
                 for placeholder, (direction, commands) in node["substitutions"].items():
                     if direction == "<":
-                        substitution_outputs[placeholder] = flow(commands, inherited)
+                        substitution_outputs[placeholder] = flow(commands, inherited, literal_stdin=literal_stdin)
                         language = stdin_language(["/dev/stdin" if word == placeholder else word for word in node["argv"]])
                         assign_language(substitution_outputs[placeholder], language, node["index"])
                 forwards = forwards_stdin(child)
@@ -2900,13 +2938,13 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                             options = False
                         elif not options or not word.startswith("-") or word == "-":
                             if word in node["substitutions"] and node["substitutions"][word][0] == ">":
-                                flow(node["substitutions"][word][1], inputs)
+                                flow(node["substitutions"][word][1], inputs, literal_stdin=literal_stdin)
                             else:
                                 record_file(node, word, inputs, True, not any(flag in {"-a", "--append"} for flag in child[1:]), command_effect=True)
             if isinstance(descriptors[1], tuple) and descriptors[1][0] == "file":
                 record_file(node, descriptors[1][1], produced, forwards, descriptors[1][2], position=descriptors[1][3])
             elif isinstance(descriptors[1], tuple) and descriptors[1][0] == "process-output":
-                flow(descriptors[1][1], produced)
+                flow(descriptors[1][1], produced, literal_stdin=literal_stdin)
             outgoing = produced if descriptors[1] == "pipe-out" else set()
             previous = node["separator"]
             if previous in {"|", "|&"}:
@@ -2915,7 +2953,20 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                 output = append_streams(output, outgoing)
         return output
 
-    nodes = parse(0, root_stop)
+    def process_subtrees(node):
+        """Visit each parsed process body once under its caller/position scope."""
+        seen = set()
+        bodies = [commands for _, commands in node["substitutions"].values()]
+        bodies.extend(value[1] for value in node["descriptors"].values()
+                      if isinstance(value, tuple) and value[0] in {"process-input", "process-output"})
+        for commands in bodies:
+            if commands:
+                scope = ("process", node["index"], commands[0]["index"])
+                if scope not in seen:
+                    seen.add(scope)
+                    yield scope, commands
+
+    nodes = parse(0, root_stop, Path(source_shell).name if isinstance(source_shell, str) and source_shell else None)
     if success_facts is not None:
         def hash_changes(action):
             def path_value(value):
@@ -2968,7 +3019,16 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                 child_parent = node["body_scope"] if node["body_scope"] is not None else node["index"]
                 child_success = (implied_success(node["children"], entry | redirections, child_parent)
                                  if node["children"] is not None else set())
+                for scope, commands in process_subtrees(node):
+                    implied_success(commands, entry, scope)
+                    # A process substitution copies shell state, but its
+                    # asynchronous completion is not its caller's success.
+                    success_facts[scope] = {"entry": set(entry), "success": set(), "children": set(),
+                                            "parent": node["index"], "subshell": True,
+                                            "fresh_shell": False, "asynchronous": True}
                 if node["body_scope"] is not None:
+                    if not node["body_complete"]:
+                        child_success = set()
                     success_facts[child_parent] = {"entry": entry, "success": set(child_success),
                         "children": child_success, "parent": node["index"], "stop": node["inline_body"][1],
                         "subshell": node["fresh_shell"], "fresh_shell": node["fresh_shell"], "shell": node["child_shell"]}
@@ -2977,7 +3037,7 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                 words = node["argv"]
                 while words and words[0] in {"if", "then", "else", "elif", "do", "while", "until"}:
                     words = words[1:]
-                positive = set() if words[:1] == ["!"] else {node["index"]}
+                positive = set() if words[:1] == ["!"] or not node["body_complete"] else {node["index"]}
                 action, builtin_action, asynchronous, dispatch = shell_command_action(words)
                 opaque_emulate = bool(action[:1] == ["emulate"] and list(executor_commands(action)))
                 if asynchronous:
@@ -3006,11 +3066,11 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                            or action[:1] == ["unfunction"]
                            or action[:1] in (["unhash"], ["disable"]) and "f" in flags) else [])
                 alias_installation = bool(action[:1] == ["alias"] and any("=" in word for word in action[1:]))
-                opaque_context &= node["inline_body"] is None
+                opaque_context &= node["inline_body"] is None and node["body_complete"]
                 installation |= opaque_context or alias_installation
                 signals = {signal.upper() for signal in trap[1:]}
                 may_skip = opaque_context or alias_installation or installation and "DEBUG" in signals
-                result = shell_literal_status(node["argv"])
+                result = shell_literal_status(node["argv"]) if node["body_complete"] else False
                 if previous == "||":
                     if list_status is False:
                         list_success = entry | positive
@@ -3026,16 +3086,20 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                 else:
                     list_success, list_status = entry | positive, result
                 builtin_change = None
-                if action[:1] == ["enable"] and not flags.intersection("adfps"):
-                    dialects = frozenset({"bash"}) if "n" in flags else frozenset({"bash", "zsh"})
-                    builtin_change = (tuple(operands), "n" not in flags, dialects)
-                elif action[:1] == ["disable"] and not flags:
-                    builtin_change = (tuple(operands), False, frozenset({"zsh"}))
+                if action[:1] in (["enable"], ["disable"]):
+                    dialects = set()
+                    if action[0] == "enable" and flags <= {"n"}:
+                        dialects.add("bash")
+                    if flags <= {"m"}:
+                        dialects.add("zsh")
+                    if dialects:
+                        builtin_change = (tuple(operands), action[0] == "enable" and "n" not in flags,
+                                          frozenset(dialects), "m" in flags)
                 success_facts[node["index"]] = {"entry": entry, "success": set(list_success),
                                                 "children": child_success, "parent": parent, "stop": node["stop"],
                                                 "subshell": node["child_scope"] == "(" or asynchronous, "asynchronous": asynchronous,
                                                 "terminates": terminates, "overrides": installation, "builtin_action": builtin_action,
-                                                "action": action, "hash_changes": hash_changes(action), "builtin_change": builtin_change,
+                                                "action": action, "hash_changes": hash_changes(action), "builtin_change": builtin_change, "literal_status": result,
                                                 "dispatch": dispatch, "redirections": redirections, "inline_body": node["inline_body"], "opaque_context": opaque_context,
                                                 "exports": (tuple(operands), "n" not in flags) if action[:1] == ["export"] and "f" in flags else (tuple(operands), True) if action[:1] in (["declare"], ["typeset"]) and {"f", "x"} <= flags else None, "removes": removes, "removal_patterns": "m" in flags, "definition": node["definition"], "pipeline": previous in {"|", "|&"}, "command": action[0] if action else None, "may_skip": may_skip,
                                                 "inherit_override": opaque_context or alias_installation or any(signal not in {"ERR", "ZERR"} for signal in signals)}
@@ -3053,7 +3117,6 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                 if node["separator"] in {"|", "|&"}:
                     success_facts[node["index"]]["subshell"] = True
             return list_success if nodes and previous not in {"&", "|", "|&"} else set(inherited)
-        success_facts["end"] = implied_success(nodes)
         def redirection_scopes(nodes):
             for node in nodes:
                 opening = node["redirection_owner"]
@@ -3071,9 +3134,8 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                             facts["entry"].update(redirections)
                 if node["children"] is not None:
                     redirection_scopes(node["children"])
-        redirection_scopes(nodes)
-        success_facts["root_stop"] = root_stop
-        success_facts["root_shell"] = Path(source_shell).name if isinstance(source_shell, str) and source_shell else None
+                for _, commands in process_subtrees(node):
+                    redirection_scopes(commands)
     def echo_scopes(nodes, scope):
         """Share one unknown echo mode until an actual mutation or child shell."""
         for node in nodes:
@@ -3092,17 +3154,20 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                                                  for option, following in zip(setting_options, setting_options[1:]))):
                     scope = ("mode", source, node["index"])
             if node["children"] is not None:
-                following = echo_scopes(node["children"], scope)
-                if tokens[node["index"]] != "(":
+                child_scope = ("child", source, node["index"]) if node["fresh_shell"] else scope
+                following = echo_scopes(node["children"], child_scope)
+                if not node["fresh_shell"] and tokens[node["index"]] != "(":
                     scope = following
-            for placeholder, (_, commands) in node["substitutions"].items():
-                echo_scopes(commands, ("process", source, node["index"], placeholder))
-            for descriptor, value in node["descriptors"].items():
-                if isinstance(value, tuple) and value[0] in {"process-input", "process-output"}:
-                    echo_scopes(value[1], ("descriptor", source, node["index"], descriptor))
+            for process_scope, commands in process_subtrees(node):
+                echo_scopes(commands, process_scope)
         return scope
     echo_scopes(nodes, ("native", source))
     produced = flow(nodes, {"external"})
+    if success_facts is not None:
+        success_facts["end"] = implied_success(nodes)
+        redirection_scopes(nodes)
+        success_facts["root_stop"] = root_stop
+        success_facts["root_shell"] = Path(source_shell).name if isinstance(source_shell, str) and source_shell else None
     if output_sources is not None:
         output_sources.update(identifier for identifier in produced if identifier != "external")
     if command_kinds is not None:
@@ -3259,20 +3324,23 @@ def stdin_ownership(content, language):
     return language is not None and bool(OWNERSHIP_TEXT.search(content))
 
 
-def shell_source(text):
-    """Tokenize one source and retain its literal heredoc bodies."""
+def shell_source(text, *, incremental=True):
+    """Retain complete input units and their literal heredoc bodies."""
     # Quoted cat substitutions are a common CLI body argument. Their literal
     # contents must never participate in either shell lexing or '&' detection.
     substitution = re.compile(r"\$\(cat[ \t]+<<(-?)(['\"])([\w-]+)\2[ \t]*\n([\s\S]*?)\n[\t]*\3\r?\n\s*\)")
     text = substitution.sub("inert-heredoc-body", text)
     code, pending, header = [], [], ""
-    bodies = []
+    bodies, unit = [], []
+    checkpoint, malformed = (0, 0), False
     for line in text.splitlines(keepends=True):
         if pending:
             delimiter, tabs, expands, body = pending[0]
             if (line.lstrip("\t") if tabs else line).rstrip("\r\n") == delimiter:
                 bodies.append(("".join(body), expands))
                 pending.pop(0)
+                if not pending and compound_bounds(unit, completion=True)[1]:
+                    checkpoint, unit = (len(code), len(bodies)), []
             else:
                 body.append(line)
             continue
@@ -3289,17 +3357,35 @@ def shell_source(text):
             if token != "<<":
                 continue
             if index + 1 == len(tokens):
-                raise ValueError("unparsed heredoc delimiter")
+                malformed = True
+                break
             raw = tokens[index + 1]
             tabs = raw.startswith("-")
             delimiter = shlex.split(raw[1:] if tabs else raw, comments=False)
             if len(delimiter) != 1:
-                raise ValueError("unparsed heredoc delimiter")
+                malformed = True
+                break
             pending.append((delimiter[0], tabs, not any(c in raw for c in "'\"\\"), []))
+        if malformed:
+            break
         code.append(header)
         header = ""
-    if pending or header:
-        raise ValueError("unparsed heredoc body")
+        unit.extend(tokens)
+        unit.append("\n")
+        if not pending and compound_bounds(unit, completion=True)[1]:
+            checkpoint, unit = (len(code), len(bodies)), []
+    # Both supported shells accept EOF as the end of a pending heredoc;
+    # Bash warns, but still executes the completed input unit.
+    if pending and not malformed and not header:
+        bodies.extend(("".join(body), expands) for _, _, expands, body in pending)
+        pending = []
+        if compound_bounds(unit, completion=True)[1]:
+            checkpoint, unit = (len(code), len(bodies)), []
+    complete = not (malformed or pending or header or unit)
+    if not complete:
+        if not incremental:
+            raise ValueError("unparsed shell input unit")
+        code, bodies = code[:checkpoint[0]], bodies[:checkpoint[1]]
     code = "".join(code)
     lexer = shell_lexer(code, posix=False)
     lexer.whitespace = " \t\r"
@@ -3308,7 +3394,7 @@ def shell_source(text):
     identifiers = [index for index, token in enumerate(tokens) if token == "<<"]
     if len(identifiers) != len(bodies):
         raise ValueError("unparsed heredoc correspondence")
-    return code, tokens, dict(zip(identifiers, bodies))
+    return code, tokens, dict(zip(identifiers, bodies)), complete
 
 
 def shell_command_action(words):
@@ -3367,26 +3453,42 @@ def shell_word_literal(raw):
 
 def shell_code(text, *, writes=None, reads=None, replacements=None, effects=None, commands=None, source_shell=None):
     """Extract bodies first, then resolve streams across the complete command."""
-    code, tokens, source_bodies = shell_source(text)
+    code, tokens, source_bodies, complete = shell_source(text, incremental=not isinstance(source_shell, str) or Path(source_shell).name != "zsh")
     root_stop = len(tokens)
     file_commands, inline_inputs, stream_sources = [], {}, {}
     execution_events, success_facts = [], {}
+    contents, owns, expansion_owners = {}, False, set()
+    def literal_source(identifier):
+        if identifier in contents:
+            return contents[identifier]
+        if identifier in source_bodies:
+            content, expands = source_bodies[identifier]
+            if expands:
+                if any(executable_content(expansion) or opaque_ownership("exec_command", {"cmd": expansion})
+                       for expansion in shell_expansions(content, heredoc=True)):
+                    expansion_owners.add(identifier)
+                content = re.sub(r"\\([\\$`\n])", lambda match: "" if match[1] == "\n" else match[1], content)
+        elif identifier in inline_inputs:
+            raw, content = inline_inputs[identifier]
+            if any(executable_content(expansion) or opaque_ownership("exec_command", {"cmd": expansion})
+                   for expansion in shell_expansions(raw)):
+                expansion_owners.add(identifier)
+        else:
+            stream = stream_sources.get(identifier, {})
+            if stream.get("kind") != "literal":
+                return None
+            content = stream["content"]
+        contents[identifier] = content
+        return content
+
     languages = heredoc_languages(tokens, code, file_commands=file_commands,
                                   inline_inputs=inline_inputs, stream_sources=stream_sources,
-                                  execution_events=execution_events, success_facts=success_facts, source_bodies=source_bodies, source_shell=source_shell)
-    contents, owns, expansion_owners = {}, False, set()
-    for identifier, (content, expands) in source_bodies.items():
-        if expands:
-            if any(executable_content(expansion) or opaque_ownership("exec_command", {"cmd": expansion})
-                   for expansion in shell_expansions(content, heredoc=True)):
-                expansion_owners.add(identifier)
-            content = re.sub(r"\\([\\$`\n])", lambda match: "" if match[1] == "\n" else match[1], content)
-        contents[identifier] = content
-    for identifier, (raw, content) in inline_inputs.items():
-        if any(executable_content(expansion) or opaque_ownership("exec_command", {"cmd": expansion})
-               for expansion in shell_expansions(raw)):
-            expansion_owners.add(identifier)
-        contents[identifier] = content
+                                  execution_events=execution_events, success_facts=success_facts, source_bodies=source_bodies,
+                                  source_shell=source_shell, literal_source=literal_source)
+    if not complete:
+        success_facts["end"] = set()
+    for identifier in (*source_bodies, *inline_inputs):
+        literal_source(identifier)
     def possible_substring(identifier, needle):
         @lru_cache(maxsize=None)
         def states(identifier, matched):
@@ -3509,6 +3611,10 @@ def shell_code(text, *, writes=None, reads=None, replacements=None, effects=None
                          key=lambda event: (event["position"], event["kind"] != "write",
                                             bool(event.get("command_effect"))))
         reached = shell_effect_order(tokens, ordered, success_facts=success_facts)
+        owns |= any(ownership_command(unwrapped_command(event["argv"]))
+                    or opaque_ownership("exec_command", {"cmd": event["source"]})
+                    for event in reached if event["kind"] == "command" and event.get("literal_stdin")
+                    and event["argv"] and not event["inline_body"])
         if effects is not None:
             effects.extend(event for event in reached if event["kind"] in {"write", "read"})
         if commands is not None:
@@ -3596,7 +3702,7 @@ def shell_effect_order(tokens, events, *, success_facts=None):
         if separator not in {";", "\n", "&&", "||", "&", "|", "|&"}:
             continue
         guard(begin, end, executes)
-        result = shell_literal_status(tokens[begin:end])
+        result = success_facts.get(begin, {}).get("literal_status", shell_literal_status(tokens[begin:end]))
         if executes is True:
             previous = result
         elif executes is None and previous != result:
@@ -3913,11 +4019,10 @@ def shell_effect_order(tokens, events, *, success_facts=None):
                             retained = frozenset(binding for binding in previous if binding[1] not in exact_dialects)
                             hashes[name, process] = retained | changed if exact else previous | changed
                     if facts.get("builtin_change"):
-                        names, enabled, dialects = facts["builtin_change"]
-                        for name in names:
-                            # enable cannot create an unknown builtin; dynamic
-                            # loading requires a separately unsupported -f form.
-                            if name not in builtin_defaults:
+                        operands, enabled, dialects, patterns = facts["builtin_change"]
+                        for name in builtin_defaults:
+                            matches = [pattern_matches(operand, name) if patterns else operand == name for operand in operands]
+                            if not any(match is not False for match in matches):
                                 continue
                             previous = visible_binding(name, scopes, builtin_states, builtin_default(name, shell_context))
                             if shell_context in {"bash", "zsh"}:
@@ -3926,6 +4031,8 @@ def shell_effect_order(tokens, events, *, success_facts=None):
                                        if enabled else frozenset((False, dialect) for dialect in dialects))
                             exact_dialects = {dialect for dialect in dialects
                                               if (True, dialect) in availability and (False, dialect) not in availability}
+                            if True not in matches:
+                                exact_dialects = set()
                             retained = frozenset(binding for binding in previous if binding[1] not in exact_dialects)
                             builtin_states[name, process] = retained | changed if exact else previous | changed
                 paths = frozenset()
