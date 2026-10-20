@@ -555,6 +555,13 @@ def validate_markdown_links(skill_dir: Path) -> list[str]:
                 (index + 1 for index, line in enumerate(lines[1:], start=1) if line.rstrip() == "---"),
                 0,
             )
+            if body_start:
+                try:
+                    if not read_frontmatter(markdown_path):
+                        body_start = 0
+                except yaml.YAMLError:
+                    # Horizontal rules may surround Markdown rather than YAML metadata.
+                    body_start = 0
         in_fence = False
         for line_number, line in enumerate(lines[body_start:], start=body_start + 1):
             if line.lstrip().startswith("```"):
