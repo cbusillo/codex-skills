@@ -160,7 +160,7 @@ def validate_closure(entry, supervisor_session, *, native=None, process=None):
         if saved != private["source"]:
             raise ValueError("private closure source changed after recording")
         import github_plan_native
-        process = github_plan_native._source_process(entry, saved)
+        process = github_plan_native._source_process(entry, saved, recorded=entry)
     status = verify_closed(entry, supervisor_session, ended_at=ended, native=native, process=process)
     if not status["timestamp"] or release.stamp(status["timestamp"]) > ended:
         raise ValueError("transcript resumed after the recorded closure")
@@ -244,7 +244,8 @@ def _validate_finish(entry, supervisor_session, *, apply):
         if saved != anchor["source"] or closure.lease_state(entry["session_id"]) != anchor["action"]:
             raise ValueError("native action or source identity changed after finish preview")
         import github_plan_native
-        native = asyncio.run(github_plan_native.prove_end(entry))
+        process = github_plan_native._source_process(entry, saved, recorded=entry)
+        native = asyncio.run(github_plan_native.prove_end(entry, process=process))
         if native["snapshot"]["source"] != anchor["source"] or native["action"] != anchor["action"]:
             raise ValueError("native proof belongs to a different finish source or action")
         status = validate_closure(entry, supervisor_session, native=native, process=native["snapshot"]["process"])

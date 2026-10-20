@@ -298,8 +298,8 @@ class _SourceEndMismatch(ValueError):
     """This verified End cannot cover the selected generation's actual facts."""
 
 
-def _source_process(entry, saved, context=None):
-    """Select one trusted generation/cutoff; the owning route supplies its saved row."""
+def _source_process(entry, saved, context=None, *, recorded=None):
+    """Select actual source identity and its recorder-owned exit boundary."""
     from github_plan_sessions import process_liveness
     from github_plan_release import stamp
     source = {**entry, **(saved or {})}
@@ -335,15 +335,21 @@ def _source_process(entry, saved, context=None):
             for key in terminal_keys:
                 if key in entry:
                     effective[key] = entry[key]
-    if not generation and saved and saved.get("process_exit_verified") is True and saved.get("ended_at"):
-        ended = stamp(saved["ended_at"])
-        cutoff = stamp(saved["tty_exited_at"]) if saved.get("tty_exited_at") else ended
+    # Later finish boundaries use this invocation's recorder output, including
+    # when the actual saved source is an open resumed generation or absent.
+    # Initial selection never accepts a caller's cutoff as recorded evidence.
+    closed = recorded if recorded is not None else (saved if not generation else None)
+    if recorded is not None and (recorded.get("process_exit_verified") is not True or not recorded.get("ended_at")):
+        raise ValueError("recorded closure lacks a verified process exit boundary")
+    if closed and closed.get("process_exit_verified") is True and closed.get("ended_at"):
+        ended = stamp(closed["ended_at"])
+        cutoff = stamp(closed["tty_exited_at"]) if closed.get("tty_exited_at") else ended
         if cutoff > ended:
             raise ValueError("native TTY exit cutoff is newer than closure")
-        if "tty_exited_at" in saved:
-            # The full saved-row identity check must see the exact trusted
-            # representation, not a caller hint or a normalized replacement.
-            effective["tty_exited_at"] = saved["tty_exited_at"]
+        if "tty_exited_at" in closed:
+            # Preserve the recorder's representation for the independent
+            # saved-row identity comparison, rather than a caller hint.
+            effective["tty_exited_at"] = closed["tty_exited_at"]
     else:
         cutoff = process_liveness().native_exit_cutoff(effective)
         if cutoff is None:

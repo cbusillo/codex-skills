@@ -221,7 +221,7 @@ class FinishPreviewIntegrationTests(unittest.TestCase):
             pass
         f.native_state = "notLoaded"
 
-    def finish(self, f, *, apply=False, discovery=None, history=None):
+    def finish(self, f, *, apply=False, discovery=None, history=None, closed_log=None):
         helper = f.release
         ledger = f.root / "ledger.json"
         ledger.write_text(json.dumps([f.entry]))
@@ -248,6 +248,8 @@ class FinishPreviewIntegrationTests(unittest.TestCase):
                 "--confirm-session-ended", "--transcript-root", str(f.home / "sessions")]
         if apply:
             argv.append("--apply")
+        if closed_log is not None:
+            argv += ["--closed-log", str(closed_log)]
         output = io.StringIO()
         with patch.object(helper.sys, "argv", argv), \
                 patch.object(helper.github_identity, "automation_login", return_value="fixture-bot"), \
@@ -306,6 +308,149 @@ class FinishPreviewIntegrationTests(unittest.TestCase):
                 self.assertFalse(reader.method_calls)
                 self.assertFalse(f.mutations)
                 self.assertEqual({path: path.read_bytes() for path in paths}, before)
+
+    def test_preview_preserves_recorded_cutoff_for_absent_and_resumed_sources(self):
+        import github_plan_native as native
+        import tmux_terminal
+        for resumed in (False, True):
+            for shared in (False, True):
+                for boundary in ("discovery", "history"):
+                    changes = ("stable", "reaped", "replacement") + (("queue",) if shared else ())
+                    if not resumed and boundary == "history":
+                        changes += ("source_pid", "source_resume", "unguarded")
+                    for change in changes:
+                        with self.subTest(resumed=resumed, shared=shared, boundary=boundary, change=change), ReceiptFixture(
+                                "11111111-2222-4333-8444-555555555555") as f:
+                            cutoff = datetime(2026, 10, 1, 2, 1, tzinfo=timezone.utc)
+                            end = cutoff + timedelta(minutes=2)
+                            current_turn = f.transcript.read_text().splitlines()[1:]
+                            CLOSURE.replace_rows([])
+                            if resumed:
+                                prior = SESSIONS.native_helpers()[1].read_jsonl(f.transcript)
+                                for row in prior:
+                                    if row.get("timestamp"):
+                                        row["timestamp"] = (f.release.release.stamp(row["timestamp"]) - timedelta(minutes=2)).isoformat()
+                                    if row.get("payload", {}).get("turn_id"):
+                                        row["payload"]["turn_id"] = "prior-" + row["payload"]["turn_id"]
+                                f.transcript.write_text("".join(json.dumps(row) + "\n" for row in prior))
+                                prior_verdict = f.release.release.stamp(SESSIONS.native_helpers()[1].session_status(f.entry)["timestamp"])
+                                class PriorClock(datetime):
+                                    @classmethod
+                                    def now(cls, tz=None):
+                                        return prior_verdict + timedelta(seconds=1)
+                                with patch.object(f.release, "datetime", PriorClock):
+                                    f.release.record_closure(f.log, f.entry, "supervisor")
+                            f.entry.update(tmux_socket="fixture", tmux_session_id="tmux:fixture:" + "a" * 32,
+                                           window_id="$1", tab_id="@1")
+                            births = {123: cutoff - timedelta(hours=1), 124: cutoff - timedelta(minutes=2),
+                                      456: cutoff + timedelta(seconds=22),
+                                      567: end + timedelta(minutes=1), 568: end + timedelta(minutes=1, seconds=1)}
+                            pane = {"session_id": f.entry["tmux_session_id"], "pane_id": "%1", "pid": 789,
+                                    "tmux_socket": "fixture", "window_id": "$1", "tab_id": "@1",
+                                    "tty": f.entry["tty"], "dead": True, "exited_at": cutoff.isoformat()}
+                            state = {"changed": False, "launched": not resumed, "panes": [pane], "parents": {456: 1}}
+                            captured, process_boundaries = {}, []
+                            private = f.root / "retained-private.json"
+                            class ActionClock(datetime):
+                                @classmethod
+                                def now(cls, tz=None):
+                                    return (end + timedelta(minutes=2) if state["changed"] else
+                                            cutoff + timedelta(minutes=1) if state["launched"] else births[124])
+                            class EndClock(datetime):
+                                @classmethod
+                                def now(cls, tz=None):
+                                    return end
+                            def register(pid):
+                                endpoint = f.root / ("guard-" + str(pid) + ".sock")
+                                sock = socket.socket(socket.AF_UNIX)
+                                f.stack.callback(sock.close)
+                                sock.bind(str(endpoint))
+                                endpoint.chmod(0o600)
+                                argv = ["codex", "--remote", "unix://" + str(endpoint)]
+                                with patch.object(CLOSURE.os, "getpid", return_value=pid), \
+                                        patch.object(CLOSURE.sys, "argv", argv):
+                                    CLOSURE.register_proxy(str(f.home), str(endpoint))
+                                self.assertIsNotNone(CLOSURE.guarded_launch_endpoint(pid, argv))
+                                return " ".join(argv)
+                            def update(_f):
+                                if state["changed"] or change == "stable":
+                                    return
+                                state["changed"] = True
+                                if change == "queue":
+                                    f.queue_items = [{"id": "new-input", "clientUserMessageId": "later-client", "input": []}]
+                                    return
+                                state["panes"] = []
+                                if change == "replacement":
+                                    f.process_rows = [(567, f.entry["tty"], "zsh"), (568, f.entry["tty"], register(568))]
+                                    state["parents"] = {567: 42, 568: 567, 42: 1}
+                                    expected_log[:] = [f.log.read_bytes()]
+                                elif change == "source_pid":
+                                    f.process_rows = [(f.entry["pid"], f.entry["tty"], "codex")]
+                                elif change == "source_resume":
+                                    f.process_rows = [(456, f.entry["tty"], "codex resume " + f.session)]
+                                elif change == "unguarded":
+                                    f.process_rows = [(567, f.entry["tty"], "codex")]
+                            record_closure, recheck_process = f.release.record_closure, native.recheck_source_process
+                            def record(*args, **kwargs):
+                                closed = record_closure(*args, **kwargs)
+                                captured.update({key: closed[key] for key in ("tty_exited_at", "ended_at", "verdict_at")})
+                                return closed
+                            def recheck(process):
+                                result = recheck_process(process)
+                                if captured:
+                                    process_boundaries.append((process.cutoff, process.saved))
+                                return result
+                            with patch.object(CLOSURE, "process_started_at", side_effect=lambda pid: births[pid]), \
+                                    patch.object(CLOSURE, "datetime", ActionClock), \
+                                    patch.object(f.release, "datetime", EndClock), \
+                                    patch.object(tmux_terminal.Terminal, "list", side_effect=lambda _self=None: list(state["panes"])), \
+                                    patch.object(tmux_terminal, "process_parents", side_effect=lambda: dict(state["parents"])):
+                                if resumed:
+                                    metadata = CLOSURE.launch_metadata(124, "actual-owned-resume", str(f.home))
+                                    f.entry.update(metadata, pid=metadata["launch_pid"], tty="resumed-tty")
+                                    pane["tty"] = f.entry["tty"]
+                                    with CLOSURE.resume_guard(f.session, method="thread/resume", home=f.home):
+                                        CLOSURE.resumed_launch(f.session, metadata, str(f.transcript), f.entry["tty"])
+                                    selected = CLOSURE.source_records({f.session})[f.session]
+                                    self.assertEqual(selected["resumed_generation"]["launch_pid"], metadata["launch_pid"])
+                                    with f.transcript.open("a") as stream:
+                                        stream.write("\n".join(current_turn) + "\n")
+                                    if not shared:
+                                        f.log.rename(private)
+                                else:
+                                    selected = None
+                                state["launched"] = True
+                                f.process_rows = [(456, f.entry["tty"], register(456))]
+                                f.native_state = "notLoaded"
+                                if shared and not resumed:
+                                    with CLOSURE.resume_guard(f.session, method="thread/resume", home=f.home):
+                                        pass
+                                self.assertEqual(CLOSURE.source_records({f.session}).get(f.session), selected if shared else None)
+                                lease = CLOSURE.lease_path(f.session)
+                                lease_before = lease.read_bytes()
+                                expected_log = [f.log.read_bytes()]
+                                private_before = private.read_bytes() if private.exists() else None
+                                verdict = SESSIONS.native_helpers()[1].session_status(f.entry)["timestamp"]
+                                with patch.object(f.release, "record_closure", side_effect=record), \
+                                        patch.object(native, "recheck_source_process", side_effect=recheck):
+                                    code, report = self.finish(f, **{boundary: update}, closed_log=None if shared else private)
+                                refuses = change in {"queue", "source_pid", "source_resume", "unguarded"}
+                                self.assertEqual(state["changed"], change != "stable")
+                                self.assertEqual(code, 1 if refuses else 0, report)
+                                self.assertEqual(report["ok"], not refuses)
+                                self.assertEqual(CLOSURE.action_pending(f.session), shared or resumed)
+                                self.assertEqual(lease.read_bytes(), lease_before)
+                                self.assertEqual(f.log.read_bytes(), expected_log[0])
+                                self.assertEqual(CLOSURE.source_records({f.session}).get(f.session), selected if shared else None)
+                                self.assertEqual(private.read_bytes() if private.exists() else None, private_before)
+                                self.assertEqual(captured["tty_exited_at"], cutoff.isoformat())
+                                self.assertEqual(captured["ended_at"], end.isoformat())
+                                self.assertEqual(captured["verdict_at"], verdict)
+                                if not refuses:
+                                    self.assertEqual(report["reports"][0]["ended_at"], captured["ended_at"])
+                                    for observed_cutoff, saved in process_boundaries:
+                                        self.assertEqual(observed_cutoff, cutoff)
+                                        self.assertEqual(saved, selected)
 
     def test_pending_preview_consumes_release_without_changing_native_or_closure_state(self):
         with ReceiptFixture() as f:
