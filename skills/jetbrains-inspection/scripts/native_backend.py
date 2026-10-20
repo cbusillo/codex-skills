@@ -41,7 +41,7 @@ ACTIVE_PROCESSORS = 2
 NICE = 10
 NAMED_PYTHON = frozenset({"DuplicatedCode", "HttpUrlsUsage", "PyUnresolvedReferencesInspection", "PyTypeCheckerInspection"})
 NAMED_ODOO = frozenset({"OdooPy", "OdooXml"})
-LICENSE_PROMPT = re.compile(r"^(?:no valid licen[cs]e\b|checking trial availability\b|(?:start|activate|try|begin|offer) (?:a |your |free )?trial\b|trial (?:expired|has expired|period|available)\b|licen[cs]e.{0,40}(?:expired|invalid|missing|required)|(?:activate|purchase|buy|log.?in).{0,40}licen[cs]e|third.party privacy notice.*not accepted)", re.I)
+LICENSE_PROMPT = re.compile(r"^(?:no valid licen[cs]e\b|checking trial availability\b|(?:start|activate|try|begin|offer) (?:a |your |free )?trial\b|(?:your |the |a )?(?:trial|evaluation) (?:is |has )?(?:expired|period|available|active|licen[cs]e|expires|ends)\b|you are using (?:a )?trial\b|licen[cs]e.{0,40}(?:expired|invalid|missing|required)|(?:activate|purchase|buy|log.?in).{0,40}licen[cs]e|third.party privacy notice.*not accepted)", re.I)
 
 
 def license_boundary(line):

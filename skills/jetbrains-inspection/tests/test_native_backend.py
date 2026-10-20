@@ -172,7 +172,7 @@ class NativeTests(unittest.TestCase):
             self.assertEqual(target.read_text(), "preserve")
 
     def test_license_prompt_and_trial_availability_stop_without_returning_contents(self):
-        for line in ("No valid license found", "Checking trial availability for product [PY]", "Start trial", "Activate your license"):
+        for line in ("No valid license found", "Checking trial availability for product [PY]", "Start trial", "Activate your license", "Your trial has expired", "Trial is active", "You are using a trial license"):
             self.assertTrue(native.license_boundary(line), line)
         self.assertFalse(native.license_boundary("Loaded custom plugins: Odoo IDE"))
 
