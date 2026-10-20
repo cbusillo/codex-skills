@@ -113,6 +113,10 @@ class RedactionError(ValueError):
     """A fixed safe code, never private input text."""
 
 
+class LiteralBudgetExceeded(Exception):
+    """Internal signal to withhold one complete bounded record."""
+
+
 @dataclass(frozen=True)
 class SafeRecord:
     message: str
@@ -319,14 +323,21 @@ def parse_literal(text: str) -> tuple[str, object, str] | None:
     positions = [index for index, char in enumerate(text) if char in "{[("]
     if text.lstrip().startswith(('"', "'")):
         positions.append(len(text) - len(text.lstrip()))
-    for attempt, start in enumerate(sorted(set(positions))):
-        if attempt >= MAX_LITERAL_ATTEMPTS:
-            raise RedactionError("log_structure_limit")
+    attempts = resume = 0
+    for start in sorted(set(positions)):
+        if start < resume:
+            continue
+        if attempts >= MAX_LITERAL_ATTEMPTS:
+            raise LiteralBudgetExceeded
+        attempts += 1
         prefix = CONTROL.sub("", normalize(text[:start]))
         if analyze_plain(prefix).cut is not None:
             return None
         parsed = leading_literal(text, start)
         if parsed is None:
+            end = balanced_end(text, start)
+            if end is not None:
+                resume = end
             continue
         value, end = parsed
         if (
@@ -399,10 +410,14 @@ def clean_record(
 ) -> CleanRecord:
     if depth >= MAX_DEPTH:
         return CleanRecord(MASK)
-    parsed = parse_literal(text)
-    if parsed is None:
-        text = CONTROL.sub("", normalize(text))
+    try:
         parsed = parse_literal(text)
+        if parsed is None:
+            text = CONTROL.sub("", normalize(text))
+            parsed = parse_literal(text)
+    except LiteralBudgetExceeded:
+        normalized = CONTROL.sub("", normalize(text))
+        return CleanRecord(MASK, analyze_plain(normalized).continuation)
     if parsed is not None:
         prefix, value, suffix = parsed
         if not prefix and not suffix and isinstance(value, str):

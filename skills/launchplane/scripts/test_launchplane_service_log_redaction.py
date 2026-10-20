@@ -361,8 +361,37 @@ class RedactionTests(unittest.TestCase):
             Redactor().feed("a." * MAX_MESSAGE_BYTES)
         with self.assertRaises(RedactionError):
             Redactor().feed("-----END RSA PRIVATE KEY-----")
-        with self.assertRaises(RedactionError):
-            Redactor().feed("[worker] " * (MAX_LITERAL_ATTEMPTS + 1))
+        state = Redactor()
+        marker = "S3NTINELBudget"
+        masked = state.feed(("[" + marker + "] ") * (MAX_LITERAL_ATTEMPTS + 1))
+        self.assertTrue(masked.redacted)
+        self.assertNotIn(marker, masked.message)
+        self.assertIn("restarted", state.feed("event=restarted").message)
+        state.feed("[worker] " * (MAX_LITERAL_ATTEMPTS + 1) + "password=[")
+        self.assertNotIn(marker, state.feed("  " + marker).message)
+
+    def test_balanced_rejected_spans_do_not_exhaust_nested_candidates(self):
+        count = MAX_LITERAL_ATTEMPTS + 4
+        sql = "INSERT INTO t (" + ", ".join(f"c{i}" for i in range(count))
+        sql += ") VALUES (" + ", ".join(f"%(c{i})s" for i in range(count)) + ")"
+        queue = "queue=[" + ", ".join(f"Operation(op-{i})" for i in range(count)) + "]"
+        for record in (sql, queue, json.dumps({"query": sql})):
+            self.assertIn(
+                "c0" if record != queue else "op-0", Redactor().feed(record).message
+            )
+        secret = "S3NTINELSkipped"
+        state = Redactor()
+        masked = state.feed("Op((a), password=" + secret + ') {"trace_id":"T"}')
+        self.assertNotIn(secret, masked.message)
+        trace = "trace-budget-evidence-991"
+        later = state.feed(
+            "Op("
+            + "(x)" * count
+            + ") "
+            + json.dumps({"token": secret, "trace_id": trace})
+        )
+        self.assertNotIn(secret, later.message)
+        self.assertIn(trace, later.message)
 
 
 if __name__ == "__main__":

@@ -101,8 +101,12 @@ their parent may precede the window. Later unindented ordinary records remain
 readable. Flush-left multiline prose without a recognizable key delimiter cannot
 be safely attributed to a writer; do not rely on redaction of that unsupported
 framing.
-An individual source message over 4 KiB, excessive encoding, more than 32 failed
-literal candidates or an unmatched private key end fails the whole read with a fixed code and no partial data. The size check
+Nested candidates inside an already rejected, balanced unquoted span do not spend
+the literal-attempt budget. Exhausting that budget masks one record and preserves
+its detected continuation; later ordinary records remain readable. Unknown quoted
+representations, including object repr calls, are withheld as closed values.
+An individual source message over 4 KiB, excessive encoding or an unmatched
+private key end fails the whole read with a fixed code and no partial data. The size check
 runs before parsing or pattern scans. Terminal controls are removed. Every record
 is sanitized before output; matching IDs is private, literal and uses normalized
 source text. `matched_record_count` and `changed_record_count` report selected
