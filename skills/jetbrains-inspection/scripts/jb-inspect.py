@@ -541,8 +541,9 @@ def main() -> int:
             result = command_closeout(args, context)
             return emit(result, args.json, classify_closeout_exit(result), command=args.command_input)
         if args.command == "agent":
-            qodana_options = bool(args.qodana_recover_only or args.qodana_image or args.qodana_license_file or args.qodana_plugin_zip or args.qodana_uv)
-            native_options = bool(args.native_worker or args.native_recover_only or args.native_framework_root or args.native_reconcile_result or args.native_release_run)
+            router = native_backend_module()
+            qodana_options = router.common.backend_options(args, "qodana")
+            native_options = router.common.backend_options(args, "native")
             if native_options and qodana_options:
                 return emit_agent_usage_error("Native and Qodana options cannot be combined.")
             if args.backend in {"api", "native"} and qodana_options:
@@ -552,7 +553,7 @@ def main() -> int:
             backend_selection = "explicit"
             if args.backend == "auto":
                 host_default = os.environ.get("JB_INSPECT_DEFAULT_BACKEND")
-                args.backend, backend_selection = native_backend_module().select_backend(
+                args.backend, backend_selection = router.select_backend(
                     args, sys.modules[__name__], host_default if host_default in {"api", "qodana", "native"} else None)
             if args.backend == "native":
                 result = command_native(args)

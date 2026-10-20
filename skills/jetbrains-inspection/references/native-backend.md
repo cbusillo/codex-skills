@@ -190,8 +190,9 @@ product activation, accounts or credentials and never launches an inspection.
 A stop receipt without a remaining journal can be released by the same exact-run
 command after that recorded confirmation. Never use the flag merely to retry.
 
-A killed guardian may leave the engine holding both inherited locks. Cleanup-only
-recovery first holds the separate control lock, proves the journaled PID birth,
+A killed guardian may leave the engine holding both inherited locks. Every run
+first holds the separate control lock and checks any journaled engine before
+resource recovery. It proves the journaled PID birth,
 group and private-path identity, and stops that exact orphan group before taking
 the normal locks. A live guardian or an unproved process identity is preserved.
 A different process birth at the journaled PID proves reuse; recovery sends it

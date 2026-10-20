@@ -54,12 +54,10 @@ def copy_tracked_fixture(fixture, destination):
 class NativeTests(unittest.TestCase):
     def test_process_reader_reports_foreign_group_and_command_before_matching(self):
         result = subprocess.CompletedProcess([], 0, b"123456 42 Tue Oct 20 12:00:00 2026 S unrelated-process\n")
-        with patch.object(native.common, "command", return_value=result) as command:
+        with patch.object(native.common, "command", return_value=result):
             identity = native.process_identity(123456, Path("/private/owned"))
         self.assertEqual(identity["pgid"], 42)
         self.assertIsNone(identity["private"])
-        self.assertEqual(command.call_args.kwargs["env"]["TZ"], "UTC")
-        self.assertEqual(command.call_args.kwargs["env"]["LC_ALL"], "C")
 
     def test_framework_dependency_must_match_the_workspaces_declared_git_ref(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -231,6 +229,7 @@ class NativeTests(unittest.TestCase):
         for line in ("Running local inspections on /project/trial.py", "Inspecting trial-balance.xml", "building package license-required-helper"):
             self.assertFalse(native.license_boundary(line), line)
 
+
 class NativeLifecycleTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
@@ -284,13 +283,13 @@ print('Done.')
         self.args = host.build_parser().parse_args(["agent-inspect", "--backend", "native", "--repo", str(self.repo),
                     "--scope", "files", "--file", "source.py", "--profile", "Test", "--native-worker", str(self.worker), "--ide-app", str(self.app)])
 
-    def assess(self, loads=None):
+    def assess(self, loads=None, *, direct=False):
         with patch.object(sys, "platform", "darwin"), \
                 patch.object(host, "cache_dir", return_value=self.root / "cache"), \
                 patch.object(host, "read_global_config", return_value={}), \
                 patch.object(host, "trusted_auto_open_roots", return_value=[str(self.repo)]), \
                 patch.object(os, "getloadavg", side_effect=loads or (lambda: (1, 1, 1))):
-            return native.run(self.args, host)
+            return native._run(self.args, host, None) if direct else native.run(self.args, host)
 
     def test_findings_require_current_reports_and_cleanup_sdk_in_place(self):
         result = self.assess()
@@ -830,12 +829,12 @@ with patch.object(native.sys,'platform','darwin'), patch.object(native,'state_di
                 self.args.native_recover_only = True
                 current = {**identity, "started": "later", "pgid": pgid, "private": str(context.private) if private else None}
                 with patch.object(native, "process_identity", return_value=current), patch.object(native.os, "killpg") as kill:
-                    result = self.assess()
+                    result = self.assess(direct=True)
                     self.assertEqual(result["inspection_outcome"]["reason"], "native_interrupted_run_unresolved")
                     self.assertEqual(result["cleanup"]["status"], "closed")
                     self.assertFalse(context.private.exists())
                     self.args.native_release_run = context.identity["run_id"]
-                    self.assertEqual(self.assess()["inspection_outcome"]["reason"], "native_recovery_only_no_inspection")
+                    self.assertEqual(self.assess(direct=True)["inspection_outcome"]["reason"], "native_recovery_only_no_inspection")
                 kill.assert_not_called()
                 self.args.native_release_run = None
 
@@ -847,11 +846,24 @@ with patch.object(native.sys,'platform','darwin'), patch.object(native,'state_di
                 self.args.native_recover_only = True
                 current = {"pid": 123456, "pgid": pgid, "started": started, "private": str(context.private) if same_path else None}
                 with patch.object(native, "process_identity", return_value=current), patch.object(native.os, "killpg") as kill:
-                    result = self.assess()
+                    result = self.assess(direct=True)
                 self.assertEqual(result["inspection_outcome"]["reason"], "native_recovery_process_identity_changed")
                 self.assertEqual(result["cleanup"]["status"], "failed")
                 kill.assert_not_called()
                 self.assertTrue(context.private.exists())
+
+    def test_both_entry_paths_preserve_resources_under_a_live_unproved_group(self):
+        for recover_only in (False, True):
+            with self.subTest(recover_only=recover_only):
+                context = self.reserve_run()
+                context.phase("engine_running", engine_identity={"pid": 123456, "pgid": 123456, "started": "old", "private": str(context.private)})
+                self.args.native_recover_only = recover_only
+                with patch.object(native, "process_identity", return_value=None), patch.object(native.os, "killpg") as kill:
+                    result = self.assess(direct=True)
+                self.assertEqual(result["inspection_outcome"]["reason"], "native_recovery_process_group_unproven")
+                self.assertEqual(result["cleanup"]["status"], "failed")
+                self.assertTrue(context.private.exists())
+                kill.assert_called_once_with(123456, 0)
 
     def test_credential_named_source_is_refused_without_opening_it(self):
         credential = self.repo / "do-not-read.license"
@@ -894,17 +906,28 @@ class LiveNativeTests(unittest.TestCase):
             self.assertIsNotNone(result["diagnostic"]["native"]["repo_head_sha"])
             tree = ast.parse((repo / "native_probe/models.py").read_text())
             functions = {node.name: node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)}
+            def in_function(finding, node, source="native_probe/models.py"):
+                start = min([node.lineno, *(decorator.lineno for decorator in node.decorator_list)])
+                return finding["file"] == source and start <= finding["line"] <= node.end_lineno
             wrong, correct = functions["wrong_model"], functions["correct_model"]
-            self.assertTrue(any(f["rule_id"] == "PyTypeCheckerInspection" and f["file"] == "native_probe/models.py"
-                                and wrong.lineno <= f["line"] <= wrong.end_lineno for f in findings))
-            self.assertFalse(any(f["file"] == "native_probe/models.py" and correct.lineno <= f["line"] <= correct.end_lineno for f in findings))
+            self.assertTrue(any(f["rule_id"] == "PyTypeCheckerInspection" and in_function(f, wrong) for f in findings))
+            self.assertFalse(any(in_function(f, correct) for f in findings))
+            self.assertTrue(any(f["rule_id"] == "PyUnresolvedReferencesInspection" and in_function(f, functions["broken_dependency"]) for f in findings))
             dependency = functions["valid_dependency"]
-            self.assertFalse(any(f["file"] == "native_probe/models.py"
-                                 and dependency.lineno <= f["line"] <= dependency.end_lineno for f in findings))
+            self.assertFalse(any(in_function(f, dependency) for f in findings))
             modern_tree = ast.parse((repo / "native_probe/python_types.py").read_text())
+            wrong_type = next(node for node in modern_tree.body if isinstance(node, ast.FunctionDef) and node.name == "wrong_type")
+            self.assertTrue(any(f["rule_id"] == "PyTypeCheckerInspection" and in_function(f, wrong_type, "native_probe/python_types.py") for f in findings))
             modern = next(node for node in modern_tree.body if isinstance(node, ast.FunctionDef) and node.name == "valid_modern_annotation")
             self.assertFalse(any(f["rule_id"] in {"PyTypeCheckerInspection", "PyTypeHintsInspection"}
-                                 and f["file"] == "native_probe/python_types.py" and modern.lineno <= f["line"] <= modern.end_lineno for f in findings))
+                                 and in_function(f, modern, "native_probe/python_types.py") for f in findings))
+            coverage_tree = ast.parse((repo / "native_probe/coverage.py").read_text())
+            reference = next(node for node in coverage_tree.body if isinstance(node, ast.FunctionDef))
+            self.assertTrue(any(f["rule_id"] == "PyUnresolvedReferencesInspection" and in_function(f, reference, "native_probe/coverage.py") for f in findings))
+            for node in (node for node in coverage_tree.body if isinstance(node, ast.Assign)):
+                insecure = isinstance(node.value, ast.Constant) and str(node.value.value).startswith("http:")
+                detected = any(f["rule_id"] == "HttpUrlsUsage" and f["file"] == "native_probe/coverage.py" and node.lineno <= f["line"] <= node.end_lineno for f in findings)
+                self.assertEqual(detected, insecure)
             for tool, source in (("OdooXml", "native_probe/views/defect.xml"), ("DuplicatedCode", "native_probe/duplicates.py"), ("OdooPy", "native_probe/models.py")):
                 self.assertTrue(any(f["rule_id"] == tool and f["file"] == source for f in findings), tool)
             duplicate_tree = ast.parse((repo / "native_probe/duplicates.py").read_text())

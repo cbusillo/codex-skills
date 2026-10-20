@@ -226,6 +226,27 @@ class ProcessDrainTests(unittest.TestCase):
         self.assertFalse(receipt.get("license_boundary_observed", False))
         self.assertTrue(receipt.get("license_observation_complete"))
 
+    def test_rotation_between_enumeration_and_open_waits_for_the_next_tick(self):
+        log = self.private / "logs/idea.log"
+        log.write_text("ordinary fixture log\n")
+        original_open = Path.open
+        rotated = False
+
+        def rotate_at_open(path, *args, **kwargs):
+            nonlocal rotated
+            if path == log and args == ("rb",) and not rotated:
+                rotated = True
+                log.rename(log.with_name("idea.1.log"))
+                log.write_text("new ordinary fixture log\n")
+                raise FileNotFoundError("fixture rotation race")
+            return original_open(path, *args, **kwargs)
+
+        with patch.object(Path, "open", new=rotate_at_open):
+            receipt, reason = self.run_process("import time;time.sleep(.3);print('ERROR: artificial end',flush=True);time.sleep(30)")
+        self.assertTrue(rotated)
+        self.assertEqual(reason, "native_engine_error")
+        self.assertTrue(receipt.get("license_observation_complete"))
+
 
 if __name__ == "__main__":
     unittest.main()

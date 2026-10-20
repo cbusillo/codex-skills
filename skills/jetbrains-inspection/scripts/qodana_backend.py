@@ -999,6 +999,14 @@ def scope_selection(args, host):
     return repo, config, scope, selected
 
 
+def backend_options(args, backend):
+    fields = {
+        "qodana": ("qodana_recover_only", "qodana_image", "qodana_license_file", "qodana_plugin_zip", "qodana_uv"),
+        "native": ("native_worker", "native_recover_only", "native_framework_root", "native_reconcile_result", "native_release_run"),
+    }
+    return any(getattr(args, name, None) for name in fields[backend])
+
+
 def select_backend(args, host, host_default=None):
     """Default backend for one agent-inspect run: (backend, reason).
 
@@ -1007,7 +1015,7 @@ def select_backend(args, host, host_default=None):
     the pinned image is already local. Everything else keeps the API. A host
     may pin the choice with JB_INSPECT_DEFAULT_BACKEND.
     """
-    if args.qodana_recover_only or args.qodana_image or args.qodana_license_file or args.qodana_plugin_zip or args.qodana_uv:
+    if backend_options(args, "qodana"):
         return "qodana", "qodana_options_supplied"
     if host_default:
         return host_default, "host_default"

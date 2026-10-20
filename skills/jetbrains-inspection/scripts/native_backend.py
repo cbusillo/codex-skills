@@ -41,8 +41,9 @@ LOAD_LIMIT = common.LOAD_LIMIT
 HEAP_LIMIT_MIB = 1536
 ACTIVE_PROCESSORS = 2
 NICE = 10
-NAMED_PYTHON = frozenset({"DuplicatedCode", "HttpUrlsUsage", "PyUnresolvedReferencesInspection", "PyTypeCheckerInspection"})
-NAMED_ODOO = frozenset({"OdooPy", "OdooXml"})
+NATIVE_SUFFIXES = frozenset({".py", ".xml"})
+
+
 def sibling_module(name, filename):
     spec = importlib.util.spec_from_file_location(name, Path(__file__).with_name(filename))
     if spec is None or spec.loader is None:
@@ -55,15 +56,17 @@ def sibling_module(name, filename):
 observations: Any = sibling_module("native_observations", "native_observer.py")
 proof: Any = sibling_module("native_proof", "native_coverage.py")
 lifecycle: Any = sibling_module("native_custody", "native_lifecycle.py")
+NAMED_ODOO = frozenset(tool for tool in proof.CANARY_FILES if tool.startswith("Odoo"))
+NAMED_PYTHON = frozenset(proof.CANARY_FILES) - NAMED_ODOO
 license_boundary = observations.license_boundary
 
 is_odoo = common.is_odoo
 
 
 def select_backend(args, host, host_default=None):
-    if args.qodana_recover_only or args.qodana_image or args.qodana_license_file or args.qodana_plugin_zip or args.qodana_uv:
+    if common.backend_options(args, "qodana"):
         return "qodana", "qodana_options_supplied"
-    if args.native_worker or args.native_recover_only or args.native_framework_root or args.native_reconcile_result or getattr(args, "native_release_run", None):
+    if common.backend_options(args, "native"):
         return "native", "native_options_supplied"
     if host_default:
         return host_default, "host_default"
@@ -74,7 +77,7 @@ def select_backend(args, host, host_default=None):
         if not eligible(args, host, repo, config):
             backend, reason = common.select_backend(args, host)
             return backend, reason + ";native_ineligible=" + str(eligibility_reason(args, host, repo, config))
-        if selected and all(Path(f).suffix in {".py", ".xml"} for f in selected) and not common.lane_gaps(host, config, selected):
+        if selected and all(Path(f).suffix in NATIVE_SUFFIXES for f in selected) and not common.lane_gaps(host, config, selected):
             if is_odoo(repo):
                 return "native", "odoo_native_route"
             if all(f.endswith(".py") for f in selected):
@@ -88,6 +91,10 @@ def eligible(args, host, repo, settings):
     return eligibility_reason(args, host, repo, settings) is None
 
 
+def framework_available(roots):
+    return bool(roots) and all(root.is_dir() for root in roots) and any((root / "odoo/release.py").is_file() for root in roots)
+
+
 def eligibility_reason(args, host, repo, settings):
     """Public configuration checks only; never inspect activation or start an IDE."""
     try:
@@ -95,7 +102,7 @@ def eligibility_reason(args, host, repo, settings):
         launcher_paths(worker)
         if settings.get("prepare") and common.requested_python_version(settings) is None:
             return "native_preparation_shape_unsupported"
-        if is_odoo(repo) and (not roots or not any((root / "odoo/release.py").is_file() for root in roots) or any(not root.is_dir() for root in roots)):
+        if is_odoo(repo) and not framework_available(roots):
             return "native_odoo_framework_required"
         if is_odoo(repo):
             framework_context(repo, common.scope_selection(args, host)[3], roots)
@@ -444,7 +451,13 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
         for path in (private / "logs").glob("*.log"):
             if path.is_symlink():
                 raise Blocked("native_log_path_unsafe")
-            with path.open("rb") as stream:
+            try:
+                stream = path.open("rb")
+            except FileNotFoundError:
+                # Rotation may rename a globbed path before open. Judge any
+                # lost observed inode in the post-exit drain, not this tick.
+                continue
+            with stream:
                 status = os.fstat(stream.fileno())
                 identity = status.st_dev, status.st_ino
                 log_identities.add(identity)
@@ -889,7 +902,7 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
             receipt.update(ide_version=product.get("version"), ide_build=product.get("buildNumber"))
         state_dir().mkdir(parents=True, exist_ok=True, mode=0o700)
         held_lock.enter_context(profile_lock(worker, "native-control.lock"))
-        stopped = stop_orphan(worker, receipt) if args.native_recover_only else False
+        stopped = stop_orphan(worker, receipt)
         lock_deadline = time.monotonic() + (2 if stopped else 0)
         while True:
             try:
@@ -914,7 +927,7 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
             raise Blocked("native_trusted_root_required")
         if not is_odoo(repo):
             framework = []
-        elif framework and (any(not root.is_dir() for root in framework) or not any((root / "odoo/release.py").is_file() for root in framework)):
+        elif framework and not framework_available(framework):
             raise Blocked("native_odoo_framework_unavailable")
         receipt.update(scope=scope, selected_file_count=len(selected), repo_head_sha=host.git_head_sha(repo))
         receipt["framework_revisions"] = [host.git_head_sha(root) for root in framework]
@@ -924,7 +937,7 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
             raise Blocked("native_framework_inputs_unproven")
         if not selected:
             raise Blocked("native_scope_empty")
-        if any(Path(f).suffix not in {".py", ".xml"} for f in selected) or common.lane_gaps(host, settings, selected):
+        if any(Path(f).suffix not in NATIVE_SUFFIXES for f in selected) or common.lane_gaps(host, settings, selected):
             raise Blocked("native_scope_unsupported")
         if args.max_files is not None and len(selected) > args.max_files:
             raise Blocked("native_scope_too_large")
