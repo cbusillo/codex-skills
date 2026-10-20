@@ -1141,6 +1141,79 @@ class ClaimTests(unittest.TestCase):
             self.assertFalse(closure.action_pending(fixture.session))
             self.assertEqual(closure.source_records({fixture.session})[fixture.session], before)
 
+    def test_coordination_keeps_actual_native_diagnostics_with_their_matching_holders(self):
+        from test_github_plan_sessions import ReceiptFixture, CLOSURE, SESSIONS
+        with ReceiptFixture("01a1514c-fa7f-7be3-95ba-4d25df73d07e") as fixture:
+            alias = fixture.session.upper()
+            original_rows = CLOSURE.log_rows()
+            fixture.log.write_text("{")
+            with self.assertRaises(ValueError) as failed_source:
+                CLOSURE.source_records({fixture.session, alias})
+            source_error = str(failed_source.exception)
+            self.assertIn(str(fixture.log), source_error)
+            peers, _states, _coverage = SESSIONS.observe({fixture.session, alias})
+            identity = next(peer for peer in peers if peer.get("canonical_session_id") == fixture.session)
+            canonical = SESSIONS.process_liveness().native_uuid(alias)
+            self.assertEqual(identity["canonical_session_id"], canonical)
+            self.assertIn(canonical, identity["error"])
+            source_record = {**OTHER, "session": fixture.session, "branch": "work/source-one"}
+            alias_record = {**OTHER, "session": alias, "branch": "work/source-two"}
+            branch_record = {**OTHER, "session": "separate-native-holder", "branch": "work/issue-42-separate"}
+            inventory = {"sessions": peers, "worktrees": [], "local_branches": [branch_record["branch"]],
+                         "remote_branches": []}
+            conflicts = CLAIM.artifact_evidence(inventory, [], 42, OWNER, own_record=False,
+                repo="owner/repo", status_sessions={fixture.session, alias})
+            comments = [{"id": identifier, "body": CLAIM.marker(record), "user": {"login": TEST_BOT},
+                         "created_at": record["claimed_at"], "updated_at": record["claimed_at"]}
+                        for identifier, record in ((60, source_record), (61, alias_record), (62, branch_record))]
+            clean = [{key: value for key, value in conflict.items() if key != "error"}
+                     for conflict in conflicts]
+            control = CLAIM.coordination(clean, comments, "owner/repo", 42)
+            holders = CLAIM.coordination(conflicts, comments, "owner/repo", 42)
+            by_session = {holder["session"]: holder for holder in holders}
+            control_by_session = {holder["session"]: holder for holder in control}
+            for record, errors in ((source_record, [source_error]),
+                                   (alias_record, [source_error, identity["error"]]),
+                                   (branch_record, [])):
+                holder = by_session[record["session"]]
+                if errors:
+                    for error in errors:
+                        self.assertIn(error, holder["error"])
+                else:
+                    self.assertFalse(holder.get("error"))
+                self.assertEqual(holder["next_action"], control_by_session[record["session"]]["next_action"])
+            self.assertNotIn(identity["error"], by_session[source_record["session"]]["error"])
+            fallback = CLAIM.coordination(conflicts, [], "owner/repo", 42)
+            clean_fallback = CLAIM.coordination(clean, [], "owner/repo", 42)
+            self.assertEqual(len(fallback), len(conflicts))
+            for conflict, holder, ordinary in zip(conflicts, fallback, clean_fallback):
+                self.assertEqual(holder.get("error"), conflict.get("error"))
+                self.assertEqual(holder["next_action"], ordinary["next_action"])
+            CLOSURE.replace_rows([*original_rows, *original_rows])
+            with self.assertRaises(ValueError) as duplicate:
+                CLOSURE.source_records({fixture.session})
+            self.assertIn(str(fixture.log), str(duplicate.exception))
+            self.assertIn(fixture.session, str(duplicate.exception))
+            self.assertFalse(fixture.mutations)
+            self.assertFalse(set(self.events).intersection({"post", "status", "labels"}))
+
+    def test_unknown_source_claim_refusal_preserves_the_actual_repair_diagnostic(self):
+        from test_github_plan_sessions import ReceiptFixture
+        import github_plan_closure as closure
+        with ReceiptFixture("11111111-2222-4333-8444-555555555555") as fixture:
+            self.released_native_fixture(fixture)
+            fixture.log.write_text("{")
+            with self.assertRaises(ValueError) as failed_source:
+                closure.source_records({fixture.session})
+            source_error = str(failed_source.exception)
+            with self.assertRaises(PLAN.PlanError) as refusal:
+                self.run_claim()
+            self.assertTrue(any(item.get("error") == source_error
+                                for item in refusal.exception.payload["competing_evidence"]))
+            self.assertTrue(any(item.get("error") == source_error
+                                for item in refusal.exception.payload["coordination"]))
+            self.assertFalse(set(self.events).intersection({"post", "status", "labels"}))
+
     def test_canonical_recovery_distinguishes_unassociated_daemon_from_required_homes(self):
         from datetime import datetime, timezone
         from test_github_plan_sessions import ReceiptFixture
@@ -3209,6 +3282,51 @@ class ClaimTests(unittest.TestCase):
         self.inventory["sessions"] = [{"sessionId": source_session, "cwd": "/elsewhere"}]
         with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
         self.assert_no_writes()
+
+    def test_retained_handoff_refusal_reports_each_canonical_owner(self):
+        from test_github_plan_sessions import ReceiptFixture
+        for malformed, shared_owner in product((False, True), repeat=2):
+            with self.subTest(malformed=malformed, shared_owner=shared_owner):
+                self.setUp()
+                self.refresh_fixture()
+                self.args.refresh_pr = None
+                source_session = CLAIM.records(self.comments[0]["body"])[0]["session"]
+                self.args.session = source_session
+                expected = {}
+                for pull in self.pulls:
+                    number = pull["number"]
+                    record = {**OTHER, "worker": "shared-pr-worker" if shared_owner else f"pr-{number}-worker",
+                              "session": "shared-pr-native" if shared_owner else f"pr-{number}-owner",
+                              "branch": pull["head"]["ref"]}
+                    source_id = number * 100 + 1
+                    self.target_comments[f"/repos/owner/repo/issues/{number}/comments"] = [
+                        {"id": source_id, "body": CLAIM.marker(record), "user": {"login": TEST_BOT},
+                         "created_at": record["claimed_at"]},
+                        {"id": source_id + 1, "body": f"Released claim {source_id}", "user": {"login": TEST_BOT},
+                         "created_at": "2026-10-01T01:00:00Z"}]
+                    expected[f"https://github.com/owner/repo/issues/{number}#issuecomment-{source_id}"] = record["session"]
+                with ReceiptFixture(source_session) as fixture:
+                    fixture.native_state = "notLoaded"
+                    self.observe_inventory = CLAIM.observe_sessions
+                    if malformed:
+                        fixture.log.write_text("{")
+                    before = fixture.log.read_bytes()
+                    if malformed:
+                        with self.assertRaises(PLAN.ClassifiedPlanError) as refused:
+                            self.run_claim()
+                        report = refused.exception.payload
+                        holders = report["coordination"]
+                        self.assertEqual({holder["claim_url"]: holder["session"] for holder in holders}, expected)
+                        for conflict in report["competing_evidence"]:
+                            for holder in holders:
+                                if holder["session"] == conflict["session"]:
+                                    self.assertIn(conflict["error"], holder["error"])
+                        self.assert_no_writes()
+                    else:
+                        self.run_claim()
+                        self.assertIn("metadata_readback", self.emitted.call_args.args[0]["completed_steps"])
+                    self.assertEqual(fixture.log.read_bytes(), before)
+                    self.assertFalse(fixture.mutations)
 
     def test_native_blocker_added_on_either_readback_still_refuses(self):
         for phase in ("after_post", "after_status"):

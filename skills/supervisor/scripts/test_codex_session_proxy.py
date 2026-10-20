@@ -55,6 +55,7 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                         with self.subTest(alias=alias, method=method):
                             result = await self.send(task, request, response, method, None, **params)
                             self.assertIn("error", result)
+                            self.assertIn(f.session, result["error"]["message"])
                             self.assertFalse(f.mutations)
                             self.assertFalse(forwarded)
                             self.assertEqual(set(closure.lease_path(f.session).parent.iterdir()), leases)
