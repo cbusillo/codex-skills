@@ -604,12 +604,22 @@ def observed_inventory(inventory: dict[str, Any], observation) -> dict[str, Any]
 
 
 def observe_sessions(inventory: dict[str, Any], comments: list[dict[str, Any]]) -> dict[str, Any]:
+    return observe_discussions(inventory, [comments])
+
+
+def observe_discussions(inventory: dict[str, Any], discussions: list[list[dict[str, Any]]]) -> dict[str, Any]:
+    """Batch native reads without borrowing releases across canonical records."""
     from github_plan_sessions import observe
     from github_plan_release import _released_source_contexts
-    ids, proof_ids = observation_inputs(comments)
+    ids, proof_ids, contexts = set(), set(), []
+    for comments in discussions:
+        requested, required = observation_inputs(comments)
+        ids.update(requested)
+        proof_ids.update(required)
+        contexts.extend(_released_source_contexts(comments))
     # Ordinary unloaded end proofs exclude released claims. Their exact release
     # is instead a prerequisite for the observer's leased idle-closure proof.
-    return observed_inventory(inventory, observe(ids, proof_ids, _source_contexts=_released_source_contexts(comments)))
+    return observed_inventory(inventory, observe(ids, proof_ids, _source_contexts=contexts))
 
 
 def ended_ownership(comments: list[dict[str, Any]], inventory: dict[str, Any]) -> list[dict[str, Any]]:
@@ -690,6 +700,16 @@ def run_read(argv: list[str], *, cwd: pathlib.Path | None = None, deadline_at: f
     return result.stdout
 
 
+def active_claude_sessions(**deadline_options) -> list[dict[str, Any]]:
+    sessions = json.loads(run_read(["claude", "agents", "--json"], cwd=pathlib.Path.home(), **deadline_options))
+    if not isinstance(sessions, list) or any(
+        not isinstance(s, dict) or not isinstance(s.get("sessionId"), str)
+        or not isinstance(s.get("cwd"), str) for s in sessions
+    ):
+        raise ValueError("Invalid Claude session inventory")
+    return sessions
+
+
 def local_inventory(repo: str, number: int, *, cwd: pathlib.Path | None = None,
                     deadline_at: float | None = None) -> dict[str, Any]:
     deadline_options = {"deadline_at": deadline_at} if deadline_at is not None else {}
@@ -711,12 +731,7 @@ def local_inventory(repo: str, number: int, *, cwd: pathlib.Path | None = None,
     coverage: dict[str, Any] = {"codex": {"status": "unavailable", "reason": "no CLI peer inventory"}}
     if shutil.which("claude"):
         try:
-            sessions = json.loads(run_read(["claude", "agents", "--json"], cwd=pathlib.Path.home(), **deadline_options))
-            if not isinstance(sessions, list) or any(
-                not isinstance(s, dict) or not isinstance(s.get("sessionId"), str)
-                or not isinstance(s.get("cwd"), str) for s in sessions
-            ):
-                raise ValueError("Invalid Claude session inventory")
+            sessions = active_claude_sessions(**deadline_options)
             coverage["claude"] = {"status": "available", "source": "claude agents --json",
                                   "scope": "native local active-session registry"}
         except (ValueError, OSError, subprocess.SubprocessError) as exc:

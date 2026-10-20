@@ -347,6 +347,9 @@ class TranscriptTests(unittest.TestCase):
                 self.assertFalse(finished_map.candidates(ledger)[0]["candidate"])
                 records.append(claude("Safe to exit: yes"))
                 transcript.write_text("\n".join(json.dumps(r) for r in records))
+                # Prose cannot complete the unidentified native tool above.
+                self.assertFalse(finished_map.candidates(ledger)[0]["candidate"])
+                transcript.write_text(json.dumps({"sessionId": entry["session_id"], **claude("Safe to exit: yes")}))
                 self.assertTrue(finished_map.candidates(ledger)[0]["candidate"])
 
     def test_claude_missing_stop_reason_is_not_completion_evidence(self):

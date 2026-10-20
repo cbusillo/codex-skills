@@ -1,12 +1,12 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = ["aiohttp==3.14.5"]
 # ///
 """Read back a native session's claim dispositions before a safe-exit verdict.
 
-This never releases ownership or closes a session. Native claim receipts derive
-the GitHub accounts to inventory, including closed issues and PR-only claims.
+This never releases ownership or closes a session. Every configured writer App
+installation is inventoried, including closed issues and PR-only claims.
 """
 from __future__ import annotations
 
@@ -29,6 +29,7 @@ import release_session_claims as sessions
 import session_record
 import claim_receipts
 import claim_history
+import github_plan_sessions as native_ownership
 
 
 def transcript_snapshot(path, harness, session, context=None):
@@ -94,28 +95,7 @@ def retained_handoff(comments, source, pulls, *, repo, number, is_pr):
     return verified
 
 
-def predates_creation(pull, repo, number, source, target):
-    key = (repo.casefold(), number, source["id"])
-    if key not in target.get("preceding_sources", set()):
-        return False
-    try:
-        # Both timestamps come from GitHub. Native record order establishes
-        # that this source claim existed before the create command launched.
-        return release.stamp(pull.get("created_at")) < release.stamp(source.get("created_at"))
-    except (TypeError, ValueError):
-        return False
-
-
-def created_head(pull, repo, number, source, targets):
-    head = pull.get("head") or {}
-    head_repo = (head.get("repo") or {}).get("full_name", "")
-    return any(target["repository"] and target["repository"].casefold() == repo.casefold()
-               and target["head"] == head.get("ref") and target.get("head_owner")
-               and target["head_owner"].casefold() == head_repo.split("/")[0].casefold()
-               and not predates_creation(pull, repo, number, source, target) for target in targets)
-
-
-def check_record(reader, repo, number, session, actor, *, pulls_cache=None, created_prs=(), created_targets=(), data_cache=None):
+def check_record(reader, repo, number, session, actor, *, pulls_cache=None, data_cache=None):
     if data_cache is None:
         data_cache = {}
     if (repo, number) not in data_cache:
@@ -134,8 +114,9 @@ def check_record(reader, repo, number, session, actor, *, pulls_cache=None, crea
     result = []
     for source in sources:
         record = release.source_record(source)
-        evidence = next((c for c in reversed(comments[comments.index(source) + 1:])
-                         if claim.exact_released_sources([source, c])), None)
+        releases = [c for c in comments[comments.index(source) + 1:]
+                    if claim.exact_released_sources([source, c])]
+        evidence = releases[-1] if releases else None
         if ((source.get("user") or {}).get("login") != actor or evidence is None):
             raise ValueError(f"{repo}#{number}: claim {source['id']} lacks an exact source-authored release")
         receipt = release.receipt_for(evidence)
@@ -156,18 +137,28 @@ def check_record(reader, repo, number, session, actor, *, pulls_cache=None, crea
                 if ((c.get("user") or {}).get("login") == actor and
                         ((c.get("body") or "").startswith(f"Handoff from {record['worker']}\n") or c == evidence)):
                     named.update(explicit_pr_numbers(c.get("body") or "", repo))
-            pulls = [p for p in pulls if (p.get("head") or {}).get("ref") == record["branch"] or p["number"] in named
-                     or (p.get("html_url") in created_prs
-                         or created_head(p, repo, number, source, created_targets))
-                     and claim.pr_issue_reference(p, number, repo=repo, attestation=True)]
+            def during_claim(pull):
+                if (not claim.pr_issue_reference(pull, number, repo=repo, attestation=True)
+                        or (pull.get("user") or {}).get("login") != actor):
+                    return False
+                try:
+                    return (release.stamp(source["created_at"]) <= release.stamp(pull.get("created_at"))
+                            <= release.stamp(releases[0]["created_at"]))
+                except (TypeError, ValueError, KeyError):
+                    # Unknown chronology cannot hide an independently linked PR.
+                    return True
+            pulls = [p for p in pulls if (p.get("head") or {}).get("ref") == record["branch"]
+                     or p["number"] in named or during_claim(p)]
         if receipt is not None:
+            handoffs = [evidence]
             for pull in pulls:
                 if pull["html_url"] not in receipt["checked_prs"]:
-                    raise ValueError("retained PR is absent from the verified recovery release")
+                    handoffs.extend(retained_handoff(comments, source, [pull],
+                        repo=repo, number=number, is_pr=is_pr))
+                    continue
                 head = reader.get_json(f"/repos/{repo}/commits/{pull['head']['sha']}", step="recovered_retained_pr_head")
                 release.check_retained_pr(pull, head, repo=repo, number=number, actor=actor,
                     ended=receipt["evidence_at"], subject_pr=number if is_pr else None, source_branch=record["branch"])
-            handoffs = [evidence]
         else:
             handoffs = retained_handoff(comments, source, pulls, repo=repo, number=number, is_pr=is_pr) if pulls else [evidence]
         result.append({"repository": repo, "record": number, "claim_comment": source["id"], "source_session": session,
@@ -179,152 +170,80 @@ def check_record(reader, repo, number, session, actor, *, pulls_cache=None, crea
 
 
 def check(reader, owner, entry, actor, *, reader_for_repo=None, read_timeout=None):
-    # No caller-supplied narrowed issue/repo list may turn partial discovery
-    # into an all-clear. Use the existing paged, non-search inventory.
     histories = entry.get("_claim_histories") or [{"session_id": entry["session_id"], "harness": entry["harness"],
                                                 "records": entry.get("_transcript_records", [])}]
-    python_checks = claim_receipts.python_source_checks()
-    file_candidates = claim_receipts.ownership_file_candidates(histories, python_checks=python_checks)
-    states = [claim_receipts.ownership_state(node["records"], node["harness"], file_candidates=file_candidates, python_checks=python_checks) for node in histories]
-    if any(state["pending"] for state in states):
-        raise ValueError("ownership command has no terminal native result; wait for it to finish, then launch a new check. "
-                         "For future generated scripts, use write && run or a single foreground write with its own "
-                         "successful native result before the run. Do not repeat an earlier ownership write.")
-    parsed_prefixes = {}
-    def parsed_outputs(records, harness):
-        # This check holds immutable native prefixes. Keep their records alive
-        # with the result so object identities cannot be recycled in this cache.
-        key = (harness, tuple(map(id, records)))
-        if key not in parsed_prefixes:
-            parsed_prefixes[key] = (tuple(records), list(claim_receipts.outputs(records, harness, python_checks=python_checks)))
-        return parsed_prefixes[key][1]
+    states = [claim_receipts.ownership_state(node["records"], node["harness"]) for node in histories]
     native_sessions = {node["session_id"] for node in histories}
-    expected, errors = [], []
+    expected = []
+    receipt_issues = set()
     for node in histories:
-        parsed = parsed_outputs(node["records"], node["harness"])
+        parsed = list(claim_receipts.outputs(node["records"], node["harness"]))
+        for _, value in parsed:
+            issue, identity = value.get("issue") or {}, value.get("claim") or {}
+            repo, number = issue.get("repo"), issue.get("number")
+            if (value.get("operation") == claim_receipts.CLAIM_OPERATION
+                    and identity.get("session") in native_sessions
+                    and isinstance(repo, str) and sessions.REPO.fullmatch(repo)
+                    and type(number) is int and number > 0):
+                receipt_issues.add((repo, number))
         for native in native_sessions:
-            found, missing = claim_receipts.sources(node["records"], node["harness"], native, parsed=parsed)
+            found, _ = claim_receipts.sources(node["records"], node["harness"], native, parsed=parsed)
             expected.extend(found)
-            errors.extend(missing)
-    native_repos = {r["repository"] for r in expected}
-    creations = []
-    for node in histories:
-        records = node["records"]
-        if node["harness"] == "codex":
-            records, _ = claim_receipts.serial_ownership_records(records)
-        for target in claim_receipts.created_pr_targets(records, node["harness"]):
-            prefixes = [*node.get("preceding_histories", []),
-                        {"harness": node["harness"], "records": records[:target["index"]]},
-                        *claim_history.completed_prefixes(node, records[:target["index"]], histories)]
-            target["preceding_sources"] = set()
-            for prefix in prefixes:
-                parsed = parsed_outputs(prefix["records"], prefix["harness"])
-                for native in native_sessions:
-                    target["preceding_sources"].update(
-                        (source["repository"].casefold(), source["record"], source["claim_comment"])
-                        for source in claim_receipts.sources(prefix["records"], prefix["harness"], native, parsed=parsed)[0])
-            creations.append(target)
-    native_issues = {(r["repository"], r["record"]) for r in expected}
-    targets = [t for node in histories for t in claim_receipts.claim_targets(node["records"], node["harness"], allowed_sessions=native_sessions)]
-    # Canonical source receipts and actual claim targets own scope; raw
-    # output may also contain saved receipts from unrelated commands.
-    native_repos.update(t["repository"] for t in targets if t["repository"])
-    native_repos.update(entry.get("_extra_repositories", []))
-    unresolved = [t for t in targets if t["repository"] is None]
-    if unresolved and not entry.get("_extra_repositories"):
-        raise ValueError("claim invocation lacks canonical command scope; --repository may add inventory but cannot prove its destination; use conditional/no")
-    expanded = set()
-    for target in targets:
-        repo, number = target["repository"], target["number"]
-        if number is None:
-            continue  # Unknown operands stay incomplete without guessed API paths.
-        if repo:
-            native_issues.add((repo, number))
-        else:
-            expanded.update((context, number) for context in entry.get("_extra_repositories", []))
-    confirmed_issues = set(native_issues)
-    native_issues.update(expanded)
-    activity = any(state["indices"] for state in states)
-    created = set().union(*(claim_receipts.created_prs(node["records"], node["harness"]) for node in histories))
     if read_timeout is not None:
         reader.deadline_at = time.time() + read_timeout
-    installed = reader.paged_json("/installation/repositories", collection_key="repositories", step_prefix="closeout_default_repositories")
-    default_repos = {r["full_name"] for r in installed}
-    if not default_repos:
-        raise ValueError("default installation repository inventory is empty")
+    inventory = github_identity.automation_repositories(deadline_at=reader.deadline_at)
+    writers = inventory["repositories"]
+    repos = (set(writers) | {r["repository"] for r in expected}
+             | {repo for repo, _ in receipt_issues} | set(entry.get("_extra_repositories", [])))
     owners = {owner} if isinstance(owner, str) else set(owner)
-    owners.update(r.split("/")[0] for r in default_repos | native_repos)
-    if (errors or not expected and activity) and not native_repos:
-        raise ValueError("claim receipt lacks repository context; add its exact --repository before reconciliation")
-    # Renewal/uncertain-write receipts can refer to a source older than this
-    # transcript prefix. Their canonical record must be read independently of
-    # the since-filtered discovery window.
-    issues, repos = set(native_issues), set()
-    readers = {}
-    for account in sorted(owners):
-        scope = {r for r in default_repos | native_repos if r.split("/")[0].casefold() == account.casefold()}
-        if not scope:
-            raise ValueError("account has no installed or native repository context; add its exact --repository")
-        for repo in sorted(scope):
-            selected = reader if repo in default_repos else (reader_for_repo or repository_reader)(repo, reader.deadline_at)
+    owners.update(r.split("/")[0] for r in repos)
+    if any(not any(repo.split("/")[0].casefold() == account.casefold() for repo in repos) for account in owners):
+        raise ValueError("required account has no verified repository inventory")
+    issues = {(r["repository"], r["record"]) for r in expected} | receipt_issues
+    readers, blocked = {}, []
+    complete = True
+    for repo in sorted(repos):
+        try:
+            selected = (reader_for_repo or repository_reader)(repo, reader.deadline_at)
             readers[repo] = selected
-            entries = ([{**entry, "session_id": node["session_id"], "_transcript_records": node["records"]} for node in histories]
-                       if "_transcript_records" in entry else [entry])
-            found, _ = sessions.discover(selected, account, entries, repos=[repo])
+            if repo in writers and selected.expected_actor not in writers[repo]:
+                raise ValueError("configured repository writer differs from verified App installation")
+            entries = [{**entry, "session_id": node["session_id"], "_transcript_records": node["records"]} for node in histories]
+            found, _ = sessions.discover(selected, repo.split("/")[0], entries, repos=[repo])
             issues.update(found)
-            repos.add(repo)
-    released, blocked, pulls_cache, data_cache = [], [], {}, {}
+        except (ValueError, GitHubReadError, GitHubReadShapeError, github_identity.GitHubAppError) as error:
+            blocked.append(f"{repo}: ownership inventory pending: {error}")
+            complete = False
+    released, pulls_cache, data_cache = [], {}, {}
     for repo, number in sorted(issues):
         try:
-            selected = readers[repo]
+            selected = readers.get(repo)
+            if selected is None:
+                raise ValueError("repository inventory is incomplete")
             source_actor = selected.expected_actor
             if not source_actor:
                 raise ValueError("repository's configured automation identity is unknown")
             for native in sorted(native_sessions):
                 released.extend(check_record(selected, repo, number, native, source_actor,
-                                             pulls_cache=pulls_cache, created_prs=created, created_targets=creations,
-                                             data_cache=data_cache))
-        except ValueError as error:
-            blocked.append(str(error))
-        except GitHubReadError as error:
-            if (repo, number) in expanded - confirmed_issues and getattr(error.result, "status", None) in {404, 410}:
-                continue  # A guessed pair is not source evidence; still reconcile below.
-            raise
-    unresolved_creations = []
-    for target in creations:
-        if target.get("url") or target["repository"] and target["head"]:
-            continue
-        # If attribution is unavailable, independently account for every open
-        # issue-linked PR it could have created. Closed PRs need no retained
-        # handoff, and another repository cannot retain this issue's claim.
-        candidates = [(record, pull) for record in released
-                      if not target["repository"] or target["repository"].casefold() == record["repository"].casefold()
-                      for pull in pulls_cache.get(record["repository"], [])
-                      if claim.pr_issue_reference(pull, record["record"], repo=record["repository"], attestation=True)
-                      and not predates_creation(pull, record["repository"], record["record"],
-                          next(source for source in data_cache[(record["repository"], record["record"])][1]
-                               if source["id"] == record["claim_comment"]), target)]
-        if any(pull["html_url"] not in record["retained_prs"] for record, pull in candidates):
-            unresolved_creations.append(target)
-    for target in unresolved_creations:
-        blocked.append(f"PR creation {target['invocation']} lacks command-bound repository/head or isolated URL evidence; "
-                       "preserve ownership and use conditional/no")
+                                             pulls_cache=pulls_cache, data_cache=data_cache))
+        except (ValueError, GitHubReadError, GitHubReadShapeError) as error:
+            blocked.append(f"{repo}#{number}: {error}")
+            if not isinstance(error, ValueError):
+                complete = False
     observed = {(r["repository"], r["record"], r["claim_comment"]) for r in released}
     if any((r["repository"], r["record"], r["claim_comment"]) not in observed for r in expected) and not blocked:
         blocked.append("native source claims were not verified in the installed repository scope")
-    for target in unresolved:
-        # An older claim with the same identity/number cannot establish where
-        # this opaque invocation wrote. Added repositories are inventory scope,
-        # not an attestation of the invocation's unknown working directory.
-        blocked.append(f"claim invocation {target['invocation']} lacks canonical command scope; added repositories cannot prove its destination; preserve ownership and use conditional/no")
+    pending = native_ownership.pending_ownership(histories, states)
+    blocked.extend(f"{item['session_id']}: {item['reason']}" for item in pending)
     return {"operation": claim_receipts.CHECK_OPERATION, "ok": not blocked, "claims_clear": not blocked,
             "session_id": entry["session_id"], "harness": entry["harness"],
-            "coverage": {"owners": sorted(owners), "repositories": sorted(repos), "complete": not unresolved and not unresolved_creations,
+            "coverage": {"owners": sorted(owners), "repositories": sorted(repos), "complete": complete,
+                         "installation_count": len(inventory["installations"]),
                          "session_ids": sorted(native_sessions),
                          "histories": [{k: node[k] for k in ("session_id", "transcript", "digest")} for node in histories[1:]],
-                         "scope": "default installation plus native and explicitly added repositories"},
+                         "scope": "all configured automation writer App installations plus explicitly added repositories"},
             "receipt_reconciliation": not blocked,
-            "released_claims": released, "blocked": blocked}
+            "released_claims": released, "pending": pending, "blocked": blocked}
 
 
 def repository_reader(repo, deadline):
@@ -366,7 +285,7 @@ def main(argv=None):
         report["checked_at"] = time.time()
         print(json.dumps(report, sort_keys=True))
         return 0 if report["claims_clear"] else 1
-    except (ValueError, OSError, TypeError, KeyError, GitHubReadError, GitHubReadShapeError) as error:
+    except (ValueError, OSError, TypeError, KeyError, GitHubReadError, GitHubReadShapeError, github_identity.GitHubAppError) as error:
         print(json.dumps({"operation": claim_receipts.CHECK_OPERATION,
                           "session_id": args.session, "harness": args.harness,
                           "ok": False, "claims_clear": False, "coverage": {"complete": False},

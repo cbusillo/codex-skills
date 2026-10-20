@@ -4486,20 +4486,23 @@ def annotate_next_queue(items: list[dict[str, Any]], args: argparse.Namespace, *
     evidence: dict[str, dict[str, Any]] = {}
     delivery_repositories: dict[str, Any] = {}
     comment_limit = getattr(args, "comment_limit", None) or 100
+    # Prepare canonical discussions before batching one native observation per
+    # repository. Only this invocation shares it; the next read starts afresh.
+    for item in items:
+        if item.get("queue") or item.get("discussion"):
+            continue
+        try:
+            _, raw = get_issue(str(item["number"]), item["repo"])
+            _, comments = collect_paged_rest_items(f"/repos/{item['repo']}/issues/{item['number']}/comments",
+                query={}, bucket="rest_core", step_prefix="next_queue_comments", limit=comment_limit + 1)
+            item["discussion"] = github_direction_next.discussion_snapshot(raw, comments[:comment_limit], complete=len(comments) <= comment_limit)
+        except PlanError as exc:
+            item["queue"] = {"state": "review", "reason": "incomplete_discussion", "detail": next_source_error(exc)}
     for item in items:
         if item.get("queue"):
             continue
         repo = item["repo"]
         trusted = {login.casefold() for login in wait_authors(repo)}
-        if not item.get("discussion"):
-            try:
-                _, raw = get_issue(str(item["number"]), repo)
-                _, comments = collect_paged_rest_items(f"/repos/{repo}/issues/{item['number']}/comments",
-                    query={}, bucket="rest_core", step_prefix="next_queue_comments", limit=comment_limit + 1)
-                item["discussion"] = github_direction_next.discussion_snapshot(raw, comments[:comment_limit], complete=len(comments) <= comment_limit)
-            except PlanError as exc:
-                item["queue"] = {"state": "review", "reason": "incomplete_discussion", "detail": next_source_error(exc)}
-                continue
         if repo not in evidence:
             observed: dict[str, Any] = {"complete": False, "coverage": {"sessions": "partial; claim rechecks current sessions"}}
             evidence[repo] = observed
@@ -4527,6 +4530,16 @@ def annotate_next_queue(items: list[dict[str, Any]], args: argparse.Namespace, *
                         observed["coverage"]["local_error"] = str(exc)
             except PlanError as exc:
                 observed["coverage"]["error"] = next_source_error(exc)
+            if observed.get("inventory"):
+                discussions = [[{**comment, "user": {"login": comment.get("author") or ""}}
+                                for comment in (source.get("discussion") or {}).get("comments", [])]
+                               for source in items if source["repo"] == repo]
+                if any(github_plan_claim.observation_inputs(comments)[0] for comments in discussions):
+                    try:
+                        observed["inventory"] = github_plan_claim.observe_discussions(observed["inventory"], discussions)
+                    except (ValueError, OSError, subprocess.SubprocessError) as exc:
+                        observed["complete"] = False
+                        observed["coverage"]["native_error"] = str(exc)
         preliminary = github_next_queue.classify(item, evidence[repo], trusted=trusted)
         if preliminary.get("state") not in {"underway", "waiting"} and (item.get("discussion") or {}).get("complete") is True:
             item["source_delivery"] = next_source_delivery(item, trusted, repositories=delivery_repositories)

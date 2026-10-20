@@ -133,7 +133,7 @@ def require_fresh_action_verdict(entry: dict) -> None:
     from github_plan_sessions import native_helpers
     records = native_helpers()[1].read_jsonl(Path(entry["transcript"]))
     tail = [r for r in records if r.get("timestamp") and stamp(r["timestamp"]) > after]
-    status = native_helpers()[1].summarize(tail, entry["harness"])
+    status = native_helpers()[1].summarize(tail, entry["harness"], inspect_claims=False)
     # Post-exit recovery needs a fresh declaration, not the live claim gate.
     # The tail deliberately excludes older identity and delegated histories.
     if not status.get("declared_safe_verdict", status["safe_verdict"]):
@@ -586,7 +586,7 @@ def transcript_facts(session: str, primary: str, *, include_status: bool = False
         identities = {r.get("payload", {}).get("id") for r in records if r.get("type") == "session_meta"}
         if identities != {session}:
             raise ValueError("native transcript identity mismatch")
-        status = native_helpers()[1].summarize(records, "codex")
+        status = native_helpers()[1].summarize(records, "codex", inspect_claims=False)
         after = path.stat()
         if transcript_identity(before) != transcript_identity(after):
             raise ValueError("native transcript is changing")

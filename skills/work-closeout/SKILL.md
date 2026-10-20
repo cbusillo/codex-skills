@@ -30,7 +30,7 @@ commands:
     source: skill
     resource_path: scripts/check_claims.py
     example_argv: ["uv", "run", "scripts/check_claims.py", "--owner", "OWNER", "--harness", "codex", "--session", "<native-id>", "--transcript", "/absolute/native-transcript.jsonl"]
-    purpose: Inventories the default installation and native or explicitly added claim repositories and refuses an all-clear until releases and retained PR handoffs are verified; never writes.
+    purpose: Inventories all configured writer App installations and refuses an all-clear until exact releases and retained PR handoffs are verified; never writes.
   - name: session-reminder-link
     source: skill
     resource_path: scripts/reminder_link.py
@@ -290,17 +290,15 @@ uv run <skill-dir>/scripts/check_claims.py --harness codex \
 
 Use `--harness claude` on Claude Code. Both use the same procedure. The native
 transcript must belong to that exact session and retain its timestamped history.
-The check always inventories the default installation, including closed issues
-and PR-only claims. Native claim receipts and helper command targets add exact
-repositories outside that installation. Those reads use the repository's existing
-configured App route and source automation identity. No identity/configuration is
-changed and no refused request is retried under another identity. Repeated
-`--repository ACCOUNT/REPOSITORY` adds context for missing/truncated receipts or
-another installation; `--owner ACCOUNT` requires that account to be covered, and
-refuses if no repository context is known. Neither option narrows native scope.
-Only actual claim destinations add mandatory inventory; foreign read targets,
-admission evidence and created-PR URLs do not. Created PRs retain their separate
-handoff verification.
+The check inventories every installation of the existing configured automation
+writer Apps, including closed issues and PR-only claims. The read-only App does
+not define source ownership. Each repository uses its existing configured writer
+route; no credentials, grants or identities are changed. Incomplete installation,
+repository or discussion reads keep coverage incomplete and are rechecked live.
+Native receipts cross-check exact older sources; repeated `--repository OWNER/REPO`
+adds known context, and `--owner OWNER` asserts account coverage. Neither option
+narrows the complete installation inventory. No refused request is retried with
+another identity.
 Claude's native session subagent directory is included because its delegated
 tools may inherit the parent's session ID. Codex's native read-only parent/child
 index supplies child thread IDs and rollouts, including descendants and closed
@@ -328,129 +326,38 @@ claim. Run the check after the write; only exit 0 with `claims_clear: true`
 and complete coverage permits an all-clear. Leave its JSON visible in the native
 tool output; use `tee` if a saved copy is needed. The Supervisor's safe-verdict
 reader requires that fresh invocation result to cover every native source claim.
-Claim invocations with redirected or missing outputs also require readback;
-absence of a receipt alone does not exempt them. A single bound terminal claim
-failure with `ok: false`, `write_outcome: not_started`, no completed steps and
-no claim-comment receipt proves that invocation wrote no ownership; it needs
-no release or remote check by itself. Ambiguous batch output, missing output
-and partial or uncertain writes retain the disposition requirement.
-One leading `cd DIR &&`, `2>&1` stderr merge, and an optional pipe to `tee`
-preserve this binding. Saved-file reads and output-hiding redirection do not.
-Delegation alone uses local
-child histories: with no ownership activity in parent or children, keep the
-existing N/A path without GitHub access. For claimed children, the parent checks
-all native IDs after each child finishes and disposes of its own ownership.
-Child snapshots are bound into the parent's check; later child activity requires
-a fresh check. Missing source
-receipts are reconciled through complete session inventory in the known repository
-scope. Add `--repository` to inventory another known repository. That flag does
-not prove the destination of an opaque numeric invocation, even if it contains
-an older released claim with identical session, worker and branch. If original
-command scope and its own receipt are both unavailable, retain conditional/no,
-record the blocker and next actor, and continue independent work. Do not repeat
-a write to manufacture evidence for the earlier invocation. For future claims,
-put `--repo OWNER/REPO` in each command and keep receipts visible with `tee`.
-A numeric or variable issue operand can use its own unique canonical receipt
-from an isolated claim invocation and its native session family to establish
-missing scope. Polls must remain isolated too. Batched shell commands
-need explicit repository operands because their shared native output cannot
-bind receipts to individual shell commands. Unknown operands without that
-evidence keep coverage incomplete, even when an older claim was released.
-Another invocation's receipt cannot fill a missing scope gap.
-Canonical receipts and raw created-PR URLs require the helper's own isolated
-output. A completed compound command with known claim scope uses complete
-session inventory to reconcile missing receipts.
-For compound PR creation, provide literal `--repo` and `--head` values so the
-checker can inventory the created branch without borrowing a URL from shared
-stdout. If neither that scope nor an isolated URL is available, independently
-verify handoffs for all open PRs linked to the session's claimed issues. Missing
-handoffs keep coverage incomplete; preserve ownership and record conditional/no.
-An older PR is excluded only when its GitHub creation time precedes a source
-claim whose canonical native receipt came before that create invocation. The
-workstation clock cannot exclude a PR from verification.
-A saved report read with `cat`, an earlier proof before another claim or PR was
-created, and final-answer prose do not satisfy shutdown acceptance. Run the
-checker as its own native shell invocation, optionally piped to `tee`, with
-one checker envelope visible in the output. Do not combine it or its process
-polls with commands that read saved reports; a mixed batch cannot attest
-freshness. In Codex composed execution, use one
-`text(await tools.exec_command({cmd: "CHECK COMMAND"}));` cell with literal
-arguments and one output. Poll with one
-`text(await tools.write_stdin({session_id: PROCESS_ID}));` cell, using the
-literal returned process ID. Keep cached output and other polls in separate
-native invocations. For long
-checks, use the shell tool's sufficient foreground timeout (at least 600 seconds
-on Claude Bash), or Codex's process handle and `write_stdin` polls. Keep all result
-JSON visible; do not background Claude Bash checks. Quiet no-GitHub child
-histories keep the existing exit path.
-Freshness is measured at the check's bound launch, including long-running
-checks collected by later polls. Every ownership command must have a terminal
-native result before the check launches; a process handle is still pending.
-Every observed process handle in an ownership batch must finish; one terminal
-poll cannot clear other processes from that batch.
-Historical Codex cells containing only literal, serial `text(await tools...)`
-calls can bind each ownership command or poll to its own complete native result wrapper.
-Unrelated read output and nested saved JSON cannot complete that writer. A
-cell with hidden, computed, missing or ambiguous results retains the refusal;
-checker acceptance still requires the isolated check and poll forms above.
-Mixed cells with stdout-only reads require a complete printed block for each
-call, matched by position; read stdout cannot supply native execution wrappers
-or process handles. Incomplete cells retain the refusal. Deferred serial output
-can complete only when fresh top-level blocks collected through its native
-outer-cell handle match every printed call; saved output cannot supply that
-handle or a missing result.
-Keep ownership results visible: use one foreground shell command or one
-`text(await tools.exec_command(...));` cell. Do not launch ownership commands
-with shell `&` or drop an inner execution result. A detached writer with no
-recoverable terminal result leaves closeout conditional/no; record that blocker
-and preserve the session rather than rerunning the write to manufacture evidence.
-Parsed foreground launchers and compound shell commands retain native completion
-and helper scope. A literal single-command shell body or a single blocking
-Python subprocess call can use the same completion evidence; arbitrary executor
-code and detached descendants remain unresolved.
-Supported uv option arity comes from the trusted runtime's help, with verified
-hidden compatibility options retained. If that metadata cannot be read, a plain
-`uv run HELPER ...` invocation remains supported; unresolved original execution
-still requires conditional/no.
-Use a literal helper path: a whole shell-variable executable leaves its writer
-unresolved and keeps the verdict conditional/no.
-Quoted heredoc bodies are data only when they are not passed to an executor,
-including a generated script executed later in the same invocation.
-Native file writes and patches are linked to execution of that same native path,
-using the recorded working directory. Source, direct and interpreter execution
-of generated ownership code stays conditional/no when execution cannot be
-established. Fixture strings, assertions, documentation, lint and compilation
-operands do not establish ownership. Shell/interpreter bodies are checked for
-executable ownership commands or process launches, rather than claim words in
-read arguments. Ordinary reads and tests remain supported.
-For generated scripts, put the replacement and its reader in one foreground
-`write && run` chain, or finish a single foreground write with its own successful
-native result before a separate run. A later unconditional command can hide a
-failed rewrite, leaving the previous script executable. Whole-shell success and
-JSON printed by the script cannot prove that rewrite succeeded. For a heredoc,
-place `&& run` on the opening command line, before its body. This is guidance for
-future execution; never repeat an earlier ownership write to manufacture proof.
-An early successful exit, an installed command hook, or opaque in-shell
-`eval`/`source` code can prevent a later rewrite from running despite a successful
-shell result. Keep shell initialization separate from the plain foreground
-rewrite so its own native completion can establish the replacement.
-Ownership commands before or after inert bodies still count. Substitutions in
-unquoted heredocs may execute and remain unparsed.
-Potential ownership in unparsed shell or computed code-mode commands stays
-pending. Use the visible foreground form above for future writes; preserve
-conditional/no when original execution evidence cannot be recovered.
-Claude background ownership waits for its native terminal task notice; a
-progress notice or a `TaskStop` invocation alone does not prove completion.
-Any later ownership activity requires a new check after its terminal result;
-receiving an older result afterward cannot cover that activity.
-Saved receipts in unrelated reads do not create ownership or invalidate a check.
-Only command-bound output is decoded as receipt evidence; malformed ownership
-or checker output still refuses complete coverage.
-Claude splits one API message across multiple native records. Its shared
-`message.id` is one launch boundary even when tool results interleave: a check
-in the same API message as ownership cannot prove it ran afterward. Finish
-ownership first and launch a separate check. Run one checker at a time rather
-than parallel checks in the same API message or native record.
+Missing or redirected claim output does not exempt ownership. Canonical session
+inventory finds claims independently of command spelling or generated source.
+Never repeat a write to manufacture evidence for an earlier invocation.
+Delegation with no ownership activity in parent or children keeps the existing
+N/A path without GitHub access. Claimed children require all native IDs in the
+parent's check; later child activity requires a fresh check.
+
+The checker does not interpret generated programs or prove covered writes.
+Uncertain native activity is pending, rechecked against current native execution,
+queue and process evidence on every closeout, claim and next invocation. It
+clears when the owner is verifiably gone; absence from a registry alone is not
+proof. This clears uncertainty only. Every actual claim still requires its exact
+release or verified recovery release. Historical pending output is never a
+permanent refusal before live readback. An active check may exclude only its
+own exactly identified native execution; other running work keeps it pending.
+
+Run the checker as its own native shell invocation, optionally piped to `tee`,
+with one checker envelope visible. A saved report, final prose or an earlier
+check before later native activity cannot attest current disposition. In Codex
+use one literal `text(await tools.exec_command({cmd: "CHECK COMMAND"}));`
+cell. Poll with one literal `text(await tools.write_stdin({session_id: PROCESS_ID}));`
+cell using its returned handle. Keep saved output and other polls separate.
+For long checks allow at least600seconds on Claude Bash, or collect Codex's
+foreground process handle with its isolated polls. Do not background the check.
+Claude's records sharing one API message ID have one launch boundary: finish
+ownership before launching a separate check. Check one at a time.
+
+Native receipts use literal, command-bound outputs; arbitrary stdout and nested
+saved JSON cannot supply execution completion or a fresh checker result.
+Computed or detached code is not reconstructed. Current native evidence decides
+whether its uncertainty remains pending. If that evidence is unavailable, record
+the exact blocker and keep conditional/no while continuing independent work.
 
 An open PR need not merge before a session exits. Its exact authored release
 must name the retained PR, and the check verifies the same repository, source
@@ -466,8 +373,9 @@ not a substitute for this executing-session check. Recovery after verified proce
 exit still reads the original unqualified declaration and checks live activity,
 so historical ended sessions without a pre-exit receipt can release through the
 existing Supervisor attestation route.
-Native ended-session proof likewise uses independently verified inactivity and
-the original declaration, preserving its claim handoff route. Normal Supervisor
+Physical native observation uses independently verified inactivity without
+requiring claim disposition or a final declaration. Recovery release still
+requires the original declaration and its existing attestation contract. Normal Supervisor
 close-out candidates and guarded terminal cleanup consume the accepted verdict.
 After recovery, resume the source session and run this check: it accepts validated
 Supervisor/Direction releases as well as exact source-authored releases, rereading

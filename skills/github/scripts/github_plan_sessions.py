@@ -68,7 +68,7 @@ def transcript_snapshot(session: str, primary: str) -> dict[str, dict]:
         for root in (home / "sessions", home / "archived_sessions"):
             paths.update(path.resolve() for path in root.rglob(f"*{session}*.jsonl"))
     return {str(path): native_helpers()[1].session_status(
-        {"session_id": session, "harness": "codex", "transcript": str(path)}) for path in paths}
+        {"session_id": session, "harness": "codex", "transcript": str(path)}, inspect_claims=False) for path in paths}
 
 
 async def observe_home(home: Path, sessions: set[str], proof_sessions: set[str] | None = None):
@@ -184,9 +184,7 @@ async def observe_home(home: Path, sessions: set[str], proof_sessions: set[str] 
             else:
                 states[session] = previous
             if session not in proof_sessions:
-                # The exact authored release owns the handoff. This positive
-                # native observation supplies only physical quiescence and its
-                # lease; it needs neither a second verdict nor an idle receipt.
+                # Exact authored releases retain the original metadata route.
                 states[session] = {"state": "ended", "source": "codex_app_server",
                                    "native_state": state, "cwd": thread["cwd"], "leased_closure": False}
                 return
@@ -287,6 +285,139 @@ def process_liveness():
     native_helpers()
     import session_liveness
     return session_liveness
+
+
+def pending_ownership(histories, historical_states):
+    """Resolve uncertainty now; historical tool text is never a permanent veto."""
+    uncertain = [(node, state) for node, state in zip(histories, historical_states) if state["pending"]]
+    if not uncertain:
+        return []
+    identities = {node["session_id"] for node, _ in uncertain}
+    try:
+        peers, current, coverage = observe(identities)
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+        peers, current, coverage = [], {}, {}
+    pending = []
+    for node, _ in uncertain:
+        session = node["session_id"]
+        if (current.get(session, {}).get("state") == "ended"
+                or _physical_quiescent(node, peers, coverage)):
+            continue  # Physical end clears uncertainty, never a GitHub claim.
+        if node is histories[0] and _current_check_quiet(node):
+            continue
+        pending.append({"session_id": session,
+                        "reason": "ownership is pending current native completion or verified session exit"})
+    return pending
+
+
+def _physical_quiescent(node, peers, coverage):
+    """Read-time uncertainty only: no closure, barrier or successor authority."""
+    session = node["session_id"]
+    try:
+        leased = github_plan_closure.lease_path(session).exists()
+        with github_plan_closure.ownership(session) as acquired:
+            if not acquired and leased:
+                return False
+            github_plan_closure.require_canonical_identity(session)
+            source = github_plan_closure.source_records({session}).get(session)
+            action = github_plan_closure.lease_state(session)
+            if node["harness"] == "claude":
+                return (source is not None and _claude_source_ended(source)
+                        and github_plan_closure.source_records({session}).get(session) == source
+                        and github_plan_closure.lease_state(session) == action
+                        and github_plan_closure.lease_path(session).exists() == leased)
+            if (coverage.get("peer_complete") is not True or coverage.get("process_coverage") != "complete"
+                    or any(peer.get("sessionId") == session and (
+                        peer.get("source") == "codex_process" or peer.get("native_state") in {"active", "systemError"}) for peer in peers)):
+                return False
+            configured = set(codex_homes(strict=True, configured_only=True))
+            primary = Path(node["transcript"]).resolve()
+            homes = {home for home in configured if any(primary.is_relative_to((home / root).resolve())
+                                                       for root in ("sessions", "archived_sessions"))}
+            if not homes:
+                return False
+            homes.update(Path(home) for home in github_plan_closure.action_homes(action)["known"])
+            if source is not None:
+                for identity in (source, source.get("resumed_generation")):
+                    if isinstance(identity, dict) and identity.get("codex_home"):
+                        homes.add(Path(identity["codex_home"]).expanduser().resolve())
+                github_plan_native.verify_source_process(source)
+            sockets = {str(github_plan_closure.daemon_endpoint(home).resolve()) for home in homes}
+            def absent():
+                result = subprocess.run(["ps", "-ww", "-axo", "pid=,args="], capture_output=True, text=True, timeout=5)
+                return (result.returncode == 0 and not process_sessions(result.stdout, {session})
+                        and process_absence_known(result.stdout, sockets))
+            async def read():
+                async with asyncio.timeout(5):
+                    for home in sorted(homes):
+                        async with github_plan_native.connection(home) as request:
+                            before = await github_plan_native.read_thread_facts(request, session)
+                            after = await github_plan_native.read_thread_facts(request, session)
+                            if (before["state"] not in {"idle", "notLoaded"} or before["queue"]
+                                    or not any(Path(before["path"]).is_relative_to((home / root).resolve())
+                                               for root in ("sessions", "archived_sessions"))
+                                    or github_plan_native.current_facts(before) != github_plan_native.current_facts(after)):
+                                return False
+                            if before["state"] == "idle":
+                                github_plan_native._require_runtime_quiet(before, [])
+                                github_plan_native._require_runtime_quiet(after, [])
+                                if not before["turns"] or any(turn["status"] == "inProgress" for turn in before["turns"]):
+                                    return False
+                    return bool(homes)
+            if not absent() or not asyncio.run(read()) or not absent():
+                return False
+            if source is not None:
+                github_plan_native.verify_source_process(source)
+            return (github_plan_closure.source_records({session}).get(session) == source
+                    and github_plan_closure.lease_state(session) == action
+                    and github_plan_closure.lease_path(session).exists() == leased)
+    except (OSError, ValueError, KeyError, TypeError, ImportError, TimeoutError, subprocess.SubprocessError):
+        return False
+
+
+def _current_check_quiet(node):
+    """A live Codex check may exclude only its own identified native execution."""
+    if node["harness"] != "codex" or not node.get("transcript"):
+        return False
+    import claim_receipts
+    calls = [call for record in node["records"]
+             for call in claim_receipts.calls_and_results(record, "codex")[0]]
+    if not calls or not claim_receipts.isolated_command(calls[-1][1], calls[-1][2], "check_claims.py"):
+        return False
+    checking_call = calls[-1][0]
+    async def read():
+        primary = Path(node["transcript"]).resolve()
+        homes = [home for home in codex_homes(strict=True, configured_only=True)
+                 if any(primary.is_relative_to((home / root).resolve()) for root in ("sessions", "archived_sessions"))]
+        if len(homes) != 1:
+            return False
+        async with asyncio.timeout(5), github_plan_native.connection(homes[0]) as request:
+            before = await github_plan_native.read_thread_facts(request, node["session_id"], checking_call=checking_call)
+            after = await github_plan_native.read_thread_facts(request, node["session_id"], checking_call=checking_call)
+            return (before == after and before["path"] == str(primary)
+                    and before["state"] == "active" and not before["queue"]
+                    and before["executions"]["ended"] and before["executions"].get("checker_seen") is True
+                    and not before["background"] and not before["realtime"] and before["goal"] != "active")
+    try:
+        return asyncio.run(read())
+    except (OSError, ValueError, KeyError, TypeError, ImportError, TimeoutError, subprocess.SubprocessError):
+        return False
+
+
+def _claude_source_ended(source):
+    """A registry absence needs the existing matched, freshly verified exit."""
+    if source.get("harness") != "claude" or source.get("resumed_at"):
+        return False
+    import github_plan_claim
+    try:
+        before = github_plan_native.verify_source_process(source)
+        peers = github_plan_claim.active_claude_sessions()
+        if any(peer["sessionId"] == source["session_id"] for peer in peers):
+            return False
+        after = github_plan_native.verify_source_process(source)
+        return before == after and github_plan_closure.receipt_current(source)
+    except (OSError, ValueError, KeyError, TypeError, ImportError, subprocess.SubprocessError):
+        return False
 
 
 def process_sessions(text: str, sessions: set[str]) -> list[dict]:
@@ -426,22 +557,25 @@ def observe(sessions: set[str], proof_sessions: set[str] | None = None, *, _sour
 def _observe(sessions: set[str], proof_sessions: set[str] | None = None):
     async def run():
         homes = set(codex_homes())
+        for session in sessions:
+            try:
+                scope = github_plan_closure.action_homes(github_plan_closure.lease_state(session))
+                homes.update(Path(home) for home in scope["known"])
+            except (OSError, ValueError):
+                pass  # The canonical-identity/action barrier below reports it.
         # Historical source homes are read through exact retained ownership;
         # this does not change configured-only resume or idle admission.
         for row in github_plan_closure.RECEIPTS.get().values():
-            try:
-                recovering = row.get("resumed_at") or github_plan_closure.action_pending(row["session_id"])
-            except (OSError, ValueError, KeyError, TypeError):
+            if row.get("harness") != "codex":
                 continue
-            if recovering:
-                for identity in (row, row.get("resumed_generation")):
-                    if not isinstance(identity, dict):
-                        continue
-                    try:
-                        if identity.get("codex_home"):
-                            homes.add(Path(identity["codex_home"]).resolve())
-                    except (OSError, ValueError, TypeError):
-                        continue
+            for identity in (row, row.get("resumed_generation")):
+                if not isinstance(identity, dict):
+                    continue
+                try:
+                    if identity.get("codex_home"):
+                        homes.add(Path(identity["codex_home"]).resolve())
+                except (OSError, ValueError, TypeError):
+                    continue
         return await asyncio.gather(*(observe_home(home, sessions, proof_sessions) for home in sorted(homes)), return_exceptions=True)
 
     peers, states, resolutions = [], {}, {}

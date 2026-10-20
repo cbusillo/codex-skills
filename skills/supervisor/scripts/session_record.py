@@ -486,7 +486,7 @@ class TranscriptChanged(ValueError):
     """The native transcript changed while its status was being read."""
 
 
-def session_status(entry: dict) -> dict:
+def session_status(entry: dict, *, inspect_claims=True) -> dict:
     path = Path(entry["transcript"])
     before = path.stat()
 
@@ -520,7 +520,8 @@ def session_status(entry: dict) -> dict:
         histories = claim_history.collect(path, entry["harness"], entry["session_id"], records, child_read)
     except (OSError, ValueError, TypeError, KeyError) as missing:
         error = str(missing)
-    result = summarize(records, entry["harness"], claim_histories=histories, history_error=error)
+    result = summarize(records, entry["harness"], claim_histories=histories, history_error=error,
+                       inspect_claims=inspect_claims)
     after = checked_stat()
     result.update(
         session_id=entry["session_id"],

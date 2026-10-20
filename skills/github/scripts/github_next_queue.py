@@ -202,17 +202,20 @@ def classify(item: dict[str, Any], ownership: dict[str, Any], *, trusted: set[st
         return {**row, "state": "review", "reason": "discussion_authorship_unknown"}
     # Use the claim helper's exact authored-release semantics instead of a
     # second claim parser. No synthetic owner can renew a real claim.
+    inventory = ownership.get("inventory") or {"local_branches": [], "remote_branches": [], "worktrees": [], "sessions": []}
     try:
+        ended = github_plan_claim.ended_ownership(comments, inventory)
         conflicts, _ = github_plan_claim.discussion_evidence(status, comments,
-            {"worker": "", "session": "", "branch": "", "claimed_at": ""})
+            {"worker": "", "session": "", "branch": "", "claimed_at": ""},
+            ended_claims={source["claim_id"] for source in ended})
         wait = github_plan_wait.current(
             {"body": discussion.get("body") or "", "user": {"login": discussion.get("author") or ""}}, comments, trusted)
     except (ValueError, KeyError, TypeError) as exc:
         return {**row, "state": "review", "reason": "unreadable_ownership_or_wait", "detail": str(exc)}
     branches = github_plan_claim.recorded_claim_branches(status, comments)
-    inventory = ownership.get("inventory") or {"local_branches": [], "remote_branches": [], "worktrees": [], "sessions": []}
     artifacts = github_plan_claim.artifact_evidence(inventory, ownership.get("pulls") or [], item["number"],
-        {"worker": "", "session": "", "branch": ""}, own_record=False, repo=item["repo"], recorded_branches=branches)
+        {"worker": "", "session": "", "branch": ""}, own_record=False, repo=item["repo"], recorded_branches=branches,
+        ended_branches=github_plan_claim.ended_artifact_branches(ended, comments, ownership.get("pulls") or []))
     if conflicts or artifacts:
         return {**row, "state": "underway", "reason": "existing_claim_or_artifact",
                 "ownership_evidence": [*conflicts, *artifacts], "certainty": "current_or_stale"}

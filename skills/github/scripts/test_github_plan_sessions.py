@@ -1668,10 +1668,12 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(peers[0]["sessionId"], "holder")
 
     async def test_idle_failure_unknown_and_changed_evidence_do_not_prove_end(self):
-        for kwargs in ({"safe": False}, {"changed": True}, {"mismatch": True}):
+        for kwargs in ({"safe": False}, {"changed": True}):
             with self.subTest(kwargs=kwargs):
                 _, states = await self.observe("notLoaded", **kwargs)
                 self.assertNotEqual(states.get("holder", {}).get("state"), "ended")
+        _, states = await self.observe("notLoaded", mismatch=True)
+        self.assertNotEqual(states.get("holder", {}).get("state"), "ended")
 
     async def test_resumed_while_reading_is_live(self):
         peers, states = await self.observe("notLoaded", after="active")
@@ -1706,6 +1708,76 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ObservationMergeTests(unittest.TestCase):
+
+    def test_pending_without_a_closeout_record_is_rechecked_from_live_native_evidence(self):
+        with ReceiptFixture() as f:
+            with CLOSURE.resume_guard(f.session, method="turn/start", home=f.home):
+                pass
+            CLOSURE.replace_rows([])
+            f.transcript.write_text(json.dumps({"type": "session_meta", "payload": {"id": f.session}}) + "\n")
+            before = CLOSURE.lease_path(f.session).read_bytes()
+            node = {"session_id": f.session, "harness": "codex", "transcript": str(f.transcript), "records": []}
+            def pending():
+                return SESSIONS.pending_ownership([node], [{"pending": True}])
+            f.native_state = "active"
+            self.assertTrue(pending())
+            f.native_state = "notLoaded"
+            self.assertFalse(pending())
+            self.assertNotEqual(f.observe()[1][f.session]["state"], "ended")
+            f.queue_items = [{"id": "new-work"}]
+            self.assertTrue(pending())
+            f.queue_items = []
+            self.assertFalse(pending())
+            self.assertEqual(CLOSURE.lease_path(f.session).read_bytes(), before)
+            self.assertFalse(f.mutations)
+
+    def test_claude_registry_absence_clears_only_a_fresh_matched_exit(self):
+        import github_plan_claim
+        import release_session_claims
+        source = {"harness": "claude", "session_id": "claude-owner"}
+        with patch.object(github_plan_claim, "active_claude_sessions", return_value=[]) as registry, \
+                patch.object(SESSIONS.github_plan_native, "verify_source_process", return_value={"generation": "ended"}) as proof, \
+                patch.object(CLOSURE, "receipt_current", return_value=True):
+            self.assertTrue(SESSIONS._claude_source_ended(source))
+            self.assertEqual(proof.call_count, 2)
+            registry.return_value = [{"sessionId": source["session_id"]}]
+            self.assertFalse(SESSIONS._claude_source_ended(source))
+            registry.return_value = []
+            proof.side_effect = ValueError("source process exit is unknown")
+            self.assertFalse(SESSIONS._claude_source_ended(source))
+            proof.side_effect = [{"generation": "ended"}, {"generation": "replacement"}]
+            self.assertFalse(SESSIONS._claude_source_ended(source))
+            self.assertFalse(SESSIONS._claude_source_ended({**source, "resumed_at": "later"}))
+        # Physical observation uses the matched process record even when no
+        # final declaration exists. It cannot authorize a recovery release.
+        closed = {**source, "pid": 123, "tty": "fixture-tty", "process_exit_verified": True,
+                  "ended_at": "2026-10-01T00:00:00Z", "transcript": "/fixture/no-verdict.jsonl"}
+        with patch.object(CLOSURE, "source_records", return_value={source["session_id"]: closed}), \
+                patch.object(release_session_claims, "inventory", return_value=[]), \
+                patch.object(github_plan_claim, "active_claude_sessions", return_value=[]), \
+                patch.object(CLOSURE, "receipt_current", return_value=True):
+            self.assertTrue(SESSIONS._claude_source_ended(closed))
+
+    def test_unmanaged_completed_native_child_needs_positive_current_coverage(self):
+        with ReceiptFixture("11111111-2222-4333-8444-555555555555") as f:
+            CLOSURE.replace_rows([])
+            CLOSURE.lease_path(f.session).unlink()
+            node = {"session_id": f.session, "harness": "codex", "transcript": str(f.transcript), "records": []}
+            complete = {"peer_complete": True, "process_coverage": "complete"}
+            self.assertTrue(SESSIONS._physical_quiescent(node, [], complete))
+            self.assertFalse(CLOSURE.lease_path(f.session).exists())
+            f.commands = "456 codex resume " + f.session
+            self.assertFalse(SESSIONS._physical_quiescent(node, [], complete))
+            f.commands = ""
+            self.assertFalse(SESSIONS._physical_quiescent(node, [], {**complete, "peer_complete": False}))
+            f.execution_items = [{"id": "working", "type": "commandExecution", "status": "inProgress"}]
+            self.assertFalse(SESSIONS._physical_quiescent(node, [], complete))
+            f.execution_items = []
+            other = f.root / "unavailable-retained-home"
+            other.mkdir()
+            with CLOSURE.resume_guard(f.session, method="turn/start", home=other):
+                pass
+            self.assertFalse(SESSIONS._physical_quiescent(node, [], complete))
     def setUp(self):
         shared = SESSIONS.process_liveness()
         self.enterContext(patch.object(shared, "process_arguments",
@@ -1844,7 +1916,7 @@ class ObservationMergeTests(unittest.TestCase):
                 path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
             with patch.object(SESSIONS, "codex_homes", return_value=[home]):
                 snapshot = SESSIONS.transcript_snapshot("holder", str(primary))
-            self.assertTrue(snapshot[str(primary.resolve())]["safe_verdict"])
+            self.assertTrue(snapshot[str(primary.resolve())]["declared_safe_verdict"])
             self.assertFalse(snapshot[str(sibling.resolve())]["safe_verdict"])
 
     def test_unknown_interactive_process_or_missing_process_inventory_prevents_native_end(self):
