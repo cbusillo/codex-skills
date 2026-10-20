@@ -53,6 +53,8 @@ def intent(h: Any, args: argparse.Namespace) -> tuple[dict[str, object], dict[st
     if mode != "dry-run":
         if not re.fullmatch(r"[a-f0-9]{64}", args.expected_plan_digest) or not args.idempotency_key.strip() or len(args.idempotency_key) > 200:
             raise ValueError("invalid_withdrawal_review_binding")
+        if h.public_identifier(args.idempotency_key) != args.idempotency_key:
+            raise ValueError("invalid_withdrawal_operation_key")
         body["reviewed_plan_sha256"] = args.expected_plan_digest
     h.assert_public_safe_shape(request)
     return request, body
@@ -105,15 +107,17 @@ RECOVERY = {
     "conflict": "This request was not dispatched. Restore the request that belongs to the original key; do not retry changed input with it.",
     "refused": "Withdrawal was refused. Inspect the current head and saved Client decisions; do not bypass the refusal or remove the label by hand.",
     "replan_required": "The original intent is settled without claiming withdrawal. Inspect the pending request and review a fresh dry run before using a new key.",
-    "unavailable": "The read or dry run was unavailable. Retry the same read when service evidence is available.",
+    "unavailable": "The requested service evidence or operation is unavailable. Inspect the service trace and retry the same request when prerequisites are available.",
 }
 
 
 def finish(h: Any, *, operation: str, request: dict[str, object], status: str,
-           result: dict[str, object] | None = None, diagnostics: dict[str, object] | None = None) -> int:
+           operation_key: str = "", result: dict[str, object] | None = None, diagnostics: dict[str, object] | None = None) -> int:
     """Keep the outcome, preserved receipt and recovery instructions in agreement."""
     output = h.base_payload(status=status, operation=operation, request=request)
     summary = dict(diagnostics or {})
+    if operation_key:
+        summary["idempotency_key"] = operation_key
     recommendation = RECOVERY.get(status, str(summary.get("recommendation", "Inspect the service refusal before retrying.")))
     if result and result.get("prior_effects_unknown") is True:
         recommendation += " A label removal may have happened without a PR history entry; preserve and inspect the saved operation and PR history."
@@ -145,6 +149,7 @@ def execute(h: Any, args: argparse.Namespace) -> int:
     operation = args.command
     request, body = intent(h, args)
     mode = str(body["mode"])
+    operation_key = getattr(args, "idempotency_key", "")
     settings = h.prepare_operator_settings(args=args, operation=operation, request=request)
     if settings is None:
         return 2
@@ -155,7 +160,7 @@ def execute(h: Any, args: argparse.Namespace) -> int:
             if evidence.get("status") != "ok" or evidence.get("operation") != "product-review-withdrawal-dry-run" or evidence.get("request") != request or evidence.get("result", {}).get("applied") is not False or evidence.get("result", {}).get("plan_sha256") != args.expected_plan_digest:
                 raise ValueError("withdrawal_review_evidence_mismatch")
         except (OSError, ValueError, AttributeError):
-            return finish(h, operation=operation, request=request, status="invalid", diagnostics={"error_code": "withdrawal_review_evidence_mismatch", "recommendation": "Save and review a dry run of this exact request before apply."})
+            return finish(h, operation=operation, request=request, operation_key=operation_key, status="invalid", diagnostics={"error_code": "withdrawal_review_evidence_mismatch", "recommendation": "Save and review a dry run of this exact request before apply."})
     timeout = getattr(args, "timeout", 30)
     known_receipt: dict[str, object] | None = None
     try:
@@ -167,7 +172,7 @@ def execute(h: Any, args: argparse.Namespace) -> int:
             observed = project(h, response, {**body, "mode": "readback"})
             result = observed if observed["applied"] is True else {**known_receipt, "readback_matches": False}
         status = result_status(result, mode=mode)
-        return finish(h, operation=operation, request=request, status=status, result=result, diagnostics=h.service_response_diagnostics(response))
+        return finish(h, operation=operation, request=request, operation_key=operation_key, status=status, result=result, diagnostics=h.service_response_diagnostics(response))
     except urllib.error.HTTPError as error:
         try:
             projected = h.summarize_http_error(operation=operation, request=request, exc=error, provider_payload=h._error_payload_from_http(error))
@@ -185,9 +190,9 @@ def execute(h: Any, args: argparse.Namespace) -> int:
                     "product_review_withdrawal_refused": "refused",
                     "product_review_withdrawal_unsettled": "outcome_unknown",
                 }.get(code, projected["status"])
-            return finish(h, operation=operation, request=request, status=status, result=known_receipt, diagnostics=diagnostics)
+            return finish(h, operation=operation, request=request, operation_key=operation_key, status=status, result=known_receipt, diagnostics=diagnostics)
         finally:
             error.close()
     except (ValueError, OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException, h.ServiceResponseError):
         status = "accepted_unverified" if known_receipt is not None else "outcome_unknown" if mode in {"apply", "readback"} else "unavailable"
-        return finish(h, operation=operation, request=request, status=status, result=known_receipt, diagnostics={"error_code": "withdrawal_unverified"})
+        return finish(h, operation=operation, request=request, operation_key=operation_key, status=status, result=known_receipt, diagnostics={"error_code": "withdrawal_unverified"})

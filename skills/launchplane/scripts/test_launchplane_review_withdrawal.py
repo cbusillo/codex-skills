@@ -13,6 +13,7 @@ from test_launchplane_helpers import write_action as h
 
 HEAD = "a" * 40
 PLAN = "b" * 64
+OPERATION_KEY = "withdraw-1"
 REASON = "PRIVATE_REASON_SENTINEL Director rerouted the PR."
 DECISION = "https://github.com/example/direction/issues/1#issuecomment-20"
 
@@ -20,7 +21,7 @@ DECISION = "https://github.com/example/direction/issues/1#issuecomment-20"
 def argv(mode="dry-run", evidence=""):
     args = ["product-review-withdrawal-" + mode, "--product", "site", "--repo", "example/site", "--pr", "42", "--head", HEAD, "--reason", REASON, "--director-decision", DECISION]
     if mode != "dry-run":
-        args += ["--expected-plan-digest", PLAN, "--idempotency-key", "withdraw-1"]
+        args += ["--expected-plan-digest", PLAN, "--idempotency-key", OPERATION_KEY]
     if mode == "apply":
         args += ["--reviewed-dry-run", "--dry-run-evidence-file", evidence]
     return args
@@ -52,7 +53,7 @@ def test_dry_run_and_apply_readback_bind_exact_request(tmp_path):
     code, applied, calls = invoke(argv("apply", str(evidence)), [response(True), response(True, True)])
     assert code == 0 and applied["result"]["readback_matches"] is True
     assert [call.kwargs["body"]["mode"] for call in calls] == ["apply", "readback"]
-    assert all(call.kwargs["idempotency_key"] == "withdraw-1" for call in calls)
+    assert all(call.kwargs["idempotency_key"] == OPERATION_KEY for call in calls)
     assert calls[0].kwargs["body"]["director_decision_url"] == DECISION
     assert REASON not in json.dumps(applied)
 
@@ -122,6 +123,7 @@ def test_recovery_classifier_preserves_receipts_and_distinguishes_other_callers(
     ):
         code, result, calls = invoke(argv("apply", str(evidence)), [failure(http_status, error_code)])
         assert code != 0 and result["status"] == expected
+        assert result["summary"]["idempotency_key"] == OPERATION_KEY
         assert len(calls) == 1
         assert "PRIVATE_REASON_SENTINEL" not in json.dumps(result)
         if expected == "outcome_unknown":

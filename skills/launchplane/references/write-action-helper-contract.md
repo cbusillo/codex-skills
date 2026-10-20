@@ -2154,3 +2154,11 @@ PR history entry. Inspect the retained operation and history before a fresh plan
 Recovery can observe a closed PR. It adopts an authentic existing history
 receipt or settles an unreceipted closed request without another DELETE.
 A new withdrawal still requires an open PR; readback never removes a label.
+
+Recovery output echoes the non-secret `idempotency_key` in its summary. Choose a
+public-safe opaque key, and save the exact private request with the dry-run
+evidence. Provider evidence failures are unavailable, not Client eligibility
+refusals. Bounded or ambiguous authenticated history settles the original intent
+as `replan_required`, preserving prior-effect uncertainty; a fresh apply checks
+history before removing a label. The full caller identity remains in the durable
+operation; public PR history contains the head, reason and Director citation.
