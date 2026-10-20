@@ -69,11 +69,9 @@ MAX_ANALYZED_FILE_KB = 2500
 CANARY_REQUIRED_RULE = "PyUnresolvedReferencesInspection"
 CANARY_LANGUAGE_LEVEL_RULE = "PyTypeHintsInspection"
 # Enabled in common profiles but not run by the Python Community image
-# (jetbrains-inspection-api#503). Results always name them. They block GREEN
-# until the Director accepts a GREEN without them (Q481, codex-skills#1833);
-# a yes adds them to PYTHON_ACCEPTED_UNCOVERED.
+# (jetbrains-inspection-api#503). Results always name them and block GREEN.
+# Q481 is retired; the qualified native route supplies these inspections.
 PYTHON_COMMUNITY_UNCOVERED = frozenset({"DuplicatedCode", "HttpUrlsUsage"})
-PYTHON_ACCEPTED_UNCOVERED = frozenset()
 # Tools for other file types cannot apply to a selection of only .py files.
 OTHER_LANGUAGE_RULE_RE = re.compile(r"(?:Css|Sass|Scss|Less|Eslint|Stylelint|Tslint|JS|Js|TypeScript|Html|Vue|Angular|Kotlin|Java|Groovy|Gradle|Xml|Json|Yaml|Sql)(?:[A-Z_]|\Z)")
 
@@ -649,8 +647,6 @@ def coverage_gaps(language, selected, expected, results, odoo_project=False):
                 continue
             if python_only and rule in PYTHON_COMMUNITY_UNCOVERED:
                 uncovered.append(rule)
-                if rule in PYTHON_ACCEPTED_UNCOVERED:
-                    continue
             gaps.append("effective_profile_missing:" + str(rule))
     if odoo_project or any(Path(f).name == "__manifest__.py" for f in selected) or expected & {"OdooPy", "OdooXml"}:
         gaps += ["odoo_effective_default_unproven", "odoo_model_roots_interpreter_unproven", "OdooXml_execution_unproven",

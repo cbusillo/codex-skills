@@ -182,18 +182,12 @@ class QodanaTests(unittest.TestCase):
         self.assertEqual(result["finding_count"], 0)
         self.assertEqual(sorted(p.name for p in (self.repo / "src").iterdir()), ["a.py", "b.py"])
 
-    def test_community_uncovered_inspection_blocks_green_until_accepted(self):
-        # Q481 pending: the result names DuplicatedCode and stays UNKNOWN on clean code.
+    def test_community_uncovered_inspection_blocks_green(self):
         self.enable_duplicated_code()
-        with patch.object(backend, "PYTHON_ACCEPTED_UNCOVERED", frozenset()):
-            pending = self.run_backend(self.clean_with_canary())
-        self.assertEqual(pending["agent_result"]["verdict"], "UNKNOWN")
-        self.assertEqual(pending["uncovered_inspections"], ["DuplicatedCode"])
-        self.assertIn("effective_profile_missing:DuplicatedCode", pending["proof_failures"])
-        with patch.object(backend, "PYTHON_ACCEPTED_UNCOVERED", frozenset({"DuplicatedCode"})):
-            accepted = self.run_backend(self.clean_with_canary())
-        self.assertEqual(accepted["agent_result"]["verdict"], "GREEN")
-        self.assertEqual(accepted["uncovered_inspections"], ["DuplicatedCode"])
+        result = self.run_backend(self.clean_with_canary())
+        self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+        self.assertEqual(result["uncovered_inspections"], ["DuplicatedCode"])
+        self.assertIn("effective_profile_missing:DuplicatedCode", result["proof_failures"])
 
     def test_zero_findings_without_canary_finding_never_green(self):
         result = self.run_backend(self.clean_with_canary(proven=()))
@@ -920,7 +914,7 @@ class LiveDescriptorTests(unittest.TestCase):
             envelope = json.loads(result.stdout)
             # While Q481 is open, Community-uncovered inspections alone may leave a clean run UNKNOWN.
             pending = {"effective_profile_missing:" + rule
-                       for rule in backend.PYTHON_COMMUNITY_UNCOVERED - backend.PYTHON_ACCEPTED_UNCOVERED}
+                       for rule in backend.PYTHON_COMMUNITY_UNCOVERED}
             verdict = envelope["agent_result"]["verdict"]
             if verdict == "UNKNOWN":
                 self.assertEqual(envelope["diagnostic"]["error_reason"], "qodana_coverage_unproven")

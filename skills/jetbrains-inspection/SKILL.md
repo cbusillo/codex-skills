@@ -121,8 +121,8 @@ On a licence prompt, lapsed activation or trial offer, stop the licensed run
 and post an `Owner question:` on the item. The Director restores activation
 through the normal product UI using existing entitlements.
 
-Other platforms retain the qualified local Qodana Python default; other
-selections retain the API. Explicit Qodana options select Qodana. Choose with
+Hosts without eligible native prerequisites retain the qualified local Qodana
+Python default when available; other selections retain the API. Explicit Qodana options select Qodana. Choose with
 `--backend native|api|qodana` or `JB_INSPECT_DEFAULT_BACKEND`. Read
 [local Qodana](references/qodana-backend.md) before diagnosing or changing it.
 Never copy license or credential files into a Qodana profile either. Run one

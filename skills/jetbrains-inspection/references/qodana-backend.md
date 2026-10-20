@@ -1,13 +1,8 @@
 # Local Qodana backend
 
-Read before diagnosing a Qodana result or changing the runner. On platforms
-without native PyCharm, `agent-inspect` selects it for only Python files when the
-pinned image is local and `qualityGate.inspection.prepare.python` is declared,
-outside Odoo repositories and PyCharm-only lanes
-([#2155](https://github.com/cbusillo/codex-skills/issues/2155)); other
-selections keep the API. On macOS, [native PyCharm](native-backend.md) is the
-Python/Odoo default. The envelope's `backend_selection` names the reason.
-`--backend native|api|qodana` or `JB_INSPECT_DEFAULT_BACKEND` overrides it.
+Read before diagnosing a Qodana result or changing the runner.
+[SKILL.md](../SKILL.md) owns selection across native PyCharm, Qodana and the API;
+`backend_selection` names the chosen route and native ineligibility, if any.
 
 ```sh
 uv run <skill-dir>/scripts/jb-inspect.py agent-inspect \

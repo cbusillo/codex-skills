@@ -1,12 +1,9 @@
 # Native PyCharm backend
 
-Read before configuring, diagnosing or changing the native runner. On macOS,
-`agent-inspect` defaults to stock PyCharm `inspect.sh` for Odoo repositories and
-Python-only selections in root PyCharm lanes when an eligible independent
-worker, interpreter and profile are configured. Unconfigured or unsupported
-hosts retain their existing Qodana/API selection. Explicit Qodana options still select Qodana. Use
-`--backend native|api|qodana` or `JB_INSPECT_DEFAULT_BACKEND` for an explicit
-choice. Native never starts a desktop IDE or falls back to its normal profile.
+Read before configuring, diagnosing or changing the native runner.
+[SKILL.md](../SKILL.md) owns backend selection; the result names its route and
+any native ineligibility reason. Native runs stock PyCharm `inspect.sh` without
+opening a desktop IDE or falling back to its normal profile.
 
 ## Independent worker
 
@@ -29,6 +26,7 @@ Configure the **helper's** shared JSON config at
     "nativeWorker": {
       "path": "/absolute/independently-activated/worker",
       "app": "/absolute/PyCharm.app",
+      "cacheRoot": "/absolute/existing/host-caches/native-inspection",
       "frameworkRoots": ["/absolute/pinned-odoo-framework"]
     }
   }
@@ -41,7 +39,19 @@ and repeatable `--native-framework-root` provide one-run selections. Framework
 roots include one Odoo core repository containing `odoo/release.py` and any
 required addon dependency repositories, each as a clean pinned Git checkout.
 Omit them for ordinary Python projects.
-Record the framework commit, not just its directory name.
+Record the framework commits and follow the tenant workspace's declared dependency
+locations and ref policy, rather than borrowing another tenant's roots. The
+canonical project content root includes `addons` as a source folder when present;
+it does not create separate addon content roots that would change scope paths.
+
+`cacheRoot` is an existing host cache directory outside the activated worker.
+On Chris-Studio keep it under `/Volumes/Developer-Artifacts/host-caches/`. A missing
+configured root is not recreated. Optional `cacheStorageIdentity` pins the same
+public storage identity the helper uses in custody records; a changed identity
+stops the run. `JETBRAINS_INSPECTION_CACHE_DIR` still places individual run artifacts
+in task evidence. Preparation uses shared non-secret uv cache and Python-install
+paths under `cacheRoot`, with a fresh preparation HOME; it forwards no account
+store, token or desktop-home settings.
 
 The worker contains `config/`, `plugins/`, `home/`, `idea.properties` and
 `worker.lock`. Its properties must point config and plugins into that exact
@@ -103,22 +113,51 @@ deleted; only sanitized findings, coverage and cleanup receipts remain.
 Use `JETBRAINS_INSPECTION_CACHE_DIR` under the host's designated task-evidence
 root. The config, activation, plugin installation and independent home stay put.
 
-If a crash interrupts cleanup, `native-run.json` beside the worker retains
-custody. The next run reconciles only its journaled SDK and private directory,
-checking the private ownership marker and storage identity. Custody is journaled
-before source copying or environment preparation. Non-secret journal, marker,
-stop receipt and SDK updates use atomic same-directory replacement; unrelated
-SDK entries and XML comments survive cleanup. A live worker's
-lock, changed storage or unproved ownership retains state. Recover without
-inspection, using the same worker/app selection:
+If a crash interrupts cleanup, `native-run.json` retains custody. Its immutable
+identity matches `owner.json`; mutable phases record reservation, materialization,
+SDK attempt, licensed launch and the terminal outcome. The exact UUID directory
+is journaled before any source or environment write. Empty reserved directories
+and a sole partial ownership marker can be reclaimed; other unproved state is
+preserved. Recovery failures never attest that retained resources were closed.
+
+The durable licensed-launch phase is a hold. Resource recovery alone cannot
+clear an unresolved outcome and start another licensed process. A licensing
+boundary persists independently in a count-only stop receipt or journal, even
+when a later write fails. Artifact and stop-receipt persistence failures do not
+skip SDK removal, private-directory deletion or lock release. The original run
+ID survives the guardian's outer exception boundary.
+
+Recover without inspection:
 
 ```sh
 uv run <skill-dir>/scripts/jb-inspect.py agent-inspect \
   --backend native --native-recover-only
 ```
 
-Recovery does not clear activation stops. A killed guardian may leave the
-engine holding the inherited profile lock until it exits; do not bypass it.
+If a known nonlicensing terminal result was returned but its journal update
+failed, reconcile that saved JSON envelope for the same run and backend:
+
+```sh
+uv run <skill-dir>/scripts/jb-inspect.py agent-inspect \
+  --backend native --native-recover-only --native-reconcile-result /task-evidence/result.json
+```
+
+Reconciliation verifies the run identity, backend revision, known terminal
+outcome, exited worker and explicit absence of an observed licensing event.
+It refuses licensing results, existing activation stops and profile-local
+inputs. It never starts an inspection or clears an activation stop. Without
+terminal evidence, preserve `native_interrupted_run_unresolved`; it is not a
+claim that activation expired. Escalate the missing outcome for review rather
+than guessing or deleting the hold. A recorded Director confirmation after
+checking the independent product UI can resolve activation uncertainty using
+existing entitlements; never start a trial or inspect activation files. After
+that recorded confirmation and a recovery receipt proving SDK/private cleanup,
+the authorized continuation holds both worker locks and removes only the
+matching count-only run journal and activation-stop receipt. It does not
+change, copy or read product activation, account or credential files.
+
+A killed guardian may leave the engine holding both inherited locks until it
+exits, including the global lock that excludes Qodana. Do not bypass either.
 
 ## Coverage and qualification
 
@@ -126,42 +165,43 @@ Results name `backend: native`, the selected scope, source/profile/helper and
 framework provenance, coverage, findings and separate cleanup. Reports must
 name the backend and any `coverage.unavailable` or `coverage.unproven` entries.
 
-The effective descriptions prove registration only. Native findings and
-completed stock `inspectionRun` telemetry prove execution. The per-run local
-Jaeger exporter records tool IDs and exact physical files, including clean
-checks. Parse it only after a successful final `Done.` and engine exit, with no
-engine error or cancellation. Malformed/truncated traces and failed spans stay
-UNKNOWN; raw traces are private and deleted with the run. Private positive controls exercise `DuplicatedCode`, `HttpUrlsUsage`,
-Python type/unresolved checks, and Odoo's named `OdooPy` and `OdooXml` checks.
-These runtime controls have distinct source from the qualification fixture,
-so their presence cannot fabricate its duplicate-code result. They are included
-in the exact native scope and excluded from user findings.
-Debug traversal observations must also cover every selected physical file.
-Unexpected physical traversal also invalidates the result. Source, selection
-and profile changes invalidate the result.
-Oversized files and scoped disabled-tool overrides cannot borrow the private
-controls' proof; they remain UNKNOWN until their selected-file execution is
-proved by a qualified route.
+The effective descriptions prove registration and supply language identity.
+Completed stock `inspectionRun` telemetry proves each applicable inspection on
+each selected physical file, including clean files. `coverage.selected_execution`
+and `missing_execution` expose the exact matrix. Findings or controls cannot
+substitute for a missing selected-file pair. Unknown applicability stays UNKNOWN;
+Python tools apply to Python, OdooXml to XML, and explicit universal tools to both.
 
-`coverage.profile_requested` lists the repository's enabled entries;
-`not_applicable` separates other-language tools from this source selection.
-The vendor migration from `PyUnusedLocalInspection` to the three
-`PyUnusedLocalVariableInspection`, `PyUnusedParameterInspection` and
-`PyUnusedFunctionInspection` checks is recorded explicitly when all successors
-are registered. Every successor must execute. This follows JetBrains
-[PyUnusedSymbolInspectionMerger](https://github.com/JetBrains/intellij-community/blob/master/python/python-psi-impl/src/com/jetbrains/python/inspections/unusedLocal/PyUnusedSymbolInspectionMerger.kt); no check is dropped.
-Applicable requested tools without positive execution evidence remain unproven,
-even when registered and the engine exits successfully. Any such gap makes the
-verdict UNKNOWN, with current findings retained. No missing check is accepted.
-This conservative rule can keep a completed clean run UNKNOWN; it is not a
-claim that every unproven tool failed to execute. Complete execution evidence
-and zero user findings permit GREEN; current findings with complete evidence
-produce RED. Cleanup failures cannot produce GREEN or RED.
+Distinct private defect canaries independently prove the named tools detect
+known defects. `coverage.canary_results` records their expected source and
+outcome; their findings never appear as user findings. They do not duplicate the
+qualification fixture. A missing canary, failed span, unexpected traversal,
+untraversed file or unavailable applicable tool keeps the verdict UNKNOWN.
+Oversized selected files are refused before execution.
+
+Parse the per-run local Jaeger trace only after final `Done.`, exit zero, and no
+engine error or cancellation. Truncated/malformed traces stay UNKNOWN. Independent
+line framers keep complete event prefixes; a long line fails without inventing
+a new event from its suffix. Preparation output is not parsed as IDE output.
+Error receipts retain only a sanitized logger category, never raw messages.
+Raw logs and traces are deleted with the private run. Source, selection, profile
+and dependency changes invalidate the result.
+
+`coverage.profile_requested` lists enabled repository entries, and
+`not_applicable` explains tools for other file types. The vendor migration from
+`PyUnusedLocalInspection` to `PyUnusedLocalVariableInspection`,
+`PyUnusedParameterInspection` and `PyUnusedFunctionInspection` is explicit when
+all successors register; every applicable successor must execute. This follows
+JetBrains [PyUnusedSymbolInspectionMerger](https://github.com/JetBrains/intellij-community/blob/master/python/python-psi-impl/src/com/jetbrains/python/inspections/unusedLocal/PyUnusedSymbolInspectionMerger.kt).
+No check is dropped. Complete evidence and no user findings permit GREEN;
+complete evidence with findings produces RED. Coverage, lifecycle or persistence
+failures keep UNKNOWN with current findings retained.
 
 The offline routing, lock, coverage, disposal and recovery tests need no IDE.
 The opt-in `JB_NATIVE_LIVE=1` test in `tests/test_native_backend.py` uses the
-tracked planted/corrected Odoo fixture through the configured independent
-worker. It requires actual Odoo XML, quoted `odoo.model.*` type, duplicate and
+committed planted/corrected Odoo fixture through the configured independent
+worker. It copies committed Git blobs into a committed disposable repository,
+so local edits and generated files cannot change its provenance. It requires actual Odoo XML, quoted `odoo.model.*` type, duplicate and
 named Odoo findings, with corrected controls clean. `JB_NATIVE_LIVE_OUT` can
 retain its sanitized result. Qualify with a real tenant change too; a synthetic
 RED alone does not prove that repository's profile or model is complete.

@@ -41,13 +41,19 @@ ACTIVE_PROCESSORS = 2
 NICE = 10
 NAMED_PYTHON = frozenset({"DuplicatedCode", "HttpUrlsUsage", "PyUnresolvedReferencesInspection", "PyTypeCheckerInspection"})
 NAMED_ODOO = frozenset({"OdooPy", "OdooXml"})
-LICENSE_PROMPT = re.compile(r"^(?:no valid licen[cs]e\b|checking trial availability\b|(?:start|activate|try|begin|offer) (?:a |your |free )?trial\b|(?:your |the |a )?(?:trial|evaluation) (?:is |has )?(?:expired|period|available|active|licen[cs]e|expires|ends)\b|you are using (?:a )?trial\b|licen[cs]e.{0,40}(?:expired|invalid|missing|required)|(?:activate|purchase|buy|log.?in).{0,40}licen[cs]e|third.party privacy notice.*not accepted)", re.I)
+def sibling_module(name, filename):
+    spec = importlib.util.spec_from_file_location(name, Path(__file__).with_name(filename))
+    if spec is None or spec.loader is None:
+        raise ImportError("Native component unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
-def license_boundary(line):
-    # Native's brief stops even on a trial offer or prompt, before activation.
-    return any(LICENSE_PROMPT.search(event.rsplit(" - ", 1)[-1].strip()) for event in line.splitlines())
-
+observations: Any = sibling_module("native_observations", "native_observer.py")
+proof: Any = sibling_module("native_proof", "native_coverage.py")
+lifecycle: Any = sibling_module("native_custody", "native_lifecycle.py")
+license_boundary = observations.license_boundary
 
 def is_odoo(repo):
     paths = common.checked(["git", "-C", str(repo), "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "*__manifest__.py"])
@@ -58,7 +64,7 @@ def is_odoo(repo):
 def select_backend(args, host, host_default=None):
     if args.qodana_recover_only or args.qodana_image or args.qodana_license_file or args.qodana_plugin_zip or args.qodana_uv:
         return "qodana", "qodana_options_supplied"
-    if args.native_worker or args.native_recover_only or args.native_framework_root:
+    if args.native_worker or args.native_recover_only or args.native_framework_root or args.native_reconcile_result:
         return "native", "native_options_supplied"
     if host_default:
         return host_default, "host_default"
@@ -67,7 +73,8 @@ def select_backend(args, host, host_default=None):
     try:
         repo, config, _scope, selected = common.scope_selection(args, host)
         if not eligible(args, host, repo, config):
-            return common.select_backend(args, host)
+            backend, reason = common.select_backend(args, host)
+            return backend, reason + ";native_ineligible=" + str(eligibility_reason(args, host, repo, config))
         if selected and is_odoo(repo):
             return "native", "odoo_native_route"
         if selected and not common.lane_gaps(host, config, selected):
@@ -79,18 +86,48 @@ def select_backend(args, host, host_default=None):
 
 
 def eligible(args, host, repo, settings):
+    return eligibility_reason(args, host, repo, settings) is None
+
+
+def eligibility_reason(args, host, repo, settings):
     """Public configuration checks only; never inspect activation or start an IDE."""
     try:
         worker, _app, roots = worker_settings(args, host)
         launcher_paths(worker)
         if is_odoo(repo) and (not roots or not any((root / "odoo/release.py").is_file() for root in roots) or any(not root.is_dir() for root in roots)):
-            return False
+            return "native_odoo_framework_required"
         if not (repo / ".venv/bin/python").is_file() and not settings.get("prepare"):
-            return False
+            return "native_python_environment_required"
         common.profile_for(repo, args.profile or settings.get("profile", ""))
-        return True
-    except (Blocked, host.InspectError, OSError, ValueError):
-        return False
+        return None
+    except Blocked as error:
+        return str(error).replace("qodana_", "native_")
+    except (host.InspectError, OSError, ValueError):
+        return "native_configuration_unavailable"
+
+
+def runtime_storage(host, worker):
+    configured = host.read_global_config().get("jetbrains", {}).get("nativeWorker", {})
+    raw = configured.get("cacheRoot")
+    if raw is not None:
+        shared = Path(raw).expanduser()
+        if not shared.is_absolute() or shared.resolve() != shared or not shared.is_dir() or shared.is_relative_to(worker):
+            raise Blocked("native_cache_root_unavailable")
+        expected_identity = configured.get("cacheStorageIdentity")
+        if expected_identity is not None and common.storage_identity(shared) != expected_identity:
+            raise Blocked("native_cache_storage_changed")
+    else:
+        shared = host.cache_dir() / "native"
+        shared.mkdir(parents=True, exist_ok=True, mode=0o700)
+    state = host.cache_dir() / "native" if os.environ.get("JETBRAINS_INSPECTION_CACHE_DIR") else shared
+    state.mkdir(parents=True, exist_ok=True, mode=0o700)
+    cache = shared / "uv-cache"
+    pythons = shared / "uv-python"
+    for path in (cache, pythons):
+        if path.is_symlink():
+            raise Blocked("native_cache_path_unsafe")
+        path.mkdir(exist_ok=True, mode=0o700)
+    return state, {"UV_CACHE_DIR": str(cache), "UV_PYTHON_INSTALL_DIR": str(pythons)}
 
 
 @contextlib.contextmanager
@@ -109,29 +146,6 @@ def profile_lock(worker):
         except BlockingIOError:
             raise Blocked("native_worker_busy") from None
         yield lock
-
-
-def coverage(requested: set[str], registered: set[str], executed: set[str]) -> dict[str, Any]:
-    missing = sorted(set(requested) - set(registered))
-    unproven = sorted(set(requested) - set(executed))
-    return {"requested": sorted(requested), "registered": sorted(set(requested) & set(registered)),
-            "execution_proved": sorted(set(requested) & set(executed)),
-            "unavailable": missing, "unproven": unproven, "complete": not missing and not unproven}
-
-
-def applicable_rules(requested, selected):
-    python = any(path.endswith(".py") for path in selected)
-    xml = any(path.endswith(".xml") for path in selected)
-    return {rule for rule in requested if (python or not rule.startswith("Py"))
-            and (not common.OTHER_LANGUAGE_RULE_RE.match(rule) or xml and rule.startswith("Xml"))}
-
-
-def applicable_files(tool, selected):
-    if tool.startswith("Py") or tool == "OdooPy":
-        return {path for path in selected if path.endswith(".py")}
-    if tool.startswith("Xml") or tool == "OdooXml":
-        return {path for path in selected if path.endswith(".xml")}
-    return set(selected)
 
 
 def worker_settings(args: Any, host: Any) -> tuple[Path, Path, list[Path]]:
@@ -235,116 +249,91 @@ def sdk_tree(path):
     try:
         return ElementTree.parse(path, parser=ElementTree.XMLParser(target=ElementTree.TreeBuilder(insert_comments=True)))
     except ElementTree.ParseError:
-        raise Blocked("native_recovery_sdk_table_malformed") from None
+        raise Blocked("native_sdk_table_malformed") from None
 
 
-def recover_run(worker):
-    """Recover only a journaled private directory and its exact SDK entry."""
-    journal = worker / "native-run.json"
-    if not journal.exists():
-        return
-    if journal.is_symlink():
-        raise Blocked("native_recovery_ownership_unproven")
+def recover_run(worker, receipt=None, result_path=None):
+    current = receipt if receipt is not None else {"private_deleted": True, "sdk_removed": True}
     try:
-        record = json.loads(journal.read_text())
-        run_id = str(uuid.UUID(record["run_id"]))
-        required = {"private", "sdk_name", "interpreter", "table_existed", "storage_anchor", "storage_identity"}
-        if not required <= record.keys():
-            raise ValueError("missing journal fields")
-    except (ValueError, KeyError, TypeError):
-        raise Blocked("native_recovery_journal_malformed") from None
-    private = Path(record["private"])
-    anchor = Path(record["storage_anchor"])
-    if record["sdk_name"] != "jb-native-" + run_id or private.is_symlink() or not private.is_absolute() or private.resolve() != private or not private.name.startswith("private-") or not private.is_relative_to(anchor):
-        raise Blocked("native_recovery_ownership_unproven")
-    if common.storage_identity(Path(record["storage_anchor"])) != record["storage_identity"]:
-        raise Blocked("native_recovery_storage_changed")
-    if private.exists():
-        marker = private / "owner.json"
-        if marker.is_symlink() or not marker.is_file() or json.loads(marker.read_text()) != record:
-            raise Blocked("native_recovery_ownership_unproven")
-    if record["interpreter"] is not None:
-        remove_sdk(worker / "config", Path(record["interpreter"]), record["sdk_name"], record["table_existed"], missing_ok=True)
-    if private.exists():
-        # Marker remains until every other owned file was deleted.
-        common.delete_private(private)
-    journal.unlink()
+        lifecycle.recover(worker, current, common, write_record, remove_sdk, result_path=result_path)
+    except lifecycle.LifecycleError as error:
+        raise Blocked(str(error)) from None
 
 
 def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, receipt: dict[str, Any], *, lock_fd: int, global_lock_fd: int | None = None, require_completion=True):
-    """One process group; continuously guard license events and parent lifetime."""
+    """One guarded process group; preparation never uses IDE event parsing."""
     process = None
+    receipt["worker_exited"] = True
     stdout = None
     paused = False
-    log_offsets = {}
-    log_tails = {}
-    pending = b""
+    log_offsets, log_framers = {}, {}
+    output_framer = observations.LineFramer()
+    observer = observations.EngineObserver(private / "project", receipt) if require_completion else None
     selector = selectors.DefaultSelector()
-    completion = False
+
+    def consume(framer, data, final=False):
+        if observer is None:
+            return
+        lines, partial = framer.feed(data, final=final)
+        for line in lines:
+            observer.observe(line)
+        if partial:
+            observer.observe(partial, partial=True)
+
+    def read_logs(final=False):
+        if observer is None:
+            return
+        for path in (private / "logs").glob("*.log"):
+            if path.is_symlink():
+                raise Blocked("native_log_path_unsafe")
+            offset = log_offsets.get(path, 0)
+            if path.stat().st_size < offset:
+                raise Blocked("native_log_truncated")
+            framer = log_framers.setdefault(path, observations.LineFramer())
+            with path.open("rb") as stream:
+                stream.seek(offset)
+                while True:
+                    check_lifetime(parent_fd, deadline)
+                    data = stream.read(1024 * 1024)
+                    consume(framer, data)
+                    if not final or len(data) < 1024 * 1024:
+                        break
+                log_offsets[path] = stream.tell()
+            if final:
+                consume(framer, b"", final=True)
+
     try:
         process = subprocess.Popen(argv, cwd=private, env=env, stdin=subprocess.DEVNULL,
                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                    start_new_session=True,
                                    pass_fds=(lock_fd,) if global_lock_fd is None else (lock_fd, global_lock_fd))
         receipt["worker_pid"] = process.pid
+        receipt["worker_exited"] = False
         stdout = process.stdout
         if stdout is None:
             raise Blocked("native_output_pipe_unavailable")
         os.set_blocking(stdout.fileno(), False)
         selector.register(stdout, selectors.EVENT_READ)
-
-        def observe(data):
-            nonlocal completion
-            if require_completion and license_boundary(data):
-                receipt["license_boundary_observed"] = True
-                raise Blocked("native_owner_activation_required")
-            plugin = re.search(r"Odoo IDE \(([0-9][\w.+-]*)\)", data)
-            if plugin:
-                receipt["odoo_plugin_version"] = plugin.group(1)
-            if re.search(r"^Done\.?\s*$", data, re.M):
-                completion = True
-            if re.search(r"Using default project profile|Cannot load project|No files to inspect|No modules", data, re.I):
-                raise Blocked("native_project_or_profile_unprepared")
-            if re.search(r"^ERROR:|\sERROR\s+-", data, re.M):
-                receipt["engine_error_observed"] = True
-                raise Blocked("native_engine_error")
-            if require_completion and re.search(r"Cancelling inspection progress|\b(?:ProcessCanceledException|CancellationException)\b", data):
-                raise Blocked("native_execution_cancelled")
-            for path in re.findall(r"Running local inspections on ([^\r\n]+)", data):
-                source = Path(path.strip())
-                project = private / "project"
-                if source.is_absolute() and source.is_relative_to(project):
-                    relative = source.relative_to(project).as_posix()
-                    if relative not in receipt.setdefault("inspected_files", []):
-                        receipt["inspected_files"].append(relative)
-
-        def read_logs():
-            for path in (private / "logs").glob("*.log"):
-                if path.is_symlink():
-                    raise Blocked("native_log_path_unsafe")
-                with path.open("rb") as stream:
-                    stream.seek(log_offsets.get(path, 0))
-                    data = stream.read(1024 * 1024)
-                    log_offsets[path] = stream.tell()
-                combined = log_tails.get(path, b"") + data
-                observe(combined.decode(errors="replace"))
-                log_tails[path] = combined[-4096:]
-
         while True:
             check_lifetime(parent_fd, deadline)
             for _key, _event in selector.select(0.1):
                 chunk = os.read(stdout.fileno(), 65536)
-                pending += chunk
-                lines = pending.split(b"\n")
-                pending = lines.pop()[-65536:]
-                observe(b"\n".join(lines).decode(errors="replace"))
+                consume(output_framer, chunk)
                 if not chunk:
                     selector.unregister(stdout)
-            observe(pending.decode(errors="replace"))
             read_logs()
             if process.poll() is not None:
-                observe(pending.decode(errors="replace"))
-                read_logs()
+                while True:
+                    check_lifetime(parent_fd, deadline)
+                    try:
+                        chunk = os.read(stdout.fileno(), 65536)
+                    except BlockingIOError:
+                        break
+                    if not chunk:
+                        break
+                    consume(output_framer, chunk)
+                consume(output_framer, b"", final=True)
+                read_logs(final=True)
                 break
             load = os.getloadavg()[0]
             if load > LOAD_LIMIT and not paused:
@@ -355,13 +344,14 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
                 os.killpg(process.pid, signal.SIGCONT)
                 paused = False
         receipt["engine_exit_code"] = process.returncode
-        receipt["completion_observed"] = completion
-        if process.returncode != 0 or require_completion and not completion:
+        receipt["completion_observed"] = observer.completion if observer else False
+        if process.returncode != 0 or observer is not None and not observer.completion:
             raise Blocked("native_execution_incomplete")
+    except observations.ObservationError as error:
+        raise Blocked(str(error)) from None
     finally:
         selector.close()
         if process is not None:
-            # Also kill descendants after a shell/launcher exits unexpectedly.
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
@@ -382,6 +372,8 @@ def prepare_model(project: Path, sdk_name: str, framework_roots: list[Path], sel
         content = ElementTree.SubElement(manager, "content", url=root.as_uri())
         ElementTree.SubElement(content, "sourceFolder", url=root.as_uri(), isTestSource="false")
         if root == project:
+            if (project / "addons").is_dir():
+                ElementTree.SubElement(content, "sourceFolder", url=(project / "addons").as_uri(), isTestSource="false")
             for excluded in (".venv", ".git"):
                 ElementTree.SubElement(content, "excludeFolder", url=(root / excluded).as_uri())
     ElementTree.SubElement(manager, "orderEntry", type="jdk", jdkName=sdk_name, jdkType="Python SDK")
@@ -422,7 +414,7 @@ def plant_controls(project, run_id, odoo):
 
 
 @contextlib.contextmanager
-def registered_sdk(config: Path, interpreter: Path, version: str, sdk_name: str):
+def registered_sdk(config: Path, interpreter: Path, version: str, sdk_name: str, *, on_attempt=None):
     """Add/remove only this run's non-secret SDK entry, in the same profile."""
     table = config / "options/jdk.table.xml"
     if table.is_symlink() or table.parent.is_symlink():
@@ -449,11 +441,13 @@ def registered_sdk(config: Path, interpreter: Path, version: str, sdk_name: str)
                 ElementTree.SubElement(composite, "root", url=Path(path).as_uri(), type="simple")
     ElementTree.SubElement(jdk, "additional")
     table.parent.mkdir(exist_ok=True)
-    atomic_write(table, ElementTree.tostring(tree.getroot(), encoding="utf-8"))
+    if on_attempt is not None:
+        on_attempt()
     try:
+        atomic_write(table, ElementTree.tostring(tree.getroot(), encoding="utf-8"))
         yield
     finally:
-        remove_sdk(config, interpreter, sdk_name, existed)
+        remove_sdk(config, interpreter, sdk_name, existed, missing_ok=True)
 
 
 def remove_sdk(config: Path, interpreter: Path, sdk_name: str, table_existed: bool, missing_ok=False):
@@ -486,9 +480,9 @@ def remove_sdk(config: Path, interpreter: Path, sdk_name: str, table_existed: bo
         atomic_write(table, ElementTree.tostring(current.getroot(), encoding="utf-8"))
 
 
-def read_results(results: Path, project: Path, selected: set[str]) -> tuple[list[dict[str, Any]], set[str], set[str]]:
+def read_results(results: Path, project: Path) -> tuple[list[dict[str, Any]], set[str], dict[str, str]]:
     findings: list[dict[str, Any]] = []
-    executed: set[str] = set()
+    languages: dict[str, str] = {}
     registered: set[str] = set()
     descriptions = results / ".descriptions.xml"
     if descriptions.is_file():
@@ -497,6 +491,8 @@ def read_results(results: Path, project: Path, selected: set[str]) -> tuple[list
             short_name = node.get("shortName")
             if short_name:
                 registered.add(short_name)
+                if language := node.get("language"):
+                    languages[short_name] = language
     for path in sorted(results.glob("*.xml")):
         if path.is_symlink():
             raise Blocked("native_report_path_unsafe")
@@ -517,78 +513,11 @@ def read_results(results: Path, project: Path, selected: set[str]) -> tuple[list
                 raise Blocked("native_finding_identity_unproven")
             if relative.startswith("jb_native_controls_") and relative.endswith("/python_types.py") and rule == "PyTypeHintsInspection":
                 raise Blocked("native_python_language_level_mismatch")
-            executed.add(rule)
-            if relative not in selected:
-                continue
             findings.append({"file": relative, "line": line, "rule_id": rule,
                              "severity": problem_class.get("severity", "WARNING") if problem_class is not None else "WARNING",
                              "message": common.safe_text(problem.findtext("description", ""))})
-    return findings, registered, executed
+    return findings, registered, languages
 
-
-UNUSED_SPLIT = frozenset({'PyUnusedLocalVariableInspection', 'PyUnusedParameterInspection', 'PyUnusedFunctionInspection'})
-
-
-def migrate_expected(requested: set[str], registered: set[str]) -> tuple[set[str], dict[str, list[str]]]:
-    expected = set(requested)
-    migrations = {}
-    if 'PyUnusedLocalInspection' in expected and 'PyUnusedLocalInspection' not in registered and UNUSED_SPLIT <= set(registered):
-        expected.remove('PyUnusedLocalInspection')
-        expected.update(UNUSED_SPLIT)
-        migrations['PyUnusedLocalInspection'] = sorted(UNUSED_SPLIT)
-    return expected, migrations
-
-
-def trace_evidence(payload: Any, project: Path) -> tuple[dict[str, set[str]], set[tuple[str, str]]]:
-    """Return successful physical tool/file pairs; errors cannot borrow success."""
-    if not isinstance(payload, dict) or not isinstance(payload.get('data'), list):
-        raise ValueError('native_trace_invalid')
-    project = Path(project)
-    success: dict[str, set[str]] = {}
-    failed: set[tuple[str, str]] = set()
-    for batch in payload['data']:
-        if not isinstance(batch, dict) or not isinstance(batch.get('spans'), list):
-            raise ValueError('native_trace_invalid')
-        for span in batch['spans']:
-            if not isinstance(span, dict):
-                raise ValueError('native_trace_invalid')
-            if span.get('operationName') != 'inspectionRun':
-                continue
-            tags = {}
-            for tag in span.get('tags', []):
-                if not isinstance(tag, dict) or not isinstance(tag.get('key'), str) or tag['key'] in tags:
-                    raise ValueError('native_trace_invalid')
-                tags[tag['key']] = tag.get('value')
-            tool, raw = tags.get('inspectionId'), tags.get('file')
-            if not isinstance(tool, str) or not tool:
-                raise ValueError('native_trace_invalid')
-            # Synthetic PSI copies such as /factories.py do not prove physical
-            # source execution. Global spans without a file cannot satisfy local
-            # or scoped tool/file requirements either.
-            if not isinstance(raw, str):
-                continue
-            source = Path(raw)
-            if not source.is_absolute() or '..' in source.parts or not source.is_relative_to(project):
-                continue
-            relative = source.relative_to(project).as_posix()
-            key = tool, relative
-            if tags.get('otel.status_code') == 'ERROR' or str(tags.get('error')).lower() == 'true':
-                failed.add(key)
-                continue
-            duration = span.get('durationNano', span.get('duration'))
-            if isinstance(duration, bool) or not isinstance(duration, int) or duration < 0:
-                raise ValueError('native_trace_invalid')
-            success.setdefault(tool, set()).add(relative)
-    for tool, relative in failed:
-        success.get(tool, set()).discard(relative)
-    return success, failed
-
-
-def read_trace(path: Path, project: Path) -> tuple[dict[str, set[str]], set[tuple[str, str]]]:
-    path = Path(path)
-    if path.is_symlink():
-        raise Blocked('native_trace_unsafe')
-    return trace_evidence(json.loads(path.read_text()), project)
 
 
 def envelope(host: Any, receipt: dict[str, Any], findings: list[dict[str, Any]], reason: str, gaps: list[str], artifact: str | None = None) -> dict[str, Any]:
@@ -607,9 +536,17 @@ def envelope(host: Any, receipt: dict[str, Any], findings: list[dict[str, Any]],
         action = "Select .py and Odoo .xml files assigned to the root PyCharm lane; other language or nested-project models require their existing qualified backend."
     elif reason.startswith("native_recovery_") and reason != "native_recovery_only_no_inspection":
         action = "Restore the journaled storage and use --backend native --native-recover-only with the same independent worker. Preserve unproved state."
+    elif reason == "native_interrupted_run_unresolved":
+        action = "Resources were recovered but the licensed run's outcome is unproved. Preserve the journal. Reconcile the original saved nonlicensing terminal JSON with --native-recover-only --native-reconcile-result; without that evidence, escalate the missing outcome for review. Never infer expired activation or delete the hold to retry."
+    elif reason.startswith("native_reconciliation_"):
+        action = "Use --native-recover-only with the original terminal native result for this exact run/backend. Licensing results, unknown outcomes and activation stops cannot be reconciled as nonlicensing. See references/native-backend.md."
+    elif reason == "native_sdk_table_malformed":
+        action = "Preserve the independent profile's malformed non-secret SDK table and repair that metadata under the worker lock before reassessing. No SDK was registered; never reset the profile or inspect activation files."
+    elif reason.startswith("native_cache_"):
+        action = "Restore the configured existing host cache directory and recorded storage identity, or configure its supported replacement outside the activated worker. Never create a replacement mount directory."
     elif reason == "native_worker_busy":
         action = "Let the current isolated worker's owner finish; use the same profile and lock after it exits."
-    report = f"{verdict}: native PyCharm; {reason}; {len(findings)} findings; {len(receipt.get('coverage', {}).get('unproven', []))} inspections unproven."
+    report = f"{verdict}: native PyCharm; {reason}; {len(findings)} findings; {len(gaps)} proof gaps; {len(receipt.get('coverage', {}).get('unproven', []))} inspections unproven."
     return {"schema_version": host.AGENT_RESULT_SCHEMA_VERSION, "command": "agent-inspect", "backend": "native",
             "status": {"GREEN": "clean", "RED": "findings"}.get(verdict, "error"),
             "agent_result": {"verdict": verdict, "bucket": {"GREEN": "clean", "RED": "findings"}.get(verdict, "environment_blocked"),
@@ -625,22 +562,35 @@ def envelope(host: Any, receipt: dict[str, Any], findings: list[dict[str, Any]],
             "diagnostic": {"error_reason": reason, "native": receipt}}
 
 
-def _run(args: Any, host: Any, parent_fd: int | None) -> dict[str, Any]:
-    receipt: dict[str, Any] = {"run_id": str(uuid.uuid4()), "private_deleted": True, "sdk_removed": True, "load_pause_count": 0,
-               "nice": NICE, "active_processors": ACTIVE_PROCESSORS, "heap_limit_mib": HEAP_LIMIT_MIB,
-               "helper_revision": host.helper_revision(), "backend_revision": "sha256:" + common.digest(Path(__file__))}
+def new_receipt(host):
+    components = {name: common.digest(Path(__file__).with_name(name)) for name in
+                  ("native_backend.py", "native_coverage.py", "native_observer.py", "native_lifecycle.py", "qodana_backend.py")}
+    revision = common.hashlib.sha256(json.dumps(components, sort_keys=True).encode()).hexdigest()
+    return {"run_id": str(uuid.uuid4()), "private_deleted": True, "sdk_removed": True, "load_pause_count": 0,
+            "nice": NICE, "active_processors": ACTIVE_PROCESSORS, "heap_limit_mib": HEAP_LIMIT_MIB,
+            "helper_revision": host.helper_revision(), "backend_revision": "sha256:" + revision,
+            "component_revisions": components}
+
+
+def new_context(host):
+    return lifecycle.RunContext(new_receipt(host), common, write_record, remove_sdk)
+
+
+def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str, Any]:
+    context = context or new_context(host)
+    receipt = context.receipt
     findings, gaps, reason, artifact = [], [], "native_prerequisite_failed", None
-    cleanup_private: Path | None = None
-    journal: Path | None = None
-    cleanup_worker: Path | None = None
-    held_lock = contextlib.ExitStack()
+    known_terminal = False
+    held_lock = context.locks
     started = time.monotonic()
     deadline = started + max(1, args.timeout_ms / 1000)
     try:
         if sys.platform != "darwin":
             raise Blocked("native_macos_not_available")
+        if args.native_reconcile_result and not args.native_recover_only:
+            raise Blocked("native_reconciliation_requires_recovery_only")
         worker, app, framework = worker_settings(args, host)
-        cleanup_worker = worker
+        context.worker = worker
         if not args.native_recover_only:
             product = json.loads((app / "Contents/Resources/product-info.json").read_text())
             receipt.update(ide_version=product.get("version"), ide_build=product.get("buildNumber"))
@@ -648,14 +598,12 @@ def _run(args: Any, host: Any, parent_fd: int | None) -> dict[str, Any]:
         global_lock = held_lock.enter_context(profile_lock(state_dir()))
         lock = held_lock.enter_context(profile_lock(worker))
         config, plugins, home = launcher_paths(worker)
-        recover_run(worker)
+        recover_run(worker, receipt, getattr(args, "native_reconcile_result", None))
+        if (worker / "native-activation-stop.json").exists():
+            raise Blocked("native_activation_stop_recorded")
         if args.native_recover_only:
             raise Blocked("native_recovery_only_no_inspection")
-        state = host.cache_dir() / "native"
-        state.mkdir(parents=True, exist_ok=True, mode=0o700)
-        stop = worker / "native-activation-stop.json"
-        if stop.exists():
-            raise Blocked("native_activation_stop_recorded")
+        state, preparation_caches = runtime_storage(host, worker)
         if os.getloadavg()[0] > LOAD_LIMIT:
             raise Blocked("native_host_load_paused")
         repo, settings, scope, selected = common.scope_selection(args, host)
@@ -679,34 +627,19 @@ def _run(args: Any, host: Any, parent_fd: int | None) -> dict[str, Any]:
             raise Blocked("native_filter_unsupported")
         profile, expected = common.profile_for(repo, args.profile or settings.get("profile", ""))
         profile_requested = set(expected)
-        expected = applicable_rules(expected, selected)
         if any(f.endswith(".py") for f in selected):
             expected |= NAMED_PYTHON
         if is_odoo(repo):
             expected |= NAMED_ODOO
-        restricted: set[str] = set()
-        for profile_tool in ElementTree.parse(profile).iter("inspection_tool"):
-            tool_name = profile_tool.get("class")
-            if tool_name and tool_name in expected and any(child.get("enabled") == "false" for child in profile_tool.findall("scope")):
-                restricted.add(tool_name)
         receipt["profile_sha256"] = common.digest(profile)
         if is_odoo(repo) and not framework:
             raise Blocked("native_odoo_framework_required")
-        private = state / ("private-" + receipt["run_id"])
-        cleanup_private = private
-        sdk_name = "jb-native-" + receipt["run_id"]
+        planned_private = state / ("private-" + receipt["run_id"])
         source_interpreter = repo / ".venv/bin/python"
-        interpreter = private / "project/.venv/bin/python" if settings.get("prepare") else source_interpreter
-        anchor = common.storage_anchor(state)
-        record = {"run_id": receipt["run_id"], "private": str(private), "sdk_name": sdk_name,
-                  "interpreter": str(interpreter), "table_existed": (config / "options/jdk.table.xml").exists(),
-                  "storage_anchor": str(anchor), "storage_identity": common.storage_identity(anchor)}
-        journal = worker / "native-run.json"
-        # Custody precedes source snapshotting or environment preparation.
-        write_record(journal, record)
-        private.mkdir(mode=0o700)
-        write_record(private / "owner.json", record)
-        receipt["private_deleted"] = False
+        interpreter = planned_private / "project/.venv/bin/python" if settings.get("prepare") else source_interpreter
+        context.reserve(state, worker, config, interpreter)
+        private = context.private
+        sdk_name = context.identity["sdk_name"]
         for name in ("project", "system", "logs", "tmp", "results", "registry"):
             (private / name).mkdir(mode=0o700)
         project = private / "project"
@@ -723,6 +656,7 @@ def _run(args: Any, host: Any, parent_fd: int | None) -> dict[str, Any]:
         if settings.get("prepare"):
             prepared = common.preparation(settings, private, "python", repo, uv_supplied=True)
             preparation_env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(private / "prepare-home"), "TMPDIR": str(private / "tmp")}
+            preparation_env.update(preparation_caches)
             (private / "prepare-home").mkdir()
             for command in prepared["commands"]:
                 argv = [arg.replace(common.WORK + "/", str(private) + "/") for arg in command]
@@ -753,37 +687,23 @@ def _run(args: Any, host: Any, parent_fd: int | None) -> dict[str, Any]:
                "PYCHARM_PROPERTIES": str(private / "idea.properties"), "PYCHARM_VM_OPTIONS": str(private / "native.vmoptions"),
                "JETBRAINS_INSPECTION_REGISTRY_DIR": str(private / "registry")}
         argv = ["/usr/bin/nice", "-n", str(NICE), str(app / "Contents/bin/inspect.sh"), str(project), str(private / "profile.xml"), str(private / "results"), "-v2"]
-        receipt["sdk_removed"] = False
-        try:
-            with registered_sdk(config, interpreter, version, sdk_name):
-                execute(argv, env, private, deadline, parent_fd, receipt, lock_fd=lock.fileno(), global_lock_fd=global_lock.fileno())
-            receipt["sdk_removed"] = True
-        except Blocked as error:
-            # registered_sdk completed its finally before propagating a run failure.
-            # A cleanup-specific failure stays explicitly unresolved.
-            if str(error) not in {"native_sdk_cleanup_identity_changed", "native_sdk_cleanup_unproven", "native_recovery_sdk_table_malformed"}:
-                receipt["sdk_removed"] = True
-            raise
-        findings, registered, executed = read_results(private / "results", project, selected)
-        trace_tools, trace_failed = read_trace(private / "inspection-trace.json", project)
-        allowed = selected | controls
-        executed.update(tool for tool, paths in trace_tools.items() if paths & allowed)
-        effective, migrations = migrate_expected(expected, registered)
-        receipt["coverage"] = coverage(effective, registered, executed)
-        receipt["coverage"]["vendor_migrations"] = migrations
-        receipt["coverage"]["physical_execution"] = {tool: sorted(paths & allowed) for tool, paths in trace_tools.items() if tool in effective and paths & allowed}
+        with registered_sdk(config, interpreter, version, sdk_name,
+                            on_attempt=lambda: context.sdk_attempt(config, interpreter, sdk_name)):
+            context.phase("engine_running")
+            execute(argv, env, private, deadline, parent_fd, receipt, lock_fd=lock.fileno(), global_lock_fd=global_lock.fileno())
+        all_findings, registered, languages = read_results(private / "results", project)
+        findings = [finding for finding in all_findings if finding["file"] in selected]
+        trace_tools, trace_failed = proof.read_trace(private / "inspection-trace.json", project)
+        control_root = next(iter(controls)).split("/", 1)[0]
+        receipt["coverage"], gaps = proof.assess(expected, registered, trace_tools, trace_failed, selected,
+                                                all_findings, control_root=control_root, tool_languages=languages)
         receipt["coverage"]["profile_requested"] = sorted(profile_requested)
-        receipt["coverage"]["not_applicable"] = sorted(profile_requested - expected)
-        gaps = ["execution_unproven:" + name for name in receipt["coverage"]["unproven"]]
-        gaps += ["inspection_execution_failed:" + failed_tool + ":" + failed_file for failed_tool, failed_file in sorted(trace_failed) if failed_file in allowed]
+        allowed = selected | controls
         if set(receipt.get("inspected_files", [])) - allowed:
             gaps.append("native_unselected_file_traversal")
-        restricted, _ = migrate_expected(restricted, registered)
-        gaps += ["scoped_profile_execution_unproven:" + name for name in sorted(restricted)
-                 if not applicable_files(name, selected) <= trace_tools.get(name, set())]
         if not selected <= set(receipt.get("inspected_files", [])):
             gaps.append("native_selected_file_traversal_unproven")
-        receipt["coverage"]["scope_failures"] = [gap for gap in gaps if not gap.startswith("execution_unproven:")]
+        receipt["coverage"]["scope_failures"] = [gap for gap in gaps if gap.startswith("native_")]
         receipt["coverage"]["complete"] = not gaps
         current_paths = common.checked(["git", "-C", str(repo), "ls-files", "-z", "--cached", "--others", "--exclude-standard"]).decode().split("\0")
         if {path for path in current_paths if path and (repo / path).exists()} != set(hashes):
@@ -803,41 +723,25 @@ def _run(args: Any, host: Any, parent_fd: int | None) -> dict[str, Any]:
         if args.severity != "all":
             findings = [finding for finding in findings if finding["severity"].lower() == args.severity.lower()]
         reason = "native_completed" if not gaps else "native_coverage_unproven"
+        known_terminal = True
     except Blocked as error:
         reason = str(error).replace("qodana_", "native_")
-        if reason.startswith("native_recovery_") and reason != "native_recovery_only_no_inspection":
-            receipt.update(private_deleted=False, sdk_removed=False)
+        known_terminal = True
     except (host.InspectError, OSError, ValueError, ElementTree.ParseError, subprocess.SubprocessError):
         reason = "native_prerequisite_or_report_failed"
+        known_terminal = True
     finally:
-        if receipt.get("license_boundary_observed") and cleanup_worker is not None:
-            # Count-only persistent stop, never preserve raw licensing output.
-            write_record(cleanup_worker / "native-activation-stop.json", {"run_id": receipt["run_id"], "boundary_event_count": 1})
-        if cleanup_private is not None and cleanup_private.exists():
-            if findings:
-                artifact_path = cleanup_private.parent / (receipt["run_id"] + ".findings.json")
-                artifact_path.write_text(json.dumps(findings))
-                artifact = str(artifact_path)
-            try:
-                if journal is not None:
-                    common.delete_private(cleanup_private)
-                else:
-                    shutil.rmtree(cleanup_private)
-                receipt["private_deleted"] = True
-            except OSError:
-                reason = "native_cleanup_failed"
-        if journal is not None and receipt["private_deleted"] and receipt["sdk_removed"]:
-            journal.unlink(missing_ok=True)
-        held_lock.close()
+        reason, artifact = context.finish(findings, reason, known_terminal=known_terminal)
         receipt["wall_seconds"] = round(time.monotonic() - started, 3)
     return envelope(host, receipt, findings, reason, gaps, artifact)
 
 
 def run(args, host):
+    context = new_context(host)
     # A child owns the complete lifecycle and keeps the profile lock after the
     # invoking harness dies. The pipe signals parent death even during a pause.
     if not hasattr(os, "fork"):
-        return envelope(host, {"run_id": str(uuid.uuid4()), "private_deleted": True, "sdk_removed": True}, [], "native_platform_unsupported", [])
+        return envelope(host, context.receipt, [], "native_platform_unsupported", [])
     lifetime_read, lifetime_write = os.pipe()
     result_read, result_write = os.pipe()
     child = os.fork()
@@ -852,9 +756,11 @@ def run(args, host):
             signal.signal(sig, guardian_signal)
         try:
             try:
-                result = _run(args, host, lifetime_read)
+                result = _run(args, host, lifetime_read, context)
             except Exception:
-                result = envelope(host, {"run_id": str(uuid.uuid4()), "private_deleted": False, "sdk_removed": False}, [], "native_internal_error", [])
+                fallback = "native_owner_activation_required" if context.receipt.get("license_boundary_observed") else "native_internal_error"
+                reason, _artifact = context.finish([], fallback, known_terminal=False)
+                result = envelope(host, context.receipt, [], reason, [])
             data = json.dumps(result).encode()
             while data:
                 data = data[os.write(result_write, data):]
@@ -868,7 +774,8 @@ def run(args, host):
         with os.fdopen(result_read, "rb") as stream:
             data = stream.read()
             if not data:
-                return envelope(host, {"run_id": str(uuid.uuid4()), "private_deleted": False, "sdk_removed": False}, [], "native_guardian_exited_without_result", [])
+                context.receipt.update(private_deleted=False, sdk_removed=False)
+                return envelope(host, context.receipt, [], "native_guardian_exited_without_result", [])
             return json.loads(data)
     finally:
         os.close(lifetime_write)

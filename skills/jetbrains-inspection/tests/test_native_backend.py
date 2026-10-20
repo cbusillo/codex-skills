@@ -39,59 +39,15 @@ native: Any = load("native_test_backend", SCRIPTS / "native_backend.py")
 
 def copy_tracked_fixture(fixture, destination):
     repository = Path(subprocess.check_output(["git", "-C", str(fixture), "rev-parse", "--show-toplevel"], text=True).strip())
+    revision = subprocess.check_output(["git", "-C", str(repository), "rev-parse", "HEAD"], text=True).strip()
     prefix = fixture.relative_to(repository).as_posix()
-    paths = subprocess.check_output(["git", "-C", str(repository), "ls-files", "-z", "--", prefix]).decode().split("\0")
+    paths = subprocess.check_output(["git", "-C", str(repository), "ls-tree", "-r", "--name-only", "-z", revision, "--", prefix]).decode().split("\0")
     for path in filter(None, paths):
         relative = (repository / path).relative_to(fixture)
         target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(fixture / relative, target)
-
-
-PROJECT=Path('/private/run/project')
-
-def span(tool='PyCompatibilityInspection',file=None,error=None,duration=0):
-    tags=[{'key':'inspectionId','value':tool},{'key':'file','value':str(PROJECT/'src/clean.py') if file is None else file}]
-    if error:tags.append({'key':error[0],'value':error[1]})
-    return {'operationName':'inspectionRun','durationNano':duration,'tags':tags}
-
-def payload(*spans):return {'data':[{'spans':list(spans)}]}
-
-class TraceTests(unittest.TestCase):
-    def test_scrubbed_stock_trace_proves_clean_physical_tools(self):
-        fixture = Path(__file__).parent / "fixtures/native-trace/clean-tools.json"
-        proved, failed = native.read_trace(fixture, Path("/fixture/project"))
-        self.assertIn("src/example.py", proved["PyCompatibilityInspection"])
-        self.assertIn("controls/control.xml", proved["OdooXml"])
-        self.assertFalse(failed)
-    def test_clean_zero_findings_still_proves_tool_and_exact_physical_file(self):
-        success,failed=native.trace_evidence(payload(span()),PROJECT)
-        self.assertIn('src/clean.py',success['PyCompatibilityInspection'])
-        self.assertFalse(failed)
-    def test_synthetic_copy_and_other_root_do_not_prove_physical_selection(self):
-        success,_=native.trace_evidence(payload(span(file='/clean.py'),span(file='/private/other/src/clean.py')),PROJECT)
-        self.assertFalse(success)
-    def test_error_tag_and_status_each_prevent_a_later_success_borrow(self):
-        for marker in [('error','true'),('otel.status_code','ERROR')]:
-            with self.subTest(marker=marker):
-                success,failed=native.trace_evidence(payload(span(error=marker),span()),PROJECT)
-                self.assertFalse(success['PyCompatibilityInspection'])
-                self.assertIn(('PyCompatibilityInspection','src/clean.py'),failed)
-    def test_incomplete_or_malformed_span_fails_closed(self):
-        for bad in [{}, {'data':[{}]}, payload(span(duration=-1))]:
-            with self.subTest(bad=bad):
-                with self.assertRaises(ValueError):native.trace_evidence(bad,PROJECT)
-    def test_vendor_split_requires_all_three_registered_successors(self):
-        expected,migrations=native.migrate_expected({'PyUnusedLocalInspection'},native.UNUSED_SPLIT)
-        self.assertEqual(expected,native.UNUSED_SPLIT)
-        self.assertEqual(set(migrations['PyUnusedLocalInspection']),native.UNUSED_SPLIT)
-        expected,migrations=native.migrate_expected({'PyUnusedLocalInspection'},set(native.UNUSED_SPLIT)-{'PyUnusedFunctionInspection'})
-        self.assertIn('PyUnusedLocalInspection',expected)
-        self.assertFalse(migrations)
-    def test_live_legacy_tool_does_not_migrate(self):
-        expected,migrations=native.migrate_expected({'PyUnusedLocalInspection'},native.UNUSED_SPLIT|{'PyUnusedLocalInspection'})
-        self.assertEqual(expected,{'PyUnusedLocalInspection'})
-        self.assertFalse(migrations)
+        target.write_bytes(subprocess.check_output(["git", "-C", str(repository), "show", revision + ":" + path]))
+    return revision
 
 
 class NativeTests(unittest.TestCase):
@@ -103,13 +59,16 @@ class NativeTests(unittest.TestCase):
             subprocess.run(["git", "init", "--quiet", str(root)], check=True)
             (fixture / "control.py").write_text("pass\n")
             subprocess.run(["git", "-C", str(root), "add", "fixture/control.py"], check=True)
+            subprocess.run(["git", "-C", str(root), "-c", "user.name=Fixture", "-c", "user.email=fixture@localhost", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "commit", "--quiet", "-m", "Fixture"], check=True)
+            (fixture / "control.py").write_text("changed locally\n")
             (fixture / "unrelated.py").write_text("must not enter qualification\n")
             output = root / "output"
             copy_tracked_fixture(fixture, output)
             self.assertEqual({p.name for p in output.iterdir()}, {"control.py"})
+            self.assertEqual((output / "control.py").read_text(), "pass\n")
     def test_native_is_default_for_odoo_xml_without_desktop_or_docker(self):
         args = host.build_parser().parse_args(["agent-inspect", "--repo", "/fixture"])
-        with patch.object(native.sys, "platform", "darwin"), \
+        with patch.object(sys, "platform", "darwin"), \
                 patch.object(native.common, "scope_selection", return_value=(Path("/fixture"), {}, "files", {"views/form.xml"})), \
                 patch.object(native, "eligible", return_value=True), \
                 patch.object(native, "is_odoo", return_value=True):
@@ -118,7 +77,7 @@ class NativeTests(unittest.TestCase):
 
     def test_full_python_coverage_uses_native(self):
         args = host.build_parser().parse_args(["agent-inspect", "--repo", "/fixture"])
-        with patch.object(native.sys, "platform", "darwin"), \
+        with patch.object(sys, "platform", "darwin"), \
                 patch.object(native.common, "scope_selection", return_value=(Path("/fixture"), {}, "files", {"src/a.py"})), \
                 patch.object(native, "eligible", return_value=True), \
                 patch.object(native, "is_odoo", return_value=False):
@@ -132,12 +91,14 @@ class NativeTests(unittest.TestCase):
 
     def test_unconfigured_native_preserves_the_existing_route(self):
         args = host.build_parser().parse_args(["agent-inspect", "--repo", "/fixture"])
-        with patch.object(native.sys, "platform", "darwin"), \
+        with patch.object(sys, "platform", "darwin"), \
                 patch.object(native.common, "scope_selection", return_value=(Path("/fixture"), {}, "files", {"src/a.py"})), \
                 patch.object(host, "read_global_config", return_value={}), \
                 patch.object(native, "is_odoo", return_value=False), \
                 patch.object(native.common, "select_backend", return_value=("qodana", "qualified")):
-            self.assertEqual(native.select_backend(args, host), ("qodana", "qualified"))
+            backend, reason = native.select_backend(args, host)
+            self.assertEqual(backend, "qodana")
+            self.assertIn("native_worker_not_configured", reason)
 
     def test_cli_dispatch_does_not_enter_desktop_lifecycle(self):
         with patch.object(host, "command_native", return_value={"backend": "native"}) as run, \
@@ -159,13 +120,6 @@ class NativeTests(unittest.TestCase):
                     redirect_stdout(io.StringIO()) as output:
                 host.main()
                 self.assertEqual(json.loads(output.getvalue())["agent_result"]["verdict"], "UNKNOWN")
-
-    def test_enabled_or_registered_without_execution_never_proves_coverage(self):
-        expected = {"OdooPy", "OdooXml", "DuplicatedCode", "HttpUrlsUsage"}
-        coverage = native.coverage(expected, expected, {"OdooPy", "HttpUrlsUsage"})
-        self.assertEqual(set(coverage["unproven"]), {"OdooXml", "DuplicatedCode"})
-        self.assertFalse(coverage["complete"])
-        self.assertTrue(native.coverage(expected, expected, expected)["complete"])
 
     def test_profile_lock_excludes_a_second_process(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -240,13 +194,20 @@ class NativeLifecycleTests(unittest.TestCase):
         (self.app / "Contents/Resources/product-info.json").write_text(json.dumps({"productCode": "PY", "envVarBaseName": "PYCHARM"}))
         (self.app / "Contents/bin/pycharm.vmoptions").write_text("")
         self.script = self.app / "Contents/bin/inspect.sh"
-        self.script.write_text(f"#!{sys.executable}\ntools={list(native.NAMED_PYTHON)!r}\n" + '''import pathlib,sys
+        self.script.write_text(f"#!{sys.executable}\ntools={list(native.NAMED_PYTHON)!r}\ncanary_files={native.proof.CANARY_FILES!r}\n" + '''import pathlib,sys,json
+report_user_findings=True
 out=pathlib.Path(sys.argv[3])
-(out.parent/'inspection-trace.json').write_text('{"data":[{"spans":[]}]}')
-print('Running local inspections on '+str(pathlib.Path(sys.argv[1])/'source.py'))
+project=pathlib.Path(sys.argv[1])
+control=next(project.glob('jb_native_controls_*'))
+spans=[{'operationName':'inspectionRun','duration':1,'tags':[{'key':'inspectionId','value':tool},{'key':'file','value':str(project/'source.py')}]} for tool in tools]
+(out.parent/'inspection-trace.json').write_text(json.dumps({'data':[{'spans':spans}]}))
+print('Running local inspections on '+str(project/'source.py'))
 (out/'.descriptions.xml').write_text('<inspections>'+''.join(f'<inspection shortName="{tool}"/>' for tool in tools)+'</inspections>')
 for tool in tools:
- (out/(tool+'.xml')).write_text(f'<problems><problem><file>file://$PROJECT_DIR$/source.py</file><line>1</line><problem_class id="{tool}" severity="ERROR"/><description>Planted finding</description></problem></problems>')
+ paths=[control/canary_files[tool]]
+ if report_user_findings: paths.append(project/'source.py')
+ problems=''.join(f'<problem><file>{path.as_uri()}</file><line>1</line><problem_class id="{tool}" severity="ERROR"/><description>Planted finding</description></problem>' for path in paths)
+ (out/(tool+'.xml')).write_text('<problems>'+problems+'</problems>')
 print('Done.')
 ''')
         self.script.chmod(0o700)
@@ -254,11 +215,11 @@ print('Done.')
                     "--scope", "files", "--file", "source.py", "--profile", "Test", "--native-worker", str(self.worker), "--ide-app", str(self.app)])
 
     def assess(self, loads=None):
-        with patch.object(native.sys, "platform", "darwin"), \
+        with patch.object(sys, "platform", "darwin"), \
                 patch.object(host, "cache_dir", return_value=self.root / "cache"), \
                 patch.object(host, "read_global_config", return_value={}), \
                 patch.object(host, "trusted_auto_open_roots", return_value=[str(self.repo)]), \
-                patch.object(native.os, "getloadavg", side_effect=loads or (lambda: (1, 1, 1))):
+                patch.object(os, "getloadavg", side_effect=loads or (lambda: (1, 1, 1))):
             return native.run(self.args, host)
 
     def test_findings_require_current_reports_and_cleanup_sdk_in_place(self):
@@ -289,46 +250,28 @@ print('Done.')
         self.assertEqual(result["inspection_outcome"]["reason"], "native_selected_file_over_analysis_limit")
         self.assertNotIn("worker_pid", result["diagnostic"]["native"])
 
-    def test_scoped_disabled_tools_do_not_borrow_unrestricted_controls_proof(self):
-        profile = self.repo / ".idea/inspectionProfiles/Test.xml"
-        profile.write_text(profile.read_text().replace('enabled="true"/>', 'enabled="true"><scope name="Generated" enabled="false"/></inspection_tool>'))
+    def test_control_findings_and_traversal_do_not_replace_selected_tool_spans(self):
+        self.script.write_text(self.script.read_text().replace("report_user_findings=True", "report_user_findings=False")
+                               .replace("'value':str(project/'source.py')", "'value':'/synthetic/source.py'"))
         result = self.assess()
         self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
-        self.assertTrue(any(gap.startswith("scoped_profile_execution_unproven:") for gap in result["proof_failures"]))
+        self.assertTrue(result["coverage"]["missing_execution"])
+        self.assertTrue(all(value["detected"] for value in result["coverage"]["canary_results"].values()))
 
     def test_registered_tool_without_execution_is_unknown_with_findings_retained(self):
         profile = self.repo / ".idea/inspectionProfiles/Test.xml"
-        profile.write_text(profile.read_text().replace('</profile>', '<inspection_tool class="OdooXml" enabled="true"/></profile>'))
+        profile.write_text(profile.read_text().replace('</profile>', '<inspection_tool class="PyCompatibilityInspection" enabled="true"/></profile>'))
         result = self.assess()
         self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
         self.assertTrue(result["findings"])
-        self.assertIn("OdooXml", result["coverage"]["unproven"])
+        self.assertIn("PyCompatibilityInspection", result["coverage"]["unproven"])
 
-    def test_scoped_tool_can_be_proved_on_the_actual_selected_physical_file(self):
-        profile = self.repo / ".idea/inspectionProfiles/Test.xml"
-        profile.write_text(profile.read_text().replace('enabled="true"/>', 'enabled="true"><scope name="Generated" enabled="false"/></inspection_tool>'))
-        self.script.write_text(self.script.read_text() + '''
-import json
-trace={"data":[{"spans":[{"operationName":"inspectionRun","duration":1,"tags":[
- {"key":"inspectionId","value":"PyUnresolvedReferencesInspection"},
- {"key":"file","value":str(pathlib.Path(sys.argv[1])/'source.py')}]}]}]}
-(out.parent/'inspection-trace.json').write_text(json.dumps(trace))
-''')
-        result = self.assess()
-        self.assertEqual(result["agent_result"]["verdict"], "RED")
-        self.assertTrue(result["coverage"]["complete"])
-
-    def test_clean_scope_can_use_private_execution_controls_without_reporting_them(self):
-        original = self.script.read_text()
-        original = original.replace("for tool in tools:",
-            "control=next(pathlib.Path(sys.argv[1]).glob('jb_native_controls_*'))/'coverage.py'\nfor tool in tools:")
-        original = original.replace("file://$PROJECT_DIR$/source.py</file>", "{control.as_uri()}</file>")
-        self.script.write_text(original)
+    def test_clean_selected_spans_and_canaries_allow_green_without_control_findings(self):
+        self.script.write_text(self.script.read_text().replace("report_user_findings=True", "report_user_findings=False"))
         result = self.assess()
         self.assertEqual(result["agent_result"]["verdict"], "GREEN")
         self.assertTrue(result["coverage"]["complete"])
         self.assertEqual(result["finding_count"], 0)
-        self.assertFalse(result["findings"])
 
     def test_license_prompt_stops_worker_removes_runtime_and_persists_stop(self):
         self.script.write_text(f"#!{sys.executable}\nimport time\nprint('No valid license found',flush=True)\ntime.sleep(30)\n")
@@ -353,7 +296,7 @@ trace={"data":[{"spans":[{"operationName":"inspectionRun","duration":1,"tags":[
         (private / "logs").mkdir(parents=True)
         receipt = {"load_pause_count": 0}
         with native.profile_lock(self.worker) as lock:
-            native.execute([sys.executable, "-c", "print('Start trial')"], {}, private, time.monotonic() + 2,
+            native.execute([sys.executable, "-c", "print('Start trial\\nERROR: build warning\\nNo modules\\nUsing default project profile')"], {}, private, time.monotonic() + 2,
                            None, receipt, lock_fd=lock.fileno(), require_completion=False)
         self.assertNotIn("license_boundary_observed", receipt)
 
@@ -388,34 +331,35 @@ trace={"data":[{"spans":[{"operationName":"inspectionRun","duration":1,"tags":[
         finally:
             os.close(read_fd)
 
+    def reserve_run(self):
+        state = self.root / "cache/native"
+        state.mkdir(parents=True, exist_ok=True)
+        context = native.new_context(host)
+        context.reserve(state, self.worker, self.worker / "config", self.repo / ".venv/bin/python")
+        return context
+
     def test_recovery_removes_only_the_journaled_sdk_and_runtime(self):
-        private = self.root / "cache/native/private-interrupted"
-        private.mkdir(parents=True)
-        run_id = str(native.uuid.uuid4())
-        sdk_name = "jb-native-" + run_id
+        table = self.worker / "config/options/jdk.table.xml"
+        table.write_text('<application><!--keep--><component name="ProjectJdkTable"><jdk><name value="owner"/></jdk></component></application>')
+        context = self.reserve_run()
         interpreter = self.repo / ".venv/bin/python"
-        record = {"run_id": run_id, "private": str(private), "sdk_name": sdk_name,
-                  "interpreter": str(interpreter), "table_existed": False,
-                  "storage_anchor": str(self.root), "storage_identity": {"fixture": str(self.root)}}
-        (private / "owner.json").write_text(json.dumps(record))
-        (self.worker / "native-run.json").write_text(json.dumps(record))
-        with native.registered_sdk(self.worker / "config", interpreter, "fixture", sdk_name):
-            # Simulate a hard-killed guardian before its normal context cleanup.
-            table = self.worker / "config/options/jdk.table.xml"
+        sdk_name = context.identity["sdk_name"]
+        with native.registered_sdk(self.worker / "config", interpreter, "fixture", sdk_name,
+                                   on_attempt=lambda: context.sdk_attempt(self.worker / "config", interpreter, sdk_name)):
             saved_sdk = table.read_text()
         table.write_text(saved_sdk)
-        unrelated = self.root / "keep"
-        unrelated.write_text("preserved")
+        context.phase("terminal", outcome="native_parent_exited", license_boundary=False)
         native.recover_run(self.worker)
-        self.assertFalse(private.exists())
-        self.assertFalse(table.exists())
-        self.assertEqual(unrelated.read_text(), "preserved")
+        self.assertFalse(context.private.exists())
+        self.assertIn('value="owner"', table.read_text())
+        self.assertIn('<!--keep-->', table.read_text())
+        self.assertNotIn(sdk_name, table.read_text())
 
     def test_atomic_sdk_update_preserves_comments_and_unrelated_entries(self):
         table = self.worker / "config/options/jdk.table.xml"
         original = '<application><!--keep--><component name="ProjectJdkTable"><jdk><name value="owner"/></jdk></component></application>'
         table.write_text(original)
-        with patch.object(native.os, "replace", side_effect=OSError("interrupted write")):
+        with patch.object(os, "replace", side_effect=OSError("interrupted write")):
             with self.assertRaises(OSError):
                 with native.registered_sdk(self.worker / "config", self.repo / ".venv/bin/python", "fixture", "owned"):
                     self.fail("incomplete write admitted")
@@ -431,28 +375,25 @@ trace={"data":[{"spans":[{"operationName":"inspectionRun","duration":1,"tags":[
 
         def check_custody(repo, project):
             record = json.loads((self.worker / "native-run.json").read_text())
-            self.assertEqual(json.loads((project.parent / "owner.json").read_text()), record)
+            self.assertEqual(json.loads((project.parent / "owner.json").read_text()), native.lifecycle.identity_from(record))
             return snapshot(repo, project)
 
         with patch.object(native.common, "snapshot", side_effect=check_custody):
-            self.assertEqual(self.assess()["cleanup"]["status"], "closed")
+            result = self.assess()
+            self.assertEqual(result["cleanup"]["status"], "closed")
+            self.assertEqual(result["agent_result"]["verdict"], "RED")
 
     def test_recovery_preserves_unproved_state(self):
-        private = self.root / "cache/native/private-interrupted"
-        private.mkdir(parents=True)
-        run_id = str(native.uuid.uuid4())
-        record = {"run_id": run_id, "private": str(private), "sdk_name": "jb-native-" + run_id,
-                  "interpreter": None, "table_existed": False,
-                  "storage_anchor": str(self.root), "storage_identity": {"fixture": str(self.root)}}
-        journal = self.worker / "native-run.json"
-        journal.write_text(json.dumps(record))
+        context = self.reserve_run()
+        private = context.private
+        journal = context.journal
         marker = private / "owner.json"
         marker.write_text("{}")
         with self.assertRaisesRegex(native.Blocked, "native_recovery_ownership_unproven"):
             native.recover_run(self.worker)
         self.assertTrue(journal.exists())
         self.assertTrue(private.exists())
-        marker.write_text(json.dumps(record))
+        marker.write_text(json.dumps(context.identity))
         with patch.object(native.common, "storage_identity", return_value={"changed": True}):
             with self.assertRaisesRegex(native.Blocked, "native_recovery_storage_changed"):
                 native.recover_run(self.worker)
@@ -462,6 +403,219 @@ trace={"data":[{"spans":[{"operationName":"inspectionRun","duration":1,"tags":[
             self.assertEqual(self.assess()["inspection_outcome"]["reason"], "native_worker_busy")
         native.recover_run(self.worker)
         self.assertFalse(private.exists())
+
+    def test_recovery_sdk_failure_retains_state_and_cannot_report_closed(self):
+        context = self.reserve_run()
+        context.sdk_attempt(self.worker / "config", self.repo / ".venv/bin/python", context.identity["sdk_name"])
+        table = self.worker / "config/options/jdk.table.xml"
+        table.write_text('<application><component name="ProjectJdkTable"><jdk><name value="' + context.identity["sdk_name"] + '"/><homePath value="different"/></jdk></component></application>')
+        self.args.native_recover_only = True
+        result = self.assess()
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_recovery_failed")
+        self.assertEqual(result["cleanup"]["status"], "failed")
+        self.assertTrue(context.journal.exists())
+        self.assertTrue(context.private.exists())
+        self.assertTrue(table.exists())
+
+    def test_recovery_storage_and_deletion_failures_are_not_closed(self):
+        context = self.reserve_run()
+        self.args.native_recover_only = True
+        with patch.object(native.common, "storage_identity", side_effect=OSError("offline storage")):
+            result = self.assess()
+        self.assertEqual(result["cleanup"]["status"], "failed")
+        self.assertTrue(context.journal.exists())
+        with patch.object(native.common, "delete_private", side_effect=OSError("interrupted deletion")):
+            result = self.assess()
+        self.assertEqual(result["cleanup"]["status"], "failed")
+        self.assertTrue(context.private.exists())
+
+    def test_reserved_empty_directory_and_partial_marker_are_recoverable(self):
+        for partial in (False, True):
+            with self.subTest(partial=partial):
+                context = self.reserve_run()
+                context.phase("reserved", private_materialized=False)
+                marker = context.private / "owner.json"
+                if partial:
+                    marker.write_text("{incomplete")
+                else:
+                    marker.unlink()
+                native.recover_run(self.worker)
+                self.assertFalse(context.private.exists())
+                self.assertFalse(context.journal.exists())
+
+    def test_partial_owner_write_is_disposed_without_an_unjournaled_temporary(self):
+        def partial_write(path, _identity):
+            path.write_text('{"run_id":')
+            raise OSError("interrupted marker write")
+
+        with patch.object(native.lifecycle, "write_owner", side_effect=partial_write):
+            result = self.assess()
+        self.assertEqual(result["cleanup"]["status"], "closed")
+        self.assertFalse((self.worker / "native-run.json").exists())
+        self.assertFalse(list((self.root / "cache/native").glob("private-*")))
+
+    def test_reserved_directory_does_not_adopt_an_unknown_temporary_file(self):
+        context = self.reserve_run()
+        context.phase("reserved", private_materialized=False)
+        (context.private / "owner.json").unlink()
+        (context.private / ".owner.json-unknown").write_text("partial")
+        with self.assertRaisesRegex(native.Blocked, "native_recovery_ownership_unproven"):
+            native.recover_run(self.worker)
+        self.assertTrue(context.private.exists())
+        self.assertTrue(context.journal.exists())
+
+    def test_malformed_preexisting_sdk_is_preserved_without_fictitious_lease(self):
+        table = self.worker / "config/options/jdk.table.xml"
+        original = "<application incomplete"
+        table.write_text(original)
+        result = self.assess()
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_sdk_table_malformed")
+        self.assertEqual(result["cleanup"]["status"], "closed")
+        self.assertEqual(table.read_text(), original)
+        self.assertFalse((self.worker / "native-run.json").exists())
+
+    def test_artifact_failure_does_not_skip_sdk_or_private_disposal(self):
+        write = native.write_record
+
+        def fail_artifact(path, payload):
+            if path.name.endswith(".findings.json"):
+                raise OSError("full output storage")
+            write(path, payload)
+
+        with patch.object(native, "write_record", side_effect=fail_artifact):
+            result = self.assess()
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_persistence_failed")
+        self.assertEqual(result["cleanup"]["status"], "closed")
+        self.assertFalse((self.worker / "config/options/jdk.table.xml").exists())
+        self.assertFalse((self.worker / "native-run.json").exists())
+
+    def test_unrecorded_licensing_event_cannot_relaunch_after_recovery(self):
+        self.script.write_text(f"#!{sys.executable}\nprint('Your license has expired',flush=True)\n")
+        write = native.write_record
+
+        def fail_terminal_writes(path, payload):
+            if path.name == "native-activation-stop.json" or path.name == "native-run.json" and payload.get("phase") == "terminal":
+                raise OSError("full profile storage")
+            write(path, payload)
+
+        with patch.object(native, "write_record", side_effect=fail_terminal_writes):
+            result = self.assess()
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_owner_activation_required")
+        self.assertEqual(result["cleanup"]["status"], "closed")
+        journal = self.worker / "native-run.json"
+        self.assertEqual(json.loads(journal.read_text())["run_id"], result["identity"]["inspection_run_id"])
+        again = self.assess()
+        self.assertEqual(again["inspection_outcome"]["reason"], "native_interrupted_run_unresolved")
+        self.assertNotIn("worker_pid", again["diagnostic"]["native"])
+        saved = self.root / "terminal-result.json"
+        saved.write_text(json.dumps(result))
+        self.args.native_recover_only = True
+        self.args.native_reconcile_result = str(saved)
+        self.assertEqual(self.assess()["inspection_outcome"]["reason"], "native_reconciliation_result_unproven")
+        self.assertTrue(journal.exists())
+
+    def test_saved_nonlicensing_terminal_result_reconciles_a_persistence_failure(self):
+        write = native.write_record
+
+        def fail_terminal(path, payload):
+            if path.name == "native-run.json" and payload.get("phase") == "terminal":
+                raise OSError("terminal write interrupted")
+            write(path, payload)
+
+        with patch.object(native, "write_record", side_effect=fail_terminal):
+            result = self.assess()
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_persistence_failed")
+        saved = self.root / "terminal-result.json"
+        saved.write_text(json.dumps(result))
+        self.args.native_recover_only = True
+        self.args.native_reconcile_result = str(saved)
+        reconciled = self.assess()
+        self.assertEqual(reconciled["inspection_outcome"]["reason"], "native_recovery_only_no_inspection")
+        self.assertFalse((self.worker / "native-run.json").exists())
+
+    def test_failed_spawn_can_reconcile_its_known_nonlicensing_outcome(self):
+        write = native.write_record
+
+        def fail_terminal(path, payload):
+            if path.name == "native-run.json" and payload.get("phase") == "terminal":
+                raise OSError("terminal write interrupted")
+            write(path, payload)
+
+        execute = native.execute
+
+        def failed_spawn(*args, **kwargs):
+            with patch.object(native.subprocess, "Popen", side_effect=OSError("spawn failed")):
+                return execute(*args, **kwargs)
+
+        with patch.object(native, "execute", side_effect=failed_spawn), \
+                patch.object(native, "write_record", side_effect=fail_terminal):
+            result = self.assess()
+        self.assertTrue(result["diagnostic"]["native"]["worker_exited"])
+        self.assertNotIn("worker_pid", result["diagnostic"]["native"])
+        saved = self.root / "terminal-result.json"
+        saved.write_text(json.dumps(result))
+        self.args.native_recover_only = True
+        self.args.native_reconcile_result = str(saved)
+        reconciled = self.assess()
+        self.assertEqual(reconciled["inspection_outcome"]["reason"], "native_recovery_only_no_inspection")
+        self.assertFalse((self.worker / "native-run.json").exists())
+
+    def test_guardian_fallback_preserves_the_prearmed_run_identity(self):
+        contexts = []
+        create = native.new_context
+
+        def remember(host_module):
+            context = create(host_module)
+            contexts.append(context)
+            return context
+
+        with patch.object(native, "new_context", side_effect=remember), \
+                patch.object(native, "execute", side_effect=RuntimeError("unexpected engine wrapper failure")):
+            result = self.assess()
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_internal_error")
+        self.assertEqual(result["identity"]["inspection_run_id"], contexts[0].receipt["run_id"])
+        journal = json.loads((self.worker / "native-run.json").read_text())
+        self.assertEqual(journal["run_id"], result["identity"]["inspection_run_id"])
+        self.assertFalse(result["diagnostic"]["native"]["terminal_outcome_known"])
+
+    def test_qodana_flock_excludes_native_execution(self):
+        import fcntl
+        state = self.root / "state"
+        state.mkdir()
+        with patch.object(native.common, "state_dir", return_value=state):
+            with native.common.worker_lock_path().open("a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                result = self.assess()
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_worker_busy")
+        self.assertNotIn("worker_pid", result["diagnostic"]["native"])
+
+    def test_structured_preparation_reuses_public_host_caches_across_runs(self):
+        shared = self.root / "shared-caches"
+        shared.mkdir()
+        config = {"jetbrains": {"nativeWorker": {"cacheRoot": str(shared)}}}
+        with patch.object(host, "read_global_config", return_value=config):
+            with patch.object(host, "cache_dir", return_value=self.root / "run-a"), patch.dict(os.environ, {"JETBRAINS_INSPECTION_CACHE_DIR": "override"}):
+                first, first_env = native.runtime_storage(host, self.worker)
+            with patch.object(host, "cache_dir", return_value=self.root / "run-b"), patch.dict(os.environ, {"JETBRAINS_INSPECTION_CACHE_DIR": "override"}):
+                second, second_env = native.runtime_storage(host, self.worker)
+        self.assertNotEqual(first, second)
+        self.assertEqual(first_env, second_env)
+        self.assertTrue(all(Path(path).is_relative_to(shared) for path in first_env.values()))
+        self.assertFalse(any(Path(path).is_relative_to(self.worker) for path in first_env.values()))
+
+    def test_missing_or_changed_host_cache_storage_is_not_recreated(self):
+        missing = self.root / "unmounted/cache"
+        config = {"jetbrains": {"nativeWorker": {"cacheRoot": str(missing)}}}
+        with patch.object(host, "read_global_config", return_value=config):
+            with self.assertRaisesRegex(native.Blocked, "native_cache_root_unavailable"):
+                native.runtime_storage(host, self.worker)
+        self.assertFalse(missing.parent.exists())
+        existing = self.root / "existing-cache"
+        existing.mkdir()
+        config["jetbrains"]["nativeWorker"].update(cacheRoot=str(existing), cacheStorageIdentity={"different": True})
+        with patch.object(host, "read_global_config", return_value=config):
+            with self.assertRaisesRegex(native.Blocked, "native_cache_storage_changed"):
+                native.runtime_storage(host, self.worker)
 
     def test_guardian_cleans_up_after_invoking_process_is_killed(self):
         started = self.root / "engine-started"
@@ -520,27 +674,38 @@ class LiveNativeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="fixture-", dir=cache) as temporary:
             repo = Path(temporary) / "project"
             fixture = Path(__file__).parent / "fixtures/native-odoo"
-            copy_tracked_fixture(fixture, repo)
+            fixture_revision = copy_tracked_fixture(fixture, repo)
             subprocess.run(["git", "init", "--quiet", str(repo)], check=True)
             subprocess.run(["git", "-C", str(repo), "add", "--all"], check=True)
+            subprocess.run(["git", "-C", str(repo), "-c", "user.name=Native fixture", "-c", "user.email=fixture@localhost", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "commit", "--quiet", "-m", "Committed qualification fixture"], check=True)
             args = host.build_parser().parse_args(["agent-inspect", "--backend", "native", "--repo", str(repo),
                        "--scope", "directory", "--dir", "native_probe", "--timeout-ms", "300000"])
             result = native.run(args, host)
+            result["qualification"] = {"fixture_source_commit": fixture_revision}
             if os.environ.get("JB_NATIVE_LIVE_OUT"):
                 Path(os.environ["JB_NATIVE_LIVE_OUT"]).write_text(json.dumps(result, indent=2))
             self.assertEqual(result["agent_result"]["verdict"], "RED", result["agent_result"]["agent_report"])
             self.assertTrue(result["coverage"]["complete"])
             self.assertEqual(result["cleanup"]["status"], "closed")
             findings = json.loads(Path(result["findings_artifact"]).read_text())
-            tree = ast.parse((fixture / "native_probe/models.py").read_text())
-            functions = {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)}
+            self.assertEqual(result["identity"]["native_backend_revision"], native.new_receipt(host)["backend_revision"])
+            self.assertIsNotNone(result["diagnostic"]["native"]["repo_head_sha"])
+            tree = ast.parse((repo / "native_probe/models.py").read_text())
+            functions = {node.name: node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)}
             wrong, correct = functions["wrong_model"], functions["correct_model"]
             self.assertTrue(any(f["rule_id"] == "PyTypeCheckerInspection" and f["file"] == "native_probe/models.py"
                                 and wrong.lineno <= f["line"] <= wrong.end_lineno for f in findings))
             self.assertFalse(any(f["file"] == "native_probe/models.py" and correct.lineno <= f["line"] <= correct.end_lineno for f in findings))
+            dependency = functions["valid_dependency"]
+            self.assertFalse(any(f["rule_id"] == "OdooPy" and f["file"] == "native_probe/models.py"
+                                 and dependency.lineno <= f["line"] <= dependency.end_lineno for f in findings))
+            modern_tree = ast.parse((repo / "native_probe/python_types.py").read_text())
+            modern = next(node for node in modern_tree.body if isinstance(node, ast.FunctionDef) and node.name == "valid_modern_annotation")
+            self.assertFalse(any(f["rule_id"] in {"PyTypeCheckerInspection", "PyTypeHintsInspection"}
+                                 and f["file"] == "native_probe/python_types.py" and modern.lineno <= f["line"] <= modern.end_lineno for f in findings))
             for tool, source in (("OdooXml", "native_probe/views/defect.xml"), ("DuplicatedCode", "native_probe/duplicates.py"), ("OdooPy", "native_probe/models.py")):
                 self.assertTrue(any(f["rule_id"] == tool and f["file"] == source for f in findings), tool)
-            duplicate_tree = ast.parse((fixture / "native_probe/duplicates.py").read_text())
+            duplicate_tree = ast.parse((repo / "native_probe/duplicates.py").read_text())
             blocks = [node for node in duplicate_tree.body if isinstance(node, ast.FunctionDef)]
             self.assertTrue(any(f["rule_id"] == "DuplicatedCode" and f["file"] == "native_probe/duplicates.py"
                                 and any(block.body[0].lineno <= f["line"] <= block.end_lineno for block in blocks)
