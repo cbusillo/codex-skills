@@ -216,9 +216,15 @@ with live, unproved descendants remains UNKNOWN.
 The group-exit check tolerates a transient permission error only within its
 bounded wait; only an absent process group proves exit. A persistent error
 retains the journal, SDK and private directory, with the PGID and last errno
-in the receipt. If recovery cannot prove that group gone, ask the Director to
-inspect the reported PGID with `ps -axo pid=,pgid=,stat=,command=` and confirm
-or end any remaining owned processes. Do not signal an unproved identity.
+in the receipt. KILL, STOP and CONT share a non-throwing signal observation;
+none of their errors proves exit. Finalization bounds the leader reap as well
+as group proof, and attempts licence draining even if signalling or reaping
+fails. Both successful reaping and group absence are required to close custody.
+A failed load-control signal aborts a still-live worker into this finalization.
+If recovery cannot prove the group or identity, run a read-only census with
+`ps -axo pid=,pgid=,stat=,command=` against the reported PID/PGID. Let unrelated
+processes finish, and bring the Director one recommendation before ending an
+owned process whose identity remains unproved. Do not signal it automatically.
 After the group is gone, repeat `--native-recover-only`; the original licensed
 outcome hold still requires its separate reconciliation or Director decision.
 Recovery alone retains an unknown-outcome hold; it does not infer expired

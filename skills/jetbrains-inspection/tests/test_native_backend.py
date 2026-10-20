@@ -951,6 +951,23 @@ with patch.object(native.sys,'platform','darwin'), patch.object(native,'state_di
                 kill.assert_not_called()
                 self.args.native_release_run = None
 
+    def test_orphan_signal_exit_races_recover_resources_but_keep_outcome_hold(self):
+        for error in (PermissionError(errno.EPERM, "exiting"), ProcessLookupError(errno.ESRCH, "gone")):
+            with self.subTest(error=type(error).__name__):
+                context = self.reserve_run()
+                identity = {"pid": 123456, "pgid": 123456, "started": "old", "birth_clock": native.PROCESS_BIRTH_CLOCK, "private": str(context.private)}
+                context.phase("engine_running", engine_identity=identity)
+                self.args.native_recover_only = True
+                with patch.object(native, "process_identity", return_value=identity), \
+                        patch.object(native.os, "killpg", side_effect=[error, ProcessLookupError(errno.ESRCH, "gone")]):
+                    result = self.assess(direct=True)
+                self.assertEqual(result["inspection_outcome"]["reason"], "native_interrupted_run_unresolved")
+                self.assertEqual(result["cleanup"]["status"], "closed")
+                self.assertNotIn("orphan_group_stopped", result["diagnostic"]["native"])
+                self.args.native_release_run = context.identity["run_id"]
+                self.assertEqual(self.assess(direct=True)["cleanup"]["status"], "closed")
+                self.args.native_release_run = None
+
     def test_recovery_refuses_unproved_identity_without_signalling(self):
         for pgid, same_path, started in ((123456, False, "old"), (42, True, "old"), (123456, True, "different-unclocked")):
             with self.subTest(pgid=pgid):
@@ -962,8 +979,28 @@ with patch.object(native.sys,'platform','darwin'), patch.object(native,'state_di
                     result = self.assess(direct=True)
                 self.assertEqual(result["inspection_outcome"]["reason"], "native_recovery_process_identity_changed")
                 self.assertEqual(result["cleanup"]["status"], "failed")
+                recorded = json.loads(context.journal.read_text())["engine_identity"]
+                for key in ("pid", "pgid"):
+                    self.assertEqual(result["diagnostic"]["native"]["recovery_process"][key], recorded[key])
+                    self.assertIn(str(recorded[key]), result["agent_result"]["next_action"])
                 kill.assert_not_called()
                 self.assertTrue(context.private.exists())
+
+    def test_unparseable_process_identity_has_numbered_continuation_without_signalling(self):
+        context = self.reserve_run()
+        identity = {"pid": 123456, "pgid": 123456, "started": "old", "private": str(context.private)}
+        context.phase("engine_running", engine_identity=identity)
+        self.args.native_recover_only = True
+        with patch.object(native, "process_identity", side_effect=native.Blocked("native_recovery_process_identity_unproven")), \
+                patch.object(native.os, "killpg") as kill:
+            result = self.assess(direct=True)
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_recovery_process_identity_unproven")
+        self.assertEqual(result["cleanup"]["status"], "failed")
+        for key in ("pid", "pgid"):
+            self.assertEqual(result["diagnostic"]["native"]["recovery_process"][key], identity[key])
+            self.assertIn(str(identity[key]), result["agent_result"]["next_action"])
+        kill.assert_not_called()
+        self.assertTrue(context.private.exists())
 
     def test_both_entry_paths_preserve_resources_under_a_live_unproved_group(self):
         for recover_only in (False, True):

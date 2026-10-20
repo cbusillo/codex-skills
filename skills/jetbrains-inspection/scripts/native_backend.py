@@ -385,6 +385,19 @@ def group_gone(pid, seconds=2, *, receipt=None):
         time.sleep(0.02)
 
 
+def send_group_signal(pid, operation, receipt):
+    """A failed signal is an observation, never proof of group exit."""
+    event = receipt.setdefault("process_signals", {}).setdefault(signal.Signals(operation).name, {"attempts": 0})
+    event.update(pgid=pid, attempts=event["attempts"] + 1, last_errno=None)
+    try:
+        os.killpg(pid, operation)
+    except OSError as error:
+        event.update(sent=False, last_errno=error.errno)
+        return False
+    event["sent"] = True
+    return True
+
+
 def stop_orphan(worker, receipt):
     """The control lock proves no live guardian owns this journal."""
     journal = worker / "native-run.json"
@@ -405,6 +418,7 @@ def stop_orphan(worker, receipt):
             return custody_proof
         engine = process["identity"]
         pid = engine["pid"]
+        receipt["recovery_process"] = {key: engine.get(key) if type(engine.get(key)) is int and engine[key] > 0 else None for key in ("pid", "pgid")}
         if type(pid) is not int or pid < 1 or engine["pgid"] != pid or engine["private"] != identity["private"]:
             raise Blocked("native_recovery_process_identity_unproven")
         current = process_identity(pid, Path(identity["private"]))
@@ -421,8 +435,8 @@ def stop_orphan(worker, receipt):
             return custody_proof
         if current != engine:
             raise Blocked("native_recovery_process_identity_changed")
-        os.killpg(pid, signal.SIGKILL)
-        receipt["orphan_group_stopped"] = pid
+        if send_group_signal(pid, signal.SIGKILL, receipt):
+            receipt["orphan_group_stopped"] = pid
         receipt["recovered_process_kind"] = process["kind"]
         if not group_gone(pid, receipt=receipt):
             raise Blocked("native_recovery_process_group_unproven")
@@ -647,11 +661,17 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
                 break
             load = os.getloadavg()[0]
             if load > LOAD_LIMIT and not paused:
-                os.killpg(process.pid, signal.SIGSTOP)
+                if not send_group_signal(process.pid, signal.SIGSTOP, receipt):
+                    if process.poll() is not None:
+                        continue
+                    raise Blocked("native_process_signal_failed")
                 paused = True
                 receipt["load_pause_count"] += 1
             elif load <= LOAD_LIMIT and paused:
-                os.killpg(process.pid, signal.SIGCONT)
+                if not send_group_signal(process.pid, signal.SIGCONT, receipt):
+                    if process.poll() is not None:
+                        continue
+                    raise Blocked("native_process_signal_failed")
                 paused = False
         receipt["engine_exit_code" if require_completion else "preparation_exit_code"] = process.returncode
         receipt["completion_observed"] = observer.completion if require_completion else False
@@ -667,12 +687,16 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
         if process is not None:
             if process.returncode is None:
                 # Until wait/poll reaps this leader its PID cannot be reused.
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-            process.wait()
-            closed = group_gone(process.pid, receipt=receipt)
+                send_group_signal(process.pid, signal.SIGKILL, receipt)
+            try:
+                process.wait(timeout=2)
+                reaped = True
+            except (subprocess.TimeoutExpired, OSError) as error:
+                reaped = False
+                receipt["process_reap_failure"] = {"kind": type(error).__name__, "errno": getattr(error, "errno", None)}
+            receipt["process_reaped"] = reaped
+            absent = group_gone(process.pid, receipt=receipt)
+            closed = reaped and absent
             receipt["process_custody_closed"] = closed
             if require_completion:
                 drain_licenses(stdout if stdout is not None else process.stdout)
@@ -865,9 +889,11 @@ def envelope(host: Any, receipt: dict[str, Any], findings: list[dict[str, Any]],
         action = "Reduce the selected scope or set --max-files to the intended file limit before reassessing."
     elif reason == "native_scope_unsupported":
         action = "Select .py and Odoo .xml files assigned to the root PyCharm lane; other language or nested-project models require their existing qualified backend."
-    elif reason == "native_recovery_process_group_unproven":
-        pgid = receipt.get("process_group_probe", {}).get("pgid", "<journaled-pgid>")
-        action = f"Preserve the SDK, private directory and journal. Ask the Director to inspect process group {pgid} with ps -axo pid=,pgid=,stat=,command= and confirm or end any remaining owned processes. Never signal a group whose journaled identity cannot be proved. After the group is gone, use --backend native --native-recover-only with the same independent worker; this does not release an unknown licensed outcome."
+    elif reason in {"native_recovery_process_group_unproven", "native_recovery_process_identity_changed", "native_recovery_process_identity_unproven"}:
+        identity = receipt.get("recovery_process", {})
+        pid = identity.get("pid") or "<journaled-pid>"
+        pgid = receipt.get("process_group_probe", {}).get("pgid") or identity.get("pgid") or "<journaled-pgid>"
+        action = f"Preserve the SDK, private directory and journal. Run the read-only census ps -axo pid=,pgid=,stat=,command= and compare journaled PID {pid} / PGID {pgid}. Let unrelated processes finish. Bring the Director one recommendation before ending any owned process whose identity is unproved; never signal an unproved identity automatically. Once the journaled PID and group are absent, use --backend native --native-recover-only with the same independent worker. This does not release an unknown licensed outcome."
     elif reason.startswith("native_recovery_") and reason != "native_recovery_only_no_inspection":
         action = "Restore the journaled storage and use --backend native --native-recover-only with the same independent worker. Preserve unproved state."
     elif reason == "native_interrupted_run_unresolved":
@@ -886,6 +912,8 @@ def envelope(host: Any, receipt: dict[str, Any], findings: list[dict[str, Any]],
         action = "Let a live isolated worker's owner finish. If its guardian died, use --backend native --native-recover-only with the same independent worker to reconcile the journaled process; never kill another session's worker."
     elif reason == "native_process_group_unproven":
         action = "Preserve the SDK, private directory and journal until the process group is proved gone. Use --backend native --native-recover-only with the same independent worker; resource recovery does not clear an unknown licensed outcome."
+    elif reason == "native_process_signal_failed":
+        action = "The load-control signal failed while its leader was still live. Bounded finalization attempted termination, reaping, group proof and licence drain. Check process_signals in the receipt before a fresh assessment; retained custody requires --native-recover-only first."
     report = f"{verdict}: native PyCharm; {reason}; {len(findings)} findings; {len(gaps)} proof gaps; {len(receipt.get('coverage', {}).get('unproven', []))} inspections unproven."
     return {"schema_version": host.AGENT_RESULT_SCHEMA_VERSION, "command": "agent-inspect", "backend": "native",
             "status": {"GREEN": "clean", "RED": "findings"}.get(verdict, "error"),

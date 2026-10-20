@@ -5,12 +5,16 @@
 # ///
 """Framing protects event identities without storing engine messages."""
 import importlib.util
+import errno
+import os
+import signal
+import subprocess
 import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from typing import Any
 
 spec = importlib.util.spec_from_file_location("observer_test", Path(__file__).parents[1] / "scripts/native_observer.py")
@@ -105,6 +109,119 @@ class ProcessDrainTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.private = Path(temporary.name).resolve()
         (self.private / "logs").mkdir()
+
+    def simulated_process(self):
+        reader, writer = os.pipe()
+        os.close(writer)
+        stream = os.fdopen(reader, "rb")
+        self.addCleanup(stream.close)
+        process = Mock(pid=123456, stdout=stream, returncode=None)
+        process.wait.return_value = 0
+        return process
+
+    def test_cleanup_signal_exit_races_preserve_abort_and_run_finalizers(self):
+        for error in (PermissionError(errno.EPERM, "exiting"), ProcessLookupError(errno.ESRCH, "gone")):
+            with self.subTest(error=type(error).__name__):
+                process = self.simulated_process()
+                receipt = {"load_pause_count": 0}
+                exited = Mock()
+
+                def abort(_pid):
+                    raise self.backend.Blocked("native_timeout")
+
+                with patch.object(self.backend.subprocess, "Popen", return_value=process), \
+                        patch.object(self.backend.os, "killpg", side_effect=error), \
+                        patch.object(self.backend, "group_gone", return_value=True) as proof, \
+                        (self.private / "worker.lock").open("w") as lock:
+                    with self.assertRaises(self.backend.Blocked) as outcome:
+                        self.backend.execute(["fixture"], {}, self.private, time.monotonic() + 3, None,
+                                             receipt, lock_fd=lock.fileno(), on_spawn=abort, on_exit=exited)
+                self.assertEqual(str(outcome.exception), "native_timeout")
+                self.assertGreater(process.wait.call_args.kwargs["timeout"], 0)
+                proof.assert_called_once()
+                exited.assert_called_once()
+                self.assertTrue(receipt["process_custody_closed"])
+                self.assertTrue(receipt["license_observation_complete"])
+
+    def test_unreaped_child_keeps_custody_and_still_drains_licence_events(self):
+        for error in (subprocess.TimeoutExpired("fixture", 2), OSError(errno.EIO, "unavailable")):
+            with self.subTest(error=type(error).__name__):
+                process = self.simulated_process()
+                process.wait.side_effect = error
+                receipt = {"load_pause_count": 0}
+                exited = Mock()
+                (self.private / "logs/late.log").write_text("No valid license found\n")
+
+                def abort(_pid):
+                    raise self.backend.Blocked("native_timeout")
+
+                with patch.object(self.backend.subprocess, "Popen", return_value=process), \
+                        patch.object(self.backend.os, "killpg", side_effect=PermissionError(errno.EPERM, "denied")), \
+                        patch.object(self.backend, "group_gone", return_value=True) as proof, \
+                        (self.private / "worker.lock").open("w") as lock:
+                    with self.assertRaises(self.backend.Blocked) as outcome:
+                        self.backend.execute(["fixture"], {}, self.private, time.monotonic() + 3, None,
+                                             receipt, lock_fd=lock.fileno(), on_spawn=abort, on_exit=exited)
+                self.assertEqual(str(outcome.exception), "native_process_group_unproven")
+                self.assertGreater(process.wait.call_args.kwargs["timeout"], 0)
+                proof.assert_called_once()
+                exited.assert_not_called()
+                self.assertFalse(receipt["process_custody_closed"])
+                self.assertFalse(receipt["license_observation_complete"])
+                self.assertTrue(receipt["license_boundary_observed"])
+                self.assertTrue(process.stdout.closed)
+
+    def load_signal_case(self, failed_signal, *, exited):
+        process = self.simulated_process()
+        receipt = {"load_pause_count": 0}
+        polls = 0
+        exit_poll = 2 if failed_signal == signal.SIGSTOP else 3
+
+        def poll():
+            nonlocal polls
+            polls += 1
+            if exited and polls >= exit_poll:
+                process.returncode = 0
+            return process.returncode
+
+        def send(_pid, operation):
+            if operation == failed_signal:
+                raise PermissionError(errno.EPERM, "signal unavailable")
+
+        def spawn(*_args, **kwargs):
+            # Model inherited descriptors so the guardian's gate has a reader.
+            for descriptor in kwargs.get("pass_fds", ()):
+                self.addCleanup(os.close, os.dup(descriptor))
+            return process
+
+        loads = iter((65, 1)) if failed_signal == signal.SIGCONT else iter((65,))
+        process.poll.side_effect = poll
+        outcome = None
+        with patch.object(self.backend.subprocess, "Popen", side_effect=spawn), \
+                patch.object(self.backend.os, "killpg", side_effect=send), \
+                patch.object(self.backend.os, "getloadavg", side_effect=lambda: (next(loads, 1), 1, 1)), \
+                patch.object(self.backend, "group_gone", return_value=True), \
+                (self.private / "worker.lock").open("w") as lock:
+            try:
+                self.backend.execute(["fixture"], {}, self.private, time.monotonic() + 3, None,
+                                     receipt, lock_fd=lock.fileno(), require_completion=False)
+            except self.backend.Blocked as error:
+                outcome = str(error)
+        return outcome, receipt
+
+    def test_load_signal_exit_races_return_to_normal_completion(self):
+        for operation in (signal.SIGSTOP, signal.SIGCONT):
+            with self.subTest(operation=operation):
+                outcome, receipt = self.load_signal_case(operation, exited=True)
+                self.assertIsNone(outcome)
+                self.assertTrue(receipt["process_custody_closed"])
+
+    def test_live_load_signal_failure_aborts_instead_of_continuing(self):
+        for operation in (signal.SIGSTOP, signal.SIGCONT):
+            with self.subTest(operation=operation):
+                outcome, receipt = self.load_signal_case(operation, exited=False)
+                self.assertEqual(outcome, "native_process_signal_failed")
+                self.assertTrue(receipt["process_custody_closed"])
 
     def run_process(self, code, *, lifetime=None):
         receipt: dict[str, Any] = {"load_pause_count": 0}
