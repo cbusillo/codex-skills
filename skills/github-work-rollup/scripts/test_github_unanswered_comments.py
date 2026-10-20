@@ -13,8 +13,8 @@ import argparse
 import importlib.util
 import json
 import os
+import subprocess
 import sys
-import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1931,67 +1931,66 @@ def test_stuck_gh_call_times_out_as_a_coverage_error(monkeypatch) -> None:
     monkeypatch.setattr(github_unanswered_comments, "GH_CALL_TIMEOUT_SECONDS", 0.2)
     started = time.monotonic()
 
-    with pytest.raises(github_unanswered_comments.rollup.RollupError, match="timed out"):
+    with pytest.raises(github_unanswered_comments.rollup.RollupError, match="Timed out"):
         github_unanswered_comments.run_json([sys.executable, "-c", "import time; time.sleep(30)"])
 
     assert time.monotonic() - started < 10
 
 
-def stuck_github(stuck_endpoint: str, release: threading.Event, fake: FakeGitHub):
-    def run_json(command: list[str]) -> object:
-        endpoint = command[2] if len(command) > 2 else ""
-        if endpoint == stuck_endpoint:
-            release.wait(30)
-            raise github_unanswered_comments.rollup.RollupError("released after the test")
-        return fake(command)
+FAKE_GH = """
+import json, sys, time
 
-    return run_json
+stuck, thread = sys.argv[1], json.loads(sys.argv[2])
+endpoint = sys.argv[4]
+if stuck in endpoint:
+    time.sleep(120)
+if endpoint == "user":
+    print(json.dumps({"login": "fixture-automation"}))
+elif endpoint == "graphql":
+    print(json.dumps({"data": {"node": {"lastEditedAt": None, "reactions": {
+        "nodes": [], "pageInfo": {"hasNextPage": False, "endCursor": None}}}}}))
+elif "--slurp" in sys.argv:
+    print("[[]]")
+else:
+    print(json.dumps(thread))
+"""
+
+RADAR_WITH_SHORT_DEADLINE = """
+import importlib.util, sys
+
+spec = importlib.util.spec_from_file_location("github_unanswered_comments", sys.argv[1])
+radar = sys.modules[spec.name] = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(radar)
+radar.DISCUSSION_READ_DEADLINE_SECONDS = 1
+sys.argv = [sys.argv[1], "--thread", "example/repo#1", "--self-login", "cbusillo", "--format", "json"]
+sys.exit(radar.main())
+"""
 
 
-def test_discussion_reads_stop_at_the_deadline_and_report_degraded(monkeypatch) -> None:
-    release = threading.Event()
-    answered = opening(number=1, author="outside", pull_request=False)
-    fake = FakeGitHub({"repos/example/repo/issues/1": answered})
-    monkeypatch.setattr(github_unanswered_comments, "run_json", stuck_github("repos/example/repo/issues/2", release, fake))
-    monkeypatch.setattr(github_unanswered_comments, "DISCUSSION_READ_DEADLINE_SECONDS", 0.5)
-    settings = github_unanswered_comments.resolve_settings(
-        args(thread=["example/repo#1", "example/repo#2"], self_login=["cbusillo"], until="2026-07-26T20:00:00Z"), {}
+@pytest.mark.parametrize(("stuck_endpoint", "lane"), [("repos/example/repo/issues/1", "thread"), ("graphql", "reactions/")])
+def test_stuck_discussion_read_ends_the_radar_at_the_deadline(tmp_path: Path, stuck_endpoint: str, lane: str) -> None:
+    # The stuck gh call is never released: the radar process itself must exit.
+    fake_gh = tmp_path / "gh"
+    fake_gh.write_text(
+        "#!/bin/sh\n"
+        f'exec "{sys.executable}" -c \'{FAKE_GH}\' "{stuck_endpoint}" \'{json.dumps(opening(number=1, author="outside", pull_request=False))}\' "$@"\n'
     )
+    fake_gh.chmod(0o755)
+    env = {**os.environ, "GITHUB_UNANSWERED_COMMENTS_GH": str(fake_gh), "CODE_HOME": str(tmp_path / "missing")}
     started = time.monotonic()
-    try:
-        payload = github_unanswered_comments.collect_payload(settings)
-    finally:
-        release.set()
 
-    assert time.monotonic() - started < 10
-    assert payload["status"] == "degraded"
-    assert payload["coverage"]["scanned_thread_count"] == 1
-    assert any("#2" in error["error"] and "deadline" in error["error"] for error in payload["coverage"]["errors"])
-
-
-def test_reaction_reads_share_the_discussion_deadline(monkeypatch) -> None:
-    release = threading.Event()
-    item = opening(number=1, author="outside", pull_request=False)
-    fake = FakeGitHub({"repos/example/repo/issues/1": item})
-    monkeypatch.setattr(github_unanswered_comments, "run_json", stuck_github("graphql", release, fake))
-    monkeypatch.setattr(github_unanswered_comments, "DISCUSSION_READ_DEADLINE_SECONDS", 0.5)
-    settings = github_unanswered_comments.resolve_settings(
-        args(thread=["example/repo#1"], self_login=["cbusillo"], until="2026-07-26T20:00:00Z"), {}
+    result = subprocess.run(
+        [sys.executable, "-c", RADAR_WITH_SHORT_DEADLINE, str(MODULE_PATH)],
+        capture_output=True, text=True, env=env, cwd=tmp_path, timeout=60,
     )
-    started = time.monotonic()
-    try:
-        payload = github_unanswered_comments.collect_payload(settings)
-    finally:
-        release.set()
 
-    assert time.monotonic() - started < 10
+    assert time.monotonic() - started < 30, result.stderr
+    assert result.stdout, result.stderr
+    payload = json.loads(result.stdout)
     assert payload["status"] == "degraded"
     assert any(
-        error["lane"].startswith("reactions/") and "deadline" in error["error"]
-        for error in payload["coverage"]["errors"]
-    )
-    assert [row["number"] for row in payload["attention"]] == [1]
-
+        error["lane"].startswith(lane) and "deadline" in error["error"] for error in payload["coverage"]["errors"]
+    ), payload["coverage"]["errors"]
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))
