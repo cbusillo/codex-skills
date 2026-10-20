@@ -210,6 +210,26 @@ class RedactionTests(unittest.TestCase):
                 (secret,),
                 ("failed", trace),
             ),
+            (
+                [r"error=(\"API_TOKEN\", \"" + secret + r'\") {"attempt":1}'],
+                (secret,),
+                ("attempt",),
+            ),
+            (
+                [r"argv=[\"deploy\", \"--token\", \"" + secret + r'\"] {"attempt":1}'],
+                (secret,),
+                ("attempt",),
+            ),
+            (
+                ["q=" + quote("('API_TOKEN', '" + secret + "')") + ' {"attempt":1}'],
+                (secret,),
+                ("attempt",),
+            ),
+            (
+                ["q=" + quote("['--token', '" + secret + "']") + ' {"attempt":1}'],
+                (secret,),
+                ("attempt",),
+            ),
             (["PGPASSWORD=" + secret], (secret,), ()),
             (
                 [json.dumps({"secrets": {"odoo_admin": secret}, "event": "failed"})],
@@ -356,7 +376,7 @@ class RedactionTests(unittest.TestCase):
         for text in ("{[1]: 2}", "{1, []}"):
             self.assertIsInstance(Redactor().feed(text).message, str)
 
-    def test_oversized_and_unbound_key_records_fail_without_output(self):
+    def test_record_limits_withhold_unsafe_data_and_keep_safe_context(self):
         with self.assertRaises(RedactionError):
             Redactor().feed("a." * MAX_MESSAGE_BYTES)
         with self.assertRaises(RedactionError):

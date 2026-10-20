@@ -424,7 +424,7 @@ def clean_record(
             # A complete serialized record cannot open a stream continuation.
             nested = clean_record(value, depth + 1, diagnostic_value=diagnostic_value)
             return CleanRecord(nested.message)
-        left = clean_plain(CONTROL.sub("", normalize(prefix)))
+        left = clean_record(CONTROL.sub("", normalize(prefix)), depth + 1)
         right = clean_record(
             CONTROL.sub("", normalize(suffix)),
             depth + 1,
