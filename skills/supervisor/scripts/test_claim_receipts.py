@@ -219,6 +219,14 @@ def ordinary_read_history(harness):
             native[0]["message"]["content"][0].update(id=identifier, input={"command": command})
         native[1] = output({"exit_code": 0, "output": ""}, harness, identifier)
         rows[-end:-end] = native
+    if harness == "codex":
+        printed_source = 'text(await tools.exec_command({cmd:"uv run gh-plan.py claim 1"}));'
+        native = history(harness, {})[1:3]
+        native[0]["payload"].update(name="functions.exec", call_id="read-cell", arguments=
+            'const read=(e,c)=>text(c);read(eval,' + json.dumps(printed_source) + ');')
+        native[1] = composed_result(printed_source, "read-cell")
+        native[1]["payload"]["output"].insert(0, cell_header())
+        rows[-end:-end] = native
     return rows
 
 
@@ -886,6 +894,12 @@ class ReceiptTests(unittest.TestCase):
                 rows[3:3] = call
                 with self.subTest(harness=harness, content=text):
                     self.assertFalse(receipts.ownership_state(rows, harness)["indices"])
+        rows = ordinary_read_history("codex")
+        cell = next(row["payload"] for row in rows
+                    if row.get("payload", {}).get("call_id") == "read-cell"
+                    and row["payload"].get("name") == "functions.exec")
+        cell["arguments"] = cell["arguments"].replace("=>text(c)", "=>e(c)")
+        self.assertTrue(receipts.ownership_state(rows, "codex")["pending"])
 
     def test_mocked_process_diagnostics_preserve_native_closeout(self):
         writer = "uv run gh-plan.py --repo example/a claim 1"
@@ -4473,6 +4487,31 @@ os.system(get())
             self.assertEqual(len(calls), count)
             traversal.append(work[0])
         self.assertLessEqual(traversal[1], 6 * traversal[0])
+        for operand in ("x", ""):
+            traversal = []
+            for count in (16, 64):
+                source = 'const cfg={' + ','.join('k' + str(index) + ':eval' for index in range(count)) + '};'
+                source += ''.join('await cfg.k' + str(index) + '(' + operand + ');' for index in range(count))
+                _, code, _, _ = receipts.javascript_projection(source)
+                work = [0]
+                owner_file = receipts.javascript_source_calls.__code__.co_filename
+                def executed(frame, event, arg):
+                    if frame.f_code.co_filename == owner_file:
+                        if event == 'line':
+                            work[0] += 1
+                        return executed
+                    return None
+                previous = sys.gettrace()
+                sys.settrace(executed)
+                try:
+                    calls = list(receipts.javascript_source_calls(source, code))
+                finally:
+                    sys.settrace(previous)
+                self.assertEqual(len(calls), count)
+                traversal.append(work[0])
+            with self.subTest(aggregate_operand_work=operand):
+                self.assertLessEqual(traversal[1], 6 * traversal[0])
+
         # Static cfg.kI safe members in the original row are now inert.
         # Keep synthesis meaningful by selecting one shared patch aggregate.
         work = []
@@ -4489,13 +4528,61 @@ os.system(get())
         self.assertLessEqual(work[1][1], 6 * work[0][1])
 
 
+        # Source conversion can demand a getter after ordinary invocations
+        # settle. Its captured lexical source handle still has to be scanned.
+        for handle, discovers_eval in (('eval', True), ('text', False)):
+            source = 'const src=' + json.dumps('tools.exec_command({cmd:' + json.dumps(writer) + '})') + ';'
+            source += 'const make=(e,s)=>({get args(){e(s);return ["c",'
+            source += json.dumps('return tools.exec_command({cmd:c})') + ']}});'
+            source += 'const o=make(' + handle + ',src);Function(...o.args)("echo safe");'
+            with self.subTest(captured_getter_handle=handle):
+                atoms, code, _, _ = receipts.javascript_projection(source)
+                calls = list(receipts.javascript_source_calls(source, code, literal_atoms=atoms))
+                self.assertTrue(any(kind == 'constructor' for _, _, kind, _, _ in calls))
+                self.assertEqual(any(kind == 'eval' for _, _, kind, _, _ in calls), discovers_eval)
+
+        # Only an actually read accessor executes. Data functions and
+        # accessor replacement keep the same original lexical capture.
+        getter_array = '["c",' + json.dumps('return tools.exec_command({cmd:c})') + ']'
+        active_getter = 'get args(){e(s);return ' + getter_array + '}'
+        read_getter = 'get args(){text(s);return ' + getter_array + '}'
+        for members, property_name, discovers_eval in (
+            (active_getter, None, False),
+            (active_getter + ',other:' + getter_array, 'other', False),
+            ('args(){e(s);return ' + getter_array + '}', 'args', False),
+            ('args:()=>{e(s);return ' + getter_array + '}', 'args', False),
+            (active_getter + ',args:' + getter_array, 'args', False),
+            ('args:' + getter_array + ',' + active_getter, 'args', True),
+            (active_getter + ',' + read_getter, 'args', False),
+            (read_getter + ',' + active_getter, 'args', True),
+            (active_getter + ',set args(v){text(s)}', 'args', True),
+            ('set args(v){text(s)},' + active_getter, 'args', True),
+            (read_getter + ',set args(v){e(s)}', 'args', False),
+            ('set args(v){e(s)}', 'args', False),
+        ):
+            source = 'const src=' + json.dumps('tools.exec_command({cmd:' + json.dumps(writer) + '})') + ';'
+            source += 'const make=(e,s)=>({' + members + '});const o=make(eval,src);'
+            operand = getter_array if property_name is None else 'o.' + property_name
+            source += 'Function(...' + operand + ')("echo safe");'
+            with self.subTest(accessor_members=members, read_property=property_name):
+                atoms, code, _, _ = receipts.javascript_projection(source)
+                calls = list(receipts.javascript_source_calls(source, code, literal_atoms=atoms))
+                self.assertTrue(any(kind == 'constructor' for _, _, kind, _, _ in calls))
+                self.assertEqual(any(kind == 'eval' for _, _, kind, _, _ in calls), discovers_eval)
+        source = 'const make=()=>({get args(){return Function("c",'
+        source += json.dumps('return tools.exec_command({cmd:c})') + ')}});const o=make();o.args("echo safe");'
+        atoms, code, _, _ = receipts.javascript_projection(source)
+        calls = list(receipts.javascript_source_calls(source, code, literal_atoms=atoms))
+        self.assertTrue(any(kind == 'constructor' for _, _, kind, _, _ in calls))
+
         # A captured receiver must not replay every prior self-member
         # assignment under a new reference spelling. Abort the old traversal
         # deterministically before it can hang this module.
-        for initial, scoped in (("{}", False), ("getReceiver()", False), ("{}", True), ("getReceiver()", True), ("eval", "wrapper"), ("text", "wrapper"), ("eval", "tag"), ("text", "tag"), ("eval", "call"), ("text", "call")):
+        for initial, scoped in (("{}", False), ("getReceiver()", False), ("{}", True), ("getReceiver()", True), ("eval", "wrapper"), ("text", "wrapper"), ("eval", "tag"), ("text", "tag"), ("eval", "call"), ("text", "call"), ("eval", "parameter"), ("text", "parameter")):
             traversals = []
             for count in (4, 8):
-                writes = ("const tag=()=>v;" + "".join("function s" + str(index) + "(){v=tag" + ("`x`" if scoped == "tag" else "()") + ";}" for index in range(count)) if scoped in {"tag", "call"} else
+                writes = ("const get=({h})=>h;" + "".join("function s" + str(index) + "(){v=get({h:v});}" for index in range(count)) if scoped == "parameter" else
+                          "const tag=()=>v;" + "".join("function s" + str(index) + "(){v=tag" + ("`x`" if scoped == "tag" else "()") + ";}" for index in range(count)) if scoped in {"tag", "call"} else
                           "".join("function s" + str(index) + "(){v={x:v};}" for index in range(count)) if scoped == "wrapper" else
                           "".join("function s" + str(index) + "(){v=v.next;}" for index in range(count)) if scoped
                           else "".join("v=v.a" + str(index) + ";" for index in range(count)))
@@ -4517,13 +4604,56 @@ os.system(get())
                     calls = list(receipts.javascript_source_calls(source, code))
                 finally:
                     sys.settrace(previous)
-                if scoped in {"wrapper", "tag", "call"} and initial == "eval":
+                if scoped in {"wrapper", "tag", "call", "parameter"} and initial == "eval":
                     self.assertTrue(calls)
                 else:
                     self.assertEqual(calls, [])
                 traversals.append(work[0])
             with self.subTest(captured_receiver_work=initial, cross_scope=scoped):
                 self.assertLessEqual(traversals[1], 6 * traversals[0])
+
+        for shape in ('forward', 'double', 'append', 'prepend', 'duplicate'):
+            traversals = []
+            for depth in (4, 8):
+                with self.subTest(shape=shape, depth=depth):
+                    if depth == 8 and not traversals:
+                        self.skipTest('depth4 did not complete; depth8 work is unmeasurable')
+                    # Bound the baseline at250k, then use the same6x growth
+                    # budget as the final assertion for the second measurement.
+                    budget = 250_000 if depth == 4 else 6 * traversals[0]
+                    if shape in {'forward', 'double'}:
+                        source = 'const f0=(f,...a)=>f(...a);'
+                        for index in range(1, depth):
+                            spread = '...a,...a' if shape == 'double' else '...a'
+                            source += 'const f' + str(index) + '=(f,...a)=>f' + str(index - 1) + '(f,' + spread + ');'
+                        source += 'f' + str(depth - 1) + '(eval,"void 0");'
+                    else:
+                        args = {'append': '...a,"x"', 'prepend': '"x",...a',
+                                'duplicate': '...a,...a'}[shape]
+                        source = 'const r=(f,...a)=>{if(flag)r(f,' + args + ');return f(...a)};r(eval,"void 0");'
+                        source += 'text("safe");' * depth
+                    count = [0]
+                    owner_file = receipts.javascript_source_calls.__code__.co_filename
+                    def executed(frame, event, arg):
+                        if frame.f_code.co_filename == owner_file:
+                            if event == 'line':
+                                count[0] += 1
+                                if count[0] > budget:
+                                    raise AssertionError('packet traversal did not stay bounded')
+                            return executed
+                        return None
+                    previous = sys.gettrace()
+                    sys.settrace(executed)
+                    try:
+                        atoms, code, _, _ = receipts.javascript_projection(source)
+                        calls = list(receipts.javascript_source_calls(source, code, literal_atoms=atoms))
+                    finally:
+                        sys.settrace(previous)
+                    self.assertTrue(any(kind == 'eval' for _, _, kind, _, _ in calls))
+                    traversals.append(count[0])
+            if len(traversals) == len((4, 8)):
+                with self.subTest(packet_work=shape):
+                    self.assertLessEqual(traversals[1], 6 * traversals[0])
 
     def test_javascript_command_discovery_covers_noncanonical_tool_callees(self):
         writer = 'uv run /catalog/gh-plan.py --repo o/r claim 5'
@@ -4725,6 +4855,55 @@ os.system(get())
                 for operand in ('C', 'globalThis.C'):
                     child = 'return Function(' + json.dumps('return tools.exec_command({cmd:' + operand + '})') + ')();'
                     cells.append(('await Function("c",' + json.dumps(mutation + child) + ')(' + assigned + ');', owning))
+        # Packet selection is shared by ordinary forwarding and native source
+        # conversion; actual commands must remain paired with their formals.
+        packet_body = json.dumps('return tools.exec_command({cmd:c})')
+        for command, owning in ((writer, True), (writer + ' &', True), ('echo safe', False)):
+            quoted = json.dumps(command)
+            fixture = 'const fixture=' + json.dumps(writer) + ';'
+            for call in ('f(c,b)', 'f.call(null,c,b)', 'f.apply(null,[c,b])',
+                         'Reflect.apply(f,null,[c,b])', 'f.bind(null,c,b)()'):
+                cells.append((fixture + 'const run=(f,c,b)=>' + call
+                    + ';run(Function,"c",' + packet_body + ')(' + quoted + ');text(fixture);', owning))
+            cells.append((fixture + 'const inner=(f,c,b)=>f(c,b);'
+                + 'const run=(f,...args)=>inner(f,...args);run(Function,"c",'
+                + packet_body + ')(' + quoted + ');text(fixture);', owning))
+            executable = json.dumps('tools.exec_command({cmd:' + quoted + '})')
+            cells.append(('const inner=(e,s)=>e(s);const run=(...a)=>inner(...a);run(eval,'
+                + executable + ');', owning))
+            cells.append(('const name=()=>"ignored";Function("ignored","c",' + packet_body
+                + ')("echo safe",' + quoted + ');', owning))
+        cells.append(('const name=()=>"ignored";Function(name(),"c",' + packet_body
+            + ')("echo safe",' + json.dumps(writer) + ');', True))
+        x_body = json.dumps('return tools.exec_command({cmd:x})')
+        for first, second, owning in (('echo safe', 'echo safe', False), (writer, 'echo safe', True)):
+            cells.append(('const mk=(a,b,c)=>Function(a,b,c);const two=(a,b,c)=>mk(a,b,c);'
+                + 'const run=()=>{two("x","y",' + x_body + ')(' + json.dumps(first) + ','
+                + json.dumps(writer) + ');two("y","x",' + x_body + ')('
+                + json.dumps(writer) + ',' + json.dumps(second) + ')};run();', owning))
+        for definition, use in (
+            ('const run=async(f,a,b)=>f(a,b);', '.then(g=>g(W))'),
+            ('function* run(f,a,b){return f(a,b)}', '.next().value(W)'),
+            ('const run=(f,a,b)=>{const g=f(a,b);g(W);return g};', '("echo safe")'),
+        ):
+            cells.append(('const W=' + json.dumps(writer) + ';' + definition
+                + 'run(Function,"c",' + packet_body + ')' + use + ';', True))
+        # These paths really may construct and execute the writer. A source
+        # certificate must not turn unresolved alternatives into a clear call.
+        for setup, invoke in (
+            ('let F=Function;if(flag)F=unknown;const run=(f,c,b)=>f(c,b);',
+             'run(F,"c",BODY)(W);'),
+            ('const run=(f,c,b)=>{if(flag)f=unknown;return f(c,b)};',
+             'run(Function,"c",BODY)(W);'),
+            ('let mk=(c,b)=>Function(c,b);if(flag)mk=text;',
+             'mk("c",BODY)(W);'),
+            ('let mk;if(flag)mk=(c,b)=>Function(c,b);',
+             'mk("c",BODY)(W);'),
+        ):
+            cells.append(('const W=' + json.dumps(writer) + ';' + setup
+                + invoke.replace('BODY', packet_body), True))
+        cells.append(('const run=unknown;run(eval,'
+            + json.dumps('tools.exec_command({cmd:' + json.dumps(writer) + '})') + ');', True))
         for cell, owning in cells:
             rows = history('codex', {})
             rows[1]['payload'].update(name='functions.exec', arguments=cell)
@@ -4896,8 +5075,10 @@ os.system(get())
                 ("const tag=()=>({run:text});const F=tag`x`;", "F.run(SRC)", False),
                 ("const tag=()=>{text(eval)};const F=tag`x`;", "F(SRC)", False),
                 ("const tag=()=>globalThis.eval;const F=tag`x`;", "F(SRC)", owning),
-                ("const tag=()=>eval.call;const F=tag`x`;", "F(null,SRC)", owning),
-                ("const tag=()=>text.call;const F=tag`x`;", "F(null,SRC)", False),
+                ("const tag=()=>eval.call;const F=tag`x`;", "F(null,SRC);", False),
+                ("const tag=()=>text.call;const F=tag`x`;", "F(null,SRC);", False),
+                ("const tag=()=>eval.call;const F=tag`x`;try{", "F(null,SRC);}catch{}", False),
+                ("const tag=()=>text.call;const F=tag`x`;try{", "F(null,SRC);}catch{}", False),
                 ("const g=globalThis;g.text=eval;const {run:e}={run:text};", "e.call(null,SRC)", owning),
                 ("const g=globalThis;if(flag)g.text=eval;const {run:e}={run:text};", "e.call(null,SRC)", owning),
                 ("const String={raw:function(){return eval}};const F=String.raw`x`;", "F(SRC)", owning),
@@ -4957,12 +5138,241 @@ os.system(get())
                 ("const get=async e=>e;const F=await get(text);", "F(SRC)", False),
                 ("const get=async e=>text;const F=await get(eval);", "F(SRC)", False),
                 ("const get=function*(e){return e};const F=await get(eval);", "F(SRC)", False),
-                ("const get=()=>eval.call;const F=get();", "F(null,SRC)", owning),
-                ("const get=()=>eval.apply;const F=get();", "F(null,[SRC])", owning),
+                ("const get=()=>eval.call;const F=get();", "F(null,SRC)", False),
+                ("const get=()=>eval.apply;const F=get();", "F(null,[SRC])", False),
                 ("const get=()=>eval;const F=get();", "F.bind(null)(SRC)", owning),
                 ("const get=()=>text.call;const F=get();", "F(null,SRC)", False),
             ):
                 cells.append((setup + "try{await " + invoke.replace("SRC", json.dumps(source)) + ";}catch{}", expected))
+            # Parameter, invocation and mutation facts share lexical provenance.
+            for cell, executes in (
+                ('const get=async()=>{for await(const x of [0]){return eval}};const F=await get();await F(SRC);', True),
+                ('const get=async()=>{for await(const x of [0]){return text}};const F=await get();await F(SRC);', False),
+                ('const o={await(){return eval}};const F=o.await();await F(SRC);', True),
+                ('const String={ async raw(){return eval}};const F=await String.raw`x`;await F(SRC);', True),
+                ('const String={a:1, async raw(){return eval}};const F=await String.raw`x`;await F(SRC);', True),
+                ('const String={ async *raw(){return eval}};const F=await String.raw`x`;try{await F(SRC)}catch{}', False),
+                ('const get=({h})=>h;const F=get({h:eval});await F(SRC);', True),
+                ('const get=({h:e})=>e;const F=get({h:eval});await F(SRC);', True),
+                ('const get=({h:{e}})=>e;const F=get({h:{e:eval}});await F(SRC);', True),
+                ('const get=({h})=>text;const F=get({h:eval});await F(SRC);', False),
+                ('const get=(e=eval)=>e;const F=get();await F(SRC);', True),
+                ('const get=(e=eval)=>e;const F=get(text);await F(SRC);', False),
+                ('const get=({e=eval})=>e;const F=get({});await F(SRC);', True),
+                ('const get=({e=eval})=>e;const F=get({e:text});await F(SRC);', False),
+                ('const get=([,e])=>e;const F=get([text,eval]);await F(SRC);', True),
+                ('const get=(...a)=>a[1];const F=get(text,eval);await F(SRC);', True),
+                ('const get=(...a)=>a[1];const F=get(eval,text);await F(SRC);', False),
+                ('const tag=(...a)=>a[1];const F=tag`${eval}`;await F(SRC);', True),
+                ('const tag=(...a)=>a[1];const F=tag`${text}`;await F(SRC);', False),
+                ('const get=({h})=>h.call;const F=get({h:eval});try{await F(null,SRC);}catch{}', False),
+                ('const get=({h})=>h.apply;const F=get({h:eval});try{await F(null,[SRC]);}catch{}', False),
+                ('const run=(s,e,c)=>e(c);await run`${eval}${SRC}`;', True),
+                ('await lib.tag`${eval}${SRC}`;', True),
+                ('await lib.tag`${text}${SRC}`;', False),
+                ('String.raw`${eval}${SRC}`;', False),
+                ('const run=(s,e,c)=>e(c);await run(null,eval,SRC);', True),
+                ('const run=(e,c)=>text(c);await run(eval,SRC);', False),
+                ('const run=(s,e,c)=>text(c);await run`${eval}${SRC}`;', False),
+                ('await eval(null,SRC);', False),
+                ('Object.defineProperty(String,"raw",{value:()=>eval});const F=String.raw`x`;await F(SRC);', True),
+                ('let F=eval;Object.defineProperty(String,"raw",{value:()=>eval});F=String.raw`x`;await F(SRC);', True),
+                ('Object.assign(String,{raw:()=>eval});const F=String.raw`x`;await F(SRC);', True),
+                ('let F=eval;Object.assign(String,{raw:()=>eval});F=String.raw`x`;await F(SRC);', True),
+                ('({a:String.raw}={a:()=>eval});const F=String.raw`x`;await F(SRC);', True),
+                ('({a:{h:String.raw}}={a:{h:()=>eval}});const F=String.raw`x`;await F(SRC);', True),
+                ('const S=String;Object.assign(S,{raw:()=>eval});const F=String.raw`x`;await F(SRC);', True),
+                ('Object.assign(globalThis.String,{raw:()=>eval});const F=String.raw`x`;await F(SRC);', True),
+                ('const assign=Object.assign;assign(String,{raw:()=>eval});const F=String.raw`x`;await F(SRC);', True),
+                ('const define=globalThis.Object.defineProperty;define(String,"raw",{value:()=>eval});const F=String.raw`x`;await F(SRC);', True),
+                ('const S=Object.assign(String,{raw:()=>eval});const F=S.raw`x`;await F(SRC);', True),
+                ('const S=Object.defineProperty(String,"raw",{value:()=>eval});const F=S.raw`x`;await F(SRC);', True),
+                ('Object.assign.call(null,String,{raw:()=>eval});const F=String.raw`x`;await F(SRC);', True),
+                ('Object.assign.apply(null,[String,{raw:()=>eval}]);const F=String.raw`x`;await F(SRC);', True),
+                ('Object.assign(String,{other:()=>eval});const F=String.raw`x`;try{await F(SRC)}catch{}', False),
+                ('Object.defineProperty(String,"other",{value:()=>eval});const F=String.raw`x`;try{await F(SRC)}catch{}', False),
+                ('Object.assign(String,{raw:()=>text});const F=String.raw`x`;await F(SRC);', False),
+                ('const Object={assign:()=>text};Object.assign(String,{raw:()=>eval});const F=String.raw`x`;try{await F(SRC)}catch{}', False),
+                ('Object.assign=text;Object.assign(String,{raw:()=>eval});const F=String.raw`x`;try{await F(SRC)}catch{}', False),
+                ('const String={raw:()=>text};Object.assign(globalThis.String,{raw:()=>eval});const F=String.raw`x`;await F(SRC);', False),
+                ('if(flag)Object.assign(String,{raw:()=>eval});const F=String.raw`x`;await F(SRC);', True),
+                ('const F=String.raw`x`;Object.assign(String,{raw:()=>eval});try{await F(SRC)}catch{}', False),
+                ('const F=await eval;await F(SRC);', True),
+                ('const F=await (await (eval));await F(SRC);', True),
+                ('const F=await text;await F(SRC);', False),
+            ):
+                cells.append((cell.replace("SRC", json.dumps(source)), owning and executes))
+            # Independent design findings and lexical capture controls.
+            for cell, executes in (
+                ('try{await (0,eval.call)(null,SRC)}catch{}', False),
+                ('try{await (0,eval.apply)(null,[SRC])}catch{}', False),
+                ('await (eval.call)(null,SRC);', True),
+                ('const get=()=>{label:{if(true){return eval}}};const F=get();await F(SRC);', True),
+                ('const get=()=>{label:{if(true){return text}}};const F=get();await F(SRC);', False),
+                ('const c=[eval];const d=c.slice();c[0]=text;await d[0](SRC);', True),
+                ('const c=[text];const d=c.slice();c[0]=eval;await d[0](SRC);', False),
+                ('const c=[eval];const d=c.slice();d[0]=text;await c[0](SRC);', True),
+                ('const c=[eval];const d=c.slice();d[0]=text;await d[0](SRC);', False),
+                ('const c={},k=["a"];for(let i=0;i<1;i++){c[k[i]]=1}', False),
+                ('const [{a}]=[{a:1}];', False),
+                ('const k="raw";const o=String;function f(){return o}f()[k]=()=>eval;const F=String.raw`x`;await F(SRC);', True),
+                ('const [e]=[text];await e(SRC);', False),
+                ('let F=eval;function g(o){F.x(o)}F=String.raw`x`;try{await F(SRC)}catch{}', False),
+                ('const tag=()=>eval.call;const F=tag`x`;try{await F(null,SRC)}catch{}', False),
+                ('const get=()=>eval.call;const F=get();try{await F(null,SRC)}catch{}', False),
+                ('const get=()=>eval.apply;const F=get();try{await F(null,[SRC])}catch{}', False),
+                ('const get=({h})=>h.call;const F=get({h:eval});try{await F(null,SRC)}catch{}', False),
+                ('const get=({h})=>h.apply;const F=get({h:eval});try{await F(null,[SRC])}catch{}', False),
+                ('const get=({h})=>h;const F=get({h:eval});await F.call(null,SRC);', True),
+                ('const F=eval.call.bind(eval);await F(null,SRC);', True),
+                ('const get=({h})=>h.call.bind(h);const F=get({h:eval});await F(null,SRC);', True),
+                ('const F=eval.apply.bind(eval);await F(null,[SRC]);', True),
+                ('Object.defineProperty(String,"raw",{get(){return ()=>eval}});const F=String.raw`x`;await F(SRC);', True),
+                ('const k="raw";Object.defineProperty(String,k,{value:()=>eval});const F=String.raw`x`;await F(SRC);', True),
+                ('Object.defineProperties(String,{raw:{value:()=>eval}});const F=String.raw`x`;await F(SRC);', True),
+                ('Reflect.set(String,"raw",()=>eval);const F=String.raw`x`;await F(SRC);', True),
+                ('Reflect.defineProperty(String,"raw",{value:()=>eval});const F=String.raw`x`;await F(SRC);', True),
+                ('Reflect.apply(Object.assign,null,[String,{raw:()=>eval}]);const F=String.raw`x`;await F(SRC);', True),
+                ('Object.assign.bind(null,String)({raw:()=>eval});const F=String.raw`x`;await F(SRC);', True),
+                ('function f(t){Object.assign(t,{raw:()=>eval})}f(String);const F=String.raw`x`;await F(SRC);', True),
+                ('Object.defineProperty(String,"raw",{get(){return ()=>text}});const F=String.raw`x`;await F(SRC);', False),
+                ('const k="other";Object.defineProperty(String,k,{value:()=>eval});const F=String.raw`x`;try{await F(SRC)}catch{}', False),
+                ('const src={raw:()=>eval};Object.assign(String,{...src});const F=String.raw`x`;await F(SRC);', True),
+                ('const k="raw";Object.assign(String,{[k]:()=>eval});const F=String.raw`x`;await F(SRC);', True),
+                ('const src={other:()=>eval};Object.assign(String,{...src});const F=String.raw`x`;try{await F(SRC)}catch{}', False),
+                ('const src={raw:()=>text};Object.assign(String,{...src});const F=String.raw`x`;await F(SRC);', False),
+                ('const k="h";let F=text;({[k]:F}={[k]:eval});await F(SRC);', True),
+                ('const k="h";let F=text;({wrap:{[k]:F}}={wrap:{[k]:eval}});await F(SRC);', True),
+                ('let F={};({...F}={raw:()=>eval});const G=F.raw`x`;await G(SRC);', True),
+                ('let F=[];[...F]=[eval];await F[0](SRC);', True),
+                ('const get=(a,b)=>b;const F=get(...[text,eval]);await F(SRC);', True),
+                ('const args=[text,eval];const get=(a,b)=>b;const F=get(...args);await F(SRC);', True),
+                ('const get=(a,b)=>b;const F=get(...[eval,text]);await F(SRC);', False),
+                ('const get=({...a})=>a.h;const F=get({h:eval});await F(SRC);', True),
+                ('const get=(...a)=>a[0];const F=get(eval);await F(SRC);', True),
+                ('const get=({...a})=>a.h;const F=get({h:text});await F(SRC);', False),
+                ('let F=eval;F=String.raw`x`;try{await F(SRC)}catch{}', False),
+                ('const F=eval.call;try{await F(null,SRC)}catch{}', False),
+                ('const F=eval.apply;try{await F(null,[SRC])}catch{}', False),
+                ('const F=eval.bind(null);await F(SRC);', True),
+                ('eval.bind(null,SRC);', False),
+                ('const call=eval.call;await Reflect.apply(call,eval,[null,SRC]);', True),
+                ('const call=eval.call;try{await Reflect.apply(call,null,[null,SRC])}catch{}', False),
+                ('const call=eval.call;await call.constructor(SRC)();', True),
+                ('const get=e=>({h:e});const F=get(eval);await F.h(SRC);', True),
+                ('const get=e=>({h:e});const F=get(text);get(eval);await F.h(SRC);', False),
+                ('const get=e=>()=>e;const F=get(eval);const G=F();await G(SRC);', True),
+                ('const get=e=>()=>e;const F=get(text);get(eval);const G=F();await G(SRC);', False),
+                ('const get=e=>e.bind(null);const F=get(eval);await F(SRC);', True),
+                ('const get=e=>e.bind(null);const F=get(text);get(eval);await F(SRC);', False),
+                ('const run=e=>e;const F=run(text);const unused=run(eval);await F(SRC);', False),
+                ('const get=()=>{const o={for(){return eval}};return text};const F=get();await F(SRC);', False),
+                ('const get=()=>{const o={if(){return eval}};return text};const F=get();await F(SRC);', False),
+                ('const get=()=>{const o={while(){return eval}};return text};const F=get();await F(SRC);', False),
+                ('const get=()=>{const o={switch(){return eval}};return text};const F=get();await F(SRC);', False),
+                ('const get=()=>{const o={catch(){return eval}};return text};const F=get();await F(SRC);', False),
+                ('const get=()=>{const o={with(){return eval}};return text};const F=get();await F(SRC);', False),
+                ('const get=()=>{const o={await(){return eval}};return text};const F=get();await F(SRC);', False),
+                ('const get=()=>{const o={function(){return eval}};return text};const F=get();await F(SRC);', False),
+                ('const get=()=>{const o={m(){return eval}};return text};const F=get();await F(SRC);', False),
+                ('const get=()=>{const o={for(x){return eval}};return text};const F=get();await F(SRC);', False),
+                ('const o={for(x){return eval}};const F=o.for(0);await F(SRC);', True),
+                ('const get=()=>{class C{for(x){return eval}}return text};const F=get();await F(SRC);', False),
+                ('const get=()=>{const o={if(x){return eval}};return text};const F=get();await F(SRC);', False),
+                ('const o={if(x){return eval}};const F=o.if(0);await F(SRC);', True),
+                ('const get=()=>{class C{if(x){return eval}}return text};const F=get();await F(SRC);', False),
+                ('const get=()=>{class C{static if(x){return eval}}return text};const F=get();await F(SRC);', False),
+            ):
+                cells.append((cell.replace("SRC", json.dumps(source)), owning and executes))
+
+            # Reference, capture and loop-phase order share the same facts;
+            # opposite directions preserve owning alternatives and clear reads.
+            for cell, executes in (
+                ('const k="eval";const F=globalThis[k];F(SRC);', True),
+                ('const k="eval";globalThis[k](SRC);', True),
+                ('const k="eval";(0,globalThis[k])(SRC);', True),
+                ('const k="eval";globalThis?.[k](SRC);', True),
+                ('const k="eval";const F=globalThis?.[k];F(SRC);', True),
+                ('let F=eval;{F(SRC);}F=text;', True),
+                ('let F=eval;const o={run:F};F=text;o.run(SRC);', True),
+                ('const o={run:eval};const {run:F}=o;o.run=text;F(SRC);', True),
+                ('const o={run:text};const {run:F}=Object.assign(o,{run:eval});o.run=eval;F(SRC);', True),
+                ('let F=eval;for(const i of [0,1]){F(SRC);F=text;}', True),
+                ('const o={run:eval};for(const i of [0,1]){o.run(SRC);o.run=text;}', True),
+                ('let F=eval;let i=0;while(i++<2){F(SRC);F=text;}', True),
+                ('const o={run:eval};let i=0;while(i++<2){o.run(SRC);o.run=text;}', True),
+                ('let F=eval;let i=0;do{F(SRC);F=text;}while(i++<1);', True),
+                ('const o={run:eval};let i=0;do{o.run(SRC);o.run=text;}while(i++<1);', True),
+                ('let F=eval;for(let i=0;i<2;(F(SRC),i++)){F=text;}', False),
+                ('const o={run:eval};for(let i=0;i<2;(o.run(SRC),i++)){o.run=text;}', False),
+                ('let F=eval;F=globalThis.getEval();F(SRC);', True),
+                ('let F=eval;F=Reflect.get(globalThis,"eval");F(SRC);', True),
+                ('let F=eval;F=Reflect.get(globalThis,"text");F(SRC);', False),
+                ('let F=eval;F=getEval();F(SRC);', True),
+                ('let F=eval;F=(()=>text)();F(SRC);', False),
+                ('const c=[eval];c.slice=()=>[text];const d=c.slice();d[0](SRC);', False),
+                ('const c=[eval];c.slice=text;const d=c.slice();try{d[0](SRC);}catch{}', False),
+                ('const k="text";const F=globalThis[k];F(SRC);', False),
+                ('const k="text";globalThis[k](SRC);', False),
+                ('const k="text";(0,globalThis[k])(SRC);', False),
+                ('const k="text";globalThis?.[k](SRC);', False),
+                ('const k="text";const F=globalThis?.[k];F(SRC);', False),
+                ('let F=text;{F(SRC);}F=eval;', False),
+                ('let F=text;const o={run:F};F=eval;o.run(SRC);', False),
+                ('const o={run:text};const {run:F}=o;o.run=eval;F(SRC);', False),
+                ('const o={run:text};const {run:F}=Object.assign(o,{run:text});o.run=eval;F(SRC);', False),
+                ('let F=text;for(const i of [0,1]){F(SRC);F=eval;}', True),
+                ('const o={run:text};for(const i of [0,1]){o.run(SRC);o.run=eval;}', True),
+                ('let F=text;let i=0;while(i++<2){F(SRC);F=eval;}', True),
+                ('const o={run:text};let i=0;while(i++<2){o.run(SRC);o.run=eval;}', True),
+                ('let F=text;let i=0;do{F(SRC);F=eval;}while(i++<1);', True),
+                ('const o={run:text};let i=0;do{o.run(SRC);o.run=eval;}while(i++<1);', True),
+                ('let F=text;let i=0;while((F(SRC),i++<2)){F=eval;}', True),
+                ('const o={run:text};let i=0;while((o.run(SRC),i++<2)){o.run=eval;}', True),
+                ('let F=text;let i=0;for(;(F(SRC),i++<2);){F=eval;}', True),
+                ('const o={run:text};let i=0;for(;(o.run(SRC),i++<2);){o.run=eval;}', True),
+                ('let F=text;for(let i=0;i<2;(F(SRC),i++)){F=eval;}', True),
+                ('const o={run:text};for(let i=0;i<2;(o.run(SRC),i++)){o.run=eval;}', True),
+                ('let F=text;let i=0;for(F(SRC);i++<2;){F=eval;}', False),
+                ('const o={run:text};let i=0;for(o.run(SRC);i++<2;){o.run=eval;}', False),
+                ('let F=text;for(const i of (F(SRC),[0,1])){F=eval;}', False),
+                ('const o={run:text};for(const i of (o.run(SRC),[0,1])){o.run=eval;}', False),
+                ('let F=text;F=globalThis.getEval();F(SRC);', False),
+                ('let F=text;F=Reflect.get(globalThis,"eval");F(SRC);', True),
+                ('let F=text;F=Reflect.get(globalThis,"text");F(SRC);', False),
+                ('let F=text;F=getEval();F(SRC);', False),
+                ('let F=text;F=(()=>text)();F(SRC);', False),
+                ('const c=[text];c.slice=()=>[eval];const d=c.slice();d[0](SRC);', True),
+                ('const c=[text];c.slice=text;const d=c.slice();try{d[0](SRC);}catch{}', False),
+                ('const a=[text],b=[text];const d=a.slice();try{d[0]=eval;}catch{}const e=b.slice();e[0](SRC);', False),
+                ('const a=[text],b=[text];const d=a.slice();try{d[0]=text;}catch{}const e=b.slice();e[0](SRC);', False),
+                ('let F=eval;for(let i=0;i<2;(F(SRC),i++)){if(i===0)continue;F=text;}', True),
+                ('const o={run:eval};for(let i=0;i<2;(o.run(SRC),i++)){if(i===0)continue;o.run=text;}', True),
+                ('let F=eval;for(let i=0;i<2;(F=eval,F(SRC),i++)){F=text;}', True),
+                ('let F=text;for(let i=0;i<2;(F=text,F(SRC),i++)){F=eval;}', False),
+                ('const o={run:eval};for(let i=0;i<2;(o.run=eval,o.run(SRC),i++)){o.run=text;}', True),
+                ('const o={run:text};for(let i=0;i<2;(o.run=text,o.run(SRC),i++)){o.run=eval;}', False),
+                ('let F=eval;for(let i=0;i<0;(F=text,i++)){}F(SRC);', True),
+                ('const o={run:eval};for(let i=0;i<0;(o.run=text,i++)){}o.run(SRC);', True),
+                ('let F=eval;for(let i=0;i<2;(flag?(F=text):0,F(SRC),i++)){}', True),
+                ('const o={run:eval};for(let i=0;i<2;(flag?(o.run=text):0,o.run(SRC),i++)){}', True),
+                ('let F=eval;for(let i=0;i<2;(flag&&(F=text),F(SRC),i++)){}', True),
+                ('const o={run:eval};for(let i=0;i<2;(flag&&(o.run=text),o.run(SRC),i++)){}', True),
+                ('let F=eval;for(let i=0;i<2;((()=>{F=text}),F(SRC),i++)){}', True),
+                ('const o={run:eval};for(let i=0;i<2;((()=>{o.run=text}),o.run(SRC),i++)){}', True),
+                ('let F=eval;for(let i=0;i<2;(((F=text)),F(SRC),i++)){}', False),
+                ('const o={run:eval};for(let i=0;i<2;(((o.run=text)),o.run(SRC),i++)){}', False),
+            ):
+                cells.append((cell.replace("SRC", json.dumps(source)), owning and executes))
+
+            for inner, executes in (
+                ("this.String.raw=()=>eval;const F=String.raw`x`;F(SRC);", True),
+                ("this.get=()=>eval;const F=get();F(SRC);", True),
+                ('"use strict";this.String.raw=()=>eval;const F=String.raw`x`;F(SRC);', False),
+            ):
+                child = inner.replace("SRC", json.dumps(source))
+                cells.append(("try{await Function(" + json.dumps(child) + ")();}catch{}", owning and executes))
+
             for handle in ("eval", "text"):
                 for reverse in (False, True):
                     definitions = ["function first(){v=v.next;}", "function second(){v=v.next;}",
@@ -5121,6 +5531,9 @@ os.system(get())
                 'const run=(f,s)=>f(s);await run(eval,' + json.dumps(source) + ');',
                 'const run=(f,...args)=>f(...args);await run(Function,"c",'
                 + json.dumps('return tools.exec_command({cmd:c})') + ')(' + json.dumps(command) + ');',
+                'const inner=(f,c,b)=>f(c,b);const run=(f,...args)=>inner(f,...args);'
+                + 'run(Function,"c",' + json.dumps('return tools.exec_command({cmd:c})')
+                + ')(' + json.dumps(command) + ');',
                 'let e;e=eval;await e(' + json.dumps(source) + ');',
                 'const o={e:eval};await o.e(' + json.dumps(source) + ');',
                 'await Reflect.construct(Function,[' + json.dumps('return ' + source) + '])();',

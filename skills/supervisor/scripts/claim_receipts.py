@@ -346,7 +346,7 @@ def javascript_projection(native, *, _facts=None):
     return atoms, code, regions, complete
 
 
-def javascript_literal_members(native, code, begin, end):
+def javascript_literal_members(native, code, begin, end, *, _facts=None):
     """Share literal aggregate property names and their original value spans."""
     while begin < end and code[begin].isspace():
         begin += 1
@@ -362,120 +362,136 @@ def javascript_literal_members(native, code, begin, end):
     object_, values = opening == "{", []
     for index, (start, finish) in enumerate(node_expression_parts(code, begin + 1, end - 1)):
         parts = node_expression_parts(code, start, finish, ":") if object_ else []
+        key_recipe = None
         if not object_:
             name, operand = (None if code[start:finish].lstrip().startswith("...") else str(index)), (start, finish)
         else:
             name = native[slice(*parts[0])].strip()
             operand = (parts[0][1] + 1, finish) if len(parts) > 1 else (start, finish)
-            method = re.match(r"(?:async\s+)?\*?\s*([A-Za-z_$][\w$]*)\s*\(", code[start:finish]) if len(parts) == 1 else None
+            method = re.match(r"\s*(?:async\s+)?\*?\s*([A-Za-z_$][\w$]*)\s*\(", code[start:finish]) if len(parts) == 1 else None
             if method:
                 name = method[1]
             if not re.fullmatch(r"[A-Za-z_$][\w$]*|\d+", name):
-                computed = name[1:-1].strip() if name.startswith("[") and name.endswith("]") else name
-                try:
-                    name = javascript_string(computed)
-                except ValueError:
-                    name = None
+                key_span = parts[0]
+                key_begin = key_span[0]
+                while key_begin < key_span[1] and native[key_begin].isspace():
+                    key_begin += 1
+                if native[key_begin:key_begin + 1] == "[":
+                    key_recipe = key_begin + 1, key_span[1] - 1
+                    try:
+                        name = javascript_string(native[slice(*key_recipe)].strip())
+                    except ValueError:
+                        name = None
+                else:
+                    try:
+                        name = javascript_string(name)
+                    except ValueError:
+                        name = None
         values.append((name, operand))
+        if _facts is not None:
+            _facts.append((name, operand, key_recipe))
     return values
 
 
-def javascript_source_calls(native, code, *, global_this=False, literal_atoms=(), templates=None):
-    """Select invoked source handles using the binding scanner's shared sites."""
-    names = {"eval": "eval", "Function": "constructor", "AsyncFunction": "constructor"}
-    facts = {}
-    javascript_bindings(code, _facts=facts)
-    pairs, owners, parents, bound, functions, declarations = (facts[name] for name in ("pairs", "owners", "parents", "bound", "functions", "declarations"))
-    reference = re.compile(r"(?<![\w.$])([A-Za-z_$][\w$]*(?:\s*(?:\?\.|\.)\s*[A-Za-z_$][\w$]*|\s*(?:\?\.\s*)?\[[^]\n]*\])*)")
-    visible, assignments, member_indexes = {}, {}, {}
-    cuts = 0
-    property_events, states = {}, {}
-    resolving, pending, settling = [], set(), False
-    literal_spans = [atom.span() for atom in literal_atoms if not atom[0].startswith(("//", "/*"))]
-    literal_starts = {begin for begin, _ in literal_spans}
-    literal_ends = {end for _, end in literal_spans}
+def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_atoms=(), templates=None):
+    """Resolve finite lexical recipes, captures and effects in one dependency graph.
 
-    def reachable(key, compute, empty, *, receiver=False):
-        nonlocal cuts, settling
-        if resolving:
-            states.setdefault(key, {"value": empty, "complete": False, "exact": False,
-                                    "compute": compute, "receiver": receiver, "users": set(), "started": False})["users"].add(resolving[-1])
-        state = states.setdefault(key, {"value": empty, "complete": False, "exact": False,
-                                        "compute": compute, "receiver": receiver, "users": set(), "started": False})
-        if state["started"]:
-            if not state["complete"] or not state["exact"]:
-                cuts += 1
-            return state["value"]
-        state["started"] = True
-        started = cuts
-        resolving.append(key)
-        try:
-            result = compute()
-        finally:
-            resolving.pop()
-        exact = cuts == started and (result[1] if receiver else True)
-        state["exact"] = state["complete"] = exact
-        state["value"] = result if exact else (result[0], False) if receiver else {
-            name: value for name, value in result.items() if value is not None}
-        if not exact:
-            pending.add(key)
-        if not resolving and not settling:
-            settling = True
-            try:
-                # Revisit dependencies when a possible fact arrives, not every
-                # simple path through a cycle. Cyclic unions are complete but
-                # never acquire exact replacement authority.
-                while pending:
-                    selected = pending.pop()
-                    current = states[selected]
-                    resolving.append(selected)
-                    try:
-                        result = current["compute"]()
-                    finally:
-                        resolving.pop()
-                    if current["receiver"]:
-                        joined = current["value"][0] | result[0], False
-                    else:
-                        joined = dict(current["value"])
-                        for name, value in result.items():
-                            if value is not None:
-                                joined[name] = (joined.get(name) or frozenset()) | value
-                    if joined != current["value"]:
-                        current["value"] = joined
-                        pending.update(user for user in current["users"] if not states[user]["complete"])
-                for current in states.values():
-                    current["complete"] = True
-            finally:
-                settling = False
-        if not state["exact"]:
-            cuts += 1
-        return state["value"]
+    An anchor names lexical sites, not an expanded argument environment. Capture,
+    caller and operand edges live in a separate table. All value consumers use
+    the same queries; publishing an effect wakes only its actual dependants.
+    """
+    pairs, owners, parents, bound, functions, declarations = (facts[name] for name in
+        ("pairs", "owners", "parents", "bound", "functions", "declarations"))
+    atoms = {atom.start(): atom.end() for atom in literal_atoms if not atom[0].startswith(("//", "/*"))}
+    atoms_end = set(atoms.values())
+    templates = {} if templates is None else templates
+    empty = frozenset()
+    data = (frozenset({("data",)}), True)
+    undefined = (frozenset({("undefined",)}), True)
+    states, dependencies, users, stack = {}, {}, {}, []
+    component_parent, component_members, cyclic = {}, {}, set()
+    computations, active_positions = {}, {}
+    choices, copy_sources = {}, {}
+    tasks, queued = [], set()
+    anchors = {None: {(-1, None, None, ())}}
+    variable_events, effect_sites, effects, effect_tokens = {}, [], {}, {}
+    literal_cache, body_cache, visible = {}, {}, {}
+    literal_getters = set()
+    bindings_by_body, body_sites, call_sites, body_effects = {}, {}, {}, {}
+    function_owners = {}
+    bind_sites, sources, write_sites, qualifications = {}, {}, {}, {}
 
-    def canonical(raw):
-        def member(match):
-            value = match[1].strip()
-            if re.fullmatch(JS_STRING + r"(?:\s*\+\s*" + JS_STRING + r")*", value):
-                try:
-                    value = "".join(javascript_string(atom[0]) for atom in re.finditer(JS_STRING, value))
-                except ValueError:
-                    pass
-            return "." + value
-        raw = re.sub(r"\?\.\s*(?=\[)", "", raw)
-        return re.sub(r"\s+", "", re.sub(r"\[([^]\n]*)\]", member, raw)).replace("?.", ".")
-
-    def unwrapped_span(begin, end, *, unwrap=True):
+    def trim(begin, end, *, unwrap=True):
         while True:
-            while begin < end and code[begin].isspace() and begin not in literal_starts:
-                begin += 1
-            while end > begin and code[end - 1].isspace() and end not in literal_ends:
-                end -= 1
-            if not unwrap or code[begin:begin + 1] != "(" or pairs.get(begin) != end - 1:
+            while begin < end and code[begin].isspace():
+                if begin in atoms:
+                    break
+                if native[begin].isspace():
+                    begin += 1
+                elif native.startswith("/*", begin):
+                    closing = native.find("*/", begin + 2, end)
+                    if closing < 0:
+                        break
+                    begin = closing + 2
+                elif native.startswith("//", begin):
+                    closing = native.find("\n", begin + 2, end)
+                    begin = end if closing < 0 else closing + 1
+                else:
+                    break
+            while end > begin and code[end - 1].isspace():
+                if end in atoms_end:
+                    break
+                if native[end - 1].isspace():
+                    end -= 1
+                elif native[max(begin, end - 2):end] == "*/":
+                    opening = native.rfind("/*", begin, end - 2)
+                    if opening < 0:
+                        break
+                    end = opening
+                else:
+                    break
+            if unwrap and code[begin:begin + 1] == "(" and pairs.get(begin) == end - 1:
+                begin, end = begin + 1, end - 1
+            else:
                 return begin, end
-            begin, end = begin + 1, end - 1
 
-    def binding(name, position):
-        owner = owners[position]
-        key, trail = (owner, name), []
+    def preceding(at):
+        while at and code[at - 1].isspace():
+            at -= 1
+        return at
+
+    def member_span(begin, end):
+        """One reference split; a computed selector remains an original recipe."""
+        if code[end - 1:end] == "]" and end - 1 in pairs:
+            opening = pairs[end - 1]
+            if opening > begin:
+                finish = preceding(opening)
+                if code[max(begin, finish - 2):finish] == "?.":
+                    finish = preceding(finish - 2)
+                return (begin, finish), (opening + 1, end - 1), None
+        suffix = re.search(r"(?:\?\.|\.)\s*([A-Za-z_$][\w$]*)\s*$", code[begin:end])
+        if suffix:
+            return (begin, begin + suffix.start()), None, suffix[1]
+        return None
+
+    def selected_member(begin, end, anchor, position):
+        selected = member_span(begin, end)
+        if selected is None:
+            return None
+        receiver_span, key_span, name = selected
+        values, exact = expression(receiver_span, anchor)
+        names, known = keys_for(native[slice(*key_span)], anchor, position) if key_span is not None else ({name}, True)
+        result = set()
+        for field in names:
+            projected, certain = project(values, exact, field, position, anchor)
+            result.update(projected)
+            known &= certain
+        if not known and not result:
+            result.add(("unknown", position, anchor))
+        return frozenset(result), exact and known, recipe(receiver_span, anchor)
+
+    def lexical(name, position):
+        owner, trail = owners[position], []
         while (owner, name) not in visible:
             trail.append((owner, name))
             if name in bound.get(owner, {}):
@@ -483,514 +499,266 @@ def javascript_source_calls(native, code, *, global_this=False, literal_atoms=()
             if owner == -1:
                 owner = None
                 break
-            owner = parents[owner]
+            owner = parents.get(owner, -1)
         result = visible.get((owner, name), owner)
-        for selected in trail:
-            visible[selected] = result
-        return visible.get(key, result)
+        for item in trail:
+            visible[item] = result
+        return result
 
-    def property_receiver(target, position, root):
-        roots, known = receiver_reference(target.rsplit(".", 1)[0], position)
-        return root in roots, known and roots == frozenset({root})
+    def function_owner(position):
+        if position not in function_owners:
+            scope = owners[position]
+            while scope != -1 and scope not in functions:
+                scope = parents.get(scope, -1)
+            function_owners[position] = scope
+        return function_owners[position]
 
-    def global_candidates(base, position, scope):
-        # Bare globals and writes through a captured global receiver share the
-        # same ordered alternatives; aliases do not invent another namespace.
-        for target, suffix, at, context, certain, rhs in property_events.get(base, ()):
-            if context == scope and rhs[1] > position:
+    def dominates(context, position, at):
+        if at > position:
+            return False
+        scope = owners[position]
+        while scope != context:
+            if scope == -1 or scope in functions:
+                return False
+            scope = parents.get(scope, -1)
+        return True
+
+    def phase(loop, position):
+        for kind, begin, end in loop:
+            if begin <= position < end:
+                return kind
+        return None
+
+    def ordering(context, position, at):
+        """Possible predecessor and proved dominance in this activation."""
+        if function_owner(write_sites.get(at, at)) != function_owner(position):
+            return True, False
+        may = at < position
+        definite = dominates(context, position, at)
+        for loop in facts.get("loops", ()):
+            if function_owner(min(begin for _, begin, _ in loop)) != function_owner(position):
                 continue
-            reaches, exact = property_receiver(target, at, ("global",))
-            if reaches:
-                yield base, suffix, at, context, certain and exact, rhs
+            write, read = phase(loop, at), phase(loop, position)
+            if write in {"body", "update"} and read is None:
+                # Reaching an outside read does not prove that this loop ran.
+                definite = False
+            if write is None or read is None:
+                continue
+            if read == "once":
+                if write != "once":
+                    return False, False
+            elif write != "once":
+                may = True
+                if write == "update" and read in {"condition", "body"}:
+                    definite = False
+                if write == "body" and read == "update":
+                    body_begin = next(begin for kind, begin, _ in loop if kind == "body")
+                    # A first unconditional body write cannot be skipped by a
+                    # preceding continue/branch. Anything less proved stays a
+                    # possible predecessor, never an exact replacement.
+                    prefix = code[body_begin:write_sites.get(at, at)].strip()
+                    if prefix.startswith("{"):
+                        prefix = prefix[1:].strip()
+                    definite = re.fullmatch(r"(?:(?:const|let|var)\s+)?", prefix) is not None
+        return may, definite
 
-    # Index the existing RHS table once. Scope facts choose which same-named
-    # binding a target can affect; a definite straight-line replacement can
-    # retire an old handle, while conditional/nonlocal writes remain possible.
-    statement_starts, start = [], 0
-    for position, char in enumerate(code):
-        statement_starts.append(start)
-        if char in ";{}\n":
-            start = position + 1
-    for match in re.finditer(r"(?<![\w.$])(?!const\b|let\b|var\b)([A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*|\s*\[[^]\n]*\])*|\{[^{}]*\}|\[[^\[\]]*\])\s*=(?!=|>)", code):
-        end = node_expression_parts(code, match.end(), len(code), ";\n", first=True)[0][1]
-        raw, target = native[match.start(1):match.end(1)].strip(), match.span(1)
-        targets = []
-        if raw.startswith(("{", "[")):
-            object_ = raw.startswith("{")
-            for index, (begin, finish) in enumerate(node_expression_parts(code, target[0] + 1, target[1] - 1)):
-                parts = node_expression_parts(code, begin, finish, ":") if object_ else []
-                key = native[slice(*parts[0])].strip() if parts else native[begin:finish].strip() if object_ else str(index)
-                named = native[parts[0][1] + 1:finish].strip() if len(parts) > 1 else native[begin:finish].strip()
-                if re.fullmatch(r"[A-Za-z_$][\w$]*", named):
-                    targets.append((named, "." + key))
-        else:
-            targets.append((canonical(raw), ""))
-        prefix = code[statement_starts[match.start(1)]:match.start(1)]
-        definite = re.fullmatch(r"\s*(?:(?:const|let|var)\s+)?", prefix) is not None
-        for selected, suffix in targets:
-            base = selected.split(".", 1)[0]
-            owner = binding(base, match.start(1))
-            context = parents[match.start(1)] if raw.startswith("{") else owners[match.start(1)]
-            event = (selected, suffix, match.start(1), context, definite, (match.end(), end))
-            assignments.setdefault((owner, selected), []).append(event)
-            if "." in selected:
-                property_events.setdefault(selected.rsplit(".", 1)[1], []).append(event)
+    def event_order(at, position):
+        for loop in reversed(facts.get("loops", ())):
+            if function_owner(min(begin for _, begin, _ in loop)) != function_owner(position):
+                continue
+            if phase(loop, position) == "update":
+                selected = phase(loop, at)
+                if selected is not None:
+                    begin = min(start for _, start, _ in loop)
+                    return begin, {"once": 0, "condition": 1, "body": 2, "update": 3}[selected], at
+        return at, 0, at
 
-    def members(begin, end, *, suffix=""):
-        return reachable(("members", begin, end, suffix), lambda: compute_members(begin, end, suffix), {})
+    def schedule(site, anchor, *, target=False):
+        key = ("target" if target else "invoke"), site, anchor
+        if key not in queued:
+            queued.add(key)
+            tasks.append(key)
 
-    def callable_body(rhs):
-        begin, end = unwrapped_span(*rhs)
-        function = re.match(r"(?P<async>async\s+)?(?:function\b\s*(?P<generator>\*)?\s*(?:[A-Za-z_$][\w$]*\s*)?|(?P<method_generator>\*)?\s*[A-Za-z_$][\w$]*\s*)\(", code[begin:end])
-        if function:
-            closing = pairs.get(begin + function.end() - 1)
+    def component(key):
+        parent = component_parent.setdefault(key, key)
+        if parent != key:
+            component_parent[key] = component(parent)
+        return component_parent[key]
+
+    def mark_dirty(key):
+        state = states.get(key)
+        if state is None:
+            return
+        if state[2] or state[3]:
+            state[4] += 1
+        state[2] = False
+        task = ("query", key)
+        if task not in queued:
+            queued.add(task)
+            tasks.append(task)
+
+    def invalidate(token, *, producer=None):
+        # Growing table facts keep their producing query edge as well as the
+        # direct consumers. Cycles through effects/captures are graph cycles.
+        if token not in states and (producer is not None or stack):
+            effect_tokens.setdefault(token, set()).add(producer if producer is not None else stack[-1])
+        if token in states:
+            mark_dirty(token)
+        for user in tuple(users.get(token, ())):
+            mark_dirty(user)
+
+    def join_component(key):
+        root = component(key)
+        members = stack[active_positions[key]:]
+        if root in cyclic and all(member in component_members[root] for member in members):
+            return
+        roots = {component(member) for member in members}
+        root = max(roots, key=lambda item: len(component_members.get(item, {item})))
+        selected = component_members.setdefault(root, {root})
+        for other in roots - {root}:
+            component_parent[other] = root
+            selected.update(component_members.pop(other, {other}))
+            cyclic.discard(other)
+        cyclic.add(root)
+        for member in selected:
+            if states[member][1]:
+                states[member][1] = False
+                for user in tuple(users.get(member, ())):
+                    mark_dirty(user)
+
+    def query(key, compute):
+        computations[key] = compute
+        if stack:
+            users.setdefault(key, set()).add(stack[-1])
+            dependencies.setdefault(stack[-1], set()).add(key)
+        state = states.setdefault(key, [empty, False, False, False, 0])
+        root = component(key)
+        component_members.setdefault(root, {root})
+        if state[3]:
+            join_component(key)
+            return state[0], False
+        if state[2]:
+            return state[0], state[1]
+        for dep in dependencies.pop(key, ()):
+            users.get(dep, set()).discard(key)
+        state[3] = True
+        generation = state[4]
+        active_positions[key] = len(stack)
+        stack.append(key)
+        try:
+            values, exact = compute()
+        finally:
+            stack.pop()
+            active_positions.pop(key)
+            state[3] = False
+        if component(key) in cyclic:
+            exact = False
+            if isinstance(values, dict):
+                joined = dict(state[0]) if isinstance(state[0], dict) else {}
+                for field, item in values.items():
+                    previous = joined.get(field)
+                    if previous is not None and previous != item:
+                        choice = ("choice", key, field)
+                        edges = choices.setdefault(choice, set())
+                        before = len(edges)
+                        edges.update(value for value in (previous, item) if value != choice)
+                        if len(edges) != before:
+                            invalidate(("choices", choice), producer=key)
+                        item = choice
+                    joined[field] = item
+                values = joined
+            else:
+                values = state[0] | values
+        changed = state[0] != values or state[1] != exact
+        state[:3] = values, exact, generation == state[4]
+        if changed:
+            for user in tuple(users.get(key, ())):
+                mark_dirty(user)
+        if not state[2]:
+            mark_dirty(key)
+        return values, exact
+
+    def token(key):
+        if stack:
+            users.setdefault(key, set()).add(stack[-1])
+            dependencies.setdefault(stack[-1], set()).add(key)
+            if key in states and states[key][3]:
+                join_component(key)
+            for producer in tuple(effect_tokens.get(key, ())):
+                users.setdefault(producer, set()).add(stack[-1])
+                dependencies.setdefault(stack[-1], set()).add(producer)
+                if states[producer][3]:
+                    join_component(producer)
+
+    def callable_body(span):
+        if span in body_cache:
+            return body_cache[span]
+        begin, end = trim(*span)
+        result = None
+        match = re.match(r"(?P<async>async\s+)?(?:function\b\s*(?P<generator>\*)?\s*(?:[A-Za-z_$][\w$]*\s*)?|(?:(?:get|set)\s+)?(?P<method_generator>\*)?\s*[A-Za-z_$][\w$]*\s*)\(", code[begin:end])
+        if match:
+            opening = begin + match.end() - 1
+            closing = pairs.get(opening)
             body = closing + 1 if closing is not None else end
             while body < end and code[body].isspace():
                 body += 1
             if code[body:body + 1] == "{" and pairs.get(body) == end - 1:
-                return (body, end, True, bool(function["async"]), bool(function["generator"] or function["method_generator"]),
-                        tuple(node_expression_parts(code, begin + function.end(), closing)))
-        starts = [begin]
-        asynchronous = re.match(r"async\b\s*", code[begin:end])
-        if asynchronous:
-            starts.insert(0, begin + asynchronous.end())
-        for parameter in starts:
-            if code[parameter:parameter + 1] == "(":
-                closing = pairs.get(parameter)
-                following = closing + 1 if closing is not None else end
-            else:
-                identifier = re.match(r"[A-Za-z_$][\w$]*", code[parameter:end])
-                following = parameter + identifier.end() if identifier else end
-            while following < end and code[following].isspace():
-                following += 1
-            if code[following:following + 2] != "=>":
-                continue
-            body, finish = unwrapped_span(following + 2, end, unwrap=False)
-            if body >= end:
-                continue
-            block = code[body:body + 1] == "{"
-            if not block or pairs.get(body) == finish - 1:
-                parameters = tuple(node_expression_parts(code, parameter + 1, closing)) if code[parameter:parameter + 1] == "(" else ((parameter, following),)
-                return body, finish, block, bool(asynchronous and parameter != begin), False, parameters
-        return None
-
-    def invoked_receiver(rhs):
-        begin, end = unwrapped_span(*rhs)
-        awaited = re.match(r"await\b\s*", code[begin:end])
-        if awaited:
-            begin, end = unwrapped_span(begin + awaited.end(), end)
-        tag = reference.match(code, begin, end)
-        if tag is None:
-            return None
-        template = tag.end()
-        while template < end and native[template].isspace():
-            template += 1
-        tagged = native[template:template + 1] == "`"
-        if tagged:
-            described = (templates or {}).get(template)
-            if described is not None:
-                if described[0] != end:
-                    return None
-                operands = (None, *described[1])
-            elif re.fullmatch(JS_STRING, native[template:end]):
-                operands = (None,)
-            else:
-                return None
-        elif code[template:template + 1] == "(" and pairs.get(template) == end - 1:
-            operands = tuple(node_expression_parts(code, template + 1, end - 1))
-        else:
-            return None
-        selected = canonical(native[begin:tag.end()])
-        # The intrinsic's literal result remains data only while neither its
-        # receiver nor its raw property acquired another possible identity.
-        roots, known = receiver_reference(selected, begin)
-        if roots == frozenset({("intrinsic-raw",)}) and known:
-            return frozenset({("data", rhs)}), True
-        return reachable(("invoked-result", rhs), lambda: callable_results(receiver_reference(selected, begin)[0], rhs, operands, bool(awaited)),
-                         (frozenset(), False), receiver=True)
-
-    def callable_results(roots, capture, operands, awaited):
-        returned = set()
-        if not roots:
-            returned.add(("unknown", capture))
-
-        def values_of(rhs):
-            if rhs is None:
-                return frozenset({("data", capture)})
-            values, _ = receiver_expression(rhs)
-            possible = members(*rhs).get("")
-            if possible:
-                values = frozenset(root for root in values if root[0] != "handle")
-                values |= frozenset(("handle", kind, adapters) for kind, adapters in possible)
-            return values
-        for root in roots:
-            if root[0] == "intrinsic-raw":
-                returned.add(("data", capture))
-                continue
-            if root[0] != "callable":
-                returned.add(("unknown", capture))
-                continue
-            body = callable_body(root[1])
-            if body is None:
-                returned.add(("unknown", capture))
-                continue
-            begin, end, block, asynchronous, generator, parameters = body
-            if generator or asynchronous and not awaited:
-                returned.add(("data", capture))
-                continue
-            arguments = {name: operand for parameter, operand in zip(parameters, operands)
-                         for name, _ in javascript_binding_names(code, *parameter)}
-            def include(rhs):
-                for value in values_of(rhs):
-                    if value[0] == "binding" and value[1] == begin and value[2] in arguments:
-                        returned.update(values_of(arguments[value[2]]))
-                    else:
-                        returned.add(value)
-            if not block:
-                include((begin, end))
-                continue
-            # Scope ownership excludes return statements of nested callables.
-            # Branch blocks remain possible return paths of this same body.
-            for statement in re.finditer(r"(?<![\w.$])return\b", code[begin + 1:end - 1]):
-                at = begin + 1 + statement.start()
-                owner = owners[at]
-                while owner != -1 and owner not in functions:
-                    owner = parents.get(owner, -1)
-                if owner != begin:
+                result = (body, end, True, bool(match["async"]),
+                    bool(match["generator"] or match["method_generator"]),
+                    tuple(node_expression_parts(code, opening + 1, closing)))
+        if result is None:
+            asynchronous = re.match(r"async\b\s*", code[begin:end])
+            starts = ([begin + asynchronous.end()] if asynchronous else []) + [begin]
+            for parameter in starts:
+                if code[parameter:parameter + 1] == "(":
+                    closing = pairs.get(parameter)
+                    following = closing + 1 if closing is not None else end
+                else:
+                    identifier = re.match(r"[A-Za-z_$][\w$]*", code[parameter:end])
+                    following = parameter + identifier.end() if identifier else end
+                while following < end and code[following].isspace():
+                    following += 1
+                if code[following:following + 2] != "=>":
                     continue
-                value = begin + 1 + statement.end()
-                finish = node_expression_parts(code, value, end - 1, ";\n", first=True)[0][1]
-                if not code[value:finish].lstrip().startswith(";"):
-                    include((value, finish))
-        # User code can have other paths and transformations. Returned handles
-        # are possible values, never exact authority to retire an old handle.
-        return frozenset(returned), False
-
-    def compute_members(begin, end, suffix):
-        begin, end = unwrapped_span(begin, end)
-        tagged = invoked_receiver((begin, end))
-        if tagged is not None:
-            roots, exact = tagged
-            if suffix:
-                return projected_members(roots, suffix, end)
-            possible = frozenset((root[1], root[2] if len(root) > 2 else ()) for root in roots if root[0] == "handle")
-            return {"": possible} if possible else {"": None} if exact else {}
-        aggregate = literal_members((begin, end))
-        transformed = False
-        if aggregate is None and code[begin:begin + 1] in {"{", "["} and begin in pairs:
-            close = pairs[begin] + 1
-            selector = native[close:end].strip()
-            if selector and reference.fullmatch("receiver" + code[close:end].strip()):
-                selected = canonical("receiver" + selector).removeprefix("receiver")
-                return selected_members((begin, close), selected + suffix, end)
-            aggregate = literal_members((begin, close))
-            transformed = True
-        if aggregate is not None:
-            if not suffix:
-                return {} if transformed else {"": None}
-            field, _, remaining = suffix[1:].partition(".")
-            if field in aggregate:
-                return selected_members(aggregate[field], "." + remaining if remaining else "")
-            if transformed:
-                return {}  # An absent projected prefix does not prove data.
-            return projected_members(frozenset({(begin, end)}), suffix, end)
-        raw = native[begin:end]
-        if re.fullmatch(JS_STRING, raw.strip()) or re.fullmatch(r"\s*(?:\d+(?:\.\d+)?|null|true|false)\s*", raw):
-            return projected_members(receiver_expression((begin, end))[0], suffix, end) if suffix else {"": None}
-        if reference.fullmatch(code[begin:end]):
-            selected = canonical(raw)
-            if suffix:
-                roots, _ = receiver_reference(selected, begin)
-                return projected_members(roots, suffix, begin)
-            return reference_members(selected, begin)
-        constructor = re.search(r"(?:\.\s*constructor)+\s*$", code[begin:end])
-        if constructor:
-            roots, _ = receiver_expression((begin, begin + constructor.start()))
-            selected = canonical("receiver" + constructor[0]).removeprefix("receiver")
-            return projected_members(roots, selected + suffix, end)
-        if suffix:
-            roots, _ = receiver_expression((begin, end))
-            return projected_members(roots, suffix, end)
-        return {}
-
-    def source_capability(kind, adapters=()):
-        return frozenset({(kind, adapters)})
-
-    def literal_members(rhs):
-        index = member_indexes.setdefault(rhs, {})
-        if None not in index:
-            aggregate = javascript_literal_members(native, code, *rhs)
-            index[None] = dict(aggregate) if aggregate is not None else None
-        return index[None]
-
-    def inherited_receiver(root, field):
-        if field != "constructor":
-            return frozenset(), False
-        if isinstance(root[0], int) or root[0] == "data":
-            return frozenset({("callable-data",)}), True
-        return frozenset({("handle", "constructor")}), root[0] in {"handle", "callable", "callable-data", "intrinsic-string", "intrinsic-raw"}
-
-    def receiver_expression(rhs):
-        return reachable(("receiver-expression", rhs), lambda: compute_receiver_expression(rhs), (frozenset(), False), receiver=True)
-
-    def compute_receiver_expression(rhs):
-        begin, end = unwrapped_span(*rhs)
-        aggregate = literal_members((begin, end))
-        tagged = invoked_receiver((begin, end))
-        if tagged is not None:
-            result = tagged
-        elif aggregate is not None:
-            result = frozenset({(begin, end)}), True
-        elif re.fullmatch(JS_STRING, native[begin:end].strip()) or re.fullmatch(r"\s*(?:\d+(?:\.\d+)?|null|true|false)\s*", native[begin:end]):
-            result = (frozenset() if native[begin:end].strip() == "null"
-                      else frozenset({("data", rhs)})), True
-        elif reference.fullmatch(code[begin:end]):
-            result = receiver_reference(canonical(native[begin:end]), begin)
-        elif callable_body((begin, end)) is not None:
-            result = frozenset({("callable", rhs)}), True
-        else:
-            # An unknown expression has one capture identity, not a projected
-            # history of every reference spelling that might have produced it.
-            result = frozenset({("unknown", rhs)}), False
+                body, finish = trim(following + 2, end, unwrap=False)
+                block = code[body:body + 1] == "{"
+                if body < end and (not block or pairs.get(body) == finish - 1):
+                    parameters = tuple(node_expression_parts(code, parameter + 1, closing)) if code[parameter:parameter + 1] == "(" else ((parameter, following),)
+                    result = (body, finish, block, bool(asynchronous and parameter != begin), False, parameters)
+                    break
+        body_cache[span] = result
         return result
 
-    def receiver_reference(selected, position):
-        return reachable(("receiver-reference", selected, position), lambda: compute_receiver_reference(selected, position), (frozenset(), False), receiver=True)
+    def literal(span):
+        if span not in literal_cache:
+            recipes = []
+            members = javascript_literal_members(native, code, *span, _facts=recipes)
+            literal_cache[span] = members, tuple(recipes)
+        return literal_cache[span][0]
 
-    def global_receiver(base):
-        return (("global",) if base in {"globalThis", "global", "window", "self"}
-                else ("handle", names[base]) if base in names
-                else ("intrinsic-string",) if base == "String"
-                else ("callable-data",) if base == "text" else None)
-
-    def receiver_projection(roots, known, suffix, position):
-        for field in suffix.split("."):
-            projected, definite = set(), known
-            for root in roots:
-                options = []
-                if isinstance(root[0], int):
-                    operands = literal_members(root) or {}
-                    if field in operands:
-                        values, exact = receiver_expression(operands[field])
-                        options.append((-1, True, values, exact))
-                    elif field == "constructor":
-                        values, exact = inherited_receiver(root, field)
-                        options.append((-1, True, values, exact))
-                elif root == ("intrinsic-string",) and field == "raw":
-                    options.append((-1, True, frozenset({("intrinsic-raw",)}), True))
-                elif root == ("global",) and global_receiver(field) is not None:
-                    options.append((-1, True, frozenset({global_receiver(field)}), True))
-                elif field == "constructor":
-                    values, exact = inherited_receiver(root, field)
-                    options.append((-1, True, values, exact))
-                for event in property_events.get(field, ()):
-                    target, _, at, context, certain, rhs = event
-                    if context == owners[position] and rhs[1] > position:
-                        continue
-                    reaches, receiver_exact = property_receiver(target, at, root)
-                    if reaches:
-                        values, exact = receiver_expression(rhs)
-                        options.append((at, certain and context == owners[position] and receiver_exact, values, exact))
-                last = max((at for at, certain, _, exact in options if certain and exact), default=-1)
-                for at, _, values, exact in options:
-                    if at >= last:
-                        projected.update(values)
-                        definite &= exact
-                if not options and not isinstance(root[0], int):
-                    definite = False
-            roots, known = frozenset(projected), definite
-        return roots, known
-
-    def compute_receiver_reference(selected, position):
-        base, dot, suffix = selected.partition(".")
-        if dot:
-            result = receiver_projection(*receiver_reference(base, position), suffix, position)
-        else:
-            owner, scope = binding(base, position), owners[position]
-            candidates = [event for event in assignments.get((owner, base), ())
-                          if event[3] != scope or event[-1][1] <= position]
-            if owner is None:
-                candidates.extend(global_candidates(base, position, scope))
-            resolved = []
-            for event in candidates:
-                values, exact = receiver_expression(event[-1])
-                if event[1]:
-                    values, exact = receiver_projection(values, exact, event[1][1:], event[-1][0])
-                resolved.append((event, (values, exact)))
-            last = max((event[2] for event, (_, exact) in resolved
-                        if event[3] == scope and event[4] and exact), default=-1)
-            roots = set()
-            intrinsic = global_receiver(base) if owner is None else None
-            declared = declarations.get((owner, base), ())
-            known = last >= 0 or intrinsic is not None or bool(declared)
-            initialized = owner is not None and owner == scope and any(
-                event[3] == scope and event[4] for event in candidates)
-            if last < 0:
-                if declared:
-                    roots.update(("callable", span) for span in declared)
-                elif intrinsic is not None or not initialized:
-                    roots.add(intrinsic if intrinsic is not None else ("binding", owner, base))
-            for event, (values, exact) in resolved:
-                if event[3] != scope or event[2] >= last:
-                    roots.update(values)
-                    known &= exact
-            result = frozenset(roots), known
-        return result
-
-    def projected_members(roots, suffix, position):
-        values = {}
-        for root in roots:
-            result = reachable(("projected-member", root, suffix, position),
-                               lambda root=root: compute_projected_member(root, suffix, position), {})
-            for name, value in result.items():
-                if value is not None:
-                    values[name] = (values.get(name) or frozenset()) | value
-                elif name not in values:
-                    values[name] = None
-        return values
-
-    def compute_projected_member(root, suffix, position):
-        nonlocal cuts
-        field, _, remaining = suffix[1:].partition(".")
-        tail = "." + remaining if remaining else ""
-        values = {}
-        alternatives = []
-        if isinstance(root[0], int):
-            operands = literal_members(root) or {}
-            if field in operands:
-                initial = selected_members(operands[field], tail, position)
-            elif field == "constructor":
-                inherited, _ = inherited_receiver(root, field)
-                initial = projected_members(inherited, tail, position) if tail else {"": None}
-            else:
-                initial = {"": None}
-            alternatives.append((-1, True, initial))
-        elif root == ("global",) and field in names and not tail:
-            alternatives.append((-1, True, {"": source_capability(names[field])}))
-        elif root[0] == "handle" and field in {"call", "apply", "bind"} and not tail:
-            alternatives.append((-1, True, {"": source_capability(root[1], (field,))}))
-        if not isinstance(root[0], int) and field == "constructor":
-            inherited, exact = inherited_receiver(root, field)
-            if not exact:
-                cuts += 1
-            initial = (projected_members(inherited, tail, position) if tail else
-                       {"": source_capability("constructor") if any(value[0] == "handle" for value in inherited) else None})
-            alternatives.append((-1, True, initial))
-        for event in property_events.get(field, ()):
-            target, source_suffix, at, context, certain, rhs = event
-            if context == owners[position] and rhs[1] > position:
-                continue
-            reaches, receiver_exact = property_receiver(target, at, root)
-            if reaches:
-                started = cuts
-                result = selected_members(rhs, source_suffix + tail, position if tail else None)
-                alternatives.append((at, certain and context == owners[position] and receiver_exact and cuts == started, result))
-        last = max((at for at, certain, result in alternatives if certain and "" in result), default=-1)
-        for at, _, result in alternatives:
-            if at >= last:
-                for name, capability in result.items():
-                    if capability is not None or name not in values:
-                        values[name] = (values.get(name) or frozenset()) | capability if capability is not None else None
-        return values
-
-    def selected_members(rhs, suffix, position=None):
-        return reachable(("selected-members", rhs, suffix, position), lambda: compute_selected_members(rhs, suffix, position), {})
-
-    def compute_selected_members(rhs, suffix, position=None):
-        # Capture the receiver binding at the RHS. Its members remain live at
-        # the use site; rebinding that variable does not change the receiver.
-        if suffix and position is not None:
-            begin, end = unwrapped_span(*rhs)
-            if reference.fullmatch(code[begin:end]):
-                roots, known = receiver_reference(canonical(native[begin:end]), begin)
-                projected = projected_members(roots, suffix, position)
-                if known or projected:
-                    return projected
-            if literal_members((begin, end)) is not None:
-                return projected_members(frozenset({(begin, end)}), suffix, position)
-        return members(*rhs, suffix=suffix)
-
-    def reference_members(selected, position):
-        return reachable(("reference-members", selected, position), lambda: compute_reference_members(selected, position), {})
-
-    def compute_reference_members(selected, position):
-        base, dot, suffix = selected.partition(".")
-        if dot:
-            roots, known = receiver_reference(base, position)
-            projected = projected_members(roots, "." + suffix, position)
-            if projected or known:
-                values = projected or {"": None}
-                return values
-        owner = binding(base, position)
-        scope = owners[position]
-        prefixes = selected.split(".")
-        candidates = [event for length in range(1, len(prefixes) + 1)
-                      for event in assignments.get((owner, ".".join(prefixes[:length])), ())
-                      if event[3] != scope or event[-1][1] <= position]
-        if owner is None and "." not in selected:
-            candidates.extend(global_candidates(base, position, scope))
-        # Missing provenance is unknown, not proof that a prior source handle
-        # disappeared. A known data value uses None and can retire that handle.
-        resolved, exact_values = {}, {}
-        for target, source_suffix, at, _, _, rhs in candidates:
-            suffix = selected[len(target):]
-            started = cuts
-            resolved[at] = selected_members(rhs, source_suffix + suffix,
-                                           position if suffix and not source_suffix else None)
-            exact_values[at] = cuts == started
-        last = max((event[2] for event in candidates if event[3] == scope and event[4]
-                    and exact_values[event[2]] and "" in resolved[event[2]]), default=-1)
-        candidates = [event for event in candidates if event[3] != scope or event[2] >= last]
-        values = {}
-        # Intrinsics remain an initial alternative until a definite known
-        # replacement at this call's scope retires them. A conditional or
-        # sibling-function write cannot remove that initial capability.
-        if last < 0 and owner is None:
-            if base in {"globalThis", "global", "window", "self"} or base == "this" and global_this:
-                values.update(("." + name, source_capability(kind)) for name, kind in names.items())
-            elif base in names:
-                values[""] = source_capability(names[base])
-            elif base == "text":
-                values[""] = None
-            suffix = selected[len(base):]
-            values = {name[len(suffix):]: kind for name, kind in values.items()
-                      if name == suffix or name.startswith(suffix + ".")}
-        for target, source_suffix, at, _, _, rhs in candidates:
-            for name, kind in resolved[at].items():
-                if kind is not None or name not in values:
-                    values[name] = (values.get(name) or frozenset()) | kind if kind is not None else None
-        # call/apply/bind preserve the source function's capability.
-        if not values and selected.rsplit(".", 1)[-1] in {"call", "apply", "bind"}:
-            parent = selected.rsplit(".", 1)[0]
-            values.update((name, frozenset((kind, (selected.rsplit(".", 1)[-1],))
-                                           for kind, adapters in possible))
-                          for name, possible in reference_members(parent, position).items() if not name and possible)
-        return {name: value for name, value in values.items() if not name}
-
-    def source_kind(expression, raw=None, position=0):
-        raw = expression if raw is None else raw
-        for word in reference.finditer(expression):
-            if expression[word.end():].lstrip().startswith(":"):
-                continue
-            selected = canonical(raw[word.start():word.end()])
-            kind = reference_members(selected, position + word.start()).get("")
-            if kind:
-                return kind
-        if re.search(r"\.\s*constructor\s*$", expression):
-            return members(position, position + len(expression)).get("")
-        if expression.lstrip().startswith(("[", "(", "{")):
-            return members(position, position + len(expression)).get("")
+    def roots_global(name):
+        if name in {"globalThis", "global", "window", "self"} or name == "this" and global_this:
+            return ("global",)
+        if name == "import":
+            return ("handle", "import")
+        if name in {"eval", "Function", "AsyncFunction"}:
+            return ("handle", "eval" if name == "eval" else "constructor")
+        if name in {"String", "Object", "Reflect"}:
+            return ("intrinsic", name)
+        if name == "text":
+            return ("read-callable",)
+        if name == "undefined":
+            return ("undefined",)
         return None
 
     def callee(opening):
-        end = opening
-        while end and code[end - 1].isspace():
-            end -= 1
+        end = preceding(opening)
         if code[max(0, end - 2):end] == "?.":
-            end -= 2
+            end = preceding(end - 2)
         begin = end
         while begin:
-            if code[begin - 1] in ")]" and begin - 1 in pairs:
+            paired = code[begin - 1] in ")]" and begin - 1 in pairs
+            if paired:
                 begin = pairs[begin - 1]
             else:
                 finish = begin
@@ -998,101 +766,1439 @@ def javascript_source_calls(native, code, *, global_this=False, literal_atoms=()
                     begin -= 1
                 if begin == finish:
                     break
-                before = begin
-                while before and code[before - 1].isspace():
-                    before -= 1
-                if (code[begin:finish] in {"await", "return", "typeof", "void", "new", "delete", "yield", "throw", "case", "in", "of"}
-                        and (not before or code[before - 1] != ".")):
+                before = preceding(begin)
+                if code[begin:finish] in {"await", "return", "typeof", "void", "new", "delete", "yield", "throw", "case", "in", "of"} and (not before or code[before - 1] != "."):
                     begin = finish
                     break
-            before = begin
-            while before and code[before - 1].isspace():
-                before -= 1
+            before = preceding(begin)
             if before and code[before - 1] == ".":
                 begin = before - 1
                 if begin and code[begin - 1] == "?":
                     begin -= 1
-            elif before == begin and before and (code[before - 1] in ")]_$" or code[before - 1].isalnum()):
+            elif paired and before == begin and before and (code[before - 1] in ")]_$" or code[before - 1].isalnum()):
                 continue
             else:
                 break
-        return begin, end
+        return trim(begin, end, unwrap=False)
 
-    for opening, char in enumerate(code):
-        if char != "(":
+    # All syntax descriptors exist before the first graph query. Targets use
+    # the binding owner's walker, including computed/rest/default recipes.
+    starts, start = [], 0
+    for position, char in enumerate(code):
+        starts.append(start)
+        if char in ";{}\n":
+            start = position + 1
+    for match in re.finditer(r"(?<![=!<>])=(?!=|>)", code):
+        finish_target = preceding(match.start())
+        if not finish_target:
             continue
-        start, finish = callee(opening)
-        expression = code[start:finish].strip()
-        start += len(code[start:finish]) - len(code[start:finish].lstrip())
-        end = pairs.get(opening, len(code))
-        following = end + 1
+        begin_target, _ = callee(finish_target)
+        if code[finish_target - 1] in "}]" and finish_target - 1 in pairs:
+            opening = pairs[finish_target - 1]
+            before = preceding(opening)
+            if ((opening, finish_target) in facts.get("targets", ())
+                    or not before or not re.match(r"[\w$)\]]", code[before - 1])):
+                begin_target = opening
+        if begin_target >= finish_target:
+            continue
+        rhs_end = node_expression_parts(code, match.end(), len(code), ",;\n", first=True)[0][1]
+        write_sites[rhs_end - 1] = begin_target
+        target = begin_target, finish_target
+        projected = []
+        list(javascript_binding_names(code, *target, _facts=projected, _native=native))
+        context = parents.get(begin_target, owners[begin_target]) if code[begin_target:begin_target + 1] == "{" else owners[begin_target]
+        prefix = code[starts[begin_target]:begin_target]
+        certain = (re.fullmatch(r"\s*(?:(?:const|let|var)\s+)?", prefix) is not None
+                   or (begin_target, finish_target, match.start()) in facts.get("update_assignments", ()))
+        for selected, path, defaults, rest in projected:
+            event = (selected, path, defaults, rest, (match.end(), rhs_end), begin_target, context, certain)
+            raw = code[slice(*selected)].strip()
+            if re.fullmatch(r"[A-Za-z_$][\w$]*", raw):
+                variable_events.setdefault((lexical(raw, selected[0]), raw), []).append(event)
+            else:
+                effect_sites.append(event)
+    for opening, char in enumerate(code):
+        if char != "(" or opening not in pairs:
+            continue
+        begin, finish = callee(opening)
+        close = pairs[opening]
+        following = close + 1
         while following < len(code) and code[following].isspace():
             following += 1
-        if not expression or code[following:following + 1] == "{":
+        if begin == finish or code[following:following + 1] == "{" or opening in facts.get("headers", set()):
             continue
-        kind = source_kind(expression, native[start:finish], start)
-        reflective = re.fullmatch(r"Reflect\s*\.\s*(apply|construct)", expression)
-        parts = node_expression_parts(code, opening + 1, end)
-        passed_handles = [part for part in parts if source_kind(code[slice(*part)], native[slice(*part)], part[0])]
-        if kind is None and not reflective and expression != "import":
-            if not passed_handles or expression == "text":
+        parts = tuple(node_expression_parts(code, opening + 1, close))
+        if len(parts) == 1 and not native[slice(*parts[0])].strip():
+            parts = ()
+        call_sites[opening] = (begin, finish, close, False, parts)
+    for opening, (end, parts) in templates.items():
+        begin, finish = callee(opening)
+        if begin != finish:
+            call_sites[opening] = begin, finish, end - 1, True, (None, *parts)
+    # A direct caller can omit template facts for a noninterpolated literal.
+    for match in re.finditer(JS_STRING, native):
+        if match[0].startswith("`") and "${" not in match[0] and match.start() not in call_sites:
+            begin, finish = callee(match.start())
+            if begin != finish:
+                call_sites[match.start()] = begin, finish, match.end() - 1, True, (None,)
+    for site in call_sites:
+        body_sites.setdefault(function_owner(site), []).append(site)
+    for event in effect_sites:
+        body_effects.setdefault(function_owner(event[5]), []).append(event)
+
+    def recipe(span, anchor):
+        return ("span", span, anchor) if span is not None else ("value", ("data",))
+
+    def value_of(item):
+        return query(("recipe", item), lambda: compute_recipe(item))
+
+    def compute_recipe(item):
+        if item[0] == "choice":
+            token(("choices", item))
+            values = set()
+            for selected in choices.get(item, ()):
+                values.update(value_of(selected)[0])
+            return frozenset(values), False
+        if item[0] == "snapshot-member":
+            source, field, site, anchor = item[1:]
+            values, exact = value_of(source)
+            return project(values, exact, field, site, anchor)
+        if item[0] == "span":
+            return expression(item[1], item[2])
+        if item[0] == "path":
+            source, path, defaults, rest, position, anchor = item[1:]
+            values, exact = value_of(source)
+            for depth in range(len(path) + 1):
+                for at, default in defaults:
+                    if at == depth and (not values or any(value[0] in {"undefined", "unknown", "binding"} for value in values)):
+                        fallback, fallback_exact = expression(default, anchor)
+                        missing = not values or values <= frozenset({("undefined",)})
+                        values = fallback if missing else values | fallback
+                        exact &= fallback_exact
+                if depth == len(path):
+                    break
+                field = path[depth]
+                if isinstance(field, tuple) and field[0] == "key":
+                    fields, certain = keys_for(native[slice(*field[1])], anchor, position)
+                else:
+                    fields, certain = ({field}, True) if field is not None else (set(), False)
+                selected, known = set(), exact and certain
+                for field in fields:
+                    result, definite = project(values, exact, field, position, anchor)
+                    selected.update(result)
+                    known &= definite
+                values = frozenset(selected) if certain else frozenset(selected | {("unknown",)})
+                exact = known
+            if rest is not None:
+                return frozenset({("rest", item)}), exact
+            return values, exact
+        if item[0] == "descriptor":
+            source, site, anchor = item[1:]
+            values, exact = value_of(source)
+            selected, getters = set(), set()
+            if source in literal_getters:
+                getters.update(values)
+            else:
+                for root in values:
+                    fields, known = aggregate_fields(root, site) if root[0] == "aggregate" else ({}, False)
+                    exact &= known
+                    if "value" in fields:
+                        results, certain = value_of(fields["value"])
+                        selected.update(results)
+                        exact &= certain
+                    if "get" in fields:
+                        getters.update(value_of(fields["get"])[0])
+            if getters:
+                results, certain = invoke_values(frozenset(getters), ("value", ("undefined",)), (), site, anchor, set())
+                selected.update(results)
+                exact &= certain
+            return frozenset(selected), exact
+        if item[0] == "args":
+            return frozenset({item}), True
+        return frozenset({item[1]}), item[1][0] != "unknown"
+
+    def keys_for(raw, anchor, position):
+        raw = raw.strip()
+        try:
+            if re.fullmatch(JS_STRING + r"(?:\s*\+\s*" + JS_STRING + r")*", raw):
+                return {"".join(javascript_string(atom[0]) for atom in re.finditer(JS_STRING, raw))}, True
+        except ValueError:
+            pass
+        if raw.isdigit():
+            return {raw}, True
+        if re.fullmatch(r"[A-Za-z_$][\w$]*", raw):
+            values, known = reference_value(raw, position, anchor)
+            result = {root[1] for root in values if root[0] == "string"}
+            return result, known and len(result) == len(values)
+        return set(), False
+
+    def select_path(item, path, defaults, rest, position, anchor):
+        return ("path", item, path, defaults, rest, position, anchor) if path or defaults or rest is not None else item
+
+    def anchor_context(anchor, owner, seen=frozenset()):
+        if anchor in seen:
+            return ()
+        if anchor is None:
+            return (None,)
+        token(("anchor", anchor))
+        if anchor[2] == owner:
+            return (anchor,)
+        result = set()
+        for _, caller, capture, _ in anchors[anchor]:
+            if capture == anchor:
                 continue
-            handle = passed_handles[0]
-            kind = source_kind(code[slice(*handle)], native[slice(*handle)], handle[0])
-            parts = [part for part in parts if part not in passed_handles]
-        if finish and code[finish - 1] == ")" and finish - 1 in pairs:
-            prefix = code[start:pairs[finish - 1]].strip()
-            if prefix and not re.search(r"\.\s*bind$", prefix):
+            if capture is None:
+                result.add(None)
+            else:
+                result.update(anchor_context(capture, owner, seen | {anchor}))
+        return tuple(result) or (None,)
+
+    def parameter_value(name, owner, anchor):
+        result, exact = set(), True
+        for active in anchor_context(anchor, owner):
+            if active is None or active[2] != owner:
+                result.add(("binding", owner, name))
+                exact = False
                 continue
-        if reflective and parts:
-            kind = source_kind(code[slice(*parts[0])], native[slice(*parts[0])], parts[0][0])
-        if kind is None and expression == "import":
-            kind = "import"
-            operand = native[slice(*parts[0])].strip() if parts else ""
-            try:
-                specifier = javascript_string(operand)
-            except ValueError:
-                specifier = None
-            if specifier is not None and not specifier.startswith(("data:", "blob:")):
+            token(("anchor", active))
+            specs = bindings_by_body.get(owner, {})
+            spec = specs.get(name)
+            if spec is None:
                 continue
-        if kind is None:
+            index, path, defaults, rest = spec
+            for _, caller, capture, operands in anchors[active]:
+                if rest == ((), None):
+                    selected = ("args", active, index)
+                else:
+                    selected = operands[index] if isinstance(operands, Packet) else ("value", ("undefined",))
+                    selected = select_path(selected, path, defaults, rest, owner, capture)
+                values, certain = value_of(selected)
+                result.update(values)
+                exact &= certain
+        return frozenset(result), exact
+
+    def reference_value(selected, position, anchor):
+        return query(("reference", selected, position, anchor), lambda: compute_reference(selected, position, anchor))
+
+    def compute_reference(selected, position, anchor):
+        base, dot, suffix = selected.partition(".")
+        if dot:
+            values, exact = reference_value(base, position, anchor)
+            for field in suffix.split("."):
+                values, exact = project(values, exact, field, position, anchor)
+            return values, exact
+        owner = lexical(base, position)
+        candidates = variable_events.get((owner, base), ())
+        resolved = []
+        for event in candidates:
+            span, path, defaults, rest, rhs, at, context, certain = event
+            write_at = rhs[1] - 1
+            possible, _ = ordering(context, position, write_at)
+            if not possible:
+                continue
+            creation_anchors = anchor_context(anchor, function_owner(at)) if function_owner(at) != -1 else (None,)
+            values, exact = set(), True
+            for creation in creation_anchors:
+                item = select_path(recipe(rhs, creation), path, defaults, rest, rhs[1], creation)
+                selected_values, known = value_of(item)
+                values.update(selected_values)
+                exact &= known
+            resolved.append((write_at, context, certain, frozenset(values), exact))
+        last = max((event_order(at, position) for at, context, certain, _, exact in resolved if certain and exact and ordering(context, position, at)[1]), default=None)
+        values, known = set(), True
+        if last is None:
+            if (owner, base) in declarations:
+                values.update(("callable", span, anchor) for span in declarations[owner, base])
+            elif name_is_parameter(base, owner):
+                initial, known = parameter_value(base, owner, anchor)
+                values.update(initial)
+            elif owner is None:
+                initial = roots_global(base)
+                if initial == ("global",):
+                    values.add(initial)
+                else:
+                    extra, certain = member_one(("global",), base, position, anchor)
+                    if extra:
+                        values.update(extra)
+                        known &= certain
+                    else:
+                        values.add(("unknown", base))
+                        known = False
+            elif not any(context == owners[position] and certain for _, context, certain, _, _ in resolved):
+                values.add(("binding", owner, base))
+                known = False
+        for at, context, _, selected_values, exact in resolved:
+            if last is None or event_order(at, position) >= last or not ordering(context, position, at)[1]:
+                values.update(selected_values)
+                known &= exact
+        return frozenset(values), known
+
+    def name_is_parameter(name, owner):
+        return name in bindings_by_body.get(owner, {})
+
+    def expression(span, anchor):
+        return query(("expression", span, anchor), lambda: compute_expression(span, anchor))
+
+    def compute_expression(span, anchor):
+        begin, end = trim(*span)
+        if begin >= end:
+            return undefined
+        body = callable_body((begin, end))
+        if body is not None:
+            body_start, _, _, _, _, params = body
+            specs = bindings_by_body.setdefault(body_start, {})
+            for index, parameter in enumerate(params):
+                targets = []
+                list(javascript_binding_names(code, *parameter, _facts=targets, _native=native))
+                for target, path, defaults, rest in targets:
+                    name = code[slice(*target)].strip()
+                    if re.fullmatch(r"[A-Za-z_$][\w$]*", name):
+                        specs[name] = index, path, defaults, rest
+            return frozenset({("callable", (begin, end), anchor)}), True
+        if re.match(r"await\b", code[begin:end]):
+            return expression((begin + 5, end), anchor)
+        aggregate = literal((begin, end))
+        if aggregate is not None:
+            return frozenset({("aggregate", (begin, end), anchor)}), True
+        for site in ending_sites.get(end, ()):
+            if call_sites[site][0] == begin and call_sites[site][3]:
+                return invocation(site, anchor)
+        raw = native[begin:end].strip()
+        try:
+            if re.fullmatch(JS_STRING, raw):
+                return frozenset({("string", javascript_string(raw))}), True
+        except ValueError:
+            pass
+        if re.fullmatch(r"(?:\d+(?:\.\d+)?|null|true|false)", raw):
+            return data
+        if re.fullmatch(r"[A-Za-z_$][\w$]*", code[begin:end]):
+            return reference_value(raw, begin, anchor)
+        comma = node_expression_parts(code, begin, end)
+        if len(comma) > 1:
+            return expression(comma[-1], anchor)
+        if code[end - 1:end] == ")" and end - 1 in pairs:
+            opening = pairs[end - 1]
+            if opening > begin and opening in call_sites:
+                return invocation(opening, anchor)
+        selected = selected_member(begin, end, anchor, end)
+        if selected is not None:
+            return selected[0], selected[1]
+        # A tag's end can contain masked literal text, so inspect immutable sites.
+        for site in ending_sites.get(end, ()):
+            if call_sites[site][0] == begin:
+                return invocation(site, anchor)
+        return frozenset({("unknown", (begin, end), anchor)}), False
+
+    def aggregate_fields(root, position):
+        fields, exact = query(("fields", root), lambda: compute_fields(root))
+        return fields if isinstance(fields, dict) else {}, exact
+
+    def compute_fields(root):
+        span, anchor = root[1:]
+        position = span[0]
+        literal(span)
+        entries = literal_cache[span][1]
+        fields, accessors, known = {}, set(), True
+        for name, operand, key_recipe in entries:
+            raw = native[slice(*operand)].strip()
+            if code[slice(*operand)].lstrip().startswith("..."):
+                start = operand[0] + code[slice(*operand)].find("...") + 3
+                values, exact = expression((start, operand[1]), anchor)
+                known &= exact
+                for value in values:
+                    if value[0] == "aggregate":
+                        shared, certain = aggregate_fields(value, position)
+                        fields.update(shared)
+                        accessors.difference_update(shared)
+                        known &= certain
+                    else:
+                        known = False
+                continue
+            # Preserve the existing callable syntax's plain accessor role;
+            # the public member reader deliberately keeps original spans.
+            accessor = re.match(r"\s*(get|set)\s+([A-Za-z_$][\w$]*)\s*\(", code[slice(*operand)])
+            if key_recipe is None and accessor and callable_body(operand) is not None:
+                field = accessor[2]
+                if accessor[1] == "get":
+                    item = recipe(operand, anchor)
+                    literal_getters.add(item)
+                    # The original accessor start is a finite implicit site.
+                    # It is not a lexical call or an application certificate.
+                    fields[field] = ("descriptor", item, operand[0], anchor)
+                elif field not in accessors:
+                    fields[field] = ("value", ("undefined",))
+                accessors.add(field)
+                continue
+            if key_recipe is not None:
+                names, exact = keys_for(native[slice(*key_recipe)], anchor, operand[0])
+                known &= exact
+            else:
+                names = {name} if name is not None else set()
+                known &= name is not None
+            for field in names:
+                fields[field] = recipe(operand, anchor)
+                accessors.discard(field)
+        return fields, known
+
+    def project(values, exact, field, position, anchor):
+        result, known = set(), exact
+        for root in values:
+            selected, certain = query(("member", root, field, position, anchor), lambda root=root: member_one(root, field, position, anchor))
+            result.update(selected)
+            known &= certain
+        return frozenset(result), known
+
+    def member_one(root, field, position, anchor, inherited=True):
+        options = []
+        unordered = set()
+        own_absent = None
+        tag = root[0]
+        if tag == "aggregate":
+            fields, known = aggregate_fields(root, position)
+            if field in fields:
+                values, exact = value_of(fields[field])
+                options.append((-1, True, values, exact))
+            else:
+                own_absent = known
+        elif tag == "copy":
+            token(("copy", root))
+            values, exact = set(), True
+            for source in copy_sources.get(root, ()):
+                selected, certain = value_of(("snapshot-member", source, field, root[1], root[2]))
+                values.update(selected)
+                exact &= certain
+            options.append((-1, True, frozenset(values), exact))
+        elif tag == "args":
+            token(("anchor", root[1]))
+            if field.isdigit():
+                values, exact = empty, True
+                if anchors[root[1]]:
+                    values, exact = value_of(packet(("args", root[1], root[2]), ("args", root[1], root[2]))[int(field)])
+                options.append((-1, True, values, exact))
+        elif tag == "rest":
+            item = root[1]
+            source, path, defaults, rest, at, creation = item[1:]
+            selected, exact = value_of(("path", source, path, defaults, None, at, creation))
+            offset = rest[1]
+            target_field = str(int(field) + int(offset)) if offset is not None and str(offset).isdigit() and field.isdigit() else field
+            values, known = project(selected, exact, target_field, position, creation)
+            options.append((-1, True, values, known))
+        elif root == ("global",) and inherited:
+            value = roots_global(field)
+            if value is not None:
+                options.append((-1, True, frozenset({value}), True))
+        elif root == ("intrinsic", "String") and field == "raw":
+            options.append((-1, True, frozenset({("intrinsic", "String.raw")}), True))
+        elif tag == "intrinsic" and root[1] in {"Object", "Reflect"}:
+            allowed = {"assign", "defineProperty", "defineProperties"} if root[1] == "Object" else {"apply", "construct", "get", "set", "defineProperty"}
+            if field in allowed:
+                options.append((-1, True, frozenset({("intrinsic", root[1] + "." + field)}), True))
+        if field == "slice" and not options and (tag == "copy" or tag == "aggregate" and code[root[1][0]] == "["):
+            options.append((-1, True, frozenset({("array-method", "slice")}), True))
+        if field in {"call", "apply", "bind"} and not options and tag in {"handle", "callable", "bound", "intrinsic", "method", "array-method", "read-callable"}:
+            options.append((-1, True, frozenset({("method", field)}), True))
+        if field == "constructor" and not options:
+            callable_ = tag in {"handle", "callable", "bound", "intrinsic", "method", "array-method", "read-callable", "callable-data"}
+            constructor = ("handle", "constructor") if callable_ or tag in {"unknown", "binding"} else ("callable-data",)
+            options.append((-1, True, frozenset({constructor}), tag not in {"unknown", "binding"}))
+        if not options and own_absent is not None:
+            options.append((-1, True, frozenset({("undefined",)}) if own_absent else frozenset({("unknown",)}), own_absent))
+        token(("effects", root, field))
+        for at, context, certain, item, effect_anchor, producer in effects.get((root, field), ()):
+            possible, definite = ordering(context, position, at)
+            if not possible:
+                continue
+            if producer is not None:
+                token(("qualification", producer))
+                token(producer)
+                roots, qualified, unconditional = qualifications.get(producer, (empty, False, False))
+                certain = (unconditional and qualified and roots == frozenset({root})
+                           and states.get(producer, [None, False])[1])
+            values, exact = value_of(item)
+            if function_owner(write_sites.get(at, at)) != function_owner(position):
+                unordered.add(at)
+            options.append((at, certain and definite, values, exact))
+        last = max((event_order(at, position) for at, certain, _, exact in options if certain and exact), default=None)
+        values, exact = set(), bool(options)
+        for at, _, selected, certain in options:
+            if last is None or event_order(at, position) >= last or at in unordered:
+                values.update(selected)
+                exact &= certain
+        if not options:
+            return frozenset({("unknown", position, field, anchor)}), False
+        return frozenset(values), exact
+
+    def publish(root, field, item, at, context, certain, anchor, producer=None):
+        if root[0] in {"undefined", "data", "string"}:
+            return
+        event = at, context, certain, item, anchor, producer
+        key = root, field
+        selected = effects.setdefault(key, set())
+        origin = stack[-1] if stack else None
+        fact = ("effects", root, field)
+        new_producer = origin is not None and origin not in effect_tokens.get(fact, ())
+        if event not in selected or new_producer:
+            selected.add(event)
+            invalidate(fact)
+
+    # Packet descriptors are structural graph edges, never runtime values or
+    # expanded actual environments. Their leaves remain ordinary recipes.
+    packet_nodes = {}
+
+    class Packet:
+        def __init__(self, key, form):
+            self.key = key
+            self.form = form
+
+        def __hash__(self):
+            return hash(self.key)
+
+        def __eq__(self, other):
+            return isinstance(other, Packet) and self.key == other.key
+
+        def __bool__(self):
+            return packet_length(self, 1)[1] != 0
+
+        def __len__(self):
+            # Adapter consumers ask only whether positions 0, 1 and 2 exist.
+            # This saturated abstract length is not a materialization limit.
+            limit = 3 + sum(spec[0] for specs in bindings_by_body.values() for spec in specs.values()) + 2 * len(call_sites)
+            low, high = packet_length(self, limit)
+            return high if high is not None else limit
+
+        def __getitem__(self, index):
+            if isinstance(index, slice):
+                raise TypeError("packet slices need a lexical adapter identity")
+            items, certain = query(("packet-select", self.key, index),
+                lambda: packet_selection(self, index))
+            if len(items) == 1:
+                return next(iter(items))
+            selected = ("choice", ("packet-select", self.key, index), "operand")
+            options = choices.setdefault(selected, set())
+            before = len(options)
+            options.update(items)
+            if len(options) != before:
+                invalidate(("choices", selected))
+            return selected
+
+        def __iter__(self):
+            return iter(packet_leaves(self))
+
+    def packet(key, form):
+        result = packet_nodes.get(key)
+        if result is None:
+            result = packet_nodes[key] = Packet(key, form)
+        elif result.form != form:
+            raise ValueError("one lexical packet node has conflicting definitions")
+        return result
+
+    def packet_view(actual, offset, site, anchor, adapting, role):
+        key = (site, anchor, frozenset(adapting), role)
+        return packet(key, ("drop", actual, offset))
+
+    def packet_join(left, right, site, anchor, adapting):
+        return packet((site, anchor, frozenset(adapting), "bound-prefix"),
+            ("join", left, right))
+
+    def spread_packets(item):
+        values, exact = value_of(item)
+        structural = False
+        if item[0] == "span":
+            begin, end = trim(*item[1])
+            name = code[begin:end]
+            owner = lexical(name, begin) if re.fullmatch(r"[A-Za-z_$][\w$]*", name) else None
+            spec = bindings_by_body.get(owner, {}).get(name)
+            if spec is not None and spec[3] == ((), None) and not variable_events.get((owner, name)):
+                contexts = anchor_context(item[2], owner)
+                structural = bool(values) and all(root[0] == "args" and root[1] in contexts
+                    and root[1] is not None and root[1][2] == owner and root[2] == spec[0]
+                    for root in values)
+        selected, opaque = [], not (exact or structural)
+        for root in values:
+            if root[0] == "args":
+                selected.append(packet(root, ("args", root[1], root[2])))
+            elif root[0] == "aggregate" and code[root[1][0]] == "[":
+                literal(root[1])
+                pieces = []
+                for _, span, _ in literal_cache[root[1]][1]:
+                    begin, end = trim(*span)
+                    spread = code[begin:begin + 3] == "..."
+                    pieces.append((recipe((begin + 3, end) if spread else span, root[2]), spread))
+                selected.append(packet(root, ("sequence", tuple(pieces))))
+            else:
+                opaque = True
+        return tuple(selected), opaque
+
+    def packet_edges(actual, constraints):
+        form = actual.form
+        if form[0] != "args":
+            return ()
+        active = form[1]
+        token(("anchor", active))
+        selected = anchors.get(active, ())
+        if active in constraints:
+            selected = tuple(edge for edge in selected if edge == constraints[active])
+        return tuple(selected)
+
+    def packet_length(actual, limit, constraints=None, active=frozenset(), memo=None):
+        if not isinstance(actual, Packet):
+            return len(actual), len(actual)
+        constraints = {} if constraints is None else constraints
+        memo = {} if memo is None else memo
+        if actual.key in active:
+            return 0, None
+        if actual.key in memo:
+            return memo[actual.key]
+        active = active | {actual.key}
+        kind, *parts = actual.form
+        def length(child):
+            return packet_length(child, limit, constraints, active, memo)
+        def add(left, right):
+            lo = min(limit, left[0] + right[0])
+            total = None if left[1] is None or right[1] is None else left[1] + right[1]
+            hi = None if total is None or total > limit else total
+            return lo, hi
+        if kind == "sequence":
+            result = (0, 0)
+            for item, spread in parts[0]:
+                if not spread:
+                    result = add(result, (1, 1))
+                    continue
+                candidates, opaque = spread_packets(item)
+                lengths = [length(child) for child in candidates]
+                low = min((entry[0] for entry in lengths), default=0)
+                high = None if opaque or not lengths or any(entry[1] is None for entry in lengths) else max(entry[1] for entry in lengths)
+                result = add(result, (low, high))
+        elif kind == "drop":
+            lo, hi = length(parts[0])
+            result = max(0, lo - parts[1]), None if hi is None else max(0, hi - parts[1])
+        elif kind == "join":
+            result = add(length(parts[0]), length(parts[1]))
+        else:
+            lengths = []
+            for edge in packet_edges(actual, constraints):
+                lo, hi = length(edge[3])
+                lengths.append((max(0, lo - parts[1]), None if hi is None else max(0, hi - parts[1])))
+            result = (min((entry[0] for entry in lengths), default=0),
+                None if not lengths or any(entry[1] is None for entry in lengths) else max(entry[1] for entry in lengths))
+        memo[actual.key] = result
+        return result
+
+    def packet_leaves(actual, visited=None):
+        if visited is None and isinstance(actual, Packet):
+            leaves, _ = query(("packet-leaves", actual.key),
+                lambda: (frozenset(packet_leaves(actual, set())), False))
+            return set(leaves)
+        visited = set() if visited is None else visited
+        if not isinstance(actual, Packet):
+            return set(actual)
+        if actual.key in visited:
+            return set()
+        visited.add(actual.key)
+        kind, *parts = actual.form
+        result = set()
+        if kind == "sequence":
+            for item, spread in parts[0]:
+                result.add(item)
+                if spread:
+                    for child in spread_packets(item)[0]:
+                        result.update(packet_leaves(child, visited))
+        elif kind == "args":
+            for edge in packet_edges(actual, {}):
+                result.update(packet_leaves(edge[3], visited))
+        else:
+            for child in parts[:2] if kind == "join" else parts[:1]:
+                result.update(packet_leaves(child, visited))
+        return result
+
+    def packet_selection(actual, index, constraints=None, *, variants=False):
+        # Rest offsets never enter query keys. Cut repeated nodes before
+        # offset arithmetic; widen ambiguity before forming choice products.
+        constraints = {} if constraints is None else dict(constraints)
+        offsets = sum(spec[0] for specs in bindings_by_body.values() for spec in specs.values())
+        limit = index + offsets + 2 * len(call_sites) + 1
+        visited, cache = {}, {}
+        unknown = ("value", ("unknown",))
+        def opaque(node, selected):
+            return [(item, selected) for item in packet_leaves(node) | {unknown}], False
+        def walk(node, at, selected, active):
+            if not isinstance(node, Packet):
+                return [((node[at] if at < len(node) else ("value", ("undefined",))), selected)], True
+            if node.key in active:
+                return opaque(node, selected)
+            previous = visited.get(node.key)
+            if previous is not None and previous != at:
+                return opaque(node, selected)
+            visited[node.key] = at
+            active = active | {node.key}
+            kind, *parts = node.form
+            if kind == "args":
+                edges = packet_edges(node, selected)
+                if len(edges) > 1 and selected and parts[0] not in selected:
+                    return opaque(node, selected)
+                result, exact = [], bool(edges)
+                for edge in edges:
+                    branch = {**selected, parts[0]: edge}
+                    values, certain = walk(edge[3], at + parts[1], branch, active)
+                    result.extend(values)
+                    exact &= certain
+                return result or [(unknown, selected)], exact
+            if kind == "drop":
+                return walk(parts[0], at + parts[1], selected, active)
+            if kind == "join":
+                children = (parts[0], parts[1])
+            else:
+                def remaining():
+                    for item, spread in parts[0]:
+                        if not spread:
+                            yield item
+                            continue
+                        values, uncertain = spread_packets(item)
+                        if uncertain or len(values) != 1:
+                            yield None
+                            return
+                        yield values[0]
+                children = remaining()
+            for child in children:
+                if child is None:
+                    return opaque(node, selected)
+                if not isinstance(child, Packet):
+                    if at == 0:
+                        return [(child, selected)], True
+                    at -= 1
+                    continue
+                low, high = packet_length(child, limit, selected, memo=cache)
+                if high is not None and low == high and high <= at:
+                    at -= high
+                elif low > at:
+                    return walk(child, at, selected, active)
+                else:
+                    return opaque(node, selected)
+            return [(("value", ("undefined",)), selected)], True
+        selected, exact = walk(actual, index, constraints, frozenset())
+        return (selected, exact) if variants else (frozenset(item for item, _ in selected), exact)
+
+    def operands(parts, anchor, site):
+        selected = []
+        for span in parts:
+            if span is None:
+                selected.append((recipe(None, anchor), False))
+                continue
+            begin, end = trim(*span)
+            spread = code[begin:begin + 3] == "..."
+            selected.append((recipe((begin + 3, end) if spread else span, anchor), spread))
+        return packet((site, anchor, "raw"), ("sequence", tuple(selected)))
+
+    def reference_call(span, anchor):
+        begin, end = trim(*span)
+        if len(node_expression_parts(code, begin, end)) > 1:
+            # A comma obtains a value; it does not retain the last property's
+            # invocation receiver. Parentheses around a member still do.
+            target, known = expression((begin, end), anchor)
+            return target, known, ("value", ("undefined",))
+        selected = selected_member(begin, end, anchor, begin)
+        if selected is not None:
+            return selected
+        target, known = expression((begin, end), anchor)
+        return target, known, ("value", ("undefined",))
+
+    def array_operands(item):
+        selected, opaque = spread_packets(item)
+        if selected:
+            yield from selected
+        if opaque or not selected:
+            yield packet(("opaque-array", item), ("sequence", ((item, False),)))
+
+    def source_operand(item, constraints=None, seen=frozenset()):
+        constraints = {} if constraints is None else constraints
+        if item in seen:
+            return [], False
+        if item[0] == "choice":
+            token(("choices", item))
+            options = choices.get(item, ())
+            if len(options) != 1:
+                return [], False
+            return source_operand(next(iter(options)), constraints, seen | {item})
+        if item[0] == "path":
+            source, path, defaults, rest, position, creation = item[1:]
+            if not path and rest is None:
+                values, certain = value_of(source)
+                if values <= frozenset({("undefined",)}) and defaults:
+                    return source_operand(recipe(defaults[-1][1], creation), constraints, seen | {item})
+                return source_operand(source, constraints, seen | {item})
+            return [], False
+        if item[0] != "span":
+            return [], item == ("value", ("undefined",))
+        span, creation = item[1:]
+        begin, end = trim(*span)
+        name = code[begin:end]
+        owner = lexical(name, begin) if re.fullmatch(r"[A-Za-z_$][\w$]*", name) else None
+        if not name_is_parameter(name, owner):
+            return [((span,), constraints)], True
+        result, exact = [], True
+        index, path, defaults, rest = bindings_by_body[owner][name]
+        for active in anchor_context(creation, owner):
+            if active is None or active[2] != owner or rest is not None:
+                exact = False
+                continue
+            token(("anchor", active))
+            edges = tuple(anchors[active])
+            if active in constraints:
+                edges = tuple(edge for edge in edges if edge == constraints[active])
+            if len(edges) > 1 and constraints and active not in constraints:
+                return [], False
+            for edge in edges:
+                selected, certain = packet_selection(edge[3], index,
+                    {**constraints, active: edge}, variants=True)
+                exact &= certain
+                for operand, branch in selected:
+                    operand = select_path(operand, path, defaults, rest, owner, edge[2])
+                    variants, known = source_operand(operand, branch, seen | {item})
+                    result.extend(variants)
+                    exact &= known
+        return result or [((span,), constraints)], exact and bool(result)
+
+    def source_layout(actual, constraints, active=frozenset(), used=None):
+        # Certify output size BEFORE expanding a constructor tuple. Repeated
+        # subtrees and independent choice products use opaque source closure.
+        used = set() if used is None else used
+        if not isinstance(actual, Packet):
+            return len(actual)
+        if actual.key in active or actual.key in used:
+            return None
+        used.add(actual.key)
+        active = active | {actual.key}
+        kind, *parts = actual.form
+        if kind == "args":
+            edges = packet_edges(actual, constraints)
+            if len(edges) > 1 and constraints and parts[0] not in constraints:
+                return None
+            lengths = []
+            for edge in edges:
+                value = source_layout(edge[3], {**constraints, parts[0]: edge}, active, set(used))
+                if value is None:
+                    return None
+                lengths.append(max(0, value - parts[1]))
+            return lengths[0] if lengths and len(set(lengths)) == 1 else None
+        if kind == "drop":
+            value = source_layout(parts[0], constraints, active, used)
+            return None if value is None else max(0, value - parts[1])
+        children = parts if kind == "join" else []
+        if kind == "sequence":
+            for item, spread in parts[0]:
+                if not spread:
+                    children.append(None)
+                else:
+                    selected, opaque = spread_packets(item)
+                    if opaque or len(selected) != 1:
+                        return None
+                    children.append(selected[0])
+        count = 0
+        for child in children:
+            value = 1 if child is None else source_layout(child, constraints, active, used)
+            if value is None:
+                return None
+            count += value
+        return count
+
+    def source_variants(actual, constraints=None, active=frozenset(), used=None):
+        constraints = {} if constraints is None else constraints
+        used = set() if used is None else used
+        if not isinstance(actual, Packet):
+            return [((), constraints)], not actual
+        if actual.key in active or actual.key in used:
+            return [], False
+        used.add(actual.key)
+        active = active | {actual.key}
+        kind, *parts = actual.form
+        if kind == "args":
+            edges = packet_edges(actual, constraints)
+            if len(edges) > 1 and constraints and parts[0] not in constraints:
+                return [], False
+            result, exact = [], bool(edges)
+            for edge in edges:
+                branch = {**constraints, parts[0]: edge}
+                dropped = packet((actual.key, edge[0], edge[1], "source-rest"),
+                    ("drop", edge[3], parts[1]))
+                variants, known = source_variants(dropped, branch, active, set(used))
+                result.extend(variants)
+                exact &= known
+            return result, exact
+        if kind == "drop":
+            high = source_layout(actual, constraints)
+            if high is None:
+                return [], False
+            result = [((), constraints)]
+            for index in range(high):
+                next_result = []
+                for spans, branch in result:
+                    items, exact = packet_selection(actual, index, branch, variants=True)
+                    if not exact:
+                        return [], False
+                    for item, selected in items:
+                        variants, known = source_operand(item, selected)
+                        if not known:
+                            return [], False
+                        next_result.extend((spans + tail, candidate) for tail, candidate in variants)
+                result = next_result
+            return result, True
+        if kind == "join":
+            children = (parts[0], parts[1])
+        else:
+            children = []
+            for item, spread in parts[0]:
+                if spread:
+                    selected, opaque = spread_packets(item)
+                    if opaque or len(selected) != 1:
+                        return [], False
+                    children.append(selected[0])
+                else:
+                    children.append(item)
+        result = [((), constraints)]
+        for child in children:
+            next_result = []
+            for spans, branch in result:
+                if isinstance(child, Packet):
+                    variants, known = source_variants(child, branch, active, used)
+                else:
+                    variants, known = source_operand(child, branch)
+                if not known:
+                    return [], False
+                next_result.extend((spans + tail, selected) for tail, selected in variants)
+            result = next_result
+        return result, True
+
+    def opaque_sources(actual):
+        result, visited = set(), set()
+        pending = list(packet_leaves(actual))
+        while pending:
+            item = pending.pop()
+            if item in visited:
+                continue
+            visited.add(item)
+            if item[0] == "choice":
+                pending.extend(choices.get(item, ()))
+            elif item[0] == "path":
+                pending.append(item[1])
+                pending.extend(recipe(span, item[-1]) for _, span in item[3])
+            elif item[0] == "span":
+                span, creation = item[1:]
+                result.add(span)
+                begin, end = trim(*span)
+                name = code[begin:end]
+                owner = lexical(name, begin) if re.fullmatch(r"[A-Za-z_$][\w$]*", name) else None
+                if name_is_parameter(name, owner):
+                    for active in anchor_context(creation, owner):
+                        if active is not None and active[2] == owner:
+                            token(("anchor", active))
+                            for edge in anchors[active]:
+                                pending.extend(packet_leaves(edge[3]))
+        return result
+
+    def plain_const_binding(owner, name):
+        events = variable_events.get((owner, name), ())
+        if len(events) != 1:
+            return False
+        _, path, defaults, rest, _, at, context, certain = events[0]
+        return (certain and context == -1 and not path and not defaults and rest is None
+            and re.fullmatch(r"\s*const\s+", code[starts[at]:at]) is not None)
+
+    def capability_origin(item, constraints, seen=frozenset()):
+        # Certify original recipes, not an inexact singleton SCC result.
+        if item in seen:
+            return empty, False
+        seen = seen | {item}
+        if item[0] != "span":
+            return empty, False
+        begin, end = trim(*item[1])
+        name = code[begin:end]
+        identifier = re.fullmatch(r"[A-Za-z_$][\w$]*", name)
+        owner = lexical(name, begin) if identifier else None
+        spec = bindings_by_body.get(owner, {}).get(name)
+        events = variable_events.get((owner, name), ()) if identifier else ()
+        if spec is not None:
+            if events or spec[1] or spec[2] or spec[3] is not None:
+                return empty, False
+            result, exact = set(), True
+            for active in anchor_context(item[2], owner):
+                if active is None or active[2] != owner:
+                    return empty, False
+                token(("anchor", active))
+                edges = tuple(anchors[active])
+                if active in constraints:
+                    edges = tuple(edge for edge in edges if edge == constraints[active])
+                if len(edges) > 1 and constraints and active not in constraints:
+                    return empty, False
+                for edge in edges:
+                    selected, certain = packet_selection(edge[3], spec[0],
+                        {**constraints, active: edge}, variants=True)
+                    exact &= certain
+                    for source, branch in selected:
+                        values, known = capability_origin(source, branch, seen)
+                        result.update(values)
+                        exact &= known
+            return frozenset(result), exact and bool(result) and len(result) == 1
+        values, exact = value_of(item)
+        if exact:
+            return values, bool(values) and len(values) == 1 and all(
+                root[0] in {"handle", "callable", "intrinsic"} for root in values)
+        # A successful read of this const has its initializer's value;
+        # a read in its temporal dead zone throws instead of yielding a callee.
+        if not identifier or not plain_const_binding(owner, name):
+            return empty, False
+        defined, known = expression(events[0][4], None)
+        if not known or len(defined) != 1 or next(iter(defined))[0] != "callable":
+            return empty, False
+        allowed = defined | {("binding", owner, name)}
+        if not values or not values <= allowed:
+            return empty, False
+        return defined, True
+
+    def effective_source_target(site, anchor, constraints, seen=frozenset()):
+        targets, known, receiver = reference_call(call_sites[site][:2], anchor)
+        if len(targets) != 1:
+            # Immutable callable provenance is the only supported placeholder
+            # exception; genuine competing roots never acquire a certificate.
+            values, certain = capability_origin(recipe(call_sites[site][:2], anchor),
+                constraints)
+            return certain and len(values) == 1 and next(iter(values))[0] == "callable"
+        target = next(iter(targets))
+        if target in seen or target[0] in {"unknown", "binding"}:
+            return False
+        seen = seen | {target}
+        if target[0] == "method":
+            values, certain = capability_origin(receiver, constraints)
+            return certain and len(values) == 1 and not effects.get((next(iter(values)), target[1]))
+        if target[0] == "bound":
+            token(("bind", target[1], target[2]))
+            saved = bind_sites.get((target[1], target[2]), ())
+            if not saved:
+                return False
+            for source, captured in saved:
+                values, certain = capability_origin(source, constraints)
+                if not certain or len(values) != 1 or source_layout(captured, constraints) is None:
+                    return False
+            return True
+        if target in {("intrinsic", "Reflect.apply"), ("intrinsic", "Reflect.construct")}:
+            actual = packet_nodes.get((site, anchor, "raw"))
+            if actual is None:
+                return False
+            selected, exact = packet_selection(actual, 0, constraints, variants=True)
+            if not exact:
+                return False
+            for source, branch in selected:
+                values, certain = capability_origin(source, branch)
+                if not certain or len(values) != 1:
+                    return False
+            return bool(selected)
+        values, certain = capability_origin(recipe(call_sites[site][:2], anchor),
+            constraints)
+        return certain and values == targets
+
+    def relay_sources(site, anchor, constraints, lineage, seen=frozenset()):
+        current = site, anchor
+        if current in seen or anchor is None or function_owner(site) != anchor[2]:
+            return [(site, constraints)], False
+        if not effective_source_target(site, anchor, constraints):
+            return [(site, constraints)], False
+        body = bodies_by_owner.get(anchor[2])
+        if body is None or body[3] or body[4]:
+            return [(site, constraints)], False
+        begin, end, block = body[:3]
+        if block:
+            returns = return_sites.get(begin, ())
+            if len(returns) != 1:
+                return [(site, constraints)], False
+            prefix = code[begin + 1:returns[0][0]].strip()
+            suffix = code[returns[0][1]:end - 1].strip()
+            if prefix != "return" or suffix not in {"", ";"}:
+                return [(site, constraints)], False
+            returned_span = trim(*returns[0])
+        else:
+            returned_span = trim(begin, end)
+        if returned_span != trim(call_sites[site][0], call_sites[site][2] + 1):
+            return [(site, constraints)], False
+        edges = tuple(anchors.get(anchor, ()))
+        if anchor in constraints:
+            edges = tuple(edge for edge in edges if edge == constraints[anchor])
+        if len(edges) > 1 and constraints and anchor not in constraints:
+            return [(site, constraints)], False
+        result = []
+        for caller_site, caller, capture, _ in edges:
+            if caller_site not in call_sites:
+                # An accessor read has no following-application syntax.
+                return [(site, constraints)], False
+            state = states.get(("invoke", caller_site, caller))
+            allowed = lineage | {("unknown", site, anchor), ("unknown", caller_site, caller)}
+            if state is None or not (lineage & state[0]) or any(value not in allowed for value in state[0]):
+                return [(site, constraints)], False
+            branch = {**constraints, anchor: (caller_site, caller, capture, _)}
+            endpoints, _ = relay_sources(caller_site, caller, branch, allowed, seen | {current})
+            result.extend(endpoints)
+        return result or [(site, constraints)], bool(result)
+
+    def invocation(site, anchor):
+        return query(("invoke", site, anchor), lambda: compute_invocation(site, anchor))
+
+    def compute_invocation(site, anchor):
+        # Replace this site's derived source facts on reevaluation. Published
+        # possible effects remain monotone; exact source consumers use only
+        # the settled invocation facts after the dependency queue is empty.
+        sources[site, anchor] = set()
+        begin, finish, end, tagged, parts = call_sites[site]
+        targets, known, this = reference_call((begin, finish), anchor)
+        actual = operands(parts, anchor, site)
+        values, exact = invoke_values(targets, this, actual, site, anchor, set())
+        if not known and not values:
+            values = frozenset({("unknown", site, anchor)})
+        return values, exact and known
+
+    def invoke_values(targets, this, actual, site, anchor, adapting):
+        returned, exact = set(), True
+        for root in targets:
+            transition = root
+            if transition in adapting:
+                exact = False
+                continue
+            active = adapting | {transition}
+            tag = root[0]
+            if tag == "binding" and plain_const_binding(root[1], root[2]):
+                continue
+            if tag == "method":
+                target_values, target_exact = value_of(this)
+                callable_values = frozenset(value for value in target_values if value[0] in {"method", "handle", "callable", "bound", "intrinsic", "array-method", "read-callable", "unknown", "binding"})
+                if not callable_values:
+                    returned.add(("undefined",))
+                    continue
+                if root[1] == "bind":
+                    selected = bind_sites.setdefault((site, anchor), set())
+                    if (this, actual) not in selected:
+                        selected.add((this, actual))
+                        invalidate(("bind", site, anchor))
+                    returned.add(("bound", site, anchor))
+                    continue
+                next_this = actual[0] if actual else ("value", ("undefined",))
+                variants = array_operands(actual[1]) if root[1] == "apply" and len(actual) > 1 else (packet_view(actual, 1, site, anchor, active, "call"),)
+                for selected in variants:
+                    values, certain = invoke_values(callable_values, next_this, selected, site, anchor, active)
+                    returned.update(values)
+                    exact &= certain and target_exact
+            elif tag == "array-method":
+                receiver_values, receiver_exact = value_of(this)
+                if not actual and receiver_values and all(value[0] in {"aggregate", "copy"} for value in receiver_values):
+                    copy_root = ("copy", site, anchor)
+                    selected = copy_sources.setdefault(copy_root, set())
+                    if this not in selected:
+                        selected.add(this)
+                        invalidate(("copy", copy_root))
+                    returned.add(copy_root)
+                    exact &= receiver_exact
+                else:
+                    returned.add(("unknown", site, anchor))
+                    exact = False
+            elif tag == "bound":
+                token(("bind", root[1], root[2]))
+                for target_recipe, captured in bind_sites.get((root[1], root[2]), ()):
+                    target_values, target_exact = value_of(target_recipe)
+                    bound_this = captured[0] if captured else ("value", ("undefined",))
+                    prefix = packet_view(captured, 1, site, anchor, active, "bound-capture")
+                    joined = packet_join(prefix, actual, site, anchor, active)
+                    values, certain = invoke_values(target_values, bound_this, joined, site, anchor, active)
+                    returned.update(values)
+                    exact &= certain and target_exact
+            elif root == ("intrinsic", "Reflect.apply") or root == ("intrinsic", "Reflect.construct"):
+                if actual:
+                    target_values, target_exact = value_of(actual[0])
+                    index = 1 if root[1].endswith("construct") else 2
+                    reflect_this = actual[1] if index == 2 and len(actual) > 1 else ("value", ("undefined",))
+                    for selected in array_operands(actual[index]) if index < len(actual) else ((),):
+                        values, certain = invoke_values(target_values, reflect_this, selected, site, anchor, active)
+                        returned.update(values)
+                        exact &= certain and target_exact
+            elif tag == "handle":
+                # Source conversion waits for settled packet and caller facts.
+                if root[1] == "import" and actual:
+                    values, certain = value_of(actual[0])
+                    if certain and values and all(value[0] == "string" and not value[1].startswith(("data:", "blob:")) for value in values):
+                        continue
+                direct = root[1] == "eval" and code[slice(*trim(call_sites[site][0], call_sites[site][1]))] == "eval" and "?." not in code[call_sites[site][1]:site]
+                sources.setdefault((site, anchor), set()).add((root[1], direct, actual))
+                returned.add(("unknown", site, anchor))
+                exact = False
+            elif root == ("intrinsic", "String.raw"):
+                returned.add(("data",))
+            elif root == ("intrinsic", "Reflect.get"):
+                if len(actual) < 2:
+                    returned.add(("unknown", site, anchor))
+                    exact = False
+                    continue
+                receivers, receiver_exact = value_of(actual[0])
+                keys, key_exact = value_of(actual[1])
+                names = {value[1] for value in keys if value[0] == "string"}
+                exact &= receiver_exact and key_exact and len(names) == len(keys)
+                for field in names:
+                    values, certain = project(receivers, receiver_exact, field, site, anchor)
+                    returned.update(values)
+                    exact &= certain
+            elif tag == "intrinsic" and root[1] in {"Object.assign", "Object.defineProperty", "Object.defineProperties", "Reflect.set", "Reflect.defineProperty"}:
+                if not actual:
+                    continue
+                target_values, certain = value_of(actual[0])
+                exact &= certain
+                returned.update(target_values)
+                context, at = owners[site], site
+                if root[1] == "Object.assign":
+                    for donor in packet_view(actual, 1, site, anchor, active, "donors"):
+                        values, certain = value_of(donor)
+                        exact &= certain
+                        for value in values:
+                            if value[0] != "aggregate":
+                                continue
+                            fields, _ = aggregate_fields(value, site)
+                            for field, item in fields.items():
+                                for target in target_values:
+                                    publish(target, field, item, at, context, False, anchor)
+                else:
+                    descriptors = []
+                    if root[1] == "Object.defineProperties" and len(actual) >= 2:
+                        values, _ = value_of(actual[1])
+                        for value in values:
+                            if value[0] == "aggregate":
+                                fields, _ = aggregate_fields(value, site)
+                                descriptors.extend(fields.items())
+                    elif len(actual) >= 3:
+                        key_values, _ = value_of(actual[1])
+                        descriptors.extend((value[1], actual[2]) for value in key_values if value[0] == "string")
+                    for field, descriptor in descriptors:
+                        if root[1] == "Reflect.set":
+                            item = descriptor
+                        else:
+                            item = ("descriptor", descriptor, site, anchor)
+                        for target in target_values:
+                            publish(target, field, item, at, context, False, anchor)
+            elif tag == "callable":
+                body = callable_body(root[1])
+                if body is None:
+                    exact = False
+                    continue
+                begin_body, end_body, block, asynchronous, generator, parameters = body
+                # Materialize formal recipes through this same expression owner.
+                expression(root[1], root[2])
+                origin = anchor[0] if anchor is not None else site
+                invoked = origin, site, begin_body
+                edge = site, anchor, root[2], actual
+                selected = anchors.setdefault(invoked, set())
+                if edge not in selected:
+                    selected.add(edge)
+                    invalidate(("anchor", invoked))
+                    for nested in body_sites.get(begin_body, ()):
+                        schedule(nested, invoked)
+                    for event in body_effects.get(begin_body, ()):
+                        qualify_target(event, invoked)
+                if generator or asynchronous and not is_awaited(site):
+                    returned.add(("data",))
+                    continue
+                returns = return_sites.get(begin_body, ()) if block else ((begin_body, end_body),)
+                if not returns:
+                    returned.add(("undefined",))
+                for span in returns:
+                    values, certain = expression(span, invoked)
+                    returned.update(values)
+                    exact &= certain
+            elif tag in {"read-callable", "callable-data", "data", "string", "undefined"}:
+                returned.add(("undefined",))
+            else:
+                # An unknown receiver can execute a passed capability on any
+                # co-operand. A known callable is scanned under its own anchor.
+                handles = set()
+                for item in actual:
+                    values, _ = value_of(item)
+                    handles.update(value for value in values if value[0] == "handle")
+                for handle in handles:
+                    co_operands = [item for item in actual if not any(value[0] == "handle" for value in value_of(item)[0])]
+                    if not co_operands:
+                        sources.setdefault((site, anchor), set()).add((handle[1], False, packet((site, anchor, "no-cooperands"), ("sequence", ()))))
+                    for item in co_operands:
+                        co_packet = packet((site, anchor, "cooperand", item), ("sequence", ((item, False),)))
+                        sources.setdefault((site, anchor), set()).add((handle[1], False, co_packet))
+                returned.add(("unknown", site, anchor))
+                exact = False
+        return frozenset(returned), exact
+
+    def is_awaited(site):
+        begin = call_sites[site][0]
+        before = preceding(begin)
+        word_begin = before
+        while word_begin and (code[word_begin - 1].isalnum() or code[word_begin - 1] in "_$"):
+            word_begin -= 1
+        return code[word_begin:before] == "await"
+
+    def qualify_target(event, anchor):
+        return query(("target", event, anchor), lambda: compute_target(event, anchor))
+
+    def compute_target(event, anchor):
+        target, path, defaults, rest, rhs, at, context, certain = event
+        begin, end = trim(*target)
+        selected = member_span(begin, end)
+        if selected is None:
+            return empty, True
+        receiver_span, key_span, name = selected
+        names, _ = keys_for(native[slice(*key_span)], anchor, at) if key_span is not None else ({name}, True)
+        roots, exact = expression(receiver_span, anchor)
+        item = select_path(recipe(rhs, anchor), path, defaults, rest, rhs[1], anchor)
+        producer = ("target", event, anchor)
+        qualified = roots, exact, certain
+        if qualifications.get(producer) != qualified:
+            qualifications[producer] = qualified
+            invalidate(("qualification", producer))
+        for root in roots:
+            for field in names:
+                publish(root, field, item, rhs[1] - 1, context, certain, anchor, producer)
+        return empty, exact
+
+    ending_sites = {}
+    for site, (_, _, end, _, _) in call_sites.items():
+        ending_sites.setdefault(end + 1, []).append(site)
+    return_sites = {}
+    for match in re.finditer(r"(?<![\w.$])return\b", code):
+        owner = function_owner(match.start())
+        end = node_expression_parts(code, match.end(), len(code), ";\n", first=True)[0][1]
+        return_sites.setdefault(owner, []).append((match.end(), end))
+    # Force declaration/parameter descriptors before any caller query. This is
+    # syntax only; expression results remain demanded and anchor-specific.
+    for spans in declarations.values():
+        for span in spans:
+            body = callable_body(span)
+            if body is not None:
+                specs = bindings_by_body.setdefault(body[0], {})
+                for index, parameter in enumerate(body[-1]):
+                    targets = []
+                    list(javascript_binding_names(code, *parameter, _facts=targets, _native=native))
+                    for target, path, defaults, rest in targets:
+                        name = code[slice(*target)].strip()
+                        if re.fullmatch(r"[A-Za-z_$][\w$]*", name):
+                            specs[name] = index, path, defaults, rest
+    for event in effect_sites:
+        qualify_target(event, None)
+    for site in call_sites:
+        schedule(site, None)
+    task_cursor = 0
+    while True:
+        while task_cursor < len(tasks):
+            task = tasks[task_cursor]
+            task_cursor += 1
+            queued.discard(task)
+            if task[0] == "query":
+                key = task[1]
+                query(key, computations[key])
+            elif task[0] == "target":
+                qualify_target(task[1], task[2])
+            else:
+                invocation(task[1], task[2])
+        bodies_by_owner = {body[0]: body for body in body_cache.values() if body is not None}
+        emitted, buffered = set(), []
+        source_snapshot = tuple((key, frozenset(values)) for key, values in sources.items())
+        source_facts = frozenset(source_snapshot)
+        state_count = len(states)
+        for (site, anchor), selected in source_snapshot:
+            _, _, end, _, _ = call_sites[site]
+            for kind, direct, actual in selected:
+                layout = source_layout(actual, {})
+                variants, exact = source_variants(actual) if layout is not None else ([], False)
+                if not exact:
+                    # An original parenthesized argument span is unresolved by
+                    # javascript_literal. It prevents compressed formal binding.
+                    prefix = (site, end + 1)
+                    variants = [((prefix, body) if kind == "constructor" else (body,), {})
+                        for body in opaque_sources(actual)]
+                for parts, constraints in variants:
+                    endpoints = [(site, constraints)]
+                    if kind == "constructor" and exact:
+                        lineage = {("unknown", site, anchor)}
+                        endpoints, _ = relay_sources(site, anchor, constraints, lineage)
+                    for effective, _ in endpoints:
+                        record = effective + 1, call_sites[effective][2], kind, direct, tuple(parts)
+                        if record not in emitted:
+                            emitted.add(record)
+                            buffered.append(record)
+
+        # Conversion may demand new getters, recipes or source facts.
+        # Rebuild from settled facts before exposing any public record.
+        if (task_cursor < len(tasks) or len(states) != state_count
+                or frozenset((key, frozenset(values)) for key, values in sources.items()) != source_facts):
             continue
-        modes = kind if isinstance(kind, frozenset) else source_capability(kind)
-        for kind, adapters in modes:
-            selected_parts = parts
-            adapter = adapters[-1] if adapters else None
-            direct = (kind == "eval" and "?." not in code[finish:opening]
-                      and re.fullmatch(r"[ (]*eval[ )]*", expression) is not None)
-            if reflective or adapter == "apply":
-                index = (1 if reflective[1] == "construct" else 2) if reflective else 1
-                selected_parts = selected_parts[index:index + 1]
-                if selected_parts:
-                    begin, finish = selected_parts[0]
-                    while begin < finish and code[begin].isspace():
-                        begin += 1
-                    while finish > begin and code[finish - 1].isspace():
-                        finish -= 1
-                    selected_parts = node_expression_parts(code, begin + 1, finish - 1) if code[begin:begin + 1] == "[" else [(begin, finish)]
-            elif adapter == "call":
-                selected_parts = selected_parts[1:]
-            yield opening + 1, end, kind, direct, selected_parts
+        for record in buffered:
+            yield *record[:4], list(record[4])
+        break
 
 
-def javascript_binding_names(code, start, end):
-    """Share pattern targets between proof invalidation and possible RHS reach."""
-    target = code[start:end].strip()
-    start += len(code[start:end]) - len(code[start:end].lstrip())
-    if target.startswith("..."):
-        yield from javascript_binding_names(code, start + 3, end)
-        return
-    end = node_expression_parts(code, start, end, "=", first=True)[0][1]
-    target = code[start:end].strip()
-    if target.startswith(("{", "[")):
-        for begin, finish in node_expression_parts(code, start + 1, end - 1):
-            keyed = node_expression_parts(code, begin, finish, ":")
-            yield from javascript_binding_names(code, *(keyed[-1] if len(keyed) > 1 else (begin, finish)))
-    elif re.fullmatch(r"[A-Za-z_$][\w$]*", target):
-        yield target, start
+def javascript_source_calls(native, code, *, global_this=False, literal_atoms=(), templates=None):
+    """Select invoked source handles from the shared lexical recipe graph."""
+    facts = {}
+    javascript_bindings(code, _facts=facts)
+    for begin, end, kind, direct, parts in _javascript_recipe_graph(native, code, facts,
+            global_this=global_this, literal_atoms=literal_atoms, templates=templates):
+        yield begin, end, kind, direct, parts
+
+
+def javascript_binding_names(code, start, end, *, _facts=None, _native=None):
+    """Share binding names and lexical target projections with RHS discovery."""
+    native = code if _native is None else _native
+
+    def targets(start, end, path=(), defaults=(), rest=None):
+        while start < end and code[start].isspace():
+            start += 1
+        while end > start and code[end - 1].isspace():
+            end -= 1
+        if code[start:start + 3] == "...":
+            yield from targets(start + 3, end, path, defaults, (path[:-1], path[-1]) if path else ((), None))
+            return
+        selected = node_expression_parts(code, start, end, "=", first=True)[0]
+        if selected[1] < end:
+            defaults = (*defaults, (len(path), (selected[1] + 1, end)))
+            end = selected[1]
+            while end > start and code[end - 1].isspace():
+                end -= 1
+        opening = code[start:start + 1]
+        if opening in {"{", "["}:
+            for index, (begin, finish) in enumerate(node_expression_parts(code, start + 1, end - 1)):
+                if not native[begin:finish].strip():
+                    continue
+                target_begin = begin
+                while target_begin < finish and code[target_begin].isspace():
+                    target_begin += 1
+                if code[target_begin:target_begin + 3] == "...":
+                    marker = (path, str(index) if opening == "[" else "object")
+                    yield from targets(target_begin + 3, finish, path, defaults, marker)
+                    continue
+                parts = node_expression_parts(code, begin, finish, ":") if opening == "{" else []
+                if opening == "[":
+                    field = str(index)
+                else:
+                    field = native[slice(*parts[0])].strip()
+                    if len(parts) == 1:
+                        field = field.split("=", 1)[0].strip()
+                    if not re.fullmatch(r"[A-Za-z_$][\w$]*|\d+", field):
+                        if field.startswith("[") and field.endswith("]"):
+                            key_start = parts[0][0]
+                            while key_start < parts[0][1] and native[key_start].isspace():
+                                key_start += 1
+                            field = ("key", (key_start + 1, parts[0][1] - 1))
+                        else:
+                            try:
+                                field = javascript_string(field)
+                            except ValueError:
+                                field = None
+                target = (parts[0][1] + 1, finish) if len(parts) > 1 else (begin, finish)
+                yield from targets(*target, (*path, field), defaults, rest)
+            return
+        if _facts is not None:
+            _facts.append(((start, end), path, defaults, rest))
+        name = code[start:end]
+        if re.fullmatch(r"[A-Za-z_$][\w$]*", name):
+            yield name, start
+
+    yield from targets(start, end)
 
 
 def javascript_bindings(code, *, sloppy=False, _facts=None):
@@ -1103,6 +2209,7 @@ def javascript_bindings(code, *, sloppy=False, _facts=None):
     the direct-eval invalidation that consumes source-handle discovery itself.
     """
     sites, declarations, mutable = {}, {}, set()
+    target_spans, expression_spans, pattern_spans = set(), set(), set()
     records, ranges, functions, pairs, stack, callable_declarations = [], {}, set(), {}, [], []
     if _facts is not None:
         for position, char in enumerate(code):
@@ -1116,6 +2223,12 @@ def javascript_bindings(code, *, sloppy=False, _facts=None):
                         ranges[begin] = position + 1
 
     def bind(start, end, owner=None, kind=None):
+        if _facts is not None:
+            begin = start
+            while begin < end and code[begin].isspace():
+                begin += 1
+            if code[begin:begin + 1] in {"{", "["}:
+                pattern_spans.add((begin, end))
         for name, position in javascript_binding_names(code, start, end):
             sites.setdefault(name, set()).add(position)
             if _facts is not None and kind is not None:
@@ -1144,6 +2257,15 @@ def javascript_bindings(code, *, sloppy=False, _facts=None):
             loop = re.search(r"\b(?:of|in)\b", code[begin:target_end])
             if loop:
                 target_end = begin + loop.start()
+            if _facts is not None:
+                target_begin, target_finish = begin, target_end
+                while target_begin < target_finish and code[target_begin].isspace():
+                    target_begin += 1
+                while target_finish > target_begin and code[target_finish - 1].isspace():
+                    target_finish -= 1
+                target_spans.add((target_begin, target_finish))
+                if len(assignment) > 1:
+                    expression_spans.add((target_end + 1, finish))
             bind(begin, target_end, ("at", declaration.start()) if _facts is not None else None, declaration[1])
             named = re.fullmatch(r"\s*([A-Za-z_$][\w$]*)\s*", code[begin:target_end])
             if named and len(assignment) > 1:
@@ -1213,8 +2335,71 @@ def javascript_bindings(code, *, sloppy=False, _facts=None):
     if _facts is None and any(direct for _, _, _, direct, _ in javascript_source_calls(code, code)):
         for name in sites if sloppy else mutable:
             sites[name].add(len(code))
+    member_containers, headers = set(), set()
+    brace_owner, brace_stack = {}, []
+    if _facts is not None:
+        for position, char in enumerate(code):
+            while brace_stack and pairs[brace_stack[-1]] <= position:
+                brace_stack.pop()
+            brace_owner[position] = brace_stack[-1] if brace_stack else None
+            if char == "{" and position in pairs:
+                brace_stack.append(position)
+        # These are expression roots established by the shared syntax scanner:
+        # declaration/assignment RHSs, return values, and paired operands.
+        # A label's statement block is none of those roots. Function bodies are
+        # barriers because paired traversal never descends arbitrary braces.
+        for assignment in re.finditer(r"(?<![=!<>])=(?!=|>)", code):
+            finish = node_expression_parts(code, assignment.end(), len(code), ",;\n", first=True)[0][1]
+            expression_spans.add((assignment.end(), finish))
+        for returned in re.finditer(r"(?<![\w.$])return\b", code):
+            finish = node_expression_parts(code, returned.end(), len(code), ";\n", first=True)[0][1]
+            expression_spans.add((returned.end(), finish))
+        for opening in pairs:
+            if code[opening:opening + 1] == "(" and pairs[opening] > opening:
+                expression_spans.update(node_expression_parts(code, opening + 1, pairs[opening]))
+        pending, seen = list(expression_spans), set()
+        while pending:
+            begin, end = pending.pop()
+            while True:
+                while begin < end and code[begin].isspace():
+                    begin += 1
+                while end > begin and code[end - 1].isspace():
+                    end -= 1
+                if code[begin:begin + 1] == "(" and pairs.get(begin) == end - 1:
+                    begin, end = begin + 1, end - 1
+                else:
+                    break
+            if begin >= end or (begin, end) in seen:
+                continue
+            seen.add((begin, end))
+            if code[begin:begin + 1] in {"{", "["} and begin in pairs and pairs[begin] < end:
+                close = pairs[begin]
+                if code[begin] == "{":
+                    member_containers.add(begin)
+                    for _, operand in javascript_literal_members(code, code, begin, close + 1) or ():
+                        pending.append(operand)
+                else:
+                    pending.extend(node_expression_parts(code, begin + 1, close))
+            else:
+                # Conditional/binary/comma operands stay expressions. Splitters
+                # skip callable/object bodies through the same paired syntax.
+                parts = node_expression_parts(code, begin, end, "?:,|&")
+                if len(parts) > 1:
+                    pending.extend(parts)
+        for cls in re.finditer(r"\bclass(?:\s+[A-Za-z_$][\w$]*)?(?:\s+extends\s+[A-Za-z_$][\w$]*)?\s*{", code):
+            member_containers.add(cls.end() - 1)
     for method in re.finditer(r"\b([A-Za-z_$][\w$]*)\s*\(", code):
-        if method[1] in {"if", "for", "while", "switch", "catch", "with", "function"}:
+        before = method.start()
+        while before and code[before - 1].isspace():
+            before -= 1
+        for_await = (method[1] == "await" and code[max(0, before - 3):before] == "for"
+                     and (before == 3 or not re.match(r"[\w$]", code[before - 4])))
+        container = brace_owner.get(method.start())
+        member_role = container in member_containers
+        control = method[1] in {"if", "for", "while", "switch", "catch", "with", "function"}
+        property_access = before > 0 and code[before - 1] == "."
+        if (control or for_await) and not member_role and not property_access:
+            headers.add(method.end() - 1)
             continue
         end = node_expression_parts(code, method.end(), len(code))[-1][1]
         following = end + 1
@@ -1236,6 +2421,78 @@ def javascript_bindings(code, *, sloppy=False, _facts=None):
         # execution states or second binding parser are maintained here.
         for match in re.finditer(r"\bclass\s+([A-Za-z_$][\w$]*)", code):
             records.append((match[1], match.start(1), None, "class"))
+        for opening in tuple(ranges):
+            if opening not in functions and (opening in member_containers or any(begin <= opening < end for begin, end in pattern_spans)):
+                ranges.pop(opening)
+        loops = []
+        do_conditions = set()
+        for match in re.finditer(r"(?<![\w.$])do\b\s*", code):
+            begin = match.end()
+            if code[begin:begin + 1] == "{" and begin in pairs:
+                finish = pairs[begin] + 1
+            else:
+                finish = node_expression_parts(code, begin, len(code), ";\n", first=True)[0][1] + 1
+            following = re.match(r"\s*while\s*\(", code[finish:])
+            if following:
+                opening = finish + following.end() - 1
+                if opening in pairs:
+                    do_conditions.add(opening)
+                    loops.append((("body", begin, finish), ("condition", opening + 1, pairs[opening])))
+        for opening in sorted(headers):
+            if opening in do_conditions or opening not in pairs:
+                continue
+            before = code[:opening]
+            header = re.search(r"\b(for\s*(?:await\s*)?|while)\s*$", before)
+            if header is None:
+                continue
+            closing = pairs[opening]
+            begin = closing + 1
+            while begin < len(code) and code[begin].isspace():
+                begin += 1
+            if code[begin:begin + 1] == "{" and begin in pairs:
+                finish = pairs[begin] + 1
+            else:
+                finish = node_expression_parts(code, begin, len(code), ";\n", first=True)[0][1] + 1
+            phases = [("body", begin, finish)]
+            if header[1].strip() == "while":
+                phases.append(("condition", opening + 1, closing))
+            else:
+                parts = node_expression_parts(code, opening + 1, closing, ";")
+                if len(parts) == 3:
+                    phases.extend((kind, start, end) for kind, (start, end) in zip(("once", "condition", "update"), parts))
+                else:
+                    phases.append(("once", opening + 1, closing))
+            loops.append(tuple(phases))
+        # Only assignments occupying complete root operands are unconditional
+        # within an update. Paired whole-expression wrappers and comma operands
+        # preserve that role; logical/conditional/callable interiors do not.
+        update_assignments, operands = set(), []
+        for loop in loops:
+            operands.extend((begin, end) for kind, begin, end in loop if kind == "update")
+        while operands:
+            begin, end = operands.pop()
+            while True:
+                while begin < end and code[begin].isspace():
+                    begin += 1
+                while end > begin and code[end - 1].isspace():
+                    end -= 1
+                if code[begin:begin + 1] == "(" and pairs.get(begin) == end - 1:
+                    begin, end = begin + 1, end - 1
+                else:
+                    break
+            if begin >= end:
+                continue
+            parts = node_expression_parts(code, begin, end)
+            if len(parts) > 1:
+                operands.extend(parts)
+                continue
+            target = node_expression_parts(code, begin, end, "=", first=True)[0]
+            if target[1] >= end:
+                continue
+            finish = target[1]
+            while finish > begin and code[finish - 1].isspace():
+                finish -= 1
+            update_assignments.add((begin, finish, target[1]))
         owners, parents, scopes = [-1] * (len(code) + 1), {}, sorted(ranges.items())
         stack, cursor = [], 0
         for position in range(len(code) + 1):
@@ -1260,7 +2517,10 @@ def javascript_bindings(code, *, sloppy=False, _facts=None):
         declared = {}
         for name, position, span in callable_declarations:
             declared.setdefault((owners[position], name), []).append(span)
-        _facts.update(pairs=pairs, owners=owners, parents=parents, bound=bound, functions=functions, declarations=declared)
+        _facts.update(pairs=pairs, owners=owners, parents=parents, bound=bound, functions=functions,
+                      declarations=declared, headers=headers, member_containers=member_containers,
+                      targets=target_spans, expression_spans=seen, loops=tuple(loops),
+                      update_assignments=frozenset(update_assignments))
     return {name: expression for name, expression in declarations.items()
             if len(sites.get(name, ())) == 1}, set(sites)
 
@@ -1954,7 +3214,8 @@ def javascript_generated_sources(value):
                         child_bindings.pop(parameter_name, None)
                 complete_actuals = all(literal(current[begin:finish]) is not None
                                        for actuals in invocations for begin, finish in actuals)
-                plain_parameters = all(re.fullmatch(r"([A-Za-z_$][\w$]*)(?:\s*=\s*([\s\S]*))?", parameter)
+                complete_formals = all(parameter is not None for parameter in parameters)
+                plain_parameters = complete_formals and all(re.fullmatch(r"([A-Za-z_$][\w$]*)(?:\s*=\s*([\s\S]*))?", parameter)
                                        for parameter in parameter_parts)
                 if not complete_invocations or not complete_actuals or not plain_parameters:
                     child_fallback.extend((*fallback, *javascript_source_literals(current_atoms)))
@@ -1974,7 +3235,7 @@ def javascript_generated_sources(value):
                         values.append(operand)
                         if operand is not None:
                             child_fallback.append(operand)
-                    if complete_invocations and values[0] is not None and all(value == values[0] for value in values):
+                    if complete_formals and complete_invocations and values[0] is not None and all(value == values[0] for value in values):
                         child_bindings[named[1]] = values[0]
                     else:
                         # Loops, callbacks and reflective calls are not covered

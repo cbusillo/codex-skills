@@ -83,11 +83,8 @@ def retained_handoff(comments, source, pulls, *, repo, number, is_pr):
                 else:
                     # Closeout covers every pull, including separate authored
                     # handoffs. A successor selects just one of those handoffs.
-                    retained = claim.retained_handoff(released, [handoff], [pull],
+                    claim.retained_handoff(released, [handoff], [pull],
                         issue_repo=repo, issue_number=number, target_repo=repo, selected_id=handoff["id"])
-                    if (retained is None or retained["open_conflicts"]
-                            or pull["number"] not in {p["number"] for p in retained["qualified"]}):
-                        continue
                 verified.append(handoff)
                 break
             except ValueError:
