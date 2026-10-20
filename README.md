@@ -573,6 +573,22 @@ timeout locally. It is the leading explanation for the historical CI failures,
 whose process traces were not retained. The regression keeps its five-second
 deadline, and the import does not fetch the manual.
 
+## JetBrains inspections
+
+On macOS, `jetbrains-inspection` runs Python and Odoo assessments through stock
+PyCharm `inspect.sh` using an independently Director-activated profile in place.
+It keeps exclusive ownership and private system/cache/log paths, without
+opening the desktop IDE or copying activation or credentials. Configure the
+worker once in the [native runner reference](skills/jetbrains-inspection/references/native-backend.md).
+Reports name the backend, requested checks and execution gaps; an unavailable
+or unproven check keeps the verdict UNKNOWN. Planted controls cover Odoo Python,
+XML, `odoo.model.*` types, duplicates and insecure HTTP links.
+
+Other platforms retain qualified local Qodana for Python when available;
+other languages retain the Inspection API. `--backend native|qodana|api` and
+`JB_INSPECT_DEFAULT_BACKEND` select explicitly. The
+[inspection skill](skills/jetbrains-inspection/SKILL.md) owns routing and safety.
+
 ## Reviews By Another Model
 
 The `model-review` skill asks a model from another provider to review a change

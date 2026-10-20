@@ -3,6 +3,12 @@
 Read before defining or diagnosing lane routing, preparation configuration,
 preparation receipts, or preparation override flags.
 
+For the macOS native backend's independently activated worker, host configuration,
+snapshot preparation and recovery, read [native PyCharm](native-backend.md).
+`jetbrains.nativeWorker` belongs in the shared helper config, not repository
+metadata or a desktop IDE profile. The API lane/lifecycle behavior below remains
+the route for other supported language models.
+
 The helper reads `.github/github.json` when present:
 
 - `qualityGate.inspection.scopePreference`
