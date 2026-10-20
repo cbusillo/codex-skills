@@ -2128,6 +2128,13 @@ a separate PR edit; real notes or a later review label request review normally.
 
 Keep the original request, reviewed digest and key after an interrupted call.
 Read back before resubmitting the exact apply. Recovery can finish a missing
-history entry when the label is absent, and never deletes a label again.
+history entry when the label is absent, and never deletes a label again after
+an uncertain dispatch. A pre-dispatch failure can resume the original operation.
+If a request is present after dispatch, or its head/review authority changed,
+recovery instead settles the original intent with `applied=false` and
+`replan_required=true`, without claiming absence of earlier effects. The helper
+reports `replan_required` and exits nonzero. Review a fresh dry run and use a new
+key to withdraw that request. `product_review_withdrawal_unsettled` is an
+`outcome_unknown`, distinct from a definite refusal.
 A completed-key replay returns the original receipt, preserving later review
 requests. Do not remove a label by hand or use another identity after a denial.

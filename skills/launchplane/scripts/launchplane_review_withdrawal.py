@@ -72,9 +72,13 @@ def project(h: Any, response: object, body: dict[str, object]) -> dict[str, obje
     if result["applied"]:
         url = result.get("history_url")
         prefix = f"https://github.com/{body['repository']}/pull/{body['pull_request']}#issuecomment-"
-        if not isinstance(url, str) or not url.startswith(prefix) or not re.fullmatch(r"[1-9][0-9]*", url[len(prefix):]):
+        if not isinstance(url, str) or not url.casefold().startswith(prefix.casefold()) or not re.fullmatch(r"[1-9][0-9]*", url[len(prefix):]):
             raise h.LaunchplaneSafetyError("invalid_response")
         projected["history_url"] = h.public_url(url)
+    if "replan_required" in result:
+        if type(result["replan_required"]) is not bool or result["applied"]:
+            raise h.LaunchplaneSafetyError("invalid_response")
+        projected["replan_required"] = result["replan_required"]
     if mode == "readback":
         if type(result.get("readback_matches")) is not bool:
             raise h.LaunchplaneSafetyError("invalid_response")
@@ -106,6 +110,11 @@ def execute(h: Any, args: argparse.Namespace) -> int:
         attempted = mode == "apply"
         response = h.request_launchplane(service_url=settings["service_url"], path=h.helper_command_path(operation), settings=settings, body=body, timeout=timeout, idempotency_key=getattr(args, "idempotency_key", ""))
         result = project(h, response, body)
+        if result.get("replan_required") is True:
+            output = h.unavailable_payload(operation=operation, request=request, status="replan_required", code="withdrawal_replan_required", message="The original operation is settled without claiming withdrawal. Inspect the pending request; use a fresh reviewed dry run and new key for a new withdrawal.")
+            output["result"] = result
+            h.emit(output)
+            return 1
         if mode == "apply":
             applied = result["applied"] is True
             if not applied:
@@ -120,6 +129,8 @@ def execute(h: Any, args: argparse.Namespace) -> int:
             output = h.summarize_http_error(operation=operation, request=request, exc=error, provider_payload=h._error_payload_from_http(error))
             if applied:
                 output["status"] = "accepted_unverified"
+            elif attempted and output.get("summary", {}).get("error_code") == "product_review_withdrawal_unsettled":
+                output["status"] = "outcome_unknown"
             h.emit(output)
         finally:
             error.close()

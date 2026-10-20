@@ -79,6 +79,31 @@ def test_readback_mismatch_is_not_success(tmp_path):
     assert len(calls) == 2
 
 
+def test_unsettled_apply_is_unknown_and_terminal_replan_needs_a_new_review(tmp_path):
+    import urllib.error
+
+    _, dry, _ = invoke(argv(), [response()])
+    evidence = tmp_path / "dry.json"
+    evidence.write_text(json.dumps(dry))
+    body = {"trace_id": "trace-test", "error": {"code": "product_review_withdrawal_unsettled", "message": "PRIVATE_REASON_SENTINEL"}}
+    error = urllib.error.HTTPError("https://plane.example.invalid", 409, "Conflict", {}, io.BytesIO(json.dumps(body).encode()))
+    code, result, _ = invoke(argv("apply", str(evidence)), [error])
+    assert code != 0 and result["status"] == "outcome_unknown"
+    assert REASON not in json.dumps(result)
+    replan = response()
+    replan["result"]["replan_required"] = True
+    code, result, calls = invoke(argv("apply", str(evidence)), [replan])
+    assert code != 0 and result["status"] == "replan_required"
+    assert len(calls) == 1
+
+
+def test_canonical_repository_casing_is_accepted_on_readback():
+    args = argv("readback")
+    args[args.index("example/site")] = "Example/Site"
+    code, result, _ = invoke(args, [response(True, True)])
+    assert code == 0 and result["result"]["readback_matches"]
+
+
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__]))
