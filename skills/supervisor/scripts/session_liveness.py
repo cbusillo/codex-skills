@@ -49,6 +49,19 @@ def process_started_at(pid):
     return datetime.strptime(value, "%a %b %d %H:%M:%S %Y").replace(tzinfo=timezone.utc)
 
 
+def process_absent(pid):
+    """Only the kernel's missing-PID result establishes current absence."""
+    if sys.platform not in {"darwin", "linux"} or type(pid) is not int or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        pass
+    return False
+
+
 def idle_terminal_command(command):
     try:
         argv = shlex.split(command)
@@ -61,6 +74,12 @@ def idle_terminal_command(command):
         arg in {"-l", "-i", "-il", "-li", "--login", "--interactive"} for arg in argv[1:])
 
 
+def versioned_claude(executable):
+    path = Path(executable)
+    return (path.parent.name == "versions" and path.parent.parent.name == "claude"
+            and re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][\w.-]+)?", path.name) is not None)
+
+
 def harness_family(executable):
     name = Path(executable).name.casefold()
     if name in {"codex-session.py", "codex_session_proxy.py"}:
@@ -71,7 +90,7 @@ def harness_family(executable):
         return None  # Repository utilities are not native harness executables.
     if name.startswith("codex"):
         return "codex"
-    return "claude" if name in {"claude", "claude.js"} else None
+    return "claude" if name in {"claude", "claude.js"} or versioned_claude(executable) else None
 
 
 ARGUMENT_BYTES = 2 * 1024 * 1024
@@ -130,16 +149,80 @@ def native_arguments(pid):
     return darwin_arguments(memoryview(data)[:size.value])
 
 
+def interpreter_family(executable):
+    name = Path(executable).name
+    if name in {"node", "nodejs", "bun", "deno"}:
+        return "javascript"
+    if name in {"sh", "bash", "zsh"}:
+        return "shell"
+    return "python" if re.fullmatch(r"python(?:3(?:\.\d+)?)?", name) else None
+
+
+def execution_arguments(command):
+    """Find one executable/script prefix; later operands never supply identity."""
+    flat = isinstance(command, str)
+    words = command.split() if flat else list(command)
+    wrappers = {"codex-session.py", "codex_session_proxy.py"}
+
+    def candidate(value):
+        return harness_family(value) is not None or Path(value).name in wrappers
+
+    def path_span(index):
+        value = words[index]
+        end = index + 1
+        # Flat text can lose spaces inside a path. Extend only this anchored
+        # span, never across an option or a separate absolute/relative path.
+        if flat and "/" in value and not (candidate(value) or interpreter_family(value)):
+            while end < len(words) and not words[end].startswith(("-", "/", "./", "../")):
+                value += " " + words[end]
+                end += 1
+                if candidate(value) or interpreter_family(value):
+                    break
+        return value, end
+
+    if not words:
+        return [], [], False
+    executable, index = path_span(0)
+    identity = [executable]
+    interpreter = interpreter_family(executable)
+    uncertain = False
+    if interpreter:
+        while index < len(words) and words[index].startswith("-"):
+            option = words[index]
+            identity.append(option)
+            index += 1
+            uncertain = True
+            if option == "--":
+                break
+            # Node's preload operand precedes the main script. It is not the
+            # script slot and cannot hide a later native CLI entrypoint.
+            if Path(executable).name in {"node", "nodejs"}:
+                preload = option.partition("=")[0] in {"-r", "--require", "--import", "--loader", "--experimental-loader"}
+                if preload and "=" not in option:
+                    if index == len(words):
+                        return [], [], True
+                    identity.append(words[index])
+                    index += 1
+                    continue
+                if preload or option.startswith("-r"):
+                    continue
+            code_mode = (interpreter == "shell" and not option.startswith("--") and "c" in option[1:]
+                         or interpreter == "python" and re.match(r"^-[bBdEhiIOqRsSuvVx]*[cm]", option)
+                         or interpreter == "javascript" and (option.partition("=")[0] in {"--eval", "--print"}
+                                                              or option.startswith(("-e", "-p"))))
+            if code_mode:
+                return [], identity, True
+        if index == len(words):
+            return [], [], uncertain  # Missing script cannot clear an earlier one.
+        script, index = path_span(index)
+        identity.append(script)
+    argv = [identity[-1], *words[index:]] if candidate(identity[-1]) else []
+    return argv, identity, uncertain
+
+
 def harness_arguments(command):
     """Keep full argv; identity parsing and guarded prefix binding are separate."""
-    words = command.split() if isinstance(command, str) else list(command)
-    positions = words[:1]
-    if words and (Path(words[0]).name in {"node", "nodejs", "bun", "deno", "sh", "bash", "zsh"}
-                  or re.fullmatch(r"python(?:3(?:\.\d+)?)?", Path(words[0]).name)):
-        positions = words[:2]
-    index = next((i for i, arg in enumerate(positions)
-                  if harness_family(arg) is not None or Path(arg).name in {"codex-session.py", "codex_session_proxy.py"}), None)
-    return [] if index is None else words[index:]
+    return execution_arguments(command)[0]
 
 
 def process_arguments(pid, command):
@@ -148,9 +231,25 @@ def process_arguments(pid, command):
     if not fallback:
         return [], False
     try:
-        argv = harness_arguments(native_arguments(pid))
-        if argv:
-            return argv, True
+        native = native_arguments(pid)
+        argv, identity, uncertain = execution_arguments(native)
+        parts = Path(native[0]).parts if native else ()
+        framework_helper = any(part.endswith(".framework") and "Helpers" in parts[index + 1:]
+                               for index, part in enumerate(parts))
+        helper_role = (len(native) > 1 and native[1] in {
+            "--type=gpu-process", "--type=utility", "--type=renderer"}
+            and sum(arg.startswith("--type") for arg in native[1:]) == 1)
+        if not argv or framework_helper and helper_role:
+            # Never clear an earlier candidate using a replacement process.
+            # ps rewrites prompt control characters; compare only the complete
+            # executable/script prefix and retain all PID/launch/daemon checks.
+            prefix = " ".join(identity)
+            if isinstance(command, str):
+                consistent = bool(identity) and (command == prefix or command.startswith(prefix + " "))
+            else:
+                consistent = bool(identity) and identity == list(command)[:len(identity)]
+            return ([], True) if consistent else (fallback, False)
+        return argv, not uncertain
     except (OSError, ValueError, UnicodeError):
         pass
     return fallback, False
@@ -245,7 +344,7 @@ def uncertain_invocation(argv):
 
 def invocation(argv, *, bounded=True):
     """Return source candidates, command kind, and an exact native resume operand."""
-    if not bounded:
+    if not bounded or argv and versioned_claude(argv[0]):
         return uncertain_invocation(argv)
     if not argv:
         return [], None, None

@@ -1388,6 +1388,232 @@ class ProcessArgumentsTests(unittest.TestCase):
     source = "01a1514c-fa7f-7be3-95ba-4d25df73d07e"
     other = "01970242-7941-7f0c-b461-16aa5723fb51"
 
+    def setUp(self):
+        # Kernel existence is a fixture fact, never a host PID assumption.
+        self.enterContext(patch.object(session_liveness.os, "kill", return_value=None))
+        github = str(Path(__file__).resolve().parents[2] / "github/scripts")
+        with patch.object(sys, "path", [github, *sys.path]):
+            import github_plan_sessions as sessions
+        self.enterContext(patch.object(sessions.github_plan_closure, "managed_launch", return_value=False))
+
+    def test_only_kernel_absence_clears_stale_process_coverage(self):
+        github = str(Path(__file__).resolve().parents[2] / "github/scripts")
+        with patch.object(sys, "path", [github, *sys.path]):
+            import github_plan_sessions as sessions
+        commands = [
+            "/git-core/git-remote-https origin https://github.com/owner/codex-skills.git",
+            "/bin/gh repo view owner/codex-skills",
+            "python3 /abs/tool.py view owner/codex-skills",
+            "codex exec -- short-lived-work",
+            "codex resume " + self.source,
+        ]
+        for platform, argv_error in (("darwin", OSError(errno.EINVAL, "argv unavailable")),
+                                     ("linux", FileNotFoundError(errno.ENOENT, "argv unavailable"))):
+            for command in commands:
+                for outcome, absent in ((ProcessLookupError(errno.ESRCH, "gone"), True),
+                                        (None, False),
+                                        (PermissionError(errno.EPERM, "denied"), False),
+                                        (OSError(errno.EIO, "unknown"), False)):
+                    with self.subTest(platform=platform, command=command, absent=absent, outcome=type(outcome)), \
+                            patch.object(session_liveness.sys, "platform", platform), \
+                            patch.object(session_liveness, "native_arguments", side_effect=argv_error), \
+                            patch.object(session_liveness.os, "kill", side_effect=outcome) as existence:
+                        self.assertEqual(sessions.process_absence_known("456 " + command), absent)
+        # Positive source identity is not erased by later kernel absence.
+        command = "456 codex resume " + self.source
+        with patch.object(session_liveness.sys, "platform", "darwin"), \
+                patch.object(session_liveness, "native_arguments", side_effect=ProcessLookupError), \
+                patch.object(session_liveness.os, "kill", side_effect=ProcessLookupError):
+            self.assertTrue(sessions.process_absence_known(command))
+            self.assertEqual([p["sessionId"] for p in sessions.process_sessions(command, {self.source})], [self.source])
+            with self.assertRaises(ValueError):
+                session_liveness.verify_process_exit({"pid": 123, "tty": "source-tty", "session_id": self.source},
+                    rows=[(456, "other-tty", command.split(" ", 1)[1])])
+        # A live replacement cannot erase an earlier candidate.
+        with patch.object(session_liveness, "native_arguments", return_value=["/usr/bin/true"]):
+            self.assertFalse(sessions.process_absence_known(command))
+        for platform, row in (("win32", command), ("darwin", "codex resume " + self.source),
+                              ("darwin", "0 codex resume " + self.source)):
+            with self.subTest(platform=platform, row=row), \
+                    patch.object(session_liveness.sys, "platform", platform), \
+                    patch.object(session_liveness, "native_arguments", side_effect=OSError), \
+                    patch.object(session_liveness.os, "kill", side_effect=ProcessLookupError) as existence:
+                self.assertFalse(sessions.process_absence_known(row))
+                existence.assert_not_called()
+
+    def test_disappearing_snapshot_row_keeps_prior_source_peer(self):
+        github = str(Path(__file__).resolve().parents[2] / "github/scripts")
+        with patch.object(sys, "path", [github, *sys.path]):
+            import github_plan_sessions as sessions
+        for command, source_visible in (("/bin/gh repo view owner/codex-skills", False),
+                                        ("codex resume " + self.source, True)):
+            for native_complete in (False, True):
+                async def read(*_args):
+                    return [], {self.source: {"state": "ended"}}, {
+                        "status": "available" if native_complete else "incomplete",
+                        "peer_complete": native_complete, "socket": "/fixture/socket"}
+                with self.subTest(command=command, native_complete=native_complete), \
+                        patch.object(sessions, "codex_homes", return_value=[Path("/fixture")]), \
+                        patch.object(sessions, "observe_home", side_effect=read), \
+                        patch.object(sessions.github_plan_closure, "inherit_observed_leases"), \
+                        patch.object(sessions.subprocess, "run", side_effect=[
+                            SimpleNamespace(returncode=0, stdout="456 " + command),
+                            SimpleNamespace(returncode=0, stdout="")]), \
+                        patch.object(session_liveness.sys, "platform", "darwin"), \
+                        patch.object(session_liveness, "native_arguments", side_effect=OSError(errno.EINVAL, "unavailable")), \
+                        patch.object(session_liveness.os, "kill", side_effect=ProcessLookupError):
+                    peers, states, coverage = sessions._observe({self.source})
+                self.assertEqual(coverage["process_coverage"], "complete")
+                self.assertEqual(coverage["peer_complete"], native_complete)
+                self.assertEqual(bool(peers), source_visible)
+                self.assertEqual(states.get(self.source, {}).get("state"),
+                                 "live" if source_visible else "ended" if native_complete else None)
+
+    def test_authoritative_non_harness_argv_clears_an_ambiguous_ps_candidate(self):
+        github = str(Path(__file__).resolve().parents[2] / "github/scripts")
+        with patch.object(sys, "path", [github, *sys.path]):
+            import github_plan_sessions as sessions
+        executable = "/Applications/Example.app/Contents/Frameworks/Codex Framework.framework/Helpers/report_helper"
+        command = f"456 {executable} --message resume {self.source}"
+        with patch.object(session_liveness, "native_arguments", return_value=[executable, "--message", "resume " + self.source]):
+            self.assertTrue(sessions.process_absence_known(command))
+            self.assertEqual(sessions.process_sessions(command, {self.source}), [])
+        with patch.object(session_liveness, "native_arguments", side_effect=OSError("argv unavailable")):
+            self.assertFalse(sessions.process_absence_known(command))
+        with patch.object(session_liveness, "native_arguments", return_value=["codex", "resume", self.source]):
+            self.assertFalse(sessions.process_absence_known(command))
+            self.assertEqual([peer["sessionId"] for peer in sessions.process_sessions(command, {self.source})], [self.source])
+        # A different process at the same PID cannot erase the earlier candidate.
+        with patch.object(session_liveness, "native_arguments", return_value=["/usr/bin/true"]):
+            self.assertFalse(sessions.process_absence_known(command))
+        for native in (["node"], ["node", "/tools/other.js"]):
+            with self.subTest(native=native), patch.object(session_liveness, "native_arguments", return_value=native):
+                self.assertFalse(sessions.process_absence_known("456 node /tools/codex.js resume " + self.source))
+        for native, earlier in ((["/tools/code"], "/tools/codex"),
+                                (["node", "/tools/code"], "node /tools/codex.js")):
+            with self.subTest(native=native), patch.object(session_liveness, "native_arguments", return_value=native):
+                self.assertFalse(sessions.process_absence_known("456 " + earlier + " resume " + self.source))
+        for argv in ([executable, "--message", "first line\nsecond line"],
+                     ["node", "/tools/worker.js", "codex", "first line\nsecond line"]):
+            with self.subTest(argv=argv), patch.object(session_liveness, "native_arguments", return_value=argv):
+                rendered = "456 " + " ".join(argv).replace("\n", "?")
+                self.assertTrue(sessions.process_absence_known(rendered))
+        argv = ["codex", "resume", self.source, "first line\nsecond line"]
+        with patch.object(session_liveness, "native_arguments", return_value=argv):
+            rendered = "456 " + " ".join(argv).replace("\n", "?")
+            self.assertFalse(sessions.process_absence_known(rendered))
+            self.assertEqual([peer["sessionId"] for peer in sessions.process_sessions(rendered, {self.source})], [self.source])
+
+    def test_framework_helpers_clear_only_with_bounded_matching_role_identity(self):
+        github = str(Path(__file__).resolve().parents[2] / "github/scripts")
+        with patch.object(sys, "path", [github, *sys.path]):
+            import github_plan_sessions as sessions
+        for prefix in ("/Applications/Example.app/Contents", "/Relocated Folder/Other.app/Contents"):
+            helper = prefix + "/Frameworks/Runtime.framework/Versions/Current/Helpers/Codex (Service).app/Contents/MacOS/Codex (Service)"
+            for role in ("gpu-process", "utility", "renderer"):
+                argv = [helper, "--type=" + role, "--service-argument"]
+                command = "456 " + " ".join(argv)
+                with self.subTest(prefix=prefix, role=role), patch.object(session_liveness, "native_arguments",
+                        side_effect=lambda pid: argv if pid == 456 else ["codex", "app-server"]):
+                    self.assertTrue(sessions.process_absence_known(command))
+                    self.assertEqual(sessions.process_sessions(command, {self.source}), [])
+                    self.assertFalse(sessions.process_absence_known(command + "\n789 codex app-server"))
+                with patch.object(session_liveness, "native_arguments", side_effect=OSError("argv unavailable")):
+                    self.assertFalse(sessions.process_absence_known(command))
+            for argv in ([helper, "--type=unknown"], [helper, "--type="],
+                         [helper, "--other", "--type=gpu-process"],
+                         [helper, "--type=gpu-process", "--type=renderer"],
+                         [prefix + "/Resources/CLI.app/Contents/MacOS/codex", "--type=gpu-process"],
+                         ["codexPreview", "resume", self.source],
+                         ["/tools/codex Preview", "resume", self.source],
+                         ["codex", "--config", "--type=gpu-process"],
+                         ["node", helper, "--type=gpu-process"]):
+                with self.subTest(argv=argv), patch.object(session_liveness, "native_arguments", return_value=argv):
+                    self.assertFalse(sessions.process_absence_known("456 " + " ".join(argv)))
+
+    def test_spaced_cli_paths_keep_native_resume_and_unavailable_argv_vetoes(self):
+        github = str(Path(__file__).resolve().parents[2] / "github/scripts")
+        with patch.object(sys, "path", [github, *sys.path]):
+            import github_plan_sessions as sessions
+        for prefix in (["/Tools With Spaces/bin/codex"], ["node", "/Application Support/bin/codex.js"],
+                       ["node", "--inspect", "/Application Support/bin/codex.js"]):
+            argv = [*prefix, "resume", self.source]
+            command = "456 " + " ".join(argv)
+            for available in (True, False):
+                kwargs = {"return_value": argv} if available else {"side_effect": OSError("argv unavailable")}
+                with self.subTest(prefix=prefix, available=available), patch.object(session_liveness, "native_arguments", **kwargs):
+                    self.assertFalse(sessions.process_absence_known(command))
+                    self.assertEqual([peer["sessionId"] for peer in sessions.process_sessions(command, {self.source})], [self.source])
+                    with self.assertRaises(ValueError):
+                        session_liveness.verify_process_exit(
+                            {"session_id": self.source, "pid": 123, "tty": "source-tty"},
+                            rows=[(456, "other", " ".join(argv))])
+
+        argv = ["/Tools With Spaces/bin/python3", "/Application Support/codex-session.py", "resume"]
+        for available in (True, False):
+            kwargs = {"return_value": argv} if available else {"side_effect": OSError("argv unavailable")}
+            with self.subTest(venv=available), patch.object(session_liveness, "native_arguments", **kwargs):
+                self.assertFalse(sessions.process_absence_known("456 " + " ".join(argv)))
+
+    def test_command_data_never_supplies_native_harness_ownership(self):
+        github = str(Path(__file__).resolve().parents[2] / "github/scripts")
+        with patch.object(sys, "path", [github, *sys.path]):
+            import github_plan_sessions as sessions
+        data = "resume " + self.source
+        cases = (["git", "-C", "/repo/codex-skills", "status", data],
+                 ["rg", "codex " + data, "fixture.log"],
+                 ["gh-plan", "--repo", "cbusillo/codex-skills", "show", "2285", data],
+                 ["python3", "-I", "tool.py", "--repo", "cbusillo/codex-skills", data],
+                 ["python3", "-m", "module", "/repo/codex-skills", data],
+                 ["zsh", "-lc", "git -C /repo/codex-skills status"],
+                 ["node", "--eval", "codex " + data])
+        for argv in cases:
+            for available in (True, False):
+                kwargs = {"return_value": argv} if available else {"side_effect": OSError("argv unavailable")}
+                with self.subTest(argv=argv, available=available), patch.object(session_liveness, "native_arguments", **kwargs):
+                    command = " ".join(argv)
+                    self.assertTrue(sessions.process_absence_known("456 " + command))
+                    self.assertEqual(sessions.process_sessions("456 " + command, {self.source}), [])
+                    session_liveness.verify_process_exit(
+                        {"session_id": self.source, "pid": 123, "tty": "source-tty"},
+                        rows=[(456, "other", command)])
+
+    def test_versioned_claude_resume_can_veto_but_cannot_grant_authority(self):
+        executable = "/fixture/claude/versions/1.2.3"
+        for available in (True, False):
+            argv = [executable, "--resume", self.source]
+            kwargs = {"return_value": argv} if available else {"side_effect": OSError("argv unavailable")}
+            with self.subTest(available=available), patch.object(session_liveness, "native_arguments", **kwargs):
+                with self.assertRaises(ValueError):
+                    session_liveness.verify_process_exit(
+                        {"session_id": self.source, "harness": "claude", "pid": 123, "tty": "source-tty"},
+                        rows=[(456, "other", " ".join(argv))])
+        with self.assertRaises(ValueError):
+            self.probe([executable, "--resume", self.other], harness="claude")
+        self.probe([executable, "--resume", self.other], harness="claude", guarded=True)
+
+    def test_node_preload_values_do_not_hide_or_supply_the_main_harness(self):
+        github = str(Path(__file__).resolve().parents[2] / "github/scripts")
+        with patch.object(sys, "path", [github, *sys.path]):
+            import github_plan_sessions as sessions
+        for preload in (["-r", "bootstrap.js"], ["--require", "bootstrap.js"],
+                        ["-rbootstrap.js"], ["--require=bootstrap.js"],
+                        ["--import", "bootstrap.js"], ["--loader=bootstrap.js"],
+                        ["--experimental-loader", "bootstrap.js"]):
+            for available in (True, False):
+                for script in ("/fixture/claude.js", "/fixture/codex.js"):
+                    resume = ["--resume", self.source] if script.endswith("claude.js") else ["resume", self.source]
+                    argv = ["node", *preload, script, *resume]
+                    kwargs = {"return_value": argv} if available else {"side_effect": OSError("argv unavailable")}
+                    with self.subTest(preload=preload, available=available, script=script), patch.object(session_liveness, "native_arguments", **kwargs):
+                        with self.assertRaises(ValueError):
+                            session_liveness.verify_process_exit(
+                                {"session_id": self.source, "pid": 123, "tty": "source-tty"},
+                                rows=[(456, "other", " ".join(argv))])
+            argv = ["node", *preload, "ordinary.js", "--repo", "codex-skills"]
+            with patch.object(session_liveness, "native_arguments", return_value=argv):
+                self.assertTrue(sessions.process_absence_known("456 " + " ".join(argv)))
+
     def probe(self, argv, *, tty="source-tty", scope="session", guarded=False, harness="codex"):
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
         entry = {"session_id": self.source, "harness": harness, "pid": 123, "tty": "source-tty"}

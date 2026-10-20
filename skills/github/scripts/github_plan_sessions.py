@@ -324,6 +324,10 @@ def process_absence_known(text: str, observed_sockets: set[str] | None = None) -
             if shared.invocation(argv, bounded=bounded)[1] == "exec":
                 continue
             if not bounded:
+                # A row retained from the first snapshot can exit during
+                # native observation. Keep earlier source peers independently.
+                if shared.process_absent(pid):
+                    continue
                 return False
             # A stdio/extension server or unobserved daemon is unidentified too.
             listeners = [argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "--listen"]
