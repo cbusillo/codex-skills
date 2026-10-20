@@ -43,7 +43,8 @@ ASK = re.compile(
     re.IGNORECASE,
 )
 # A status report answers its own question in place: "Can the train merge yet? No, CI is running."
-ANSWERED = re.compile(r"\s*[*_]*(yes|no|not yet)\b", re.IGNORECASE)
+ANSWERED = re.compile(r"\s*[*_]*(yes|no|not yet)[*_]*\s*[,.;—–-]", re.IGNORECASE)
+NEGATED = re.compile(r"\b(nothing|no|not|never)\b[^.!?\n]{0,20}$", re.IGNORECASE)
 REASON = (
     "Your reply asks Chris to decide something but has no bold Q number. Every question "
     "to him starts with a bold Q### from the shared counter (talking-with-the-director.md): "
@@ -58,7 +59,9 @@ def asks_director(message: str) -> bool:
         return False
     questions = (match[0].strip(" \t*_-") for match in SENTENCE.finditer(text)
                  if not ANSWERED.match(text, match.end()))
-    return any(ADDRESSED.search(question) for question in questions) or bool(ASK.search(text))
+    # "Nothing is waiting on your approval" reports that there is no ask.
+    return (any(ADDRESSED.search(question) for question in questions)
+            or any(not NEGATED.search(text, 0, ask.start()) for ask in ASK.finditer(text)))
 
 
 def last_message(payload: Mapping) -> str | None:

@@ -37,15 +37,17 @@ runner; the rerun passed. See https://github.com/OWNER/REPO/actions?query=branch
 Nothing is needed from you."""
 
 
-# Real-shaped replies the first review found mis-sorted.
+# Real-shaped replies the reviews found mis-sorted.
 MISSED_ASKS = [
     "> **Q590 — Keep the watcher?**\n\nShould I move the nightly sync to the CM host? I recommend yes.",
     "I recommend moving the sync to the CM host. Is that okay? Ongoing cost: none.",
     "I recommend moving the nightly sync to the CM host. Let me know if I should proceed.",
+    "I recommend moving the nightly sync to the CM host. Should I proceed? No downtime is expected.",
 ]
 PLAIN_STATUS = [
     "Can the train merge yet? No, CI is still running. I am watching it; nothing is needed from you.",
     "Yesterday Chris asked: ‘Should I retire the old watcher service?’ He approved it; it is retired.",
+    "Nothing is waiting on your approval. The train is running.",
 ]
 
 
