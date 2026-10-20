@@ -87,11 +87,11 @@ unclear code stand by explaining it.
   you want checked.
 - Use `str | None` and built-in generics such as `list[str]`. Use `Self` from
   `typing`.
-- Below Python 3.14, `|` beside a quoted type, as in
-  `-> "odoo.model.product_template" | None`, raises `TypeError` on import.
-  Start any module that has one with `from __future__ import annotations`. On a
-  Python 3.10 target, that import also lets you take `Self` from
-  `typing_extensions` under `TYPE_CHECKING`.
+- `|` beside a quoted type, as in `-> "odoo.model.product_template" | None`,
+  raises `TypeError`: on Python 3.13 when the module is imported, and on 3.14,
+  which defers annotations, when anything reads them, such as
+  `inspect.signature`. Start any module that has one with
+  `from __future__ import annotations`.
 - In Odoo code inspected by PyCharm, use the PyCharm Odoo plugin's types as
   string annotations, with no import: recordsets as
   `"odoo.model.product_template"`, values dicts as `"odoo.values.sale_order"`.
@@ -204,9 +204,12 @@ unclear code stand by explaining it.
   sets no Ruff configuration, use line length 133, select `ANN`, `UP`, `B`,
   `I`, `G`, `BLE`, and `S608`, and ignore `D`, `UP037`, which would strip the
   quotes from the PyCharm types, and `ANN401`, which rejects the `Any` that
-  `**kwargs` and Odoo overrides need. Set the target to the oldest Python
-  version the code is deployed on. House rule: the repositories already
+  `**kwargs` and Odoo overrides need. House rule: the repositories already
   format at 133.
+- Target the Python version our Odoo images run (today 3.13; Ruff
+  `target-version` matches it). Upgrade the images first, then raise the
+  target in one change, and let Ruff's `UP` rules and `ruff check --fix`
+  modernize the code.
 - PyCharm inspection is the cleanup list. Leave touched files with no
   actionable warnings. Fix the cause before you add a `noinspection`.
 - Follow the [shared test rules](../../instructions/global.md#tests).
