@@ -146,6 +146,11 @@ class ResumeTests(unittest.TestCase):
 
     def test_source_validation_refuses_unconfigured_home_wrong_transcript_and_socket(self):
         with patch.object(SESSION, "run_client", new_callable=AsyncMock) as guarded:
+            self.args.session_id = self.native.replace("-", "")
+            with self.assertRaises(ValueError) as alias:
+                SESSION.run(self.args)
+            self.assertIn(self.native, str(alias.exception))
+            self.args.session_id = self.native
             self.homes.return_value = []
             with self.assertRaises(ValueError):
                 SESSION.run(self.args)

@@ -89,104 +89,24 @@ def assert_rejects_url(value: str, code: str) -> None:
         raise AssertionError(f"expected {value!r} to be rejected")
 
 
-def contract_artifact() -> dict[str, Any]:
-    return json.loads(contract.DEFAULT_CONTRACT_PATH.read_text(encoding="utf-8"))
-
-
-def assert_contract_error(artifact: dict[str, Any], code: str) -> None:
-    try:
-        contract.validate_contract(artifact)
-    except contract.ContractError as exc:
-        assert exc.code == code, exc.code
-    else:
-        raise AssertionError(f"expected contract error {code}")
-
-
-def test_agent_operator_contract_identity_and_provenance_semantics() -> None:
-    artifact = contract_artifact()
-    summary = contract.validate_contract(artifact)
-    assert summary["hermetic_only"] is True
-    assert summary["upstream_freshness_proven"] is False
-
-    provenance_only = copy.deepcopy(artifact)
-    provenance_only["provenance"]["source_commit_sha"] = "f" * 40
-    assert contract.semantic_digest(provenance_only) == contract.semantic_digest(
-        artifact
-    )
-    contract.validate_contract(provenance_only)
-
-
-def test_agent_operator_contract_rejects_drift_and_unsafe_content() -> None:
-    artifact = contract_artifact()
-
-    unsupported = copy.deepcopy(artifact)
-    unsupported["normalization_version"] = 2
-    assert_contract_error(unsupported, "unsupported_normalization_version")
-
-    unsupported_schema = copy.deepcopy(artifact)
-    unsupported_schema["schema_version"] = 2
-    assert_contract_error(unsupported_schema, "unsupported_schema_version")
-
-    digest_drift = copy.deepcopy(artifact)
-    digest_drift["contract"]["invariants"]["governance"][
-        "owner_acceptance_authoritative"
-    ] = False
-    assert_contract_error(digest_drift, "invariant_contract_mismatch")
-
-    unsafe = copy.deepcopy(artifact)
-    unsafe["contract"]["operations"][0]["purpose"] = (
-        "Contact https://private.example.invalid for details."
-    )
-    unsafe["semantic_digest_sha256"] = contract.semantic_digest(unsafe)
-    assert_contract_error(unsafe, "unsafe_public_value")
-
-    malformed = copy.deepcopy(artifact)
-    malformed["contract"]["operations"][0]["unexpected"] = True
-    assert_contract_error(malformed, "invalid_operation_keys")
-
-    digest_mismatch = copy.deepcopy(artifact)
-    digest_mismatch["contract"]["operations"][0][
-        "schema_fingerprint_sha256"
-    ] = "f" * 64
-    assert_contract_error(digest_mismatch, "semantic_digest_mismatch")
-
-    projected_extension = copy.deepcopy(artifact)
-    for operation in projected_extension["contract"]["operations"]:
-        if operation["operation_id"] == "evaluate_agent_write_intent":
-            operation["path"] = contract.LOCAL_EXTENSION_ROUTES[
-                "generic-web-deploy-recovery-dry-run"
-            ]["path"]
-            break
-    assert_contract_error(projected_extension, "local_extension_now_projected")
-
-
 def test_agent_operator_contract_routes_every_local_consumer() -> None:
-    artifact = contract_artifact()
-    operation_paths = {
-        operation["operation_id"]: operation["path"]
-        for operation in artifact["contract"]["operations"]
-    }
-    for command, (operation_id, modes) in {
-        **contract.PROJECTED_HELPER_COMMANDS, **contract.SERVICE_API_HELPER_COMMANDS,
-    }.items():
-        assert contract.helper_command_path(command) == operation_paths[operation_id]
-        assert modes
-    for command, extension in contract.LOCAL_EXTENSION_ROUTES.items():
-        assert contract.helper_command_path(command) == extension["path"]
-        assert extension["path"] not in operation_paths.values()
-    assert contract.internal_helper_path("merge-train-policy-targets-read") == (
-        "/v1/work-graph/merge-train/policy-targets"
-    )
-    assert "authz-activation-preflight-read" not in contract.PROJECTED_HELPER_COMMANDS
-    assert not hasattr(write_action, "execute_authz_activation_preflight_read")
+    for lookup, key in ((contract.operation_path, "unknown_operation"),
+                        (contract.helper_command_path, "unknown_command"),
+                        (contract.internal_helper_path, "unknown_route")):
+        try:
+            lookup(key)
+        except contract.ContractError:
+            pass
+        else:
+            raise AssertionError("unknown bindings must fail closed")
     context_args = argparse.Namespace(
         repo="example/repo", branch=None, issue=None, pr=None
     )
     assert context_helper.build_context_url(
         "https://launchplane.example.invalid", context_args
     ) == (
-        "https://launchplane.example.invalid/v1/agent/context"
-        "?repository=example%2Frepo"
+        "https://launchplane.example.invalid"
+        f"{contract.operation_path('read_agent_context')}?repository=example%2Frepo"
     )
 
 

@@ -980,6 +980,9 @@ class ReleaseTests(ReleaseHarness):
 
     def refresh_setup(self):
         self.f.refresh_fixture()
+        # The produced canonical release is the visible retained-PR handoff
+        # under test; an earlier worker handoff must not attest both siblings.
+        self.f.comments[2]["body"] = "Released claim 1"
         for n, c in enumerate(self.f.comments):
             c.update(created_at=f"2026-10-01T0{n}:00:00Z", updated_at=f"2026-10-01T0{n}:00:00Z")
         for p in self.f.pulls:
@@ -991,21 +994,18 @@ class ReleaseTests(ReleaseHarness):
         self.f.comments[2]["body"] = "trial-b handoff:\n\nReleased claim 1\nPR #99 and #100"
         self.f.comments.append(self.comment(4, "Released claim 1", "2026-10-01T03:00:00Z"))
         self.run_release()
-        self.f.args.handoff_comment = self.f.comments[-1]["id"]
         self.successor()
 
     def test_codex_release_without_pr_attestation_recovers_with_explicit_retained_prs(self):
         self.refresh_setup()
         self.f.comments[2]["body"] = "Released claim 1\nNo PR attestation on this canonical issue."
         self.run_release()
-        self.f.args.handoff_comment = self.f.comments[-1]["id"]
         self.successor()
 
     def test_retained_pr_contextual_link_remains_valid_for_release(self):
         self.refresh_setup()
         self.f.pulls[0]["body"] = "Planning issue: https://github.com/owner/repo/issues/42"
         self.run_release()
-        self.f.args.handoff_comment = self.f.comments[-1]["id"]
         self.successor()
 
     def test_repairshopr_embedded_release_is_claimable_without_supervisor(self):
@@ -1153,7 +1153,6 @@ class ReleaseTests(ReleaseHarness):
 
     def test_successor_push_does_not_resurrect_the_abandoned_owner(self):
         self.refresh_setup(); self.run_release()
-        self.f.args.handoff_comment = self.f.comments[-1]["id"]
         self.successor()
         successor_id = self.f.comments[-1]["id"]
         self.commit_date = "2026-10-04T00:00:00Z"
@@ -1171,9 +1170,9 @@ class ReleaseTests(ReleaseHarness):
         self.f.pulls[0]["head"]["ref"] = CLAIM.records(self.f.comments[0]["body"])[0]["branch"]
         self.args.retained_pr = [self.args.retained_pr[1]]
         self.run_release()
-        self.f.args.handoff_comment = self.f.comments[-1]["id"]
-        with self.assertRaisesRegex(PLAN.PlanError, "attested in the released handoff"):
-            self.successor()
+        before = copy.deepcopy((self.f.comments, self.f.issue, self.f.inventory))
+        with self.assertRaises(PLAN.PlanError): self.successor()
+        self.assertEqual(before, (self.f.comments, self.f.issue, self.f.inventory))
 
     def test_dry_run_is_reviewable_and_writes_nothing(self):
         self.args.dry_run = True
@@ -1387,7 +1386,7 @@ class ReleaseTests(ReleaseHarness):
                 if mode == "foreign": self.f.pulls[0]["user"]["login"] = "someone-else"
                 if mode == "unmentioned": self.args.retained_pr = self.args.retained_pr[:1]
                 if mode == "unmentioned":
-                    self.run_release(); self.f.args.handoff_comment = self.f.comments[-1]["id"]
+                    self.run_release()
                     with self.assertRaises(PLAN.PlanError): self.successor()
                 else:
                     with self.assertRaises(PLAN.PlanError): self.run_release()

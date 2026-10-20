@@ -132,7 +132,10 @@ def normalize_ledger_entry(path: Path, entry: dict) -> dict:
     if isinstance(entry.get("tty"), str):
         entry["tty"] = entry["tty"].removeprefix("/dev/")
     if isinstance(entry.get("transcript"), str) and entry["transcript"]:
-        entry["transcript"] = str((path.parent / Path(entry["transcript"]).expanduser()).resolve())
+        try:
+            entry["transcript"] = str((path.parent / Path(entry["transcript"]).expanduser()).resolve())
+        except RuntimeError as error:
+            raise ValueError(f"invalid transcript path for session {entry.get('session_id')} in {path}: {error}") from error
     return entry
 
 

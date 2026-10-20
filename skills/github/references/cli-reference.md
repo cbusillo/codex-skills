@@ -862,8 +862,8 @@ claim that issue instead. PR-scoped claims require a same-repository head and
 base; forks use a canonical planning issue. The PR's remote source head is its
 work record; local source branches/worktrees and live peers remain competing
 evidence unless owned or covered by an exact authored release. `--resume-from`
-works for released PR claims; `--refresh-pr` and `--handoff-comment` keep their
-canonical-issue contract. `release-claim` accepts the same PR references and attestation URLs on either
+works for released PR claims without inferring a retained-issue handoff from
+the subject PR itself. `release-claim` accepts the same PR references and attestation URLs on either
 issue or PR timeline comments. It checks the claimed source branch against the closed-session attestation. A
 later update to a separate Dependabot work-record branch does not count as
 source-session activity; source-branch activity, ownership and peer checks
@@ -996,8 +996,11 @@ minimal saved resume generation. The helper binds its actual launch identity,
 home and transcript to the verified source and closure time, then checks all
 relevant native homes and physical processes. It rereads the canonical release
 authority before clearing a pending action; it adds no ownership fields to the
-saved row. Each claim readback first reads its existing native source family and
-retained PR discussions once. A verified End for the same native session can
+saved row. Each publication phase collects its canonical source family, retained
+PR discussions, waits, blockers and checkout inventories before one shared native
+observation. Each discussion supplies its own exact releases and proof obligations;
+the shared result keeps each checkout's registry and local ownership independent.
+A verified End for the same native session can
 support physical completion across those records; each record still needs its
 own exact ownership release. The authority read after native verification stays
 fresh. Pending, legacy, worker-only and termination releases cannot supply
@@ -1129,8 +1132,8 @@ reused rather than posted again, and `--dry-run` names that comment. This narrow
 exclusive lock or new source of closure authority.
 
 On refusal, inspect `release_comment`, `release_state`, `completed_steps` and
-`release_recovery_action`. A pending record cannot support `--resume-from` or
-`--handoff-comment`, even if the activity that caused refusal disappears.
+`release_recovery_action`. A pending record cannot support `--resume-from`,
+even if the activity that caused refusal disappears.
 Preserve it, resolve the refusal, and freshly verify closure. Use the same
 attestation procedure above to post a new attestation, then inspect `--dry-run`
 with that `--evidence-comment` before
@@ -1194,7 +1197,8 @@ applying. These flags cannot release or reinterpret a structured source.
 For retained PRs, pass each verified same-repository PR URL with repeatable
 `--retained-pr`. Each PR must independently link the canonical issue and belong
 to the source automation identity. The release comment is the new handoff for
-`claim --resume-from <original-id> --refresh-pr <url> --handoff-comment <release-id>`.
+`claim --resume-from <original-id>`; the claim resolves its qualified retained
+PRs from the source-authored handoff.
 Unmentioned siblings, live retained-worktree peers and other ownership still
 refuse. Commit activity newer than the cited closure refuses for listed PRs and every
 open PR on the source branch. Commit timestamps do not prove push time; verify
@@ -1248,17 +1252,10 @@ Session field or authored exact-ID recovery for those older formats. A distinct 
 evidence; an unstructured claim needs an exact-ID release by its author.
 A hand-written source claim requires its author to post the exact-ID release.
 
-A plain claim (without `--resume-from`) whose only ownership evidence is one
-released structured claim's retained work reruns itself once as that claim's
-ordinary successor below: the claim's exact-ID release must be its first line,
-be newer than the claim, and name the open PR, and the refused evidence may be
-only that PR, that claim's Current Status marker, unstructured status text and
-local branch or worktree artifacts. Every successor check then runs as usual,
-and its claim records `resume_from` and `retained_handoff`. When the rerun
-refuses without writing, the original `claim_conflict` returns with
-`successor_route` naming the IDs tried, its reason and its evidence; a hold it
-finds, such as `claim_wait_unresolved`, is returned with `successor_route` so
-the next attempt can pass the same flags with the resolution evidence.
+A claim without `--resume-from` never retries itself as a successor. When the
+refused evidence identifies one released structured source, `successor_route`
+may name its original claim ID. Read the handoff and invoke the supported route
+explicitly; the diagnostic supplies no release or takeover authority.
 
 After a verified retained-work handoff, use `--resume-from <claim-comment-id>`.
 The source must be one structured claim explicitly released by its author.
@@ -1271,8 +1268,11 @@ invalid timestamps remain uncertain ownership. The successor claim replaces
 automation-managed stale status on normal readback; contributor-owned status
 stays intact, with the successor's claim in a comment. Unstructured ownership
 outside the helper-generated fields still refuses. The original status remains quoted in
-the successor's claim comment. Without `--handoff-comment`, only the source
-claim's exact retained branch, worktree, and PR evidence is accepted;
+the successor's claim comment. The helper initially selects the first qualified
+authored handoff that the existing artifact rules permit. An unreleased structured
+successor claim keeps its recorded handoff on renewal; release that claim before
+selecting a different handoff. Each preflight/readback phase freshly validates
+the selected source and handoff;
 other Current Status ownership, unreleased comments,
 other artifacts, and visible peer sessions still refuse. A source on the claimed
 issue's native parent uses the retained-handoff route below; prose links alone
@@ -1287,19 +1287,14 @@ Verify the source session has finished, its exact authored release, that the
 handoff retains no PR at all, and the preserved branch's live remote head and
 local state before claiming.
 Keep unpublished changes intact. Pass the source claim's exact branch as
-`--branch` and its released claim ID as `--resume-from`; omit both
-`--handoff-comment` and `--refresh-pr`. After confirmed success, continue the
-preserved linked worktree under the host's worktree policy. Do not create a
+`--branch` and its released claim ID as `--resume-from`. After confirmed success,
+continue the preserved linked worktree under the host's worktree policy. Do not create a
 fresh task branch or fabricate a PR to meet the retained-PR contract.
 This uses the existing source-recovery exception, not a second adoption path.
+Historical PR references alone leave this same-record recovery route available;
+current PR ownership, artifacts and peers still determine admission.
 Ownership, live peers, issue waits, native blockers and other retained artifacts
 keep their checks; a refusal stops the action for reconciliation.
-During initial preflight only, the no-PR refusal includes `successor_route`
-with the source's `resume_from` and exact `branch` for this same-record case
-with no source-branch or named retained PR. This is guidance, not an automatic
-retry or proof that every PR mention was recognized. Verify the full handoff;
-unparsed or cross-repository PR references are not proof of absence. After
-publication starts, a refusal keeps only the existing claim-recovery action.
 
 For an authorized **ordinary successor** whose next step precedes PR refresh,
 use the canonical open planning issue in the PRs' repository:
@@ -1309,11 +1304,10 @@ uv run <skill-dir>/scripts/gh-plan.py claim <canonical-issue> \
   --worker <worker-token> --session <native-session-id> \
   --branch work/<new-task-slug> --next-action "<authorized next step>" \
   --resume-from <released-claim-comment-id> \
-  --handoff-comment <exact-source-handoff-comment-id> \
   --wait-resolved "<verified existing authorization and retained hold evidence>"
 ```
 
-Omit `--refresh-pr`. The same exact-ID release and source-author handoff proof
+The same exact-ID release and source-author handoff proof
 described below binds every named open or merged same-repository PR to its
 retained branch, including branches different from the source claim. Every
 open PR on those branches must be named and same-author; independent issue
@@ -1333,14 +1327,14 @@ available source-session activity refuses even outside a retained worktree.
 Unavailable peer coverage cannot establish inactivity or attribute later pushes
 to a session. The claim
 binds its source and handoff so recovery cannot silently discard that proof or
-become conflict-only refresh. Create a new linked worktree only after confirmed
-success; preserve the original checkouts. This route grants no live-operation,
+change its source or selected handoff. Ordinary retained PRs may merge during
+readback without changing that selected mode or lineage. Create a new linked
+worktree only after confirmed success; preserve the original checkouts. This route grants no live-operation,
 PR-change, cleanup, access, or takeover authority.
 
 When actionable source work is split from a waiting parent, use its native child
-as `<canonical-issue>` with the parent's original `--resume-from` and
-`--handoff-comment` IDs. If the source claim is absent on the child, the helper
-reads the child's native parent in the same repository and verifies that
+as `<canonical-issue>` with the parent's original `--resume-from` ID. If the
+source claim is absent on the child, the helper reads the child's native parent in the same repository and verifies that
 parent's complete source/release/handoff records. The retained PRs must
 independently link that parent. A body link alone, a different parent, or an
 unreadable native relationship cannot supply this proof. Both readbacks recheck
@@ -1348,7 +1342,6 @@ the native relationship, parent's ownership and release, retained artifacts and
 live sessions. The claim records the handoff's actual parent URL, writes only
 the child's claim/status/labels, and preserves the parent's waits and labels.
 The child's own waits and blockers and the retained PRs' holds still apply.
-Without `--handoff-comment`, resume stays on the claimed record.
 Both same-record and child successors also read the source issue's current
 native children and native child history from its timeline. A detached or
 reparented child remains visible through that history. When REST omits a
@@ -1384,11 +1377,10 @@ blocks the child when that claim describes unrelated work. Coordinate its
 exact release, or continue independently authorized work on a separate issue
 and fresh branch without the retained source. A fresh parent claim does not
 itself transfer a child's retained source.
-Cross-record source inference applies only to ordinary successors.
-Conflict-only refresh continues to use the source's canonical issue and checks
-the lineage already recorded there. Cross-repository refresh checks both that
-family and the source's own successors with the runtime inventory and the
-verified planning repository's inventory.
+Cross-repository retained work checks both that family and the source's own
+successors with the implementation inventory and verified planning checkout
+inventory. A parent or cross-repository handoff can retain qualified merged PR
+history; that history alone does not allow adoption of no-PR WIP on another record.
 The resume-source, handoff-author and native-parent guards retain their human
 explanations and expose stable `claim_resume_*`, `claim_handoff_*` or
 `claim_native_parent_*` codes. Native blocker and malformed child-history
@@ -1412,7 +1404,7 @@ source assets; do not rewrite claim history or treat a redirect alone as
 cross-repository source authority.
 If an old self-reference cannot be read, an ordinary fresh claim on the current
 issue can still support independently authorized work on a new branch, without
-`--resume-from`, `--handoff-comment` or retained source assets. Its own ownership,
+`--resume-from` or retained source assets. Its own ownership,
 waits and blockers must be clear; malformed lineage metadata still refuses.
 
 Unreadable current or historical children (including a 403 or ambiguous 404),
@@ -1423,7 +1415,7 @@ visibility or valid native history through the existing administrative process
 before retrying resume; do not grant access or skip the record to pass the gate.
 If the evidence cannot be restored, independent work can continue on a separately
 authorized issue and fresh branch, using an ordinary claim without
-`--resume-from` or `--handoff-comment` and without the retained source artifacts.
+`--resume-from` and without the retained source artifacts.
 That route still enforces its own ownership, waits and blockers; it does not
 release or transfer the child's source, or provide a way to retain the blocked
 same-record branch.
@@ -1437,8 +1429,6 @@ uv run <skill-dir>/scripts/gh-plan.py claim <canonical-issue-url> \
   --worker <worker-token> --session <native-session-id> \
   --branch work/<new-task-slug> --next-action "Conflict-only refresh of <PR>" \
   --resume-from <released-claim-comment-id> \
-  --refresh-pr https://github.com/OWNER/REPO/pull/123 \
-  --handoff-comment <handoff-comment-id> \
   --wait-resolved "<verified evidence resolving the recorded wait for this refresh>"
 ```
 
@@ -1459,17 +1449,14 @@ a qualified reference. The open PR must independently link the planning issue
 and use a head and base in the PR's repository; fork refreshes are not supported.
 The issue and target PR's recorded waits still require verified resolution.
 
-For a PR-only refresh of the source claim's own branch, a later source-authored
-handoff naming that open PR can bind directly to the released structured source
-record, admitting only that source branch, not named split siblings. It need not
-repeat the source worker/session header. The caller must verify that the selected
-comment is the actual finished source session's handoff; the shared bot login
-alone cannot prove the native session that wrote it. Exact prior release,
-authorship, chronology, independent issue link, same-repository head/base and
-all ownership checks still apply. A malformed `Handoff from` header or embedded
-claim record cannot use this route. Plain claims remain unsupported for an
-open retained PR; use the canonical issue with `--resume-from`, `--refresh-pr`
-and `--handoff-comment` above, on a new task branch.
+The implementation repository is `--repo` when supplied, otherwise the current
+checkout's repository. Run from that repository's checkout. Name a different
+planning issue with its qualified reference instead of changing `--repo` to the
+planning repository. The handoff requires qualified PR references when the
+planning issue is elsewhere. The helper does
+not reinterpret a PR mention in another namespace or a generic same-bot rollup
+as source authority. One original claim ID selects this same route for ordinary
+successor work and an already authorized conflict refresh.
 
 For ordinary successor work or a PR on a split retained branch, the handoff
 must start with the exact-ID release line described above, or with
@@ -1489,7 +1476,10 @@ native source session, and every retained PR, and linking its original handoff
 and release comments. Use supported session routing to reach that session;
 another session sharing its bot login must not impersonate it. When the source
 session cannot record this, retained-work recovery remains blocked. Preserve
-the original records and use the new comment ID with `--handoff-comment`.
+the original records. Without an unreleased successor pinning its recorded
+handoff, the helper can select the new qualified handoff on the next explicit
+`--resume-from` invocation when the existing artifact rules require the later
+complete handoff. A requested branch alone never selects a handoff.
 A release posted after the old handoff does not validate it retroactively.
 The exact source-authored release owns release state. The selected handoff
 binds source identity and named retained PRs; its free prose is not scanned for
@@ -1501,22 +1491,28 @@ Only open or merged same-repository PRs independently linked to the canonical
 issue and named in that handoff count as retained artifacts; a closed unmerged
 PR does not. A superseded closed PR with no remaining artifacts is ignored,
 while its unreleased claims and unaccounted branches/worktrees still refuse.
-The refresh target itself must still be open. Cross-repository
-links must qualify the canonical issue, since bare `#123` belongs to the PR
+Cross-repository links must qualify the canonical issue, since bare `#123` belongs to the PR
 repository. Merged siblings may retain their branches/worktrees without
 requiring cleanup to refresh the remaining PR. The helper reads the
 issue and those PR discussions, local/remote branches, registered worktrees,
 and available peer sessions again during readback. Unreleased claims, active
 Current Status, live peers on retained worktrees, unaccounted artifacts, and
 races still refuse. Sibling references identify retained artifacts and do not
-authorize refreshing those siblings. A refresh claim records its target PR so recovering it
-cannot silently become a general implementation claim.
+authorize refreshing those siblings. Historical `refresh_pr`, `retained_handoff`
+and `resume_from` claim markers retain their ownership meaning; new retained
+claims record the selected source and handoff without a second public selector.
 
 This route grants no refresh, push, merge, cleanup, or takeover authority.
 Verify the finished-session handoff and existing conflict-refresh authorization
 first. On confirmed claim success, create your own new linked task worktree;
 leave the original worktree and its lease intact. Reusing any retained
-PR/source branch as the new task branch refuses. From that new task branch,
+PR/source branch as the new task branch refuses, with one narrow same-session
+continuation: the same worker in the same exact native session may select the
+unique open PR head attested by its release, different from the original source
+branch. All exposed native bindings must agree with that session, and the same
+attested PR must stay open with that head through both readbacks. A different
+native session still uses a fresh branch. This exception does not replace the
+same-record no-PR original-branch recovery above. From the new task branch,
 push explicitly to the verified existing PR head
 with a normal fast-forward refspec (`task-branch:pr-head-branch`) under the
 brief's authority; never check out the PR branch in two worktrees or force-push.

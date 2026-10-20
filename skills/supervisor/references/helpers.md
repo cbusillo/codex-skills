@@ -1854,8 +1854,8 @@ ownership gates. Keep the original termination time across retries.
 
 For the successor, **`--resume-from` takes the original claim comment's numeric
 ID after that claim has been released; it never takes a branch**. It is also
-distinct from the release comment's ID. When retained PRs need a handoff, pass
-the new release comment's numeric ID as `--handoff-comment`. Inspect the
+distinct from the release comment's ID. The claim derives its qualified
+source-authored retained-PR handoff from that original ID. Inspect the
 supported route with the helper's help before putting it in a brief:
 
 Without a retained PR, continue the verified preserved branch using only the
@@ -1865,12 +1865,12 @@ released original claim ID:
 uv run skills/github/scripts/gh-plan.py --repo OWNER/REPO claim <canonical-issue> --worker <new-token> --session <successor-native-id> --branch <verified-preserved-branch> --resume-from <original-claim-comment-id> --next-action "Resume the preserved branch after checking its current state"
 ```
 
-With a retained-PR handoff, claim a **new task branch**, separate from every
-retained PR/source branch. The existing retained-handoff route preserves the
+For a different native session with a retained-PR handoff, claim a **new task
+branch**, separate from every retained PR/source branch. The existing retained-handoff route preserves the
 original worktrees and PRs; it does not authorize editing their branches.
 
 ```sh
-uv run skills/github/scripts/gh-plan.py --repo OWNER/REPO claim <canonical-issue> --worker <new-token> --session <successor-native-id> --branch work/<new-task-slug> --resume-from <original-claim-comment-id> --handoff-comment <release-comment-id> --next-action "Continue the prerequisite while preserving the retained PR work"
+uv run skills/github/scripts/gh-plan.py --repo OWNER/REPO claim <canonical-issue> --worker <new-token> --session <successor-native-id> --branch work/<new-task-slug> --resume-from <original-claim-comment-id> --next-action "Continue the prerequisite while preserving the retained PR work"
 ```
 
 Add the actual admission and existing wait-resolution evidence when required. Read
@@ -2230,6 +2230,16 @@ with the original actual closure time.
 
 Default is a read-only preview. `finish` consumes canonical claim releases;
 backfill previews claim IDs, retained PRs and attestation bodies.
+A pending Codex source can be previewed with its original Supervisor-owned
+ledger and matching shared source record. Each validation after discovery and
+canonical release reads takes the existing ownership guard and obtains fresh
+native end proof for the same source generation and pending action. Preview
+leaves that action, the shared closure record and lease contents unchanged;
+apply alone can clear the original proved action. A new action or changed source
+requires fresh verification through the existing recovery route above, and
+cannot borrow the preview's earlier proof. Transcript records after the saved
+closure time still refuse; preview does not waive the source's safe verdict,
+process, native work or configured transcript-copy checks.
 For `finish`, discovery checks original claim comments after their release.
 An exact `Released claim <id>` directive binds the release through that source's
 native session, with both comments authored by the automation actor. A worker's
@@ -2328,8 +2338,13 @@ Use `ended_at - verdict_at` for the one-day shutdown-latency measurement.
 Retries preserve both original times. Legacy records without `verdict_at`
 remain valid and need their original native transcript to reconstruct it;
 never substitute notice arrival or log-write time for the verdict.
-Repeat finish previews use the existing log's original closure time. The first
-closure requires an empty or idle TTY, an exact dead-pane cutoff, or a proved
+Repeat finish previews use the existing log's original closure time. Shared
+source reads require valid saved metadata or proved absence of that source.
+Unreadable, unsafe, ambiguous or continuously changing source data stays unknown:
+finish preserves pending, and claim observation takes no new source lease or
+ended verdict. Correct the existing source artifact, then preview again;
+unknown metadata never becomes a first closure from caller-supplied launch facts.
+A first closure requires an empty or idle TTY, an exact dead-pane cutoff, or a proved
 replacement process tree before recording its own observation time; it never
 trusts an end time supplied by the ledger. If the original nonce-bearing tmux
 pane has already been removed, the helper can use the birth of one newer TTY

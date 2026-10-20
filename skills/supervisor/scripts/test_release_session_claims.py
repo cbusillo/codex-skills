@@ -339,6 +339,26 @@ class ReleaseTests(unittest.TestCase):
                         saved = json.loads((self.root / "closed.json").read_text())[0]
                         self.assertEqual(saved["ended_at"], self.entry["ended_at"])
 
+    def test_guarded_tty_reuse_requires_a_unique_saved_source(self):
+        ended = helper.release.stamp(self.entry["ended_at"])
+        shared = self.root / "shared.json"
+        other = {**self.entry, "pid": 999, "tty": "other-tty"}
+        for rows in ([self.entry], [self.entry, other], [other, self.entry]):
+            with self.subTest(rows=rows):
+                shared.write_text(json.dumps(rows))
+                shared.chmod(0o600)
+                before = shared.read_bytes()
+                with patch.object(helper.closure, "closed_log", return_value=shared), \
+                        patch.object(helper, "inventory", return_value=[(456, self.entry["tty"], "codex --remote unix:///new-client")]), \
+                        patch.object(helper.closure, "process_started_at", return_value=ended + timedelta(seconds=22)), \
+                        patch.object(helper.closure, "guarded_launch_endpoint", return_value="/new-client"):
+                    if len(rows) == 1:
+                        helper.verify_process_exit(self.entry, ended_at=ended)
+                    else:
+                        with self.assertRaises(ValueError):
+                            helper.verify_process_exit(self.entry, ended_at=ended)
+                self.assertEqual(shared.read_bytes(), before)
+
     def test_finish_retry_never_excuses_recorded_pids_or_native_resume(self):
         self.entry["launch_pid"] = 124
         ended = helper.release.stamp(self.entry["ended_at"])
@@ -470,6 +490,162 @@ class ReleaseTests(unittest.TestCase):
         with patch.object(helper.closure, "closed_log", return_value=shared):
             closed = helper.record_closure(self.root / "private-closure.json", self.entry, "supervisor")
             self.assertTrue(helper.validate_closure(closed, "supervisor")["safe_verdict"])
+
+    def private_tty_main(self, *, mode="finish", apply=False, prior=True, shared_kind="different", mutation=None, boundary="discovery"):
+        import github_plan_native as native
+        import tmux_terminal
+        import socket
+        case = type(self)()
+        case.setUp()
+        try:
+            ended = helper.release.stamp(case.entry["ended_at"])
+            entry = {**case.entry, "handoff_url": None if mode == "finish" else case.entry["handoff_url"]}
+            if not prior:
+                entry.update(tmux_socket="fixture", tmux_session_id="tmux:fixture:" + "a" * 32,
+                             window_id="$1", tab_id="@1")
+            pane = {"session_id": entry.get("tmux_session_id"), "pane_id": "%1", "pid": 789,
+                    "tmux_socket": "fixture", "window_id": "$1", "tab_id": "@1", "tty": entry["tty"],
+                    "dead": True, "exited_at": ended.isoformat()}
+            ledger, private, shared = (case.root / name for name in ("ledger.json", "private.json", "shared.json"))
+            ledger.write_text(json.dumps([entry]))
+            if prior:
+                private.write_text(json.dumps([entry]))
+                private.chmod(0o600)
+            shared_row = dict(entry)
+            if shared_kind == "different":
+                shared_row.update(pid=999, tty="other-tty")
+            endpoint = case.root / "proxy.sock"
+            guard_socket = socket.socket(socket.AF_UNIX)
+            case.addCleanup(guard_socket.close)
+            guard_socket.bind(str(endpoint))
+            endpoint.chmod(0o600)
+            native_argv = ["codex", "--remote", "unix://" + str(endpoint)]
+            born = ended + timedelta(seconds=22)
+            proxy = {"record_kind": "managed_proxy", "launch_pid": 456,
+                     "launch_started_at": born.isoformat(), "codex_home": str(case.root / "home"),
+                     "endpoint": str(endpoint), "argv_digest": helper.closure.argv_signature(native_argv)}
+            shared.write_text("{" if shared_kind == "malformed" else json.dumps([shared_row, proxy]))
+            shared.chmod(0o600)
+            shared_before = shared.read_bytes()
+            private_before = private.read_bytes() if private.exists() else None
+            state = {"changed": False, "discovered": False}
+            captured = {}
+            real_record, real_process = helper.record_closure, native.recheck_source_process
+            def record(*args, **kwargs):
+                closed = real_record(*args, **kwargs)
+                captured.setdefault("closed", closed)
+                captured.setdefault("ended_at", closed["ended_at"])
+                captured.setdefault("verdict_at", closed.get("verdict_at"))
+                return closed
+            def change():
+                if state["changed"]:
+                    return
+                if mutation == "transcript":
+                    with case.transcript.open("a") as stream:
+                        stream.write(json.dumps({"timestamp": datetime.now(timezone.utc).isoformat(),
+                            "payload": {"type": "agent_message", "message": "Continuing work."}}) + "\n")
+                    state["changed"] = True
+                    return
+                with helper.closure.store_lock(private, create=True):
+                    if mutation == "remove":
+                        private.unlink()
+                    else:
+                        rows = json.loads(private.read_text()) if private.exists() else []
+                        selected = next((row for row in rows if row.get("session_id") == entry["session_id"]), None)
+                        if selected is None:
+                            selected = {key: value for key, value in captured["closed"].items() if not key.startswith("_")}
+                            rows.append(selected)
+                        selected["resumed_at"] = datetime.now(timezone.utc).isoformat()
+                        private.write_text(json.dumps(rows))
+                state["changed"] = True
+            def discover(*_args, **_kwargs):
+                state["discovered"] = True
+                if mutation and boundary == "discovery":
+                    change()
+                return [("test/a", 1)], ["test/a"]
+            def process(*args, **kwargs):
+                result = real_process(*args, **kwargs)
+                if mutation and boundary == "process" and state["discovered"]:
+                    change()
+                return result
+            def history(*_args, **_kwargs):
+                if mutation and boundary == "history":
+                    change()
+                return [case.source, case.own_release()]
+            handoff = case.reader.get_json.return_value
+            case.reader.get_json.side_effect = lambda path, **_kw: handoff if "/issues/comments/" in path else {"body": "", "number": 1}
+            case.reader.paged_json.side_effect = history
+            argv = ["helper", mode, "--closed-log", str(private), "--session-id", entry["session_id"],
+                    "--supervisor-session", "supervisor", "--owner", "test", "--confirm-session-ended",
+                    "--transcript-root", str(case.root)]
+            argv += ["--ledger", str(ledger)] if mode == "finish" else ["--checkout-root", str(case.root)]
+            if apply:
+                argv.append("--apply")
+            output = io.StringIO()
+            with patch.object(helper.sys, "argv", argv), \
+                    patch.object(helper.closure, "closed_log", return_value=shared), \
+                    patch.object(helper, "inventory", return_value=[(456, entry["tty"], " ".join(native_argv))]), \
+                    patch.object(helper.closure, "process_started_at", return_value=ended + timedelta(seconds=22)), \
+                    patch.object(tmux_terminal.Terminal, "list", return_value=[pane]), \
+                    patch.object(helper, "record_closure", side_effect=record), \
+                    patch.object(native, "recheck_source_process", side_effect=process), \
+                    patch.object(helper.github_identity, "automation_login", return_value=ACTOR), \
+                    patch.object(helper, "GitHubReader", return_value=case.reader), \
+                    patch.object(helper, "discover", side_effect=discover), \
+                    patch.object(helper, "comment") as write, patch.object(helper, "run_release") as run, \
+                    contextlib.redirect_stdout(output):
+                code = helper.main()
+            report = json.loads(output.getvalue())
+            write.assert_not_called()
+            run.assert_not_called()
+            self.assertEqual(shared.read_bytes(), shared_before)
+            self.assertEqual(state["changed"], mutation is not None)
+            if mutation or shared_kind == "malformed":
+                self.assertEqual(code, 1, report)
+                self.assertFalse(report["ok"])
+            else:
+                self.assertEqual(code, 0, report)
+                self.assertTrue(report["ok"])
+                if mode == "finish":
+                    self.assertEqual(report["reports"][0]["ended_at"], captured["ended_at"])
+                    if private.exists():
+                        saved = json.loads(private.read_text())[0]
+                        self.assertEqual(saved["ended_at"], captured["ended_at"])
+                        if "verdict_at" in saved:
+                            self.assertEqual(saved["verdict_at"], captured["verdict_at"])
+                if not apply or mode == "backfill":
+                    self.assertEqual(private.read_bytes() if private.exists() else None, private_before)
+        finally:
+            case.doCleanups()
+
+    def test_private_finish_preserves_its_source_through_guarded_tty_boundaries(self):
+        for apply, prior, shared in itertools.product((False, True), (False, True), ("matching", "different")):
+            with self.subTest(apply=apply, prior=prior, shared=shared):
+                self.private_tty_main(apply=apply, prior=prior, shared_kind=shared)
+        for apply, prior, boundary in itertools.product((False, True), (False, True), ("discovery", "history", "process")):
+            with self.subTest(apply=apply, prior=prior, boundary=boundary):
+                self.private_tty_main(apply=apply, prior=prior, mutation="change", boundary=boundary)
+        for apply, boundary in itertools.product((False, True), ("discovery", "history")):
+            with self.subTest(apply=apply, boundary=boundary, mutation="remove"):
+                self.private_tty_main(apply=apply, mutation="remove", boundary=boundary)
+        self.private_tty_main(apply=True, prior=False, mutation="remove", boundary="history")
+        for apply, boundary in itertools.product((False, True), ("discovery", "process")):
+            with self.subTest(apply=apply, boundary=boundary, mutation="transcript"):
+                self.private_tty_main(apply=apply, mutation="transcript", boundary=boundary)
+
+        self.private_tty_main(shared_kind="malformed")
+
+    def test_private_backfill_uses_the_actual_closed_row_for_guarded_tty_checks(self):
+        for apply, shared in itertools.product((False, True), ("matching", "different")):
+            with self.subTest(apply=apply, shared=shared):
+                self.private_tty_main(mode="backfill", apply=apply, shared_kind=shared)
+        for apply, boundary in itertools.product((False, True), ("discovery", "process")):
+            with self.subTest(apply=apply, boundary=boundary):
+                self.private_tty_main(mode="backfill", apply=apply, mutation="change", boundary=boundary)
+        for apply in (False, True):
+            with self.subTest(apply=apply, mutation="transcript"):
+                self.private_tty_main(mode="backfill", apply=apply, mutation="transcript", boundary="process")
+        self.private_tty_main(mode="backfill", shared_kind="malformed")
 
     def test_scheduled_jobs_do_not_change_post_exit_finish_policy(self):
         entry = {**self.entry, "harness": "claude"}
@@ -1022,7 +1198,6 @@ class ReleaseTests(unittest.TestCase):
                 "--confirm-session-ended", "--transcript-root", str(self.root)]
         output = io.StringIO()
         with patch.object(helper.sys, "argv", argv), patch.object(helper.github_identity, "automation_login", return_value=ACTOR), \
-                patch.object(helper.session_record, "load_ledger", return_value=entries), \
                 patch.object(helper, "discover", return_value=([], ["test/a"])), \
                 patch.object(helper, "release_session", return_value={"session_id": "source-session", "claims": []}) as run, \
                 contextlib.redirect_stdout(output):

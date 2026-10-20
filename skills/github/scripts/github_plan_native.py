@@ -298,8 +298,8 @@ class _SourceEndMismatch(ValueError):
     """This verified End cannot cover the selected generation's actual facts."""
 
 
-def _source_process(entry, saved, context=None):
-    """Select one trusted generation/cutoff; the owning route supplies its saved row."""
+def _source_process(entry, saved, context=None, *, recorded=None):
+    """Select actual source identity and its recorder-owned exit boundary."""
     from github_plan_sessions import process_liveness
     from github_plan_release import stamp
     source = {**entry, **(saved or {})}
@@ -335,15 +335,21 @@ def _source_process(entry, saved, context=None):
             for key in terminal_keys:
                 if key in entry:
                     effective[key] = entry[key]
-    if not generation and saved and saved.get("process_exit_verified") is True and saved.get("ended_at"):
-        ended = stamp(saved["ended_at"])
-        cutoff = stamp(saved["tty_exited_at"]) if saved.get("tty_exited_at") else ended
+    # Later finish boundaries use this invocation's recorder output, including
+    # when the actual saved source is an open resumed generation or absent.
+    # Initial selection never accepts a caller's cutoff as recorded evidence.
+    closed = recorded if recorded is not None else (saved if not generation else None)
+    if recorded is not None and (recorded.get("process_exit_verified") is not True or not recorded.get("ended_at")):
+        raise ValueError("recorded closure lacks a verified process exit boundary")
+    if closed and closed.get("process_exit_verified") is True and closed.get("ended_at"):
+        ended = stamp(closed["ended_at"])
+        cutoff = stamp(closed["tty_exited_at"]) if closed.get("tty_exited_at") else ended
         if cutoff > ended:
             raise ValueError("native TTY exit cutoff is newer than closure")
-        if "tty_exited_at" in saved:
-            # The full saved-row identity check must see the exact trusted
-            # representation, not a caller hint or a normalized replacement.
-            effective["tty_exited_at"] = saved["tty_exited_at"]
+        if "tty_exited_at" in closed:
+            # Preserve the recorder's representation for the independent
+            # saved-row identity comparison, rather than a caller hint.
+            effective["tty_exited_at"] = closed["tty_exited_at"]
     else:
         cutoff = process_liveness().native_exit_cutoff(effective)
         if cutoff is None:
@@ -536,12 +542,17 @@ async def prove_end(entry, request=None, *, process=None):
     return {"snapshot": after, "facts": final[after["home"]], "homes": final, "action": action}
 
 
-def resolve_pending(session, proof):
-    """Only the actual lease-owning caller writes, never an off-loop reader."""
+def _require_current_proof(session, proof):
+    """Require the held lease and the source/action identity behind this proof."""
     if session not in (closure._LEASES.get() or set()):
         raise ValueError("native resolution has no ownership lease")
     if closure.lease_state(session) != proof["action"] or closure.source_records({session}).get(session) != proof["snapshot"]["source"]:
         raise ValueError("native action or source identity changed before resolution")
+
+
+def resolve_pending(session, proof):
+    """Only the actual lease-owning caller writes, never an off-loop reader."""
+    _require_current_proof(session, proof)
     require_proof_quiet(proof)
     closure.set_action_pending(session, False)
 
@@ -584,15 +595,7 @@ def _cancel_selected(path, session, *, ledger=False):
 
 
 def _cancel_saved(session):
-    if not closure.closed_log().exists():
-        return None
-    matches = [row for row in closure.log_rows() if row.get("session_id") == session]
-    if len(matches) > 1:
-        raise ValueError("source generation is not unique")
-    if not matches:
-        return None
-    from github_plan_sessions import native_helpers
-    return native_helpers()[1].normalize_ledger_entry(closure.closed_log(), matches[0])
+    return closure.source_records({session}).get(session)
 
 
 def _cancel_generation(entry, saved):

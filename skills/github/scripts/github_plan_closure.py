@@ -35,7 +35,7 @@ def require_canonical_identity(session: str) -> None:
     from github_plan_sessions import process_liveness
     canonical = process_liveness().native_uuid(session)
     if canonical is not None and canonical != session:
-        raise ValueError("use the canonical native thread UUID")
+        raise ValueError(f"use the canonical native thread UUID {canonical}")
 
 
 def lease_path(session: str) -> Path:
@@ -210,9 +210,11 @@ def observation(sessions: set[str], *, retain: set[str] | None = None):
         token = LOG_CACHE.set(None)
         try:
             candidates = source_records(sessions)
+        except (OSError, ValueError, KeyError, TypeError):
+            candidates = None
         finally:
             LOG_CACHE.reset(token)
-        for session in sorted(sessions):
+        for session in sorted(sessions if candidates is not None else ()):
             try:
                 if session in (_LEASES.get() or set()):
                     # Borrow only the currently live guard. Its owner controls
@@ -729,26 +731,55 @@ def receipt_current(entry: dict) -> bool:
         return False
 
 
+def selected_source_rows(rows, session):
+    """Validate the selected source without interpreting other sessions' facts."""
+    if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+        raise ValueError("closure log must contain session objects")
+    for index, row in enumerate(rows):
+        if row.get("record_kind") in {"managed_launch", "managed_proxy"} and "session_id" not in row:
+            continue
+        if not isinstance(row.get("session_id"), str) or not row["session_id"].strip():
+            raise ValueError(f"closure log row {index + 1} has an ambiguous session identity")
+    selected = [row for row in rows if row.get("session_id") == session]
+    if len(selected) > 1:
+        raise ValueError(f"duplicate selected closure session_id {session}")
+    for row in selected:
+        if row.get("harness") not in {"claude", "codex"}:
+            raise ValueError(f"selected closure {session} harness must be claude or codex")
+        if not isinstance(row.get("transcript"), str) or not row["transcript"].strip():
+            raise ValueError(f"selected closure {session} requires its transcript")
+    return selected
+
+
 def source_records(sessions: set[str]) -> dict:
+    """Read selected saved identities; only proved absence means first closure."""
     if not sessions:
         return {}
     try:
-        before = log_identity(closed_log().lstat())
-        rows = log_rows()
-        if before != log_identity(closed_log().lstat()):
-            return {}
-        LOG_CACHE.set((before, rows))
-        from github_plan_sessions import native_helpers
-        normalize = native_helpers()[1].normalize_ledger_entry
-        return {session: normalize(closed_log(), matches[0]) for session in sessions
-                if len(matches := [r for r in rows if r.get("session_id") == session]) == 1}
-    except (OSError, ValueError, KeyError, TypeError):
-        return {}
-
-
-def candidate_records(sessions: set[str]) -> dict:
-    return {session: row for session, row in source_records(sessions).items()
-            if isinstance(row.get("closure_evidence"), dict)}
+        for attempt in range(2):
+            try:
+                before = log_identity(closed_log().lstat())
+            except FileNotFoundError:
+                if attempt == 0:
+                    return {}
+                raise
+            rows = log_rows()
+            if before != log_identity(closed_log().lstat()):
+                # Another source can atomically replace the shared log while
+                # this source is leased. Read the new generation once.
+                continue
+            from github_plan_sessions import native_helpers
+            normalize = native_helpers()[1].normalize_ledger_entry
+            selected = {}
+            for session in sessions:
+                matches = selected_source_rows(rows, session)
+                if matches:
+                    selected[session] = normalize(closed_log(), matches[0])
+            LOG_CACHE.set((before, rows))
+            return selected
+        raise ValueError("closed-session log changed during source verification")
+    except (ValueError, RuntimeError) as error:
+        raise ValueError(f"closed-session source {closed_log()}: {error}") from error
 
 
 def log_identity(info: os.stat_result) -> tuple:

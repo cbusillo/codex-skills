@@ -5,9 +5,10 @@
 """Fake native daemon evidence, including refusal and read-only transport."""
 import copy
 import asyncio
-from contextlib import ExitStack
-import json
+from contextlib import ExitStack, redirect_stdout
+import io
 import inspect
+import json
 import os
 import socket
 import sys
@@ -18,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from aiohttp import web
 import github_plan_sessions as SESSIONS
@@ -213,6 +214,697 @@ class ReceiptFixture:
         native[native.index("--remote") + 1] = "unix://" + str(binding)
         with patch.object(CLOSURE.os, "getpid", return_value=456):
             CLOSURE.register_launch(native, str(self.home), proxy=proxy)
+
+
+class FinishPreviewIntegrationTests(unittest.TestCase):
+    def pending(self, f):
+        with CLOSURE.resume_guard(f.session, method="thread/resume", home=f.home):
+            pass
+        f.native_state = "notLoaded"
+
+    def finish(self, f, *, apply=False, discovery=None, history=None, closed_log=None):
+        helper = f.release
+        ledger = f.root / "ledger.json"
+        ledger.write_text(json.dumps([f.entry]))
+        source = {"worker": "trial", "session": f.session, "branch": "work/trial",
+                  "claimed_at": "2026-10-01T01:00:00Z"}
+        comments = [{"id": identifier, "body": body, "user": {"login": "fixture-bot"},
+                     "created_at": timestamp, "updated_at": timestamp}
+                    for identifier, body, timestamp in (
+                        (1, "Claimed by trial\n\n" + helper.claim.marker(source), source["claimed_at"]),
+                        (2, "Released claim 1", "2026-10-01T02:00:02Z"))]
+        reader = Mock()
+        reader.get_json.return_value = {"body": "", "number": 42}
+        def read(*_args, **_kwargs):
+            if history:
+                history(f)
+            return comments
+        def discover(*_args, **_kwargs):
+            if discovery:
+                discovery(f)
+            return [("owner/repo", 42)], ["owner/repo"]
+        reader.paged_json.side_effect = read
+        argv = ["helper", "finish", "--ledger", str(ledger), "--session-id", f.session,
+                "--supervisor-session", "supervisor", "--owner", "owner", "--repo", "owner/repo",
+                "--confirm-session-ended", "--transcript-root", str(f.home / "sessions")]
+        if apply:
+            argv.append("--apply")
+        if closed_log is not None:
+            argv += ["--closed-log", str(closed_log)]
+        output = io.StringIO()
+        with patch.object(helper.sys, "argv", argv), \
+                patch.object(helper.github_identity, "automation_login", return_value="fixture-bot"), \
+                patch.object(helper, "automation_only_gh_prefix_args", return_value=[]), \
+                patch.object(helper, "GitHubReader", return_value=reader), \
+                patch.object(helper, "discover", side_effect=discover), \
+                patch.object(helper, "comment") as write, patch.object(helper, "run_release") as run, \
+                redirect_stdout(output):
+            code = helper.main()
+        write.assert_not_called()
+        run.assert_not_called()
+        self.assertFalse(f.mutations)
+        return code, json.loads(output.getvalue())
+
+    def test_invalid_private_transcript_account_reports_refusal_without_side_effects(self):
+        for case in ("supervisor-ledger", "private-finish", "backfill-selected", "backfill-unrelated",
+                     "valid-private-offline"):
+            with self.subTest(case=case), ReceiptFixture() as f:
+                closed = CLOSURE.log_rows()[0]
+                invalid = {**f.entry, "transcript": "~q526-absent-account/rollout.jsonl"}
+                invalid_closed = {**closed, "transcript": invalid["transcript"]}
+                ledger_rows = [invalid] if case == "supervisor-ledger" else [f.entry]
+                private_rows = ([closed, {**invalid_closed, "session_id": "unrelated-source"}]
+                                if case == "backfill-unrelated" else
+                                [invalid_closed] if case in {"private-finish", "backfill-selected"} else [closed])
+                ledger = f.root / "supervisor-ledger.json"
+                private = f.root / "private-closed.json"
+                ledger.write_text(json.dumps(ledger_rows))
+                private.write_text(json.dumps(private_rows))
+                private.chmod(0o600)
+                if case == "valid-private-offline":
+                    f.log.write_text("{")
+                mode = "backfill" if case.startswith("backfill") else "finish"
+                argv = ["helper", mode, "--supervisor-session", "supervisor", "--owner", "owner",
+                        "--session-id", f.session, "--confirm-session-ended", "--transcript-root",
+                        str(f.home / "sessions"), "--closed-log", str(private)]
+                argv += ["--ledger", str(ledger)] if mode == "finish" else ["--checkout-root", str(f.root)]
+                paths = (ledger, private, f.log, CLOSURE.lease_path(f.session))
+                before = {path: path.read_bytes() for path in paths}
+                reader = Mock()
+                output = io.StringIO()
+                with patch.object(f.release.sys, "argv", argv), \
+                        patch.object(f.release.github_identity, "automation_login", return_value="fixture-bot"), \
+                        patch.object(f.release, "automation_only_gh_prefix_args", return_value=[]), \
+                        patch.object(f.release, "GitHubReader", return_value=reader), \
+                        patch.object(f.release, "discover", return_value=([], ["owner/repo"])), \
+                        patch.object(f.release, "comment") as write, patch.object(f.release, "run_release") as run, \
+                        patch("pwd.getpwnam", side_effect=KeyError("fixture account absent")), redirect_stdout(output):
+                    code = f.release.main()
+                report = json.loads(output.getvalue())
+                valid = case == "valid-private-offline"
+                self.assertEqual(code, 0 if valid else 1)
+                self.assertEqual(report["ok"], valid)
+                write.assert_not_called()
+                run.assert_not_called()
+                self.assertFalse(reader.method_calls)
+                self.assertFalse(f.mutations)
+                self.assertEqual({path: path.read_bytes() for path in paths}, before)
+
+    def test_preview_preserves_recorded_cutoff_for_absent_and_resumed_sources(self):
+        import github_plan_native as native
+        import tmux_terminal
+        for resumed in (False, True):
+            for shared in (False, True):
+                for boundary in ("discovery", "history"):
+                    changes = ("stable", "reaped", "replacement") + (("queue",) if shared else ())
+                    if not resumed and boundary == "history":
+                        changes += ("source_pid", "source_resume", "unguarded")
+                    for change in changes:
+                        with self.subTest(resumed=resumed, shared=shared, boundary=boundary, change=change), ReceiptFixture(
+                                "11111111-2222-4333-8444-555555555555") as f:
+                            cutoff = datetime(2026, 10, 1, 2, 1, tzinfo=timezone.utc)
+                            end = cutoff + timedelta(minutes=2)
+                            current_turn = f.transcript.read_text().splitlines()[1:]
+                            CLOSURE.replace_rows([])
+                            if resumed:
+                                prior = SESSIONS.native_helpers()[1].read_jsonl(f.transcript)
+                                for row in prior:
+                                    if row.get("timestamp"):
+                                        row["timestamp"] = (f.release.release.stamp(row["timestamp"]) - timedelta(minutes=2)).isoformat()
+                                    if row.get("payload", {}).get("turn_id"):
+                                        row["payload"]["turn_id"] = "prior-" + row["payload"]["turn_id"]
+                                f.transcript.write_text("".join(json.dumps(row) + "\n" for row in prior))
+                                prior_verdict = f.release.release.stamp(SESSIONS.native_helpers()[1].session_status(f.entry)["timestamp"])
+                                class PriorClock(datetime):
+                                    @classmethod
+                                    def now(cls, tz=None):
+                                        return prior_verdict + timedelta(seconds=1)
+                                with patch.object(f.release, "datetime", PriorClock):
+                                    f.release.record_closure(f.log, f.entry, "supervisor")
+                            f.entry.update(tmux_socket="fixture", tmux_session_id="tmux:fixture:" + "a" * 32,
+                                           window_id="$1", tab_id="@1")
+                            births = {123: cutoff - timedelta(hours=1), 124: cutoff - timedelta(minutes=2),
+                                      456: cutoff + timedelta(seconds=22),
+                                      567: end + timedelta(minutes=1), 568: end + timedelta(minutes=1, seconds=1)}
+                            pane = {"session_id": f.entry["tmux_session_id"], "pane_id": "%1", "pid": 789,
+                                    "tmux_socket": "fixture", "window_id": "$1", "tab_id": "@1",
+                                    "tty": f.entry["tty"], "dead": True, "exited_at": cutoff.isoformat()}
+                            state = {"changed": False, "launched": not resumed, "panes": [pane], "parents": {456: 1}}
+                            captured, process_boundaries = {}, []
+                            private = f.root / "retained-private.json"
+                            class ActionClock(datetime):
+                                @classmethod
+                                def now(cls, tz=None):
+                                    return (end + timedelta(minutes=2) if state["changed"] else
+                                            cutoff + timedelta(minutes=1) if state["launched"] else births[124])
+                            class EndClock(datetime):
+                                @classmethod
+                                def now(cls, tz=None):
+                                    return end
+                            def register(pid):
+                                endpoint = f.root / ("guard-" + str(pid) + ".sock")
+                                sock = socket.socket(socket.AF_UNIX)
+                                f.stack.callback(sock.close)
+                                sock.bind(str(endpoint))
+                                endpoint.chmod(0o600)
+                                argv = ["codex", "--remote", "unix://" + str(endpoint)]
+                                with patch.object(CLOSURE.os, "getpid", return_value=pid), \
+                                        patch.object(CLOSURE.sys, "argv", argv):
+                                    CLOSURE.register_proxy(str(f.home), str(endpoint))
+                                self.assertIsNotNone(CLOSURE.guarded_launch_endpoint(pid, argv))
+                                return " ".join(argv)
+                            def update(_f):
+                                if state["changed"] or change == "stable":
+                                    return
+                                state["changed"] = True
+                                if change == "queue":
+                                    f.queue_items = [{"id": "new-input", "clientUserMessageId": "later-client", "input": []}]
+                                    return
+                                state["panes"] = []
+                                if change == "replacement":
+                                    f.process_rows = [(567, f.entry["tty"], "zsh"), (568, f.entry["tty"], register(568))]
+                                    state["parents"] = {567: 42, 568: 567, 42: 1}
+                                    expected_log[:] = [f.log.read_bytes()]
+                                elif change == "source_pid":
+                                    f.process_rows = [(f.entry["pid"], f.entry["tty"], "codex")]
+                                elif change == "source_resume":
+                                    f.process_rows = [(456, f.entry["tty"], "codex resume " + f.session)]
+                                elif change == "unguarded":
+                                    f.process_rows = [(567, f.entry["tty"], "codex")]
+                            record_closure, recheck_process = f.release.record_closure, native.recheck_source_process
+                            def record(*args, **kwargs):
+                                closed = record_closure(*args, **kwargs)
+                                captured.update({key: closed[key] for key in ("tty_exited_at", "ended_at", "verdict_at")})
+                                return closed
+                            def recheck(process):
+                                result = recheck_process(process)
+                                if captured:
+                                    process_boundaries.append((process.cutoff, process.saved))
+                                return result
+                            with patch.object(CLOSURE, "process_started_at", side_effect=lambda pid: births[pid]), \
+                                    patch.object(CLOSURE, "datetime", ActionClock), \
+                                    patch.object(f.release, "datetime", EndClock), \
+                                    patch.object(tmux_terminal.Terminal, "list", side_effect=lambda _self=None: list(state["panes"])), \
+                                    patch.object(tmux_terminal, "process_parents", side_effect=lambda: dict(state["parents"])):
+                                if resumed:
+                                    metadata = CLOSURE.launch_metadata(124, "actual-owned-resume", str(f.home))
+                                    f.entry.update(metadata, pid=metadata["launch_pid"], tty="resumed-tty")
+                                    pane["tty"] = f.entry["tty"]
+                                    with CLOSURE.resume_guard(f.session, method="thread/resume", home=f.home):
+                                        CLOSURE.resumed_launch(f.session, metadata, str(f.transcript), f.entry["tty"])
+                                    selected = CLOSURE.source_records({f.session})[f.session]
+                                    self.assertEqual(selected["resumed_generation"]["launch_pid"], metadata["launch_pid"])
+                                    with f.transcript.open("a") as stream:
+                                        stream.write("\n".join(current_turn) + "\n")
+                                    if not shared:
+                                        f.log.rename(private)
+                                else:
+                                    selected = None
+                                state["launched"] = True
+                                f.process_rows = [(456, f.entry["tty"], register(456))]
+                                f.native_state = "notLoaded"
+                                if shared and not resumed:
+                                    with CLOSURE.resume_guard(f.session, method="thread/resume", home=f.home):
+                                        pass
+                                self.assertEqual(CLOSURE.source_records({f.session}).get(f.session), selected if shared else None)
+                                lease = CLOSURE.lease_path(f.session)
+                                lease_before = lease.read_bytes()
+                                expected_log = [f.log.read_bytes()]
+                                private_before = private.read_bytes() if private.exists() else None
+                                verdict = SESSIONS.native_helpers()[1].session_status(f.entry)["timestamp"]
+                                with patch.object(f.release, "record_closure", side_effect=record), \
+                                        patch.object(native, "recheck_source_process", side_effect=recheck):
+                                    code, report = self.finish(f, **{boundary: update}, closed_log=None if shared else private)
+                                refuses = change in {"queue", "source_pid", "source_resume", "unguarded"}
+                                self.assertEqual(state["changed"], change != "stable")
+                                self.assertEqual(code, 1 if refuses else 0, report)
+                                self.assertEqual(report["ok"], not refuses)
+                                self.assertEqual(CLOSURE.action_pending(f.session), shared or resumed)
+                                self.assertEqual(lease.read_bytes(), lease_before)
+                                self.assertEqual(f.log.read_bytes(), expected_log[0])
+                                self.assertEqual(CLOSURE.source_records({f.session}).get(f.session), selected if shared else None)
+                                self.assertEqual(private.read_bytes() if private.exists() else None, private_before)
+                                self.assertEqual(captured["tty_exited_at"], cutoff.isoformat())
+                                self.assertEqual(captured["ended_at"], end.isoformat())
+                                self.assertEqual(captured["verdict_at"], verdict)
+                                if not refuses:
+                                    self.assertEqual(report["reports"][0]["ended_at"], captured["ended_at"])
+                                    self.assertTrue(process_boundaries)
+                                    for observed_cutoff, saved in process_boundaries:
+                                        self.assertEqual(observed_cutoff, cutoff)
+                                        self.assertEqual(saved, selected)
+
+    def test_pending_preview_consumes_release_without_changing_native_or_closure_state(self):
+        with ReceiptFixture() as f:
+            self.pending(f)
+            paths = [f.log, CLOSURE.lease_path(f.session)]
+            before = [path.read_bytes() for path in paths]
+            code, report = self.finish(f)
+            self.assertEqual(code, 0)
+            self.assertTrue(report["ok"])
+            self.assertEqual([row["claim_comment"] for row in report["reports"][0]["released_claims"]], [1])
+            self.assertTrue(CLOSURE.action_pending(f.session))
+            self.assertEqual([path.read_bytes() for path in paths], before)
+
+    def test_pending_preview_refuses_changed_source_action_or_work_at_either_boundary(self):
+        for boundary in ("discovery", "history"):
+            for change in ("generation", "source", "action", "queue", "turn"):
+                with self.subTest(boundary=boundary, change=change), ReceiptFixture() as f:
+                    self.pending(f)
+                    changed = set()
+                    def update(f):
+                        if change in {"generation", "source"}:
+                            with CLOSURE.ownership(f.session), CLOSURE.store_lock(f.log):
+                                rows = CLOSURE.log_rows()
+                                if change == "generation":
+                                    rows[0]["resumed_generation"] = {**f.entry, "launch_generation": "next-generation"}
+                                else:
+                                    rows[0]["resumed_at"] = datetime.now(timezone.utc).isoformat()
+                                CLOSURE.replace_rows(rows)
+                        elif change == "action":
+                            with CLOSURE.ownership(f.session):
+                                CLOSURE.set_action_pending(f.session, True, method="turn/start", home=f.home)
+                        elif change == "queue":
+                            f.queue_items = [{"id": "later-input", "clientUserMessageId": "new-client",
+                                              "input": [{"type": "text", "text": "new work"}]}]
+                        else:
+                            with f.transcript.open("a") as stream:
+                                stream.write(json.dumps({"type": "event_msg", "timestamp": datetime.now(timezone.utc).isoformat(),
+                                    "payload": {"type": "task_started", "turn_id": "new-turn"}}) + "\n")
+                        changed.add(change)
+                    code, report = self.finish(f, **{boundary: update})
+                    self.assertEqual(changed, {change})
+                    self.assertEqual(code, 1)
+                    self.assertFalse(report["ok"])
+                    self.assertTrue(CLOSURE.action_pending(f.session))
+
+    def test_apply_resolves_original_pending_but_preserves_a_later_action(self):
+        for boundary in (None, "discovery", "history"):
+            with self.subTest(boundary=boundary), ReceiptFixture() as f:
+                self.pending(f)
+                changed = set()
+                def update(f):
+                    with CLOSURE.ownership(f.session):
+                        CLOSURE.set_action_pending(f.session, True, method="turn/start", home=f.home)
+                    changed.add(boundary)
+                code, report = self.finish(f, apply=True, **({boundary: update} if boundary else {}))
+                self.assertEqual(changed, {boundary} if boundary else set())
+                self.assertEqual(code, 1 if boundary else 0)
+                self.assertEqual(report["ok"], boundary is None)
+                self.assertEqual(CLOSURE.action_pending(f.session), boundary is not None)
+
+    def test_preview_cannot_acquire_authority_for_an_action_added_after_record(self):
+        for boundary in ("discovery", "history"):
+            with self.subTest(boundary=boundary), ReceiptFixture() as f:
+                f.native_state = "notLoaded"
+                changed = set()
+                def update(f):
+                    with CLOSURE.ownership(f.session):
+                        CLOSURE.set_action_pending(f.session, True, method="turn/start", home=f.home)
+                    changed.add(boundary)
+                code, report = self.finish(f, **{boundary: update})
+                self.assertEqual(changed, {boundary})
+                self.assertEqual(code, 1)
+                self.assertFalse(report["ok"])
+                self.assertTrue(CLOSURE.action_pending(f.session))
+
+    def test_plain_finish_refuses_a_new_turn_at_either_boundary(self):
+        for apply in (False, True):
+            for boundary in ("discovery", "history"):
+                with self.subTest(apply=apply, boundary=boundary), ReceiptFixture() as f:
+                    changed = set()
+                    def update(f):
+                        with f.transcript.open("a") as stream:
+                            stream.write(json.dumps({"type": "event_msg", "timestamp": datetime.now(timezone.utc).isoformat(),
+                                "payload": {"type": "task_started", "turn_id": "new-turn"}}) + "\n")
+                        changed.add(boundary)
+                    code, report = self.finish(f, apply=apply, **{boundary: update})
+                    self.assertEqual(changed, {boundary})
+                    self.assertEqual(code, 1)
+                    self.assertFalse(report["ok"])
+
+    def test_pending_preview_requires_unchanged_source_and_action_through_real_proof(self):
+        import github_plan_native as native
+        for timing in ("snapshot_start", "snapshot_end", "proof_return", "process_recheck"):
+            for kind in (None, "action", "source", "generation"):
+                with self.subTest(timing=timing, kind=kind), ReceiptFixture() as f, ExitStack() as stack:
+                    self.pending(f)
+                    paths = [f.log, CLOSURE.lease_path(f.session)]
+                    before = [path.read_bytes() for path in paths]
+                    real_proof = native.prove_end
+                    real_snapshot = native.source_snapshot
+                    real_process = native.recheck_source_process
+                    state = {"changed": False, "proof_complete": False}
+                    def change():
+                        if kind is None or state["changed"]:
+                            return
+                        with CLOSURE.ownership(f.session):
+                            if kind == "action":
+                                CLOSURE.set_action_pending(f.session, True, method="turn/start", home=f.home)
+                            else:
+                                with CLOSURE.store_lock(f.log):
+                                    rows = CLOSURE.log_rows()
+                                    if kind == "generation":
+                                        rows[0]["resumed_generation"] = {**f.entry, "launch_generation": "later-generation"}
+                                    else:
+                                        rows[0]["closure_evidence"] = {"changed": "different selected row"}
+                                    CLOSURE.replace_rows(rows)
+                        state["changed"] = True
+                    def snapshot(*args, **kwargs):
+                        if timing == "snapshot_start":
+                            change()
+                        result = real_snapshot(*args, **kwargs)
+                        if timing == "snapshot_end":
+                            change()
+                        return result
+                    async def prove(*args, **kwargs):
+                        result = await real_proof(*args, **kwargs)
+                        state["proof_complete"] = True
+                        if timing == "proof_return":
+                            change()
+                        return result
+                    def process(*args, **kwargs):
+                        result = real_process(*args, **kwargs)
+                        if timing == "process_recheck" and state["proof_complete"]:
+                            change()
+                        return result
+                    def install(_f):
+                        stack.enter_context(patch.object(native, "prove_end", side_effect=prove))
+                        stack.enter_context(patch.object(native, "source_snapshot", side_effect=snapshot))
+                        stack.enter_context(patch.object(native, "recheck_source_process", side_effect=process))
+                    code, report = self.finish(f, history=install)
+                    self.assertEqual(state["changed"], kind is not None)
+                    if kind is None:
+                        self.assertEqual(code, 0)
+                        self.assertTrue(report["ok"])
+                        self.assertEqual([row["claim_comment"] for row in report["reports"][0]["released_claims"]], [1])
+                        self.assertTrue(CLOSURE.action_pending(f.session))
+                        self.assertEqual([path.read_bytes() for path in paths], before)
+                    else:
+                        self.assertEqual(code, 1)
+                        self.assertFalse(report["ok"])
+
+    def source_artifact(self, f, kind):
+        if kind == "malformed-json":
+            f.log.write_text("{")
+        elif kind == "unsafe-mode":
+            f.log.chmod(0o644)
+        elif kind == "duplicates":
+            rows = CLOSURE.log_rows() or [f.entry]
+            CLOSURE.replace_rows([*rows, *rows])
+        elif kind == "missing-transcript":
+            CLOSURE.replace_rows([{"session_id": f.session, "harness": "codex"}])
+        elif kind == "normalization-error":
+            CLOSURE.replace_rows([{"session_id": f.session, "harness": "codex", "transcript": "\0"}])
+        elif kind == "unknown-user":
+            f.stack.enter_context(patch("pwd.getpwnam", side_effect=KeyError("fixture account absent")))
+            CLOSURE.replace_rows([{"session_id": f.session, "harness": "codex",
+                                   "transcript": "~q526-missing-user-2285/rollout.jsonl"}])
+        elif kind == "ambiguous-unrelated":
+            CLOSURE.replace_rows([{"record_kind": "not-a-registration"}])
+        elif kind == "absent":
+            f.log.unlink()
+        elif kind == "empty":
+            CLOSURE.replace_rows([])
+        elif kind == "registration-only":
+            CLOSURE.replace_rows([])
+            CLOSURE.register_proxy(str(f.home), str(f.root / "fixture-ingress.sock"))
+        else:
+            raise AssertionError(kind)
+
+    def source_bytes(self, f):
+        return f.log.read_bytes() if f.log.exists() else None
+
+    def test_unknown_shared_source_cannot_resolve_or_record_a_pending_finish(self):
+        import github_plan_native as native
+        for kind in ("malformed-json", "unsafe-mode", "duplicates", "missing-transcript",
+                     "normalization-error", "unknown-user", "ambiguous-unrelated"):
+            for mode in ("apply", "preview", "resolve"):
+                with self.subTest(kind=kind, mode=mode), ReceiptFixture() as f:
+                    self.pending(f)
+                    self.source_artifact(f, kind)
+                    source = self.source_bytes(f)
+                    lease = CLOSURE.lease_path(f.session).read_bytes()
+                    if mode == "resolve":
+                        with CLOSURE.ownership(f.session), self.assertRaises((OSError, ValueError)):
+                            proof = asyncio.run(native.prove_end(f.entry))
+                            native.resolve_pending(f.session, proof)
+                    else:
+                        code, report = self.finish(f, apply=mode == "apply")
+                        self.assertEqual(code, 1)
+                        self.assertFalse(report["ok"])
+                    self.assertTrue(CLOSURE.action_pending(f.session))
+                    self.assertEqual(CLOSURE.lease_path(f.session).read_bytes(), lease)
+                    self.assertEqual(self.source_bytes(f), source)
+                    self.assertFalse(f.mutations)
+
+    def test_known_absence_allows_first_pending_finish_and_read_only_preview(self):
+        for kind in ("absent", "empty", "registration-only"):
+            for apply in (False, True):
+                with self.subTest(kind=kind, apply=apply), ReceiptFixture() as f:
+                    self.pending(f)
+                    self.source_artifact(f, kind)
+                    source = self.source_bytes(f)
+                    lease = CLOSURE.lease_path(f.session).read_bytes()
+                    code, report = self.finish(f, apply=apply)
+                    self.assertEqual(code, 0)
+                    self.assertTrue(report["ok"])
+                    self.assertEqual(CLOSURE.action_pending(f.session), not apply)
+                    if apply:
+                        closed = CLOSURE.verified_record(f.session)
+                        self.assertIsNotNone(closed)
+                        self.assertEqual(closed["session_id"], f.session)
+                    else:
+                        self.assertEqual(self.source_bytes(f), source)
+                        self.assertEqual(CLOSURE.lease_path(f.session).read_bytes(), lease)
+                    self.assertFalse(f.mutations)
+
+    def test_resolution_refuses_source_read_failure_after_valid_native_proof(self):
+        import github_plan_native as native
+        for initial in ("selected", "empty"):
+            for kind in ("malformed-json", "unsafe-mode", "duplicates", "missing-transcript",
+                         "normalization-error", "unknown-user", "ambiguous-unrelated", "disappeared"):
+                with self.subTest(initial=initial, kind=kind), ReceiptFixture() as f, ExitStack() as stack:
+                    self.pending(f)
+                    if initial == "empty":
+                        self.source_artifact(f, initial)
+                    with CLOSURE.ownership(f.session):
+                        proof = asyncio.run(native.prove_end(f.entry))
+                        if kind == "disappeared":
+                            read = self.interleave_source_records(f, stack, kind)
+                        else:
+                            self.source_artifact(f, kind)
+                        source = self.source_bytes(f)
+                        lease = CLOSURE.lease_path(f.session).read_bytes()
+                        with self.assertRaises((OSError, ValueError)):
+                            native.resolve_pending(f.session, proof)
+                        if kind == "disappeared":
+                            self.assertTrue(read["changed"])
+                        self.assertTrue(CLOSURE.action_pending(f.session))
+                        self.assertEqual(CLOSURE.lease_path(f.session).read_bytes(), lease)
+                        self.assertEqual(self.source_bytes(f), source)
+                        self.assertFalse(f.mutations)
+
+    def test_observation_keeps_unknown_cleared_resumed_source_live_without_retaining_lease(self):
+        import github_plan_native as native
+        for moved, queued in ((False, False), (True, True)):
+            for kind in (None, "unsafe-mode", "malformed-json", "duplicates", "unknown-user"):
+                with self.subTest(moved=moved, queued=queued, kind=kind), ReceiptFixture() as f:
+                    home = f.root / "retained-account" if moved else f.home
+                    transcript = f.add_home(home) if moved else f.transcript
+                    metadata = {"codex_home": str(home), "launch_pid": 456,
+                                "launch_generation": "actual-resume",
+                                "launch_started_at": f.entry["launch_started_at"]}
+                    with CLOSURE.resume_guard(f.session, method="thread/resume", home=home):
+                        CLOSURE.resumed_launch(f.session, metadata, str(transcript), "resumed-tty")
+                    f.native_state = "notLoaded"
+                    current = {**f.entry, **metadata, "pid": metadata["launch_pid"],
+                               "tty": "resumed-tty", "transcript": str(transcript)}
+                    with CLOSURE.ownership(f.session):
+                        native.resolve_pending(f.session, asyncio.run(native.prove_end(current)))
+                    self.assertFalse(CLOSURE.action_pending(f.session))
+                    if moved:
+                        f.homes = [f.home]
+                    if queued:
+                        f.home_queues[str(home)] = [{"id": "queued", "clientUserMessageId": "client",
+                            "input": [{"type": "text", "text": "queued after prior resolution"}]}]
+                    if kind is not None:
+                        self.source_artifact(f, kind)
+                        with self.assertRaises(ValueError) as failed_source:
+                            CLOSURE.source_records({f.session})
+                        source_error = str(failed_source.exception)
+                    source = self.source_bytes(f)
+                    lease = CLOSURE.lease_path(f.session).read_bytes()
+                    f.home_requests.clear()
+                    def available():
+                        try:
+                            with CLOSURE.ownership(f.session) as acquired:
+                                return acquired
+                        except CLOSURE.LeaseBusy:
+                            return False
+                    with CLOSURE.admission(), ThreadPoolExecutor(max_workers=1) as pool:
+                        outer_observation = CLOSURE._OBSERVATION.get()
+                        peers, states, coverage = f.observe()
+                        self.assertIs(CLOSURE._OBSERVATION.get(), outer_observation)
+                        available_after_observe = pool.submit(available).result(2)
+                        self.assertEqual(coverage["process_coverage"], "complete")
+                        self.assertIn((str(f.home), "thread/queue/list"), f.home_requests)
+                        if kind is not None:
+                            self.assertEqual(states[f.session]["state"], "live")
+                            self.assertEqual(states[f.session]["error"], source_error)
+                            self.assertTrue(any(peer.get("sessionId") == f.session
+                                                and peer.get("error") == source_error for peer in peers))
+                        else:
+                            self.assertEqual(states[f.session]["state"], "live" if queued else "ended")
+                            self.assertIn((str(home), "thread/queue/list"), f.home_requests)
+                        self.assertEqual(available_after_observe, kind is not None or queued)
+                    self.assertFalse(CLOSURE.action_pending(f.session))
+                    self.assertEqual(CLOSURE.lease_path(f.session).read_bytes(), lease)
+                    self.assertEqual(self.source_bytes(f), source)
+                    self.assertFalse(f.mutations)
+
+    def test_resumed_source_keeps_its_saved_generation_and_refuses_unknown_metadata(self):
+        import github_plan_native as native
+        for corrupt in (False, True):
+            for mode in ("apply", "resolve"):
+                with self.subTest(corrupt=corrupt, mode=mode), ReceiptFixture() as f:
+                    generation = {"codex_home": str(f.home), "launch_pid": 456,
+                                  "launch_generation": "resumed-generation",
+                                  "launch_started_at": f.entry["launch_started_at"]}
+                    with CLOSURE.resume_guard(f.session, method="thread/resume", home=f.home):
+                        CLOSURE.resumed_launch(f.session, generation, str(f.transcript), "resumed-tty")
+                    f.native_state = "notLoaded"
+                    if corrupt:
+                        self.source_artifact(f, "malformed-json")
+                    source = self.source_bytes(f)
+                    lease = CLOSURE.lease_path(f.session).read_bytes()
+                    if mode == "resolve":
+                        with CLOSURE.ownership(f.session):
+                            if corrupt:
+                                with self.assertRaises((OSError, ValueError)):
+                                    proof = asyncio.run(native.prove_end(f.entry))
+                                    native.resolve_pending(f.session, proof)
+                            else:
+                                proof = asyncio.run(native.prove_end(f.entry))
+                                self.assertEqual(proof["snapshot"]["process"].effective["launch_generation"],
+                                                 generation["launch_generation"])
+                                native.resolve_pending(f.session, proof)
+                    else:
+                        code, report = self.finish(f, apply=True)
+                        self.assertEqual(code, 1)
+                        self.assertFalse(report["ok"])
+                    refuses = mode == "apply" or corrupt
+                    self.assertEqual(CLOSURE.action_pending(f.session), refuses)
+                    if refuses:
+                        self.assertEqual(CLOSURE.lease_path(f.session).read_bytes(), lease)
+                    self.assertEqual(self.source_bytes(f), source)
+                    self.assertFalse(f.mutations)
+
+    def interleave_source_records(self, f, stack, kind):
+        real = CLOSURE.log_rows
+        state = {"changed": False, "inside": False, "serial": 0}
+        def other_closure():
+            sid = "other-source-" + str(state["serial"])
+            path = f.home / "sessions" / ("rollout-" + sid + ".jsonl")
+            rows = f.release.session_record.read_jsonl(f.transcript)
+            rows[0]["payload"]["id"] = sid
+            path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+            entry = {**f.entry, "session_id": sid, "transcript": str(path),
+                     "pid": 124, "launch_pid": 124, "tty": "other-tty", "launch_generation": sid}
+            f.release.record_closure(f.log, entry, "supervisor")
+        def read():
+            if state["inside"] or state["changed"] and kind != "continuous":
+                return real()
+            state["inside"] = True
+            try:
+                if kind in {"malformed", "disappeared"}:
+                    before = f.log.read_bytes()
+                    try:
+                        if kind == "disappeared":
+                            f.log.unlink()
+                        else:
+                            f.log.write_text("{")
+                        state["changed"] = True
+                        return real()
+                    finally:
+                        f.log.write_bytes(before)
+                        f.log.chmod(0o600)
+                rows = real()
+                if kind == "selected":
+                    metadata = {"codex_home": str(f.home), "launch_pid": 456,
+                                "launch_generation": "later-generation", "launch_started_at": f.entry["launch_started_at"]}
+                    CLOSURE.resumed_launch(f.session, metadata, str(f.transcript), "resumed-tty")
+                else:
+                    state["serial"] += 1
+                    # This independent writer owns only its unrelated source.
+                    with ThreadPoolExecutor(max_workers=1) as pool:
+                        pool.submit(other_closure).result(3)
+                state["changed"] = True
+                return rows
+            finally:
+                state["inside"] = False
+        stack.enter_context(patch.object(CLOSURE, "log_rows", side_effect=read))
+        return state
+
+    def run_source_records_interleaving(self, f, stack, kind, mode):
+        state = {}
+        def install(_f=None):
+            state["read"] = self.interleave_source_records(f, stack, kind)
+        if mode == "preview":
+            code, report = self.finish(f, history=install)
+            accepted = code == 0 and report["ok"]
+        else:
+            import github_plan_native as native
+            with CLOSURE.ownership(f.session):
+                proof = asyncio.run(native.prove_end(f.entry))
+                install()
+                try:
+                    native.resolve_pending(f.session, proof)
+                except ValueError:
+                    accepted = False
+                else:
+                    accepted = True
+        self.assertTrue(state["read"]["changed"])
+        self.assertFalse(f.mutations)
+        return accepted
+
+    def test_unrelated_closure_publication_during_read_preserves_selected_source_authority(self):
+        for mode in ("preview", "resolve"):
+            with self.subTest(mode=mode), ReceiptFixture() as f, ExitStack() as stack:
+                self.pending(f)
+                before = CLOSURE.source_records({f.session})[f.session]
+                lease = CLOSURE.lease_path(f.session).read_bytes()
+                self.assertTrue(self.run_source_records_interleaving(f, stack, "unrelated", mode))
+                stack.close()
+                self.assertEqual(CLOSURE.source_records({f.session})[f.session], before)
+                self.assertEqual(CLOSURE.action_pending(f.session), mode == "preview")
+                if mode == "preview":
+                    self.assertEqual(CLOSURE.lease_path(f.session).read_bytes(), lease)
+
+    def test_unstable_or_malformed_shared_reads_remain_unknown(self):
+        for kind in ("continuous", "malformed"):
+            for mode in ("preview", "resolve"):
+                with self.subTest(kind=kind, mode=mode), ReceiptFixture() as f, ExitStack() as stack:
+                    self.pending(f)
+                    before = CLOSURE.source_records({f.session})[f.session]
+                    lease = CLOSURE.lease_path(f.session).read_bytes()
+                    self.assertFalse(self.run_source_records_interleaving(f, stack, kind, mode))
+                    stack.close()
+                    self.assertEqual(CLOSURE.source_records({f.session})[f.session], before)
+                    self.assertTrue(CLOSURE.action_pending(f.session))
+                    self.assertEqual(CLOSURE.lease_path(f.session).read_bytes(), lease)
+
+    def test_selected_generation_change_during_read_never_borrows_the_new_source(self):
+        for mode in ("preview", "resolve"):
+            with self.subTest(mode=mode), ReceiptFixture() as f, ExitStack() as stack:
+                self.pending(f)
+                before = CLOSURE.source_records({f.session})[f.session]
+                lease = CLOSURE.lease_path(f.session).read_bytes()
+                self.assertFalse(self.run_source_records_interleaving(f, stack, "selected", mode))
+                stack.close()
+                self.assertNotEqual(CLOSURE.source_records({f.session})[f.session], before)
+                self.assertTrue(CLOSURE.action_pending(f.session))
+                self.assertEqual(CLOSURE.lease_path(f.session).read_bytes(), lease)
 
 
 class IdleReceiptIntegrationTests(unittest.TestCase):
@@ -648,7 +1340,7 @@ class IdleReceiptIntegrationTests(unittest.TestCase):
                     self.assertEqual(verified["transcript"], str(f.transcript))
                     self.assertEqual(verified["tty"], "fixture-tty")
                     self.assertTrue(CLOSURE.receipt_current(verified))
-                    self.assertEqual(CLOSURE.candidate_records({f.session})[f.session]["transcript"], str(f.transcript))
+                    self.assertEqual(CLOSURE.source_records({f.session})[f.session]["transcript"], str(f.transcript))
                     self.assertEqual(f.log.read_bytes(), saved)
                     for change in ("generation", "transcript", "pending"):
                         with self.subTest(change=change):
