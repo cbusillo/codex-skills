@@ -5,6 +5,8 @@
 # ///
 
 import ast
+import base64
+import binascii
 import json
 import re
 from dataclasses import dataclass
@@ -14,6 +16,8 @@ MAX_MESSAGE_BYTES = 4096
 MAX_DEPTH = 8
 MAX_DECODES = 3
 MASK = "[redacted]"
+PAIR_NAMES = {"name", "key", "variable"}
+PAIR_VALUES = {"value", "data", "default", "val"}
 CONTROL = re.compile(
     r"\x1b\[[0-?]*[ -/]*[@-~]|[\x00-\x08\x0b-\x1f\x7f-\x9f\u2028\u2029]"
 )
@@ -27,8 +31,12 @@ KEY_BLOCK = re.compile(
 PROVIDER_TOKEN = re.compile(
     r"\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|[sr]k[-_][A-Za-z0-9_-]+|(?:AKIA|ASIA)[A-Z0-9]{16}|AIza[A-Za-z0-9_-]{35}|xox[baprs]-[A-Za-z0-9-]+|glpat-[A-Za-z0-9_-]+|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)\b"
 )
-AUTH_VALUE = re.compile(r"(?i)\b(?:bearer|basic|digest)\s+[^\s,;\"']+")
-USERINFO = re.compile(r"(\b[A-Za-z][A-Za-z0-9+.-]*://)[^\s]+@")
+AUTH_VALUE = re.compile(
+    r"(?i)\b(?:bearer\s+[^\s,;\"']+|digest\s+(?:username|realm|nonce|response)\s*=[^\n]+|basic\s+(?P<basic>[A-Za-z0-9+/]+={0,2}))"
+)
+USERINFO = re.compile(
+    r"(\b[A-Za-z][A-Za-z0-9+.-]*://)(?:[^\s/?#:@]+:[^\s]+|[^\s/?#]+)@"
+)
 OPAQUE = re.compile(r"[A-Za-z0-9_+/=-]{32,}")
 DIAGNOSTIC_VALUE = re.compile(
     r"""(?ix)(?:\b(?:deploying|commit(?:_sha)?|sha|digest|revision|image(?:_id)?|head|trace(?:_id)?|operation(?:_id)?|idempotency_key)\s*(?:[=:]\s*|\s+)|sha(?:1|256):)([A-Za-z0-9_./:-]+)|\bFile\s+["']([^"']+)["']"""
@@ -120,8 +128,22 @@ def sensitive(name: str) -> bool:
         return False
     if parts[-1] in METADATA_SUFFIXES:
         return False
-    return any(part in SENSITIVE_WORDS for part in parts) or (
-        parts[-1] == "key" and (len(parts) == 1 or parts[-2] not in DIAGNOSTIC_KEYS)
+    canonical = [part.removesuffix("s") for part in parts]
+    long_stems = (
+        "password",
+        "passwd",
+        "passphrase",
+        "secret",
+        "token",
+        "credential",
+        "apikey",
+        "cookie",
+    )
+    return any(
+        part in SENSITIVE_WORDS or part.endswith(long_stems) or part == "privatekey"
+        for part in canonical
+    ) or (
+        canonical[-1] == "key" and (len(parts) == 1 or parts[-2] not in DIAGNOSTIC_KEYS)
     )
 
 
@@ -148,7 +170,17 @@ def normalize(text: str) -> str:
 
 def shape_redact(text: str, *, diagnostic_value: bool = False) -> str:
     text = PROVIDER_TOKEN.sub(MASK, text)
-    text = AUTH_VALUE.sub(MASK, text)
+
+    def auth(match: re.Match) -> str:
+        if match["basic"] is not None:
+            try:
+                if b":" not in base64.b64decode(match["basic"], validate=True):
+                    return match[0]
+            except (ValueError, binascii.Error):
+                return match[0]
+        return MASK
+
+    text = AUTH_VALUE.sub(auth, text)
     text = USERINFO.sub(r"\1" + MASK + "@", text)
     protected = [
         match.span(group)
@@ -178,7 +210,7 @@ def parse_literal(text: str) -> tuple[str, object, str] | None:
     # JSON handles real structured logs; literal_eval handles Python repr data
     # without executing calls. Both see only an already size-bounded record.
     positions = [text.find(char) for char in ("{", "[", "(") if char in text]
-    if text.lstrip().startswith('"'):
+    if text.lstrip().startswith(('{"', "{'", '["', "['", '("', "('")):
         positions.append(len(text) - len(text.lstrip()))
     if not positions:
         return None
@@ -186,7 +218,7 @@ def parse_literal(text: str) -> tuple[str, object, str] | None:
     if any(
         sensitive(match["name"].strip("\"'"))
         and (match["sep"] in {"=", ":"} or match["name"].startswith("--"))
-        for match in FIELD.finditer(text[:start])
+        for match in FIELD.finditer(CONTROL.sub("", normalize(text[:start])))
     ):
         return None
     try:
@@ -198,7 +230,7 @@ def parse_literal(text: str) -> tuple[str, object, str] | None:
         pass
     try:
         return text[:start], ast.literal_eval(text[start:]), ""
-    except (ValueError, SyntaxError, RecursionError):
+    except (ValueError, SyntaxError, RecursionError, TypeError, MemoryError):
         return None
 
 
@@ -209,15 +241,21 @@ def project(value: object, depth: int, *, field: str = "") -> object:
         if not all(isinstance(key, str) for key in value):
             return MASK
         normalized = {normalize(key): item for key, item in value.items()}
+        named_pair = any(key.casefold() in PAIR_VALUES for key in normalized) and any(
+            key.casefold() in PAIR_NAMES and isinstance(item, str)
+            for key, item in normalized.items()
+        )
         pair = any(
-            key.casefold() in {"name", "key"}
+            key.casefold() in PAIR_NAMES
             and isinstance(item, str)
             and sensitive(normalize(item))
             for key, item in normalized.items()
         )
         return {
             key: MASK
-            if sensitive(key) or pair and key.casefold() in {"value", "data", "default"}
+            if (sensitive(key) and not (named_pair and key.casefold() in PAIR_NAMES))
+            or pair
+            and key.casefold() in PAIR_VALUES
             else project(item, depth + 1, field=key)
             for key, item in normalized.items()
         }
@@ -252,20 +290,24 @@ def clean_record(text: str, depth: int = 0, *, diagnostic_value: bool = False) -
         if not prefix and not suffix and isinstance(value, str):
             return clean_record(value, depth + 1, diagnostic_value=diagnostic_value)
         return (
-            shape_redact(prefix)
+            clean_plain(CONTROL.sub("", normalize(prefix)))
             + json.dumps(project(value, depth + 1), ensure_ascii=True)
-            + clean_plain(suffix, diagnostic_value=diagnostic_value)
+            + clean_plain(
+                CONTROL.sub("", normalize(suffix)), diagnostic_value=diagnostic_value
+            )
         )
     text = CONTROL.sub("", normalize(text))
     parsed = parse_literal(text)
     if parsed is not None:
         prefix, value, suffix = parsed
         return (
-            shape_redact(prefix)
+            clean_plain(CONTROL.sub("", normalize(prefix)))
             + json.dumps(project(value, depth + 1), ensure_ascii=True)
-            + clean_plain(suffix, diagnostic_value=diagnostic_value)
+            + clean_plain(
+                CONTROL.sub("", normalize(suffix)), diagnostic_value=diagnostic_value
+            )
         )
-    if text.lstrip().startswith(("{", '["', "['", "(")):
+    if text.lstrip().startswith(('{"', "{'", '["', "['", '("', "('")):
         return MASK
     return clean_plain(text, diagnostic_value=diagnostic_value)
 
@@ -273,6 +315,17 @@ def clean_record(text: str, depth: int = 0, *, diagnostic_value: bool = False) -
 def clean_plain(text: str, *, diagnostic_value: bool = False) -> str:
     for match in FIELD.finditer(text):
         name = match["name"].strip("\"'")
+        if name.casefold() in PAIR_NAMES:
+            pair_value = re.match(
+                r"[\"']?([A-Za-z_][A-Za-z0-9_.-]{0,127})", text[match.end() :]
+            )
+            if pair_value and sensitive(pair_value[1]):
+                return shape_redact(text[: match.end()]) + MASK
+            if pair_value and any(
+                sibling["name"].strip("\"'").casefold() in PAIR_VALUES
+                for sibling in FIELD.finditer(text[match.end() :])
+            ):
+                continue
         is_flag = name.startswith("--")
         if sensitive(name) and (match["sep"] in {"=", ":"} or is_flag):
             return shape_redact(text[: match.end()]) + MASK
@@ -295,6 +348,7 @@ class Redactor:
         self.hide_next = False
         self.started = False
         self.public_pair_indent: int | None = None
+        self.sensitive_indentation = False
 
     def feed(self, raw: str) -> SafeRecord:
         if len(raw.encode("utf-8", errors="replace")) > MAX_MESSAGE_BYTES:
@@ -316,7 +370,7 @@ class Redactor:
             return SafeRecord(MASK, matched, True)
         if self.key_block is not None:
             return SafeRecord(MASK, matched, True)
-        if not self.started and indent:
+        if indent and (not self.started or self.sensitive_indentation):
             return SafeRecord(MASK, matched, True)
         self.started = True
         if self.hide_next:
@@ -327,7 +381,7 @@ class Redactor:
                 return SafeRecord(MASK, matched, True)
             self.block_indent = None
         pair = re.match(
-            r"\s*(?:-\s*)?[\"']?(?:name|key)[\"']?\s*:\s*(.*)",
+            r"\s*(?:-\s*)?[\"']?(?:name|key|variable)[\"']?\s*:\s*(.*)",
             normalized,
             re.IGNORECASE,
         )
@@ -336,7 +390,7 @@ class Redactor:
         if pair and not sensitive(pair[1].strip("\"' ,")):
             self.public_pair_indent = indent
         value_fragment = re.match(
-            r"\s*(?:-\s*)?[\"']?(?:value|data|default)[\"']?\s*:",
+            r"\s*(?:-\s*)?[\"']?(?:value|data|default|val)[\"']?\s*:",
             normalized,
             re.IGNORECASE,
         )
@@ -348,9 +402,20 @@ class Redactor:
         for match in FIELD.finditer(normalized):
             if sensitive(match["name"].strip("\"'")) and match["sep"] in {"=", ":"}:
                 rest = normalized[match.end() :].strip()
-                if not rest or re.fullmatch(r"[|>][+-]?[0-9]?", rest):
+                incomplete = (
+                    rest.startswith(("{", "[", "'", chr(34)))
+                    and parse_literal(rest) is None
+                )
+                if (
+                    not rest
+                    or incomplete
+                    or re.fullmatch(
+                        r"(?:&[A-Za-z0-9_-]+\s+)?[|>][0-9+-]*(?:\s+#.*)?", rest
+                    )
+                ):
                     self.block_indent = indent
-                    self.hide_next = match["sep"] == "="
+                    self.sensitive_indentation = True
+                    self.hide_next = not rest
                 break
         message = clean_record(text)
-        return SafeRecord(message, matched, message != text)
+        return SafeRecord(message, matched, message != raw)

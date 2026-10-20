@@ -52,7 +52,8 @@ uv run scripts/launchplane-service-logs.py \
 Both bounds require an explicit RFC3339 timezone. The start is inclusive and
 the end exclusive, with nanosecond precision and a maximum 24-hour window.
 `--lines` is positive and at most 1,000; the default is 200. `--timeout` bounds
-each SSH read, defaults to 30 seconds and is at most 60. The helper reads at
+each SSH read and each container's local parse (checked between size-bounded
+records), defaults to 30 seconds and is at most 60. The helper reads at
 most eight retained matching containers, newest first, reporting any older
 omitted containers. Docker applies the time window at the source; the helper
 independently checks timestamps and applies the final chronological line cap
@@ -78,7 +79,8 @@ container stdout and stderr inside the remote log invocation, so entries use
 `transport_diagnostics_present` only reports that some were observed.
 
 Redaction uses bounded JSON/Python-literal projection, sensitive field components,
-name/value pairs, and recognizable token, authorization, cookie and URL-credential
+name/key/variable paired with value/data/default/val in structured records, conservative plain
+name/key pairs and split value fragments, and recognizable token, authorization, cookie and URL-credential
 shapes. It normalizes at most three percent/JSON escape layers and bounds structured
 nesting. Complete objects retain neighboring diagnostic fields such as trace IDs,
 commit SHAs, image digests and code paths. A plain sensitive assignment discards
@@ -86,15 +88,22 @@ the rest of its record; malformed structured records are masked. Standalone
 value/data/default fragments without an established ordinary name are masked,
 including reversed or window-truncated name/value output.
 
-Multiline PEM/PGP private keys and indented sensitive YAML blocks are masked until
-their closing delimiter or dedent. Leading indented fragments are masked because
-their parent may precede the window. A later ordinary record remains readable.
+Multiline PEM/PGP private keys are masked through their closing delimiter.
+Sensitive YAML block headers (including scalar indicators, comments and anchors)
+mask the block; after one such header, later indented records remain masked even
+across interleaved unindented writers. This trades indented traceback detail for
+safe continuation handling. Leading indented fragments are also masked because
+their parent may precede the window. Later unindented ordinary records remain
+readable. Flush-left multiline prose without a recognizable key delimiter cannot
+be safely attributed to a writer; do not rely on redaction of that unsupported
+framing.
 An individual source message over 4 KiB, excessive encoding or an unmatched private
 key end fails the whole read with a fixed code and no partial data. The size check
 runs before parsing or pattern scans. Terminal controls are removed. Every record
 is sanitized before output; matching IDs is private, literal and uses normalized
 source text. `matched_record_count` and `changed_record_count` report selected
-source records and those changed by sanitization, before the final line cap.
+source records and those changed by sanitization or normalization (including
+JSON reserialization), before the final line cap. They do not count secrets.
 Arbitrary unlabelled prose cannot be classified as a secret reliably. Treat even
 redacted output as private operational evidence, not publication-ready content;
 publish only the necessary reviewed, sanitized conclusion.

@@ -45,7 +45,7 @@ def timestamp(value: str) -> int:
         raise LogReadError("invalid_timestamp")
     try:
         parsed = datetime.fromisoformat(value).astimezone(UTC)
-    except ValueError:
+    except (ValueError, OverflowError):
         raise LogReadError("invalid_timestamp") from None
     fractional = re.search(r"\.(\d+)", value)
     nanos = int(fractional[1].ljust(9, "0")) if fractional else 0
@@ -172,11 +172,15 @@ def entries_from_stream(
     until: int,
     identifiers: tuple[str, ...],
     limit: int,
+    timeout: float,
 ) -> tuple[list[dict], int, int]:
     redactor = Redactor(identifiers)
     kept: list[tuple[int, int, dict]] = []
     matched = changed = 0
+    deadline = time.monotonic() + timeout
     for sequence, line in enumerate(raw.decode("utf-8", errors="replace").split("\n")):
+        if time.monotonic() >= deadline:
+            raise LogReadError("local_parse_timeout")
         if not line:
             continue
         stamp, separator, message = line.partition(" ")
@@ -187,6 +191,8 @@ def entries_from_stream(
         except ValueError:
             raise LogReadError("invalid_log_framing") from None
         safe = redactor.feed(message)
+        if time.monotonic() >= deadline:
+            raise LogReadError("local_parse_timeout")
         if since <= observed < until and safe.matched:
             matched += 1
             changed += safe.redacted
@@ -331,7 +337,7 @@ def read_logs(args: argparse.Namespace) -> dict:
         )
         transport_diagnostics |= log_diagnostics
         kept, count, altered = entries_from_stream(
-            stdout, index, since, until, identifiers, args.lines
+            stdout, index, since, until, identifiers, args.lines, args.timeout
         )
         entries.extend(kept)
         matched += count

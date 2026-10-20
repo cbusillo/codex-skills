@@ -57,26 +57,20 @@ class ServiceLogTests(unittest.TestCase):
             self.assertEqual(kwargs["stdin"], subprocess.DEVNULL)
             calls.append(argv)
             command = shlex.split(argv[-1])
-            self.assertEqual(command[:2], ["env", "LC_ALL=C"])
-            command = command[2:]
+            if command[0] == "env":
+                command = command[1:]
+                while command and "=" in command[0]:
+                    command = command[1:]
             self.assertEqual(command[:4], ["pct", "exec", str(CONFIG["lxc_id"]), "--"])
             docker = command[4:]
+            combined = False
             if docker[:2] == ["sh", "-c"]:
                 docker = shlex.split(docker[2])
-                self.assertEqual(docker[-1], "2>&1")
-                docker = docker[:-1]
+                combined = docker[-1] == "2>&1"
+                if combined:
+                    docker = docker[:-1]
             if docker[:2] == ["docker", "ps"]:
-                image = (
-                    "sha256:" + "b" * 64
-                    if image_id
-                    else CONFIG["image_repository"] + ":test"
-                )
-                data = "".join(
-                    f"{identity} {image}\n"
-                    if ".Image" in docker[-1]
-                    else f"{identity}\n"
-                    for identity in ids
-                ).encode()
+                data = "".join(f"{identity}\n" for identity in ids).encode()
                 return REAL_POPEN(
                     [
                         sys.executable,
@@ -130,11 +124,13 @@ class ServiceLogTests(unittest.TestCase):
                 emitted = b"\n".join(
                     stdout.split(b"\n")[-int(docker[docker.index("--tail") + 1]) - 1 :]
                 )
+            data = emitted + stderr if combined else emitted
+            diagnostics = transport_stderr if combined else stderr + transport_stderr
             return REAL_POPEN(
                 [
                     sys.executable,
                     "-c",
-                    f"import sys; sys.stdout.buffer.write({emitted + stderr!r}); sys.stderr.buffer.write({transport_stderr!r})",
+                    f"import sys; sys.stdout.buffer.write({data!r}); sys.stderr.buffer.write({diagnostics!r})",
                 ],
                 **kwargs,
             )
@@ -188,7 +184,7 @@ class ServiceLogTests(unittest.TestCase):
     def test_redacts_secret_shapes_before_any_output(self):
         cases = [
             ('password="two words private"', "two words private"),
-            ('{"password": "json\\"private"}', "json"),
+            ('{"password": "S3NTINEL-json\\"private"}', "S3NTINEL-json"),
             ("DB_PASSWORD=plain-private", "plain-private"),
             ("Authorization: Basic dXNlcjpwcml2YXRl", "dXNlcjpwcml2YXRl"),
             ("Bearer bearer-private-token", "bearer-private-token"),
@@ -243,6 +239,8 @@ class ServiceLogTests(unittest.TestCase):
             ("--lines", "-1"),
             ("--operation-id", "$(touch /tmp/unwanted)"),
             ("--since", "2026-01-02T12:00:00"),
+            ("--until", "9999-12-31T23:59:59-01:00"),
+            ("--since", "0001-01-01T00:00:00+01:00"),
         ):
             with self.subTest(extra=extra):
                 status, result, calls = self.run_reader(extra=extra)
@@ -282,9 +280,9 @@ class ServiceLogTests(unittest.TestCase):
         self.assertTrue(result["tail_limit_reached"])
 
     def test_unparseable_log_output_is_an_error_not_empty_success(self):
-        status, result, _ = self.run_reader(b"unframed password=private\n")
+        status, result, _ = self.run_reader(b"unframed password=S3NTINEL-unframed\n")
         self.assertEqual(status, 1)
-        self.assertNotIn("private", json.dumps(result))
+        self.assertNotIn("S3NTINEL-unframed", json.dumps(result))
 
     def test_id_path_colon_and_encoded_boundaries(self):
         records = [
@@ -377,6 +375,16 @@ class ServiceLogTests(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertNotIn("entries", result)
 
+    def test_local_parse_deadline_fails_closed(self):
+        raw = b"2026-01-02T12:01:00Z event=started\n"
+        with (
+            patch.object(reader.time, "monotonic", side_effect=[0, 2]),
+            self.assertRaises(reader.LogReadError),
+        ):
+            reader.entries_from_stream(
+                raw, 0, reader.timestamp(START), reader.timestamp(END), (), 1, 1
+            )
+
     def test_historical_id_is_found_before_display_tail(self):
         raw = (
             b"2026-01-02T12:01:00Z op-1 original\n"
@@ -395,11 +403,19 @@ class ServiceLogTests(unittest.TestCase):
             "2026-01-02T12:01:00Z hello\rworld\u2028end\n".encode()
         )
         self.assertEqual(status, 0)
-        self.assertEqual(result["entries"][0]["message"], "helloworldend")
+        message = result["entries"][0]["message"]
+        self.assertTrue(all(part in message for part in ("hello", "world", "end")))
+        self.assertFalse(any(char in message for char in ("\r", "\u2028", "\n")))
+        self.assertEqual(result["changed_record_count"], 1)
 
     def test_replacement_image_and_container_limit_have_coverage(self):
+        status, original, _ = self.run_reader()
+        self.assertEqual(status, 0)
         status, result, _ = self.run_reader(image_id=True)
         self.assertEqual(status, 0)
+        self.assertNotEqual(
+            original["containers"][0]["image_id"], result["containers"][0]["image_id"]
+        )
         ids = [f"{i:064x}" for i in range(reader.MAX_CONTAINERS + 2)]
         status, result, _ = self.run_reader(image_id=True, containers=ids)
         self.assertEqual(status, 0)

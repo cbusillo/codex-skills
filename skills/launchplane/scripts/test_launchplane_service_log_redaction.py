@@ -121,6 +121,80 @@ class RedactionTests(unittest.TestCase):
                     "non-private upload",
                 ),
             ),
+            (["GET /cb?token%3D" + secret + " [200]"], (secret,), ()),
+            (
+                ['{"event":"redirect"} next=/cb%3Ftoken%3D' + secret],
+                (secret,),
+                ("redirect",),
+            ),
+            (['{"a":1} body=\\"password\\":\\"' + secret + '\\"'], (secret,), ()),
+            (
+                [
+                    json.dumps(
+                        {"variable": "PRIVATEKEY", "val": secret, "event": "failed"}
+                    )
+                ],
+                (secret,),
+                ("failed",),
+            ),
+            (
+                [
+                    json.dumps({"key": "LOG_LEVEL", "value": "debug"}),
+                    "key=LOG_LEVEL value=debug",
+                ],
+                (),
+                ("LOG_LEVEL", "debug"),
+            ),
+            (
+                [
+                    "password: 'wrapped",
+                    "WARNING slow request",
+                    "  '" + secret + "'",
+                    "event=restarted",
+                ],
+                (secret,),
+                ("restarted",),
+            ),
+            (["PGPASSWORD=" + secret], (secret,), ()),
+            (
+                [json.dumps({"secrets": {"odoo_admin": secret}, "event": "failed"})],
+                (secret,),
+                ("failed",),
+            ),
+            ([json.dumps({"api_keys": [secret], "tokens": [secret]})], (secret,), ()),
+            (["name=DB_PASSWORD value=" + secret], (secret,), ()),
+            (["key=DB_PASSWORD value=" + secret], (secret,), ()),
+            (["name: DB_PASSWORD, value: " + secret], (secret,), ()),
+            (["- {name: DB_PASSWORD, value: " + secret + "}"], (secret,), ()),
+            (
+                ["basic validation failed", "pulled image digest sha256:" + "d" * 64],
+                (),
+                ("basic validation failed", "sha256:" + "d" * 64),
+            ),
+            (
+                [
+                    "(psycopg2.errors.UniqueViolation) duplicate key value",
+                    "(1/3) migrating",
+                    "{level=info event=migrating}",
+                ],
+                (),
+                ("UniqueViolation", "(1/3) migrating", "event=migrating"),
+            ),
+            (
+                ["https://registry.npmjs.org/@scope/pkg"],
+                (),
+                ("registry.npmjs.org/@scope/pkg",),
+            ),
+            (
+                [
+                    "password: | # private field",
+                    "WARNING slow request",
+                    "  " + secret,
+                    "event=restarted",
+                ],
+                (secret,),
+                ("restarted",),
+            ),
             (["Cookie: session=" + secret + "; HttpOnly"], (secret,), ()),
             (["command --password " + secret], (secret,), ()),
             (['password="' + secret + '"'], (secret,), ()),
@@ -185,6 +259,10 @@ class RedactionTests(unittest.TestCase):
             text = quote(text)
         with self.assertRaises(RedactionError):
             Redactor().feed(text)
+
+    def test_malformed_literals_do_not_raise(self):
+        for text in ("{[1]: 2}", "{1, []}"):
+            self.assertIsInstance(Redactor().feed(text).message, str)
 
     def test_oversized_and_unbound_key_records_fail_without_output(self):
         with self.assertRaises(RedactionError):
