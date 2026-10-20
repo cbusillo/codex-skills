@@ -384,20 +384,31 @@ def _current_check_quiet(node):
              for call in claim_receipts.calls_and_results(record, "codex")[0]]
     if not calls or not claim_receipts.isolated_command(calls[-1][1], calls[-1][2], "check_claims.py"):
         return False
-    checking_call = calls[-1][0]
+    import claim_history
+    primary = Path(node["transcript"]).resolve()
+    try:
+        current = claim_history.root_records(primary, "codex", node["session_id"], native_helpers()[1].read_jsonl(primary))
+        process = claim_receipts.current_check_process(node["records"], current)
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    if process is None:
+        return False
     async def read():
-        primary = Path(node["transcript"]).resolve()
         homes = [home for home in codex_homes(strict=True, configured_only=True)
                  if any(primary.is_relative_to((home / root).resolve()) for root in ("sessions", "archived_sessions"))]
         if len(homes) != 1:
             return False
         async with asyncio.timeout(5), github_plan_native.connection(homes[0]) as request:
-            before = await github_plan_native.read_thread_facts(request, node["session_id"], checking_call=checking_call)
-            after = await github_plan_native.read_thread_facts(request, node["session_id"], checking_call=checking_call)
+            before = await github_plan_native.read_thread_facts(request, node["session_id"], include_active=True)
+            after = await github_plan_native.read_thread_facts(request, node["session_id"], include_active=True)
+            background = before["background"]
             return (before == after and before["path"] == str(primary)
                     and before["state"] == "active" and not before["queue"]
-                    and before["executions"]["ended"] and before["executions"].get("checker_seen") is True
-                    and not before["background"] and not before["realtime"] and before["goal"] != "active")
+                    and before["executions"]["ended"] and len(background) == 1
+                    and background[0][1] == process and bool(background[0][0])
+                    and not before["realtime"] and before["goal"] != "active"
+                    and claim_history.root_records(primary, "codex", node["session_id"],
+                        native_helpers()[1].read_jsonl(primary)) == current)
     try:
         return asyncio.run(read())
     except (OSError, ValueError, KeyError, TypeError, ImportError, TimeoutError, subprocess.SubprocessError):

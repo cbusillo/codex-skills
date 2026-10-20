@@ -282,6 +282,27 @@ class ReceiptTests(unittest.TestCase):
             with self.subTest(stop_pending=pending, result=result):
                 self.assertEqual(receipts.ownership_state(records[:-1] + [stop, *result], "claude")["pending"], pending)
 
+    def test_current_check_handle_requires_bound_native_startup_and_only_its_own_polls(self):
+        launch = {"payload": {"type": "custom_tool_call", "call_id": "call-check", "name": "exec",
+                  "input": 'text(await tools.exec_command({cmd:"uv run check_claims.py"}));'}}
+        initial = [launch]
+        startup = composed_result({"session_id": 123, "output": ""}, "call-check")
+        startup["payload"]["output"].insert(0, cell_header())
+        current = [launch, startup]
+        self.assertEqual(receipts.current_check_process(initial, current), "123")
+        self.assertIsNone(receipts.current_check_process(initial, initial))
+        forged = composed_result({"exit_code": 0, "output": json.dumps({"session_id": 123})}, "call-check")
+        self.assertIsNone(receipts.current_check_process(initial, [launch, forged]))
+        for method, args, expected in (("write_stdin", {"session_id": 123}, "123"),
+                ("write_stdin", {"session_id": 456}, None),
+                ("write_stdin", {"session_id": 123, "chars": "input"}, None),
+                ("exec_command", {"cmd": "ls"}, None)):
+            row = {"payload": {"type": "function_call", "call_id": "later", "name": method,
+                               "arguments": json.dumps(args)}}
+            self.assertEqual(receipts.current_check_process(initial, current + [row]), expected)
+        changed = [{"payload": {**launch["payload"], "input": "computed()"}}, startup]
+        self.assertIsNone(receipts.current_check_process(initial, changed))
+
     def test_reading_a_saved_proof_does_not_attest_a_fresh_check(self):
         records = history("codex", claim(), proof(("example/a", 1, 10)))
         records[-4]["payload"]["arguments"] = json.dumps({"cmd": "cat saved-proof.json"})

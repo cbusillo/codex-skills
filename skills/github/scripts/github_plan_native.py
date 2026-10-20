@@ -97,8 +97,8 @@ THREAD_ITEM_TYPES = {"userMessage", "hookPrompt", "agentMessage", "functionCallO
     "webSearch", "imageView", "sleep", "imageGeneration", "enteredReviewMode", "exitedReviewMode", "contextCompaction"}
 
 
-async def read_executions(request, session, *, checking_call=None):
-    ended, items, checker_seen = True, [], False
+async def read_executions(request, session):
+    ended, items = True, []
     async for page in pages(request, "thread/items/list", session, sortDirection="desc"):
         for entry in page["data"]:
             item = entry.get("item") if isinstance(entry, dict) else None
@@ -114,15 +114,13 @@ async def read_executions(request, session, *, checking_call=None):
             terminal = {"completed", "failed", "declined"} if item["type"] == "commandExecution" else {"completed", "failed"}
             if item["type"] == "collabAgentToolCall":
                 terminal.add("interrupted")
-            checker = execution and item["id"] == checking_call and state == "inProgress"
-            checker_seen |= checker
-            ended &= checker or state != "inProgress" and (not execution or state in terminal)
-            if not checker and item["type"] == "commandExecution" and item.get("processId") is not None:
+            ended &= state != "inProgress" and (not execution or state in terminal)
+            if item["type"] == "commandExecution" and item.get("processId") is not None:
                 ended &= type(item.get("exitCode")) is int
             if execution:
                 items.append((entry.get("turnId"), item.get("id"), item["type"], state,
                               item.get("processId"), item.get("exitCode")))
-    return {"ended": ended, "items": items, **({"checker_seen": checker_seen} if checking_call else {})}
+    return {"ended": ended, "items": items}
 
 
 async def read_turns(request, session):
@@ -173,13 +171,13 @@ async def read_thread(request, session, *, include_turns=False):
             "history_mode": thread.get("historyMode", "legacy")}
 
 
-async def read_thread_facts(request, session, *, checking_call=None):
+async def read_thread_facts(request, session, *, include_active=False):
     # This serialized read fences the exact proven synchronous native routes.
     # It is not a fence for arbitrary asynchronous Core operations.
     thread = await read_thread(request, session)
     facts = {**thread, "queue": await read_queue(request, session), "turns": [],
              "executions": {"ended": True, "items": []}, "background": [], "realtime": [], "goal": None}
-    if thread["state"] == "systemError" or thread["state"] == "active" and checking_call is None:
+    if thread["state"] == "systemError" or thread["state"] == "active" and not include_active:
         return facts
     if thread["state"] == "notLoaded":
         # Persisted unfinished commands/realtime may survive a crash. Current
@@ -195,7 +193,7 @@ async def read_thread_facts(request, session, *, checking_call=None):
         raise ValueError("native source changed during its canonical persistence read")
     facts["turns"] = await read_turns(request, session)
     facts["history_complete"] = True
-    facts["executions"] = await read_executions(request, session, checking_call=checking_call)
+    facts["executions"] = await read_executions(request, session)
     async for page in pages(request, "thread/backgroundTerminals/list", session):
         for item in page["data"]:
             if not isinstance(item, dict) or not isinstance(item.get("itemId"), str):

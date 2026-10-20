@@ -182,24 +182,25 @@ class NativeFactsTests(unittest.IsolatedAsyncioTestCase):
             "id": "collaborator", "type": "collabAgentToolCall", "status": "interrupted"}}]
         self.assertTrue((await NATIVE.read_executions(self.request, self.session))["ended"])
 
-    async def test_active_checker_excludes_only_its_exact_native_execution(self):
+    async def test_active_work_read_preserves_all_executions_and_background_handles(self):
         self.responses["thread/read"]["thread"]["status"]["type"] = "active"
         item = {"turnId": "actual-turn", "item": {
             "id": "checker", "type": "dynamicToolCall", "status": "inProgress"}}
         self.responses["thread/items/list"]["data"] = [item]
-        facts = await NATIVE.read_thread_facts(self.request, self.session, checking_call="checker")
-        self.assertTrue(facts["executions"]["ended"])
-        self.assertTrue(facts["executions"]["checker_seen"])
+        facts = await NATIVE.read_thread_facts(self.request, self.session, include_active=True)
+        self.assertFalse(facts["executions"]["ended"])
         for other in ({"id": "other", "type": "dynamicToolCall", "status": "inProgress"},
                       {"id": "other", "type": "commandExecution", "status": "completed", "processId": "running"},
                       {"id": "other", "type": "dynamicToolCall", "status": "unknown"}):
             self.responses["thread/items/list"]["data"] = [item, {"turnId": "actual-turn", "item": other}]
-            facts = await NATIVE.read_thread_facts(self.request, self.session, checking_call="checker")
+            facts = await NATIVE.read_thread_facts(self.request, self.session, include_active=True)
             self.assertFalse(facts["executions"]["ended"])
-        self.responses["thread/items/list"]["data"] = [item]
-        wrong = await NATIVE.read_thread_facts(self.request, self.session, checking_call="another")
-        self.assertFalse(wrong["executions"]["ended"])
-        self.assertFalse(wrong["executions"]["checker_seen"])
+        self.responses["thread/items/list"]["data"] = []
+        pair = {"itemId": "exec-native", "processId": "returned-handle"}
+        self.responses["thread/backgroundTerminals/list"]["data"] = [pair]
+        facts = await NATIVE.read_thread_facts(self.request, self.session, include_active=True)
+        self.assertTrue(facts["executions"]["ended"])
+        self.assertEqual(facts["background"], [(pair["itemId"], pair["processId"])])
 
 
 class NativeQueueTests(unittest.TestCase):

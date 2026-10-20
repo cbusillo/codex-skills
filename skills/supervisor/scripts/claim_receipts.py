@@ -574,6 +574,55 @@ def serial_ownership_records(records):
     return [r for r, _ in kept], [p for _, p in kept]
 
 
+def current_check_process(initial, current):
+    """Bind one yielded checker to native startup metadata, never its stdout."""
+    if current[:len(initial)] != initial:
+        return None
+    calls = [call for record in initial for call in calls_and_results(record, "codex")[0]]
+    if not calls:
+        return None
+    identifier, name, value = calls[-1]
+    if not (name in {"exec", "functions.exec"} and single_composed_call(value, "exec_command")
+            and isolated_command(name, value, "check_claims.py")):
+        return None
+    startups = [wrappers[0] for source, serial, wrappers in serial_native_bindings(current).values()
+                if source == identifier and len(serial) == 1 and not serial[0][2]]
+    if (len(startups) != 1 or type(startups[0].get("session_id")) is not int
+            or startups[0]["session_id"] <= 0 or startups[0].get("exit_code") is not None):
+        return None
+    handle = startups[0]["session_id"]
+    allowed, cells = {identifier}, set()
+    for index, record in enumerate(current):
+        calls, results = calls_and_results(record, "codex")
+        if index >= len(initial):
+            payload = record.get("payload") or {}
+            if payload.get("type") in {"task_started", "user_message"}:
+                return None
+            for call_id, method, args in calls:
+                args = arguments(args)
+                if method in {"exec", "functions.exec"}:
+                    serial = composed_calls(args)
+                    if len(serial) != 1 or serial[0][2]:
+                        return None
+                    method, args, _ = serial[0]
+                if not isinstance(args, dict):
+                    return None
+                if method in {"write_stdin", "functions.write_stdin"}:
+                    if args.get("session_id") != handle or args.get("chars", "") != "":
+                        return None
+                elif method in {"wait", "functions.wait"}:
+                    if args.get("cell_id") not in cells or args.get("terminate") is True:
+                        return None
+                else:
+                    return None
+                allowed.add(call_id)
+        if any(result in allowed for result in results):
+            _, cell = serial_native_chunk(record)
+            if cell:
+                cells.add(cell)
+    return str(handle)
+
+
 def isolated_command(name, value, helper):
     """One helper, optional leading cd, stderr merge and tee; no other output source."""
     texts = list(shell_texts(name, value))

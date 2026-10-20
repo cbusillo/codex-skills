@@ -1768,6 +1768,7 @@ class ObservationMergeTests(unittest.TestCase):
             self.assertFalse(CLOSURE.lease_path(f.session).exists())
             f.commands = "456 codex resume " + f.session
             self.assertFalse(SESSIONS._physical_quiescent(node, [], complete))
+
             f.commands = ""
             self.assertFalse(SESSIONS._physical_quiescent(node, [], {**complete, "peer_complete": False}))
             f.execution_items = [{"id": "working", "type": "commandExecution", "status": "inProgress"}]
@@ -1778,6 +1779,42 @@ class ObservationMergeTests(unittest.TestCase):
             with CLOSURE.resume_guard(f.session, method="turn/start", home=other):
                 pass
             self.assertFalse(SESSIONS._physical_quiescent(node, [], complete))
+
+    def test_active_check_binds_its_native_background_handle_instead_of_its_call_id(self):
+        import claim_receipts
+        from test_claim_receipts import cell_header, composed_result
+        with ReceiptFixture("11111111-2222-4333-8444-555555555555") as f:
+            f.native_state = "active"
+            original = [json.loads(line) for line in f.transcript.read_text().splitlines()][:2]
+            original.append({"type": "response_item", "payload": {"type": "custom_tool_call", "call_id": "call-check",
+                "name": "exec", "input": 'text(await tools.exec_command({cmd:"uv run check_claims.py"}));'}})
+            started = composed_result({"session_id": 123, "output": ""}, "call-check")
+            started["payload"]["output"].insert(0, cell_header())
+            current = [*original, started]
+            f.transcript.write_text("".join(json.dumps(row) + "\n" for row in current))
+            node = {"session_id": f.session, "harness": "codex", "transcript": str(f.transcript), "records": original}
+            pair = {"itemId": "exec-native-check", "processId": "123"}
+            f.rpc_results["thread/backgroundTerminals/list"] = {"data": [pair], "nextCursor": None}
+            # Real native capture: the running command is absent from items;
+            # only the background registry contains its exec-* identity.
+            self.assertTrue(SESSIONS._current_check_quiet(node))
+            for pairs in ([], [{**pair, "processId": "other"}], [pair, pair],
+                          [pair, {"itemId": "exec-other", "processId": "456"}]):
+                f.rpc_results["thread/backgroundTerminals/list"]["data"] = pairs
+                self.assertFalse(SESSIONS._current_check_quiet(node))
+            f.rpc_results["thread/backgroundTerminals/list"]["data"] = [pair]
+            f.queue_items = [{"id": "queued", "clientUserMessageId": "new", "input": []}]
+            self.assertFalse(SESSIONS._current_check_quiet(node))
+            f.queue_items = []
+            f.execution_items = [{"id": "other", "type": "dynamicToolCall", "status": "inProgress"}]
+            self.assertFalse(SESSIONS._current_check_quiet(node))
+            f.execution_items = []
+            extra = {"payload": {"type": "function_call", "call_id": "other", "name": "exec_command",
+                                 "arguments": json.dumps({"cmd": "ls"})}}
+            f.transcript.write_text("".join(json.dumps(row) + "\n" for row in [*current, extra]))
+            self.assertFalse(SESSIONS._current_check_quiet(node))
+            self.assertIsNone(claim_receipts.current_check_process(original, [*current, extra]))
+
     def setUp(self):
         shared = SESSIONS.process_liveness()
         self.enterContext(patch.object(shared, "process_arguments",
