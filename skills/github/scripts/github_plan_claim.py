@@ -588,19 +588,30 @@ def discussion_evidence(
     return conflicts, owned
 
 
-def observe_sessions(inventory: dict[str, Any], comments: list[dict[str, Any]]) -> dict[str, Any]:
-    from github_plan_sessions import observe
-    from github_plan_release import _released_source_contexts
+def observation_inputs(comments: list[dict[str, Any]]) -> tuple[set[str], set[str]]:
+    """Derive native obligations within one canonical discussion."""
     ids = {r["session"] for c in comments for r in records(c.get("body") or "")}
     released = {comments[i]["id"] for i, _, _ in exact_released_sources(comments)}
     proof_ids = {r["session"] for c in comments if c.get("id") not in released for r in records(c.get("body") or "")}
-    # Ordinary unloaded end proofs exclude released claims. Their exact release
-    # is instead a prerequisite for the observer's leased idle-closure proof.
-    peers, states, coverage = observe(ids, proof_ids, _source_contexts=_released_source_contexts(comments))
+    return ids, proof_ids
+
+
+def observed_inventory(inventory: dict[str, Any], observation) -> dict[str, Any]:
+    """Attach shared physical facts without replacing this checkout's registry."""
+    peers, states, coverage = observation
     return {**inventory, "sessions": [*inventory["sessions"], *peers], "session_states": states,
             "session_coverage": {**inventory.get("session_coverage", {}), "codex_claims": {
                 **coverage,
                 "scope": "exact claimed sessions and observed active daemon threads; partial global coverage"}}}
+
+
+def observe_sessions(inventory: dict[str, Any], comments: list[dict[str, Any]]) -> dict[str, Any]:
+    from github_plan_sessions import observe
+    from github_plan_release import _released_source_contexts
+    ids, proof_ids = observation_inputs(comments)
+    # Ordinary unloaded end proofs exclude released claims. Their exact release
+    # is instead a prerequisite for the observer's leased idle-closure proof.
+    return observed_inventory(inventory, observe(ids, proof_ids, _source_contexts=_released_source_contexts(comments)))
 
 
 def ended_ownership(comments: list[dict[str, Any]], inventory: dict[str, Any]) -> list[dict[str, Any]]:
