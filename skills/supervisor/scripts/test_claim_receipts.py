@@ -6619,7 +6619,9 @@ os.system(get())
                          ("invalid_arithmetic_argument", "echo ((1<<2))\n" + writer, False),
                          ("arithmetic_nested_writer", "echo $((1+$(" + writer + ")))", True),
                          ("ansi_escaped_writer", "eval $'uv \\x72un /catalog/gh-plan.py --repo client/repo claim 12'", True)]
-        for label, prefix in (("ansi", ansi), ("shift", "echo $((1<<2))"), ("arithmetic_command", "((1<<2))")):
+        for label, prefix in (("ansi", ansi), ("shift", "echo $((1<<2))"), ("arithmetic_command", "((1<<2))"),
+                              ("ansi_multiline", "printf %s $'it\\'s\ndata'"),
+                              ("arithmetic_multiline", "echo $((1\n<<2))")):
             body = prefix + "\n" + writer
             lexical_cases.extend(((label + "_root", body, True),
                                   (label + "_child", "bash -c " + shlex.quote(body), True),

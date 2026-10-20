@@ -3503,9 +3503,9 @@ def shell_source(text, *, incremental=True):
                 body.append(line)
             continue
         header += line
-        lexer = shell_lexer(header, posix=False)
-        lexer.whitespace_split = True
         try:
+            lexer = shell_lexer(header, posix=False)
+            lexer.whitespace_split = True
             tokens = list(lexer)
         except ValueError:
             continue  # A quoted word may span several physical lines.
