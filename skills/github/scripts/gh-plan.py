@@ -2483,10 +2483,13 @@ def _claim_once(args: argparse.Namespace) -> None:
     phase_peers = []
     phase_owners = set()
     phase_family_error = None
+    phase = {}
 
     def read_record(record_number, record_repo, *, allow_closed=False):
         key = (record_repo.casefold(), int(record_number))
         if key not in phase_records:
+            if phase.get("observed"):
+                raise PlanError("Claim phase requires an unprepared ownership record")
             phase_records[key] = claim_snapshot(str(record_number), record_repo, allow_closed=allow_closed)
         snapshot = phase_records[key]
         if snapshot[0].get("state") not in ({"open", "closed"} if allow_closed else {"open"}):
@@ -2500,13 +2503,18 @@ def _claim_once(args: argparse.Namespace) -> None:
         retained_ended_sources.update(session for session in sessions if session != claim["session"]
             and observed.get("session_states", {}).get(session, {}).get("state") == "ended")
 
-    def observe_claim_sources(source_inventory, source_comments):
+    def observe_claim_sources():
         import github_plan_sessions
         owners = [(snapshot[0].get("repo", owner_repo), owner_number, snapshot[2])
                   for (owner_repo, owner_number), snapshot in phase_records.items()
                   if (owner_repo, owner_number) in phase_owners]
         contexts = tuple(context for _, _, discussion in owners
                          for context in github_plan_release._released_source_contexts(discussion))
+        sessions, proof_sessions = set(), set()
+        for _, _, discussion in owners:
+            requested, required = github_plan_claim.observation_inputs(discussion)
+            sessions.update(requested)
+            proof_sessions.update(required)
         def readback(context):
             owner = next((item for item in owners if any(c.get("id") == context.source_id for c in item[2])), None)
             if owner is None:
@@ -2519,11 +2527,15 @@ def _claim_once(args: argparse.Namespace) -> None:
                     payload={"competing_evidence": [{"source": "released_source_changed", "id": context.source_id,
                                                       "session": context.session}]})
         with github_plan_sessions._source_readback(readback, contexts):
-            return github_plan_claim.observe_sessions(source_inventory, source_comments)
+            observation = github_plan_sessions.observe(sessions, proof_sessions)
+        for scope in ("inventory", "planning_inventory"):
+            if scope in phase:
+                phase[scope] = github_plan_claim.observed_inventory(phase[scope], observation)
+        phase["observed"] = True
 
     def ownership_snapshot(current_status: str, current_comments: list[dict[str, Any]]):
         nonlocal inventory, ended_owners
-        inventory = observe_claim_sources(github_plan_claim.local_inventory(target_repo, number), current_comments)
+        inventory = phase["inventory"]
         ended_owners = github_plan_claim.ended_ownership(current_comments, inventory)
         retain_released_sources((entry["session"] for entry in ended_owners), inventory)
         branches = set(inventory["local_branches"]) | set(inventory["remote_branches"]) | {t["branch"] for t in inventory["worktrees"]}
@@ -2546,7 +2558,7 @@ def _claim_once(args: argparse.Namespace) -> None:
 
     def check_wait(waiting_issue: dict[str, Any], waiting_status: str, *, target: bool = False) -> bool:
         wait = waiting_issue["claim_wait"]
-        status_state = next_plan_status(waiting_issue, load_config(target_repo) if target else config)
+        status_state = next_plan_status(waiting_issue, phase["target_config"] if target else config)
         has_wait = bool(wait["state"] != "clear" or status_state in {"stale", "done"})
         if has_wait and not args.wait_resolved:
             raise ClassifiedPlanError("claim_wait_unresolved",
@@ -2597,7 +2609,7 @@ def _claim_once(args: argparse.Namespace) -> None:
     ) -> None:
         peer_records = github_plan_claim.records(peer_status) + [
             record for c in peer_comments for record in github_plan_claim.records(c.get("body") or "")]
-        peer_inventory: dict[str, Any] = observe_claim_sources(source_inventory, peer_comments)
+        peer_inventory: dict[str, Any] = source_inventory
         # The requester can occupy a released source worktree. Exclude only its
         # native identity, including observations added by observe_sessions;
         # foreign sessions and unreleased discussion ownership still compete.
@@ -2777,6 +2789,8 @@ def _claim_once(args: argparse.Namespace) -> None:
                                      traversal=traversal)
 
     def handoff_record(pull):
+        if phase.get("observed"):
+            raise PlanError("Claim phase requires an unprepared retained PR")
         key = (target_repo.casefold(), pull["number"])
         cached = phase_records.get(key)
         if cached is not None:
@@ -2796,14 +2810,11 @@ def _claim_once(args: argparse.Namespace) -> None:
         phase_owners.add(key)
         return target, sections, target_comments
 
-    def prepare_handoff(source_info):
+    def prepare_handoff(source_info, open_pulls):
         if not handoff_id:
             return None
         source_number, source_comments, source_status = source_info
-        _, target_pulls = collect_paged_rest_items(
-            f"/repos/{target_repo}/pulls", query={"state": "open"},
-            bucket="rest_core", step_prefix="refresh_open_prs",
-        )
+        target_pulls = list(open_pulls)
         handoff = next((c for c in source_comments if c.get("id") == handoff_id), None)
         named = github_plan_claim.handoff_pr_numbers(
             (handoff or {}).get("body") or "", issue_repo=issue_repo, target_repo=target_repo,
@@ -2819,16 +2830,20 @@ def _claim_once(args: argparse.Namespace) -> None:
                     raise
                 continue
             target_pulls.append(retained_pull)
+        prepared = {"source": source_info, "pulls": target_pulls, "named": named,
+                    "permitted": set(), "error": None, "targets": {}}
         try:
             permitted = github_plan_claim.retained_handoff(
                 source_comments, args.resume_from, handoff_id, target_pulls, target_number if refresh_pr else None,
                 issue_repo=issue_repo, issue_number=source_number, target_repo=target_repo,
                 allow_resume_only=source_number == number and not completed,
             )
-        except ValueError:
+        except ValueError as error:
             # Keep the existing current-ownership decision ahead of local
             # handoff qualification. Unqualified PRs supply no source context.
-            return source_info, target_pulls, named
+            prepared["error"] = error
+            return prepared
+        prepared["permitted"] = permitted
         source_author = next(c for c in source_comments if c.get("id") == args.resume_from)["user"]["login"]
         for pull in target_pulls:
             if ((pull.get("head") or {}).get("ref") in permitted and pull.get("state") == "open"
@@ -2838,20 +2853,23 @@ def _claim_once(args: argparse.Namespace) -> None:
                 continue
             if (pull.get("head") or {}).get("ref") not in permitted and pull.get("state") != "closed":
                 continue
-            handoff_record(pull)
-        return source_info, target_pulls, named
+            target, sections, target_comments = handoff_record(pull)
+            if (not refresh_pr or pull["number"] == target_number) and "claim_wait" not in target:
+                target["claim_wait"] = current_wait(target, target_comments, target_repo)
+            prepared["targets"][pull["number"]] = (target, sections, target_comments)
+        return prepared
 
     def prepare_phase(snapshot):
         nonlocal phase_family_error
         phase_records.clear()
         phase_peers.clear()
         phase_owners.clear()
+        phase.clear()
         phase_family_error = None
         phase_records[(issue_repo.casefold(), number)] = snapshot
         current_issue, current_status, current_comments, _ = snapshot
         source_info = resume_source(current_comments, current_status) if args.resume_from else (number, current_comments, current_status)
         phase_owners.update(((issue_repo.casefold(), number), (issue_repo.casefold(), source_info[0])))
-        prepared = prepare_handoff(source_info)
         if record_kind == "issue":
             traversal = {}
             try:
@@ -2868,6 +2886,48 @@ def _claim_once(args: argparse.Namespace) -> None:
                 # Stop at the invalid edge. Already collected peer ownership
                 # still has its original precedence over that local predicate.
                 phase_family_error = error
+        phase["inventory"] = github_plan_claim.local_inventory(target_repo, number)
+        if handoff_id:
+            phase["target_config"] = load_config(target_repo)
+            if issue_repo.casefold() != target_repo.casefold():
+                handoff_checkout = getattr(args, "planning_checkout", None)
+                config_path = repo_config_path(issue_repo) if not handoff_checkout else None
+                planning_path = pathlib.Path(handoff_checkout) if handoff_checkout else config_path.parent.parent if config_path else None
+                if planning_path is None:
+                    raise PlanError("Cross-repository refresh requires a verified planning checkout; pass --planning-checkout PATH")
+                phase["planning_inventory"] = github_plan_claim.local_inventory(issue_repo, number, cwd=planning_path)
+                _, phase["planning_pulls"] = collect_paged_rest_items(
+                    f"/repos/{issue_repo}/pulls", query={"state": "open"},
+                    bucket="rest_core", step_prefix="refresh_planning_prs",
+                )
+        phase["blockers"] = []
+        if record_kind != "pr":
+            _, phase["blockers"] = collect_paged_rest_items(
+                f"/repos/{issue_repo}/issues/{number}/dependencies/blocked_by",
+                query={}, bucket="rest_core", step_prefix="claim_blockers",
+            )
+        _, phase["open_pulls"] = collect_paged_rest_items(
+            f"/repos/{target_repo}/pulls", query={"state": "open"},
+            bucket="rest_core", step_prefix="claim_pr_readback",
+        )
+        prepared = prepare_handoff(source_info, phase["open_pulls"])
+        phase["canonical_issue"] = None
+        subject = next((pull for pull in phase["open_pulls"] if pull["number"] == number), None)
+        if record_kind == "pr" and subject is not None:
+            text = (subject.get("title") or "") + "\n" + (subject.get("body") or "")
+            links = re.findall(r"https://github\.com/([\w.-]+/[\w.-]+)/issues/([1-9]\d*)|(?<![\w/])([\w.-]+/[\w.-]+)#([1-9]\d*)|(?<![\w/])#([1-9]\d*)", text)
+            for url_repo, url_number, qualified_repo, qualified_number, bare_number in links:
+                linked_repo = url_repo or qualified_repo or issue_repo
+                linked_number = int(url_number or qualified_number or bare_number)
+                if linked_repo.casefold() == issue_repo.casefold() and linked_number == number:
+                    continue
+                if not github_plan_claim.pr_issue_reference(subject, linked_number, repo=linked_repo,
+                                                            local_references=linked_repo.casefold() == issue_repo.casefold()):
+                    continue
+                _, linked = get_issue(str(linked_number), linked_repo)
+                if "pull_request" not in linked:
+                    phase["canonical_issue"] = f"https://github.com/{linked_repo}/issues/{linked_number}"
+                    break
         return source_info, prepared
 
     def check_phase_peers(source_inventory):
@@ -2885,12 +2945,10 @@ def _claim_once(args: argparse.Namespace) -> None:
         if prepared is None:
             check_phase_peers(inventory)
             return set()
-        (source_number, source_comments, source_status), target_pulls, named = prepared
-        permitted = github_plan_claim.retained_handoff(
-            source_comments, args.resume_from, handoff_id, target_pulls, target_number if refresh_pr else None,
-            issue_repo=issue_repo, issue_number=source_number, target_repo=target_repo,
-            allow_resume_only=source_number == number and not completed,
-        )
+        if prepared["error"] is not None:
+            raise prepared["error"]
+        source_number, source_comments, source_status = prepared["source"]
+        target_pulls, named, permitted = prepared["pulls"], prepared["named"], prepared["permitted"]
         for ended in ended_owners:
             ended["pull_requests"] = [f"https://github.com/{target_repo}/pull/{p['number']}" for p in target_pulls
                                       if (p.get("head") or {}).get("ref") == ended["branch"]]
@@ -2905,9 +2963,6 @@ def _claim_once(args: argparse.Namespace) -> None:
         for comment in source_comments:
             for record in github_plan_claim.records(comment.get("body") or ""):
                 retain_session_owner(record, source_comments, issue_repo, source_number)
-        target_session_comments = list(source_comments)
-        if source_number != number:
-            target_session_comments.extend(current_comments)
         for pull in target_pulls:
             if ((pull.get("head") or {}).get("ref") in permitted and pull.get("state") == "open"
                     and (pull["number"] not in named or (pull.get("user") or {}).get("login") != source_author)):
@@ -2915,11 +2970,10 @@ def _claim_once(args: argparse.Namespace) -> None:
                          "certainty": "not_in_source_handoff"}], owner_comments=source_comments, owner_number=source_number)
             if (pull.get("head") or {}).get("ref") not in permitted and pull.get("state") != "closed":
                 continue
-            target, sections, target_comments = handoff_record(pull)
+            target, sections, target_comments = prepared["targets"][pull["number"]]
             for comment in target_comments:
                 for record in github_plan_claim.records(comment.get("body") or ""):
                     retain_session_owner(record, target_comments, target_repo, pull["number"])
-            target_session_comments.extend(target_comments)
             # PR status may name the canonical issue being claimed. Keep its
             # holder prose conservative rather than applying issue exclusions.
             competing, _ = github_plan_claim.discussion_evidence(sections.get("Current Status", ""), target_comments, claim)
@@ -2930,8 +2984,7 @@ def _claim_once(args: argparse.Namespace) -> None:
                 retain_session_owner(record, target_comments, target_repo, pull["number"])
             if not refresh_pr or pull["number"] == target_number:
                 target_status = sections.get("Current Status", "")
-                target_wait = current_wait(target, target_comments, target_repo)
-                target["claim_wait"] = target_wait
+                target_wait = target["claim_wait"]
                 if check_wait(target, target_status, target=True):
                     wait_labels = sorted(set(normalize_labels(target.get("labels"))) &
                                          {config["labels"][key] for key in ("waiting", "blocked", "stale", "done")})
@@ -2940,8 +2993,7 @@ def _claim_once(args: argparse.Namespace) -> None:
             if retained_waits is not None and observed_waits != retained_waits:
                 raise PlanError("Retained PR waits changed during claim readback; verify the new evidence before recovery")
             retained_waits = observed_waits
-        target_inventory = observe_claim_sources(
-            github_plan_claim.local_inventory(target_repo, target_number), target_session_comments)
+        target_inventory = inventory
         source_ended = github_plan_claim.ended_ownership(source_comments, target_inventory)
         if source_number != number:
             # The parent's wait remains there; only its ownership is inherited.
@@ -2995,17 +3047,9 @@ def _claim_once(args: argparse.Namespace) -> None:
             if competing:
                 refuse(competing, owner_comments=checked_comments, owner_repo=checked_repo, owner_number=checked_number)
         if issue_repo.casefold() != target_repo.casefold():
-            handoff_checkout = getattr(args, "planning_checkout", None)
-            config_path = repo_config_path(issue_repo) if not handoff_checkout else None
-            planning_path = pathlib.Path(handoff_checkout) if handoff_checkout else config_path.parent.parent if config_path else None
-            if planning_path is None:
-                raise PlanError("Cross-repository refresh requires a verified planning checkout; pass --planning-checkout PATH")
-            planning_inventory = github_plan_claim.local_inventory(issue_repo, number, cwd=planning_path)
+            planning_inventory = phase["planning_inventory"]
             check_phase_peers(planning_inventory)
-            _, planning_pulls = collect_paged_rest_items(
-                f"/repos/{issue_repo}/pulls", query={"state": "open"},
-                bucket="rest_core", step_prefix="refresh_planning_prs",
-            )
+            planning_pulls = phase["planning_pulls"]
             competing = github_plan_claim.artifact_evidence(
                 planning_inventory, planning_pulls, number, claim, own_record=bool(own_comments), repo=issue_repo,
                 recorded_branches=github_plan_claim.recorded_claim_branches(source_status, source_comments),
@@ -3072,38 +3116,16 @@ def _claim_once(args: argparse.Namespace) -> None:
         )
 
     def check_native_blockers() -> None:
-        if record_kind == "pr":
-            return  # GitHub native issue dependencies do not exist on PRs.
-        _, blockers = collect_paged_rest_items(
-            f"/repos/{issue_repo}/issues/{number}/dependencies/blocked_by",
-            query={}, bucket="rest_core", step_prefix="claim_blockers",
-        )
-        if any(blocker.get("state") != "closed" for blocker in blockers):
+        if any(blocker.get("state") != "closed" for blocker in phase["blockers"]):
             raise ClassifiedPlanError("claim_native_blockers_unresolved", "Claim requires resolved native blockers; preserve blocked planning state")
 
     def check_pr_artifacts(status_to_check: str, current_comments: list[dict[str, Any]]) -> None:
         fresh_inventory = inventory
-        _, fresh_pulls = collect_paged_rest_items(
-            f"/repos/{target_repo}/pulls", query={"state": "open"},
-            bucket="rest_core", step_prefix="claim_pr_readback",
-        )
-        subject = next((p for p in fresh_pulls if p["number"] == number), None)
-        if record_kind == "pr" and subject is not None:
-            text = (subject.get("title") or "") + "\n" + (subject.get("body") or "")
-            links = re.findall(r"https://github\.com/([\w.-]+/[\w.-]+)/issues/([1-9]\d*)|(?<![\w/])([\w.-]+/[\w.-]+)#([1-9]\d*)|(?<![\w/])#([1-9]\d*)", text)
-            for url_repo, url_number, qualified_repo, qualified_number, bare_number in links:
-                linked_repo = url_repo or qualified_repo or issue_repo
-                linked_number = int(url_number or qualified_number or bare_number)
-                if linked_repo.casefold() == issue_repo.casefold() and linked_number == number:
-                    continue
-                if not github_plan_claim.pr_issue_reference(subject, linked_number, repo=linked_repo,
-                                                            local_references=linked_repo.casefold() == issue_repo.casefold()):
-                    continue
-                _, linked = get_issue(str(linked_number), linked_repo)
-                if "pull_request" not in linked:
-                    raise ClassifiedPlanError("claim_issue_record_required",
-                        "PR has a canonical implementation issue; claim that issue instead",
-                        payload={"canonical_issue": f"https://github.com/{linked_repo}/issues/{linked_number}"})
+        fresh_pulls = phase["open_pulls"]
+        if phase["canonical_issue"] is not None:
+            raise ClassifiedPlanError("claim_issue_record_required",
+                "PR has a canonical implementation issue; claim that issue instead",
+                payload={"canonical_issue": phase["canonical_issue"]})
         _, own = github_plan_claim.discussion_evidence("", current_comments, claim)
         conflicts = github_plan_claim.artifact_evidence(
             fresh_inventory, fresh_pulls, number, claim, own_record=bool(own), repo=issue_repo,
@@ -3127,6 +3149,7 @@ def _claim_once(args: argparse.Namespace) -> None:
         previous_wait_labels = set(normalize_labels(issue.get("labels"))) & {config["labels"][key] for key in ("waiting", "blocked")}
         check_agent(issue)
         source_info, prepared_handoff = prepare_phase((issue, status, comments, can_update))
+        observe_claim_sources()
         _, resume_comments, _ = source_info
         conflicts, owned = ownership_snapshot(status, comments)
         if conflicts:
@@ -3139,10 +3162,7 @@ def _claim_once(args: argparse.Namespace) -> None:
         retained = github_plan_claim.retained_branch(resume_comments, args.resume_from) if args.resume_from else None
         check_native_blockers()
         retained_branches = handoff_preflight(comments, status, prepared_handoff)
-        _, pulls = collect_paged_rest_items(
-            f"/repos/{target_repo}/pulls", query={"state": "open"},
-            bucket="rest_core", step_prefix="claim_open_prs",
-        )
+        pulls = phase["open_pulls"]
         conflicts = github_plan_claim.artifact_evidence(inventory, pulls, number, claim,
                                                        subject_pr=number if record_kind == "pr" else None,
                                                        own_record=bool(owned), retained=retained, repo=issue_repo,
@@ -3193,6 +3213,7 @@ def _claim_once(args: argparse.Namespace) -> None:
         issue, status, comments, can_update = claim_snapshot(args.issue, repo)
         check_agent(issue)
         _, prepared_handoff = prepare_phase((issue, status, comments, can_update))
+        observe_claim_sources()
         conflicts, observed = ownership_snapshot(status, comments)
         if conflicts:
             refuse(conflicts)
@@ -3234,6 +3255,20 @@ def _claim_once(args: argparse.Namespace) -> None:
             completed.append("update_current_status")
         label_map = config["labels"]
         if record_kind == "issue":
+            # Status publication is a real mutation boundary. Re-read mutable
+            # assignment and holds before labels can remove them, without
+            # discovering or admitting another native source.
+            label_issue, label_status, _, _ = claim_snapshot(args.issue, repo)
+            check_agent(label_issue)
+            check_issue_holds(label_issue)
+            previous_labels = set(normalize_labels(issue.get("labels")))
+            fresh_labels = set(normalize_labels(label_issue.get("labels")))
+            if (fresh_labels - previous_labels) & {label_map[key] for key in ("waiting", "blocked", "stale", "done")}:
+                raise PlanError("Issue acquired a new hold before claim label update")
+            if can_update and not any(github_plan_claim.same_owner(record, claim)
+                                      for record in github_plan_claim.records(label_status)):
+                raise PlanError("Current Status claim changed before label update")
+            issue = label_issue
             label_result = github_issue_core.edit_issue(
                 number, repo=issue_repo, add_labels=[label_map["active"]],
                 remove_labels=[label_map[key] for key in (("stale", "done") if handoff_id and not refresh_pr
@@ -3247,6 +3282,7 @@ def _claim_once(args: argparse.Namespace) -> None:
         comments = final_comments
         check_agent(final)
         _, prepared_handoff = prepare_phase((final, final_status, final_comments, can_update))
+        observe_claim_sources()
         conflicts, observed = ownership_snapshot(final_status, final_comments)
         if conflicts:
             refuse(conflicts)
