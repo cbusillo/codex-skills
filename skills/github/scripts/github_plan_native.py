@@ -61,8 +61,10 @@ async def connection(home: Path, *, max_msg_size: int = 64 * 1024 * 1024):
 
 
 async def pages(request, method, session, **params):
+    # A valid continuation chain is read in full. The caller's deadline (the
+    # connection's own timeout) bounds it, not a page count a long session outgrows.
     cursor, seen = None, set()
-    for _ in range(100):
+    while True:
         page = await request(method, {"threadId": session, "limit": 20, "cursor": cursor, **params})
         if not isinstance(page, dict) or not isinstance(page.get("data"), list):
             raise ValueError("native read coverage is unavailable")
@@ -73,7 +75,6 @@ async def pages(request, method, session, **params):
         if not isinstance(cursor, str) or not cursor or cursor in seen:
             raise ValueError("native continuation is unavailable")
         seen.add(cursor)
-    raise ValueError("native read coverage is truncated")
 
 
 async def read_queue(request, session):
