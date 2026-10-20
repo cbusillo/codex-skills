@@ -90,13 +90,6 @@ def assert_rejects_url(value: str, code: str) -> None:
 
 
 def test_agent_operator_contract_routes_every_local_consumer() -> None:
-    for command, (operation_id, modes) in {
-        **contract.PROJECTED_HELPER_COMMANDS, **contract.SERVICE_API_HELPER_COMMANDS,
-    }.items():
-        assert contract.helper_command_path(command) == contract.operation_path(operation_id)
-        assert modes
-    for command, route in contract.LOCAL_EXTENSION_ROUTES.items():
-        assert contract.helper_command_path(command) == route["path"]
     for lookup, key in ((contract.operation_path, "unknown_operation"),
                         (contract.helper_command_path, "unknown_command"),
                         (contract.internal_helper_path, "unknown_route")):

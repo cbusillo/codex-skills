@@ -25,37 +25,21 @@ OPERATION_PATHS = {
     'remediate_preview_pr_feedback': '/v1/previews/pr-feedback/remediation',
 }
 
-PROJECTED_HELPER_COMMANDS = {
-    "agent-context": ("read_agent_context", ("read",)),
-    "product-config-preflight": (
-        "evaluate_agent_write_intent",
-        ("preflight",),
-    ),
-    "product-config-dry-run": ("apply_product_config", ("dry-run",)),
-    "product-config-apply": ("apply_product_config", ("apply",)),
-    "odoo-addon-settings-dry-run": ("apply_odoo_addon_settings", ("dry-run",)),
-    "odoo-addon-settings-apply": ("apply_odoo_addon_settings", ("apply",)),
-    "merge-train-controller-run-once": (
-        "write_merge_train_controller_run_once",
-        ("dry-run", "mutate"),
-    ),
-    "preview-feedback-remediation": (
-        "remediate_preview_pr_feedback",
-        ("dry-run", "apply"),
-    ),
-}
-
-# Installed callers of producer service API surfaces.
-SERVICE_API_HELPER_COMMANDS = {
-    **{
-        f"testing-private-ingress-{mode}": ("prepare_testing_private_ingress", (mode,))
-        for mode in ("dry-run", "apply", "readback")
-    },
-    # Clear and prepare-rebuild need their separate consumer implementations.
-    **{
-        f"disposable-lane-{mode}": ("record_disposable_lane_safety", (mode,))
-        for mode in ("inspect", "collect", "record")
-    },
+HELPER_OPERATIONS = {
+    "agent-context": "read_agent_context",
+    "product-config-preflight": "evaluate_agent_write_intent",
+    "product-config-dry-run": "apply_product_config",
+    "product-config-apply": "apply_product_config",
+    "odoo-addon-settings-dry-run": "apply_odoo_addon_settings",
+    "odoo-addon-settings-apply": "apply_odoo_addon_settings",
+    "merge-train-controller-run-once": "write_merge_train_controller_run_once",
+    "preview-feedback-remediation": "remediate_preview_pr_feedback",
+    "testing-private-ingress-dry-run": "prepare_testing_private_ingress",
+    "testing-private-ingress-apply": "prepare_testing_private_ingress",
+    "testing-private-ingress-readback": "prepare_testing_private_ingress",
+    "disposable-lane-inspect": "record_disposable_lane_safety",
+    "disposable-lane-collect": "record_disposable_lane_safety",
+    "disposable-lane-record": "record_disposable_lane_safety",
 }
 
 LOCAL_EXTENSION_ROUTES = {
@@ -481,7 +465,7 @@ def validate_local_bindings() -> dict[str, object]:
     for path in paths:
         if not isinstance(path, str) or not path_pattern.fullmatch(path):
             raise ContractError("invalid_local_route")
-    for command in (*PROJECTED_HELPER_COMMANDS, *SERVICE_API_HELPER_COMMANDS):
+    for command in HELPER_OPERATIONS:
         helper_command_path(command)
     for command in ("dokploy-target-repair-domain-authority-dry-run", "ingress-route-dry-run"):
         route = LOCAL_EXTENSION_ROUTES.get(command, {})
@@ -490,7 +474,7 @@ def validate_local_bindings() -> dict[str, object]:
     if LOCAL_EXTENSION_ROUTES["dokploy-target-repair-domain-authority-dry-run"]["path"] != LOCAL_EXTENSION_ROUTES["dokploy-target-create-compose-dry-run"]["path"]:
         raise ContractError("inert_planner_binding_mismatch")
     return {
-        "helper_command_count": len(PROJECTED_HELPER_COMMANDS) + len(SERVICE_API_HELPER_COMMANDS) + len(LOCAL_EXTENSION_ROUTES),
+        "helper_command_count": len(HELPER_OPERATIONS) + len(LOCAL_EXTENSION_ROUTES),
         "internal_helper_route_count": len(INTERNAL_HELPER_ROUTES),
         "hermetic_only": True,
         "upstream_freshness_proven": False,
@@ -505,9 +489,9 @@ def operation_path(operation_id: str) -> str:
 
 
 def helper_command_path(command: str) -> str:
-    caller = PROJECTED_HELPER_COMMANDS.get(command) or SERVICE_API_HELPER_COMMANDS.get(command)
+    caller = HELPER_OPERATIONS.get(command)
     if caller is not None:
-        return operation_path(caller[0])
+        return operation_path(caller)
     route = LOCAL_EXTENSION_ROUTES.get(command)
     if route is not None:
         return route["path"]

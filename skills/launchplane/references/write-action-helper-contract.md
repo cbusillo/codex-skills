@@ -27,7 +27,7 @@ including an external link to another external file, is accepted.
 existing Director-agent identity dependency. It adds no permission or provider
 fallback. Source contract agreement does not prove deployed compatibility;
 confirm normal service delivery before operational use.
-`SERVICE_API_HELPER_COMMANDS` identifies the installed callers and their modes.
+
 
 Each command requires `--payload-file /absolute/private/request.json`. Its
 exact fields are `product`, `context`, `instance` (only `testing`),
@@ -89,11 +89,9 @@ service API with the existing Director-agent identity. They add no permission
 or provider fallback. The `prepare-rebuild` mode is not wrapped. An observation
 is short-lived safety evidence for one lane. It is never an access grant.
 
-Clearing an observation is not offered. The service's clear mode checks
-neither a current observation binding nor lane ownership, so a local check of
-saved inspect output cannot stop it from deleting a protective observation.
-The helper adds clear only after Launchplane enforces both before it clears
-([launchplane#4111](https://github.com/cbusillo/launchplane/issues/4111)).
+Clear and prepare-rebuild have no installed catalog command. For the producer's
+supported modes and requirements, read
+[the producer contract and caller bindings](agent-operator-contract.md).
 
 Each command requires `--payload-file /absolute/private/request.json` outside
 the repository. Its fields are `product`, `context`, `instance` and an optional

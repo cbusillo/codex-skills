@@ -6,7 +6,8 @@ idempotency and protected-workflow bindings. Read it when selecting a surface or
 copy and makes no whole-contract freshness claim.
 
 `scripts/launchplane_contract.py` holds only this client's installed HTTP
-bindings. `OPERATION_PATHS` supplies paths shared by caller commands;
+bindings. `HELPER_OPERATIONS` maps installed commands to operation ids, and
+`OPERATION_PATHS` supplies their shared paths;
 `LOCAL_EXTENSION_ROUTES` and `INTERNAL_HELPER_ROUTES` supply the other installed
 bindings. These are implementation details, not permission or a complete
 inventory of producer operations. Changes to the producer alone do not install
