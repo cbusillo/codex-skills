@@ -207,7 +207,9 @@ with a public response, or closed after the comment's latest version, appear
 only in the handled count; closure does not prove personal acknowledgement.
 Unrelated later comments, generic closeout posts, labels, and notifications
 prove neither awareness nor response. Edits/new comments reopen attention;
-incomplete coverage is never an all-clear.
+incomplete coverage is never an all-clear. Each `gh` call has a timeout, and
+all thread and reaction reads share one deadline; a read that misses either
+bound is reported as degraded coverage rather than stalling the report.
 
 Add `--outbound --self-login LOGIN` to find replies in repositories the Director
 does not own, either alone or alongside a portfolio scan. It searches issues

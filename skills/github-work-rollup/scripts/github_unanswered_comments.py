@@ -16,7 +16,9 @@ import os
 import re
 import subprocess
 import sys
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
+from collections.abc import Iterator
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -58,6 +60,9 @@ DEFAULT_CONFIG = ROOT / ".local/github-work-rollup.yaml"
 DEFAULT_WINDOW = "30d"
 DEFAULT_BOT_LOGINS = ()
 MAX_WORKERS = 8
+# Each gh call is bounded, and every thread and reaction read shares one deadline.
+GH_CALL_TIMEOUT_SECONDS = 60
+DISCUSSION_READ_DEADLINE_SECONDS = 600
 EXIT_CLEAR = 0
 EXIT_ATTENTION = 2
 EXIT_DEGRADED = 3
@@ -242,7 +247,24 @@ def resolve_settings(
 
 
 def run(command: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, capture_output=True, text=True, check=False)
+    try:
+        return subprocess.run(command, capture_output=True, text=True, check=False, timeout=GH_CALL_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired as exc:
+        raise rollup.RollupError(
+            f"GitHub command timed out after {GH_CALL_TIMEOUT_SECONDS}s: {' '.join(command)}"
+        ) from exc
+
+
+def completed_before(futures: dict[Future[Any], Any], deadline: float) -> Iterator[Future[Any]]:
+    """Yield futures as they finish, stopping at the deadline."""
+    try:
+        yield from as_completed(futures, timeout=max(0.0, deadline - time.monotonic()))
+    except TimeoutError:
+        return
+
+
+def deadline_error() -> str:
+    return f"Discussion read deadline of {DISCUSSION_READ_DEADLINE_SECONDS}s passed before this read finished."
 
 
 def run_json(command: list[str]) -> Any:
@@ -683,7 +705,7 @@ def collect_thread(
     return thread, comments, errors
 
 
-def collect_comment_reactions(comment: Comment) -> tuple[list[Reaction], Edit | None]:
+def collect_comment_reactions(comment: Comment, deadline: float | None = None) -> tuple[list[Reaction], Edit | None]:
     if not comment.node_id:
         raise rollup.RollupError(f"Comment {comment.comment_id} has no GraphQL node id.")
     reactions: list[Reaction] = []
@@ -691,6 +713,8 @@ def collect_comment_reactions(comment: Comment) -> tuple[list[Reaction], Edit | 
     after = ""
     seen_cursors: set[str] = set()
     while True:
+        if deadline is not None and time.monotonic() >= deadline:
+            raise rollup.RollupError(deadline_error())
         command = [GH, "api", "graphql", "-f", f"query={REACTIONS_QUERY}", "-F", f"id={comment.node_id}"]
         if after:
             command.extend(["-F", f"after={after}"])
@@ -735,6 +759,7 @@ def collect_comment_reactions(comment: Comment) -> tuple[list[Reaction], Edit | 
 
 def collect_candidate_reactions(
     comments: list[Comment],
+    deadline: float,
 ) -> tuple[
     dict[tuple[str, int, str, int], list[Reaction]],
     dict[tuple[str, int, str, int], Edit],
@@ -747,27 +772,34 @@ def collect_candidate_reactions(
     if not unique_comments:
         return reactions, last_edits, errors
     worker_count = min(MAX_WORKERS, max(1, len(unique_comments)))
-    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+    executor = ThreadPoolExecutor(max_workers=worker_count)
+    try:
         futures = {
-            executor.submit(collect_comment_reactions, comment): comment
+            executor.submit(collect_comment_reactions, comment, deadline): comment
             for comment in unique_comments.values()
         }
-        for future in as_completed(futures):
-            comment = futures[future]
+        unread = dict(futures)
+        for future in completed_before(futures, deadline):
+            comment = unread.pop(future)
             try:
                 comment_reactions, last_edit = future.result()
                 reactions[comment.global_key] = comment_reactions
                 if last_edit:
                     last_edits[comment.global_key] = last_edit
             except rollup.RollupError as exc:
-                errors.append(
-                    {
-                        "repo": comment.repo,
-                        "lane": f"reactions/{comment.kind}/{comment.comment_id}",
-                        "error": rollup.trim(str(exc)),
-                    }
-                )
+                errors.append(reaction_error(comment, str(exc)))
+        errors.extend(reaction_error(comment, deadline_error()) for comment in unread.values())
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
     return reactions, last_edits, errors
+
+
+def reaction_error(comment: Comment, error: str) -> dict[str, str]:
+    return {
+        "repo": comment.repo,
+        "lane": f"reactions/{comment.kind}/{comment.comment_id}",
+        "error": rollup.trim(error),
+    }
 
 
 def event_sort_key(comment: Comment) -> tuple[str, int]:
@@ -1527,13 +1559,16 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
     thread_worker_count = min(MAX_WORKERS, max(1, len(candidate_ids)))
     # With --no-cutoff every fetched comment, edit and reaction is classified.
     classification_until = datetime.max.replace(tzinfo=timezone.utc) if settings.get("no_cutoff") else settings["until"]
-    with ThreadPoolExecutor(max_workers=thread_worker_count) as executor:
+    read_deadline = time.monotonic() + DISCUSSION_READ_DEADLINE_SECONDS
+    executor = ThreadPoolExecutor(max_workers=thread_worker_count)
+    try:
         futures = {
             executor.submit(collect_thread, repo, number): (repo, number, ids)
             for (repo, number), ids in candidate_ids.items()
         }
-        for future in as_completed(futures):
-            repo, number, ids = futures[future]
+        unread = dict(futures)
+        for future in completed_before(futures, read_deadline):
+            repo, number, ids = unread.pop(future)
             thread, comments, thread_errors = future.result()
             coverage_errors.extend(thread_errors)
             if thread is None or thread_errors:
@@ -1564,9 +1599,15 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
                     and is_external_comment(comment, self_logins, bot_logins)
                 )
             )
+        coverage_errors.extend(
+            {"repo": repo, "lane": "thread", "error": f"{repo}#{number}: {deadline_error()}"}
+            for repo, number, _ in unread.values()
+        )
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
     reactions_by_global_key, last_edits_by_global_key, reaction_errors = collect_candidate_reactions(
-        reaction_candidates
+        reaction_candidates, read_deadline
     )
     coverage_errors.extend(reaction_errors)
     comment_states: list[dict[str, Any]] = []

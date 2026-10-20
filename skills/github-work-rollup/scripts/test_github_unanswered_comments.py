@@ -14,6 +14,8 @@ import importlib.util
 import json
 import os
 import sys
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -736,7 +738,7 @@ def test_full_history_thread_includes_old_review_body(monkeypatch) -> None:
     monkeypatch.setattr(
         github_unanswered_comments,
         "collect_candidate_reactions",
-        lambda comments: ({old_review.global_key: []}, {}, []),
+        lambda comments, deadline: ({old_review.global_key: []}, {}, []),
     )
 
     payload = github_unanswered_comments.collect_payload(settings)
@@ -768,7 +770,7 @@ def test_graphql_last_edit_reopens_review_body_after_reaction(monkeypatch) -> No
     monkeypatch.setattr(
         github_unanswered_comments,
         "collect_candidate_reactions",
-        lambda comments: (
+        lambda comments, deadline: (
             {review.global_key: [reaction(created_at="2026-07-25T13:00:00Z")]},
             {review.global_key: github_unanswered_comments.Edit("2026-07-25T14:00:00Z", "outside-reviewer")},
             [],
@@ -791,7 +793,7 @@ def test_no_cutoff_classifies_comments_fetched_after_the_scan_end(monkeypatch) -
     monkeypatch.setattr(github_unanswered_comments, "authenticated_login", lambda: "fixture-automation")
     monkeypatch.setattr(github_unanswered_comments, "collect_thread", lambda repo, number: (thread(), [reply, posted], []))
     monkeypatch.setattr(github_unanswered_comments, "collect_candidate_reactions",
-                        lambda comments: ({posted.global_key: []}, {}, []))
+                        lambda comments, deadline: ({posted.global_key: []}, {}, []))
 
     assert payload()["attention"] == []
     [row] = payload(no_cutoff=True)["attention"]
@@ -816,7 +818,7 @@ def test_reaction_failure_degrades_and_keeps_comment_visible(monkeypatch) -> Non
     monkeypatch.setattr(
         github_unanswered_comments,
         "collect_candidate_reactions",
-        lambda comments: ({}, {}, [{"repo": "example/repo", "lane": "reactions", "error": "denied"}]),
+        lambda comments, deadline: ({}, {}, [{"repo": "example/repo", "lane": "reactions", "error": "denied"}]),
     )
 
     payload = github_unanswered_comments.collect_payload(settings)
@@ -1395,7 +1397,7 @@ def test_include_handled_lists_closed_thread_comments_apart_from_attention(monke
     monkeypatch.setattr(github_unanswered_comments, "authenticated_login", lambda: "fixture-automation")
     monkeypatch.setattr(github_unanswered_comments, "collect_thread", lambda repo, number: (closed, [external], []))
     monkeypatch.setattr(github_unanswered_comments, "collect_candidate_reactions",
-                        lambda comments: ({external.global_key: []}, {}, []))
+                        lambda comments, deadline: ({external.global_key: []}, {}, []))
 
     def payload(**overrides: object) -> dict[str, object]:
         settings = github_unanswered_comments.resolve_settings(
@@ -1423,7 +1425,7 @@ def test_director_login_keeps_another_accounts_own_comment_outside(monkeypatch, 
     monkeypatch.setattr(github_unanswered_comments, "collect_thread",
                         lambda repo, number: (thread(), [by_thread_owner], []))
     monkeypatch.setattr(github_unanswered_comments, "collect_candidate_reactions",
-                        lambda comments: ({by_thread_owner.global_key: []}, {}, []))
+                        lambda comments, deadline: ({by_thread_owner.global_key: []}, {}, []))
 
     def attention(**overrides: object) -> list[object]:
         settings = github_unanswered_comments.resolve_settings(
@@ -1922,6 +1924,73 @@ def test_structured_wait_search_pagination_gaps_degrade_coverage(monkeypatch, tm
 
     assert payload["status"] == "degraded"
     assert [(error["repo"], error["lane"]) for error in payload["coverage"]["errors"]] == [("example", "director_waits_search")]
+
+
+
+def test_stuck_gh_call_times_out_as_a_coverage_error(monkeypatch) -> None:
+    monkeypatch.setattr(github_unanswered_comments, "GH_CALL_TIMEOUT_SECONDS", 0.2)
+    started = time.monotonic()
+
+    with pytest.raises(github_unanswered_comments.rollup.RollupError, match="timed out"):
+        github_unanswered_comments.run_json([sys.executable, "-c", "import time; time.sleep(30)"])
+
+    assert time.monotonic() - started < 10
+
+
+def stuck_github(stuck_endpoint: str, release: threading.Event, fake: FakeGitHub):
+    def run_json(command: list[str]) -> object:
+        endpoint = command[2] if len(command) > 2 else ""
+        if endpoint == stuck_endpoint:
+            release.wait(30)
+            raise github_unanswered_comments.rollup.RollupError("released after the test")
+        return fake(command)
+
+    return run_json
+
+
+def test_discussion_reads_stop_at_the_deadline_and_report_degraded(monkeypatch) -> None:
+    release = threading.Event()
+    answered = opening(number=1, author="outside", pull_request=False)
+    fake = FakeGitHub({"repos/example/repo/issues/1": answered})
+    monkeypatch.setattr(github_unanswered_comments, "run_json", stuck_github("repos/example/repo/issues/2", release, fake))
+    monkeypatch.setattr(github_unanswered_comments, "DISCUSSION_READ_DEADLINE_SECONDS", 0.5)
+    settings = github_unanswered_comments.resolve_settings(
+        args(thread=["example/repo#1", "example/repo#2"], self_login=["cbusillo"], until="2026-07-26T20:00:00Z"), {}
+    )
+    started = time.monotonic()
+    try:
+        payload = github_unanswered_comments.collect_payload(settings)
+    finally:
+        release.set()
+
+    assert time.monotonic() - started < 10
+    assert payload["status"] == "degraded"
+    assert payload["coverage"]["scanned_thread_count"] == 1
+    assert any("#2" in error["error"] and "deadline" in error["error"] for error in payload["coverage"]["errors"])
+
+
+def test_reaction_reads_share_the_discussion_deadline(monkeypatch) -> None:
+    release = threading.Event()
+    item = opening(number=1, author="outside", pull_request=False)
+    fake = FakeGitHub({"repos/example/repo/issues/1": item})
+    monkeypatch.setattr(github_unanswered_comments, "run_json", stuck_github("graphql", release, fake))
+    monkeypatch.setattr(github_unanswered_comments, "DISCUSSION_READ_DEADLINE_SECONDS", 0.5)
+    settings = github_unanswered_comments.resolve_settings(
+        args(thread=["example/repo#1"], self_login=["cbusillo"], until="2026-07-26T20:00:00Z"), {}
+    )
+    started = time.monotonic()
+    try:
+        payload = github_unanswered_comments.collect_payload(settings)
+    finally:
+        release.set()
+
+    assert time.monotonic() - started < 10
+    assert payload["status"] == "degraded"
+    assert any(
+        error["lane"].startswith("reactions/") and "deadline" in error["error"]
+        for error in payload["coverage"]["errors"]
+    )
+    assert [row["number"] for row in payload["attention"]] == [1]
 
 
 if __name__ == "__main__":
