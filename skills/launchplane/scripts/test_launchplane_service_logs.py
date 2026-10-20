@@ -48,6 +48,7 @@ class ServiceLogTests(unittest.TestCase):
         driver_tail=False,
         image_id=False,
         containers=None,
+        transport_stderr=b"",
     ):
         calls = []
         ids = [CONTAINER] if containers is None else containers
@@ -56,8 +57,14 @@ class ServiceLogTests(unittest.TestCase):
             self.assertEqual(kwargs["stdin"], subprocess.DEVNULL)
             calls.append(argv)
             command = shlex.split(argv[-1])
+            self.assertEqual(command[:2], ["env", "LC_ALL=C"])
+            command = command[2:]
             self.assertEqual(command[:4], ["pct", "exec", str(CONFIG["lxc_id"]), "--"])
             docker = command[4:]
+            if docker[:2] == ["sh", "-c"]:
+                docker = shlex.split(docker[2])
+                self.assertEqual(docker[-1], "2>&1")
+                docker = docker[:-1]
             if docker[:2] == ["docker", "ps"]:
                 image = (
                     "sha256:" + "b" * 64
@@ -84,7 +91,7 @@ class ServiceLogTests(unittest.TestCase):
                         {
                             "id": identity,
                             "image": CONFIG["image_repository"] + ":test",
-                            "image_digest": "sha256:" + "b" * 64,
+                            "image_id": "sha256:" + ("c" if image_id else "b") * 64,
                             "project": CONFIG["compose_project"],
                             "service": CONFIG["compose_service"],
                             "created_at": START,
@@ -127,7 +134,7 @@ class ServiceLogTests(unittest.TestCase):
                 [
                     sys.executable,
                     "-c",
-                    f"import sys; sys.stdout.buffer.write({emitted!r}); sys.stderr.buffer.write({stderr!r})",
+                    f"import sys; sys.stdout.buffer.write({emitted + stderr!r}); sys.stderr.buffer.write({transport_stderr!r})",
                 ],
                 **kwargs,
             )
@@ -173,7 +180,7 @@ class ServiceLogTests(unittest.TestCase):
             ["op-1 trace.1 started", "op-1 trace.1 failed"],
         )
         self.assertEqual(
-            [entry["stream"] for entry in result["entries"]], ["stdout", "stderr"]
+            [entry["stream"] for entry in result["entries"]], ["combined", "combined"]
         )
         self.assertTrue(calls)
         self.assertFalse(result["complete"])
@@ -279,6 +286,39 @@ class ServiceLogTests(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertNotIn("private", json.dumps(result))
 
+    def test_id_path_colon_and_encoded_boundaries(self):
+        records = [
+            "POST /v1/operations/op-1/cancel failed",
+            "operation:op-1: failed",
+            "op-1. completed",
+            "op-1.5 different operation",
+            "op-10 different operation",
+            "operation%3Dop-1 failed",
+        ]
+        raw = "".join(
+            "2026-01-02T12:01:00Z " + line + "\n" for line in records
+        ).encode()
+        status, result, _ = self.run_reader(raw, extra=("--operation-id", "op-1"))
+        self.assertEqual(status, 0)
+        messages = [entry["message"] for entry in result["entries"]]
+        self.assertEqual(len(messages), 4)
+        self.assertTrue(
+            all("different operation" not in message for message in messages)
+        )
+        self.assertIn("/v1/operations/op-1/cancel", messages[0])
+
+    def test_oversized_record_returns_no_partial_data(self):
+        raw = (
+            b"2026-01-02T12:01:00Z event=started\n"
+            + b"2026-01-02T12:02:00Z "
+            + b"password=S3NTINEL-oversize " * 2000
+            + b"\n"
+        )
+        status, result, _ = self.run_reader(raw)
+        self.assertEqual(status, 1)
+        self.assertNotIn("entries", result)
+        self.assertNotIn("S3NTINEL", json.dumps(result))
+
     def test_nanosecond_window_boundaries(self):
         self.assertGreater(
             reader.timestamp("2026-01-02T12:00:00.000000002Z"),
@@ -322,7 +362,7 @@ class ServiceLogTests(unittest.TestCase):
     def test_tail_without_pem_start_redacts_short_final_fragment(self):
         raw = b"2026-01-02T12:01:00Z abcdefgh\n2026-01-02T12:02:00Z -----END RSA PRIVATE KEY-----\n"
         status, result, _ = self.run_reader(raw)
-        self.assertEqual(status, 0)
+        self.assertEqual(status, 1)
         self.assertNotIn("abcdefgh", json.dumps(result))
 
     def test_wrong_image_and_overlarge_response_fail_without_partial_data(self):
@@ -376,7 +416,6 @@ class ServiceLogTests(unittest.TestCase):
             "password:\n  yaml-private",
             "-----BEGIN PGP PRIVATE "
             + "KEY BLOCK-----\nshort-pgp-private\n-----END PGP PRIVATE KEY BLOCK-----",
-            "x" * (reader.MAX_MESSAGE_BYTES + 1) + "password=\nyaml-private",
         ):
             raw = "".join(
                 "2026-01-02T12:01:00Z " + line + "\n" for line in message.split("\n")
@@ -385,6 +424,16 @@ class ServiceLogTests(unittest.TestCase):
             self.assertEqual(status, 0)
             self.assertNotIn("yaml-private", json.dumps(result))
             self.assertNotIn("short-pgp-private", json.dumps(result))
+
+    def test_transport_warnings_are_separate_and_never_emitted(self):
+        status, result, _ = self.run_reader(
+            b"2026-01-02T12:01:00Z event=restarted\n",
+            transport_stderr=b"perl: warning: S3NTINEL-transport-secret\n",
+        )
+        self.assertEqual(status, 0)
+        self.assertTrue(result["transport_diagnostics_present"])
+        self.assertEqual(result["entries"][0]["message"], "event=restarted")
+        self.assertNotIn("S3NTINEL-transport-secret", json.dumps(result))
 
     def test_invalid_calendar_and_cli_arguments_are_safe_json(self):
         for extra in (

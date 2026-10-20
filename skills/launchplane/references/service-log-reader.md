@@ -68,23 +68,36 @@ line. They do not expand or reconstruct a trace: use the bounded unfiltered
 window for surrounding traceback/context lines. Selection reads the private
 source text, so an ID subsequently hidden by redaction still matches. Output
 contains timestamps, stream names, local container ordinals, redacted messages
-and per-container lifecycle/image-digest metadata, not private target selectors.
+and per-container lifecycle/image metadata, not private target selectors.
 The `containers` array uses the same ordinal order as entries and includes
-creation/start/finish times, state, exit code and the OOM flag, so old and
-replacement instances can be distinguished without exposing host/container names.
+creation/start/finish times, state, exit code, OOM flag and `image_id`, the local
+Docker image configuration ID (not a registry manifest digest). Old and replacement
+instances can be distinguished without exposing host/container names. Docker merges
+container stdout and stderr inside the remote log invocation, so entries use
+`stream: "combined"`. SSH/LXC diagnostics are kept separate and never printed;
+`transport_diagnostics_present` only reports that some were observed.
 
-Redaction covers secret assignments (including nested JSON and unquoted
-values), authorization and cookie headers, URL credentials, recognizable
-tokens, opaque key-shaped text and multiline PEM/PGP private keys. Quoted
-sensitive field names also redact name/value structures and tuples. A sensitive
-assignment discards the rest of its line so nested or malformed values cannot
-leak fragments. A multiline sensitive field or a message over 4 KiB redacts the
-rest of its stream conservatively, including possible continuation fragments.
-Terminal controls are removed. Every selected message is redacted before
-output; errors never echo raw SSH/provider text or credentials.
-Arbitrary unlabelled prose cannot be classified as a secret reliably. Treat
-even redacted output as private operational evidence, not publication-ready
-content; publish only the necessary reviewed, sanitized conclusion.
+Redaction uses bounded JSON/Python-literal projection, sensitive field components,
+name/value pairs, and recognizable token, authorization, cookie and URL-credential
+shapes. It normalizes at most three percent/JSON escape layers and bounds structured
+nesting. Complete objects retain neighboring diagnostic fields such as trace IDs,
+commit SHAs, image digests and code paths. A plain sensitive assignment discards
+the rest of its record; malformed structured records are masked. Standalone
+value/data/default fragments without an established ordinary name are masked,
+including reversed or window-truncated name/value output.
+
+Multiline PEM/PGP private keys and indented sensitive YAML blocks are masked until
+their closing delimiter or dedent. Leading indented fragments are masked because
+their parent may precede the window. A later ordinary record remains readable.
+An individual source message over 4 KiB, excessive encoding or an unmatched private
+key end fails the whole read with a fixed code and no partial data. The size check
+runs before parsing or pattern scans. Terminal controls are removed. Every record
+is sanitized before output; matching IDs is private, literal and uses normalized
+source text. `matched_record_count` and `changed_record_count` report selected
+source records and those changed by sanitization, before the final line cap.
+Arbitrary unlabelled prose cannot be classified as a secret reliably. Treat even
+redacted output as private operational evidence, not publication-ready content;
+publish only the necessary reviewed, sanitized conclusion.
 
 Exit 0 emits `ok: true` JSON, including a possible empty `entries` list.
 Exit 1 emits a fixed diagnostic code and no raw or partial log data. Codes
@@ -96,7 +109,8 @@ trace because no API request was made. The helper does not retry.
 
 `complete` is always false and `coverage` is `retained_containers_only`.
 `tail_limit_reached` reports an observed cap, not proof of complete coverage
-when false. Container removal, rotation, omitted containers, a failed read or
+when false. Container removal (including a race between listing and reading), rotation,
+omitted containers, a failed read or
 the display cap can leave the requested period unavailable. An empty window or ID
 match is not proof that the operation never ran. Use the original operation's
 supported readback for its disposition, without replaying it for diagnosis.

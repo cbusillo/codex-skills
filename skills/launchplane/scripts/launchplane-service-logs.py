@@ -6,46 +6,34 @@
 """Read a bounded, redacted window of Launchplane's own retained container logs."""
 
 import argparse
+import heapq
 import json
 import os
 import re
 import selectors
 import shlex
 import subprocess
+import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from launchplane_service_log_redaction import (
+    RedactionError,
+    Redactor,
+)
 
 MAX_WINDOW_NS = 24 * 60 * 60 * 10**9
 MAX_LINES = 1000
 MAX_CONTAINERS = 8
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
-MAX_MESSAGE_BYTES = 4096
 SELECTOR = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
 IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,199}\Z")
 TIMESTAMP = re.compile(
     r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?(?:Z|[+-]\d\d:\d\d)\Z"
 )
-CONTROL = re.compile(
-    r"\x1b\[[0-?]*[ -/]*[@-~]|[\x00-\x08\x0b-\x1f\x7f-\x9f\u2028\u2029]"
-)
-SECRET_NAME = r"[A-Za-z0-9_.-]*(?:password|passwd|passphrase|pwd|token|secret|credential|cookie|auth|session|sid|private|key)[A-Za-z0-9_.-]*"
-ASSIGNMENT = re.compile(
-    rf"""(?i)(?:["']?\b{SECRET_NAME}["']?\s*[=:]\s*|--?{SECRET_NAME}(?:\s+|['"]\s*,\s*))"""
-)
-SECRET_FIELD = re.compile(rf"""(?i)["']{SECRET_NAME}["']""")
-HEADER = re.compile(
-    r"(?i)\b(?:authorization|proxy-authorization|cookie|set-cookie)\s*:\s*.*"
-)
-BEARER = re.compile(r"(?i)\b(?:bearer|basic)\s+[^\s,;\"']+")
-URL_CREDENTIAL = re.compile(r"(\b[a-zA-Z][a-zA-Z0-9+.-]*://)[^\s]+@")
-TOKEN = re.compile(
-    r"\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|[sr]k[-_][A-Za-z0-9_-]+|(?:AKIA|ASIA)[A-Z0-9]{16}|AIza[A-Za-z0-9_-]{35}|xox[baprs]-[A-Za-z0-9-]+|glpat-[A-Za-z0-9_-]+|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)\b"
-)
-OPAQUE = re.compile(r"(?<![A-Za-z0-9+/=_-])[A-Za-z0-9+/=_-]{40,}(?![A-Za-z0-9+/=_-])")
-PEM_BEGIN = re.compile(r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----")
-PEM_END = re.compile(r"-----END (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----")
-INSPECT_FORMAT = '{"id":{{json .Id}},"image":{{json .Config.Image}},"image_digest":{{json .Image}},"project":{{json (index .Config.Labels "com.docker.compose.project")}},"service":{{json (index .Config.Labels "com.docker.compose.service")}},"created_at":{{json .Created}},"started_at":{{json .State.StartedAt}},"finished_at":{{json .State.FinishedAt}},"state":{{json .State.Status}},"exit_code":{{json .State.ExitCode}},"oom_killed":{{json .State.OOMKilled}}}'
+INSPECT_FORMAT = '{"id":{{json .Id}},"image":{{json .Config.Image}},"image_id":{{json .Image}},"project":{{json (index .Config.Labels "com.docker.compose.project")}},"service":{{json (index .Config.Labels "com.docker.compose.service")}},"created_at":{{json .Created}},"started_at":{{json .State.StartedAt}},"finished_at":{{json .State.FinishedAt}},"state":{{json .State.Status}},"exit_code":{{json .State.ExitCode}},"oom_killed":{{json .State.OOMKilled}}}'
 
 
 class LogReadError(ValueError):
@@ -66,7 +54,10 @@ def timestamp(value: str) -> int:
 
 def load_target(path: str) -> dict:
     # These are explicit private selectors, not credentials or runtime defaults.
-    target = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
+    try:
+        target = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        raise LogReadError("invalid_config") from None
     required = {"ssh_host", "compose_project", "compose_service", "image_repository"}
     if (
         not isinstance(target, dict)
@@ -101,11 +92,17 @@ def load_target(path: str) -> dict:
     return target
 
 
-def read_remote(target: dict, docker: list[str], timeout: float) -> tuple[bytes, bytes]:
-    command = (
-        ["pct", "exec", str(target["lxc_id"]), "--", *docker]
-        if "lxc_id" in target
+def read_remote(target: dict, docker: list[str], timeout: float) -> tuple[bytes, bool]:
+    # Redirect inside the target's shell, so pct/SSH stderr stays transport-only.
+    target_command = (
+        ["sh", "-c", shlex.join(docker) + " 2>&1"]
+        if docker[:2] == ["docker", "logs"]
         else docker
+    )
+    command = (
+        ["pct", "exec", str(target["lxc_id"]), "--", *target_command]
+        if "lxc_id" in target
+        else target_command
     )
     with (
         subprocess.Popen(
@@ -126,7 +123,7 @@ def read_remote(target: dict, docker: list[str], timeout: float) -> tuple[bytes,
                 "PermitLocalCommand=no",
                 "--",
                 target["ssh_host"],
-                shlex.join(command),
+                shlex.join(["env", "LC_ALL=C", *command]),
             ],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
@@ -154,46 +151,32 @@ def read_remote(target: dict, docker: list[str], timeout: float) -> tuple[bytes,
                     if size > MAX_RESPONSE_BYTES:
                         raise LogReadError("remote_response_too_large")
                     buffers[key.data].append(chunk)
-            if process.wait(timeout=max(0, deadline - time.monotonic())):
+            try:
+                return_code = process.wait(timeout=max(0, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                raise LogReadError("remote_read_timeout") from None
+            if return_code:
                 # Never return an SSH/provider error body or partial raw output.
                 raise LogReadError("remote_read_failed")
         except BaseException:
             process.kill()
             process.wait()
             raise
-        return b"".join(buffers[0]), b"".join(buffers[1])
-
-
-def redact(message: str) -> str:
-    message = CONTROL.sub("", message)
-    if SECRET_FIELD.search(message):
-        return "[redacted-sensitive-fields]"
-    # Unframed final PEM fragments can be all that survives --tail/rotation.
-    if re.fullmatch(r"[A-Za-z0-9+/=]{16,}", message.strip()):
-        return "[redacted]"
-    message = HEADER.sub("[redacted-header]", message)
-    message = BEARER.sub("[redacted-authorization]", message)
-    message = URL_CREDENTIAL.sub(r"\1[redacted]@", message)
-    message = TOKEN.sub("[redacted]", message)
-    message = OPAQUE.sub("[redacted]", message)
-    sensitive = ASSIGNMENT.search(message)
-    # Discard the remainder, including nested JSON, unquoted spaces and trailing
-    # cookie attributes. Trying to guess the value's end can expose fragments.
-    return message[: sensitive.end()] + "[redacted]" if sensitive else message
+        return b"".join(buffers[0]), bool(buffers[1])
 
 
 def entries_from_stream(
     raw: bytes,
-    stream: str,
     container: int,
     since: int,
     until: int,
-    patterns: tuple[re.Pattern, ...] = (),
-) -> list[dict]:
-    entries = []
-    private_key = False
-    private_continuation = False
-    for line in raw.decode("utf-8", errors="replace").split("\n"):
+    identifiers: tuple[str, ...],
+    limit: int,
+) -> tuple[list[dict], int, int]:
+    redactor = Redactor(identifiers)
+    kept: list[tuple[int, int, dict]] = []
+    matched = changed = 0
+    for sequence, line in enumerate(raw.decode("utf-8", errors="replace").split("\n")):
         if not line:
             continue
         stamp, separator, message = line.partition(" ")
@@ -203,51 +186,26 @@ def entries_from_stream(
             observed = timestamp(stamp)
         except ValueError:
             raise LogReadError("invalid_log_framing") from None
-        message = CONTROL.sub("", message)
-        sensitive = ASSIGNMENT.search(message)
-        private_continuation |= (
-            len(message.encode("utf-8")) > MAX_MESSAGE_BYTES
-            or bool(sensitive and not message[sensitive.end() :].strip())
-            or bool(
-                SECRET_FIELD.search(message)
-                and message.rstrip().endswith((":", ",", "{", "["))
-            )
-        )
-        if PEM_BEGIN.search(message):
-            private_key = True
-        if PEM_END.search(message) and not private_key:
-            # --since/--tail can omit BEGIN but retain short final key fragments.
-            # Without the start delimiter, redact the preceding stream as well.
-            for entry in entries:
-                entry["message"] = "[redacted-private-key]"
-            private_key = True
-        safe_message = (
-            "[redacted-private-key]"
-            if private_key
-            else "[redacted-continuation]"
-            if private_continuation
-            else redact(message)
-        )
-        if PEM_END.search(message):
-            private_key = False
-        if since <= observed < until and all(
-            pattern.search(message) for pattern in patterns
-        ):
-            entries.append(
-                {
-                    "timestamp": stamp,
-                    "stream": stream,
-                    "container": container,
-                    "message": safe_message,
-                }
-            )
-    return entries
+        safe = redactor.feed(message)
+        if since <= observed < until and safe.matched:
+            matched += 1
+            changed += safe.redacted
+            entry = {
+                "timestamp": stamp,
+                "stream": "combined",
+                "container": container,
+                "message": safe.message,
+            }
+            heapq.heappush(kept, (observed, sequence, entry))
+            if len(kept) > limit:
+                heapq.heappop(kept)
+    return [item[2] for item in sorted(kept)], matched, changed
 
 
 def inspect_containers(
     target: dict, identities: list[str], timeout: float
-) -> list[dict]:
-    output, _ = read_remote(
+) -> tuple[list[dict], bool]:
+    output, transport_diagnostics = read_remote(
         target,
         [
             "docker",
@@ -295,8 +253,8 @@ def inspect_containers(
             }
             or type(record.get("exit_code")) is not int
             or type(record.get("oom_killed")) is not bool
-            or not isinstance(record.get("image_digest"), str)
-            or not re.fullmatch(r"sha256:[a-f0-9]{64}", record["image_digest"])
+            or not isinstance(record.get("image_id"), str)
+            or not re.fullmatch(r"sha256:[a-f0-9]{64}", record["image_id"])
         ):
             raise LogReadError("invalid_container_identity")
     return [
@@ -309,11 +267,11 @@ def inspect_containers(
                 "state",
                 "exit_code",
                 "oom_killed",
-                "image_digest",
+                "image_id",
             )
         }
         for record in records
-    ]
+    ], transport_diagnostics
 
 
 def read_logs(args: argparse.Namespace) -> dict:
@@ -328,7 +286,7 @@ def read_logs(args: argparse.Namespace) -> dict:
         if value and not IDENTIFIER.fullmatch(value):
             raise LogReadError("invalid_identifier")
     target = load_target(args.config)
-    output, _ = read_remote(
+    output, transport_diagnostics = read_remote(
         target,
         [
             "docker",
@@ -351,17 +309,13 @@ def read_logs(args: argparse.Namespace) -> dict:
         if not re.fullmatch(r"[a-f0-9]{64}", candidate):
             raise LogReadError("invalid_container_identity")
     containers = candidates[:MAX_CONTAINERS]
-    coverage = inspect_containers(target, containers, args.timeout)
+    coverage, inspect_diagnostics = inspect_containers(target, containers, args.timeout)
+    transport_diagnostics |= inspect_diagnostics
     entries = []
-    patterns = tuple(
-        re.compile(
-            r"(?<![A-Za-z0-9_.:/-])" + re.escape(value) + r"(?![A-Za-z0-9_.:/-])"
-        )
-        for value in (args.operation_id, args.trace_id)
-        if value
-    )
+    matched = changed = 0
+    identifiers = (args.operation_id, args.trace_id)
     for index, container in enumerate(containers):
-        stdout, stderr = read_remote(
+        stdout, log_diagnostics = read_remote(
             target,
             [
                 "docker",
@@ -375,10 +329,13 @@ def read_logs(args: argparse.Namespace) -> dict:
             ],
             args.timeout,
         )
-        for stream, raw in (("stdout", stdout), ("stderr", stderr)):
-            entries.extend(
-                entries_from_stream(raw, stream, index, since, until, patterns)
-            )
+        transport_diagnostics |= log_diagnostics
+        kept, count, altered = entries_from_stream(
+            stdout, index, since, until, identifiers, args.lines
+        )
+        entries.extend(kept)
+        matched += count
+        changed += altered
     entries.sort(key=lambda entry: timestamp(entry["timestamp"]))
     return {
         "ok": True,
@@ -389,7 +346,10 @@ def read_logs(args: argparse.Namespace) -> dict:
         "container_count": len(containers),
         "containers": coverage,
         "omitted_containers": len(candidates) - len(containers),
-        "tail_limit_reached": len(entries) > args.lines,
+        "tail_limit_reached": matched > args.lines,
+        "matched_record_count": matched,
+        "changed_record_count": changed,
+        "transport_diagnostics_present": transport_diagnostics,
         # A retained-container tail cannot prove historical coverage or absence.
         "complete": False,
         "coverage": "retained_containers_only",
@@ -422,7 +382,7 @@ def main(argv: list[str] | None = None) -> int:
     except (ValueError, OSError, subprocess.SubprocessError) as error:
         code = (
             str(error)
-            if isinstance(error, LogReadError)
+            if isinstance(error, (LogReadError, RedactionError))
             else "service_logs_unavailable"
         )
         print(json.dumps({"ok": False, "error": code, "complete": False}))
