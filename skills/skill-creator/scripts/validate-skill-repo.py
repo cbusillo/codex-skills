@@ -543,13 +543,20 @@ def validate_no_install_paths(skill_dir: Path) -> list[str]:
 
 
 def validate_markdown_links(skill_dir: Path) -> list[str]:
+    """Check Markdown body links, excluding YAML metadata and fenced examples."""
     errors: list[str] = []
     for markdown_path in sorted(skill_dir.rglob("*.md")):
         if any(part in IGNORED_SKILL_DIRS for part in markdown_path.relative_to(skill_dir).parts):
             continue
-        text = markdown_path.read_text()
+        lines = markdown_path.read_text().splitlines()
+        body_start = 0
+        if lines and lines[0].rstrip() == "---":
+            body_start = next(
+                (index + 1 for index, line in enumerate(lines[1:], start=1) if line.rstrip() == "---"),
+                0,
+            )
         in_fence = False
-        for line_number, line in enumerate(text.splitlines(), start=1):
+        for line_number, line in enumerate(lines[body_start:], start=body_start + 1):
             if line.lstrip().startswith("```"):
                 in_fence = not in_fence
                 continue
