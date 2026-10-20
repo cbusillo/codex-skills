@@ -37,11 +37,58 @@ host: Any = load("native_test_host", SCRIPTS / "jb-inspect.py")
 native: Any = load("native_test_backend", SCRIPTS / "native_backend.py")
 
 
+PROJECT=Path('/private/run/project')
+
+def span(tool='PyCompatibilityInspection',file=None,error=None,duration=0):
+    tags=[{'key':'inspectionId','value':tool},{'key':'file','value':str(PROJECT/'src/clean.py') if file is None else file}]
+    if error:tags.append({'key':error[0],'value':error[1]})
+    return {'operationName':'inspectionRun','durationNano':duration,'tags':tags}
+
+def payload(*spans):return {'data':[{'spans':list(spans)}]}
+
+class TraceTests(unittest.TestCase):
+    def test_scrubbed_stock_trace_proves_clean_physical_tools(self):
+        fixture = Path(__file__).parent / "fixtures/native-trace/clean-tools.json"
+        proved, failed = native.read_trace(fixture, Path("/fixture/project"))
+        self.assertIn("src/example.py", proved["PyCompatibilityInspection"])
+        self.assertIn("controls/control.xml", proved["OdooXml"])
+        self.assertFalse(failed)
+    def test_clean_zero_findings_still_proves_tool_and_exact_physical_file(self):
+        success,failed=native.trace_evidence(payload(span()),PROJECT)
+        self.assertIn('src/clean.py',success['PyCompatibilityInspection'])
+        self.assertFalse(failed)
+    def test_synthetic_copy_and_other_root_do_not_prove_physical_selection(self):
+        success,_=native.trace_evidence(payload(span(file='/clean.py'),span(file='/private/other/src/clean.py')),PROJECT)
+        self.assertFalse(success)
+    def test_error_tag_and_status_each_prevent_a_later_success_borrow(self):
+        for marker in [('error','true'),('otel.status_code','ERROR')]:
+            with self.subTest(marker=marker):
+                success,failed=native.trace_evidence(payload(span(error=marker),span()),PROJECT)
+                self.assertFalse(success['PyCompatibilityInspection'])
+                self.assertIn(('PyCompatibilityInspection','src/clean.py'),failed)
+    def test_incomplete_or_malformed_span_fails_closed(self):
+        for bad in [{}, {'data':[{}]}, payload(span(duration=-1))]:
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):native.trace_evidence(bad,PROJECT)
+    def test_vendor_split_requires_all_three_registered_successors(self):
+        expected,migrations=native.migrate_expected({'PyUnusedLocalInspection'},native.UNUSED_SPLIT)
+        self.assertEqual(expected,native.UNUSED_SPLIT)
+        self.assertEqual(set(migrations['PyUnusedLocalInspection']),native.UNUSED_SPLIT)
+        expected,migrations=native.migrate_expected({'PyUnusedLocalInspection'},set(native.UNUSED_SPLIT)-{'PyUnusedFunctionInspection'})
+        self.assertIn('PyUnusedLocalInspection',expected)
+        self.assertFalse(migrations)
+    def test_live_legacy_tool_does_not_migrate(self):
+        expected,migrations=native.migrate_expected({'PyUnusedLocalInspection'},native.UNUSED_SPLIT|{'PyUnusedLocalInspection'})
+        self.assertEqual(expected,{'PyUnusedLocalInspection'})
+        self.assertFalse(migrations)
+
+
 class NativeTests(unittest.TestCase):
     def test_native_is_default_for_odoo_xml_without_desktop_or_docker(self):
         args = host.build_parser().parse_args(["agent-inspect", "--repo", "/fixture"])
         with patch.object(native.sys, "platform", "darwin"), \
                 patch.object(native.common, "scope_selection", return_value=(Path("/fixture"), {}, "files", {"views/form.xml"})), \
+                patch.object(native, "eligible", return_value=True), \
                 patch.object(native, "is_odoo", return_value=True):
             backend, _ = native.select_backend(args, host)
         self.assertEqual(backend, "native")
@@ -50,6 +97,7 @@ class NativeTests(unittest.TestCase):
         args = host.build_parser().parse_args(["agent-inspect", "--repo", "/fixture"])
         with patch.object(native.sys, "platform", "darwin"), \
                 patch.object(native.common, "scope_selection", return_value=(Path("/fixture"), {}, "files", {"src/a.py"})), \
+                patch.object(native, "eligible", return_value=True), \
                 patch.object(native, "is_odoo", return_value=False):
             self.assertEqual(native.select_backend(args, host)[0], "native")
 
@@ -58,6 +106,15 @@ class NativeTests(unittest.TestCase):
         self.assertEqual(native.select_backend(args, host)[0], "qodana")
         args.qodana_recover_only = False
         self.assertEqual(native.select_backend(args, host, "api"), ("api", "host_default"))
+
+    def test_unconfigured_native_preserves_the_existing_route(self):
+        args = host.build_parser().parse_args(["agent-inspect", "--repo", "/fixture"])
+        with patch.object(native.sys, "platform", "darwin"), \
+                patch.object(native.common, "scope_selection", return_value=(Path("/fixture"), {}, "files", {"src/a.py"})), \
+                patch.object(host, "read_global_config", return_value={}), \
+                patch.object(native, "is_odoo", return_value=False), \
+                patch.object(native.common, "select_backend", return_value=("qodana", "qualified")):
+            self.assertEqual(native.select_backend(args, host), ("qodana", "qualified"))
 
     def test_cli_dispatch_does_not_enter_desktop_lifecycle(self):
         with patch.object(host, "command_native", return_value={"backend": "native"}) as run, \
@@ -119,6 +176,13 @@ class NativeTests(unittest.TestCase):
             self.assertTrue(native.license_boundary(line), line)
         self.assertFalse(native.license_boundary("Loaded custom plugins: Odoo IDE"))
 
+    def test_source_names_are_not_license_prompts(self):
+        for line in ("Running local inspections on /project/trial.py", "Inspecting trial-balance.xml", "building package license-required-helper"):
+            self.assertFalse(native.license_boundary(line), line)
+
+    def test_native_and_qodana_share_the_same_global_lock(self):
+        self.assertEqual(native.state_dir() / "worker.lock", native.common.worker_lock_path())
+
 
 class NativeLifecycleTests(unittest.TestCase):
     def setUp(self):
@@ -155,6 +219,7 @@ class NativeLifecycleTests(unittest.TestCase):
         self.script = self.app / "Contents/bin/inspect.sh"
         self.script.write_text(f"#!{sys.executable}\ntools={list(native.NAMED_PYTHON)!r}\n" + '''import pathlib,sys
 out=pathlib.Path(sys.argv[3])
+(out.parent/'inspection-trace.json').write_text('{"data":[{"spans":[]}]}')
 print('Running local inspections on '+str(pathlib.Path(sys.argv[1])/'source.py'))
 (out/'.descriptions.xml').write_text('<inspections>'+''.join(f'<inspection shortName="{tool}"/>' for tool in tools)+'</inspections>')
 for tool in tools:
@@ -171,7 +236,7 @@ print('Done.')
                 patch.object(host, "read_global_config", return_value={}), \
                 patch.object(host, "trusted_auto_open_roots", return_value=[str(self.repo)]), \
                 patch.object(native.os, "getloadavg", side_effect=loads or (lambda: (1, 1, 1))):
-            return native._run(self.args, host, None)
+            return native.run(self.args, host)
 
     def test_findings_require_current_reports_and_cleanup_sdk_in_place(self):
         result = self.assess()
@@ -242,14 +307,26 @@ print('Done.')
         self.script.write_text(f"#!{sys.executable}\nimport sys,time\nsys.stdout.write('Start trial');sys.stdout.flush()\ntime.sleep(30)\n")
         self.assertEqual(self.assess()["inspection_outcome"]["reason"], "native_owner_activation_required")
 
+    def test_cancelled_inspection_cannot_borrow_completed_spans_or_done(self):
+        self.script.write_text(self.script.read_text() + "print('Cancelling inspection progress')\n")
+        self.assertEqual(self.assess()["inspection_outcome"]["reason"], "native_execution_cancelled")
+
+    def test_preparation_output_is_not_an_ide_licensing_event(self):
+        private = self.root / "private"
+        (private / "logs").mkdir(parents=True)
+        receipt = {"load_pause_count": 0}
+        with native.profile_lock(self.worker) as lock:
+            native.execute([sys.executable, "-c", "print('Start trial')"], {}, private, time.monotonic() + 2,
+                           None, receipt, lock_fd=lock.fileno(), require_completion=False)
+        self.assertNotIn("license_boundary_observed", receipt)
+
     def test_timeout_kills_the_group_and_removes_sdk_and_private_files(self):
         self.script.write_text(f"#!{sys.executable}\nimport time\ntime.sleep(30)\n")
         self.args.timeout_ms = 100
         result = self.assess()
         self.assertEqual(result["inspection_outcome"]["reason"], "native_timeout")
         self.assertEqual(result["cleanup"]["status"], "closed")
-        with self.assertRaises(ProcessLookupError):
-            os.kill(result["diagnostic"]["native"]["worker_pid"], 0)
+        self.assertTrue(result["diagnostic"]["native"]["worker_exited"])
 
     def test_load_pause_resumes_and_exits_under_the_same_deadline(self):
         original = self.script.read_text()
@@ -297,6 +374,92 @@ print('Done.')
         self.assertFalse(table.exists())
         self.assertEqual(unrelated.read_text(), "preserved")
 
+    def test_atomic_sdk_update_preserves_comments_and_unrelated_entries(self):
+        table = self.worker / "config/options/jdk.table.xml"
+        original = '<application><!--keep--><component name="ProjectJdkTable"><jdk><name value="owner"/></jdk></component></application>'
+        table.write_text(original)
+        with patch.object(native.os, "replace", side_effect=OSError("interrupted write")):
+            with self.assertRaises(OSError):
+                with native.registered_sdk(self.worker / "config", self.repo / ".venv/bin/python", "fixture", "owned"):
+                    self.fail("incomplete write admitted")
+        self.assertEqual(table.read_text(), original)
+        with native.registered_sdk(self.worker / "config", self.repo / ".venv/bin/python", "fixture", "owned"):
+            pass
+        self.assertIn("<!--keep-->", table.read_text())
+        self.assertIn('value="owner"', table.read_text())
+        self.assertNotIn('value="owned"', table.read_text())
+
+    def test_snapshot_already_has_a_recoverable_custody_record(self):
+        snapshot = native.common.snapshot
+
+        def check_custody(repo, project):
+            record = json.loads((self.worker / "native-run.json").read_text())
+            self.assertEqual(json.loads((project.parent / "owner.json").read_text()), record)
+            return snapshot(repo, project)
+
+        with patch.object(native.common, "snapshot", side_effect=check_custody):
+            self.assertEqual(self.assess()["cleanup"]["status"], "closed")
+
+    def test_recovery_preserves_unproved_state(self):
+        private = self.root / "cache/native/private-interrupted"
+        private.mkdir(parents=True)
+        run_id = str(native.uuid.uuid4())
+        record = {"run_id": run_id, "private": str(private), "sdk_name": "jb-native-" + run_id,
+                  "interpreter": None, "table_existed": False,
+                  "storage_anchor": str(self.root), "storage_identity": {"fixture": str(self.root)}}
+        journal = self.worker / "native-run.json"
+        journal.write_text(json.dumps(record))
+        marker = private / "owner.json"
+        marker.write_text("{}")
+        with self.assertRaisesRegex(native.Blocked, "native_recovery_ownership_unproven"):
+            native.recover_run(self.worker)
+        self.assertTrue(journal.exists())
+        self.assertTrue(private.exists())
+        marker.write_text(json.dumps(record))
+        with patch.object(native.common, "storage_identity", return_value={"changed": True}):
+            with self.assertRaisesRegex(native.Blocked, "native_recovery_storage_changed"):
+                native.recover_run(self.worker)
+        self.assertTrue(private.exists())
+        with native.profile_lock(self.worker):
+            self.args.native_recover_only = True
+            self.assertEqual(self.assess()["inspection_outcome"]["reason"], "native_worker_busy")
+        native.recover_run(self.worker)
+        self.assertFalse(private.exists())
+
+    def test_guardian_cleans_up_after_invoking_process_is_killed(self):
+        started = self.root / "engine-started"
+        self.script.write_text(f"#!{sys.executable}\nimport pathlib,time\npathlib.Path({str(started)!r}).touch()\ntime.sleep(30)\n")
+        code = '''import json,sys
+from pathlib import Path
+from unittest.mock import patch
+sys.path.insert(0,sys.argv[1])
+from test_native_backend import native,host
+root=Path(sys.argv[2])
+args=host.build_parser().parse_args(json.loads(sys.argv[3]))
+with patch.object(native.sys,'platform','darwin'), patch.object(native,'state_dir',return_value=root/'state'), patch.object(native.common,'storage_identity',side_effect=lambda anchor:{'fixture':str(anchor)}), patch.object(host,'cache_dir',return_value=root/'cache'), patch.object(host,'read_global_config',return_value={}), patch.object(host,'trusted_auto_open_roots',return_value=[str(root/'repo')]), patch.object(native.os,'getloadavg',return_value=(1,1,1)):
+ native.run(args,host)
+'''
+        argv = ["agent-inspect", "--backend", "native", "--repo", str(self.repo), "--scope", "files", "--file", "source.py", "--profile", "Test", "--native-worker", str(self.worker), "--ide-app", str(self.app)]
+        process = subprocess.Popen([sys.executable, "-c", code, str(Path(__file__).parent), str(self.root), json.dumps(argv)])
+        try:
+            deadline = time.monotonic() + 10
+            while not started.exists() and process.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(started.exists(), "engine never entered guarded run")
+            process.kill()
+            process.wait(timeout=5)
+            while (self.worker / "native-run.json").exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertFalse((self.worker / "native-run.json").exists())
+            self.assertFalse((self.worker / "config/options/jdk.table.xml").exists())
+            self.assertFalse(list((self.root / "cache/native").glob("private-*")))
+            with native.profile_lock(self.worker):
+                pass
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+
     def test_credential_named_source_is_refused_without_opening_it(self):
         credential = self.repo / "do-not-read.license"
         credential.write_text("fixture content must not be read")
@@ -340,6 +503,11 @@ class LiveNativeTests(unittest.TestCase):
             self.assertFalse(any(f["file"] == "native_probe/models.py" and correct.lineno <= f["line"] <= correct.end_lineno for f in findings))
             for tool, source in (("OdooXml", "native_probe/views/defect.xml"), ("DuplicatedCode", "native_probe/duplicates.py"), ("OdooPy", "native_probe/models.py")):
                 self.assertTrue(any(f["rule_id"] == tool and f["file"] == source for f in findings), tool)
+            duplicate_tree = ast.parse((fixture / "native_probe/duplicates.py").read_text())
+            blocks = [node for node in duplicate_tree.body if isinstance(node, ast.FunctionDef)]
+            self.assertTrue(any(f["rule_id"] == "DuplicatedCode" and f["file"] == "native_probe/duplicates.py"
+                                and any(block.body[0].lineno <= f["line"] <= block.end_lineno for block in blocks)
+                                for f in findings), "duplicate must be inside the planted blocks, not a cloned file")
             self.assertFalse(any(f["file"] == "native_probe/views/control.xml" for f in findings))
 
 

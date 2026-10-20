@@ -41,17 +41,17 @@ ACTIVE_PROCESSORS = 2
 NICE = 10
 NAMED_PYTHON = frozenset({"DuplicatedCode", "HttpUrlsUsage", "PyUnresolvedReferencesInspection", "PyTypeCheckerInspection"})
 NAMED_ODOO = frozenset({"OdooPy", "OdooXml"})
-LICENSE_PROMPT = re.compile(r"\btrial\b|no valid licen[cs]e|licen[cs]e.{0,40}(?:expired|invalid|missing|required)|(?:activate|purchase|buy|log.?in).{0,40}licen[cs]e|third.party privacy notice.*not accepted", re.I)
+LICENSE_PROMPT = re.compile(r"^(?:no valid licen[cs]e\b|checking trial availability\b|(?:start|activate|try|begin|offer) (?:a |your |free )?trial\b|trial (?:expired|has expired|period|available)\b|licen[cs]e.{0,40}(?:expired|invalid|missing|required)|(?:activate|purchase|buy|log.?in).{0,40}licen[cs]e|third.party privacy notice.*not accepted)", re.I)
 
 
 def license_boundary(line):
     # Native's brief stops even on a trial offer or prompt, before activation.
-    return bool(LICENSE_PROMPT.search(line))
+    return any(LICENSE_PROMPT.search(event.rsplit(" - ", 1)[-1].strip()) for event in line.splitlines())
 
 
 def is_odoo(repo):
     paths = common.checked(["git", "-C", str(repo), "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "*__manifest__.py"])
-    fixture_roots = {"tests", "fixtures", "test-fixtures", "testdata"}
+    fixture_roots = {"tests", "fixtures", "test-fixtures", "testdata", "assets"}
     return any(not fixture_roots.intersection(Path(path).parts) for path in paths.decode().split("\0") if path)
 
 
@@ -66,6 +66,8 @@ def select_backend(args, host, host_default=None):
         return common.select_backend(args, host)
     try:
         repo, config, _scope, selected = common.scope_selection(args, host)
+        if not eligible(args, host, repo, config):
+            return common.select_backend(args, host)
         if selected and is_odoo(repo):
             return "native", "odoo_native_route"
         if selected and not common.lane_gaps(host, config, selected):
@@ -74,6 +76,21 @@ def select_backend(args, host, host_default=None):
     except (Blocked, host.InspectError, OSError, subprocess.SubprocessError, ValueError):
         pass
     return common.select_backend(args, host)
+
+
+def eligible(args, host, repo, settings):
+    """Public configuration checks only; never inspect activation or start an IDE."""
+    try:
+        worker, _app, roots = worker_settings(args, host)
+        launcher_paths(worker)
+        if is_odoo(repo) and (not roots or not any((root / "odoo/release.py").is_file() for root in roots) or any(not root.is_dir() for root in roots)):
+            return False
+        if not (repo / ".venv/bin/python").is_file() and not settings.get("prepare"):
+            return False
+        common.profile_for(repo, args.profile or settings.get("profile", ""))
+        return True
+    except (Blocked, host.InspectError, OSError, ValueError):
+        return False
 
 
 @contextlib.contextmanager
@@ -126,7 +143,14 @@ def worker_settings(args: Any, host: Any) -> tuple[Path, Path, list[Path]]:
         return worker, Path(app).expanduser().resolve() if isinstance(app, str) else worker, []
     if not isinstance(app, str) or not app:
         raise Blocked("native_app_not_configured")
-    app = Path(app).expanduser().resolve()
+    candidate = Path(app).expanduser()
+    if not candidate.is_absolute():
+        candidates = [item.path for item in host.discover_ide_app_candidates()
+                      if item.name == app or item.path.name == app or item.path.stem == app]
+        if len(candidates) != 1:
+            raise Blocked("native_app_selection_ambiguous_or_missing")
+        candidate = candidates[0]
+    app = candidate.resolve()
     launcher = app / "Contents/bin/inspect.sh"
     if not launcher.is_file():
         raise Blocked("native_inspector_unavailable")
@@ -173,8 +197,37 @@ def check_lifetime(parent_fd, deadline):
 
 
 def state_dir():
-    import pwd
-    return Path(pwd.getpwuid(os.getuid()).pw_dir) / ".local/state/jetbrains-inspection/native"
+    # Qodana and native must exclude each other, not just their own backend.
+    return common.worker_lock_path().parent
+
+
+def atomic_write(path, data):
+    """Replace a non-secret owned file in its existing directory, durably."""
+    fd, temporary = tempfile.mkstemp(prefix="." + path.name + "-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
+def write_record(path, record):
+    atomic_write(path, json.dumps(record).encode())
+
+
+def sdk_tree(path):
+    try:
+        return ElementTree.parse(path, parser=ElementTree.XMLParser(target=ElementTree.TreeBuilder(insert_comments=True)))
+    except ElementTree.ParseError:
+        raise Blocked("native_recovery_sdk_table_malformed") from None
 
 
 def recover_run(worker):
@@ -184,10 +237,17 @@ def recover_run(worker):
         return
     if journal.is_symlink():
         raise Blocked("native_recovery_ownership_unproven")
-    record = json.loads(journal.read_text())
-    run_id = str(uuid.UUID(record["run_id"]))
+    try:
+        record = json.loads(journal.read_text())
+        run_id = str(uuid.UUID(record["run_id"]))
+        required = {"private", "sdk_name", "interpreter", "table_existed", "storage_anchor", "storage_identity"}
+        if not required <= record.keys():
+            raise ValueError("missing journal fields")
+    except (ValueError, KeyError, TypeError):
+        raise Blocked("native_recovery_journal_malformed") from None
     private = Path(record["private"])
-    if record["sdk_name"] != "jb-native-" + run_id or private.is_symlink() or not private.is_absolute() or not private.name.startswith("private-"):
+    anchor = Path(record["storage_anchor"])
+    if record["sdk_name"] != "jb-native-" + run_id or private.is_symlink() or not private.is_absolute() or private.resolve() != private or not private.name.startswith("private-") or not private.is_relative_to(anchor):
         raise Blocked("native_recovery_ownership_unproven")
     if common.storage_identity(Path(record["storage_anchor"])) != record["storage_identity"]:
         raise Blocked("native_recovery_storage_changed")
@@ -195,7 +255,8 @@ def recover_run(worker):
         marker = private / "owner.json"
         if marker.is_symlink() or not marker.is_file() or json.loads(marker.read_text()) != record:
             raise Blocked("native_recovery_ownership_unproven")
-    remove_sdk(worker / "config", Path(record["interpreter"]), record["sdk_name"], record["table_existed"], missing_ok=True)
+    if record["interpreter"] is not None:
+        remove_sdk(worker / "config", Path(record["interpreter"]), record["sdk_name"], record["table_existed"], missing_ok=True)
     if private.exists():
         # Marker remains until every other owned file was deleted.
         common.delete_private(private)
@@ -226,7 +287,7 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
 
         def observe(data):
             nonlocal completion
-            if license_boundary(data):
+            if require_completion and license_boundary(data):
                 receipt["license_boundary_observed"] = True
                 raise Blocked("native_owner_activation_required")
             plugin = re.search(r"Odoo IDE \(([0-9][\w.+-]*)\)", data)
@@ -239,6 +300,8 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
             if re.search(r"^ERROR:|\sERROR\s+-", data, re.M):
                 receipt["engine_error_observed"] = True
                 raise Blocked("native_engine_error")
+            if require_completion and re.search(r"Cancelling inspection progress|\b(?:ProcessCanceledException|CancellationException)\b", data):
+                raise Blocked("native_execution_cancelled")
             for path in re.findall(r"Running local inspections on ([^\r\n]+)", data):
                 source = Path(path.strip())
                 project = private / "project"
@@ -323,6 +386,10 @@ def prepare_model(project: Path, sdk_name: str, framework_roots: list[Path], sel
     misc = ElementTree.Element("project", version="4")
     ElementTree.SubElement(misc, "component", name="ProjectRootManager", version="2", attrib={"project-jdk-name": sdk_name, "project-jdk-type": "Python SDK"})
     ElementTree.ElementTree(misc).write(idea / "misc.xml", encoding="unicode")
+    pyproject_model = ElementTree.Element("project", version="4")
+    component = ElementTree.SubElement(pyproject_model, "component", name="PyProjectModelSettings")
+    ElementTree.SubElement(component, "option", name="usePyprojectToml", value="false")
+    ElementTree.ElementTree(pyproject_model).write(idea / "pyProjectModel.xml", encoding="unicode")
     scope = ElementTree.Element("component", name="DependencyValidationManager")
     if any(re.search(r'[\s"!&|()*?:\[\]\\]', path) for path in selected):
         raise Blocked("native_scope_path_unsupported")
@@ -332,13 +399,13 @@ def prepare_model(project: Path, sdk_name: str, framework_roots: list[Path], sel
 
 
 def plant_controls(project, run_id, odoo):
-    fixtures = Path(__file__).parents[1] / "tests/fixtures/native-odoo/native_probe"
+    fixtures = Path(__file__).parents[1] / "assets/native-controls"
     prefix = "jb_native_controls_" + run_id.replace("-", "")
     destination = project / prefix
     destination.mkdir()
     names = ["coverage.py", "duplicates.py", "python_types.py"]
     if odoo:
-        names += ["__init__.py", "__manifest__.py", "models.py", "views/defect.xml", "views/control.xml"]
+        names += ["__init__.py", "__manifest__.py", "models.py", "views/defect.xml"]
     for name in names:
         target = destination / name
         target.parent.mkdir(exist_ok=True)
@@ -353,7 +420,7 @@ def registered_sdk(config: Path, interpreter: Path, version: str, sdk_name: str)
     if table.is_symlink() or table.parent.is_symlink():
         raise Blocked("native_sdk_table_unsafe")
     existed = table.exists()
-    tree = ElementTree.parse(table) if existed else ElementTree.ElementTree(ElementTree.Element("application"))
+    tree = sdk_tree(table) if existed else ElementTree.ElementTree(ElementTree.Element("application"))
     root = tree.getroot()
     component = root.find("component[@name='ProjectJdkTable']")
     if component is None:
@@ -374,7 +441,7 @@ def registered_sdk(config: Path, interpreter: Path, version: str, sdk_name: str)
                 ElementTree.SubElement(composite, "root", url=Path(path).as_uri(), type="simple")
     ElementTree.SubElement(jdk, "additional")
     table.parent.mkdir(exist_ok=True)
-    tree.write(table, encoding="unicode")
+    atomic_write(table, ElementTree.tostring(tree.getroot(), encoding="utf-8"))
     try:
         yield
     finally:
@@ -387,7 +454,7 @@ def remove_sdk(config: Path, interpreter: Path, sdk_name: str, table_existed: bo
         raise Blocked("native_sdk_table_unsafe")
     if not table.exists() and missing_ok:
         return
-    current = ElementTree.parse(table)
+    current = sdk_tree(table)
     component = current.getroot().find("component[@name='ProjectJdkTable']")
     if component is None:
         if missing_ok:
@@ -408,7 +475,7 @@ def remove_sdk(config: Path, interpreter: Path, sdk_name: str, table_existed: bo
     if not table_existed and len(component) == 0 and len(current.getroot()) == 1:
         table.unlink()
     elif matches:
-        current.write(table, encoding="unicode")
+        atomic_write(table, ElementTree.tostring(current.getroot(), encoding="utf-8"))
 
 
 def read_results(results: Path, project: Path, selected: set[str]) -> tuple[list[dict[str, Any]], set[str], set[str]]:
@@ -444,6 +511,70 @@ def read_results(results: Path, project: Path, selected: set[str]) -> tuple[list
                              "severity": problem_class.get("severity", "WARNING") if problem_class is not None else "WARNING",
                              "message": common.safe_text(problem.findtext("description", ""))})
     return findings, registered, executed
+
+
+UNUSED_SPLIT = frozenset({'PyUnusedLocalVariableInspection', 'PyUnusedParameterInspection', 'PyUnusedFunctionInspection'})
+
+
+def migrate_expected(requested, registered):
+    expected = set(requested)
+    migrations = {}
+    if 'PyUnusedLocalInspection' in expected and 'PyUnusedLocalInspection' not in registered and UNUSED_SPLIT <= set(registered):
+        expected.remove('PyUnusedLocalInspection')
+        expected.update(UNUSED_SPLIT)
+        migrations['PyUnusedLocalInspection'] = sorted(UNUSED_SPLIT)
+    return expected, migrations
+
+
+def trace_evidence(payload, project):
+    """Return successful physical tool/file pairs; errors cannot borrow success."""
+    if not isinstance(payload, dict) or not isinstance(payload.get('data'), list):
+        raise ValueError('native_trace_invalid')
+    project = Path(project)
+    success, failed = {}, set()
+    for batch in payload['data']:
+        if not isinstance(batch, dict) or not isinstance(batch.get('spans'), list):
+            raise ValueError('native_trace_invalid')
+        for span in batch['spans']:
+            if not isinstance(span, dict):
+                raise ValueError('native_trace_invalid')
+            if span.get('operationName') != 'inspectionRun':
+                continue
+            tags = {}
+            for tag in span.get('tags', []):
+                if not isinstance(tag, dict) or not isinstance(tag.get('key'), str) or tag['key'] in tags:
+                    raise ValueError('native_trace_invalid')
+                tags[tag['key']] = tag.get('value')
+            tool, raw = tags.get('inspectionId'), tags.get('file')
+            if not isinstance(tool, str) or not tool:
+                raise ValueError('native_trace_invalid')
+            # Synthetic PSI copies such as /factories.py do not prove physical
+            # source execution. Global spans without a file cannot satisfy local
+            # or scoped tool/file requirements either.
+            if not isinstance(raw, str):
+                continue
+            source = Path(raw)
+            if not source.is_absolute() or '..' in source.parts or not source.is_relative_to(project):
+                continue
+            relative = source.relative_to(project).as_posix()
+            key = tool, relative
+            if tags.get('otel.status_code') == 'ERROR' or str(tags.get('error')).lower() == 'true':
+                failed.add(key)
+                continue
+            duration = span.get('durationNano', span.get('duration'))
+            if isinstance(duration, bool) or not isinstance(duration, int) or duration < 0:
+                raise ValueError('native_trace_invalid')
+            success.setdefault(tool, set()).add(relative)
+    for tool, relative in failed:
+        success.get(tool, set()).discard(relative)
+    return success, failed
+
+
+def read_trace(path, project):
+    path = Path(path)
+    if path.is_symlink():
+        raise Blocked('native_trace_unsafe')
+    return trace_evidence(json.loads(path.read_text()), project)
 
 
 def envelope(host: Any, receipt: dict[str, Any], findings: list[dict[str, Any]], reason: str, gaps: list[str], artifact: str | None = None) -> dict[str, Any]:
@@ -517,7 +648,7 @@ def _run(args: Any, host: Any, parent_fd: int | None) -> dict[str, Any]:
             raise Blocked("native_trusted_root_required")
         if not is_odoo(repo):
             framework = []
-        elif any(not root.is_dir() or not (root / "odoo/release.py").is_file() for root in framework):
+        elif framework and (any(not root.is_dir() for root in framework) or not any((root / "odoo/release.py").is_file() for root in framework)):
             raise Blocked("native_odoo_framework_unavailable")
         receipt.update(scope=scope, selected_file_count=len(selected), repo_head_sha=host.git_head_sha(repo))
         receipt["framework_revisions"] = [host.git_head_sha(root) for root in framework]
@@ -543,8 +674,19 @@ def _run(args: Any, host: Any, parent_fd: int | None) -> dict[str, Any]:
         receipt["profile_sha256"] = common.digest(profile)
         if is_odoo(repo) and not framework:
             raise Blocked("native_odoo_framework_required")
-        private = Path(tempfile.mkdtemp(prefix="private-", dir=state))
-        private.chmod(0o700)
+        private = state / ("private-" + receipt["run_id"])
+        sdk_name = "jb-native-" + receipt["run_id"]
+        source_interpreter = repo / ".venv/bin/python"
+        interpreter = private / "project/.venv/bin/python" if settings.get("prepare") else source_interpreter
+        anchor = common.storage_anchor(state)
+        record = {"run_id": receipt["run_id"], "private": str(private), "sdk_name": sdk_name,
+                  "interpreter": str(interpreter), "table_existed": (config / "options/jdk.table.xml").exists(),
+                  "storage_anchor": str(anchor), "storage_identity": common.storage_identity(anchor)}
+        journal = worker / "native-run.json"
+        # Custody precedes source snapshotting or environment preparation.
+        write_record(journal, record)
+        private.mkdir(mode=0o700)
+        write_record(private / "owner.json", record)
         receipt["private_deleted"] = False
         for name in ("project", "system", "logs", "tmp", "results", "registry"):
             (private / name).mkdir(mode=0o700)
@@ -559,7 +701,6 @@ def _run(args: Any, host: Any, parent_fd: int | None) -> dict[str, Any]:
         check_lifetime(parent_fd, deadline)
         # Use the declared version, or the exact worktree's prepared venv.
         requested = common.requested_python_version(settings)
-        source_interpreter = repo / ".venv/bin/python"
         if settings.get("prepare"):
             prepared = common.preparation(settings, private, "python", repo, uv_supplied=True)
             preparation_env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(private / "prepare-home"), "TMPDIR": str(private / "tmp")}
@@ -576,15 +717,6 @@ def _run(args: Any, host: Any, parent_fd: int | None) -> dict[str, Any]:
         if requested and not (version == requested or version.startswith(requested + ".")):
             raise Blocked("native_python_version_mismatch")
         receipt["python_version"] = version
-        sdk_name = "jb-native-" + receipt["run_id"]
-        anchor = common.storage_anchor(private.parent)
-        record = {"run_id": receipt["run_id"], "private": str(private), "sdk_name": sdk_name,
-                  "interpreter": str(interpreter), "table_existed": (config / "options/jdk.table.xml").exists(),
-                  "storage_anchor": str(anchor), "storage_identity": common.storage_identity(anchor)}
-        (private / "owner.json").write_text(json.dumps(record))
-        journal = worker / "native-run.json"
-        journal.write_text(json.dumps(record))
-        journal.chmod(0o600)
         prepare_model(project, sdk_name, framework, selected | controls)
         shutil.copyfile(profile, private / "profile.xml")
         properties = {"config": config, "plugins": plugins, "system": private / "system", "log": private / "logs"}
@@ -594,6 +726,8 @@ def _run(args: Any, host: Any, parent_fd: int | None) -> dict[str, Any]:
         vm = [line for line in vm if not line.startswith(("-Xmx", "-Xms", "-XX:HeapDump", "-XX:+HeapDump", "-XX:ErrorFile", "-Duser.home", "-Didea.", "-XX:ActiveProcessorCount"))]
         vm += ["-Xms256m", f"-Xmx{HEAP_LIMIT_MIB}m", f"-XX:ActiveProcessorCount={ACTIVE_PROCESSORS}", "-XX:-HeapDumpOnOutOfMemoryError", "-Djava.awt.headless=true", f"-Duser.home={home}", "-Didea.headless.enable.statistics=false", "-Didea.analyze.scope=JBNativeSelection", "-Didea.log.debug.categories=#com.intellij.codeInspection.ex.GlobalInspectionContextImpl", f"-Didea.max.intellisense.filesize={common.MAX_ANALYZED_FILE_KB}"]
         vm += [f"-Didea.{name}.path={path}" for name, path in properties.items()]
+        vm += [f"-Didea.diagnostic.opentelemetry.file={private}/inspection-trace.json",
+               "-Didea.diagnostic.opentelemetry.detailed.scopes=inspection"]
         vm += [f"-XX:ErrorFile={private}/logs/java-error-%p.log", f"-XX:HeapDumpPath={private}/logs"]
         (private / "native.vmoptions").write_text("\n".join(vm) + "\n")
         env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(home), "TMPDIR": str(private / "tmp"),
@@ -608,14 +742,23 @@ def _run(args: Any, host: Any, parent_fd: int | None) -> dict[str, Any]:
         except Blocked as error:
             # registered_sdk completed its finally before propagating a run failure.
             # A cleanup-specific failure stays explicitly unresolved.
-            if str(error) not in {"native_sdk_cleanup_identity_changed", "native_sdk_cleanup_unproven"}:
+            if str(error) not in {"native_sdk_cleanup_identity_changed", "native_sdk_cleanup_unproven", "native_recovery_sdk_table_malformed"}:
                 receipt["sdk_removed"] = True
             raise
         findings, registered, executed = read_results(private / "results", project, selected)
-        receipt["coverage"] = coverage(expected, registered, executed)
+        trace_tools, trace_failed = read_trace(private / "inspection-trace.json", project)
+        allowed = selected | controls
+        executed.update(tool for tool, paths in trace_tools.items() if paths & allowed)
+        effective, migrations = migrate_expected(expected, registered)
+        receipt["coverage"] = coverage(effective, registered, executed)
+        receipt["coverage"]["vendor_migrations"] = migrations
+        receipt["coverage"]["physical_execution"] = {tool: sorted(paths & allowed) for tool, paths in trace_tools.items() if tool in effective and paths & allowed}
         receipt["coverage"]["profile_requested"] = sorted(profile_requested)
         receipt["coverage"]["not_applicable"] = sorted(profile_requested - expected)
         gaps = ["execution_unproven:" + name for name in receipt["coverage"]["unproven"]]
+        gaps += ["inspection_execution_failed:" + tool + ":" + path for tool, path in sorted(trace_failed) if path in allowed]
+        if set(receipt.get("inspected_files", [])) - allowed:
+            gaps.append("native_unselected_file_traversal")
         gaps += ["scoped_profile_execution_unproven:" + name for name in sorted(restricted)]
         if not selected <= set(receipt.get("inspected_files", [])):
             gaps.append("native_selected_file_traversal_unproven")
@@ -648,8 +791,8 @@ def _run(args: Any, host: Any, parent_fd: int | None) -> dict[str, Any]:
     finally:
         if receipt.get("license_boundary_observed") and worker is not None:
             # Count-only persistent stop, never preserve raw licensing output.
-            (worker / "native-activation-stop.json").write_text(json.dumps({"run_id": receipt["run_id"], "boundary_event_count": 1}))
-        if private is not None:
+            write_record(worker / "native-activation-stop.json", {"run_id": receipt["run_id"], "boundary_event_count": 1})
+        if private is not None and private.exists():
             if findings:
                 artifact_path = private.parent / (receipt["run_id"] + ".findings.json")
                 artifact_path.write_text(json.dumps(findings))
@@ -663,7 +806,7 @@ def _run(args: Any, host: Any, parent_fd: int | None) -> dict[str, Any]:
             except OSError:
                 reason = "native_cleanup_failed"
         if journal is not None and receipt["private_deleted"] and receipt["sdk_removed"]:
-            journal.unlink()
+            journal.unlink(missing_ok=True)
         held_lock.close()
         receipt["wall_seconds"] = round(time.monotonic() - started, 3)
     return envelope(host, receipt, findings, reason, gaps, artifact)
@@ -680,8 +823,12 @@ def run(args, host):
     if child == 0:
         os.close(lifetime_write)
         os.close(result_read)
+        def guardian_signal(_signum, _frame):
+            # A caught handler resets to default across exec; SIG_IGN would
+            # incorrectly propagate immunity into the inspected process.
+            pass
         for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
-            signal.signal(sig, signal.SIG_IGN)
+            signal.signal(sig, guardian_signal)
         try:
             try:
                 result = _run(args, host, lifetime_read)

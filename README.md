@@ -576,7 +576,9 @@ deadline, and the import does not fetch the manual.
 ## JetBrains inspections
 
 On macOS, `jetbrains-inspection` runs Python and Odoo assessments through stock
-PyCharm `inspect.sh` using an independently Director-activated profile in place.
+PyCharm `inspect.sh` when an independently Director-activated worker and its
+project prerequisites are configured. Other hosts retain their existing route.
+The worker uses its activated profile in place.
 It keeps exclusive ownership and private system/cache/log paths, without
 opening the desktop IDE or copying activation or credentials. Configure the
 worker once in the [native runner reference](skills/jetbrains-inspection/references/native-backend.md).

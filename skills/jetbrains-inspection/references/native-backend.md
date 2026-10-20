@@ -2,8 +2,9 @@
 
 Read before configuring, diagnosing or changing the native runner. On macOS,
 `agent-inspect` defaults to stock PyCharm `inspect.sh` for Odoo repositories and
-Python-only selections in root PyCharm lanes. Other platforms retain their
-existing selection. Explicit Qodana options still select Qodana. Use
+Python-only selections in root PyCharm lanes when an eligible independent
+worker, interpreter and profile are configured. Unconfigured or unsupported
+hosts retain their existing Qodana/API selection. Explicit Qodana options still select Qodana. Use
 `--backend native|api|qodana` or `JB_INSPECT_DEFAULT_BACKEND` for an explicit
 choice. Native never starts a desktop IDE or falls back to its normal profile.
 
@@ -37,7 +38,9 @@ Configure the **helper's** shared JSON config at
 The standard `JETBRAINS_INSPECTION_GLOBAL_CONFIG` override selects a helper
 config. `--native-worker` (or `JETBRAINS_INSPECTION_NATIVE_WORKER`), `--ide-app`
 and repeatable `--native-framework-root` provide one-run selections. Framework
-roots must contain `odoo/release.py`; omit them for ordinary Python projects.
+roots include one Odoo core repository containing `odoo/release.py` and any
+required addon dependency repositories, each as a clean pinned Git checkout.
+Omit them for ordinary Python projects.
 Record the framework commit, not just its directory name.
 
 The worker contains `config/`, `plugins/`, `home/`, `idea.properties` and
@@ -82,9 +85,11 @@ worktree must already have its documented `.venv`. Native does not guess a
 Python version or read a desktop SDK table. A unique non-secret SDK entry is
 added to the independent profile's table in place and removed after execution;
 unrelated entries remain. The snapshot gets canonical project and framework
-roots; no source project metadata is changed.
+roots; its private `PyProjectModelSettings.usePyprojectToml=false` preserves that
+model when uv workspace discovery would otherwise replace module roots and
+break exact named scopes. No source project metadata is changed.
 
-A per-user native lock and the independent profile's lock allow one worker.
+A per-user lock shared with Qodana and the independent profile's lock allow one worker.
 The child has its own process group, nice 10, a 1,536 MiB JVM heap and two active
 processors. The latter is a JVM concurrency cap, not an OS CPU quota. System,
 cache, logs, temporary files and inspection results live in fresh private paths
@@ -100,7 +105,10 @@ root. The config, activation, plugin installation and independent home stay put.
 
 If a crash interrupts cleanup, `native-run.json` beside the worker retains
 custody. The next run reconciles only its journaled SDK and private directory,
-checking the private ownership marker and storage identity. A live worker's
+checking the private ownership marker and storage identity. Custody is journaled
+before source copying or environment preparation. Non-secret journal, marker,
+stop receipt and SDK updates use atomic same-directory replacement; unrelated
+SDK entries and XML comments survive cleanup. A live worker's
 lock, changed storage or unproved ownership retains state. Recover without
 inspection, using the same worker/app selection:
 
@@ -118,18 +126,30 @@ Results name `backend: native`, the selected scope, source/profile/helper and
 framework provenance, coverage, findings and separate cleanup. Reports must
 name the backend and any `coverage.unavailable` or `coverage.unproven` entries.
 
-The effective descriptions prove registration only. Native findings prove
-execution. Private positive controls exercise `DuplicatedCode`, `HttpUrlsUsage`,
+The effective descriptions prove registration only. Native findings and
+completed stock `inspectionRun` telemetry prove execution. The per-run local
+Jaeger exporter records tool IDs and exact physical files, including clean
+checks. Parse it only after a successful final `Done.` and engine exit, with no
+engine error or cancellation. Malformed/truncated traces and failed spans stay
+UNKNOWN; raw traces are private and deleted with the run. Private positive controls exercise `DuplicatedCode`, `HttpUrlsUsage`,
 Python type/unresolved checks, and Odoo's named `OdooPy` and `OdooXml` checks.
-They are included in the exact native scope and excluded from user findings.
+These runtime controls have distinct source from the qualification fixture,
+so their presence cannot fabricate its duplicate-code result. They are included
+in the exact native scope and excluded from user findings.
 Debug traversal observations must also cover every selected physical file.
-Source, selection and profile changes invalidate the result.
+Unexpected physical traversal also invalidates the result. Source, selection
+and profile changes invalidate the result.
 Oversized files and scoped disabled-tool overrides cannot borrow the private
 controls' proof; they remain UNKNOWN until their selected-file execution is
 proved by a qualified route.
 
 `coverage.profile_requested` lists the repository's enabled entries;
 `not_applicable` separates other-language tools from this source selection.
+The vendor migration from `PyUnusedLocalInspection` to the three
+`PyUnusedLocalVariableInspection`, `PyUnusedParameterInspection` and
+`PyUnusedFunctionInspection` checks is recorded explicitly when all successors
+are registered. Every successor must execute. This follows JetBrains
+[PyUnusedSymbolInspectionMerger](https://github.com/JetBrains/intellij-community/blob/master/python/python-psi-impl/src/com/jetbrains/python/inspections/unusedLocal/PyUnusedSymbolInspectionMerger.kt); no check is dropped.
 Applicable requested tools without positive execution evidence remain unproven,
 even when registered and the engine exits successfully. Any such gap makes the
 verdict UNKNOWN, with current findings retained. No missing check is accepted.

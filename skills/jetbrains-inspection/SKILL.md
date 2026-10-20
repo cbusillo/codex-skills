@@ -109,7 +109,9 @@ native PyCharm, Qodana or the Inspection API. Prefer it over direct curl or MCP
 tool calls.
 
 On macOS, `agent-inspect` defaults to isolated native PyCharm for Odoo repositories
-and Python-only selections assigned to root PyCharm lanes. Read
+and Python-only selections assigned to root PyCharm lanes when an eligible
+independent worker, interpreter and profile are configured. Otherwise the
+existing Qodana/API selection remains available. Read
 [native PyCharm](references/native-backend.md) before configuring, diagnosing
 or changing that runner. It uses the independently Director-activated worker
 in place, with its shared exclusive lock and private system/cache/log paths;
