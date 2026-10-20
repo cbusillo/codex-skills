@@ -1369,11 +1369,15 @@ class AccountChoiceTests(unittest.TestCase):
             self.assertEqual(list(root.iterdir()), [])
 
 
+# Launch fixtures carry the rules link every Supervisor brief needs.
+BRIEF = f"brief under {iterm_tab.BRIEF_RULES_URL}"
+
+
 def fixture_briefs(command_files):
     files = command_files if isinstance(command_files, list) else [command_files]
     briefs = [path.with_suffix(".brief") for path in files]
     for path in briefs:
-        path.write_text("brief")
+        path.write_text(BRIEF)
     return briefs
 
 
@@ -2738,7 +2742,7 @@ class TerminalTests(unittest.TestCase):
             launch.write_text("cd / && exec " + shlex.quote(str(child)))
             args = account_launch_args(launch)
             args.account_provider, args.account_config = "google", config_path
-            brief = "--Google brief\nKeep $(touch injected) literal."
+            brief = "--Google brief\nKeep $(touch injected) literal.\n" + BRIEF
             args.brief_file[0].write_text(brief)
             terminal, window, app = launch_terminal_fixture()
             with (patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
@@ -2808,7 +2812,7 @@ class TerminalTests(unittest.TestCase):
             launch = root / "launch.txt"
             launch.write_text("cd / && exec " + shlex.quote(str(child)))
             brief = root / "brief.txt"
-            content = "--Don't substitute $(touch injected) or `touch injected`\n\tFollow the issue."
+            content = "--Don't substitute $(touch injected) or `touch injected`\n\tFollow the issue.\n" + BRIEF
             brief.write_text(content)
             args = account_launch_args(launch)
             args.brief_file = [brief]
@@ -2867,7 +2871,20 @@ class TerminalTests(unittest.TestCase):
                 patch.object(account_choice, "record_launch") as receipt,
                 patch.object(iterm_tab, "check_codex_daemon") as daemon,
             ):
-                for content in (None, "", "   \n"):
+                rules = iterm_tab.brief_rules_block()
+                middle = len(rules) // 2
+                edited = rules[:middle] + " edited " + rules[middle:]
+                copy = root / "old" / "skills" / "supervisor" / "references" / "brief-rules.md"
+                copy.parent.mkdir(parents=True)
+                copy.write_text(f"<!-- brief-rules:start -->\n{edited}\n<!-- brief-rules:end -->\n")
+                stale = (None, "", "   \n", "Do the task.",
+                         "Rules: https://github.com/o/r/blob/0a1b2c3/skills/supervisor/references/brief-rules.md",
+                         f"Rules: {iterm_tab.BRIEF_RULES_URL}.old", f"Rules: {iterm_tab.BRIEF_RULES_URL}%2Eold",
+                         f"Rules: {iterm_tab.BRIEF_RULES_URL}/other.md", f"Rules: {iterm_tab.BRIEF_RULES}/other.md",
+                         "Rules: skills/supervisor/references/brief-rules.md",
+                         f"Rules: {copy}", f"Rules: {root / 'missing' / copy.relative_to(root / 'old')}",
+                         "Do the task.\n" + edited)
+                for content in stale:
                     if content is not None:
                         brief.write_text(content)
                     with self.subTest(content=content), self.assertRaises((ValueError, OSError)):
@@ -2878,6 +2895,15 @@ class TerminalTests(unittest.TestCase):
                     daemon.assert_not_called()
                     window.async_create_tab.assert_not_awaited()
                     terminal.async_send_text.assert_not_awaited()
+
+    def test_brief_links_or_includes_the_current_rules(self):
+        rules = iterm_tab.brief_rules_block()
+        for brief in (f"Do the task.\nRules for this brief: {iterm_tab.BRIEF_RULES_URL}",
+                      f"Read {iterm_tab.BRIEF_RULES_URL}. Then start.",
+                      f"Do the task. Rules: ({iterm_tab.BRIEF_RULES}#rules-every-brief-carries)",
+                      "Do the task.\n\n" + " ".join(rules.split())):
+            with self.subTest(brief=brief):
+                iterm_tab.validate_brief_rules(brief)
 
     def test_codex_daemon_preflight_checks_selected_home_before_tabs_and_receipts(self):
         # Short disposable paths fit macOS's Unix socket path limit.
@@ -3278,7 +3304,7 @@ class TerminalTests(unittest.TestCase):
             if sent.startswith("\x1b[200~"):
                 sent = sent.removeprefix("\x1b[200~").removesuffix("\x1b[201~")
             launched = subprocess.run(["/bin/sh", "-c", sent], capture_output=True, text=True, check=True)
-            self.assertEqual(launched.stdout.splitlines(), [choice["env"]["CLAUDE_CONFIG_DIR"], "1", "brief"])
+            self.assertEqual(launched.stdout.splitlines(), [choice["env"]["CLAUDE_CONFIG_DIR"], "1", BRIEF])
         window.async_create_tab.assert_awaited_once_with(select=False)
         receipt.assert_called_once_with(choice)
         self.assertEqual(result["account"]["env_keys"], ["CLAUDE_CONFIG_DIR"])

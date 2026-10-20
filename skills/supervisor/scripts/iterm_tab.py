@@ -37,6 +37,16 @@ CLAUDE_AUTOCOMPACT_OPTION = "--autocompact"
 CODEX_PROMPT_WINDOW = 20.0
 # The catalog's Chrome opt-in; with it, browser tools come only from the pinned server.
 CHROME_OPT_IN = Path(__file__).resolve().parents[3] / ".local" / "chrome.toml"
+# Every brief carries the reviewed rules, by link or as an unchanged copy (Q587).
+BRIEF_RULES = Path(__file__).resolve().parents[1] / "references" / "brief-rules.md"
+BRIEF_RULES_URL = "https://github.com/cbusillo/codex-skills/blob/main/skills/supervisor/references/brief-rules.md"
+# A link to main stays current; a pinned commit, relative path or longer name does not.
+# The link ends at an anchor, whitespace, a closing delimiter or sentence punctuation.
+_BRIEF_RULES_TAIL = (re.escape("skills/supervisor/references/brief-rules.md")
+                     + r"(?=#|$|[\s)>\]`'\"]|[.,;:](?:\s|$))")
+BRIEF_RULES_URL_LINK = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/blob/main/" + _BRIEF_RULES_TAIL)
+# An absolute path counts only when that file holds the current rules block.
+BRIEF_RULES_PATH_LINK = re.compile(r"(?<![^\s(<\[`'\"])(/(?:[^\s:()<>\[\]`'\"]+/)?" + _BRIEF_RULES_TAIL + ")")
 
 
 
@@ -290,6 +300,32 @@ def validate_text(text, allow_tabs=False):
     allowed = "\n\t" if allow_tabs else "\n"
     if not text or any(ord(c) < 32 and c not in allowed for c in text):
         raise ValueError("text must be nonempty with no terminal control characters")
+
+
+def brief_rules_block(path=BRIEF_RULES):
+    """Return the marked rules block from a brief rules reference."""
+    text = Path(path).read_text(encoding="utf-8")
+    start, end = "<!-- brief-rules:start -->", "<!-- brief-rules:end -->"
+    if text.count(start) != 1 or text.count(end) != 1:
+        raise ValueError(f"{path} needs exactly one marked rules block")
+    return text.split(start, 1)[1].split(end, 1)[0].strip()
+
+
+def current_rules_path(path, rules):
+    try:
+        return brief_rules_block(path) == rules
+    except (OSError, ValueError):
+        return False
+
+
+def validate_brief_rules(brief):
+    rules = brief_rules_block()
+    if (BRIEF_RULES_URL_LINK.search(brief)
+            or any(current_rules_path(path, rules) for path in BRIEF_RULES_PATH_LINK.findall(brief))
+            or " ".join(rules.split()) in " ".join(brief.split())):
+        return
+    raise ValueError(f"brief must link the current Supervisor brief rules ({BRIEF_RULES_URL} or {BRIEF_RULES}) "
+                     "or include their rules block unchanged")
 
 
 def launch_parts(command_text):
@@ -1085,6 +1121,7 @@ def prepare_launches(args):
         if not brief.strip():
             raise ValueError("brief must be nonempty")
         validate_text(brief, allow_tabs=True)
+        validate_brief_rules(brief)
     apps = [gui_launch.declared_app(brief) for brief in briefs]
     if any(apps):
         if len(files) != 1 or getattr(args, "account_provider", None) != "openai":
