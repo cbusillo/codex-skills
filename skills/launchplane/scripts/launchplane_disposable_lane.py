@@ -482,13 +482,16 @@ def execute(h: Any, args: argparse.Namespace) -> int:
 def _recommendation(mode: str, status: str, body: dict[str, Any]) -> str:
     if mode == "inspect":
         return ("Save this output privately and review the binding. It is required evidence for collect "
-                "and record. Facts stay unknown until the service collects them.")
+                "and record. Fresh facts stay unknown until the service collects them. Stored observations "
+                "have unverified freshness and binding; they do not establish current disposal eligibility.")
     if status != "accepted":
         return ("The service accepted the request, but the lane binding could not be confirmed afterwards. "
                 "Inspect again before relying on it; do not retry automatically.")
     if mode == "record" and "preview_id" in body:
-        return "The preview observation is recorded and a preview reconcile was requested. Stored facts cannot be read back."
-    return "The observation is stored for a short time. Stored facts cannot be read back; only the lane binding was rechecked."
+        return ("The preview observation is recorded and a preview reconcile was requested. Only the lane "
+                "binding was rechecked; the stored report was not matched to this submission.")
+    return ("The observation is stored for a short time. Only the lane binding was rechecked; "
+            "the stored report was not matched to this submission.")
 
 
 def _outcome_unknown(h: Any, args: argparse.Namespace, request: dict[str, object],
