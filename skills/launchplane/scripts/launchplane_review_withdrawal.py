@@ -130,6 +130,8 @@ def finish(h: Any, *, operation: str, request: dict[str, object], status: str,
     if operation_key:
         summary["idempotency_key"] = operation_key
     recommendation = RECOVERY.get(status, str(summary.get("recommendation", "Inspect the service refusal before retrying.")))
+    if status == "history_unverifiable" and result and result.get("replan_required") is True:
+        recommendation += " " + RECOVERY["replan_required"]
     if result and result.get("prior_effects_unknown") is True:
         recommendation += " A label removal may have happened without a PR history entry; preserve and inspect the saved operation and PR history."
     summary["recommendation"] = recommendation

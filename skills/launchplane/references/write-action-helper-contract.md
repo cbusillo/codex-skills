@@ -2162,7 +2162,8 @@ refusals. Dry-run and fresh apply check history before removing a label. Bounded
 or ambiguous authenticated history blocks dispatch with `history_unverifiable`;
 resolve history verification before retrying, because changing keys cannot fix
 it. Recovery of an uncertain operation can settle with that same status while
-retaining `prior_effects_unknown`. Completed readback preserves its applied
+retaining `prior_effects_unknown`. That key is terminal: after resolving history
+verification, review a fresh dry-run and use a new key. Completed readback preserves its applied
 receipt and reports a mismatch when permanent history limits prevent verification.
 `not_started` means this caller/key has no saved operation: resubmit the exact
 original apply with that same key. `invalid_request` requires correcting the

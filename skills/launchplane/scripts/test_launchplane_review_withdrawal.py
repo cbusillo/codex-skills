@@ -152,6 +152,7 @@ def test_recovery_classifier_preserves_receipts_and_distinguishes_other_callers(
     assert result["result"]["prior_effects_unknown"] is True
     from launchplane_review_withdrawal import RECOVERY
     assert result["summary"]["recommendation"].startswith(RECOVERY["history_unverifiable"])
+    assert RECOVERY["replan_required"] in result["summary"]["recommendation"]
 
 
 
