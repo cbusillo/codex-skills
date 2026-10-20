@@ -53,8 +53,11 @@ def intent(h: Any, args: argparse.Namespace) -> tuple[dict[str, object], dict[st
     if mode != "dry-run":
         if not re.fullmatch(r"[a-f0-9]{64}", args.expected_plan_digest) or not args.idempotency_key.strip() or len(args.idempotency_key) > 200:
             raise ValueError("invalid_withdrawal_review_binding")
-        if h.public_identifier(args.idempotency_key) != args.idempotency_key:
-            raise ValueError("invalid_withdrawal_operation_key")
+        try:
+            if h.public_identifier(args.idempotency_key) != args.idempotency_key:
+                raise ValueError("invalid_withdrawal_operation_key")
+        except h.LaunchplaneSafetyError as error:
+            raise ValueError("invalid_withdrawal_operation_key") from error
         body["reviewed_plan_sha256"] = args.expected_plan_digest
     h.assert_public_safe_shape(request)
     return request, body
@@ -81,6 +84,10 @@ def project(h: Any, response: object, body: dict[str, object]) -> dict[str, obje
         if type(result["replan_required"]) is not bool or result["applied"]:
             raise h.LaunchplaneSafetyError("invalid_response")
         projected["replan_required"] = result["replan_required"]
+    if "history_unverifiable" in result:
+        if type(result["history_unverifiable"]) is not bool or result.get("replan_required") is not True:
+            raise h.LaunchplaneSafetyError("invalid_response")
+        projected["history_unverifiable"] = result["history_unverifiable"]
     if "prior_effects_unknown" in result:
         if type(result["prior_effects_unknown"]) is not bool or result.get("replan_required") is not True:
             raise h.LaunchplaneSafetyError("invalid_response")
@@ -104,6 +111,10 @@ RECOVERY = {
     "outcome_unknown": "Outcome unknown. The original caller must keep the exact request, reviewed digest and key, read back, then resubmit that same apply to recover or settle it. Do not start over with a new key.",
     "in_progress": "The original operation is still running. Wait and read back with the same caller, request and key.",
     "target_busy": "This request was not dispatched. Another operation owns the PR; its original caller must recover its saved operation. This caller's key cannot recover it.",
+    "not_started": "No operation exists for this caller and key. Resubmit the exact original apply with that same caller, request, reviewed digest and key.",
+    "invalid_request": "This request was not dispatched. Correct the invalid request before applying.",
+    "stale_plan": "This request was not dispatched. Refresh and review the exact dry-run before applying.",
+    "history_unverifiable": "Authenticated history cannot be uniquely verified. Resolve history verification before retrying; changing keys cannot fix it. Preserve any saved receipt and prior-effect uncertainty.",
     "conflict": "This request was not dispatched. Restore the request that belongs to the original key; do not retry changed input with it.",
     "refused": "Withdrawal was refused. Inspect the current head and saved Client decisions; do not bypass the refusal or remove the label by hand.",
     "replan_required": "The original intent is settled without claiming withdrawal. Inspect the pending request and review a fresh dry run before using a new key.",
@@ -136,6 +147,8 @@ def finish(h: Any, *, operation: str, request: dict[str, object], status: str,
 
 
 def result_status(result: dict[str, object], *, mode: str) -> str:
+    if result.get("history_unverifiable") is True:
+        return "history_unverifiable"
     if result.get("replan_required") is True:
         return "replan_required"
     if mode == "dry-run":
@@ -187,6 +200,10 @@ def execute(h: Any, args: argparse.Namespace) -> int:
                     "product_review_withdrawal_target_busy": "target_busy",
                     "product_review_withdrawal_in_progress": "in_progress",
                     "product_review_withdrawal_conflict": "conflict",
+                    "product_review_withdrawal_not_started": "not_started",
+                    "product_review_withdrawal_invalid_request": "invalid_request",
+                    "product_review_withdrawal_stale_plan": "stale_plan",
+                    "product_review_withdrawal_history_unverifiable": "history_unverifiable",
                     "product_review_withdrawal_refused": "refused",
                     "product_review_withdrawal_unsettled": "outcome_unknown",
                 }.get(code, projected["status"])

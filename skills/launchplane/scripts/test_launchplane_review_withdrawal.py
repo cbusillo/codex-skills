@@ -120,6 +120,10 @@ def test_recovery_classifier_preserves_receipts_and_distinguishes_other_callers(
         (409, "product_review_withdrawal_target_busy", "target_busy"),
         (409, "product_review_withdrawal_in_progress", "in_progress"),
         (409, "product_review_withdrawal_conflict", "conflict"),
+        (409, "product_review_withdrawal_not_started", "not_started"),
+        (409, "product_review_withdrawal_invalid_request", "invalid_request"),
+        (409, "product_review_withdrawal_stale_plan", "stale_plan"),
+        (409, "product_review_withdrawal_history_unverifiable", "history_unverifiable"),
     ):
         code, result, calls = invoke(argv("apply", str(evidence)), [failure(http_status, error_code)])
         assert code != 0 and result["status"] == expected
@@ -142,6 +146,13 @@ def test_recovery_classifier_preserves_receipts_and_distinguishes_other_callers(
     code, result, _ = invoke(argv("readback"), [replan])
     assert code != 0 and result["status"] == "replan_required"
     assert result["result"]["prior_effects_unknown"] is True
+    replan["result"]["history_unverifiable"] = True
+    code, result, _ = invoke(argv("readback"), [replan])
+    assert code != 0 and result["status"] == "history_unverifiable"
+    assert result["result"]["prior_effects_unknown"] is True
+    from launchplane_review_withdrawal import RECOVERY
+    assert result["summary"]["recommendation"].startswith(RECOVERY["history_unverifiable"])
+
 
 
 if __name__ == "__main__":

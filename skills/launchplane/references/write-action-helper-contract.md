@@ -2158,7 +2158,13 @@ A new withdrawal still requires an open PR; readback never removes a label.
 Recovery output echoes the non-secret `idempotency_key` in its summary. Choose a
 public-safe opaque key, and save the exact private request with the dry-run
 evidence. Provider evidence failures are unavailable, not Client eligibility
-refusals. Bounded or ambiguous authenticated history settles the original intent
-as `replan_required`, preserving prior-effect uncertainty; a fresh apply checks
-history before removing a label. The full caller identity remains in the durable
+refusals. Dry-run and fresh apply check history before removing a label. Bounded
+or ambiguous authenticated history blocks dispatch with `history_unverifiable`;
+resolve history verification before retrying, because changing keys cannot fix
+it. Recovery of an uncertain operation can settle with that same status while
+retaining `prior_effects_unknown`. Completed readback preserves its applied
+receipt and reports a mismatch when permanent history limits prevent verification.
+`not_started` means this caller/key has no saved operation: resubmit the exact
+original apply with that same key. `invalid_request` requires correcting the
+request; `stale_plan` requires refreshing and reviewing the exact dry-run. The full caller identity remains in the durable
 operation; public PR history contains the head, reason and Director citation.
