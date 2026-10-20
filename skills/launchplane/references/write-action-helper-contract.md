@@ -6,18 +6,8 @@ optional and soft-failing, explicit write actions fail closed, and bounded
 admin reads also fail closed when required configuration or authorization is
 missing. Command examples run from the `launchplane` skill directory.
 
-Projected operation paths are resolved from the vendored
-`agent-operator-contract.json` through `launchplane_contract.py`. Run
-`check-agent-operator-contract.py` to verify schema, semantic digest,
-public-safety, operation semantics, protected workflows, invariant coverage, and
-helper bindings without network access. This is local consistency evidence, not
-proof of upstream freshness.
-
-Commands listed under `LOCAL_EXTENSION_ROUTES` in
-`scripts/launchplane_contract.py` are bounded local extensions because their
-routes are not in the current vendored projection. The conformance gate fails
-if those routes later appear upstream so migration cannot leave duplicate route
-authorities behind.
+For operation authority and local HTTP bindings, read
+[the producer contract and caller bindings](agent-operator-contract.md).
 
 The helper lives at `scripts/launchplane-write-action.py`.
 
@@ -31,14 +21,13 @@ including an external link to another external file, is accepted.
 ## Application testing private ingress
 
 `testing-private-ingress-dry-run`, `testing-private-ingress-apply` and
-`testing-private-ingress-readback` call the vendored
+`testing-private-ingress-readback` call the producer's
 `prepare_testing_private_ingress` service API. The producer advertises a
 `service_api` surface, and this installed caller retains that surface and its
 existing Director-agent identity dependency. It adds no permission or provider
 fallback. Source contract agreement does not prove deployed compatibility;
 confirm normal service delivery before operational use.
-`SERVICE_API_HELPER_COMMANDS` validates these explicit bindings against that
-producer surface and its modes without rewriting the vendored advertisement.
+`SERVICE_API_HELPER_COMMANDS` identifies the installed callers and their modes.
 
 Each command requires `--payload-file /absolute/private/request.json`. Its
 exact fields are `product`, `context`, `instance` (only `testing`),
@@ -95,7 +84,7 @@ source and caller delivery.
 ## Disposable lane observations
 
 `disposable-lane-inspect`, `disposable-lane-collect` and
-`disposable-lane-record` call the vendored `record_disposable_lane_safety`
+`disposable-lane-record` call the producer's `record_disposable_lane_safety`
 service API with the existing Director-agent identity. They add no permission
 or provider fallback. The `prepare-rebuild` mode is not wrapped. An observation
 is short-lived safety evidence for one lane. It is never an access grant.
@@ -261,7 +250,7 @@ policy changes here.
 and the service's standing `merge_train.policy_targets` permission. Omitting
 `--repo` resolves the origin remote in `--repo-root` (default current directory).
 No grant, credential resolution, policy mutation or train entry occurs.
-The endpoint is a bounded local extension, absent from the vendored projection.
+The endpoint has a bounded local helper binding.
 
 On success, `status=available` and `result` contains `source=launchplane`,
 `status=enrolled|not_enrolled`, boolean `enabled`, per-branch `targets`
@@ -284,7 +273,7 @@ A read grants no merge authority.
 `odoo-addon-settings-dry-run` and `odoo-addon-settings-apply` call
 `POST /v1/product-config/odoo-addon-settings/apply` to set an Odoo lane's
 Shopify addon settings on its instance-override record. The Launchplane
-operation is `apply_odoo_addon_settings`, projected by the vendored contract.
+operation is `apply_odoo_addon_settings`, defined by the producer contract.
 
 - The private payload file, outside the repository, holds `schema_version`,
   `product`, `context`, `instance`, `reason`, and a `shopify` block with
@@ -310,7 +299,7 @@ operation is `apply_odoo_addon_settings`, projected by the vendored contract.
 `integration-allowances-apply` call `GET /v1/product-config/integration-allowances`
 and `POST /v1/product-config/integration-allowances/apply`. A non-production lane
 may hold an integration's settings only when an allowance recorded here says why.
-These routes are local extensions until the vendored artifact is refreshed.
+These routes have installed local helper bindings.
 
 - `integration-allowances-read --product --context --instance` returns the lane's
   allowances. Use the product's canonical id; the service refuses a lane the
@@ -382,8 +371,7 @@ authorize live apply or grant the service's plan/apply permissions.
 `testing-hold-read`, `testing-hold-dry-run` and `testing-hold-apply` call
 `GET /v1/product-config/testing-hold` and
 `POST /v1/product-config/testing-hold/apply`. While site staff test a product's
-testing lane, the hold keeps event-driven deploys off it. These routes are local
-extensions until the vendored artifact is refreshed.
+testing lane, the hold keeps event-driven deploys off it. These routes have installed local helper bindings.
 
 - `testing-hold-read --product --context --instance` returns the lane's hold or
   `null`.
@@ -417,7 +405,7 @@ extensions until the vendored artifact is refreshed.
 `GET /v1/products/{product}/environments/{environment}` and
 `GET /v1/products/{product}/activity`; `preview-history-read` is below. They let an agent confirm what a
 merge-triggered deploy shipped without an admin signing in. These routes are
-local extensions until the vendored artifact is refreshed.
+installed local helper bindings.
 
 - `product-environment-read --product --environment` returns the lane's
   identity, `target.artifact` (artifact id, source commit, image repository and
@@ -643,8 +631,7 @@ local extensions until the vendored artifact is refreshed.
 call `POST /v1/product-profiles/repository-identity/apply`. The service copies
 `repository_id` and `repository_owner_id` into the product profile from the
 current tracked repository inventory record; the caller never supplies ids, and a
-recorded identity is never overwritten. This route is a local extension until the
-vendored artifact is refreshed.
+recorded identity is never overwritten. This route has a local helper binding.
 
 - Both commands take `--product` and `--reason`; there is no payload file.
 - Save the dry-run output. Apply requires `--reviewed-dry-run`,
@@ -657,8 +644,7 @@ vendored artifact is refreshed.
 
 These commands record what a product needs before Launchplane can promote it
 from a testing lane: its Client, the lane's provider target and lane record, and
-the production backup policy. Their routes are local extensions until the
-vendored artifact is refreshed. Every apply follows the same safeguards:
+the production backup policy. Their routes have local helper bindings. Every apply follows the same safeguards:
 
 - Save the dry-run output. Apply requires `--reviewed-dry-run`,
   `--expected-plan-digest`, `--dry-run-evidence-file` and `--idempotency-key`.
@@ -847,8 +833,7 @@ never-deployed target Launchplane created empty, named exactly in
 
 ### Inert domain and ingress planning
 
-These commands are bounded local extensions, not projected operations in the
-vendored public artifact. Neither accepts an apply mode, confirmation, credential
+These commands have bounded local helper bindings. Neither accepts an apply mode, confirmation, credential
 argument, provider URL or alternate identity. They use the existing configured
 local-admin transport. A plan is review evidence for the separate repair commands
 below; it grants no service permission or live-repair authorization. Do not run

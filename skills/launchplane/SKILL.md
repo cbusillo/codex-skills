@@ -15,16 +15,10 @@ resources:
     description: Perform bounded Launchplane write-action preflight, dry-run, apply, and merge-train controller calls.
   - path: scripts/check-agent-operator-contract.py
     kind: script
-    description: Validate the vendored public agent/admin contract and local consumer bindings offline.
-  - path: scripts/check-agent-operator-contract-freshness.py
-    kind: script
-    description: Compare the vendored contract with the current public upstream artifact and report semantic drift.
-  - path: references/agent-operator-contract.json
-    kind: reference
-    description: Vendored public Launchplane agent/admin contract artifact.
+    description: Validate local HTTP caller bindings and inert-planner constraints offline.
   - path: references/agent-operator-contract.md
     kind: reference
-    description: Contract identity, validation, freshness, and local-extension guidance.
+    description: Producer contract source and local HTTP caller binding guidance.
   - path: references/context-helper-contract.md
     kind: reference
     description: Contract for Launchplane context helper configuration, fallback, output, and redaction behavior.
@@ -89,13 +83,7 @@ commands:
     resource_path: scripts/check-agent-operator-contract.py
     example_argv:
       ["uv", "run", "scripts/check-agent-operator-contract.py"]
-    purpose: Proves hermetic consistency between the vendored contract and local Launchplane consumers.
-  - name: launchplane-contract-freshness
-    source: skill
-    resource_path: scripts/check-agent-operator-contract-freshness.py
-    example_argv:
-      ["uv", "run", "scripts/check-agent-operator-contract-freshness.py", "compare"]
-    purpose: Emits advisory current, known-stale, or unknown semantic-freshness evidence.
+    purpose: Checks local HTTP caller bindings and inert-planner constraints offline.
   - name: launchplane-merge-train-policy-read
     source: skill
     resource_path: scripts/launchplane-write-action.py
@@ -799,40 +787,8 @@ context to fix deliberately.
 
 ## Agent/Admin Contract
 
-Use `references/agent-operator-contract.json` as the checked-in public contract
-for agent/helper operation routing, protected workflow bindings, and semantic
-invariants. Run `uv run scripts/check-agent-operator-contract.py` after changing
-Launchplane helper routes, workflow guidance, lifecycle guidance, governance
-boundaries, or the vendored artifact.
-
-The conformance gate is offline and non-authoritative. It proves that the local
-artifact, helper bindings, protected workflows, and durable invariants agree;
-it does not contact Launchplane and does not prove that the artifact is current
-upstream. Use `check-agent-operator-contract-freshness.py compare` or the
-scheduled `Launchplane Contract Freshness` workflow for separate advisory
-evidence. Treat matching semantic digests as `current`, a valid mismatch as
-`known-stale`, and unavailable or insufficient evidence as `unknown`. Ignore
-provenance-only source SHA movement when the semantic digest is unchanged.
-
-`unknown` never grants runtime authority and never opens a drift issue. A
-scheduled `known-stale` result opens or updates one maintenance issue through
-the maintained GitHub helpers; repeated mismatches reuse the same open issue.
-Manual dispatch is compare-only unless issue reporting is explicitly selected.
-
-Keep durable fail-closed rules local: Client acceptance is authoritative (see
-the [release rule](../references/role-words.md#release-rule)),
-engineering review is advisory, GitHub projection is routing/status only,
-authorization/admission/landing are independent, protected workflow dispatch
-and watching stay delegated to `github_workflow_babysit.py`, and raw protected
-workflow dispatch is not allowed. Source projected HTTP paths from the vendored
-operation map rather than adding duplicate literals.
-
-Commands listed under `LOCAL_EXTENSION_ROUTES` in
-`scripts/launchplane_contract.py` are explicit bounded local extensions: the
-vendored public operation projection does not contain their routes, so do not
-describe them as contract-backed. If a later artifact adds those routes, migrate
-them deliberately and remove the local-extension entries instead of retaining
-parallel sources of truth.
+Read [the producer contract and caller bindings](references/agent-operator-contract.md)
+before changing helper routes or choosing an operation surface.
 
 ### Agent Policy Proposals
 
@@ -858,7 +814,7 @@ uses private `local_operator` config, independent of terminal-agent credentials.
 ### Contract-Backed Lifecycle And Repair Routing
 
 For lifecycle retirement, managed authorization reconciliation, and stable-lane
-repair, resolve the requested operation from the vendored contract before
+repair, resolve the requested operation from the producer contract before
 choosing a surface. Use the operation's modes, idempotency, reviewed-evidence
 requirements, and supported surfaces as the boundary. When the selected surface
 is `protected_workflow`, resolve exactly one protected-workflow binding whose
@@ -870,8 +826,10 @@ Fail closed when the contract does not contain one unambiguous operation and,
 when required, one unambiguous workflow binding. Report the scenario as an
 unsupported capability gap and track focused follow-up coverage; do not route it
 through a nearby helper, workflow, or endpoint. Plan or dry-run first, and do not
-apply without every contract-required reviewed-evidence field, explicit admin
-approval, and an apply-eligible result. Detached application retirement must
+apply without every contract-required reviewed-evidence field and an
+apply-eligible result. For approval and standing authority, follow
+[task scope](../references/execution-scope.md) and the direction files loaded
+under Rollout Plan Alignment below. Detached application retirement must
 preserve zero authority writes and is complete only when candidate absence is
 proved.
 
@@ -975,29 +933,18 @@ Mutate runtime environments, managed secrets, and product config.
   `launchplane` binary or by poking provider config directly.
 - **Denied Actions**: A local admin token can be present and still lack a
   specific action. Report that as authorization denial, not missing credential.
-  Before choosing a next step, classify the denial. A scope denial means an
-  existing Launchplane capability does not grant this identity the requested
-  scope. A capability gap means no supported Launchplane surface owns the
-  operation. Neither case is solved by selecting another credential or CI job.
-  Block only the affected operation or work item, preserve the trace and source
-  URL, and continue independent safe work when available. Stop the whole
-  session only when no useful unblocked work remains or the failed operation may
-  have produced an uncertain effect.
+  Preserve the trace and source URL, then follow
+  [Blocked Work Continuation](#blocked-work-continuation).
 - **GitHub Is Not Authorization Authority**: A GitHub workflow, Actions secret,
   repository or environment variable, OIDC role, or CI job is never evidence
   that a denied Launchplane action is authorized. Do not author, edit, extend,
   retarget, or dispatch a workflow to carry a call Launchplane denied.
   Repository workflow content is routing metadata, just like
   `.github/github.json`; Launchplane DB/service records remain authority.
-- **Unsupported Helper Coverage**: If the helper lacks a command for the needed
-  runtime record operation, treat that as a capability gap. Stop the affected
-  operation at the supported Launchplane service/UI path and use `github-plan`
-  to open or update the owning authorization-architecture issue, record the
-  denied operation and trace ID, and add a native `blocked-by` edge from the
-  affected work. Re-rank or continue unrelated work instead of turning one gap
-  into a session-wide stop. Do not synthesize record payloads from issue text,
-  checked-in examples, workflow defaults, provider observations, or local
-  files, and do not close the gap with a workflow.
+- **Unsupported Helper Coverage**: Follow
+  [Blocked Work Continuation](#blocked-work-continuation) for a missing helper
+  command. Use the supported service/UI surface; do not synthesize runtime
+  records from issue text, examples, workflow defaults or local files.
 - **Workflow**:
   1. Inspect Context to identify the target and change needed. Before asking
      the Director to approve a dry run, apply, recovery, or onboarding, check
@@ -1019,8 +966,8 @@ product-config-preflight` when agent-side authorization or managed-secret
      private local payload file, never from chat, CLI plaintext secret args, or
      committed examples.
   7. **Dry-run** and inspect redacted results.
-  8. **Apply** with a concrete reason only after the dry-run succeeds and the
-     admin's intent is explicit.
+  8. **Apply** with a concrete reason after the dry-run succeeds, under the
+     authority established by [task scope](../references/execution-scope.md).
   9. Inspect returned `next_actions` and complete required follow-up actions;
      product-config apply can update Launchplane records before the live target
      runtime has been synced.
@@ -1032,19 +979,12 @@ Launchplane by editing provider configuration directly.
 
 ### Blocked Work Continuation
 
-Until Launchplane exports a native deferred-operation lifecycle, represent an
-authorization or capability gap through the owning GitHub plan relationship:
-
-1. preserve the denied operation, bounded reason, trace ID, and source URL;
-2. block only the affected work item on the owning architecture issue;
-3. use `github-plan next` or the existing work source to select independent
-   work;
-4. notify the Director immediately only when every useful item is blocked, an
-   effect is uncertain, or an active environment is unhealthy.
-
-Do not tell the Director to provision a new credential or click through a
-GitHub Actions workaround. A future Launchplane deferred-operation record may
-replace this GitHub-plan handoff after it is present in the public contract.
+Apply the wrong-refusal rule in the Director's overall `DIRECTION.md`
+(Stop Boundaries), loaded under Rollout Plan Alignment. Keep the actual refused
+operation stopped and preserve its trace, source URL and any uncertain-effect
+evidence while fixing the owning tool. Use `github-plan` to track the repair
+and any native dependency on it; follow the same direction source for work
+priority and escalation. Reconcile uncertain effects before reexecution.
 
 ### Sanctioned Reconciliation And Break-Glass
 
@@ -1112,10 +1052,11 @@ merge-train-controller-run-once` instead of open-coding the route. Mutating
   required Client acceptance covers the current head. Read the GitHub
   [ready handoff contract](../github/references/cli-reference.md#ready-handoffs)
   for checks and stale-head handling. The assigned Supervisor owns train entry.
-- **Mutation Gate**: Keep scheduled runners in dry-run mode until the Director
-  explicitly selects a mutation pilot. Manual `mutate=true` controller runs are
-  appropriate only after dry-run evidence shows the intended queue, candidate,
-  and next action. Do not leave scheduled mutation enabled as a casual default.
+- **Scheduled controller**: Read the active enrolled-target policy with
+  `merge-train-policy-read`. For scheduler changes, use the producer's
+  [operational policy path](https://github.com/cbusillo/launchplane/blob/main/docs/merge-train-policy.md#policy-changes-and-bindings)
+  with its reviewed baseline and standing lane authority. Approval follows the direction files loaded under
+  Rollout Plan Alignment and [Q297](https://github.com/cbusillo/launchplane/issues/2961#issuecomment-6177897575).
 - **Post-Merge Checkout Handoff**: After the controller confirms a final landing
   commit, delegate post-merge default-branch freshness to `github` with the exact
   final landing SHA from that terminal controller result and an explicit source
@@ -1161,9 +1102,8 @@ verification.
   Dokploy compose target, production backup authority and private health
   endpoint dry-run/apply with read-back, product promotion status and dry-run, and
   merge-train controller calls.
-- `scripts/check-agent-operator-contract.py`: Hermetic schema, digest,
-  public-safety, operation, workflow, invariant, and local-consumer conformance
-  gate. A green result is not upstream freshness evidence.
+- `scripts/check-agent-operator-contract.py`: Offline local caller-binding and
+  inert-planner check; see [the binding guide](references/agent-operator-contract.md).
 - `operator-config-diagnostic`: Redacted source-presence diagnostic for local
   admin URL and token configuration. Global options such as `--url` must come
   before the subcommand.

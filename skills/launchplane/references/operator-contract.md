@@ -3,26 +3,10 @@
 This reference defines the safety rules and execution patterns for the
 Launchplane admin surface.
 
-## Vendored Public Contract
+## Operation source
 
-The machine-readable public operation/workflow projection is vendored at
-`agent-operator-contract.json` and validated by
-`../scripts/check-agent-operator-contract.py`. Use it for projected operation
-paths and supported surfaces. Keep the fail-closed runtime authority and review
-rules in this reference.
-
-Hermetic validation proves local contract/helper consistency only. It does not
-prove that the vendored artifact is current upstream. A source-provenance-only
-change is non-gating when schema version, normalization version, semantic digest,
-and contract content are unchanged.
-
-The commands listed under `LOCAL_EXTENSION_ROUTES` in
-`scripts/launchplane_contract.py`, such as merge-train policy import,
-generic-web deploy-recovery, and Odoo addon-settings, remain bounded local
-extensions until the vendored public projection includes them.
-Their private-file, dry-run, review, digest-binding, idempotency, redaction, and
-trace requirements remain fully enforced, but they must not be reported as
-contract-backed.
+For operation authority and the installed client's HTTP bindings, read
+[the producer contract and caller bindings](agent-operator-contract.md).
 
 ## Execution Rules
 

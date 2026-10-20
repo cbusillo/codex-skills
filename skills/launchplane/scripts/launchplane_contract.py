@@ -1,250 +1,28 @@
-"""Load and validate the vendored Launchplane agent/operator contract."""
 # /// script
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
 
+"""Local Launchplane HTTP caller bindings, never operation authority.
+
+The producer owns contracts/agent-operator-contract.json. These paths are the
+installed client's implementation; payload and response safeguards live in each
+caller and launchplane_safety.py.
+"""
+
 from __future__ import annotations
 
-import hashlib
-import json
 import re
-from collections.abc import Mapping
-from functools import lru_cache
-from pathlib import Path
-from typing import Any
 
-SCHEMA_VERSION = 1
-NORMALIZATION_VERSION = 1
-DEFAULT_CONTRACT_PATH = (
-    Path(__file__).resolve().parent.parent
-    / "references"
-    / "agent-operator-contract.json"
-)
-
-_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
-_SOURCE_SHA_PATTERN = re.compile(r"^(unknown|[0-9a-f]{40}|[0-9a-f]{64})$")
-_OPERATION_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
-_PATH_PATTERN = re.compile(
-    r"^/v1/(?:[a-z0-9_.-]+|\{[a-z][a-z0-9_]*})"
-    r"(?:/(?:[a-z0-9_.-]+|\{[a-z][a-z0-9_]*}))*$"
-)
-_CODE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
-_STATUS_PATTERN = re.compile(r"^[1-5][0-9]{2}$")
-_WORKFLOW_PATTERN = re.compile(r"^[.]github/workflows/[a-z0-9_.-]+[.]ya?ml$")
-_UNSAFE_STRING_PATTERNS = (
-    re.compile(r"https?://", re.IGNORECASE),
-    re.compile(r"\bLAUNCHPLANE_[A-Z0-9_]+\b"),
-    re.compile(r"\b(?:token|password|private[_-]?key)\s*[:=]", re.IGNORECASE),
-)
-
-_ARTIFACT_KEYS = {
-    "schema_version",
-    "normalization_version",
-    "semantic_digest_sha256",
-    "provenance",
-    "contract",
-}
-_CONTRACT_KEYS = {"operations", "protected_workflows", "invariants"}
-_OPERATION_KEYS = {
-    "method",
-    "path",
-    "operation_id",
-    "identity_dependencies",
-    "purpose",
-    "supported_surfaces",
-    "modes",
-    "idempotency",
-    "reviewed_evidence",
-    "response_statuses",
-    "schema_fingerprint_sha256",
-}
-_WORKFLOW_KEYS = {"workflow_file", "reusable_workflow_file", "route"}
-
-EXPECTED_OPERATION_CONTRACTS = {
-    "prepare_testing_private_ingress": {
-        "method": "POST",
-        "supported_surfaces": ["service_api"],
-        "modes": ["dry-run", "apply", "readback"],
-        "idempotency": "apply",
-        "reviewed_evidence": ["reviewed_plan_sha256"],
-    },
-    "activate_private_testing_transport_source": {
-        "method": "POST",
-        "supported_surfaces": ["service_api", "local_cli"],
-        "modes": ["dry-run", "apply", "readback"],
-        "idempotency": "apply",
-        "reviewed_evidence": ["expected_plan_sha256", "host_review"],
-    },
-    "prepare_testing_public_ingress": {
-        "method": "POST",
-        "supported_surfaces": ["service_api"],
-        "modes": ["dry-run", "apply", "readback"],
-        "idempotency": "apply",
-        "reviewed_evidence": ["reviewed_plan_sha256"],
-    },
-    "complete_testing_verification": {
-        "method": "POST",
-        "supported_surfaces": ["service_api"],
-        "modes": ["dry-run", "apply", "readback"],
-        "idempotency": "apply",
-        "reviewed_evidence": ["reviewed_plan_sha256"],
-    },
-    "plan_private_testing_transport": {
-        "method": "POST",
-        "supported_surfaces": ["service_api", "local_cli"],
-        "modes": ["dry-run", "readback"],
-        "idempotency": "none",
-        "reviewed_evidence": ["expected_plan_sha256"],
-    },
-    "odoo_testing_walkthrough": {
-        "method": "POST",
-        "supported_surfaces": ["service_api"],
-        "modes": ["dry-run", "apply"],
-        "idempotency": "apply",
-        "reviewed_evidence": ["reviewed_plan_sha256"],
-    },
-    "retire_incomplete_testing_generation": {
-        "method": "POST",
-        "supported_surfaces": ["service_api"],
-        "modes": ["dry-run", "apply", "readback"],
-        "idempotency": "apply",
-        "reviewed_evidence": ["reviewed_plan_sha256"],
-    },
-    "prepare_fresh_testing_bootstrap": {
-        "method": "POST",
-        "supported_surfaces": ["service_api"],
-        "modes": ["dry-run", "apply", "readback"],
-        "idempotency": "apply",
-        "reviewed_evidence": ["reviewed_plan_sha256"],
-    },
-    "prepare_testing_replacement_resources": {
-        "method": "POST",
-        "supported_surfaces": ["service_api"],
-        "modes": ["dry-run", "apply", "readback"],
-        "idempotency": "apply",
-        "reviewed_evidence": ["reviewed_plan_sha256"],
-    },
-    "record_disposable_lane_safety": {
-        "method": "POST",
-        "supported_surfaces": ["service_api"],
-        "modes": ["inspect", "collect", "record", "clear", "prepare-rebuild"],
-        "idempotency": "none",
-        "reviewed_evidence": ["expected_binding_sha256"],
-    },
-    "update_merge_train_operational_policy": {
-        "method": "POST",
-        "supported_surfaces": ["service_api"],
-        "modes": ["apply"],
-        "idempotency": "body",
-        "reviewed_evidence": ["expected_record_id", "expected_policy_sha256"],
-    },
-    "apply_odoo_website_settings": {
-        "method": "POST",
-        "supported_surfaces": ["service_api"],
-        "modes": ["dry-run", "apply"],
-        "idempotency": "apply",
-        "reviewed_evidence": ["reviewed_plan_digest"],
-    },
-    "restart_lane_service": {
-        "method": "POST",
-        "supported_surfaces": ["bounded_admin_helper", "operator_ui", "service_api"],
-        "modes": ["dry-run", "apply", "reconcile"],
-        "idempotency": "apply",
-        "reviewed_evidence": [
-            "reviewed_plan_digest",
-            "current_artifact_identity",
-            "release_lane_exclusion",
-        ],
-    },
-    "read_agent_context": {
-        "method": "GET",
-        "supported_surfaces": ["agent_helper", "read_only_service"],
-        "modes": ["read"],
-        "idempotency": "none",
-        "reviewed_evidence": [],
-    },
-    "evaluate_agent_write_intent": {
-        "method": "POST",
-        "supported_surfaces": ["agent_helper", "service_api"],
-        "modes": ["preflight"],
-        "idempotency": "optional",
-        "reviewed_evidence": [],
-    },
-    "apply_odoo_addon_settings": {
-        "method": "POST",
-        "supported_surfaces": ["agent_helper", "operator_ui", "service_api"],
-        "modes": ["dry-run", "apply"],
-        "idempotency": "apply",
-        "reviewed_evidence": ["reviewed_plan_digest"],
-    },
-    "apply_product_config": {
-        "method": "POST",
-        "supported_surfaces": ["agent_helper", "operator_ui", "service_api"],
-        "modes": ["dry-run", "apply"],
-        "idempotency": "apply",
-        "reviewed_evidence": ["reviewed_dry_run"],
-    },
-    "write_merge_train_controller_run_once": {
-        "method": "POST",
-        "supported_surfaces": ["agent_helper", "operator_ui", "service_api"],
-        "modes": ["dry-run", "mutate"],
-        "idempotency": "mutate",
-        "reviewed_evidence": [],
-    },
-    "remediate_preview_pr_feedback": {
-        "method": "POST",
-        "supported_surfaces": ["agent_helper", "operator_ui", "service_api"],
-        "modes": ["dry-run", "apply"],
-        "idempotency": "apply",
-        "reviewed_evidence": ["reviewed_dry_run"],
-    },
-    "execute_product_retirement": {
-        "method": "POST",
-        "supported_surfaces": ["protected_workflow", "operator_ui", "service_api"],
-        "modes": ["plan", "apply"],
-        "idempotency": "always",
-        "reviewed_evidence": ["reviewed_plan_digest"],
-    },
-    "execute_detached_application_retirement": {
-        "method": "POST",
-        "supported_surfaces": ["protected_workflow", "operator_ui", "service_api"],
-        "modes": ["plan", "apply"],
-        "idempotency": "always",
-        "reviewed_evidence": ["reviewed_plan_digest"],
-    },
-    "reconcile_managed_authz_policy": {
-        "method": "POST",
-        "supported_surfaces": ["protected_workflow", "operator_ui", "service_api"],
-        "modes": ["dry-run", "apply"],
-        "idempotency": "apply",
-        "reviewed_evidence": ["reviewed_plan_digest"],
-    },
-    "apply_product_stable_lane_repair": {
-        "method": "POST",
-        "supported_surfaces": ["protected_workflow", "operator_ui", "service_api"],
-        "modes": ["dry-run", "apply"],
-        "idempotency": "apply",
-        "reviewed_evidence": ["reviewed_plan_digest"],
-    },
-    "reconcile_legacy_generic_web_preview": {
-        "method": "POST",
-        "supported_surfaces": ["agent_helper", "service_api"],
-        "modes": ["inspect", "plan", "apply"],
-        "idempotency": "plan_and_apply",
-        "reviewed_evidence": [
-            "reviewed_plan",
-            "expected_plan_digest",
-            "plan_idempotency_key",
-        ],
-    },
-    "read_governance_projection": {
-        "method": "GET",
-        "supported_surfaces": ["read_only_service", "operator_ui"],
-        "modes": ["read"],
-        "idempotency": "none",
-        "reviewed_evidence": [],
-    },
+OPERATION_PATHS = {
+    'prepare_testing_private_ingress': '/v1/products/{product}/testing-private-ingress',
+    'record_disposable_lane_safety': '/v1/disposable-lanes/observations',
+    'read_agent_context': '/v1/agent/context',
+    'evaluate_agent_write_intent': '/v1/agent/write-intents/evaluate',
+    'apply_product_config': '/v1/product-config/apply',
+    'apply_odoo_addon_settings': '/v1/product-config/odoo-addon-settings/apply',
+    'write_merge_train_controller_run_once': '/v1/work-graph/merge-train/controller/run-once',
+    'remediate_preview_pr_feedback': '/v1/previews/pr-feedback/remediation',
 }
 
 PROJECTED_HELPER_COMMANDS = {
@@ -267,15 +45,13 @@ PROJECTED_HELPER_COMMANDS = {
     ),
 }
 
-# Explicit installed callers of producer service_api surfaces. This does not
-# change the producer's identity dependency or advertise an agent_helper surface.
+# Installed callers of producer service API surfaces.
 SERVICE_API_HELPER_COMMANDS = {
     **{
         f"testing-private-ingress-{mode}": ("prepare_testing_private_ingress", (mode,))
         for mode in ("dry-run", "apply", "readback")
     },
-    # prepare-rebuild stays producer-owned until a reviewed caller exists. clear
-    # waits until the service enforces the binding and lane ownership itself.
+    # Clear and prepare-rebuild need their separate consumer implementations.
     **{
         f"disposable-lane-{mode}": ("record_disposable_lane_safety", (mode,))
         for mode in ("inspect", "collect", "record")
@@ -683,426 +459,58 @@ INTERNAL_HELPER_ROUTES = {
     },
 }
 
-EXPECTED_PROTECTED_WORKFLOWS = {
-    ".github/workflows/product-retirement.yml": {
-        "operation_id": "execute_product_retirement",
-        "reusable_workflow_file": ".github/workflows/reusable-product-retirement.yml",
-    },
-    ".github/workflows/detached-application-retirement.yml": {
-        "operation_id": "execute_detached_application_retirement",
-        "reusable_workflow_file": ".github/workflows/reusable-detached-application-retirement.yml",
-    },
-    ".github/workflows/authz-policy-reconcile.yml": {
-        "operation_id": "reconcile_managed_authz_policy",
-        "reusable_workflow_file": ".github/workflows/reusable-authz-policy-reconcile.yml",
-    },
-    ".github/workflows/product-onboarding-manifest.yml": {
-        "operation_id": "apply_product_stable_lane_repair",
-        "reusable_workflow_file": ".github/workflows/reusable-stable-lane-repair.yml",
-    },
-}
-
-EXPECTED_INVARIANTS = {
-    "detached_retirement": {
-        "authority_write_count": 0,
-        "completion_requires_candidate_absence": True,
-    },
-    "governance": {
-        "authorization_admission_and_landing_are_independent": True,
-        "engineering_review_advisory": True,
-        "github_projection_role": "routing_and_status_only",
-        "owner_acceptance_authoritative": True,
-        "temporary_hotfix_start": "director_human_session_only",
-    },
-    "product_lifecycle": {
-        "active_automation_states": ["active"],
-        "retired_previews_enabled": False,
-        "states": ["active", "retiring", "retired"],
-        "transitions": ["active->retiring", "retiring->retired"],
-    },
-    "protected_workflow_policy": {
-        "dispatch_and_watch_helper": "github_workflow_babysit.py",
-        "raw_workflow_dispatch_allowed": False,
-    },
-    "reconciliation": {
-        "effect_unknown": "reconciliation_required_before_reexecution",
-        "landing_sha_source": "terminal_controller_result_only",
-        "pre_effect": "retry_only_after_fixing_the_block",
-    },
-    "stable_deploy_identity": {
-        "artifact_id": "digest_pinned_evidence_and_runtime_identity",
-        "deploy_reference": "published_same_repository_immutable_sha_tag",
-        "floating_tags_allowed": False,
-        "image_reference": "provider_tag_readback",
-        "target_category": "application",
-    },
-}
-
 
 class ContractError(ValueError):
-    """Fail-closed contract validation error with a public-safe code."""
+    """Public-safe binding validation error."""
 
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
 
 
-def _canonical_json(value: Any) -> str:
-    return json.dumps(value, separators=(",", ":"), sort_keys=True)
-
-
-def semantic_digest(artifact: Mapping[str, Any]) -> str:
-    payload = {
-        "normalization_version": artifact.get("normalization_version"),
-        "contract": artifact.get("contract"),
-    }
-    return hashlib.sha256(_canonical_json(payload).encode()).hexdigest()
-
-
-def _require_exact_keys(
-    value: Mapping[str, Any], expected: set[str], code: str
-) -> None:
-    if set(value) != expected:
-        raise ContractError(code)
-
-
-def _require_string_list(value: object, code: str) -> list[str]:
-    if not isinstance(value, list) or not all(
-        isinstance(item, str) and item for item in value
-    ):
-        raise ContractError(code)
-    return value
-
-
-def _validate_public_safety(value: Any) -> None:
-    if isinstance(value, str):
-        if any(pattern.search(value) for pattern in _UNSAFE_STRING_PATTERNS):
-            raise ContractError("unsafe_public_value")
-        return
-    if isinstance(value, Mapping):
-        for key, item in value.items():
-            _validate_public_safety(str(key))
-            _validate_public_safety(item)
-        return
-    if isinstance(value, list | tuple):
-        for item in value:
-            _validate_public_safety(item)
-        return
-    if value is not None and not isinstance(value, bool | int | float):
-        raise ContractError("non_json_value")
-
-
-def _operation_map(contract: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
-    operations = contract.get("operations")
-    if not isinstance(operations, list):
-        raise ContractError("invalid_operations")
-    operation_map: dict[str, Mapping[str, Any]] = {}
-    route_keys: set[tuple[str, str]] = set()
-    for operation in operations:
-        if not isinstance(operation, Mapping):
-            raise ContractError("invalid_operation")
-        _require_exact_keys(operation, _OPERATION_KEYS, "invalid_operation_keys")
-        operation_id = operation.get("operation_id")
-        method = operation.get("method")
-        path = operation.get("path")
-        purpose = operation.get("purpose")
-        if not isinstance(operation_id, str) or not _OPERATION_ID_PATTERN.fullmatch(
-            operation_id
-        ):
-            raise ContractError("invalid_operation_id")
-        if operation_id in operation_map:
-            raise ContractError("duplicate_operation_id")
-        if method not in {"GET", "POST"}:
-            raise ContractError("invalid_operation_method")
-        if not isinstance(path, str) or not _PATH_PATTERN.fullmatch(path):
-            raise ContractError("invalid_operation_path")
-        route_key = (method, path)
-        if route_key in route_keys:
-            raise ContractError("duplicate_operation_route")
-        route_keys.add(route_key)
-        if not isinstance(purpose, str) or not purpose.strip():
-            raise ContractError("invalid_operation_purpose")
-        for field in (
-            "identity_dependencies",
-            "supported_surfaces",
-            "modes",
-            "reviewed_evidence",
-        ):
-            values = _require_string_list(
-                operation.get(field), f"invalid_operation_{field}"
-            )
-            if len(values) != len(set(values)) or not all(
-                _CODE_PATTERN.fullmatch(item) for item in values
-            ):
-                raise ContractError(f"invalid_operation_{field}")
-        if not operation["identity_dependencies"]:
-            raise ContractError("missing_identity_dependencies")
-        statuses = _require_string_list(
-            operation.get("response_statuses"), "invalid_response_statuses"
-        )
-        if len(statuses) != len(set(statuses)) or not all(
-            _STATUS_PATTERN.fullmatch(item) for item in statuses
-        ):
-            raise ContractError("invalid_response_statuses")
-        idempotency = operation.get("idempotency")
-        if not isinstance(idempotency, str) or not _CODE_PATTERN.fullmatch(idempotency):
-            raise ContractError("invalid_operation_idempotency")
-        fingerprint = operation.get("schema_fingerprint_sha256")
-        if not isinstance(fingerprint, str) or not _SHA256_PATTERN.fullmatch(
-            fingerprint
-        ):
-            raise ContractError("invalid_operation_fingerprint")
-        operation_map[operation_id] = operation
-    return operation_map
-
-
-def _validate_operation_contracts(
-    operation_map: Mapping[str, Mapping[str, Any]],
-) -> None:
-    for operation_id, expected in EXPECTED_OPERATION_CONTRACTS.items():
-        operation = operation_map[operation_id]
-        for field, expected_value in expected.items():
-            if operation.get(field) != expected_value:
-                raise ContractError(
-                    f"operation_contract_mismatch_{operation_id}_{field}"
-                )
-
-
-def _validate_helper_bindings(
-    operation_map: Mapping[str, Mapping[str, Any]],
-) -> None:
-    for commands, surface in ((PROJECTED_HELPER_COMMANDS, "agent_helper"),
-                              (SERVICE_API_HELPER_COMMANDS, "service_api")):
-        for operation_id, modes in commands.values():
-            operation = operation_map[operation_id]
-            if surface not in operation["supported_surfaces"]:
-                raise ContractError("helper_surface_mismatch")
-            if any(mode not in operation["modes"] for mode in modes):
-                raise ContractError("helper_mode_mismatch")
-    projected_routes = {
-        (operation["method"], operation["path"]) for operation in operation_map.values()
-    }
-    for extension in LOCAL_EXTENSION_ROUTES.values():
-        route = (extension["method"], extension["path"])
-        if route in projected_routes:
-            raise ContractError("local_extension_now_projected")
+def validate_local_bindings() -> dict[str, object]:
+    path_pattern = re.compile(
+        r"^/v1/(?:[a-z0-9_.-]+|\{[a-z][a-z0-9_]*})"
+        r"(?:/(?:[a-z0-9_.-]+|\{[a-z][a-z0-9_]*}))*$"
+    )
+    paths = (
+        *OPERATION_PATHS.values(),
+        *(route["path"] for route in LOCAL_EXTENSION_ROUTES.values()),
+        *(route["path"] for route in INTERNAL_HELPER_ROUTES.values()),
+    )
+    for path in paths:
+        if not isinstance(path, str) or not path_pattern.fullmatch(path):
+            raise ContractError("invalid_local_route")
+    for command in (*PROJECTED_HELPER_COMMANDS, *SERVICE_API_HELPER_COMMANDS):
+        helper_command_path(command)
     for command in ("dokploy-target-repair-domain-authority-dry-run", "ingress-route-dry-run"):
-        extension = LOCAL_EXTENSION_ROUTES.get(command, {})
-        if extension.get("method") != "POST" or extension.get("mode") != "dry-run":
+        route = LOCAL_EXTENSION_ROUTES.get(command, {})
+        if route.get("method") != "POST" or route.get("mode") != "dry-run":
             raise ContractError("inert_planner_binding_mismatch")
     if LOCAL_EXTENSION_ROUTES["dokploy-target-repair-domain-authority-dry-run"]["path"] != LOCAL_EXTENSION_ROUTES["dokploy-target-create-compose-dry-run"]["path"]:
         raise ContractError("inert_planner_binding_mismatch")
-    for internal_route in INTERNAL_HELPER_ROUTES.values():
-        route = (internal_route["method"], internal_route["path"])
-        if route in projected_routes:
-            raise ContractError("internal_helper_route_now_projected")
-
-
-def _protected_workflow_map(
-    contract: Mapping[str, Any], operation_map: Mapping[str, Mapping[str, Any]]
-) -> dict[str, Mapping[str, Any]]:
-    workflows = contract.get("protected_workflows")
-    if not isinstance(workflows, list):
-        raise ContractError("invalid_protected_workflows")
-    actual: dict[str, Mapping[str, Any]] = {}
-    for workflow in workflows:
-        if not isinstance(workflow, Mapping):
-            raise ContractError("invalid_protected_workflow")
-        allowed_keys = (
-            _WORKFLOW_KEYS
-            if "reusable_workflow_file" in workflow
-            else {
-                "workflow_file",
-                "route",
-            }
-        )
-        _require_exact_keys(workflow, allowed_keys, "invalid_protected_workflow_keys")
-        workflow_file = workflow.get("workflow_file")
-        route = workflow.get("route")
-        if not isinstance(workflow_file, str) or not _WORKFLOW_PATTERN.fullmatch(
-            workflow_file
-        ):
-            raise ContractError("invalid_workflow_file")
-        if workflow_file in actual:
-            raise ContractError("duplicate_workflow_file")
-        if not isinstance(route, str) or not _PATH_PATTERN.fullmatch(route):
-            raise ContractError("invalid_workflow_route")
-        reusable = workflow.get("reusable_workflow_file")
-        if reusable is not None and (
-            not isinstance(reusable, str) or not _WORKFLOW_PATTERN.fullmatch(reusable)
-        ):
-            raise ContractError("invalid_reusable_workflow_file")
-        if route not in {operation["path"] for operation in operation_map.values()}:
-            raise ContractError("unknown_protected_workflow_route")
-        actual[workflow_file] = workflow
-    return actual
-
-
-def _validate_protected_workflows(
-    actual: Mapping[str, Mapping[str, Any]],
-    operation_map: Mapping[str, Mapping[str, Any]],
-) -> None:
-    if set(actual) != set(EXPECTED_PROTECTED_WORKFLOWS):
-        raise ContractError("unexpected_protected_workflows")
-    for workflow_file, expected in EXPECTED_PROTECTED_WORKFLOWS.items():
-        workflow = actual[workflow_file]
-        operation = operation_map[expected["operation_id"]]
-        if workflow.get("route") != operation["path"]:
-            raise ContractError("protected_workflow_route_mismatch")
-        if workflow.get("reusable_workflow_file") != expected.get(
-            "reusable_workflow_file"
-        ):
-            raise ContractError("protected_workflow_binding_mismatch")
-
-
-def _validate_operation_coverage(
-    operation_map: Mapping[str, Mapping[str, Any]],
-) -> None:
-    helper_operations = {
-        operation_id for operation_id, _modes in
-        (*PROJECTED_HELPER_COMMANDS.values(), *SERVICE_API_HELPER_COMMANDS.values())
-    }
-    workflow_operations = {
-        expected["operation_id"] for expected in EXPECTED_PROTECTED_WORKFLOWS.values()
-    }
-    read_only_operations = {"read_governance_projection"}
-    # Producer-owned service/UI/CLI surfaces serve these; this skill does not wrap them.
-    producer_client_operations = {
-        "reconcile_legacy_generic_web_preview",
-        "restart_lane_service",
-        "activate_private_testing_transport_source",
-        "prepare_testing_public_ingress",
-        "complete_testing_verification",
-        "plan_private_testing_transport",
-        "odoo_testing_walkthrough",
-        "retire_incomplete_testing_generation",
-        "prepare_fresh_testing_bootstrap",
-        "prepare_testing_replacement_resources",
-        "update_merge_train_operational_policy",
-        "apply_odoo_website_settings",
-    }
-    categories = (
-        helper_operations,
-        workflow_operations,
-        read_only_operations,
-        producer_client_operations,
-    )
-    covered: set[str] = set()
-    for category in categories:
-        if covered & category:
-            raise ContractError("overlapping_operation_coverage")
-        covered.update(category)
-    if covered != set(operation_map):
-        raise ContractError("incomplete_operation_coverage")
-
-
-def _validate_semantic_artifact(
-    artifact: Mapping[str, Any], *, verify_digest: bool
-) -> tuple[
-    dict[str, object], dict[str, Mapping[str, Any]], dict[str, Mapping[str, Any]]
-]:
-    _require_exact_keys(artifact, _ARTIFACT_KEYS, "invalid_artifact_keys")
-    if artifact.get("schema_version") != SCHEMA_VERSION:
-        raise ContractError("unsupported_schema_version")
-    if artifact.get("normalization_version") != NORMALIZATION_VERSION:
-        raise ContractError("unsupported_normalization_version")
-    digest = artifact.get("semantic_digest_sha256")
-    if not isinstance(digest, str) or not _SHA256_PATTERN.fullmatch(digest):
-        raise ContractError("invalid_semantic_digest")
-    provenance = artifact.get("provenance")
-    if not isinstance(provenance, Mapping):
-        raise ContractError("invalid_provenance")
-    _require_exact_keys(provenance, {"source_commit_sha"}, "invalid_provenance_keys")
-    source_sha = provenance.get("source_commit_sha")
-    if not isinstance(source_sha, str) or not _SOURCE_SHA_PATTERN.fullmatch(source_sha):
-        raise ContractError("invalid_source_provenance")
-    contract = artifact.get("contract")
-    if not isinstance(contract, Mapping):
-        raise ContractError("invalid_contract")
-    _require_exact_keys(contract, _CONTRACT_KEYS, "invalid_contract_keys")
-    _validate_public_safety(artifact)
-    operation_map = _operation_map(contract)
-    workflow_map = _protected_workflow_map(contract, operation_map)
-    invariants = contract.get("invariants")
-    if not isinstance(invariants, Mapping):
-        raise ContractError("invalid_invariants")
-    if verify_digest and semantic_digest(artifact) != digest:
-        raise ContractError("semantic_digest_mismatch")
-    summary: dict[str, object] = {
-        "schema_version": SCHEMA_VERSION,
-        "normalization_version": NORMALIZATION_VERSION,
-        "semantic_digest_sha256": digest,
-        "source_commit_sha": source_sha,
-        "operation_count": len(operation_map),
-        "protected_workflow_count": len(workflow_map),
-    }
-    return summary, operation_map, workflow_map
-
-
-def validate_semantic_artifact(artifact: Mapping[str, Any]) -> dict[str, object]:
-    summary, _operation_map_value, _workflow_map_value = _validate_semantic_artifact(
-        artifact, verify_digest=True
-    )
-    return summary
-
-
-def validate_contract(artifact: Mapping[str, Any]) -> dict[str, object]:
-    summary, operation_map, workflow_map = _validate_semantic_artifact(
-        artifact, verify_digest=False
-    )
-    if set(operation_map) != set(EXPECTED_OPERATION_CONTRACTS):
-        raise ContractError("unexpected_operation_allow_list")
-    _validate_operation_contracts(operation_map)
-    _validate_helper_bindings(operation_map)
-    _validate_protected_workflows(workflow_map, operation_map)
-    _validate_operation_coverage(operation_map)
-    contract = artifact["contract"]
-    if contract.get("invariants") != EXPECTED_INVARIANTS:
-        raise ContractError("invariant_contract_mismatch")
-    if semantic_digest(artifact) != artifact["semantic_digest_sha256"]:
-        raise ContractError("semantic_digest_mismatch")
     return {
-        **summary,
-        "projected_helper_command_count": len(PROJECTED_HELPER_COMMANDS) + len(SERVICE_API_HELPER_COMMANDS),
-        "local_extension_count": len(LOCAL_EXTENSION_ROUTES),
+        "helper_command_count": len(PROJECTED_HELPER_COMMANDS) + len(SERVICE_API_HELPER_COMMANDS) + len(LOCAL_EXTENSION_ROUTES),
         "internal_helper_route_count": len(INTERNAL_HELPER_ROUTES),
         "hermetic_only": True,
         "upstream_freshness_proven": False,
     }
 
 
-def load_contract(path: Path = DEFAULT_CONTRACT_PATH) -> dict[str, Any]:
-    try:
-        artifact = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ContractError("contract_unreadable") from exc
-    if not isinstance(artifact, dict):
-        raise ContractError("invalid_artifact")
-    validate_contract(artifact)
-    return artifact
-
-
-@lru_cache(maxsize=1)
-def _default_contract() -> dict[str, Any]:
-    return load_contract()
-
-
 def operation_path(operation_id: str) -> str:
-    artifact = _default_contract()
-    operations = artifact["contract"]["operations"]
-    for operation in operations:
-        if operation["operation_id"] == operation_id:
-            return str(operation["path"])
-    raise ContractError("unknown_operation_id")
+    try:
+        return OPERATION_PATHS[operation_id]
+    except KeyError:
+        raise ContractError("unknown_operation_id") from None
 
 
 def helper_command_path(command: str) -> str:
-    projected = PROJECTED_HELPER_COMMANDS.get(command) or SERVICE_API_HELPER_COMMANDS.get(command)
-    if projected is not None:
-        return operation_path(projected[0])
-    extension = LOCAL_EXTENSION_ROUTES.get(command)
-    if extension is not None:
-        return extension["path"]
+    caller = PROJECTED_HELPER_COMMANDS.get(command) or SERVICE_API_HELPER_COMMANDS.get(command)
+    if caller is not None:
+        return operation_path(caller[0])
+    route = LOCAL_EXTENSION_ROUTES.get(command)
+    if route is not None:
+        return route["path"]
     raise ContractError("unknown_helper_command")
 
 
