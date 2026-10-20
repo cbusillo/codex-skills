@@ -66,6 +66,80 @@ def linked_worktree(checkout: Path, linked: Path) -> Path:
 
 
 class CommandPolicyHookTests(unittest.TestCase):
+    def test_pattern_process_kills_are_refused_without_running_them(self) -> None:
+        for line in (
+            "pkill sleep", "pkill -f 'sleep 10|sleep 15'", "killall sleep",
+            "command /usr/bin/pkill -f watcher", "env MODE=test killall sleep",
+            "bash -lc 'pkill -f watcher'", "sudo pkill -f watcher",
+            "timeout 5 killall sleep", "pgrep sleep | xargs /bin/kill",
+            "ps -axo pid,command | awk '/sleep/ {print $1}' | xargs -r kill -9",
+            "kill $(pgrep -f 'sleep 10')", 'kill "$(pgrep sleep)"',
+            "kill -TERM `pgrep sleep`", "builtin kill $(pgrep sleep)",
+            "kill $(ps -axo pid,command | awk '/sleep/ {print $1}')",
+            "bash <<'EOF'\nkill $(pgrep sleep)\nEOF",
+            'pids=$(pgrep -f vite); kill $pids',
+            'for p in $(pgrep -f watcher); do kill "$p"; done',
+            'pgrep sleep | while read p; do kill "$p"; done',
+            'kill "$task_pid"', 'kill "$(cat server.pid)"',
+            "kill 0", "kill -9 -1", "nice -n 5 pkill watcher",
+            "caffeinate -i killall watcher", "doas pkill watcher",
+            "stdbuf -o0 pkill watcher", "sudo -u worker pkill watcher",
+            "pgrep sleep | xargs -I{} kill {}",
+            "kill 12345 0 > log", "kill 12345 -1 > log",
+            "sudo timeout 5 pkill watcher", "timeout 5 sudo pkill watcher",
+            "sudo env MODE=test pkill watcher", "nice -n5 pkill watcher",
+            "pgrep sleep | xargs -d '\\n' kill", "xargs -a pids kill",
+            "pgrep sleep | xargs --max-args 1 kill",
+            "xargs -i kill {}", "xargs -i{} kill {}", "xargs -J % kill %",
+            "stdbuf -o L pkill watcher", "sudo -D /tmp pkill watcher",
+            "sudo -T 30 pkill watcher", "nice --adjustment 5 pkill watcher",
+            "sudo nohup pkill watcher", "timeout 5 command pkill watcher",
+        ):
+            with self.subTest(line=line):
+                result = bash(line)
+                self.assertEqual(result.returncode, 2)
+                blocked = command_policy_hook.blocking_policy(line)
+                self.assertIsNotNone(blocked)
+                if blocked is not None:
+                    self.assertIn(blocked[0]["message"], result.stderr)
+
+    def test_recorded_pid_kills_and_process_reads_remain_allowed(self) -> None:
+        for line in (
+            "kill 12345", "kill -TERM 12345", "/bin/kill -s TERM 12345",
+            "builtin kill 12345", "kill -- 12345", "kill -0 12345",
+            "kill --signal=TERM 12345", "kill -TERM 12345 12346",
+            "kill 12345 2>/dev/null || true",
+            "kill -0 12345 2>/dev/null && echo alive",
+            "kill -TERM 12345 >/dev/null 2>&1",
+            'kill 12345 > "task log.txt"',
+            "kill 12345 >| log", "kill $!", 'kill "$!"',
+            'uv run server.py & kill "$!"',
+            "pgrep -f 'sleep 10'", "ps -axo pid,command", "kill -l",
+            "git status", "rg 'pkill|killall' skills/",
+            "printf '%s' 'kill $(pgrep sleep)'",
+            "cat <<'EOF'\npkill sleep\nkill $(pgrep sleep)\nEOF",
+            "git ls-files | xargs grep -n kill", "xargs rg -w pkill",
+            "timeout 30 rg -n killall skills/", "sudo grep -r pkill /var/log",
+            "grep -n kill $(git ls-files)",
+            'git log -S kill -- "$(git rev-parse --show-toplevel)/hooks"',
+            "stdbuf -o L rg pkill", "sudo -D /tmp rg kill",
+            "sudo nohup rg killall", "xargs -i grep -n1 kill",
+            "sudo -D pkill rg killall", "sudo -u pkill grep killall",
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(bash(line).returncode, 0)
+
+    def test_legacy_command_policies_still_find_wrapped_commands(self) -> None:
+        for line in (
+            "timeout 60 git pull", "sudo git merge origin/main",
+            "xargs -n1 git rebase", "timeout 120 git -C /repo push origin br",
+            "nice git -c user.name=Fixture commit -m demo",
+            "caffeinate -i codex resume example",
+            "timeout 600 codex exec resume example",
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(bash(line).returncode, 2)
+
     def test_global_keyboard_synthesis_is_refused_without_sending_keys(self) -> None:
         apple = 'tell application "System Events" to tell process "Google Chrome"\nkeystroke "/path/proposal.json"\nkey code 36'
         commands = (
