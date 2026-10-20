@@ -252,17 +252,13 @@ def track_claude_background_tasks(record: dict, running: dict, scheduled: dict, 
                 running.pop(task_id.group(1).strip(), None)
     if record.get("type") == "assistant":
         for block in message.get("content") or []:
-            if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") in {"CronCreate", "CronDelete", "CronList"}:
+            if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") in {"CronCreate", "CronDelete", "CronList", "TaskStop"}:
                 identity = block.get("id")
                 if isinstance(identity, str) and identity not in tools:
                     tools[identity] = {"name": block["name"], "input": block.get("input") or {}, "complete": False}
                     if block["name"] == "CronCreate":
                         scheduled.setdefault("cron-create:" + identity, {
                             "started": record.get("timestamp"), "kind": "scheduled", "recurring": None})
-            if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") == "TaskStop":
-                stopped = (block.get("input") or {}).get("task_id")
-                if isinstance(stopped, str):
-                    running.pop(stopped, None)
     if record.get("type") == "user":
         result_blocks = [block for block in message.get("content") or []
                          if isinstance(block, dict) and block.get("type") == "tool_result"]
@@ -279,6 +275,12 @@ def track_claude_background_tasks(record: dict, running: dict, scheduled: dict, 
             if block.get("is_error") is True:
                 if name == "CronCreate":
                     scheduled.pop("cron-create:" + identity, None)
+                tool["complete"] = True
+                continue
+            if name == "TaskStop":
+                stopped = values.get("task_id")
+                if isinstance(stopped, str):
+                    running.pop(stopped, None)
                 tool["complete"] = True
                 continue
             result = record.get("toolUseResult") if len(result_blocks) == 1 else None

@@ -10,17 +10,13 @@ by callers rather than inferred from an immutable execution history.
 """
 from __future__ import annotations
 
-import argparse
 import copy
-import importlib.util
-import io
 import json
 import re
 import shlex
 import shutil
 import subprocess
 import sys
-from contextlib import redirect_stdout
 from functools import lru_cache
 from pathlib import Path
 
@@ -258,7 +254,7 @@ def outputs(records, harness):
         records, positions = serial_ownership_records(records)
     def relevant(name, value):
         return (opaque_ownership(name, value)
-                or any(ownership_command(argv) or script(argv) == "check_claims.py"
+                or any(script(argv) in {"gh-plan.py", "gh-pr.py", "check_claims.py"}
                        for argv in shell_commands(name, value)))
     isolated = {identifier: helper for record in records
                 for identifier, name, value in calls_and_results(record, harness)[0]
@@ -617,128 +613,25 @@ def ownership_activity(records, harness):
     yield from ownership_state(records, harness)["indices"]
 
 
-@lru_cache(maxsize=2)
-def helper_parser(name):
-    """Use the helpers' real argparse definitions without invoking any command."""
-    path = Path(__file__).resolve().parents[2] / "github/scripts" / name
-    module_name = "claim_receipts_" + name.replace("-", "_").removesuffix(".py")
-    spec = importlib.util.spec_from_file_location(module_name, path)
-    module = importlib.util.module_from_spec(spec)
-    sys.path.insert(0, str(path.parent))
-    try:
-        spec.loader.exec_module(module)
-    finally:
-        sys.path.pop(0)
-    return module.build_parser()
-
-
-def parser_option(parser, token):
-    try:
-        parsed = parser._parse_optional(token)
-    except Exception:
-        return None
-    # Python 3.14 returns candidate tuples; older argparse returns one tuple.
-    if isinstance(parsed, list):
-        parsed = parsed[0] if len(parsed) == 1 else None
-    return (parsed[0], parsed[1], parsed[-1]) if parsed and parsed[0] is not None else None
-
-
-def option_end(parser, words, index):
-    """Consume one option with the authoritative argparse arity and prefixes."""
-    parsed = parser_option(parser, words[index])
-    if parsed is None:
-        return None
-    action, _, explicit = parsed
-    if explicit is not None or action.nargs == 0:
-        return index + 1
-    if action.nargs is None:
-        return index + 2 if index + 1 < len(words) else None
-    if isinstance(action.nargs, int):
-        end = index + 1 + action.nargs
-        return end if end <= len(words) else None
-    return None  # Variable-arity options require contextual parsing, not guesses.
-
-
-def helper_action(argv):
-    """Only the actual subcommand, after helper-wide options, selects an action."""
-    helper = helper_argv(argv)
-    if not helper:
-        return "", []
-    name, action = Path(helper[0]).name, helper[1:]
-    parser = helper_parser(name if name in {"gh-plan.py", "gh-pr.py"} else "gh-plan.py")
-    while action and action[0].startswith("-"):
-        end = option_end(parser, action, 0)
-        if end is None:
-            break
-        action = action[end:]
-    return name, action
-
-
-def ownership_command(argv):
-    name, action = helper_action(argv)
-    verb = "claim" if name == "gh-plan.py" else "create"
-    owning = (name == "gh-plan.py" and action[:1] == ["claim"]
-              or name == "gh-pr.py" and action[:1] == ["create"]
-              or name == "gh" and action[:1] == ["pr"] and action[1:2] in (["create"], ["new"]))
-    # Only the observed bare action help form is exempt. Elsewhere a flag-like
-    # word may be an option value rather than a help request.
-    help_only = action[-2:] in ([verb, "--help"], [verb, "-h"]) and action.count(verb) == 1
-    if owning and name == "gh-plan.py":
-        help_only = help_only or claim_read_only_help(argv)
-    if owning and (name == "gh-pr.py" or name == "gh" and any(word in {"--help", "-h"} for word in action)):
-        parsed = creation_arguments(argv)
-        help_only = help_only or parsed is not None and getattr(parsed, "help_only", False)
-    return owning and not help_only
-
-
-def claim_read_only_help(argv):
-    """Only the real parser can decide whether a help-shaped argument executes."""
-    parser = helper_parser("gh-plan.py")
-    claim_parser = next(item for item in parser._actions
-                        if isinstance(item, argparse._SubParsersAction)).choices["claim"]
-    words = helper_argv(argv)[1:]
-    if not any(parsed and isinstance(parsed[0], argparse._HelpAction)
-               for word in words for parsed in (parser_option(parser, word), parser_option(claim_parser, word))):
-        return False
-    with redirect_stdout(io.StringIO()):
-        try:
-            parser.parse_known_args(words)
-        except SystemExit as error:
-            return error.code == 0
-        except Exception as error:
-            parsing_error = getattr(sys.modules.get("github_api"), "ArgumentParsingError", ())
-            return isinstance(error, parsing_error)
-    return False
-
-
-def claim_commands(name, value):
-    return [argv for argv in shell_commands(name, value) if script(argv) == "gh-plan.py" and ownership_command(argv)]
-
-
-def no_write_claims(records, harness):
-    """A unique bound terminal refusal can prove that no ownership was written."""
-    reports, single = {}, set()
-    for record in records:
-        for identifier, name, value in calls_and_results(record, harness)[0]:
-            if len(claim_commands(name, value)) == 1 and isolated_command(name, value, "gh-plan.py"):
-                single.add(identifier)
-    for _, source, value in bound_outputs(records, harness, lambda n, v: bool(claim_commands(n, v)), isolated_polls=True):
-        if value.get("operation") == CLAIM_OPERATION:
-            reports.setdefault(source, []).append(value)
-    return {source for source, values in reports.items() if source in single and len(values) == 1
-            and values[0].get("ok") is False and values[0].get("write_outcome") == "not_started"
-            and not values[0].get("completed_steps") and not values[0].get("claim_comment")}
-
-
 def bound_outputs(records, harness, predicate, *, receipts=None, isolated_polls=False, opaque_calls=()):
     """Bind native outputs and process polls to an actual tool invocation."""
     calls, processes, background, polled, outstanding = {}, {}, set(), {}, {}
     opaque, required, deferred, visible = set(), {}, {}, {}
     serial_calls = {}
+    tasks, running, scheduled, task_tools = {}, {}, {}, {}
     parsed = {}
     for index, value in receipts or []:
         parsed.setdefault(index, []).append(value)
     for index, record in enumerate(records):
+        if harness == "claude":
+            from session_record import track_claude_background_tasks
+            previous = set(running)
+            track_claude_background_tasks(record, running, scheduled, task_tools)
+            for task in previous - running.keys():
+                source = tasks.pop(task, None)
+                if source is not None and source not in tasks.values():
+                    background.discard(source)
+                    yield index, source, {"_result": True, "_pending": bool(outstanding.get(source)) or source in opaque}
         invocations, results = calls_and_results(record, harness)
         for call_id, name, value in invocations:
             invoked = call_id in opaque_calls or predicate(name, value)
@@ -766,7 +659,7 @@ def bound_outputs(records, harness, predicate, *, receipts=None, isolated_polls=
                     try:
                         lexer = shell_lexer(command, posix=False)
                         lexer.whitespace_split = True
-                        if ("&" in list(lexer) or any(unwrapped_command(argv, stop_at={"coproc"})[:1] == ["coproc"]
+                        if ("&" in list(lexer) or any((unwrapped_command(argv, stop_at={"coproc"}) or [])[:1] == ["coproc"]
                                 for argv in shell_commands("exec_command", {"cmd": command}))):
                             opaque.add(source)
                     except ValueError:
@@ -820,6 +713,8 @@ def bound_outputs(records, harness, predicate, *, receipts=None, isolated_polls=
             active.update(handles)
             native_task = record.get("toolUseResult")
             task = (native_task.get("backgroundTaskId") or native_task.get("taskId")) if harness == "claude" and isinstance(native_task, dict) else None
+            if task and len(results) == 1:
+                tasks[task] = source
             yield index, source, {"_result": True, "_tool_call_id": result, "_pending": bool(active) or bool(task) or source in background or source in opaque,
                                   "_background_task": task, "_native_output": raw}
             for value in values:
@@ -884,55 +779,6 @@ def sources(records, harness, session, *, parsed=None):
     return list(found.values()), errors
 
 
-def creation_arguments(argv):
-    """Read helper options with its parser, adapting the native gh aliases."""
-    helper = helper_argv(argv)
-    name, action = helper_action(argv)
-    words = helper[1:]
-    if name == "gh":
-        # gh-pr mirrors gh create's long options; these are gh's short forms.
-        aliases = {"-H": "--head", "-R": "--repo", "-t": "--title", "-b": "--body-file",
-                   "--body": "--body-file", "-B": "--base", "-d": "--draft", "-f": "--fill",
-                   "-l": "--label", "-r": "--reviewer", "-a": "--assignee", "-p": "--project",
-                   "-m": "--milestone", "-T": "--template", "-F": "--body-file"}
-        words, repository, cursor = [], [], 0
-        create_parser = next(item for item in helper_parser("gh-pr.py")._actions
-                             if isinstance(item, argparse._SubParsersAction)).choices["create"]
-        tail = action[2:]
-        while cursor < len(tail):
-            token = tail[cursor]
-            option, equal, inline = token.partition("=")
-            option = aliases.get(option, option)
-            if token[:2] in {"-H", "-R"} and len(token) > 2 and not equal:
-                option, equal, inline = aliases[token[:2]], "=", token[2:]
-            normalized = option + ("=" + inline if equal else "")
-            if option == "--repo":
-                if equal:
-                    repository = ["--repo", inline]
-                elif cursor + 1 < len(tail):
-                    repository = ["--repo", tail[cursor + 1]]
-                    cursor += 1
-                cursor += 1
-                continue
-            end = option_end(create_parser, [normalized, *tail[cursor + 1:]], 0)
-            if end is None:
-                break  # Preserve known scope before an unfamiliar gh-only option.
-            words.extend([normalized, *tail[cursor + 1:cursor + end]])
-            cursor += end
-        words = [*repository, "create", *words]
-    try:
-        with redirect_stdout(io.StringIO()):
-            args, _ = helper_parser("gh-pr.py").parse_known_args(words)
-    except SystemExit as error:
-        return argparse.Namespace(help_only=True) if error.code == 0 else None
-    except Exception as error:
-        parsing_error = getattr(sys.modules.get("github_api"), "ArgumentParsingError", ())
-        if name == "gh-pr.py" and isinstance(error, parsing_error):
-            return argparse.Namespace(help_only=True)
-        return None
-    return args
-
-
 def acceptance(records, harness, session, *, histories=None, history_error=None):
     try:
         if history_error:
@@ -976,10 +822,7 @@ def _acceptance(records, harness, session, histories):
         return {"clear": True, "reason": "no_claim_receipts"}
     keys = {(r["repository"], r["record"], r["claim_comment"]) for r in expected}
     last_claim = max([r["index"] for r in root_expected] + activity + [-1])
-    no_writes = no_write_claims(records, harness)
-    no_write_indices = {i for i, source, _ in bound_outputs(records, harness, lambda n, v: bool(claim_commands(n, v)), receipts=parsed)
-                        if source in no_writes}
-    last_claim = max([last_claim, *(i for i, v in parsed if v.get("operation") == CLAIM_OPERATION and i not in no_write_indices
+    last_claim = max([last_claim, *(i for i, v in parsed if v.get("operation") == CLAIM_OPERATION
                                   or v.get("operation") == "github.pr.create" and v.get("ok"))])
     checks = list(check_outputs(records, harness, receipts=parsed))
     last_attempt = max((i for i, v in checks if v.get("_attempt")), default=-1)

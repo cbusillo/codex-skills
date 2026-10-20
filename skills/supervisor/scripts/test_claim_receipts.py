@@ -247,6 +247,41 @@ class ReceiptTests(unittest.TestCase):
         for harness in ("codex", "claude"):
             self.assertTrue(session_record.summarize(history(harness), harness)["safe_verdict"])
 
+    def test_unsupported_uv_command_can_reach_a_fresh_complete_check(self):
+        for harness in ("codex", "claude"):
+            records = history(harness, {})
+            if harness == "codex":
+                records[1]["payload"]["arguments"] = json.dumps({"cmd": "uv pip list"})
+            else:
+                records[1]["message"]["content"][0]["input"] = {"command": "uv pip list"}
+            records[2] = output({"exit_code": 0, "output": ""}, harness, "tool-0")
+            self.assertFalse(receipts.ownership_state(records, harness)["pending"])
+            self.assertFalse(session_record.summarize(records, harness)["safe_verdict"])
+            end = 2 if harness == "codex" else 1
+            checked = history(harness, {**proof(), "harness": harness})
+            records[-end:-end] = checked[1:-end]
+            self.assertTrue(session_record.summarize(records, harness)["safe_verdict"])
+
+    def test_claude_terminal_task_notice_clears_only_its_bound_background_source(self):
+        records = history("claude", {})
+        records[1]["message"]["content"][0]["input"] = {"command": "uv run test_sample.py", "run_in_background": True}
+        records[2]["toolUseResult"] = {"backgroundTaskId": "watcher"}
+        self.assertTrue(receipts.ownership_state(records, "claude")["pending"])
+        for task, status, pending in (("other", "completed", True), ("watcher", "running", True),
+                                      ("watcher", "completed", False), ("watcher", "failed", False)):
+            notice = {"type": "user", "message": {"content":
+                f"<task-notification><task-id>{task}</task-id><status>{status}</status></task-notification>"}}
+            with self.subTest(task=task, status=status):
+                self.assertEqual(receipts.ownership_state(records[:-1] + [notice], "claude")["pending"], pending)
+        stop = {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "stop",
+            "name": "TaskStop", "input": {"task_id": "watcher"}}]}}
+        for result, pending in (([], True), ([{"type": "user", "message": {"content": [{"type": "tool_result",
+                "tool_use_id": "stop", "content": "failed", "is_error": True}]}}], True),
+                ([{"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "stop",
+                    "content": "Stopped", "is_error": False}]}}], False)):
+            with self.subTest(stop_pending=pending, result=result):
+                self.assertEqual(receipts.ownership_state(records[:-1] + [stop, *result], "claude")["pending"], pending)
+
     def test_reading_a_saved_proof_does_not_attest_a_fresh_check(self):
         records = history("codex", claim(), proof(("example/a", 1, 10)))
         records[-4]["payload"]["arguments"] = json.dumps({"cmd": "cat saved-proof.json"})

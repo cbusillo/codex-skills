@@ -37,6 +37,20 @@ def pull(number=2, branch=SOURCE["branch"], **changes):
 
 class ClaimCloseoutTests(unittest.TestCase):
 
+    def test_unrelated_helper_issue_number_is_not_a_claim_receipt(self):
+        from test_claim_receipts import history, SESSION as native_session
+        for harness in ("codex", "claude"):
+            rows = history(harness, {"operation": "github.plan.update_section", "issue": 2214, "ok": True})
+            for row in rows:
+                row["timestamp"] = SOURCE["claimed_at"]
+            entry = {"session_id": native_session, "harness": harness, "_transcript_records": rows}
+            self.comments = [comment(10, helper.claim.marker({**SOURCE, "session": native_session}))]
+            with patch.object(helper.sessions, "discover", return_value=({(REPO, 1)}, [REPO])):
+                self.assertFalse(helper.check(self.reader, [], entry, ACTOR)["claims_clear"])
+                self.comments.append(comment(11, "Released claim 10\nSession: " + native_session,
+                                             at="2026-01-01T00:02:00Z"))
+                self.assertTrue(helper.check(self.reader, [], entry, ACTOR)["claims_clear"])
+
     def test_native_family_reuses_receipt_parsing_without_reusing_a_later_snapshot(self):
         from test_claim_receipts import history, claim as native_claim, SESSION as native_session
         from test_claim_history import records
@@ -199,6 +213,8 @@ class ClaimCloseoutTests(unittest.TestCase):
                 self.assertTrue(report["claims_clear"], report)
                 self.assertTrue(report["coverage"]["complete"], report)
                 self.assertEqual({r["claim_comment"] for r in report["released_claims"]}, {10})
+                if harness == "claude":
+                    continue  # Claude completion is exercised through its real task tracker below.
                 # A historical running record is rechecked, never a permanent
                 # refusal before the live GitHub inventory.
                 pending = history(harness, {})[1:3]
@@ -231,6 +247,29 @@ class ClaimCloseoutTests(unittest.TestCase):
                 self.reader.paged_json.assert_called()
                 self.comments.append(comment(11, "Released claim 10\n\nSession: " + native_session,
                                              at="2026-01-01T00:02:00Z"))
+
+    def test_claude_completed_background_task_reaches_live_complete_inventory(self):
+        from test_claim_receipts import history, output, SESSION as native_session
+        rows = history("claude", {})
+        rows[1]["message"]["content"][0]["input"] = {"command": "uv run test_sample.py", "run_in_background": True}
+        rows[2] = output({}, "claude", "tool-0")
+        rows[2]["toolUseResult"] = {"backgroundTaskId": "watcher"}
+        for row in rows:
+            row["timestamp"] = SOURCE["claimed_at"]
+        self.comments = [comment(10, helper.claim.marker({**SOURCE, "session": native_session})),
+                         comment(11, "Released claim 10\nSession: " + native_session, at="2026-01-01T00:02:00Z")]
+        entry = {"session_id": native_session, "harness": "claude", "_transcript_records": rows}
+        with patch.object(helper.native_ownership, "pending_ownership", wraps=CURRENT_NATIVE_PENDING), \
+                patch.object(helper.native_ownership, "observe", return_value=([], {}, {})), \
+                patch.object(helper.sessions, "discover", return_value=({(REPO, 1)}, [REPO])):
+            self.assertTrue(helper.check(self.reader, [], entry, ACTOR)["pending"])
+            rows[-1:-1] = [{"type": "user", "timestamp": SOURCE["claimed_at"], "message": {"content":
+                "<task-notification><task-id>watcher</task-id><status>completed</status></task-notification>"}}]
+            finished = helper.check(self.reader, [], entry, ACTOR)
+            self.assertTrue(finished["claims_clear"], finished)
+            self.assertTrue(finished["coverage"]["complete"], finished)
+            self.comments.pop()
+            self.assertFalse(helper.check(self.reader, [], entry, ACTOR)["claims_clear"])
 
     def test_shorthand_redirected_client_claim_is_inventoried_with_its_own_actor(self):
         from test_claim_receipts import history, claim as native_claim, output, SESSION as native_session

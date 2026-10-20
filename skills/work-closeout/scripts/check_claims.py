@@ -179,10 +179,13 @@ def check(reader, owner, entry, actor, *, reader_for_repo=None, read_timeout=Non
     for node in histories:
         parsed = list(claim_receipts.outputs(node["records"], node["harness"]))
         for _, value in parsed:
+            if value.get("operation") != claim_receipts.CLAIM_OPERATION:
+                continue
             issue, identity = value.get("issue") or {}, value.get("claim") or {}
+            if not isinstance(issue, dict) or not isinstance(identity, dict):
+                continue  # Canonical inventory still reconciles every source.
             repo, number = issue.get("repo"), issue.get("number")
-            if (value.get("operation") == claim_receipts.CLAIM_OPERATION
-                    and identity.get("session") in native_sessions
+            if (identity.get("session") in native_sessions
                     and isinstance(repo, str) and sessions.REPO.fullmatch(repo)
                     and type(number) is int and number > 0):
                 receipt_issues.add((repo, number))

@@ -141,17 +141,13 @@ Read the refusal's `claim_disposition` and the owning issue before acting. Nudge
 that exact worker once to complete work-closeout's claim disposition for its
 native session and children: release its own claims or verify retained-PR
 handoffs, run the maintained check, and give a fresh standalone verdict. Missing
-repository context can be inventoried with additive `--repository`; an opaque
-command without its own scope evidence still refuses, even if that inventory
-contains an older matching release. Do not guess scope or drop a child. The source worker coordinates any
+repository context can be inventoried with additive `--repository`. Follow the
+[claim disposition contract](../../work-closeout/SKILL.md#claim-disposition)
+for complete inventory and live pending checks. Do not drop a child. The source worker coordinates any
 child-owned release through that child; the parent does not impersonate it.
-An `ownership_activity_incomplete` refusal means a claim/PR command still lacks
-its terminal native result. Have the worker collect that result, then launch
-a new check. A process handle or an overlapping checker result does not clear
-the obligation; Claude tools sharing one API message are treated as concurrent.
 
 For no-GitHub exploration, local readable child histories with no ownership
-activity satisfy the N/A path. The reader uses Claude's native child files and
+or shell activity satisfy the N/A path. The reader uses Claude's native child files and
 Codex's native parent/child index and rollouts. Missing, active or changed child
 history refuses acceptance; fix the identified local evidence before asking
 for another verdict. There is no GitHub read merely because delegation occurred.

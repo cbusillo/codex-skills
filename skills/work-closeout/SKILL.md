@@ -329,14 +329,15 @@ reader requires that fresh invocation result to cover every native source claim.
 Missing or redirected claim output does not exempt ownership. Canonical session
 inventory finds claims independently of command spelling or generated source.
 Never repeat a write to manufacture evidence for an earlier invocation.
-Delegation with no ownership activity in parent or children keeps the existing
-N/A path without GitHub access. Claimed children require all native IDs in the
+Histories with no shell execution or ownership activity keep the N/A path
+without GitHub access. Any shell execution requires this check, including
+ordinary reads. Claimed children require all native IDs in the
 parent's check; later child activity requires a fresh check.
 
 The checker does not interpret generated programs or prove covered writes.
 Uncertain native activity is pending, rechecked against current native execution,
 queue and process evidence on every closeout, claim and next invocation. It
-clears when the owner is verifiably gone; absence from a registry alone is not
+clears when the native session is verifiably gone; absence from a registry alone is not
 proof. This clears uncertainty only. Every actual claim still requires its exact
 release or verified recovery release. Historical pending output is never a
 permanent refusal before live readback. An active check may exclude only its
@@ -374,7 +375,9 @@ exit still reads the original unqualified declaration and checks live activity,
 so historical ended sessions without a pre-exit receipt can release through the
 existing Supervisor attestation route.
 Physical native observation uses independently verified inactivity without
-requiring claim disposition or a final declaration. Recovery release still
+requiring claim disposition. Claude process proof requires a retained matched
+launch record; a live Claude task clears through its bound terminal notice or
+successful task stop. Recovery release still
 requires the original declaration and its existing attestation contract. Normal Supervisor
 close-out candidates and guarded terminal cleanup consume the accepted verdict.
 After recovery, resume the source session and run this check: it accepts validated
