@@ -90,6 +90,10 @@ class CommandPolicyHookTests(unittest.TestCase):
             "sudo env MODE=test pkill watcher", "nice -n5 pkill watcher",
             "pgrep sleep | xargs -d '\\n' kill", "xargs -a pids kill",
             "pgrep sleep | xargs --max-args 1 kill",
+            "xargs -i kill {}", "xargs -i{} kill {}", "xargs -J % kill %",
+            "stdbuf -o L pkill watcher", "sudo -D /tmp pkill watcher",
+            "sudo -T 30 pkill watcher", "nice --adjustment 5 pkill watcher",
+            "sudo nohup pkill watcher", "timeout 5 command pkill watcher",
         ):
             with self.subTest(line=line):
                 result = bash(line)
@@ -118,6 +122,9 @@ class CommandPolicyHookTests(unittest.TestCase):
             "timeout 30 rg -n killall skills/", "sudo grep -r pkill /var/log",
             "grep -n kill $(git ls-files)",
             'git log -S kill -- "$(git rev-parse --show-toplevel)/hooks"',
+            "stdbuf -o L rg pkill", "sudo -D /tmp rg kill",
+            "sudo nohup rg killall", "xargs -i grep -n1 kill",
+            "sudo -D pkill rg killall", "sudo -u pkill grep killall",
         ):
             with self.subTest(line=line):
                 self.assertEqual(bash(line).returncode, 0)

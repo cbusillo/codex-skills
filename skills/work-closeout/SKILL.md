@@ -68,16 +68,16 @@ policy:
     - id: reject-wrapped-process-kills
       match:
         shell_regex: >-
-          (?x)\A(?:(?:\S*/)?(?:
-          xargs(?:\s+(?:-[0prtx]+|['"]?-[IEnPLsad] (?:[^\s'"]+['"]?|\s+\S+)|--(?:arg-file|delimiter|max-(?:args|procs|lines|chars)|replace|eof)(?:=|\s+)\S+|--[\w-]+))*
-          |sudo(?:\s+(?:-[ughp]\s+\S+|-\S+))*
-          |timeout(?:\s+(?:-[ks]\s+\S+|-\S+))*\s+\S+
-          |nice(?:\s+(?:-n\s*-?\d+|--\w+=-?\d+|-\d+))*
-          |caffeinate(?:\s+(?:-[dimsu]+|-[tw]\s+\d+))*
-          |doas(?:\s+(?:-[uC]\s+\S+|-[Lnns]+))*
-          |stdbuf(?:\s+(?:-[ioe]\S+|--\w+=\S+))*
-          |env(?:\s+-\S+)*(?:\s+[A-Za-z_]\w*=\S+)*
-          )\s+)+(?:\S*/)?(?:kill|pkill|killall)(?:\s|$)
+          (?x)\A((\S*/)?(
+          xargs(\s+(?>-[0prtx]+|'?-i\S*|['"]?-[IEnPLsadJ] ([^\s'"]+['"]?|\s+\S+)|--(arg-file|delimiter|max-(args|procs|lines|chars)|replace|eof)(=|\s+)\S+|--[\w-]+))*
+          |sudo(\s+(?>-[ughpDT]\s+\S+|-\S+))*
+          |timeout(\s+(?>-[ks]\s+\S+|-\S+))*\s+\S+
+          |nice(\s+(-n\s*-?\d+|--\w+(=|\s+)-?\d+|-\d+))*
+          |caffeinate(\s+(-[dimsu]+|-[tw]\s+\d+))*
+          |doas(\s+(-[uC]\s+\S+|-[Lnns]+))*
+          |stdbuf(\s+(-[ioe]\s*\S+|--\w+=\S+))*
+          |command|exec|nohup|time|env(\s+-\S+)*(\s+[A-Za-z_]\w*=\S+)*
+          )\s+)+(\S*/)?(kill|pkill|killall)(\s|$)
       action: reject
       message: *process_stop_route
 ---
