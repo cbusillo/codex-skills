@@ -432,7 +432,9 @@ def followup_release(source: dict[str, Any], comments: list[dict[str, Any]], *, 
 
     Worker releases precede their own end. A later release needs an earlier
     validated parent receipt selecting this follow-up through related_ids;
-    explanatory prose and the hand claim's position confer no authority.
+    that receipt may attest a later end than the verified one, as its producer
+    checked activity through that time. Explanatory prose and the hand claim's
+    position confer no authority.
     """
     if (source.get("user") or {}).get("login") != actor or claim.records(source.get("body") or ""):
         return None
@@ -453,8 +455,7 @@ def followup_release(source: dict[str, Any], comments: list[dict[str, Any]], *, 
             if ("_release_evidence" not in confirmed
                     or (confirmed.get("user") or {}).get("login") != actor
                     or receipt["source"]["session"] != session
-                    or not isinstance(related_ids, list) or source["id"] not in related_ids
-                    or stamp(receipt["evidence_at"]) > ended):
+                    or not isinstance(related_ids, list) or source["id"] not in related_ids):
                 continue
             # Check this canonical source/receipt pair independently: an older
             # ordinary release of the same source must not shadow its receipt.

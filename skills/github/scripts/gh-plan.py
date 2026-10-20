@@ -105,6 +105,7 @@ PLAN_COMMAND_CONTEXT: dict[str, tuple[str, str, bool]] = {
     "show": ("rest_api", "rest_core", False),
     "claim": ("composite", "rest_core", True),
     "release-claim": ("composite", "rest_core", True),
+    "release": ("composite", "rest_core", True),
     "wait": ("composite", "rest_core", True),
     "create": ("composite", "mixed", True),
     "update-section": ("rest_api", "rest_core", True),
@@ -2374,6 +2375,64 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
             "release_refusal_scope": github_plan_release.ISSUE_REFUSAL_SCOPE if isinstance(exc, github_plan_release.IssueReleaseRefusal) else "session_or_unknown"}) from exc
 
 
+def cmd_release(args: argparse.Namespace) -> None:
+    """Release this session's own claim with the exact directive its consumers read."""
+    repo = default_repo(args.repo)
+    args = claim_reference(args)
+    actor, gh_cmd, expected_actor = comment_route()
+    if not expected_actor:
+        raise PlanError("Release requires configured automation auth, the claim's own identity")
+    agent = github_agent.running_agent(getattr(args, "agent", None))
+    native = github_agent.native_sessions(agent)
+    if native and args.session not in native.values():
+        found = ", ".join(f"{name}={value}" for name, value in native.items())
+        raise ClassifiedPlanError("session_not_native",
+            f"--session {args.session} is not this session's native ID ({found}); release only your own claim.",
+            payload={"native_sessions": native, "running_agent": agent})
+    handoff = read_body(argparse.Namespace(body_file=args.handoff_file)).strip() if args.handoff_file else ""
+    body = f"Released claim {args.claim_comment}" + (f"\n\n{handoff}" if handoff else "")
+    # The handoff is narrative only: it can neither restate nor forge release authority.
+    if (github_plan_claim.released_claim_id(body) != args.claim_comment
+            or any(marker in body for marker in (github_plan_release.RELEASE_MARKER, github_plan_release.PENDING_MARKER))
+            or github_plan_claim.records(body)):
+        raise PlanError("Handoff must be narrative; it cannot carry a release receipt or ownership record")
+    completed = []
+
+    def snapshot():
+        record, _status, comments, _can_update = claim_snapshot(args.issue, repo, allow_closed=True)
+        source = next((c for c in comments if c.get("id") == args.claim_comment), None)
+        records = github_plan_claim.records((source or {}).get("body") or "")
+        if (source is None or (source.get("user") or {}).get("login") != expected_actor
+                or len(records) != 1 or records[0]["session"] != args.session):
+            raise PlanError("The claim comment is not this session's own structured claim on this record; "
+                            "an ended session's claim uses release-claim")
+        confirmed = next((c for c in comments if c.get("id") != source["id"]
+                          and github_plan_release.exact_source_release(source["id"], c, comments)), None)
+        return record, confirmed
+
+    issue, existing = snapshot()
+    completed.append("release_preflight")
+    if existing is not None:
+        emit({"ok": True, "release_state": "already_released", "source_claim": args.claim_comment,
+              "release_comment": {"id": existing["id"], "url": existing.get("html_url")}, "completed_steps": completed})
+        return
+    if args.dry_run:
+        emit({"ok": True, "dry_run": True, "release_body": body, "release_state": "not_started",
+              "source_claim": args.claim_comment, "completed_steps": completed})
+        return
+    result = github_comment_core.comment("pr" if "pull_request" in issue else "issue", issue["number"], body,
+        repo=issue["repo"], gh_cmd=gh_cmd, operation=CURRENT_OPERATION, expected_actor=expected_actor,
+        completed_steps=completed, failed_step="post_release", dedupe_body=True)
+    completed.append("post_release")
+    _issue, existing = snapshot()
+    if existing is None or existing["id"] != result["comment"]["id"]:
+        raise PlanError("Release readback is not an exact release of this claim; inspect the record before any retry",
+                        payload={"release_comment": result["comment"], "completed_steps": completed})
+    completed.append("release_readback")
+    emit({"ok": True, "actor": actor, "release_state": "confirmed", "source_claim": args.claim_comment,
+          "release_comment": {"id": existing["id"], "url": existing.get("html_url")}, "completed_steps": completed})
+
+
 def claim_reference(args: argparse.Namespace) -> argparse.Namespace:
     """Accept a canonical PR URL on claim/release without broadening issue commands."""
     match = re.fullmatch(r"https://github\.com/([\w.-]+/[\w.-]+)/pull/([1-9]\d*)", args.issue.strip())
@@ -3402,7 +3461,14 @@ def _claim_once(args: argparse.Namespace) -> None:
                 write_outcome="unknown", completed_steps=completed,
             )
         raise
-    emit({"ok": True, "actor": actor, "record_kind": record_kind, "claim": claim, "claim_comment": claim_comment, "issue": compact_issue(final),
+    claim_id = (claim_comment.get("comment") or {}).get("id")
+    # Name the supported release here so a finishing worker never hand-writes the directive.
+    release_route = ({"release_command": shlex.join([
+        "uv", "run", str(pathlib.Path(__file__).resolve()), "--repo", issue_repo, "release", str(number),
+        "--claim-comment", str(claim_id), "--session", claim["session"], "--handoff-file", "<handoff.md>"])}
+        if claim_id else {})
+    emit({"ok": True, "actor": actor, "record_kind": record_kind, "claim": claim, "claim_comment": claim_comment, **release_route,
+          "issue": compact_issue(final),
           "current_status_location": "issue_body" if can_update else "claim_comment",
           "previous_current_status": previous_status,
           "retained_artifacts": [entry for entry in ended_owners if entry.get("worktrees") or entry.get("pull_requests")
@@ -6736,6 +6802,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--retained-pr", action="append", default=[])
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=cmd_release_claim)
+
+    p = sub.add_parser("release", help="Release this session's own claim with the exact directive and a handoff")
+    p.add_argument("issue")
+    p.add_argument("--claim-comment", type=int, required=True)
+    p.add_argument("--session", required=True, help="This session's native ID, as claimed")
+    p.add_argument("--handoff-file", help="Handoff narrative posted below the directive; - reads stdin")
+    p.add_argument("--agent", choices=github_agent.FAMILIES, help="Running family; defaults to harness detection")
+    p.add_argument("--dry-run", action="store_true")
+    p.set_defaults(func=cmd_release)
 
     p = sub.add_parser("claim", help="Recheck, record, and read back issue or PR ownership before work")
     p.add_argument("issue")

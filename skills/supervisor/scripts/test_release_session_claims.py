@@ -725,6 +725,23 @@ class ReleaseTests(unittest.TestCase):
         self.assertFalse(report["needs_reconciliation"])
         self.assertEqual(report["reports"][0]["released_claims"][0]["claim_comment"], self.source["id"])
 
+    def test_finish_consumes_supervisor_release_attesting_an_end_after_recorded_closure(self):
+        # CS2319-C1: the attestation's Ended at follows the recorded closure by seconds.
+        evidence = {**comment(99, "Closed session source-session\nEnded at: 2026-01-01T00:02:05Z\nSafe to exit: yes"),
+                    "issue_url": "https://api.github.com/repos/test/control/issues/9",
+                    "created_at": "2026-01-01T00:04:00Z", "updated_at": "2026-01-01T00:04:00Z"}
+        body = helper.release.prepare_release(self.source, evidence, [self.source], {"sessions": [], "worktrees": []},
+            actor=ACTOR, role="supervisor", releaser_session="supervisor",
+            evidence_url="https://github.com/test/control/issues/9#issuecomment-99", retained_prs=[], related=[])
+        receipt = self.own_release(body=body, created_at="2026-01-01T00:05:00Z", updated_at="2026-01-01T00:05:00Z")
+        result, report = self.finish_thread([self.source, receipt], evidence=evidence)
+        self.assertEqual(result, 0, report)
+        self.assertEqual(report["reports"][0]["released_claims"][0]["claim_comment"], self.source["id"])
+        # A naked release posted after the end is still not the worker's own.
+        late = self.own_release(created_at="2026-01-01T00:05:00Z", updated_at="2026-01-01T00:05:00Z")
+        result, report = self.finish_thread([self.source, late], evidence=evidence)
+        self.assertEqual(result, 1)
+
     def test_finish_invalid_supervisor_proofs_preserve_the_exact_source_without_writes(self):
         evidence = {**comment(99, "Closed session source-session\nEnded at: 2026-01-01T00:02:00Z\nSafe to exit: yes"),
                     "issue_url": "https://api.github.com/repos/test/control/issues/9",

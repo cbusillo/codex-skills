@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import copy
+import shlex
 import json
 import os
 import tempfile
@@ -218,9 +219,10 @@ class ReleaseTests(ReleaseHarness):
             failed = self.consume_related_release(produced)
         self.assertTrue(failed["issue_refusals"])
         self.assertNotIn(3, [r["claim_comment"] for r in failed["released_claims"]])
-        failed = self.consume_related_release(produced, ended="2026-10-01T23:00:00Z")
-        self.assertTrue(failed["issue_refusals"])
-        self.assertNotIn(3, [r["claim_comment"] for r in failed["released_claims"]])
+        # The receipt may attest a later end than the verified closure (CS2319-C1).
+        accepted = self.consume_related_release(produced, ended="2026-10-01T23:00:00Z")
+        self.assertFalse(accepted["issue_refusals"])
+        self.assertEqual({r["claim_comment"] for r in accepted["released_claims"]}, {1, 3})
 
     def test_receipt_related_authority_survives_earlier_hand_worker_release_and_narrative_edits(self):
         for case in ("earlier-hand", "ordinary-source-release", "narrative", "receipt-edit", "earlier-hand-and-ordinary-release"):
@@ -290,28 +292,11 @@ class ReleaseTests(ReleaseHarness):
         self.assertFalse(after["issue_refusals"])
         self.assertEqual({r["claim_comment"] for r in after["released_claims"]}, {1, hand["id"]})
 
-    def test_finish_exposes_recorded_end_and_accepts_corrected_producer_evidence(self):
+    def test_finish_accepts_producer_evidence_attesting_a_later_end(self):
         selected_end = "2026-10-02T00:00:00Z"
         self.evidence["body"] = self.evidence["body"].replace(selected_end, "2026-10-02T00:30:00Z")
-        bad_evidence = copy.deepcopy(self.evidence)
         produced = self.produced_related_release()
-        refused = self.consume_related_release(produced, ended=selected_end)
-        self.assertEqual({r["claim_comment"] for r in refused["issue_refusals"]}, {1, 3})
-        self.assertEqual(refused["ended_at"], selected_end)
-        self.assertTrue(refused.get("next_action"))
-        self.evidence = {**bad_evidence, "id": 89,
-            "body": bad_evidence["body"].replace("2026-10-02T00:30:00Z", refused["ended_at"]),
-            "created_at": "2026-10-02T02:00:00Z", "updated_at": "2026-10-02T02:00:00Z"}
-        self.args.evidence_comment = "https://github.com/owner/control/issues/884#issuecomment-89"
-        api = self.api
-        def read(method, path, **kwargs):
-            if path.endswith(f"/issues/comments/{bad_evidence['id']}"):
-                return "bot", copy.deepcopy(bad_evidence)
-            return api(method, path, **kwargs)
-        with patch.object(self, "api", side_effect=read):
-            self.run_release()
-        accepted = self.consume_related_release(self.f.comments, ended=selected_end,
-            evidence_by_id={bad_evidence["id"]: bad_evidence, self.evidence["id"]: self.evidence})
+        accepted = self.consume_related_release(produced, ended=selected_end)
         self.assertEqual(accepted["ended_at"], selected_end)
         self.assertFalse(accepted["issue_refusals"])
         self.assertEqual({r["claim_comment"] for r in accepted["released_claims"]}, {1, 3})
@@ -1623,6 +1608,75 @@ class LegacyReleaseTests(ReleaseHarness):
         self.run_release()
         self.f.assert_no_writes()
         self.assertEqual(CLAIM.released_claim_id(self.f.emitted.call_args.args[0]['release_body']), self.args.claim_comment)
+
+
+class OwnReleaseTests(ReleaseHarness):
+    """A worker releases its own claim through the helper, never a hand-written directive."""
+
+    def setUp(self):
+        super().setUp()
+        self.handoff = Path(self.enterContext(tempfile.TemporaryDirectory())) / "handoff.md"
+        # LP4214-C1 put this summary on the directive line by hand.
+        self.handoff.write_text("LP4214-C1 Finish Line met: reviewed, tested and landed.\n\nSafe to exit: yes\n")
+        self.args = Namespace(repo="owner/repo", issue="42", claim_comment=1, session=fixtures.OTHER["session"],
+                              handoff_file=str(self.handoff), agent=None, dry_run=False)
+
+    def run_own_release(self):
+        with patch.multiple(PLAN, default_repo=lambda _: "owner/repo", get_issue=self.f.get_issue,
+                            EXPECTED_ACTOR=BOT, collect_paged_rest_items=self.f.read_pages,
+                            comment_route=lambda: ("bot", "bot-gh", BOT), emit=self.f.emitted), \
+                patch.object(github_identity, "configured_bot_logins", return_value=[BOT]), \
+                patch.object(github_comment, "comment", autospec=True, side_effect=self.post):
+            PLAN.cmd_release(self.args)
+
+    def test_release_posts_the_exact_directive_with_handoff_below_it(self):
+        self.run_own_release()
+        result = self.f.emitted.call_args.args[0]
+        self.assertTrue(result["ok"])
+        posted = self.f.comments[-1]
+        self.assertEqual(CLAIM.released_claim_id(posted["body"]), 1)
+        self.assertIn("LP4214-C1 Finish Line met", posted["body"])
+        self.assertTrue(release.exact_source_release(1, posted, self.f.comments))
+        self.assertEqual(result["release_comment"]["id"], posted["id"])
+        # A second run finds the confirmed release and writes nothing.
+        posts = self.f.events.count("post")
+        self.run_own_release()
+        self.assertEqual(self.f.events.count("post"), posts)
+        self.assertEqual(self.f.emitted.call_args.args[0]["release_state"], "already_released")
+
+    def test_claim_names_the_release_command_for_its_own_comment(self):
+        self.f.comments = []
+        self.f.run_claim()
+        result = self.f.emitted.call_args.args[0]
+        argv = shlex.split(result["release_command"])
+        parsed = PLAN.build_parser().parse_args(argv[argv.index("--repo"):])
+        self.assertIs(parsed.func, PLAN.cmd_release)
+        self.assertEqual((parsed.claim_comment, parsed.session),
+                         (result["claim_comment"]["comment"]["id"], result["claim"]["session"]))
+
+    def test_dry_run_shows_the_body_without_writing(self):
+        self.args.dry_run = True
+        self.run_own_release()
+        self.f.assert_no_writes()
+        self.assertEqual(CLAIM.released_claim_id(self.f.emitted.call_args.args[0]["release_body"]), 1)
+
+    def test_release_refuses_records_this_session_does_not_own_without_writing(self):
+        cases = {
+            "other session": lambda: setattr(self.args, "session", fixtures.OWNER["session"]),
+            "missing claim": lambda: setattr(self.args, "claim_comment", 7),
+            "foreign author": lambda: self.f.comments[0].update(user={"login": "foreign[bot]"}),
+            "not native": lambda: (setattr(self.args, "agent", "claude"),
+                                   os.environ.update(CLAUDE_CODE_SESSION_ID="another-native")),
+            "receipt in handoff": lambda: self.handoff.write_text(
+                "Done.\n<!-- " + release.RELEASE_MARKER + "{} -->\n"),
+        }
+        for name, change in cases.items():
+            with self.subTest(name), patch.dict(os.environ):
+                self.setUp()
+                change()
+                with self.assertRaises(PLAN.PlanError):
+                    self.run_own_release()
+                self.f.assert_no_writes()
 
 
 if __name__ == "__main__":

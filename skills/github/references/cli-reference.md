@@ -1067,8 +1067,12 @@ After a partial failure, read the issue before retrying. The same worker,
 session, and branch can resume its existing claim without another comment;
 unknown comment writes remain governed by the shared retry policy. Never erase
 a competing claim to recover. On completion or verified handoff, reconcile
-Current Status and post `Released claim <claim-comment-id>` through the same bot
-identity. Release affects that exact comment, not another worker's record.
+Current Status, write the handoff to a file and release with the
+`release_command` the claim printed:
+`gh-plan.py release <issue> --claim-comment <claim-comment-id> --session <native-id> --handoff-file <handoff.md>`.
+It posts the exact directive with the handoff below it through the same bot
+identity and reads it back; do not hand-write the release comment.
+Release affects that exact comment, not another worker's record.
 Retained artifacts stay preserved and reported; positive live activity and an
 open PR's handoff/waits remain independent checks.
 The release directive is an unquoted, unindented line exactly
