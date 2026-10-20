@@ -37,6 +37,7 @@ INSTALL_PATH_RE = re.compile(
 COMMAND_SPAN_RE = re.compile(r"`([^`]+)`")
 SKILL_CREATOR_REF_RE = re.compile(r"<path-to-skill-creator>/scripts/([^`\s]+)")
 MARKDOWN_LINK_RE = re.compile(r'(?<!!)?\[[^]\n]+]\(([^)\s]+)(?:\s+"[^"]*")?\)')
+FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---[ \t]*(?:\n|$)", re.DOTALL)
 ALLOWED_OPENAI_INTERFACE_KEYS = {
     "display_name",
     "short_description",
@@ -95,7 +96,7 @@ def validate_system_override_paths(skill_dirs: list[Path]) -> list[str]:
 
 def read_frontmatter(skill_md: Path) -> dict[str, Any]:
     contents = skill_md.read_text()
-    match = re.match(r"^---\n(.*?)\n---", contents, re.DOTALL)
+    match = FRONTMATTER_RE.match(contents)
     if not match:
         return {}
     parsed = yaml.safe_load(match.group(1))
@@ -548,22 +549,20 @@ def validate_markdown_links(skill_dir: Path) -> list[str]:
     for markdown_path in sorted(skill_dir.rglob("*.md")):
         if any(part in IGNORED_SKILL_DIRS for part in markdown_path.relative_to(skill_dir).parts):
             continue
-        lines = markdown_path.read_text().splitlines()
-        body_start = 0
-        if lines and lines[0].rstrip() == "---":
-            body_start = next(
-                (index + 1 for index, line in enumerate(lines[1:], start=1) if line.rstrip() == "---"),
-                0,
-            )
-            if body_start:
-                try:
-                    if not read_frontmatter(markdown_path):
-                        body_start = 0
-                except yaml.YAMLError:
-                    # Horizontal rules may surround Markdown rather than YAML metadata.
-                    body_start = 0
+        text = markdown_path.read_text()
+        match = FRONTMATTER_RE.match(text)
+        line_offset = 0
+        if match:
+            try:
+                metadata = yaml.safe_load(match.group(1))
+            except yaml.YAMLError:
+                # Horizontal rules may surround Markdown rather than YAML metadata.
+                metadata = None
+            if isinstance(metadata, dict):
+                line_offset = match.group(0).count("\n")
+                text = text[match.end():]
         in_fence = False
-        for line_number, line in enumerate(lines[body_start:], start=body_start + 1):
+        for line_number, line in enumerate(text.splitlines(), start=line_offset + 1):
             if line.lstrip().startswith("```"):
                 in_fence = not in_fence
                 continue

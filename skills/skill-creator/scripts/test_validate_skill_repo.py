@@ -246,7 +246,7 @@ def test_markdown_links_check_body_between_horizontal_rules() -> None:
         skill_dir = root / "demo-skill"
         references_dir = skill_dir / "references"
         references_dir.mkdir(parents=True)
-        for heading in ("# Guide", "[unfinished"):
+        for heading in ("# Guide", "[unfinished", "Key: value\n-----"):
             put_text(references_dir / "guide.md", f"---\n{heading}\nSee [missing](missing.md).\n---\n")
             errors = module.validate_markdown_links(skill_dir)
             assert len(errors) == 1 and "missing.md" in errors[0], errors
