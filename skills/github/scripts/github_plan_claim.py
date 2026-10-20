@@ -652,7 +652,7 @@ def coordination(conflicts: list[dict[str, Any]], comments: list[dict[str, Any]]
                         or c.get("session") == record["session"] or (
                             c.get("branch") == record["branch"] and source.get("id") not in released_ids)]
             if matching:
-                holders.append({**record, "claim_url": f"https://github.com/{repo}/issues/{number}#issuecomment-{source.get('id')}",
+                holders.append({**record, "claim_url": handoff_url(repo, number, source.get("id")),
                                 "next_action": "Contact this native session or coordinate an exact authored handoff on the work record; preserve its artifacts",
                                 **diagnostics(matching)})
     if not holders:

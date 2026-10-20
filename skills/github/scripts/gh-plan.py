@@ -2629,7 +2629,7 @@ def _claim_once(args: argparse.Namespace) -> None:
             if source_claim_id is None:
                 source_claim_id = args.resume_from
             if source_handoff_url is None and handoff_id is not None:
-                source_handoff_url = f"https://github.com/{source_repo}/issues/{source_number}#issuecomment-{handoff_id}"
+                source_handoff_url = github_plan_claim.handoff_url(source_repo, source_number, handoff_id)
         directions = traversal.setdefault((source_repo.casefold(), source_number), set())
         if "children" in directions:
             return

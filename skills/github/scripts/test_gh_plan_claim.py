@@ -1294,6 +1294,43 @@ class ClaimTests(unittest.TestCase):
                                                 for entry in caught.exception.payload["competing_evidence"]))
                         if phase == "after_post": self.assertNotIn("status", self.events)
 
+        for mode, changed in product(("next", "plain"), (False, True)):
+            with self.subTest(fresh_invocation=mode, changed=changed):
+                self.setUp()
+                if mode == "next": source = self.next_handoff_fixture()
+                else:
+                    source = self.no_pr_resume_fixture()
+                    self.args.branch = source["branch"]
+                with patch.dict(os.environ, {"CODEX_THREAD_ID": self.args.session}):
+                    self.run_claim()
+                    published = copy.deepcopy(self.emitted.call_args.args[0]["claim"])
+                    if changed and mode == "next":
+                        pull = self.pulls.pop(0)
+                        pull.update(state="closed", merged_at="2026-10-02T03:00:00Z")
+                        self.closed_pulls[pull["number"]] = pull
+                        self.targets[str(pull["number"])]["state"] = "closed"
+                    elif changed:
+                        pull = {"number": 99, "state": "open", "user": {"login": TEST_BOT},
+                                "title": "New retained work", "body": "Refs #42",
+                                "head": {"ref": "work/later-retained", "repo": {"full_name": "owner/repo"}},
+                                "base": {"repo": {"full_name": "owner/repo"}}}
+                        self.pulls.append(pull)
+                        self.comments.append({"id": 88, "user": {"login": TEST_BOT}, "body": (
+                            f"Handoff from {source['worker']}\nSource claim {self.args.resume_from}; "
+                            f"Session: {source['session']}; PR #{pull['number']}")})
+                    before = copy.deepcopy((self.comments, self.inventory, self.pulls, self.closed_pulls))
+                    self.events = []
+                    self.emitted.reset_mock()
+                    if changed:
+                        with self.assertRaises(PLAN.PlanError): self.run_claim()
+                        self.assert_no_writes()
+                        self.emitted.assert_not_called()
+                    else:
+                        self.run_claim()
+                        self.assertNotIn("post", self.events)
+                        self.assertTrue(CLAIM.same_owner(self.emitted.call_args.args[0]["claim"], published))
+                    self.assertEqual((self.comments, self.inventory, self.pulls, self.closed_pulls), before)
+
     def test_direct_pr_original_selector_preserves_subject_head_and_native_routes(self):
         for author, same_native, original_branch in product((TEST_BOT, "dependabot[bot]"), (False, True), (False, True)):
             with self.subTest(author=author, same_native=same_native, original_branch=original_branch):
@@ -4164,8 +4201,7 @@ class ClaimTests(unittest.TestCase):
                 self.comment_id_offset = corrected["id"]
                 self.args.branch = (f"work/issue-{self.issue['number']}-renewal" if control == "numbered"
                                     else "work/retained-renewal")
-                expected_url = (f"https://github.com/{source_repo}/issues/{source_number}"
-                                f"#issuecomment-{corrected['id']}")
+                expected_url = CLAIM.handoff_url(source_repo, source_number, corrected["id"])
                 if publication == "partial":
                     def interrupt_publication():
                         raise PLAN.PlanError("Fixture interruption after publication")
@@ -4199,7 +4235,7 @@ class ClaimTests(unittest.TestCase):
                     self.comments.append({"id": published["id"] + 1, "user": {"login": TEST_BOT},
                                           "body": f"Released claim {published['id']}"})
                 elif control in {"competing", "competing_lineage"}:
-                    peer = ({**published_record, "retained_handoff": expected_url.rsplit("-", 1)[0] + f"-{release['id']}"}
+                    peer = ({**published_record, "retained_handoff": CLAIM.handoff_url(source_repo, source_number, release["id"])}
                             if control == "competing_lineage" else
                         {**published_record, "session": "peer-native"})
                     self.comments.append({"id": published["id"] + 1, "user": {"login": TEST_BOT},
@@ -4208,7 +4244,7 @@ class ClaimTests(unittest.TestCase):
                     if control == "wrong_source": published_record["resume_from"] = str(published["id"])
                     elif control == "malformed_handoff": published_record["retained_handoff"] = "invalid-handoff"
                     else:
-                        published_record["retained_handoff"] = expected_url.rsplit("-", 1)[0] + f"-{published['id']}"
+                        published_record["retained_handoff"] = CLAIM.handoff_url(source_repo, source_number, published["id"])
                     self.comments[-1]["body"] = CLAIM.marker(published_record)
                 elif control == "withdrawn_handoff": corrected["body"] = "Handoff withdrawn"
                 elif control == "omit_resume": self.args.resume_from = None
@@ -4232,7 +4268,7 @@ class ClaimTests(unittest.TestCase):
                         self.assertEqual(self.events.count("post"), 1)
                         self.assertEqual(self.comments[:-1], prior_comments)
                         self.assertEqual(result["claim"]["retained_handoff"],
-                                         expected_url.rsplit("-", 1)[0] + f"-{release['id']}")
+                                     CLAIM.handoff_url(source_repo, source_number, release["id"]))
                     else:
                         self.assertNotIn("post", self.events)
                         self.assertEqual(self.comments, prior_comments)

@@ -1268,9 +1268,11 @@ invalid timestamps remain uncertain ownership. The successor claim replaces
 automation-managed stale status on normal readback; contributor-owned status
 stays intact, with the successor's claim in a comment. Unstructured ownership
 outside the helper-generated fields still refuses. The original status remains quoted in
-the successor's claim comment. The helper selects the first qualified authored
-handoff initially, then freshly validates its selected source and handoff in
-each preflight/readback phase;
+the successor's claim comment. The helper initially selects the first qualified
+authored handoff that the existing artifact rules permit. An unreleased structured
+successor claim keeps its recorded handoff on renewal; release that claim before
+selecting a different handoff. Each preflight/readback phase freshly validates
+the selected source and handoff;
 other Current Status ownership, unreleased comments,
 other artifacts, and visible peer sessions still refuse. A source on the claimed
 issue's native parent uses the retained-handoff route below; prose links alone
@@ -1474,9 +1476,10 @@ native source session, and every retained PR, and linking its original handoff
 and release comments. Use supported session routing to reach that session;
 another session sharing its bot login must not impersonate it. When the source
 session cannot record this, retained-work recovery remains blocked. Preserve
-the original records. The helper can select the new qualified handoff on the
-next explicit `--resume-from` invocation when the existing artifact rules require
-the later complete handoff. Selection is independent of the requested branch.
+the original records. Without an unreleased successor pinning its recorded
+handoff, the helper can select the new qualified handoff on the next explicit
+`--resume-from` invocation when the existing artifact rules require the later
+complete handoff. A requested branch alone never selects a handoff.
 A release posted after the old handoff does not validate it retroactively.
 The exact source-authored release owns release state. The selected handoff
 binds source identity and named retained PRs; its free prose is not scanned for
