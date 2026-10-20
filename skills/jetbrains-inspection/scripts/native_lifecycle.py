@@ -44,6 +44,16 @@ def identity_from(record):
         raise LifecycleError("native_recovery_journal_malformed") from None
 
 
+def active_process(record):
+    process = record.get("active_process") if "active_process" in record else (
+        {"kind": "engine", "identity": record["engine_identity"]}
+        if record.get("engine_identity") and record.get("worker_exited") is not True else None)
+    if process is not None and (not isinstance(process, dict) or process.get("kind") not in {"preparation", "engine"}
+                                or not isinstance(process.get("identity"), dict)):
+        raise LifecycleError("native_recovery_process_identity_unproven")
+    return process
+
+
 def write_owner(path, identity):
     # A write-once marker has no temporary basename absent from the journal. The durable
     # reservation permits recovery of this exact partial file before any source
@@ -126,7 +136,7 @@ def release_stop(worker, run_id):
     return False
 
 
-def recover(worker, receipt, common, write_record, remove_sdk, *, result_path=None, release_run=None):
+def recover(worker, receipt, common, write_record, remove_sdk, *, result_path=None, release_run=None, process_proof=None):
     journal = worker / "native-run.json"
     if not journal.exists():
         if release_run:
@@ -151,6 +161,9 @@ def recover(worker, receipt, common, write_record, remove_sdk, *, result_path=No
         if phase not in {"reserved", "materialized", "sdk_attempted", "engine_running", "terminal"}:
             raise LifecycleError("native_recovery_phase_unproven")
         prove_private(identity, record.get("private_materialized", False))
+        process = active_process(record)
+        if process is not None and process_proof != {"run_id": identity["run_id"], "active_process": process}:
+            raise LifecycleError("native_recovery_process_group_unproven")
         if result_path:
             record = reconcile_result(result_path, worker, record, common)
             write_record(journal, record)
@@ -231,8 +244,11 @@ class RunContext:
         self.sdk_lease = (config, interpreter, sdk_name, self.identity["table_existed"])
         self.receipt["sdk_removed"] = False
 
-    def engine_spawned(self, identity):
-        self.phase("engine_running", engine_identity=identity)
+    def process_spawned(self, kind, identity):
+        self.phase(self.record["phase"], active_process={"kind": kind, "identity": identity})
+
+    def process_finished(self):
+        self.phase(self.record["phase"], active_process=None)
 
     def attempt(self, operation, callback):
         try:
@@ -265,9 +281,10 @@ class RunContext:
                 output = self.private.parent / (self.receipt["run_id"] + ".findings.json")
                 if self.attempt("findings_artifact", lambda: self.write_record(output, findings)):
                     artifact = str(output)
-            if self.sdk_lease is not None:
+            process_closed = self.receipt.get("process_custody_closed", True)
+            if self.sdk_lease is not None and process_closed:
                 self.receipt["sdk_removed"] = self.attempt("sdk_removal", lambda: self.remove_sdk(*self.sdk_lease, missing_ok=True))
-            if self.private is not None and self.record is not None:
+            if self.private is not None and self.record is not None and process_closed:
                 def dispose_private():
                     prove_private(self.identity, self.record.get("private_materialized", False))
                     if self.private.exists():
@@ -285,7 +302,9 @@ class RunContext:
         self.receipt["persistence_failures"] = list(self.failures)
         self.receipt["findings_artifact"] = artifact
         if not licensing:
-            if self.record is not None and (not self.receipt["private_deleted"] or not self.receipt["sdk_removed"]):
+            if not self.receipt.get("process_custody_closed", True):
+                reason = "native_process_group_unproven"
+            elif self.record is not None and (not self.receipt["private_deleted"] or not self.receipt["sdk_removed"]):
                 reason = "native_cleanup_failed"
             elif self.failures:
                 reason = "native_persistence_failed"

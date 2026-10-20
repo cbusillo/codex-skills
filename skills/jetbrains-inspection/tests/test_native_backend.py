@@ -179,6 +179,20 @@ class NativeTests(unittest.TestCase):
             self.assertEqual(host.main(), 0)
         run.assert_called_once()
 
+    def test_explicit_existing_backends_do_not_import_native_components(self):
+        for backend in ("api", "qodana"):
+            with self.subTest(backend=backend), \
+                    patch.object(host, "native_backend_module", side_effect=AssertionError("native import")) as native_import, \
+                    patch.object(host, "command_qodana", return_value={}) as qodana, \
+                    patch.object(host, "build_context", return_value={}), \
+                    patch.object(host, "command_run", return_value={}) as api, \
+                    patch.object(host, "emit_agent_result", return_value=0), \
+                    patch.object(sys, "argv", ["jb-inspect", "agent-inspect", "--backend", backend]), \
+                    redirect_stdout(io.StringIO()):
+                self.assertEqual(host.main(), 0)
+                native_import.assert_not_called()
+                (api if backend == "api" else qodana).assert_called_once()
+
     def test_backend_option_conflicts_never_open_a_desktop_or_start_either_worker(self):
         cases = (["--backend", "api", "--native-recover-only"],
                  ["--backend", "native", "--qodana-recover-only"],
@@ -327,6 +341,13 @@ print('Done.')
         self.assertEqual(result["inspection_outcome"]["reason"], "native_recovery_only_no_inspection")
         self.assertEqual(result["cleanup"]["status"], "closed")
 
+    def test_invalid_worker_directory_gets_no_lock_files(self):
+        directory = self.root / "wrong-worker"
+        directory.mkdir()
+        self.args.native_worker = str(directory)
+        self.assess()
+        self.assertEqual(list(directory.iterdir()), [])
+
     def test_lane_scope_limit_keeps_its_specific_reason(self):
         error = host.InspectError("fixture scope exceeds limit", payload={"error_reason": "inspection_lane_scope_too_large"})
         with patch.object(native.common, "scope_selection", side_effect=error):
@@ -452,10 +473,8 @@ print('Done.')
         context = self.reserve_run()
         interpreter = self.repo / ".venv/bin/python"
         sdk_name = context.identity["sdk_name"]
-        with native.registered_sdk(self.worker / "config", interpreter, "fixture", sdk_name,
-                                   on_attempt=lambda: context.sdk_attempt(self.worker / "config", interpreter, sdk_name)):
-            saved_sdk = table.read_text()
-        table.write_text(saved_sdk)
+        native.register_sdk(self.worker / "config", interpreter, "fixture", sdk_name,
+                            on_attempt=lambda: context.sdk_attempt(self.worker / "config", interpreter, sdk_name))
         context.phase("terminal", outcome="native_parent_exited", license_boundary=False)
         native.recover_run(self.worker)
         self.assertFalse(context.private.exists())
@@ -469,11 +488,10 @@ print('Done.')
         table.write_text(original)
         with patch.object(os, "replace", side_effect=OSError("interrupted write")):
             with self.assertRaises(OSError):
-                with native.registered_sdk(self.worker / "config", self.repo / ".venv/bin/python", "fixture", "owned"):
-                    self.fail("incomplete write admitted")
+                native.register_sdk(self.worker / "config", self.repo / ".venv/bin/python", "fixture", "owned")
         self.assertEqual(table.read_text(), original)
-        with native.registered_sdk(self.worker / "config", self.repo / ".venv/bin/python", "fixture", "owned"):
-            pass
+        native.register_sdk(self.worker / "config", self.repo / ".venv/bin/python", "fixture", "owned")
+        native.remove_sdk(self.worker / "config", self.repo / ".venv/bin/python", "owned", True)
         self.assertIn("<!--keep-->", table.read_text())
         self.assertIn('value="owner"', table.read_text())
         self.assertNotIn('value="owned"', table.read_text())
@@ -734,9 +752,15 @@ print('Done.')
             with self.assertRaisesRegex(native.Blocked, "native_cache_storage_changed"):
                 native.runtime_storage(host, self.worker)
 
-    def start_guarded_fixture(self):
-        started = self.root / "engine-started"
+    def start_guarded_fixture(self, preparation=False):
+        started = self.root / ("preparation-started" if preparation else "engine-started")
         self.script.write_text(f"#!{sys.executable}\nimport pathlib,time\npathlib.Path({str(started)!r}).touch()\ntime.sleep(30)\n")
+        preparation_command = None
+        if preparation:
+            directory = self.repo / ".github"
+            directory.mkdir(exist_ok=True)
+            (directory / "github.json").write_text(json.dumps({"qualityGate": {"inspection": {"prepare": {"python": {"version": ".".join(map(str, sys.version_info[:2])), "moduleName": "fixture"}}}}}))
+            preparation_command = [sys.executable, "-c", f"import pathlib,time,os;pathlib.Path({str(started)!r}).write_text(str(os.getpid()));time.sleep(30)", native.common.WORK + "/project"]
         code = '''import json,sys
 from pathlib import Path
 from unittest.mock import patch
@@ -744,16 +768,46 @@ sys.path.insert(0,sys.argv[1])
 from test_native_backend import native,host
 root=Path(sys.argv[2])
 args=host.build_parser().parse_args(json.loads(sys.argv[3]))
-with patch.object(native.sys,'platform','darwin'), patch.object(native,'state_dir',return_value=root/'state'), patch.object(native.common,'storage_identity',side_effect=lambda anchor:{'fixture':str(anchor)}), patch.object(host,'cache_dir',return_value=root/'cache'), patch.object(host,'read_global_config',return_value={}), patch.object(host,'trusted_auto_open_roots',return_value=[str(root/'repo')]), patch.object(native.os,'getloadavg',return_value=(1,1,1)):
- native.run(args,host)
+with patch.object(native.sys,'platform','darwin'), patch.object(native,'state_dir',return_value=root/'state'), patch.object(native.common,'storage_identity',side_effect=lambda anchor:{'fixture':str(anchor)}), patch.object(host,'cache_dir',return_value=root/'cache'), patch.object(host,'read_global_config',return_value={}), patch.object(host,'trusted_auto_open_roots',return_value=[str(root/'repo')]), patch.object(native.os,'getloadavg',return_value=(1,1,1)), patch.object(native.common,'preparation',return_value={'commands':[json.loads(sys.argv[4])]}):
+ (root/'guarded-result.json').write_text(json.dumps(native.run(args,host)))
 '''
         argv = ["agent-inspect", "--backend", "native", "--repo", str(self.repo), "--scope", "files", "--file", "source.py", "--profile", "Test", "--native-worker", str(self.worker), "--ide-app", str(self.app)]
-        process = subprocess.Popen([sys.executable, "-c", code, str(Path(__file__).parent), str(self.root), json.dumps(argv)], start_new_session=True)
+        process = subprocess.Popen([sys.executable, "-c", code, str(Path(__file__).parent), str(self.root), json.dumps(argv), json.dumps(preparation_command)], start_new_session=True)
         deadline = time.monotonic() + 10
         while not started.exists() and process.poll() is None and time.monotonic() < deadline:
             time.sleep(0.02)
-        self.assertTrue(started.exists(), "engine never entered guarded run")
+        self.assertTrue(started.exists(), (self.root / "guarded-result.json").read_text() if (self.root / "guarded-result.json").exists() else "process never entered guarded run")
         return process
+
+    def test_killed_guardian_preparation_is_recovered_without_a_licensing_hold(self):
+        process = self.start_guarded_fixture(preparation=True)
+        journal = self.worker / "native-run.json"
+        record = json.loads(journal.read_text())
+        preparation_pid = int((self.root / "preparation-started").read_text())
+        try:
+            os.kill(record["guardian_pid"], signal.SIGKILL)
+            process.wait(timeout=5)
+            self.args.native_recover_only = True
+            result = self.assess()
+            self.assertEqual(result["inspection_outcome"]["reason"], "native_recovery_only_no_inspection")
+            self.assertEqual(result["cleanup"]["status"], "closed")
+            self.assertFalse(journal.exists())
+            self.assertFalse(list((self.root / "cache/native").glob("private-*")))
+            self.assertFalse((self.worker / "native-activation-stop.json").exists())
+        finally:
+            try:
+                os.killpg(preparation_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+
+    def test_explicit_odoo_without_roots_reports_required_before_launch(self):
+        (self.repo / "__manifest__.py").write_text('{"version":"19.0.1.0.0"}')
+        result = self.assess()
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_odoo_framework_required")
+        self.assertNotIn("worker_pid", result["diagnostic"]["native"])
 
     def test_guardian_cleans_up_after_invoking_group_is_killed(self):
         process = self.start_guarded_fixture()
@@ -783,7 +837,7 @@ with patch.object(native.sys,'platform','darwin'), patch.object(native,'state_di
             self.args.native_recover_only = True
             result = self.assess()
             self.assertEqual(result["inspection_outcome"]["reason"], "native_interrupted_run_unresolved")
-            self.assertEqual(result["diagnostic"]["native"]["orphan_group_stopped"], record["engine_identity"]["pid"])
+            self.assertEqual(result["diagnostic"]["native"]["orphan_group_stopped"], record["active_process"]["identity"]["pid"])
             self.assertEqual(result["cleanup"]["status"], "closed")
             self.assertFalse(Path(record["private"]).exists())
             self.assertTrue(journal.exists())
@@ -799,17 +853,56 @@ with patch.object(native.sys,'platform','darwin'), patch.object(native,'state_di
                 process.kill()
                 process.wait(timeout=5)
             try:
-                os.killpg(record["engine_identity"]["pid"], signal.SIGKILL)
+                os.killpg(record["active_process"]["identity"]["pid"], signal.SIGKILL)
             except ProcessLookupError:
                 pass
 
     def test_failed_engine_identity_persistence_never_releases_the_launch_gate(self):
         marker = self.root / "must-not-start"
         self.script.write_text(f"#!{sys.executable}\nfrom pathlib import Path\nPath({str(marker)!r}).touch()\n")
-        with patch.object(native.lifecycle.RunContext, "engine_spawned", side_effect=OSError("journal storage full")):
+        with patch.object(native.lifecycle.RunContext, "process_spawned", side_effect=OSError("journal storage full")):
             result = self.assess()
         self.assertFalse(marker.exists())
         self.assertEqual(result["cleanup"]["status"], "closed")
+
+    def test_failed_preparation_identity_persistence_never_releases_its_gate(self):
+        marker = self.root / "must-not-prepare"
+        directory = self.repo / ".github"
+        directory.mkdir()
+        (directory / "github.json").write_text(json.dumps({"qualityGate": {"inspection": {"prepare": {"python": {"version": ".".join(map(str, sys.version_info[:2])), "moduleName": "fixture"}}}}}))
+        command = [sys.executable, "-c", f"from pathlib import Path;Path({str(marker)!r}).touch()", native.common.WORK + "/project"]
+        with patch.object(native.common, "preparation", return_value={"commands": [command]}), \
+                patch.object(native.lifecycle.RunContext, "process_spawned", side_effect=OSError("journal storage full")):
+            result = self.assess()
+        self.assertFalse(marker.exists())
+        self.assertEqual(result["cleanup"]["status"], "closed")
+
+    def test_unproved_engine_group_keeps_sdk_private_and_licensed_hold(self):
+        with patch.object(native, "group_gone", return_value=False):
+            result = self.assess()
+        self.assertEqual(result["cleanup"]["status"], "failed")
+        self.assertFalse(result["diagnostic"]["native"]["license_observation_complete"])
+        self.assertFalse(result["diagnostic"]["native"]["terminal_outcome_known"])
+        self.assertTrue((self.worker / "config/options/jdk.table.xml").exists())
+        self.assertTrue(list((self.root / "cache/native").glob("private-*")))
+        journal = self.worker / "native-run.json"
+        self.assertTrue(journal.exists())
+        self.args.native_recover_only = True
+        recovered = self.assess()
+        self.assertEqual(recovered["inspection_outcome"]["reason"], "native_interrupted_run_unresolved")
+        self.assertEqual(recovered["cleanup"]["status"], "closed")
+        self.assertTrue(journal.exists())
+
+    def test_durable_license_stop_does_not_dispose_an_unproved_group(self):
+        self.script.write_text(f"#!{sys.executable}\nimport time\nprint('No valid license found',flush=True)\ntime.sleep(30)\n")
+        with patch.object(native, "group_gone", return_value=False):
+            result = self.assess()
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_owner_activation_required")
+        self.assertEqual(result["cleanup"]["status"], "failed")
+        self.assertTrue((self.worker / "native-activation-stop.json").exists())
+        self.assertTrue((self.worker / "native-run.json").exists())
+        self.assertTrue((self.worker / "config/options/jdk.table.xml").exists())
+        self.assertTrue(list((self.root / "cache/native").glob("private-*")))
 
     def test_foreign_launch_identity_never_releases_the_engine_gate(self):
         marker = self.root / "must-not-start"
@@ -817,7 +910,7 @@ with patch.object(native.sys,'platform','darwin'), patch.object(native,'state_di
         with patch.object(native, "process_identity", return_value={"pgid": 42, "private": None}):
             result = self.assess()
         self.assertFalse(marker.exists())
-        self.assertEqual(result["inspection_outcome"]["reason"], "native_engine_identity_unproven")
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_process_identity_unproven")
         self.assertEqual(result["cleanup"]["status"], "closed")
 
     def test_reused_pid_recovers_resources_but_keeps_hold_until_exact_release(self):
@@ -858,12 +951,24 @@ with patch.object(native.sys,'platform','darwin'), patch.object(native,'state_di
                 context = self.reserve_run()
                 context.phase("engine_running", engine_identity={"pid": 123456, "pgid": 123456, "started": "old", "private": str(context.private)})
                 self.args.native_recover_only = recover_only
-                with patch.object(native, "process_identity", return_value=None), patch.object(native.os, "killpg") as kill:
+                with patch.object(native, "process_identity", return_value=None), \
+                        patch.object(native, "group_gone", return_value=False), patch.object(native.os, "killpg") as kill:
                     result = self.assess(direct=True)
                 self.assertEqual(result["inspection_outcome"]["reason"], "native_recovery_process_group_unproven")
                 self.assertEqual(result["cleanup"]["status"], "failed")
                 self.assertTrue(context.private.exists())
-                kill.assert_called_once_with(123456, 0)
+                kill.assert_not_called()
+
+    def test_leader_exit_waits_for_group_absence_before_disposal(self):
+        context = self.reserve_run()
+        context.phase("engine_running", engine_identity={"pid": 123456, "pgid": 123456, "started": "old", "private": str(context.private)})
+        self.args.native_recover_only = True
+        with patch.object(native, "process_identity", return_value=None), \
+                patch.object(native.os, "killpg", side_effect=[None, ProcessLookupError()]) as probe:
+            result = self.assess(direct=True)
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_interrupted_run_unresolved")
+        self.assertEqual(result["cleanup"]["status"], "closed")
+        self.assertTrue(all(call.args == (123456, 0) for call in probe.call_args_list))
 
     def test_credential_named_source_is_refused_without_opening_it(self):
         credential = self.repo / "do-not-read.license"
@@ -915,12 +1020,13 @@ class LiveNativeTests(unittest.TestCase):
             self.assertTrue(any(f["rule_id"] == "PyUnresolvedReferencesInspection" and in_function(f, functions["broken_dependency"]) for f in findings))
             dependency = functions["valid_dependency"]
             self.assertFalse(any(in_function(f, dependency) for f in findings))
+            self.assertTrue(any(f["rule_id"] == "OdooPy" and in_function(f, functions["broken_deprecated_call"]) for f in findings))
+            self.assertFalse(any(in_function(f, functions["deprecated_api"]) for f in findings))
             modern_tree = ast.parse((repo / "native_probe/python_types.py").read_text())
             wrong_type = next(node for node in modern_tree.body if isinstance(node, ast.FunctionDef) and node.name == "wrong_type")
             self.assertTrue(any(f["rule_id"] == "PyTypeCheckerInspection" and in_function(f, wrong_type, "native_probe/python_types.py") for f in findings))
             modern = next(node for node in modern_tree.body if isinstance(node, ast.FunctionDef) and node.name == "valid_modern_annotation")
-            self.assertFalse(any(f["rule_id"] in {"PyTypeCheckerInspection", "PyTypeHintsInspection"}
-                                 and in_function(f, modern, "native_probe/python_types.py") for f in findings))
+            self.assertFalse(any(in_function(f, modern, "native_probe/python_types.py") for f in findings))
             coverage_tree = ast.parse((repo / "native_probe/coverage.py").read_text())
             reference = next(node for node in coverage_tree.body if isinstance(node, ast.FunctionDef))
             self.assertTrue(any(f["rule_id"] == "PyUnresolvedReferencesInspection" and in_function(f, reference, "native_probe/coverage.py") for f in findings))
@@ -936,6 +1042,7 @@ class LiveNativeTests(unittest.TestCase):
                                 and any(block.body[0].lineno <= f["line"] <= block.end_lineno for block in blocks)
                                 for f in findings), "duplicate must be inside the planted blocks, not a cloned file")
             self.assertFalse(any(f["file"] == "native_probe/views/control.xml" for f in findings))
+            self.assertFalse(any(Path(f["file"]).name in {"__init__.py", "__manifest__.py"} for f in findings))
 
 
 if __name__ == "__main__":

@@ -144,11 +144,20 @@ is journaled before any source or environment write. Empty reserved directories
 and a sole partial ownership marker can be reclaimed; other unproved state is
 preserved. Recovery failures never attest that retained resources were closed.
 
+One `active_process` record identifies the current preparation or inspection
+group. Both use the same journal-before-exec gate and inherit only the shared
+global/profile locks. Preparation is unlicensed; its interrupted process can be
+recovered without an activation decision. The separate licensed-launch phase
+retains its unknown-outcome hold even after process recovery. Older engine-only
+journals remain recoverable through the same ownership proof.
+
 The durable licensed-launch phase is a hold. Resource recovery alone cannot
 clear an unresolved outcome and start another licensed process. A licensing
 boundary persists independently in a count-only stop receipt or journal, even
 when a later write fails. Artifact and stop-receipt persistence failures do not
-skip SDK removal, private-directory deletion or lock release. The original run
+skip independently permitted cleanup or lock release. SDK/private disposal
+requires proved process-group exit; even a durable activation stop cannot
+discard resources under an unproved group. The original run
 ID survives the guardian's outer exception boundary.
 
 Recover without inspection:
@@ -190,11 +199,14 @@ product activation, accounts or credentials and never launches an inspection.
 A stop receipt without a remaining journal can be released by the same exact-run
 command after that recorded confirmation. Never use the flag merely to retry.
 
-A killed guardian may leave the engine holding both inherited locks. Every run
-first holds the separate control lock and checks any journaled engine before
-resource recovery. It proves the journaled PID birth,
-group and private-path identity, and stops that exact orphan group before taking
-the normal locks. A live guardian or an unproved process identity is preserved.
+A killed guardian may leave preparation or inspection holding both inherited
+locks. Every run first validates the public launcher properties before creating
+worker locks, then holds the separate control lock and checks the active child
+before resource recovery. It proves the journaled PID birth, group and private
+path identity, and stops that exact orphan group before taking the normal locks.
+A bounded group-exit proof follows both a kill and an absent leader. Neither
+leader exit nor released locks alone permits SDK/private deletion. A live
+guardian or an unproved process identity is preserved.
 A different process birth at the journaled PID proves reuse; recovery sends it
 no signal and proceeds with resource disposal while retaining the outcome hold.
 Birth comparisons require the same recorded UTC/C-locale clock; legacy or
