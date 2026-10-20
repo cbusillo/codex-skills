@@ -104,6 +104,44 @@ def test_canonical_repository_casing_is_accepted_on_readback():
     assert code == 0 and result["result"]["readback_matches"]
 
 
+def test_recovery_classifier_preserves_receipts_and_distinguishes_other_callers(tmp_path):
+    import urllib.error
+
+    _, dry, _ = invoke(argv(), [response()])
+    evidence = tmp_path / "dry.json"
+    evidence.write_text(json.dumps(dry))
+    def failure(status, code):
+        body = {"trace_id": "trace-test", "error": {"code": code, "message": "PRIVATE_REASON_SENTINEL"}}
+        return urllib.error.HTTPError("https://plane.example.invalid", status, "Failure", {}, io.BytesIO(json.dumps(body).encode()))
+    for http_status, error_code, expected in (
+        (503, "product_review_withdrawal_unavailable", "outcome_unknown"),
+        (502, "gateway_error", "outcome_unknown"),
+        (409, "product_review_withdrawal_target_busy", "target_busy"),
+        (409, "product_review_withdrawal_in_progress", "in_progress"),
+        (409, "product_review_withdrawal_conflict", "conflict"),
+    ):
+        code, result, calls = invoke(argv("apply", str(evidence)), [failure(http_status, error_code)])
+        assert code != 0 and result["status"] == expected
+        assert len(calls) == 1
+        assert "PRIVATE_REASON_SENTINEL" not in json.dumps(result)
+        if expected == "outcome_unknown":
+            from launchplane_review_withdrawal import RECOVERY
+            assert result["summary"]["recommendation"] == RECOVERY[expected]
+    code, result, _ = invoke(argv("apply", str(evidence)), [response(True), failure(503, "service_unavailable")])
+    assert code != 0 and result["status"] == "accepted_unverified"
+    assert result["result"]["applied"] is True
+    assert result["result"]["history_url"] == response(True)["result"]["history_url"]
+    unresolved = response()
+    unresolved["result"].update(readback_matches=False, operation_state="reconcile_required")
+    code, result, _ = invoke(argv("readback"), [unresolved])
+    assert code != 0 and result["status"] == "outcome_unknown"
+    replan = response()
+    replan["result"].update(replan_required=True, prior_effects_unknown=True, readback_matches=False, operation_state="completed")
+    code, result, _ = invoke(argv("readback"), [replan])
+    assert code != 0 and result["status"] == "replan_required"
+    assert result["result"]["prior_effects_unknown"] is True
+
+
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__]))

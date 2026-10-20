@@ -79,6 +79,14 @@ def project(h: Any, response: object, body: dict[str, object]) -> dict[str, obje
         if type(result["replan_required"]) is not bool or result["applied"]:
             raise h.LaunchplaneSafetyError("invalid_response")
         projected["replan_required"] = result["replan_required"]
+    if "prior_effects_unknown" in result:
+        if type(result["prior_effects_unknown"]) is not bool or result.get("replan_required") is not True:
+            raise h.LaunchplaneSafetyError("invalid_response")
+        projected["prior_effects_unknown"] = result["prior_effects_unknown"]
+    if "operation_state" in result:
+        if result["operation_state"] not in {"running", "reconcile_required", "completed"}:
+            raise h.LaunchplaneSafetyError("invalid_response")
+        projected["operation_state"] = result["operation_state"]
     if mode == "readback":
         if type(result.get("readback_matches")) is not bool:
             raise h.LaunchplaneSafetyError("invalid_response")
@@ -87,10 +95,56 @@ def project(h: Any, response: object, body: dict[str, object]) -> dict[str, obje
     return projected
 
 
+
+RECOVERY = {
+    "ok": "Pending request only. Client decisions and release acceptance remain unchanged.",
+    "accepted_unverified": "Keep the applied receipt and exact original intent/key. The original caller must inspect service readback before proceeding.",
+    "outcome_unknown": "Outcome unknown. The original caller must keep the exact request, reviewed digest and key, read back, then resubmit that same apply to recover or settle it. Do not start over with a new key.",
+    "in_progress": "The original operation is still running. Wait and read back with the same caller, request and key.",
+    "target_busy": "This request was not dispatched. Another operation owns the PR; its original caller must recover its saved operation. This caller's key cannot recover it.",
+    "conflict": "This request was not dispatched. Restore the request that belongs to the original key; do not retry changed input with it.",
+    "refused": "Withdrawal was refused. Inspect the current head and saved Client decisions; do not bypass the refusal or remove the label by hand.",
+    "replan_required": "The original intent is settled without claiming withdrawal. Inspect the pending request and review a fresh dry run before using a new key.",
+    "unavailable": "The read or dry run was unavailable. Retry the same read when service evidence is available.",
+}
+
+
+def finish(h: Any, *, operation: str, request: dict[str, object], status: str,
+           result: dict[str, object] | None = None, diagnostics: dict[str, object] | None = None) -> int:
+    """Keep the outcome, preserved receipt and recovery instructions in agreement."""
+    output = h.base_payload(status=status, operation=operation, request=request)
+    summary = dict(diagnostics or {})
+    recommendation = RECOVERY.get(status, str(summary.get("recommendation", "Inspect the service refusal before retrying.")))
+    if result and result.get("prior_effects_unknown") is True:
+        recommendation += " A label removal may have happened without a PR history entry; preserve and inspect the saved operation and PR history."
+    summary["recommendation"] = recommendation
+    output["summary"] = summary
+    if result is not None:
+        output["result"] = result
+    if status != "ok":
+        output["warnings"] = [h.warning(str(summary.get("error_code", status)), recommendation)]
+    # The standard envelope uses the reserved wrapper key "request"; validate
+    # each projected value, including the already redacted request body.
+    for value in output.values():
+        h.assert_public_safe_shape(value)
+    h.emit(output)
+    return 0 if status == "ok" else 1
+
+
+def result_status(result: dict[str, object], *, mode: str) -> str:
+    if result.get("replan_required") is True:
+        return "replan_required"
+    if mode == "dry-run":
+        return "ok"
+    if result.get("applied") is True:
+        return "ok" if result.get("readback_matches") is True else "accepted_unverified"
+    return "in_progress" if result.get("operation_state") == "running" else "outcome_unknown"
+
+
 def execute(h: Any, args: argparse.Namespace) -> int:
     operation = args.command
     request, body = intent(h, args)
-    mode = body["mode"]
+    mode = str(body["mode"])
     settings = h.prepare_operator_settings(args=args, operation=operation, request=request)
     if settings is None:
         return 2
@@ -101,46 +155,39 @@ def execute(h: Any, args: argparse.Namespace) -> int:
             if evidence.get("status") != "ok" or evidence.get("operation") != "product-review-withdrawal-dry-run" or evidence.get("request") != request or evidence.get("result", {}).get("applied") is not False or evidence.get("result", {}).get("plan_sha256") != args.expected_plan_digest:
                 raise ValueError("withdrawal_review_evidence_mismatch")
         except (OSError, ValueError, AttributeError):
-            h.emit(h.unavailable_payload(operation=operation, request=request, status="invalid", code="withdrawal_review_evidence_mismatch", message="Save and review a dry run of this exact request before apply."))
-            return 1
+            return finish(h, operation=operation, request=request, status="invalid", diagnostics={"error_code": "withdrawal_review_evidence_mismatch", "recommendation": "Save and review a dry run of this exact request before apply."})
     timeout = getattr(args, "timeout", 30)
-    attempted = False
-    applied = False
+    known_receipt: dict[str, object] | None = None
     try:
-        attempted = mode == "apply"
         response = h.request_launchplane(service_url=settings["service_url"], path=h.helper_command_path(operation), settings=settings, body=body, timeout=timeout, idempotency_key=getattr(args, "idempotency_key", ""))
         result = project(h, response, body)
-        if result.get("replan_required") is True:
-            output = h.unavailable_payload(operation=operation, request=request, status="replan_required", code="withdrawal_replan_required", message="The original operation is settled without claiming withdrawal. Inspect the pending request; use a fresh reviewed dry run and new key for a new withdrawal.")
-            output["result"] = result
-            h.emit(output)
-            return 1
-        if mode == "apply":
-            applied = result["applied"] is True
-            if not applied:
-                raise h.LaunchplaneSafetyError("invalid_response")
-            readback = h.request_launchplane(service_url=settings["service_url"], path=h.helper_command_path(operation), settings=settings, body={**body, "mode": "readback"}, timeout=timeout, idempotency_key=args.idempotency_key)
-            result = project(h, readback, {**body, "mode": "readback"})
-            response = readback
-        if mode != "dry-run" and result.get("readback_matches") is not True:
-            raise h.LaunchplaneSafetyError("withdrawal_readback_mismatch")
+        if mode == "apply" and result["applied"] is True:
+            known_receipt = result
+            response = h.request_launchplane(service_url=settings["service_url"], path=h.helper_command_path(operation), settings=settings, body={**body, "mode": "readback"}, timeout=timeout, idempotency_key=args.idempotency_key)
+            observed = project(h, response, {**body, "mode": "readback"})
+            result = observed if observed["applied"] is True else {**known_receipt, "readback_matches": False}
+        status = result_status(result, mode=mode)
+        return finish(h, operation=operation, request=request, status=status, result=result, diagnostics=h.service_response_diagnostics(response))
     except urllib.error.HTTPError as error:
         try:
-            output = h.summarize_http_error(operation=operation, request=request, exc=error, provider_payload=h._error_payload_from_http(error))
-            if applied:
-                output["status"] = "accepted_unverified"
-            elif attempted and output.get("summary", {}).get("error_code") == "product_review_withdrawal_unsettled":
-                output["status"] = "outcome_unknown"
-            h.emit(output)
+            projected = h.summarize_http_error(operation=operation, request=request, exc=error, provider_payload=h._error_payload_from_http(error))
+            diagnostics = projected.get("summary", {})
+            code = diagnostics.get("error_code")
+            if known_receipt is not None:
+                status = "accepted_unverified"
+            elif mode == "apply" and (error.code >= 500 or code == "product_review_withdrawal_unsettled"):
+                status = "outcome_unknown"
+            else:
+                status = {
+                    "product_review_withdrawal_target_busy": "target_busy",
+                    "product_review_withdrawal_in_progress": "in_progress",
+                    "product_review_withdrawal_conflict": "conflict",
+                    "product_review_withdrawal_refused": "refused",
+                    "product_review_withdrawal_unsettled": "outcome_unknown",
+                }.get(code, projected["status"])
+            return finish(h, operation=operation, request=request, status=status, result=known_receipt, diagnostics=diagnostics)
         finally:
             error.close()
-        return 1
     except (ValueError, OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException, h.ServiceResponseError):
-        status = "accepted_unverified" if applied else "outcome_unknown" if attempted else "unavailable"
-        h.emit(h.unavailable_payload(operation=operation, request=request, status=status, code="withdrawal_unverified", message="Preserve the original request, reviewed digest and operation key. Read back before retrying; never remove the label by hand."))
-        return 1
-    output = h.base_payload(status="ok", operation=operation, request=request)
-    output["result"] = result
-    output["summary"] = {**h.service_response_diagnostics(response), "recommendation": "Pending request only. Client decisions and release acceptance remain unchanged."}
-    h.emit(output)
-    return 0
+        status = "accepted_unverified" if known_receipt is not None else "outcome_unknown" if mode in {"apply", "readback"} else "unavailable"
+        return finish(h, operation=operation, request=request, status=status, result=known_receipt, diagnostics={"error_code": "withdrawal_unverified"})

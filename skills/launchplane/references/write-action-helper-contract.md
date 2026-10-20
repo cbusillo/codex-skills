@@ -2138,3 +2138,19 @@ key to withdraw that request. `product_review_withdrawal_unsettled` is an
 `outcome_unknown`, distinct from a definite refusal.
 A completed-key replay returns the original receipt, preserving later review
 requests. Do not remove a label by hand or use another identity after a denial.
+
+The helper classifies the whole exchange, keeping status, retained receipt and
+recovery instructions together. Attempted-apply transport loss or any HTTP 5xx
+is `outcome_unknown`. A known applied receipt without matching readback is
+`accepted_unverified`, and that receipt stays in the output. An unfinished
+original readback is `outcome_unknown` (or `in_progress` while running).
+`target_busy` means another operation owns the PR and this call dispatched
+nothing: only that operation's original caller/key can recover it. A key conflict
+is `conflict`; a definite eligibility refusal is `refused`. Neither is reported
+as an unknown effect. Terminal `replan_required` results preserve the boolean
+`prior_effects_unknown`; when true, a label removal may have happened without a
+PR history entry. Inspect the retained operation and history before a fresh plan.
+
+Recovery can observe a closed PR. It adopts an authentic existing history
+receipt or settles an unreceipted closed request without another DELETE.
+A new withdrawal still requires an open PR; readback never removes a label.
