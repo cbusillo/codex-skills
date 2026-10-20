@@ -15,6 +15,7 @@ from urllib.parse import unquote
 MAX_MESSAGE_BYTES = 4096
 MAX_DEPTH = 8
 MAX_DECODES = 3
+MAX_LITERAL_ATTEMPTS = 32
 MASK = "[redacted]"
 PAIR_NAMES = {"name", "key", "variable"}
 PAIR_VALUES = {"value", "data", "default", "val"}
@@ -210,11 +211,7 @@ def shape_redact(text: str, *, diagnostic_value: bool = False) -> str:
     return OPAQUE.sub(opaque, text)
 
 
-def leading_literal(text: str, start: int = 0) -> tuple[object, int] | None:
-    try:
-        return json.JSONDecoder().raw_decode(text, start)
-    except (ValueError, RecursionError):
-        pass
+def balanced_end(text: str, start: int = 0) -> int | None:
     if start >= len(text) or text[start] not in "[{(\"'":
         return None
     stack = []
@@ -236,11 +233,27 @@ def leading_literal(text: str, start: int = 0) -> tuple[object, int] | None:
         elif char in "]})" and (not stack or stack.pop() != char):
             return None
         if not quote and not stack:
-            try:
-                return ast.literal_eval(text[start : index + 1]), index + 1
-            except (ValueError, SyntaxError, RecursionError, TypeError, MemoryError):
-                return None
+            return index + 1
     return None
+
+
+def leading_literal(text: str, start: int = 0) -> tuple[object, int] | None:
+    try:
+        return json.JSONDecoder().raw_decode(text, start)
+    except (ValueError, RecursionError):
+        pass
+    end = balanced_end(text, start)
+    if end is None:
+        return None
+    span = text[start:end]
+    try:
+        return ast.literal_eval(span), end
+    except (ValueError, SyntaxError, RecursionError, TypeError, MemoryError):
+        # Unknown repr calls are data, never executable. A quoted container
+        # whose semantics cannot be projected is withheld as one closed value.
+        if any(char in span for char in "\"'"):
+            return MASK, end
+        return None
 
 
 @dataclass(frozen=True)
@@ -248,6 +261,7 @@ class PlainAnalysis:
     cut: int | None = None
     continuation: str | None = None
     whole: bool = False
+    pair_value: bool = False
 
 
 @dataclass(frozen=True)
@@ -262,7 +276,7 @@ def continuation_kind(rest: str) -> str | None:
         return "next"
     if re.fullmatch(r"(?:&[A-Za-z0-9_-]+\s+)?[|>][0-9+-]*(?:\s+#.*)?", rest):
         return "block"
-    if rest[0] in "[{(\"'" and leading_literal(rest) is None:
+    if rest[0] in "[{(\"'" and balanced_end(rest) is None:
         return "block"
     return None
 
@@ -278,13 +292,10 @@ def analyze_plain(text: str) -> PlainAnalysis:
             if value:
                 descriptors.append((field, sensitive(value[1])))
     secret_pair = any(secret for _, secret in descriptors)
-    public_pair = (
-        bool(descriptors)
-        and not secret_pair
-        and any(
-            field["name"].strip("\"'").casefold() in PAIR_VALUES for field in fields
-        )
+    pair_value = any(
+        field["name"].strip("\"'").casefold() in PAIR_VALUES for field in fields
     )
+    public_pair = bool(descriptors) and not secret_pair and pair_value
     cuts = []
     continuation = None
     for field in fields:
@@ -298,27 +309,42 @@ def analyze_plain(text: str) -> PlainAnalysis:
             cuts.append(field.end())
             continuation = continuation or continuation_kind(text[field.end() :])
     if secret_pair:
-        return PlainAnalysis(0, continuation, True)
-    return PlainAnalysis(min(cuts) if cuts else None, continuation)
+        return PlainAnalysis(0, continuation, whole=True, pair_value=pair_value)
+    return PlainAnalysis(
+        min(cuts) if cuts else None, continuation, pair_value=pair_value
+    )
 
 
 def parse_literal(text: str) -> tuple[str, object, str] | None:
-    positions = [text.find(char) for char in ("{", "[", "(") if char in text]
+    positions = [index for index, char in enumerate(text) if char in "{[("]
     if text.lstrip().startswith(('"', "'")):
         positions.append(len(text) - len(text.lstrip()))
-    if not positions:
-        return None
-    start = min(positions)
-    prefix = CONTROL.sub("", normalize(text[:start]))
-    if analyze_plain(prefix).cut is not None:
-        return None
-    parsed = leading_literal(text, start)
-    if parsed is None:
-        return None
-    value, end = parsed
-    if isinstance(value, str) and (prefix.strip() or text[end:].strip()):
-        return None
-    return prefix, value, text[end:]
+    for attempt, start in enumerate(sorted(set(positions))):
+        if attempt >= MAX_LITERAL_ATTEMPTS:
+            raise RedactionError("log_structure_limit")
+        prefix = CONTROL.sub("", normalize(text[:start]))
+        if analyze_plain(prefix).cut is not None:
+            return None
+        parsed = leading_literal(text, start)
+        if parsed is None:
+            continue
+        value, end = parsed
+        if (
+            isinstance(value, str)
+            and value != MASK
+            and (prefix.strip() or text[end:].strip())
+        ):
+            continue
+        suffix = CONTROL.sub("", normalize(text[end:]))
+        outside = analyze_plain(prefix + " " + suffix)
+        if (
+            outside.whole
+            or outside.pair_value
+            and analyze_plain(CONTROL.sub("", normalize(text))).whole
+        ):
+            return None
+        return prefix, value, text[end:]
+    return None
 
 
 def project(value: object, depth: int, *, field: str = "") -> object:
@@ -384,8 +410,10 @@ def clean_record(
             nested = clean_record(value, depth + 1, diagnostic_value=diagnostic_value)
             return CleanRecord(nested.message)
         left = clean_plain(CONTROL.sub("", normalize(prefix)))
-        right = clean_plain(
-            CONTROL.sub("", normalize(suffix)), diagnostic_value=diagnostic_value
+        right = clean_record(
+            CONTROL.sub("", normalize(suffix)),
+            depth + 1,
+            diagnostic_value=diagnostic_value,
         )
         return CleanRecord(
             left.message

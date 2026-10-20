@@ -10,6 +10,7 @@ import unittest
 from urllib.parse import quote
 
 from launchplane_service_log_redaction import (
+    MAX_LITERAL_ATTEMPTS,
     MAX_MESSAGE_BYTES,
     RedactionError,
     Redactor,
@@ -184,6 +185,31 @@ class RedactionTests(unittest.TestCase):
                 (),
                 ("north", "disabled"),
             ),
+            (
+                ["[worker] bad env: ('API_TOKEN', '" + secret + "') rejected"],
+                (secret,),
+                ("rejected",),
+            ),
+            (["retry (2/3): ('API_TOKEN', '" + secret + "')"], (secret,), ()),
+            (["[ERROR] argv: ['deploy', '--token', '" + secret + "']"], (secret,), ()),
+            (
+                ["data=" + secret + ' extra={"attempt":1} key=DB_PASSWORD'],
+                (secret,),
+                (),
+            ),
+            (['value={"raw":"' + secret + '"} name=DB_PASSWORD'], (secret,), ()),
+            (["value=" + secret + ' {"name":"DB_PASSWORD"}'], (secret,), ()),
+            (['{"value":"' + secret + '"} {"name":"DB_PASSWORD"}'], (secret,), ()),
+            (
+                [
+                    "[INFO] "
+                    + json.dumps(
+                        {"password": secret, "event": "failed", "trace_id": trace}
+                    )
+                ],
+                (secret,),
+                ("failed", trace),
+            ),
             (["PGPASSWORD=" + secret], (secret,), ()),
             (
                 [json.dumps({"secrets": {"odoo_admin": secret}, "event": "failed"})],
@@ -253,6 +279,9 @@ class RedactionTests(unittest.TestCase):
             'password="' + secret + '"',
             "token='" + secret + "'",
             "password=" + secret,
+            "token=[REDACTED]",
+            "api_key=(unset)",
+            "{'secrets': [SecretStr('**')]}",
             json.dumps(json.dumps({"password": secret})),
             "{'password': {'v': '" + secret + "'}, 'x': 1}",
         ]
@@ -332,6 +361,8 @@ class RedactionTests(unittest.TestCase):
             Redactor().feed("a." * MAX_MESSAGE_BYTES)
         with self.assertRaises(RedactionError):
             Redactor().feed("-----END RSA PRIVATE KEY-----")
+        with self.assertRaises(RedactionError):
+            Redactor().feed("[worker] " * (MAX_LITERAL_ATTEMPTS + 1))
 
 
 if __name__ == "__main__":

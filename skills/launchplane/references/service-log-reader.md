@@ -86,6 +86,7 @@ nesting. Complete objects retain neighboring diagnostic fields such as trace IDs
 commit SHAs, image digests and code paths. A plain sensitive assignment discards
 the rest of its record; an unparsed sensitive name/value pair masks the whole
 record in either property order. Malformed structured records are masked.
+A quote-aware balance scan decides completeness independently of literal parsing.
 Complete structured or quoted values cannot open multiline continuation state;
 nested serialized fields are projected without changing that state. Standalone
 value/data/default fragments without an established ordinary name are masked,
@@ -100,8 +101,8 @@ their parent may precede the window. Later unindented ordinary records remain
 readable. Flush-left multiline prose without a recognizable key delimiter cannot
 be safely attributed to a writer; do not rely on redaction of that unsupported
 framing.
-An individual source message over 4 KiB, excessive encoding or an unmatched private
-key end fails the whole read with a fixed code and no partial data. The size check
+An individual source message over 4 KiB, excessive encoding, more than 32 failed
+literal candidates or an unmatched private key end fails the whole read with a fixed code and no partial data. The size check
 runs before parsing or pattern scans. Terminal controls are removed. Every record
 is sanitized before output; matching IDs is private, literal and uses normalized
 source text. `matched_record_count` and `changed_record_count` report selected

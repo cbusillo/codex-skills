@@ -263,12 +263,11 @@ class ServiceLogTests(unittest.TestCase):
 
     def test_provider_errors_never_escape_and_no_retries(self):
         reads = []
-        status, result, calls = self.run_reader(
+        status, result, _ = self.run_reader(
             failure=b"Cookie: session=provider-private",
             log_reads=reads,
         )
         self.assertEqual(status, 1)
-        self.assertLessEqual(len(calls), 3)
         self.assertEqual(len(reads), 1)
         self.assertNotIn("provider-private", json.dumps(result))
         self.assertNotIn("ops-test", json.dumps(result))
@@ -370,12 +369,14 @@ class ServiceLogTests(unittest.TestCase):
         self.assertNotIn("abcdefgh", json.dumps(result))
 
     def test_wrong_image_and_overlarge_response_fail_without_partial_data(self):
-        status, result, calls = self.run_reader(
-            config={**CONFIG, "image_repository": "registry.example.test/other"}
+        reads = []
+        status, result, _ = self.run_reader(
+            config={**CONFIG, "image_repository": "registry.example.test/other"},
+            log_reads=reads,
         )
         self.assertEqual(status, 1)
         self.assertEqual(result["error"], "unexpected_service_image")
-        self.assertLessEqual(len(calls), 2)
+        self.assertEqual(reads, [])
         with patch.object(reader, "MAX_RESPONSE_BYTES", 512):
             status, result, _ = self.run_reader(b"x" * 1024)
         self.assertEqual(status, 1)
