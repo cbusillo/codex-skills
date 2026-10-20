@@ -2099,3 +2099,35 @@ requesting approval. Approved or executing plans need observation, not another
 approval. Inspect terminal outcomes before an intentional replacement; an expired, cancelled or revoked proposal needs a fresh
 source event for a replacement. The signed-in Director reviews
 and approves pending plans in the UI; no helper approval or apply path is added.
+
+## Pending Client review withdrawal
+
+`product-review-withdrawal-dry-run`, `product-review-withdrawal-apply` and
+`product-review-withdrawal-readback` use `POST /v1/product-review/withdrawal`.
+They require `--product`, `--repo OWNER/REPO`, `--pr`, `--head` (the exact current
+commit), `--reason` and `--director-decision` (the recorded decision's GitHub
+comment URL). The Director's authenticated agent or admin attests that this
+citation records the Director's decision; it supplies no Client acceptance.
+No new grant or credential is installed.
+
+Save the dry-run JSON output outside the checkout. Apply requires
+`--reviewed-dry-run --dry-run-evidence-file /private/dry.json`,
+`--expected-plan-digest` from that output and `--idempotency-key`. Saved evidence
+binds the exact scope, head, reason and decision citation; receipts omit the
+reason and citation. Readback requires that same scope, reason, citation,
+expected digest and original key. Apply always follows with readback, and only
+matching applied readback returns success. Drift, malformed responses and
+transport loss exit nonzero; an uncertain apply reports `outcome_unknown`, and
+an applied response without verified readback reports `accepted_unverified`.
+
+The service refuses after a Client has accepted or rejected this product's
+current head. It removes only the configured review label and records the
+withdrawal in the PR's history and its durable operation. It never edits Client
+decisions, PR test notes, or release acceptance. Truthful engineering notes are
+a separate PR edit; real notes or a later review label request review normally.
+
+Keep the original request, reviewed digest and key after an interrupted call.
+Read back before resubmitting the exact apply. Recovery can finish a missing
+history entry when the label is absent, and never deletes a label again.
+A completed-key replay returns the original receipt, preserving later review
+requests. Do not remove a label by hand or use another identity after a denial.

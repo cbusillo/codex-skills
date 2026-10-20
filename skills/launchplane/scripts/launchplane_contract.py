@@ -43,6 +43,12 @@ HELPER_OPERATIONS = {
 }
 
 LOCAL_EXTENSION_ROUTES = {
+    **{
+        "product-review-withdrawal-" + mode: {
+            "method": "POST", "path": "/v1/product-review/withdrawal", "mode": mode,
+        }
+        for mode in ("dry-run", "apply", "readback")
+    },
     "context-runtime-settings-read": {
         "method": "GET", "path": "/v1/contexts/{context}/runtime-settings", "mode": "read",
     },
