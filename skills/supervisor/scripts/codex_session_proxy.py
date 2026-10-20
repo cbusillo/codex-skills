@@ -75,8 +75,9 @@ def source_endpoint(session, home, *, transcript=None):
 
 
 def require_native_identity(value):
-    if session_liveness.native_uuid(value) != value or not isinstance(value, str):
-        raise ValueError("use the canonical native thread UUID")
+    canonical = session_liveness.native_uuid(value)
+    if canonical != value or not isinstance(value, str):
+        raise ValueError("use the canonical native thread UUID" + (f" {canonical}" if canonical else ""))
     return value
 
 

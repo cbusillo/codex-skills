@@ -701,6 +701,17 @@ class LedgerTests(unittest.TestCase):
         self.assertNotIn("error", result)
         self.assertFalse(result["safe_verdict"])
 
+    def test_unknown_account_transcript_is_invalid_input_in_normalizer_and_loader(self):
+        entry = {**self.entry, "transcript": "~q526-absent-account/rollout.jsonl"}
+        self.ledger.write_text(json.dumps([entry]))
+        before = self.ledger.read_bytes()
+        for normalize in (lambda: session_record.normalize_ledger_entry(self.ledger, entry),
+                          lambda: session_record.load_ledger(self.ledger)):
+            with self.subTest(consumer=normalize), patch("pwd.getpwnam", side_effect=KeyError("fixture account absent")):
+                with self.assertRaises(ValueError):
+                    normalize()
+                self.assertEqual(self.ledger.read_bytes(), before)
+
     def test_relative_path_and_duplicate_identity(self):
         self.assertEqual(
             session_record.load_ledger(self.ledger)[0]["transcript"],
