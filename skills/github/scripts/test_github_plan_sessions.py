@@ -1787,6 +1787,23 @@ class ObservationMergeTests(unittest.TestCase):
                 self.assertTrue(SESSIONS._current_check_quiet(node, deadline_at=time.time() + 2))
             with patch.object(SESSIONS.native_helpers()[1], "read_jsonl", return_value=original):
                 self.assertFalse(SESSIONS._current_check_quiet(node, deadline_at=time.time() + 0.1))
+            complete = "".join(json.dumps(row) + "\n" for row in current)
+            partial = "".join(json.dumps(row) + "\n" for row in original) + '{"type":"response_item"'
+            f.transcript.write_text(partial)
+            finished = False
+            def finish_append(path):
+                nonlocal finished
+                try:
+                    return read_jsonl(path)
+                finally:
+                    if not finished:
+                        finished = True
+                        f.transcript.write_text(complete)
+            with patch.object(SESSIONS.native_helpers()[1], "read_jsonl", side_effect=finish_append):
+                self.assertTrue(SESSIONS._current_check_quiet(node, deadline_at=time.time() + 2))
+            f.transcript.write_text(partial)
+            self.assertFalse(SESSIONS._current_check_quiet(node, deadline_at=time.time() + 0.1))
+            f.transcript.write_text(complete)
             # Real native capture: the running command is absent from items;
             # only the background registry contains its exec-* identity.
             self.assertTrue(SESSIONS._current_check_quiet(node))

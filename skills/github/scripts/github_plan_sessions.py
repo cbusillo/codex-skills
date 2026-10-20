@@ -391,7 +391,12 @@ def _current_check_quiet(node, *, deadline_at=None):
         until = deadline_at if deadline_at is not None else time.time() + github_plan_native.read_timeout()
         async with asyncio.timeout(github_plan_native.read_timeout(until)):
             while True:
-                current = claim_history.root_records(primary, "codex", node["session_id"], native_helpers()[1].read_jsonl(primary))
+                try:
+                    records = native_helpers()[1].read_jsonl(primary)
+                except ValueError:
+                    await asyncio.sleep(0.05)
+                    continue  # A live append can be incomplete until startup lands.
+                current = claim_history.root_records(primary, "codex", node["session_id"], records)
                 process = claim_receipts.current_check_process(node["records"], current)
                 if process is not None:
                     break
