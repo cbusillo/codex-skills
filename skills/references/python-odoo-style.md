@@ -96,7 +96,8 @@ unclear code stand by explaining it.
   string annotations, with no import: recordsets as
   `"odoo.model.product_template"`, values dicts as `"odoo.values.sale_order"`.
   Prefer them to `cast(...)`. Only PyCharm resolves them; mypy and pyright
-  report them as unresolved. House rule.
+  report them as unresolved. House rule: they give PyCharm the exact model,
+  so completion and inspection check every field.
 - Build reusable search domains with `fields.Domain(...)` and combine them
   with `&`, `|`, and `~`. An annotation alone does not make a list a `Domain`.
 - In tests, give the addon's `tests/fixtures/base.py` typed properties that
