@@ -13,7 +13,9 @@ import argparse
 import importlib.util
 import json
 import os
+import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -736,7 +738,7 @@ def test_full_history_thread_includes_old_review_body(monkeypatch) -> None:
     monkeypatch.setattr(
         github_unanswered_comments,
         "collect_candidate_reactions",
-        lambda comments: ({old_review.global_key: []}, {}, []),
+        lambda comments, deadline: ({old_review.global_key: []}, {}, []),
     )
 
     payload = github_unanswered_comments.collect_payload(settings)
@@ -768,7 +770,7 @@ def test_graphql_last_edit_reopens_review_body_after_reaction(monkeypatch) -> No
     monkeypatch.setattr(
         github_unanswered_comments,
         "collect_candidate_reactions",
-        lambda comments: (
+        lambda comments, deadline: (
             {review.global_key: [reaction(created_at="2026-07-25T13:00:00Z")]},
             {review.global_key: github_unanswered_comments.Edit("2026-07-25T14:00:00Z", "outside-reviewer")},
             [],
@@ -791,7 +793,7 @@ def test_no_cutoff_classifies_comments_fetched_after_the_scan_end(monkeypatch) -
     monkeypatch.setattr(github_unanswered_comments, "authenticated_login", lambda: "fixture-automation")
     monkeypatch.setattr(github_unanswered_comments, "collect_thread", lambda repo, number: (thread(), [reply, posted], []))
     monkeypatch.setattr(github_unanswered_comments, "collect_candidate_reactions",
-                        lambda comments: ({posted.global_key: []}, {}, []))
+                        lambda comments, deadline: ({posted.global_key: []}, {}, []))
 
     assert payload()["attention"] == []
     [row] = payload(no_cutoff=True)["attention"]
@@ -816,7 +818,7 @@ def test_reaction_failure_degrades_and_keeps_comment_visible(monkeypatch) -> Non
     monkeypatch.setattr(
         github_unanswered_comments,
         "collect_candidate_reactions",
-        lambda comments: ({}, {}, [{"repo": "example/repo", "lane": "reactions", "error": "denied"}]),
+        lambda comments, deadline: ({}, {}, [{"repo": "example/repo", "lane": "reactions", "error": "denied"}]),
     )
 
     payload = github_unanswered_comments.collect_payload(settings)
@@ -1395,7 +1397,7 @@ def test_include_handled_lists_closed_thread_comments_apart_from_attention(monke
     monkeypatch.setattr(github_unanswered_comments, "authenticated_login", lambda: "fixture-automation")
     monkeypatch.setattr(github_unanswered_comments, "collect_thread", lambda repo, number: (closed, [external], []))
     monkeypatch.setattr(github_unanswered_comments, "collect_candidate_reactions",
-                        lambda comments: ({external.global_key: []}, {}, []))
+                        lambda comments, deadline: ({external.global_key: []}, {}, []))
 
     def payload(**overrides: object) -> dict[str, object]:
         settings = github_unanswered_comments.resolve_settings(
@@ -1423,7 +1425,7 @@ def test_director_login_keeps_another_accounts_own_comment_outside(monkeypatch, 
     monkeypatch.setattr(github_unanswered_comments, "collect_thread",
                         lambda repo, number: (thread(), [by_thread_owner], []))
     monkeypatch.setattr(github_unanswered_comments, "collect_candidate_reactions",
-                        lambda comments: ({by_thread_owner.global_key: []}, {}, []))
+                        lambda comments, deadline: ({by_thread_owner.global_key: []}, {}, []))
 
     def attention(**overrides: object) -> list[object]:
         settings = github_unanswered_comments.resolve_settings(
@@ -1923,6 +1925,72 @@ def test_structured_wait_search_pagination_gaps_degrade_coverage(monkeypatch, tm
     assert payload["status"] == "degraded"
     assert [(error["repo"], error["lane"]) for error in payload["coverage"]["errors"]] == [("example", "director_waits_search")]
 
+
+
+def test_stuck_gh_call_times_out_as_a_coverage_error(monkeypatch) -> None:
+    monkeypatch.setattr(github_unanswered_comments, "GH_CALL_TIMEOUT_SECONDS", 0.2)
+    started = time.monotonic()
+
+    with pytest.raises(github_unanswered_comments.rollup.RollupError, match="Timed out"):
+        github_unanswered_comments.run_json([sys.executable, "-c", "import time; time.sleep(30)"])
+
+    assert time.monotonic() - started < 10
+
+
+FAKE_GH = """
+import json, sys, time
+
+stuck, thread = sys.argv[1], json.loads(sys.argv[2])
+endpoint = sys.argv[4]
+if stuck in endpoint:
+    time.sleep(120)
+if endpoint == "user":
+    print(json.dumps({"login": "fixture-automation"}))
+elif endpoint == "graphql":
+    print(json.dumps({"data": {"node": {"lastEditedAt": None, "reactions": {
+        "nodes": [], "pageInfo": {"hasNextPage": False, "endCursor": None}}}}}))
+elif "--slurp" in sys.argv:
+    print("[[]]")
+else:
+    print(json.dumps(thread))
+"""
+
+RADAR_WITH_SHORT_DEADLINE = """
+import importlib.util, sys
+
+spec = importlib.util.spec_from_file_location("github_unanswered_comments", sys.argv[1])
+radar = sys.modules[spec.name] = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(radar)
+radar.DISCUSSION_READ_DEADLINE_SECONDS = 1
+sys.argv = [sys.argv[1], "--thread", "example/repo#1", "--self-login", "cbusillo", "--format", "json"]
+sys.exit(radar.main())
+"""
+
+
+@pytest.mark.parametrize(("stuck_endpoint", "lane"), [("repos/example/repo/issues/1", "thread"), ("graphql", "reactions/")])
+def test_stuck_discussion_read_ends_the_radar_at_the_deadline(tmp_path: Path, stuck_endpoint: str, lane: str) -> None:
+    # The stuck gh call is never released: the radar process itself must exit.
+    fake_gh = tmp_path / "gh"
+    fake_gh.write_text(
+        "#!/bin/sh\n"
+        f'exec "{sys.executable}" -c \'{FAKE_GH}\' "{stuck_endpoint}" \'{json.dumps(opening(number=1, author="outside", pull_request=False))}\' "$@"\n'
+    )
+    fake_gh.chmod(0o755)
+    env = {**os.environ, "GITHUB_UNANSWERED_COMMENTS_GH": str(fake_gh), "CODE_HOME": str(tmp_path / "missing")}
+    started = time.monotonic()
+
+    result = subprocess.run(
+        [sys.executable, "-c", RADAR_WITH_SHORT_DEADLINE, str(MODULE_PATH)],
+        capture_output=True, text=True, env=env, cwd=tmp_path, timeout=60,
+    )
+
+    assert time.monotonic() - started < 30, result.stderr
+    assert result.stdout, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "degraded"
+    assert any(
+        error["lane"].startswith(lane) and "deadline" in error["error"] for error in payload["coverage"]["errors"]
+    ), payload["coverage"]["errors"]
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))
