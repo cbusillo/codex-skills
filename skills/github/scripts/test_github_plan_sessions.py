@@ -448,6 +448,7 @@ class FinishPreviewIntegrationTests(unittest.TestCase):
                                 self.assertEqual(captured["verdict_at"], verdict)
                                 if not refuses:
                                     self.assertEqual(report["reports"][0]["ended_at"], captured["ended_at"])
+                                    self.assertTrue(process_boundaries)
                                     for observed_cutoff, saved in process_boundaries:
                                         self.assertEqual(observed_cutoff, cutoff)
                                         self.assertEqual(saved, selected)
