@@ -32,7 +32,8 @@ unclear code stand by explaining it.
   a prose justification line. A license header or generated-file marker that a
   tool or license requires also stays.
 - What remains is a one-line note of a fact outside the code that no name can
-  hold, such as a link to an upstream bug. Try the name first.
+  hold, such as a link to an upstream bug. Try the name first; a decision or
+  constraint that a name can state is not such a fact.
 
 ## Shape
 
@@ -74,8 +75,8 @@ unclear code stand by explaining it.
   as `"odoo.values.sale_order"`. Prefer them to `cast(...)`. They are more
   precise than core's own `odoo.orm.types` aliases, which type values as
   `dict[str, Any]`.
-- Type reusable search domains as `fields.Domain`, so `&`, `|`, and `~` keep
-  working.
+- Build reusable search domains with `fields.Domain(...)` and combine them
+  with `&`, `|`, and `~`. An annotation alone does not make a list a `Domain`.
 - In tests, give the addon's `tests/fixtures/base.py` typed properties that
   return `self.env["..."]`, instead of suppressions spread across test files.
 
@@ -93,16 +94,22 @@ unclear code stand by explaining it.
   )
   ```
 
-- Wrap every `UserError`, `ValidationError`, `AccessError`, `AccessDenied`,
-  and `MissingError` message in `self.env._(...)`.
+- Translate every message you write for a `UserError`, `ValidationError`,
+  `AccessError`, `AccessDenied`, or `MissingError`: `self.env._(...)` in model
+  code, `_(...)` from `odoo` where there is no environment. Pass an
+  already-translated message on unchanged.
 - Raise the specific exception. Never use a broad `except Exception` that
   neither re-raises nor logs, and never use a silent `pass`.
 - Log through the module's `_logger`; never `print`.
-- Use `pathlib.Path` for paths and timezone-aware datetimes.
+- Use `pathlib.Path` for paths.
+- `fields.Datetime` holds naive UTC values and rejects a timezone-aware one.
+  Use `fields.Datetime.now()` for stored values, and
+  `fields.Datetime.context_timestamp(record, value)` to show a user local time.
 
 ## Odoo 19
 
-Checked against Odoo 19.0 source; older patterns still fill examples online.
+These rules were checked against Odoo 19.0 source; older patterns still fill
+examples online. The last two are house rules, not Odoo requirements.
 
 - Declare SQL constraints as model attributes:
   `_name_uniq = models.Constraint("unique (name)", "Tag name already exists!")`.
@@ -115,13 +122,15 @@ Checked against Odoo 19.0 source; older patterns still fill examples online.
 - Use `check_access()` and `_filtered_access()`, `_read_group()` or
   `formatted_read_group()`, `aggregator=`, and `action_archive()` or
   `action_unarchive()`. Their older forms are deprecated.
-- Guard deletion with `@api.ondelete(at_uninstall=False)`; never raise inside
-  an `unlink` override.
+- Guard deletion with `@api.ondelete(at_uninstall=False)`; use `True` only for
+  a guard that must also hold while the module is uninstalled. Never raise
+  inside an `unlink` override.
 - A model method without a leading underscore can be called over RPC. Start
   helpers with `_`, or mark them `@api.private`. A public method takes no
   parameter named `ids` or `context`.
-- Views use a `<list>` root and direct `invisible`, `readonly`, `required`,
-  and `column_invisible` expressions; `attrs` and `states` fail validation.
+- List views use a `<list>` root, never `<tree>`. Write direct `invisible`,
+  `readonly`, `required`, and `column_invisible` expressions; `attrs` and
+  `states` fail validation.
 - Import another addon as `odoo.addons.<addon>` only when it is a manifest
   dependency. Inside an addon, use relative imports. Versioned migration
   scripts are the exception: Odoo loads them as standalone modules.
@@ -151,9 +160,10 @@ Checked against Odoo 19.0 source; older patterns still fill examples online.
   `ANN`, `UP`, `B`, and `I`, and ignore `D`.
 - PyCharm inspection is the cleanup list. Leave touched files with no
   actionable warnings. Fix the cause before you add a `noinspection`.
-- Follow the [shared test rules](../../instructions/global.md#tests). Keep
-  `test_support` generic; addon-specific fixtures stay in the addon's
-  `tests/fixtures/`. Each addon exposes its test API through one small
+- Follow the [shared test rules](../../instructions/global.md#tests).
+- Where the repository provides the shared `test_support` addon, keep it
+  generic and put addon-specific fixtures in the addon's `tests/fixtures/`.
+  An addon that wants a curated test API gets one small
   `tests/common_imports.py` built with `build_common_imports`.
 
 ## What Changed From The Old Guide
@@ -164,15 +174,16 @@ The earlier guide lived in the archived `odoo-ai` repository under
 | Rule | Now | Reason |
 | --- | --- | --- |
 | Prefer code that obviates comments | Kept, made strict | Comments are a second source of truth |
-| Reserve comments for "why", constraints, or decision links | Dropped | A function name and parameters carry the why |
+| Reserve comments for "why", constraints, or decision links | Narrowed | A function name and parameters carry the why; only a fact no name can hold remains |
 | One-line justification on every `noinspection` | Dropped | The directive names the inspection; the justification is a comment |
 | No docstrings (2024 prompt files) | Kept | Names carry the purpose |
-| Type hints at API boundaries, local inference | Kept | Matches 19.0 core's own annotations |
+| Type hints on every function signature, local inference | Kept | The old guide's boundary meant every signature; ruff `ANN` enforces it |
 | PyCharm Odoo plugin magic types over `cast` | Kept | Still resolved by the plugin and used across tenant code |
-| `fields.Domain` for reusable domains | Kept | Present in 19.0 with `&`, `\|`, `~` |
+| `fields.Domain` for reusable domains | Updated | Build with `fields.Domain(...)`; an annotation does not supply `&`, `\|`, `~` |
+| Timezone-aware datetimes | Updated | 19.0 `fields.Datetime` rejects aware values; store naive UTC |
 | f-strings only | Updated | Translations need a literal and arguments; Odoo's lint rejects f-strings there |
 | PEP 604 unions, early returns, small functions, DRY | Kept | The patterns in the hand-written code |
-| `<list>` root, no `attrs` or `states` | Kept | 19.0 validates both |
+| `<list>` root for list views, no `attrs` or `states` | Kept | 19.0's list view schema and view validation enforce both |
 | `_sql_constraints` (used in older code) | Replaced by `models.Constraint` | 19.0 no longer supports it |
 | Relational fields without `_id` on custom models | Kept | Records, not ids |
 | Local addon import rule | Kept, shortened | Same rule, fewer words |
