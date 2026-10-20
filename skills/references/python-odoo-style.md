@@ -1,9 +1,14 @@
 # Python And Odoo Style
 
 Use this style when you write Python, or Odoo JavaScript, in a repository
-whose agent instructions point here. Code should read like prose: names carry
-the meaning, functions are small, and nothing is said twice. Rules marked
-"house rule" are this style's choice, not an Odoo or Python requirement.
+whose agent instructions point here. It exists because code that is easy to
+understand and has one source of truth is easier to maintain and change, for
+people and for agents. Names carry the meaning, functions are small, and
+nothing is said twice.
+
+Prefer a rule a tool enforces: Ruff, PyCharm inspections, Odoo's own lint, or
+a test. Where this style departs from a standard tool or convention, the rule
+says "House rule" and why, in one line; everywhere else the convention wins.
 
 ## Names Instead Of Comments
 
@@ -69,9 +74,10 @@ unclear code stand by explaining it.
 - Return a dataclass or `NamedTuple` instead of a tuple of more than two
   values; the field names document the result.
 - Use verbs for functions, nouns for values, and no cryptic abbreviations.
-  Name constants (`REQUEST_LIMIT`) instead of leaving bare numbers. Database
-  identifiers stop at PostgreSQL's 63 bytes, so shorten constraint and index
-  names to fit.
+  Name constants (`REQUEST_LIMIT`) instead of leaving bare numbers. Odoo names
+  a constraint or index `<table>_<attribute>` and replaces anything past
+  PostgreSQL's 63-character limit with a hash, so keep the attribute short
+  enough that the full name stays readable.
 - Leave out explicit defaults and repeated attributes that change nothing.
 
 ## Types
@@ -80,8 +86,12 @@ unclear code stand by explaining it.
   unless the type is unclear, for example an empty container or a values dict
   you want checked.
 - Use `str | None` and built-in generics such as `list[str]`. Use `Self` from
-  `typing`. On a Python 3.10 target, add `from __future__ import annotations`
-  and import it from `typing_extensions` under `TYPE_CHECKING`.
+  `typing`.
+- Below Python 3.14, `|` beside a quoted type, as in
+  `-> "odoo.model.product_template" | None`, raises `TypeError` on import.
+  Start any module that has one with `from __future__ import annotations`. On a
+  Python 3.10 target, that import also lets you take `Self` from
+  `typing_extensions` under `TYPE_CHECKING`.
 - In Odoo code inspected by PyCharm, use the PyCharm Odoo plugin's types as
   string annotations, with no import: recordsets as
   `"odoo.model.product_template"`, values dicts as `"odoo.values.sale_order"`.
@@ -94,10 +104,15 @@ unclear code stand by explaining it.
 
 ## Strings, Errors, And Logging
 
-- Build ordinary strings with f-strings, not `%` or `str.format()`.
+- Build ordinary strings with f-strings, not `%` or `str.format()` (Ruff
+  `UP031`, `UP032`). House rule: Odoo's Ruff settings allow `%`, but an
+  f-string reads in order.
+- Never build SQL from an f-string or `%`. Use `odoo.tools.SQL`, with
+  `SQL.identifier()` for table and column names, or pass values as
+  `cr.execute` parameters (Ruff `S608`; Odoo's lint has an SQL injection check).
 - Pass a logging template and its arguments separately, never an f-string:
-  `_logger.info("Imported %s orders", count)`. Logging formats only the
-  messages it emits.
+  `_logger.info("Imported %s orders", count)` (Ruff `G004`). Logging formats
+  only the messages it emits.
 - A translated string's first argument is a literal. Pass values as
   arguments, and name the placeholders when there is more than one, so
   translators can reorder them. Odoo's own lint rejects an f-string here:
@@ -113,7 +128,7 @@ unclear code stand by explaining it.
   code, `_(...)` from `odoo` where there is no environment. Pass an
   already-translated message on unchanged.
 - Raise the specific exception. Never use a broad `except Exception` that
-  neither re-raises nor logs, and never use a silent `pass`.
+  neither re-raises nor logs (Ruff `BLE001`), and never use a silent `pass`.
 - Diagnostics go through the module's `_logger`. A command-line tool's results
   go to standard output, with `print` where that is the tool's output, and
   keep any machine-readable format its callers read.
@@ -127,12 +142,17 @@ unclear code stand by explaining it.
 ## Odoo 19
 
 - `self` is a recordset of any size in computes, onchanges, constraints and
-  actions. Inside `for record in self:`, read and write each record's fields
-  through `record`, never `self`. Every path of a compute assigns every
+  actions. Inside `for record in self:`, read each record's fields through
+  `record` and assign them there, never through `self`, and never with
+  `write()` in a compute or onchange. Every path of a compute assigns every
   computed field on every record. `@api.depends` names every field whose
-  change must recompute the result, except `id`, which Odoo refuses;
-  `@api.depends_context` names the context keys it reads. Call
-  `self.ensure_one()` where a method handles only one record.
+  change must recompute the result, including fields read by helpers the
+  compute calls, since Odoo does not look inside them; `id` is the exception,
+  which Odoo refuses. `@api.depends_context` names the context keys it reads.
+  Call `self.ensure_one()` where a method handles only one record.
+- Query and create in batches: call `search`, `_read_group`, or `create` once
+  for the whole recordset, before or after `for record in self:`, never once
+  per record inside it.
 - Declare SQL constraints as model attributes:
   `_name_uniq = models.Constraint("unique (name)", "Tag name already exists!")`.
   19.0 ignores `_sql_constraints` with a warning. Use `models.Index` and
@@ -160,9 +180,12 @@ unclear code stand by explaining it.
   dependency. Inside an addon, use relative imports. Versioned migration
   scripts are the exception: Odoo loads them as standalone modules.
 - On custom models, name relational fields for the records they hold: `partner`
-  and `partners`, not `partner_id` and `partner_ids`. Never rename a field on
-  a core model, and keep upstream names where another module expects them.
-  House rule; upstream Odoo uses `_id` and `_ids`.
+  and `partners`, not `partner_id` and `partner_ids`. Keep the `_id` names the
+  framework looks up: `company_id` (company checks), `currency_id`
+  (`fields.Monetary`), `parent_id` (`_parent_store`), and `partner_id` and
+  `user_id` on `mail.thread` models. Never rename a field on a core model, and
+  keep upstream names where another module expects them. House rule:
+  `order.partner.name` says what the field holds; upstream uses `_id`.
 
 ## JavaScript
 
@@ -175,18 +198,18 @@ unclear code stand by explaining it.
 - Use camelCase for values and functions, PascalCase for classes and
   components, and the same naming, early-return, and no-comment rules as
   Python.
-- Use 4-space indentation and double quotes, and end statements without
-  semicolons, except where automatic semicolon insertion needs one, such as
-  before a line that starts with `(` or `[`. Leave trailing commas to the
-  repository's formatter. House rule.
+- Format with the Prettier settings Odoo ships in `addons/web/tooling`:
+  4-space indentation, double quotes, semicolons, and a print width of 100.
 
 ## Tooling
 
 - Run `uv run ruff format` and `uv run ruff check --fix`. Where a repository
-  sets no ruff configuration, use line length 133, select `ANN`, `UP`, `B`, and
-  `I`, and ignore `D` and `UP037`, which would strip the quotes from the
-  PyCharm types. Set the target to the oldest Python version the code is
-  deployed on.
+  sets no Ruff configuration, use line length 133, select `ANN`, `UP`, `B`,
+  `I`, `G`, `BLE`, and `S608`, and ignore `D`, `UP037`, which would strip the
+  quotes from the PyCharm types, and `ANN401`, which rejects the `Any` that
+  `**kwargs` and Odoo overrides need. Set the target to the oldest Python
+  version the code is deployed on. House rule: the repositories already
+  format at 133.
 - PyCharm inspection is the cleanup list. Leave touched files with no
   actionable warnings. Fix the cause before you add a `noinspection`.
 - Follow the [shared test rules](../../instructions/global.md#tests).
