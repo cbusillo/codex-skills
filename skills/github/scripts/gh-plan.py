@@ -2818,12 +2818,36 @@ def _claim_once(args: argparse.Namespace) -> None:
                     raise
                 continue
             target_pulls.append(retained_pull)
-        prepared = {"source": source_info, "pulls": target_pulls, "named": set(),
+        prepared = {"source": source_info, "pulls": target_pulls,
                     "permitted": set(), "error": None, "targets": {}}
+        def usable(candidate: dict[str, Any]) -> bool:
+            # Selection uses the existing artifact rules on raw checkout facts.
+            # Fresh native/peer authority remains with the phase observer and
+            # admission checks; this predicate grants no ownership.
+            raw_inventory = phase["inventory"]
+            _, current_status, current_comments, _ = phase_records[(issue_repo.casefold(), number)]
+            candidate_claim = {**claim, "resume_from": str(args.resume_from), "retained_handoff": candidate["url"]}
+            _, own = github_plan_claim.discussion_evidence("", current_comments, candidate_claim)
+            scopes = {(issue_repo.casefold(), number): (issue_repo, current_comments, current_status),
+                      (issue_repo.casefold(), source_number): (issue_repo, source_comments, source_status)}
+            scopes.update({(target_repo.casefold(), pull["number"]): (target_repo, [], "")
+                           for pull in candidate["qualified"] if pull.get("state") == "open"})
+            for (_, checked_number), (checked_repo, owner_comments, owner_status) in scopes.items():
+                ended = github_plan_claim.ended_ownership(owner_comments, raw_inventory)
+                conflicts = github_plan_claim.artifact_evidence(
+                    raw_inventory, target_pulls, checked_number, candidate_claim, own_record=bool(own),
+                    retained=source["record"]["branch"], retained_branches=candidate["permitted"],
+                    retained_repo=target_repo, repo=checked_repo, inventory_repo=target_repo,
+                    ended_branches=github_plan_claim.ended_artifact_branches(ended, owner_comments, target_pulls),
+                    recorded_branches=github_plan_claim.recorded_claim_branches(owner_status, owner_comments))
+                if any(conflict["source"] in {"local_branches", "remote_branches", "worktree", "open_pr",
+                                               "closed_pr_artifacts"} for conflict in conflicts):
+                    return False
+            return True
         try:
             handoff = (github_plan_claim.retained_handoff(source, candidates, target_pulls,
                 issue_repo=issue_repo, issue_number=source_number, target_repo=target_repo,
-                selected_id=selection["handoff"] if selection else None)
+                selected_id=selection["handoff"] if selection else None, usable=usable)
                 if selection is None or selection["handoff"] is not None else None)
             record = source["record"]
             source_open = any(pull.get("state") == "open" and (pull.get("head") or {}).get("ref") == record["branch"]
@@ -2854,8 +2878,9 @@ def _claim_once(args: argparse.Namespace) -> None:
             if handoff is None:
                 raise github_plan_claim.ClaimProofError("claim_handoff_pr_required", "Released retained work has no qualified handoff")
             claim["resume_from"] = str(args.resume_from)
-            claim["retained_handoff"] = f"https://github.com/{issue_repo}/issues/{source_number}#issuecomment-{handoff_id}"
-            prepared.update(named=handoff["named"], permitted=handoff["permitted"])
+            claim["retained_handoff"] = handoff["url"]
+            prepared.update(permitted=handoff["permitted"],
+                            open_conflicts=handoff["open_conflicts"])
             if selection["mode"] == "next":
                 matching = [pull for pull in handoff["qualified"] if pull.get("state") == "open"
                             and pull["head"]["ref"] == claim["branch"]]
@@ -2870,6 +2895,8 @@ def _claim_once(args: argparse.Namespace) -> None:
             prepared["error"] = error
             return prepared
         qualified_ids = {pull["number"] for pull in handoff["qualified"]}
+        phase["retained_pr_numbers"] = {pull["number"] for pull in handoff["qualified"]
+                                        if pull.get("state") == "open"}
         for pull in target_pulls:
             if pull["number"] not in qualified_ids:
                 if pull["number"] not in handoff["named"] or pull.get("state") != "closed":
@@ -2900,6 +2927,7 @@ def _claim_once(args: argparse.Namespace) -> None:
             f"/repos/{target_repo}/pulls", query={"state": "open"},
             bucket="rest_core", step_prefix="claim_pr_readback",
         )
+        phase["inventory"] = github_plan_claim.local_inventory(target_repo, number)
         prepared = prepare_handoff(source_info, phase["open_pulls"])
         if record_kind == "issue":
             traversal = {}
@@ -2917,7 +2945,6 @@ def _claim_once(args: argparse.Namespace) -> None:
                 # Stop at the invalid edge. Already collected peer ownership
                 # still has its original precedence over that local predicate.
                 phase_family_error = error
-        phase["inventory"] = github_plan_claim.local_inventory(target_repo, number)
         if retained_mode:
             phase["target_config"] = load_config(target_repo)
             if issue_repo.casefold() != target_repo.casefold():
@@ -2974,13 +3001,14 @@ def _claim_once(args: argparse.Namespace) -> None:
         if prepared["error"] is not None:
             raise prepared["error"]
         source_number, source_comments, source_status = prepared["source"]
-        target_pulls, named, permitted = prepared["pulls"], prepared["named"], prepared["permitted"]
+        target_pulls, permitted = prepared["pulls"], prepared["permitted"]
         for ended in ended_owners:
             ended["pull_requests"] = [f"https://github.com/{target_repo}/pull/{p['number']}" for p in target_pulls
                                       if (p.get("head") or {}).get("ref") == ended["branch"]]
         if claim["branch"] in permitted and selection["mode"] != "next":
             raise PlanError("Retained handoff requires a new task branch, separate from every retained PR/source branch")
-        source_author = next(c for c in source_comments if c.get("id") == args.resume_from)["user"]["login"]
+        if prepared["open_conflicts"]:
+            refuse(prepared["open_conflicts"], owner_comments=source_comments, owner_number=source_number)
         observed_waits = {}
         released_target_sessions = set()
         session_owners = {}
@@ -2990,10 +3018,6 @@ def _claim_once(args: argparse.Namespace) -> None:
             for record in github_plan_claim.records(comment.get("body") or ""):
                 retain_session_owner(record, source_comments, issue_repo, source_number)
         for pull in target_pulls:
-            if ((pull.get("head") or {}).get("ref") in permitted and pull.get("state") == "open"
-                    and (pull["number"] not in named or (pull.get("user") or {}).get("login") != source_author)):
-                refuse([{"source": "open_pr", "number": pull["number"], "branch": pull["head"]["ref"],
-                         "certainty": "not_in_source_handoff"}], owner_comments=source_comments, owner_number=source_number)
             if pull["number"] not in prepared["targets"]:
                 continue
             target, sections, target_comments = prepared["targets"][pull["number"]]
@@ -3150,17 +3174,26 @@ def _claim_once(args: argparse.Namespace) -> None:
                 "PR has a canonical implementation issue; claim that issue instead",
                 payload={"canonical_issue": phase["canonical_issue"]})
         _, own = github_plan_claim.discussion_evidence("", current_comments, claim)
-        conflicts = github_plan_claim.artifact_evidence(
-            fresh_inventory, fresh_pulls, number, claim, own_record=bool(own), repo=issue_repo,
-            subject_pr=number if record_kind == "pr" else None, retained=retained,
-            retained_branches=retained_branches, retained_repo=target_repo if retained_mode else None,
-            inventory_repo=target_repo,
-            ended_branches=github_plan_claim.ended_artifact_branches(ended_owners, current_comments, fresh_pulls),
-            status_sessions={entry["session"] for entry in ended_owners},
-            recorded_branches=github_plan_claim.recorded_claim_branches(status_to_check, current_comments),
-        )
-        if conflicts:
-            refuse(conflicts)
+        ended_branches = github_plan_claim.ended_artifact_branches(ended_owners, current_comments, fresh_pulls)
+        status_sessions = {entry["session"] for entry in ended_owners}
+        recorded_branches = github_plan_claim.recorded_claim_branches(status_to_check, current_comments)
+        scopes = dict.fromkeys(((number, issue_repo), *((n, target_repo)
+                               for n in sorted(phase.get("retained_pr_numbers", ())))))
+        for checked_number, checked_repo in scopes:
+            canonical = checked_repo.casefold() == issue_repo.casefold() and checked_number == number
+            conflicts = github_plan_claim.artifact_evidence(
+                fresh_inventory, fresh_pulls, checked_number, claim, own_record=bool(own), repo=checked_repo,
+                subject_pr=number if record_kind == "pr" else None, retained=retained,
+                retained_branches=retained_branches, retained_repo=target_repo if retained_mode else None,
+                inventory_repo=target_repo,
+                ended_branches=ended_branches if canonical else set(),
+                status_sessions=status_sessions if canonical else set(),
+                recorded_branches=recorded_branches if canonical else set(),
+            )
+            if conflicts:
+                if canonical:
+                    refuse(conflicts)
+                refuse(conflicts, owner_comments=[], owner_repo=checked_repo, owner_number=checked_number)
 
     try:
         issue, status, comments, can_update = claim_snapshot(args.issue, repo)

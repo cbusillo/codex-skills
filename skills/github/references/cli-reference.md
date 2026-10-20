@@ -1447,8 +1447,11 @@ a qualified reference. The open PR must independently link the planning issue
 and use a head and base in the PR's repository; fork refreshes are not supported.
 The issue and target PR's recorded waits still require verified resolution.
 
-The helper uses the checkout's repository as the implementation repository and
-requires qualified PR references when the planning issue is elsewhere. It does
+The implementation repository is `--repo` when supplied, otherwise the current
+checkout's repository. Run from that repository's checkout. Name a different
+planning issue with its qualified reference instead of changing `--repo` to the
+planning repository. The handoff requires qualified PR references when the
+planning issue is elsewhere. The helper does
 not reinterpret a PR mention in another namespace or a generic same-bot rollup
 as source authority. One original claim ID selects this same route for ordinary
 successor work and an already authorized conflict refresh.
@@ -1472,7 +1475,8 @@ and release comments. Use supported session routing to reach that session;
 another session sharing its bot login must not impersonate it. When the source
 session cannot record this, retained-work recovery remains blocked. Preserve
 the original records. The helper can select the new qualified handoff on the
-next explicit `--resume-from` invocation.
+next explicit `--resume-from` invocation when the existing artifact rules require
+the later complete handoff. Selection is independent of the requested branch.
 A release posted after the old handoff does not validate it retroactively.
 The exact source-authored release owns release state. The selected handoff
 binds source identity and named retained PRs; its free prose is not scanned for

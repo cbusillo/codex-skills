@@ -433,6 +433,40 @@ class ClaimTests(unittest.TestCase):
         with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
         self.assert_no_writes()
 
+    def test_open_retained_prs_keep_their_implementation_artifact_scopes(self):
+        for cross_repo, phase, artifact in product((False, True),
+                ("preflight", "after_post", "after_status"), ("pull", "local", "remote", "worktree", "released_local")):
+            with self.subTest(cross_repo=cross_repo, phase=phase, artifact=artifact):
+                if artifact == "released_local" and phase != "preflight": continue
+                self.setUp()
+                if cross_repo: self.cross_repository_fixture()
+                else: self.refresh_fixture()
+                def add_artifact():
+                    branch = "work/issue-99-follow-up"
+                    if artifact == "released_local":
+                        record = {**OTHER, "session": "other-ended-native", "branch": branch}
+                        self.comments.extend([
+                            {"id": 70, "user": {"login": TEST_BOT}, "body": CLAIM.marker(record), "created_at": record["claimed_at"]},
+                            {"id": 71, "user": {"login": TEST_BOT}, "body": "Released claim 70", "created_at": "2026-10-02T00:00:00Z"}])
+                        self.comment_id_offset = 100
+                        self.inventory["local_branches"].append(branch)
+                    elif artifact == "pull":
+                        self.pulls.append({**copy.deepcopy(self.pulls[0]), "number": 101,
+                                           "body": "Refs #99", "head": {"ref": "work/independent-follow-up"}})
+                    elif artifact == "worktree":
+                        self.inventory["worktrees"].append({"branch": "work/independent-follow-up", "path": "/retained/issue-99"})
+                    else:
+                        self.inventory["local_branches" if artifact == "local" else "remote_branches"].append(branch)
+                if phase == "preflight": add_artifact()
+                else: setattr(self, phase, add_artifact)
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+                self.assertEqual(caught.exception.code, "claim_conflict")
+                if phase == "preflight": self.assert_no_writes()
+                else:
+                    self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
+                    if phase == "after_post": self.assertNotIn("status", self.events)
+                    else: self.assertIn("status", self.events)
+
     def test_refresh_merged_sibling_remains_retained_without_cleanup(self):
         self.refresh_fixture()
         sibling = self.pulls.pop()
@@ -509,7 +543,7 @@ class ClaimTests(unittest.TestCase):
         self.assertTrue(result["claim"]["retained_handoff"].endswith(f"#issuecomment-{self.handoff_id}"))
 
     def test_real_direction_refresh_preserves_release_pr_and_live_ownership_guards(self):
-        for change in ("plain", "missing_release", "conditional_release", "foreign_release",
+        for change in ("unchanged", "plain", "missing_release", "conditional_release", "foreign_release",
                        "unnamed_pr", "foreign_pr", "live_peer", "other_claim", "other_pr", "original_branch", "foreign_handoff", "before_release", "malformed_header"):
             with self.subTest(change=change):
                 self.setUp()
@@ -517,7 +551,7 @@ class ClaimTests(unittest.TestCase):
                 source, release, handoff = self.comments
                 record = CLAIM.records(source["body"])[0]
                 handoff["body"] = (f"Handoff from {record['worker']}\nSource claim {source['id']}; "
-                                   f"Session: {record['session']}; direction#46")
+                                   f"Session: {record['session']}; PR #46")
                 if change == "plain":
                     self.args.resume_from = self.handoff_id = None
                 if change in ("missing_release", "conditional_release"):
@@ -527,7 +561,7 @@ class ClaimTests(unittest.TestCase):
                 if change == "foreign_release":
                     release["user"] = {"login": "stranger"}
                 if change == "unnamed_pr":
-                    handoff["body"] = handoff["body"].replace("direction#46", "direction#47").replace("/pull/46", "/pull/47")
+                    handoff["body"] = handoff["body"].replace("PR #46", "PR #47")
                 if change == "foreign_pr": self.pulls[0]["user"] = {"login": "stranger"}
                 if change == "foreign_handoff": handoff["user"] = {"login": "stranger"}
                 if change == "original_branch": self.args.branch = record["branch"]
@@ -538,13 +572,22 @@ class ClaimTests(unittest.TestCase):
                     self.pulls.append({**copy.deepcopy(self.pulls[0]), "number": 47})
                 if change == "before_release": self.comments[:] = [source, handoff, release]
                 if change == "malformed_header": handoff["body"] = "Handoff from: codex-DIR-43-D4\n\n" + handoff["body"]
+                if change == "unchanged":
+                    self.run_claim()
+                    self.assertIn("metadata_readback", self.emitted.call_args.args[0]["completed_steps"])
+                    continue
                 with self.assertRaises(PLAN.PlanError) as caught: self.run_claim()
+                if change != "original_branch":
+                    expected = ("claim_conflict" if change in {"plain", "missing_release", "conditional_release",
+                                "foreign_release", "other_claim", "live_peer", "other_pr"} else "claim_handoff_pr_required")
+                    self.assertEqual(getattr(caught.exception, "code", None), expected)
                 self.assert_no_writes()
 
     def test_unmodified_d4_handoff_is_only_a_source_pr_refresh(self):
         self.historical_direction_fixture("d4")
-        with self.assertRaises(PLAN.PlanError):
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
             self.run_claim()
+        self.assertEqual(caught.exception.code, "claim_handoff_pr_required")
         self.assert_no_writes()
 
     def test_unbound_source_pr_note_needs_an_exact_authored_handoff(self):
@@ -624,7 +667,7 @@ class ClaimTests(unittest.TestCase):
                 self.assertTrue(output["claim"]["retained_handoff"].endswith(f"#issuecomment-{self.handoff_id}"))
 
     def test_direction_source_claim_colon_preserves_provenance_and_release_guards(self):
-        for change in ("wrong_id", "id_prefix", "no_release", "foreign_author", "wrong_session"):
+        for change in ("unchanged", "wrong_id", "id_prefix", "no_release", "foreign_author", "wrong_session"):
             with self.subTest(change=change):
                 self.setUp()
                 self.direction_handoff_fixture()
@@ -639,8 +682,13 @@ class ClaimTests(unittest.TestCase):
                     handoff["user"]["login"] = "stranger"
                 if change == "wrong_session":
                     handoff["body"] = handoff["body"].replace("01a11bcc-2c5e-7872-9ff9-428d4f244d98", "different-session")
-                with self.assertRaises(PLAN.PlanError):
+                if change == "unchanged":
                     self.run_claim()
+                    self.assertIn("metadata_readback", self.emitted.call_args.args[0]["completed_steps"])
+                    continue
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.run_claim()
+                self.assertEqual(caught.exception.code, "claim_conflict")
                 self.assert_no_writes()
 
     def separate_handoff_fixture(self, prose):
@@ -1079,6 +1127,87 @@ class ClaimTests(unittest.TestCase):
                 self.assertEqual(result["claim"]["retained_handoff"],
                                  f"https://github.com/{owner_repo}/issues/{owner}#issuecomment-3")
 
+    def test_handoff_selection_uses_existing_artifact_rules_for_later_corrections(self):
+        shapes = ("split", "merged", "all_merged", "cross_repository", "next", "same_head",
+                  "weak_open", "weak_merged", "other_released_merged")
+        for shape, pattern in product(shapes, ("complete", "partial_complete", "narrower")):
+            with self.subTest(shape=shape, pattern=pattern):
+                self.setUp()
+                if shape == "cross_repository": self.cross_repository_fixture()
+                elif shape == "next": self.next_handoff_fixture()
+                elif shape == "merged": self.ordinary_handoff_fixture()
+                else: self.refresh_fixture()
+                source = CLAIM.records(self.comments[0]["body"])[0]
+                first_number = 100 if shape in {"merged", "next"} else 99
+                if shape == "all_merged":
+                    for pull in self.pulls:
+                        pull.update(state="closed", merged_at="2026-10-02T03:00:00Z")
+                        self.closed_pulls[pull["number"]] = pull
+                        self.targets[str(pull["number"])]["state"] = "closed"
+                    self.pulls = []
+                if shape in {"same_head", "weak_open", "weak_merged"}:
+                    pull = self.pulls[1]
+                    old_branch = pull["head"]["ref"]
+                    new_branch = self.pulls[0]["head"]["ref"] if shape == "same_head" else "work/archived-research"
+                    pull["head"]["ref"] = new_branch
+                    for key in ("local_branches", "remote_branches"):
+                        self.inventory[key] = [new_branch if branch == old_branch else branch for branch in self.inventory[key]]
+                    for tree in self.inventory["worktrees"]:
+                        if tree["branch"] == old_branch:
+                            tree.update(branch=new_branch, path="/retained/archive")
+                    if shape != "same_head":
+                        pull.update(title="Archived research", body="Historical context: https://github.com/owner/repo/issues/42")
+                if shape in {"weak_merged", "other_released_merged"}:
+                    pull = self.pulls.pop()
+                    pull.update(state="closed", merged_at="2026-10-02T03:00:00Z")
+                    self.closed_pulls[100] = pull
+                    self.targets["100"]["state"] = "closed"
+                historical = shape in {"weak_open", "weak_merged", "other_released_merged"}
+                if historical:
+                    self.targets["100"]["labels"] = [{"name": PLAN.DEFAULT_CONFIG["labels"]["waiting"]}]
+                    self.target_comments["/repos/owner/repo/issues/100/comments"] = [{"id": 900,
+                        "user": {"login": TEST_BOT}, "body": wait_record.marker(wait_record.reviewed(
+                            evidence="Independent archived acceptance", waiting_for="Client acceptance", ends_when="Client accepts archived work"))}]
+                if shape == "other_released_merged":
+                    record = {**OTHER, "worker": "archived-worker", "session": "archived-native",
+                              "branch": self.closed_pulls[100]["head"]["ref"]}
+                    self.comments.extend([
+                        {"id": 4, "user": {"login": TEST_BOT}, "body": CLAIM.marker(record), "created_at": record["claimed_at"]},
+                        {"id": 5, "user": {"login": TEST_BOT}, "body": "Released claim 4", "created_at": "2026-10-02T00:00:00Z"}])
+                first = next(comment for comment in self.comments if comment["id"] == 3)
+                first["body"] = "Released claim 1" + ("" if pattern == "complete" else f"\nhttps://github.com/owner/repo/pull/{first_number}")
+                numbers = (100,) if pattern == "narrower" else (99, 100)
+                self.comments.append({"id": 6, "user": {"login": TEST_BOT}, "body": (
+                    f"Handoff from {source['worker']}\nSource claim 1; Session: {source['session']}; "
+                    + " ".join(f"https://github.com/owner/repo/pull/{n}" for n in numbers))})
+                self.comment_id_offset = 6
+                artifacts = copy.deepcopy((self.inventory, self.pulls, self.closed_pulls))
+                bindings = {"CODEX_THREAD_ID": self.args.session} if shape == "next" else {}
+                with patch.dict(os.environ, bindings):
+                    if historical and pattern == "complete":
+                        with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+                        self.assertEqual(caught.exception.code, "claim_wait_unresolved")
+                        self.assert_no_writes()
+                    elif pattern == "narrower" and not historical:
+                        with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+                        self.assertEqual(caught.exception.code, "claim_conflict")
+                        self.assert_no_writes()
+                    else:
+                        self.run_claim()
+                        result = self.emitted.call_args.args[0]
+                        self.assertIn("metadata_readback", result["completed_steps"])
+                        expected = 3 if historical and pattern != "complete" else 6
+                        self.assertTrue(result["claim"]["retained_handoff"].endswith(f"#issuecomment-{expected}"))
+                        self.assertEqual((self.inventory, self.pulls, self.closed_pulls), artifacts)
+                        self.inventory["local_branches"].append(self.args.branch)
+                        self.inventory["worktrees"].append({"branch": self.args.branch, "path": "/task/current-owner"})
+                        artifacts = copy.deepcopy((self.inventory, self.pulls, self.closed_pulls))
+                        published = copy.deepcopy(self.comments)
+                        self.run_claim()
+                        self.assertEqual(self.emitted.call_args.args[0]["claim"], result["claim"])
+                        self.assertEqual(self.comments, published)
+                self.assertEqual((self.inventory, self.pulls, self.closed_pulls), artifacts)
+
     def test_same_native_worker_can_claim_its_exact_attested_next_head(self):
         self.ordinary_handoff_fixture()
         self.handoff_id = None
@@ -1104,7 +1233,7 @@ class ClaimTests(unittest.TestCase):
         return source
 
     def test_next_head_exception_requires_one_exact_native_owner_and_open_attestation(self):
-        for change in ("different_worker", "different_session", "no_native_binding", "conflicting_native_binding", "original_branch", "ambiguous_head"):
+        for change in ("unchanged", "different_worker", "different_session", "no_native_binding", "conflicting_native_binding", "original_branch", "ambiguous_head"):
             with self.subTest(change=change):
                 self.setUp()
                 source = self.next_handoff_fixture()
@@ -1120,18 +1249,30 @@ class ClaimTests(unittest.TestCase):
                 bindings = {} if change == "no_native_binding" else {"CODEX_THREAD_ID": self.args.session}
                 if change == "conflicting_native_binding": bindings["CODEX_SESSION_ID"] = "another-native"
                 with patch.dict(os.environ, bindings):
+                    if change == "unchanged":
+                        self.run_claim()
+                        self.assertIn("metadata_readback", self.emitted.call_args.args[0]["completed_steps"])
+                        continue
                     with self.assertRaises(PLAN.PlanError): self.run_claim()
                 self.assert_no_writes()
 
     def test_next_head_and_ordinary_handoff_keep_their_admitted_modes_on_readback(self):
-        for phase, mode, change in product(("after_post", "after_status"), ("next", "ordinary"), ("merged", "head", "binding")):
+        for phase, mode, change in product(("after_post", "after_status"), ("next", "ordinary"), ("merged", "head", "binding", "new_handoff")):
             with self.subTest(phase=phase, mode=mode, change=change):
                 self.setUp()
                 if mode == "next": self.next_handoff_fixture()
                 else: self.ordinary_handoff_fixture()
                 def mutate():
                     pull = self.pulls[0]
-                    if change == "head": pull["head"]["ref"] = "work/changed-after-publication"
+                    if change == "new_handoff":
+                        source = CLAIM.records(self.comments[0]["body"])[0]
+                        self.pulls.append({**copy.deepcopy(pull), "number": 101,
+                                           "head": {"ref": "work/issue-42-later-work", "repo": {"full_name": "owner/repo"}}})
+                        self.targets["101"] = {**copy.deepcopy(self.targets["99"]), "number": 101}
+                        self.target_comments["/repos/owner/repo/issues/101/comments"] = []
+                        self.comments.append({"id": 88, "user": {"login": TEST_BOT}, "body": (
+                            f"Handoff from {source['worker']}\nSource claim 1; Session: {source['session']}; PR #99 #100 #101")})
+                    elif change == "head": pull["head"]["ref"] = "work/changed-after-publication"
                     elif change == "binding": os.environ["CODEX_SESSION_ID"] = "another-native"
                     else:
                         self.pulls.remove(pull)
@@ -1148,6 +1289,9 @@ class ClaimTests(unittest.TestCase):
                     else:
                         with self.assertRaises(PLAN.PlanError) as caught: self.run_claim()
                         self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
+                        if change == "new_handoff":
+                            self.assertTrue(any(entry.get("source") == "open_pr" and entry.get("number") == 101
+                                                for entry in caught.exception.payload["competing_evidence"]))
                         if phase == "after_post": self.assertNotIn("status", self.events)
 
     def test_direct_pr_original_selector_preserves_subject_head_and_native_routes(self):
@@ -1860,24 +2004,36 @@ class ClaimTests(unittest.TestCase):
         from test_github_plan_sessions import ReceiptFixture
         import github_plan_release as release
         import github_plan_closure as closure
-        with ReceiptFixture("11111111-2222-4333-8444-555555555555") as fixture:
-            evidence = self.released_native_fixture(fixture)
-            source = self.comments[0]
-            self.ordinary_handoff_fixture()
-            self.args.branch = OWNER["branch"]
-            self.comments[0] = source
-            branches = {p["head"]["ref"] for p in [*self.pulls, *self.closed_pulls.values()]}
-            self.comments[-1]["body"] = release.prepare_release(source, evidence, self.comments, self.inventory,
-                actor=TEST_BOT, role="supervisor", releaser_session="supervisor-native",
-                evidence_url="https://github.com/owner/control/issues/884#issuecomment-88",
-                retained_prs=[f"https://github.com/owner/repo/pull/{n}" for n in (99, 100)], related=[],
-                retained_branches=branches)
-            self.comments[-1].update(created_at="2026-10-01T02:03:00Z", updated_at="2026-10-01T02:03:00Z")
-            self.run_claim()
-            result = self.emitted.call_args.args[0]
-            self.assertTrue(result["ok"])
-            self.assertTrue(result["claim"]["retained_handoff"].endswith("#issuecomment-3"))
-            self.assertFalse(closure.action_pending(fixture.session))
+        for partial in (False, True):
+            with self.subTest(partial=partial):
+                self.setUp()
+                with ReceiptFixture("11111111-2222-4333-8444-555555555555") as fixture:
+                    evidence = self.released_native_fixture(fixture)
+                    source = self.comments[0]
+                    self.ordinary_handoff_fixture()
+                    self.args.branch = OWNER["branch"]
+                    self.comments[0] = source
+                    if partial:
+                        self.comments[-1].update(body="Released claim 1\nPR #100", created_at="2026-10-01T02:00:30Z")
+                    branches = {p["head"]["ref"] for p in [*self.pulls, *self.closed_pulls.values()]}
+                    body = release.prepare_release(source, evidence, self.comments, self.inventory,
+                        actor=TEST_BOT, role="supervisor", releaser_session="supervisor-native",
+                        evidence_url="https://github.com/owner/control/issues/884#issuecomment-88",
+                        retained_prs=[f"https://github.com/owner/repo/pull/{n}" for n in (99, 100)], related=[],
+                        retained_branches=branches)
+                    comment = {"id": 4 if partial else 3, "body": body, "user": {"login": TEST_BOT},
+                               "created_at": "2026-10-01T02:03:00Z", "updated_at": "2026-10-01T02:03:00Z"}
+                    if partial: self.comments.append(comment)
+                    else: self.comments[-1] = comment
+                    self.comment_id_offset = comment["id"]
+                    before = closure.source_records({fixture.session})[fixture.session]
+                    self.run_claim()
+                    result = self.emitted.call_args.args[0]
+                    self.assertIn("metadata_readback", result["completed_steps"])
+                    self.assertTrue(result["claim"]["retained_handoff"].endswith(f"#issuecomment-{comment['id']}"))
+                    self.assertFalse(closure.action_pending(fixture.session))
+                    self.assertEqual(closure.source_records({fixture.session})[fixture.session], before)
+                    self.assertFalse(fixture.mutations)
 
     def shared_native_family_fixture(self, fixture, *, current="child", end_on="child"):
         import github_plan_release as release
@@ -3902,7 +4058,7 @@ class ClaimTests(unittest.TestCase):
         self.assert_no_writes()
 
     def test_refresh_rejects_incomplete_or_foreign_handoff(self):
-        for change in ("no_release", "foreign_release", "foreign_handoff", "missing_target", "foreign_pr", "unbound_handoff", "missing_link", "fork", "closed", "before_release"):
+        for change in ("unchanged", "no_release", "foreign_release", "foreign_handoff", "missing_target", "foreign_pr", "unbound_handoff", "missing_link", "fork", "closed", "before_release"):
             with self.subTest(change=change):
                 self.setUp()
                 self.refresh_fixture()
@@ -3926,7 +4082,12 @@ class ClaimTests(unittest.TestCase):
                     self.comments[-1]["body"] = "Released claim 1"
                     self.comments[1]["body"] += "\nPR #99"
                     self.handoff_id = 2
-                with self.assertRaises(PLAN.PlanError): self.run_claim()
+                if change == "unchanged":
+                    self.run_claim()
+                    self.assertIn("metadata_readback", self.emitted.call_args.args[0]["completed_steps"])
+                    continue
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
+                self.assertEqual(caught.exception.code, "claim_conflict")
                 self.assert_no_writes()
 
     def test_refresh_retains_new_or_unaccounted_artifacts(self):

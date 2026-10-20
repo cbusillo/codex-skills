@@ -13,7 +13,7 @@ import re
 import shutil
 import subprocess
 import time
-from typing import Any
+from typing import Any, Callable
 
 
 MARKER = "github-plan:claim "
@@ -793,8 +793,9 @@ def handoff_candidates(comments: list[dict[str, Any]], source: dict[str, Any]) -
 def retained_handoff(
     source: dict[str, Any], candidates: list[dict[str, Any]], pulls: list[dict[str, Any]], *,
     issue_repo: str, issue_number: int, target_repo: str, selected_id: int | None = None,
+    usable: Callable[[dict[str, Any]], bool] | None = None,
 ) -> dict[str, Any] | None:
-    """Select the first qualified authored handoff, or revalidate its exact ID."""
+    """Prefer the first usable qualified handoff, preserving a selected ID."""
     author = source["author"]
     qualified = []
     for pull in pulls:
@@ -812,14 +813,28 @@ def retained_handoff(
                                   local_references=issue_repo.casefold() == target_repo.casefold(), attestation=True):
             continue
         qualified.append(pull)
+    first = None
     for handoff in candidates:
         if selected_id is not None and handoff.get("id") != selected_id:
             continue
         named = handoff_pr_numbers(handoff.get("body") or "", issue_repo=issue_repo, target_repo=target_repo)
         retained = [pull for pull in qualified if pull["number"] in named]
         if retained:
-            return {"comment": handoff, "named": named, "qualified": retained,
-                    "permitted": {source["record"]["branch"], *(pull["head"]["ref"] for pull in retained)}}
+            permitted = {source["record"]["branch"], *(pull["head"]["ref"] for pull in retained)}
+            open_conflicts = [{"source": "open_pr", "number": pull["number"], "branch": pull["head"]["ref"],
+                               "certainty": "not_in_source_handoff"}
+                              for pull in pulls if pull.get("state") == "open"
+                              and (pull.get("head") or {}).get("ref") in permitted
+                              and (pull["number"] not in named or (pull.get("user") or {}).get("login") != author)]
+            candidate = {"comment": handoff, "named": named, "qualified": retained,
+                         "permitted": permitted, "open_conflicts": open_conflicts,
+                         "url": f"https://github.com/{issue_repo}/issues/{issue_number}#issuecomment-{handoff['id']}"}
+            if first is None:
+                first = candidate
+            if not open_conflicts and (usable is None or usable(candidate)):
+                return candidate
+    if first is not None:
+        return first
     if selected_id is not None:
         raise ClaimProofError("claim_handoff_changed", "Selected source handoff no longer qualifies its retained work")
     return None
