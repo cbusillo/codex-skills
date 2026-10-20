@@ -771,14 +771,17 @@ print('Done.')
             with self.assertRaisesRegex(native.Blocked, "native_cache_storage_changed"):
                 native.runtime_storage(host, self.worker)
 
+    def declare_python_preparation(self):
+        directory = self.repo / ".github"
+        directory.mkdir(exist_ok=True)
+        (directory / "github.json").write_text(json.dumps({"qualityGate": {"inspection": {"prepare": {"python": {"version": ".".join(map(str, sys.version_info[:2])), "moduleName": "fixture"}}}}}))
+
     def start_guarded_fixture(self, preparation=False):
         started = self.root / ("preparation-started" if preparation else "engine-started")
         self.script.write_text(f"#!{sys.executable}\nimport pathlib,time\npathlib.Path({str(started)!r}).touch()\ntime.sleep(30)\n")
         preparation_command = None
         if preparation:
-            directory = self.repo / ".github"
-            directory.mkdir(exist_ok=True)
-            (directory / "github.json").write_text(json.dumps({"qualityGate": {"inspection": {"prepare": {"python": {"version": ".".join(map(str, sys.version_info[:2])), "moduleName": "fixture"}}}}}))
+            self.declare_python_preparation()
             preparation_command = [sys.executable, "-c", f"import pathlib,time,os;pathlib.Path({str(started)!r}).write_text(str(os.getpid()));time.sleep(30)", native.common.WORK + "/project"]
         code = '''import json,sys
 from pathlib import Path
@@ -886,9 +889,7 @@ with patch.object(native.sys,'platform','darwin'), patch.object(native,'state_di
 
     def test_failed_preparation_identity_persistence_never_releases_its_gate(self):
         marker = self.root / "must-not-prepare"
-        directory = self.repo / ".github"
-        directory.mkdir()
-        (directory / "github.json").write_text(json.dumps({"qualityGate": {"inspection": {"prepare": {"python": {"version": ".".join(map(str, sys.version_info[:2])), "moduleName": "fixture"}}}}}))
+        self.declare_python_preparation()
         command = [sys.executable, "-c", f"from pathlib import Path;Path({str(marker)!r}).touch()", native.common.WORK + "/project"]
         with patch.object(native.common, "preparation", return_value={"commands": [command]}), \
                 patch.object(native.lifecycle.RunContext, "process_spawned", side_effect=OSError("journal storage full")):

@@ -400,9 +400,9 @@ def stop_orphan(worker, receipt):
             raise Blocked("native_recovery_storage_changed")
         lifecycle.prove_private(identity, record.get("private_materialized", False))
         process = lifecycle.active_process(record)
-        proof = {"run_id": identity["run_id"], "active_process": process}
+        custody_proof = {"run_id": identity["run_id"], "active_process": process}
         if process is None:
-            return proof
+            return custody_proof
         engine = process["identity"]
         pid = engine["pid"]
         if type(pid) is not int or pid < 1 or engine["pgid"] != pid or engine["private"] != identity["private"]:
@@ -410,7 +410,7 @@ def stop_orphan(worker, receipt):
         current = process_identity(pid, Path(identity["private"]))
         if current is None:
             if group_gone(pid, receipt=receipt):
-                return proof
+                return custody_proof
             raise Blocked("native_recovery_process_group_unproven")
         if (engine.get("birth_clock") == current.get("birth_clock") == PROCESS_BIRTH_CLOCK
                 and current["started"] != engine["started"]):
@@ -418,7 +418,7 @@ def stop_orphan(worker, receipt):
             # exists. A different birth proves the old group is gone; never
             # signal the unrelated replacement. The outcome hold remains.
             receipt["orphan_pid_reused"] = pid
-            return proof
+            return custody_proof
         if current != engine:
             raise Blocked("native_recovery_process_identity_changed")
         os.killpg(pid, signal.SIGKILL)
@@ -426,7 +426,7 @@ def stop_orphan(worker, receipt):
         receipt["recovered_process_kind"] = process["kind"]
         if not group_gone(pid, receipt=receipt):
             raise Blocked("native_recovery_process_group_unproven")
-        return proof
+        return custody_proof
     except lifecycle.LifecycleError as error:
         raise Blocked(str(error)) from None
     except (KeyError, TypeError, ValueError):
