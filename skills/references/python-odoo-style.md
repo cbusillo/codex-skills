@@ -80,8 +80,8 @@ unclear code stand by explaining it.
   unless the type is unclear, for example an empty container or a values dict
   you want checked.
 - Use `str | None` and built-in generics such as `list[str]`. Use `Self` from
-  `typing`; on a Python 3.10 target, import it from `typing_extensions` under
-  `TYPE_CHECKING`.
+  `typing`. On a Python 3.10 target, add `from __future__ import annotations`
+  and import it from `typing_extensions` under `TYPE_CHECKING`.
 - In Odoo code inspected by PyCharm, use the PyCharm Odoo plugin's types as
   string annotations, with no import: recordsets as
   `"odoo.model.product_template"`, values dicts as `"odoo.values.sale_order"`.
@@ -127,9 +127,11 @@ unclear code stand by explaining it.
 ## Odoo 19
 
 - `self` is a recordset of any size in computes, onchanges, constraints and
-  actions. Inside `for record in self:`, read and write through `record`,
-  never `self`. Every path of a compute assigns every computed field on every
-  record, and `@api.depends` names every field the result reads. Call
+  actions. Inside `for record in self:`, read and write each record's fields
+  through `record`, never `self`. Every path of a compute assigns every
+  computed field on every record. `@api.depends` names every field whose
+  change must recompute the result, except `id`, which Odoo refuses;
+  `@api.depends_context` names the context keys it reads. Call
   `self.ensure_one()` where a method handles only one record.
 - Declare SQL constraints as model attributes:
   `_name_uniq = models.Constraint("unique (name)", "Tag name already exists!")`.
@@ -173,8 +175,10 @@ unclear code stand by explaining it.
 - Use camelCase for values and functions, PascalCase for classes and
   components, and the same naming, early-return, and no-comment rules as
   Python.
-- Use 4-space indentation, double quotes, and no semicolons. Leave trailing
-  commas to the repository's formatter. House rule.
+- Use 4-space indentation and double quotes, and end statements without
+  semicolons, except where automatic semicolon insertion needs one, such as
+  before a line that starts with `(` or `[`. Leave trailing commas to the
+  repository's formatter. House rule.
 
 ## Tooling
 
