@@ -2099,3 +2099,73 @@ requesting approval. Approved or executing plans need observation, not another
 approval. Inspect terminal outcomes before an intentional replacement; an expired, cancelled or revoked proposal needs a fresh
 source event for a replacement. The signed-in Director reviews
 and approves pending plans in the UI; no helper approval or apply path is added.
+
+## Pending Client review withdrawal
+
+`product-review-withdrawal-dry-run`, `product-review-withdrawal-apply` and
+`product-review-withdrawal-readback` use `POST /v1/product-review/withdrawal`.
+They require `--product`, `--repo OWNER/REPO`, `--pr`, `--head` (the exact current
+commit), `--reason` and `--director-decision` (the recorded decision's GitHub
+comment URL). The Director's authenticated agent or admin attests that this
+citation records the Director's decision; it supplies no Client acceptance.
+No new grant or credential is installed.
+
+Save the dry-run JSON output outside the checkout. Apply requires
+`--reviewed-dry-run --dry-run-evidence-file /private/dry.json`,
+`--expected-plan-digest` from that output and `--idempotency-key`. Saved evidence
+binds the exact scope, head, reason and decision citation; receipts omit the
+reason and citation. Readback requires that same scope, reason, citation,
+expected digest and original key. Apply always follows with readback, and only
+matching applied readback returns success. Drift, malformed responses and
+transport loss exit nonzero; an uncertain apply reports `outcome_unknown`, and
+an applied response without verified readback reports `accepted_unverified`.
+
+The service refuses after a Client has accepted or rejected this product's
+current head. It removes only the configured review label and records the
+withdrawal in the PR's history and its durable operation. It never edits Client
+decisions, PR test notes, or release acceptance. Truthful engineering notes are
+a separate PR edit; real notes or a later review label request review normally.
+
+Keep the original request, reviewed digest and key after an interrupted call.
+Read back before resubmitting the exact apply. Recovery can finish a missing
+history entry when the label is absent, and never deletes a label again after
+an uncertain dispatch. A pre-dispatch failure can resume the original operation.
+If a request is present after dispatch, or its head/review authority changed,
+recovery instead settles the original intent with `applied=false` and
+`replan_required=true`, without claiming absence of earlier effects. The helper
+reports `replan_required` and exits nonzero. Review a fresh dry run and use a new
+key to withdraw that request. `product_review_withdrawal_unsettled` is an
+`outcome_unknown`, distinct from a definite refusal.
+A completed-key replay returns the original receipt, preserving later review
+requests. Do not remove a label by hand or use another identity after a denial.
+
+The helper classifies the whole exchange, keeping status, retained receipt and
+recovery instructions together. Attempted-apply transport loss or any HTTP 5xx
+is `outcome_unknown`. A known applied receipt without matching readback is
+`accepted_unverified`, and that receipt stays in the output. An unfinished
+original readback is `outcome_unknown` (or `in_progress` while running).
+`target_busy` means another operation owns the PR and this call dispatched
+nothing: only that operation's original caller/key can recover it. A key conflict
+is `conflict`; a definite eligibility refusal is `refused`. Neither is reported
+as an unknown effect. Terminal `replan_required` results preserve the boolean
+`prior_effects_unknown`; when true, a label removal may have happened without a
+PR history entry. Inspect the retained operation and history before a fresh plan.
+
+Recovery can observe a closed PR. It adopts an authentic existing history
+receipt or settles an unreceipted closed request without another DELETE.
+A new withdrawal still requires an open PR; readback never removes a label.
+
+Recovery output echoes the non-secret `idempotency_key` in its summary. Choose a
+public-safe opaque key, and save the exact private request with the dry-run
+evidence. Provider evidence failures are unavailable, not Client eligibility
+refusals. Dry-run and fresh apply check history before removing a label. Bounded
+or ambiguous authenticated history blocks dispatch with `history_unverifiable`;
+resolve history verification before retrying, because changing keys cannot fix
+it. Recovery of an uncertain operation can settle with that same status while
+retaining `prior_effects_unknown`. That key is terminal: after resolving history
+verification, review a fresh dry-run and use a new key. Completed readback preserves its applied
+receipt and reports a mismatch when permanent history limits prevent verification.
+`not_started` means this caller/key has no saved operation: resubmit the exact
+original apply with that same key. `invalid_request` requires correcting the
+request; `stale_plan` requires refreshing and reviewing the exact dry-run. The full caller identity remains in the durable
+operation; public PR history contains the head, reason and Director citation.

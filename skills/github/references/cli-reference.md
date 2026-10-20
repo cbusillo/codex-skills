@@ -552,6 +552,16 @@ before posting through the shared comment writer. This is a handoff to the
 assigned routing agent; it applies no enqueue label and performs no merge.
 Other review and task authorization requirements still apply.
 
+When the Director records a decision to reroute a pending Client review as
+engineering, use Launchplane's
+[pending review withdrawal](../../launchplane/references/write-action-helper-contract.md#pending-client-review-withdrawal)
+through `product-review-withdrawal-dry-run`, `product-review-withdrawal-apply`
+and `product-review-withdrawal-readback` before setting truthful engineering
+notes and running `ready`. The service removes the configured review label and
+records the reason and Director-decision citation. It refuses after a Client
+has decided on the current head. Never remove the label by hand; withdrawal
+supplies no Client decision and leaves release acceptance required.
+
 An empty check inventory refuses until GitHub registers checks for the head.
 For a repository with no CI checks configured, add `--allow-no-checks` after
 verifying its required local gates. This never bypasses a pending, failing or
