@@ -1558,6 +1558,69 @@ class ClaimTests(unittest.TestCase):
             self.assertFalse(fixture.mutations)
             self.assertFalse(set(self.events).intersection({"post", "status", "labels"}))
 
+    def test_released_native_recovery_gets_reconciliation_in_both_claim_routes(self):
+        actions = {}
+        for route, kind in product(("ordinary", "retained"), ("native_recovery", "native_session")):
+            with self.subTest(route=route, kind=kind):
+                self.setUp()
+                source = self.no_pr_resume_fixture()
+                if route == "ordinary":
+                    self.args.resume_from = None
+                    self.args.branch = OWNER["branch"]
+                    self.inventory["remote_branches"] = []
+                peer = {"sessionId": source["session"], "cwd": "/", "state": "unknown", "source": kind}
+                self.observe_native = lambda *_a, **_k: ([peer], {
+                    source["session"]: {"state": "live", "source": kind}}, {})
+                before = copy.deepcopy((self.comments, self.inventory))
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.run_claim()
+                self.assertEqual(caught.exception.code, "claim_conflict")
+                payload = caught.exception.payload
+                holders = [holder for holder in payload["coordination"] if holder["session"] == source["session"]]
+                self.assertEqual(len(holders), 1)
+                actions[route, kind] = holders[0]["next_action"]
+                # Removing the exact release must retain the ordinary ownership route.
+                unreleased = [c for c in self.comments if source in CLAIM.records(c.get("body") or "")]
+                conflict = {"source": kind, "session": source["session"]}
+                ordinary = CLAIM.coordination([conflict], unreleased, self.args.repo, 42)[0]["next_action"]
+                if kind == "native_recovery":
+                    self.assertNotEqual(actions[route, kind], ordinary)
+                else:
+                    self.assertEqual(actions[route, kind], ordinary)
+                self.assertEqual((self.comments, self.inventory), before)
+                self.assert_no_writes()
+        self.assertEqual(actions["ordinary", "native_recovery"], actions["retained", "native_recovery"])
+
+        for route, obstruction in product(("ordinary", "retained"), ("error", "identity", "action", "live")):
+            with self.subTest(route=route, obstruction=obstruction):
+                self.setUp()
+                source = self.no_pr_resume_fixture()
+                if route == "ordinary":
+                    self.args.resume_from = None
+                    self.args.branch = OWNER["branch"]
+                    self.inventory["remote_branches"] = []
+                peers = [{"sessionId": source["session"], "cwd": "/", "state": "unknown", "source": "native_recovery"}]
+                if obstruction == "error":
+                    peers[0]["error"] = "fixture closure log cannot be read"
+                else:
+                    kind = {"identity": "native_identity", "action": "native_action", "live": "native_session"}[obstruction]
+                    peers.append({**peers[0], "source": kind})
+                self.observe_native = lambda *_a, **_k: (peers, {source["session"]: {"state": "live"}}, {})
+                before = copy.deepcopy((self.comments, self.inventory))
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.run_claim()
+                holder = next(h for h in caught.exception.payload["coordination"] if h["session"] == source["session"])
+                ordinary = actions[route, "native_session"]
+                if obstruction == "action":
+                    self.assertNotEqual(holder["next_action"], ordinary)
+                    self.assertNotEqual(holder["next_action"], actions[route, "native_recovery"])
+                else:
+                    self.assertEqual(holder["next_action"], ordinary)
+                if obstruction == "error":
+                    self.assertEqual(holder["error"], peers[0]["error"])
+                self.assertEqual((self.comments, self.inventory), before)
+                self.assert_no_writes()
+
     def test_unknown_source_claim_refusal_preserves_the_actual_repair_diagnostic(self):
         from test_github_plan_sessions import ReceiptFixture
         import github_plan_closure as closure
