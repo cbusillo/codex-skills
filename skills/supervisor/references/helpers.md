@@ -302,6 +302,23 @@ must link a question's URL or comment id to mark it answered; unlinked plain
 answers remain `needs_review` for the Supervisor to reconcile from the exact
 decision record. A script's match does not itself establish what was decided.
 
+### Q-number Stop hook
+
+`scripts/q_number_guard.py hook` is a Claude Code Stop hook. When the final
+reply asks the Director to decide something and has no bold `**Q###`, it blocks
+once with a reason naming the rule; `stop_hook_active` lets the retry through.
+Quoted text, code and links are ignored, as is a question the reply answers in
+place ("Merged yet? No, CI is running."), so a status report that quotes an old
+question passes. Any error or unreadable input lets the stop proceed. Each run
+appends `time`, `session` and `verdict` (`pass`, `caught` or `second-pass`), with
+no message text, to `skill-data/q-number-guard.jsonl` in the shared Code home.
+It is enabled only in the Director's direction repository, through its
+`.claude/settings.json`. Count verdicts for a review with:
+
+```sh
+uv run skills/supervisor/scripts/q_number_guard.py report --since YYYY-MM-DD --until YYYY-MM-DD
+```
+
 ### Acknowledged question delivery
 
 Use the existing Supervisor discussion as the durable question queue. Workers
