@@ -21,6 +21,7 @@ from collections.abc import Iterator
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from contextvars import ContextVar, copy_context
 from dataclasses import dataclass, replace
+from functools import partial
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -259,7 +260,7 @@ def run(command: list[str]) -> subprocess.CompletedProcess[str]:
             raise rollup.RollupError(deadline_error())
         timeout = min(timeout, remaining)
     try:
-        return subprocess.run(command, capture_output=True, text=True, check=False, timeout=timeout)
+        return subprocess.run(command, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
         reason = deadline_error() if timeout < GH_CALL_TIMEOUT_SECONDS else f"Timed out after {GH_CALL_TIMEOUT_SECONDS}s."
         raise rollup.RollupError(f"GitHub command failed: {' '.join(command)}\n{reason}") from exc
@@ -783,7 +784,7 @@ def collect_candidate_reactions(
     executor = ThreadPoolExecutor(max_workers=worker_count)
     try:
         futures = {
-            executor.submit(copy_context().run, collect_comment_reactions, comment): comment
+            executor.submit(copy_context().run, partial(collect_comment_reactions, comment)): comment
             for comment in unique_comments.values()
         }
         unread = dict(futures)
@@ -1572,7 +1573,7 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
     executor = ThreadPoolExecutor(max_workers=thread_worker_count)
     try:
         futures = {
-            executor.submit(copy_context().run, collect_thread, repo, number): (repo, number, ids)
+            executor.submit(copy_context().run, partial(collect_thread, repo, number)): (repo, number, ids)
             for (repo, number), ids in candidate_ids.items()
         }
         unread = dict(futures)
