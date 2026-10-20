@@ -381,6 +381,8 @@ def javascript_source_calls(native, code, *, global_this=False):
     reference = re.compile(r"(?<![\w.$])([A-Za-z_$][\w$]*(?:\s*(?:\?\.|\.)\s*[A-Za-z_$][\w$]*|\s*(?:\?\.\s*)?\[[^]\n]*\])*)")
     visible, assignments, descendants, member_cache, member_indexes, reference_cache = {}, {}, {}, {}, {}, {}
     cuts = 0
+    reference_active, receiver_active = set(), set()
+    receiver_cache, receiver_expression_cache, property_events = {}, {}, {}
 
     def canonical(raw):
         def member(match):
@@ -449,6 +451,8 @@ def javascript_source_calls(native, code, *, global_this=False):
             owner = binding(base, match.start(1))
             event = (selected, suffix, match.start(1), owners[match.start(1)], definite, (match.end(), end))
             assignments.setdefault((owner, selected), []).append(event)
+            if "." in selected:
+                property_events.setdefault(selected.rsplit(".", 1)[1], []).append(event)
             for dot in re.finditer(r"\.", selected):
                 descendants.setdefault((owner, selected[:dot.start()]), []).append(event)
 
@@ -486,11 +490,136 @@ def javascript_source_calls(native, code, *, global_this=False):
             if plain:
                 values.update(reference_members(canonical(raw), begin, active))
             elif re.search(r"\.\s*constructor\s*$", code[begin:end]):
-                values[""] = "constructor"
+                values[""] = source_capability("constructor")
             elif re.fullmatch(JS_STRING, raw.strip()) or re.fullmatch(r"\s*(?:\d+(?:\.\d+)?|undefined|null|true|false)\s*", raw):
                 values[""] = None
         if cuts == started:
             member_cache[key] = values
+        return values
+
+    def source_capability(kind, adapters=()):
+        return frozenset({(kind, adapters)})
+
+    def literal_members(rhs):
+        index = member_indexes.setdefault(rhs, {})
+        if None not in index:
+            aggregate = javascript_literal_members(native, code, *rhs)
+            index[None] = dict(aggregate) if aggregate is not None else None
+        return index[None]
+
+    def receiver_expression(rhs, active=()):
+        nonlocal cuts
+        if rhs in receiver_expression_cache:
+            return receiver_expression_cache[rhs]
+        started = cuts
+        begin, end = unwrapped_span(*rhs)
+        aggregate = literal_members((begin, end))
+        if aggregate is not None:
+            result = frozenset({(begin, end)}), True
+        elif reference.fullmatch(code[begin:end]):
+            result = receiver_reference(canonical(native[begin:end]), begin, (*active, rhs))
+        elif re.fullmatch(JS_STRING, native[begin:end].strip()) or re.fullmatch(r"\s*(?:\d+(?:\.\d+)?|undefined|null|true|false)\s*", native[begin:end]):
+            result = frozenset(), True
+        else:
+            # An unknown expression has one capture identity, not a projected
+            # history of every reference spelling that might have produced it.
+            result = frozenset({("unknown", rhs)}), False
+        if cuts == started:
+            receiver_expression_cache[rhs] = result
+        return result
+
+    def receiver_reference(selected, position, active=()):
+        nonlocal cuts
+        key = selected, position
+        if key in receiver_cache:
+            return receiver_cache[key]
+        if key in receiver_active:
+            cuts += 1
+            return frozenset(), False
+        receiver_active.add(key)
+        started = cuts
+        try:
+            base, dot, suffix = selected.partition(".")
+            if dot:
+                roots, known = receiver_reference(base, position, active)
+                for field in suffix.split("."):
+                    projected, definite = set(), known
+                    for root in roots:
+                        options = []
+                        if isinstance(root[0], int):
+                            operands = literal_members(root) or {}
+                            if field in operands:
+                                values, exact = receiver_expression(operands[field], active)
+                                options.append((-1, True, values, exact))
+                        for event in property_events.get(field, ()):
+                            target, _, at, context, certain, rhs = event
+                            if context == owners[position] and rhs[1] > position:
+                                continue
+                            parents_, _ = receiver_reference(target.rsplit(".", 1)[0], at, active)
+                            if root in parents_:
+                                values, exact = receiver_expression(rhs, active)
+                                options.append((at, certain and context == owners[position], values, exact))
+                        last = max((at for at, certain, _, exact in options if certain and exact), default=-1)
+                        for at, _, values, exact in options:
+                            if at >= last:
+                                projected.update(values)
+                                definite &= exact
+                        if not options and not isinstance(root[0], int):
+                            definite = False
+                    roots, known = frozenset(projected), definite
+                result = roots, known
+            else:
+                owner, scope = binding(base, position), owners[position]
+                candidates = [event for event in assignments.get((owner, base), ())
+                              if event[3] != scope or event[-1][1] <= position]
+                resolved = [(event, receiver_expression(event[-1], active)) for event in candidates]
+                last = max((event[2] for event, (_, exact) in resolved
+                            if event[3] == scope and event[4] and exact), default=-1)
+                roots = set()
+                known = last >= 0
+                if last < 0:
+                    roots.add(("global",) if owner is None and base in {"globalThis", "global", "window", "self"}
+                              else ("handle", names[base]) if owner is None and base in names
+                              else ("binding", owner, base))
+                for event, (values, exact) in resolved:
+                    if event[3] != scope or event[2] >= last:
+                        roots.update(values)
+                        known &= exact
+                result = frozenset(roots), known
+            if cuts == started:
+                receiver_cache[key] = result
+            return result
+        finally:
+            receiver_active.remove(key)
+
+    def projected_members(roots, suffix, position, active):
+        field, _, remaining = suffix[1:].partition(".")
+        tail = "." + remaining if remaining else ""
+        values = {}
+        for root in roots:
+            alternatives = []
+            if isinstance(root[0], int):
+                operands = literal_members(root) or {}
+                initial = selected_members(operands[field], tail, active, position) if field in operands else {"": None}
+                alternatives.append((-1, True, initial))
+            elif root == ("global",) and field in names and not tail:
+                alternatives.append((-1, True, {"": source_capability(names[field])}))
+            elif root[0] == "handle" and field in {"call", "apply", "bind"} and not tail:
+                alternatives.append((-1, True, {"": source_capability(root[1], (field,))}))
+            for event in property_events.get(field, ()):
+                target, source_suffix, at, context, certain, rhs = event
+                if context == owners[position] and rhs[1] > position:
+                    continue
+                parents_, _ = receiver_reference(target.rsplit(".", 1)[0], at, active)
+                if root in parents_:
+                    alternatives.append((at, certain and context == owners[position],
+                                         selected_members(rhs, source_suffix + tail, active, position if tail else None)))
+            last = max((at for at, certain, result in alternatives if certain and "" in result), default=-1)
+            for at, _, result in alternatives:
+                if at >= last:
+                    for name, capability in result.items():
+                        if capability is not None or name not in values:
+                            values[name] = (values.get(name) or frozenset()) | capability if capability is not None else None
         return values
 
     def selected_members(rhs, suffix, active, position=None):
@@ -499,13 +628,17 @@ def javascript_source_calls(native, code, *, global_this=False):
             cuts += 1
             return {}
         index = member_indexes.setdefault(rhs, {})
-        # Access through an object alias follows its current member writes;
-        # capturing the member value itself still uses its assignment site.
+        # Capture the receiver binding at the RHS. Its members remain live at
+        # the use site; rebinding that variable does not change the receiver.
         if suffix and position is not None:
             begin, end = unwrapped_span(*rhs)
-            raw = native[begin:end]
             if reference.fullmatch(code[begin:end]):
-                return reference_members(canonical(raw) + suffix, position, (*active, rhs))
+                roots, known = receiver_reference(canonical(native[begin:end]), begin, (*active, rhs))
+                projected = projected_members(roots, suffix, position, (*active, rhs))
+                if known or projected:
+                    return projected
+            if literal_members((begin, end)) is not None:
+                return projected_members(frozenset({(begin, end)}), suffix, position, (*active, rhs))
             if None not in index:
                 aggregate = javascript_literal_members(native, code, begin, end)
                 index[None] = dict(aggregate) if aggregate is not None else None
@@ -532,20 +665,34 @@ def javascript_source_calls(native, code, *, global_this=False):
         cache_key = selected, position
         if cache_key in reference_cache:
             return reference_cache[cache_key]
+        nonlocal cuts
+        if cache_key in reference_active:
+            cuts += 1
+            return {}
+        reference_active.add(cache_key)
         started = cuts
-        base, _, _ = selected.partition(".")
+        base, dot, suffix = selected.partition(".")
+        if dot:
+            roots, known = receiver_reference(base, position, active)
+            projected = projected_members(roots, "." + suffix, position, active)
+            if projected or known:
+                values = projected or {"": None}
+                reference_active.remove(cache_key)
+                if cuts == started:
+                    reference_cache[cache_key] = values
+                return values
         owner = binding(base, position)
         scope = owners[position]
         prefixes = selected.split(".")
         candidates = [event for length in range(1, len(prefixes) + 1)
                       for event in assignments.get((owner, ".".join(prefixes[:length])), ())
-                      if event[3] != scope or event[2] < position]
+                      if event[3] != scope or event[-1][1] <= position]
         deeper = {event[0] for event in descendants.get((owner, selected), ())
-                  if event[3] != scope or event[2] < position}
+                  if event[3] != scope or event[-1][1] <= position}
         if owner is None and "." not in selected:
             for receiver in ("globalThis", "global", "window", "self"):
                 for _, suffix, at, context, definite, rhs in assignments.get((None, receiver + "." + selected), ()):
-                    if context != scope or at < position:
+                    if context != scope or rhs[1] <= position:
                         candidates.append((selected, suffix, at, context, definite, rhs))
         # Missing provenance is unknown, not proof that a prior source handle
         # disappeared. A known data value uses None and can retire that handle.
@@ -563,9 +710,9 @@ def javascript_source_calls(native, code, *, global_this=False):
         # sibling-function write cannot remove that initial capability.
         if last < 0 and owner is None:
             if base in {"globalThis", "global", "window", "self"} or base == "this" and global_this:
-                values.update(("." + name, kind) for name, kind in names.items())
+                values.update(("." + name, source_capability(kind)) for name, kind in names.items())
             elif base in names:
-                values[""] = names[base]
+                values[""] = source_capability(names[base])
             elif base == "text":
                 values[""] = None
             suffix = selected[len(base):]
@@ -574,14 +721,17 @@ def javascript_source_calls(native, code, *, global_this=False):
         for target, source_suffix, at, _, _, rhs in candidates:
             for name, kind in resolved[at].items():
                 if kind is not None or name not in values:
-                    values[name] = kind
+                    values[name] = (values.get(name) or frozenset()) | kind if kind is not None else None
         for target in sorted(deeper):
             values.update((target[len(selected):] + name, kind)
                           for name, kind in reference_members(target, position, active).items())
         # call/apply/bind preserve the source function's capability.
         if not values and selected.rsplit(".", 1)[-1] in {"call", "apply", "bind"}:
             parent = selected.rsplit(".", 1)[0]
-            values.update((name, kind) for name, kind in reference_members(parent, position, active).items() if not name)
+            values.update((name, frozenset((kind, (*adapters, selected.rsplit(".", 1)[-1]))
+                                           for kind, adapters in possible))
+                          for name, possible in reference_members(parent, position, active).items() if not name and possible)
+        reference_active.remove(cache_key)
         if cuts == started:
             reference_cache[cache_key] = values
         return values
@@ -596,7 +746,7 @@ def javascript_source_calls(native, code, *, global_this=False):
             if kind:
                 return kind
         if re.search(r"\.\s*constructor\s*$", expression):
-            return "constructor"
+            return source_capability("constructor")
         if expression.lstrip().startswith(("[", "(", "{")):
             return members(position, position + len(expression)).get("")
         return None
@@ -676,21 +826,25 @@ def javascript_source_calls(native, code, *, global_this=False):
                 continue
         if kind is None:
             continue
-        direct = (kind == "eval" and "?." not in code[finish:opening]
-                  and re.fullmatch(r"[ (]*eval[ )]*", expression) is not None)
-        if reflective or re.search(r"\.\s*apply$", expression):
-            index = (1 if reflective[1] == "construct" else 2) if reflective else 1
-            parts = parts[index:index + 1]
-            if parts:
-                begin, finish = parts[0]
-                while begin < finish and code[begin].isspace():
-                    begin += 1
-                while finish > begin and code[finish - 1].isspace():
-                    finish -= 1
-                parts = node_expression_parts(code, begin + 1, finish - 1) if code[begin:begin + 1] == "[" else [(begin, finish)]
-        elif re.search(r"\.\s*call$", expression):
-            parts = parts[1:]
-        yield opening + 1, end, kind, direct, parts
+        modes = kind if isinstance(kind, frozenset) else source_capability(kind)
+        for kind, adapters in modes:
+            selected_parts = parts
+            adapter = adapters[-1] if adapters else None
+            direct = (kind == "eval" and "?." not in code[finish:opening]
+                      and re.fullmatch(r"[ (]*eval[ )]*", expression) is not None)
+            if reflective or adapter == "apply":
+                index = (1 if reflective[1] == "construct" else 2) if reflective else 1
+                selected_parts = selected_parts[index:index + 1]
+                if selected_parts:
+                    begin, finish = selected_parts[0]
+                    while begin < finish and code[begin].isspace():
+                        begin += 1
+                    while finish > begin and code[finish - 1].isspace():
+                        finish -= 1
+                    selected_parts = node_expression_parts(code, begin + 1, finish - 1) if code[begin:begin + 1] == "[" else [(begin, finish)]
+            elif adapter == "call":
+                selected_parts = selected_parts[1:]
+            yield opening + 1, end, kind, direct, selected_parts
 
 
 def javascript_binding_names(code, start, end):
@@ -2358,19 +2512,22 @@ def compound_bounds(tokens, *, completion=False):
     opens = {"(": ")", "{": "}", "while": "done", "until": "done", "for": "done",
              "select": "done", "if": "fi", "case": "esac"}
     stack, bounds = [], {}
-    command_start = True
+    command_start, valid = True, True
     for index, token in enumerate(tokens):
+        if token.startswith("((") and not command_start and (index == 0 or tokens[index - 1] != "for"):
+            valid = False
         if token in opens and (token in {"(", "{"} or command_start):
             stack.append((index, opens[token]))
         elif stack and token == stack[-1][1]:
             begin, _ = stack.pop()
             bounds[begin] = index
-        command_start = bool(token and all(c in ";&|\n" for c in token) or token in {"do", "then", "else"})
+        command_start = bool(token and all(c in ";&|\n" for c in token)
+                             or token in {"do", "then", "else", "if", "elif", "while", "until", "!", "(", "{"})
     if completion:
         # A physical newline inside a compound or after a pipeline/and-or
         # operator does not finish the shell's current input unit.
         tail = next((token for token in reversed(tokens) if token.strip("\n")), "")
-        return bounds, not stack and tail not in {"&&", "||", "|", "|&", "<", ">", "<<", ">>", "<<<", "<>", "<&", ">&", ">|", "&>", "&>>"}
+        return bounds, valid and not stack and tail not in {"&&", "||", "|", "|&", "<", ">", "<<", ">>", "<<<", "<>", "<&", ">&", ">|", "&>", "&>>"}
     return bounds
 
 
@@ -2393,7 +2550,7 @@ def shell_stdin_language(source, *, case=False):
     lexer = shell_lexer(source, posix=False)
     lexer.whitespace_split = True
     commands, kinds = [], set()
-    heredoc_languages(list(lexer), lexer.instream.getvalue(), command_kinds=commands, stdin_kinds=kinds)
+    heredoc_languages(list(lexer), lexer._raw_source, command_kinds=commands, stdin_kinds=kinds)
     words = [unwrapped_command(argv) for _, argv in commands]
     # A read/eval loop executes the stream line by line, even though eval
     # itself does not read stdin. Ordinary data commands in groups stay data.
@@ -2673,16 +2830,16 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                         languages[index] = None
                         descriptors[fd] = index
                         if token == "<<<" and inline_inputs is not None:
-                            decoded = shlex.split(operand, comments=False)
+                            decoded = GroupShellLexer.words(operand)
                             if len(decoded) == 1:
                                 inline_inputs[index] = (operand, decoded[0] + "\n")
                     elif token in {"<&", ">&"} and operand.isdigit():
                         descriptors[fd] = descriptors.get(int(operand))
                     elif token == "<":
-                        target = shlex.split(operand, comments=False)
+                        target = GroupShellLexer.words(operand)
                         descriptors[fd] = ("input-file", target[0]) if len(target) == 1 else None
                     elif token in {">", ">>", ">|", "&>", "&>>"}:
-                        target = shlex.split(operand, comments=False)
+                        target = GroupShellLexer.words(operand)
                         descriptors[fd] = ("file", target[0], token not in {">>", "&>>"}, index) if len(target) == 1 else None
                         if token.startswith("&>"):
                             descriptors[2] = descriptors[fd]
@@ -2690,7 +2847,7 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                         descriptors[fd] = None
                     cursor += 2
                     continue
-                decoded = shlex.split(token, comments=False)
+                decoded = GroupShellLexer.words(token)
                 argv.extend(decoded)
                 word_literals.extend([shell_word_literal(token)] * len(decoded))
                 last_word = index
@@ -2708,7 +2865,7 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                     # the arm's command or to a literal producer's output.
                     prefix = []
                     for at in segment:
-                        prefix.extend(shlex.split(tokens[at], comments=False))
+                        prefix.extend(GroupShellLexer.words(tokens[at]))
                         if at == pattern_end:
                             break
                     if argv[:len(prefix)] == prefix:
@@ -2928,7 +3085,7 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                         lexer = shell_lexer(expansion[1], posix=False)
                         lexer.whitespace_split = True
                         substitution_sources = set()
-                        heredoc_languages(list(lexer), lexer.instream.getvalue(), stream_sources=stream_sources,
+                        heredoc_languages(list(lexer), lexer._raw_source, stream_sources=stream_sources,
                                           output_sources=substitution_sources)
                         assign_language(substitution_sources, "shell", node["index"])
                 if child and Path(child[0]).name == "tee" and forwards:
@@ -3025,7 +3182,8 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                     # asynchronous completion is not its caller's success.
                     success_facts[scope] = {"entry": set(entry), "success": set(), "children": set(),
                                             "parent": node["index"], "subshell": True,
-                                            "fresh_shell": False, "asynchronous": True}
+                                            "fresh_shell": False, "asynchronous": True,
+                                            "process_substitution": True}
                 if node["body_scope"] is not None:
                     if not node["body_complete"]:
                         child_success = set()
@@ -3361,7 +3519,7 @@ def shell_source(text, *, incremental=True):
                 break
             raw = tokens[index + 1]
             tabs = raw.startswith("-")
-            delimiter = shlex.split(raw[1:] if tabs else raw, comments=False)
+            delimiter = GroupShellLexer.words(raw[1:] if tabs else raw)
             if len(delimiter) != 1:
                 malformed = True
                 break
@@ -3435,8 +3593,9 @@ def shell_command_action(words):
 
 def shell_word_literal(raw):
     """Whether decoding this word leaves no outer-shell expansion unresolved."""
-    quote, escaped = None, False
-    for char in raw:
+    quote, escaped, cursor = None, False, 0
+    while cursor < len(raw):
+        char = raw[cursor]
         if escaped:
             escaped = False
         elif char == "\\" and quote != "'":
@@ -3444,10 +3603,14 @@ def shell_word_literal(raw):
         elif quote == "'":
             if char == "'":
                 quote = None
+        elif quote is None and raw.startswith("$'", cursor):
+            cursor, _ = GroupShellLexer.protected_word(raw, cursor)
+            continue
         elif char in "$`":
             return False
         elif char in "'\"":
             quote = None if quote == char else char if quote is None else quote
+        cursor += 1
     return True
 
 
@@ -3618,8 +3781,17 @@ def shell_code(text, *, writes=None, reads=None, replacements=None, effects=None
         if effects is not None:
             effects.extend(event for event in reached if event["kind"] in {"write", "read"})
         if commands is not None:
-            commands.extend((["coproc", *event["argv"]] if event.get("detached") and event["argv"][:1] != ["coproc"] else event["argv"]) for event in reached
-                            if event["kind"] == "command" and event["argv"] and not event["inline_body"])
+            for event in reached:
+                if event["kind"] != "command" or not event["argv"] or event["inline_body"]:
+                    continue
+                argv = event["argv"]
+                detached = event.get("detached")
+                if event.get("process_substitution"):
+                    # A completed parent does not complete an owning process
+                    # body. A data producer has no such ownership obligation.
+                    detached |= (ownership_command(unwrapped_command(argv))
+                                 or opaque_ownership("exec_command", {"cmd": event["source"]}))
+                commands.append(["coproc", *argv] if detached and argv[:1] != ["coproc"] else argv)
         owns |= any(event["source"] in expansion_owners for event in reached if event["kind"] == "input_expansion")
         reached_inputs = {(event["source"], event["language"]) for event in reached if event["kind"] == "stdin"}
         if reads is not None:
@@ -3717,7 +3889,7 @@ def shell_effect_order(tokens, events, *, success_facts=None):
             enclosing = guards[start:stop]
             guard(start, stop, None)
             if start + 2 < stop and tokens[start + 2] == "in":
-                word = shlex.split(tokens[start + 1])
+                word = GroupShellLexer.words(tokens[start + 1])
                 known = len(word) == 1 and not re.search(r"[$`]", tokens[start + 1])
                 arm, first, selected, uncertain_prior = start + 3, True, False, False
                 while arm < stop:
@@ -4089,7 +4261,10 @@ def shell_effect_order(tokens, events, *, success_facts=None):
                         observed.intersection_update(before)
                 for event in current:
                     if event["kind"] == "command":
-                        yield dict(event, detached=any(scope != "end" and success_facts.get(scope, {}).get("asynchronous") for scope in scopes))
+                        asynchronous = [success_facts.get(scope, {}) for scope in scopes
+                                        if scope != "end" and success_facts.get(scope, {}).get("asynchronous")]
+                        yield dict(event, detached=any(not fact.get("process_substitution") for fact in asynchronous),
+                                   process_substitution=any(fact.get("process_substitution") for fact in asynchronous))
                     else:
                         yield dict(event, _implied_success=tuple(observed)) if event["kind"] == "read" else event
             index += 1
@@ -4400,6 +4575,14 @@ def shell_expansions(text, *, heredoc=False):
             escaped = False
         elif char == "\\" and quote != "'":
             escaped = True
+        elif not heredoc and quote is None and text.startswith("$'", cursor):
+            cursor, _ = GroupShellLexer.protected_word(text, cursor)
+            continue
+        elif quote != "'" and text.startswith("$((", cursor):
+            end, _ = GroupShellLexer.protected_word(text, cursor)
+            yield from shell_expansions(text[cursor + 3:end - 2])
+            cursor = end
+            continue
         elif (text[cursor:cursor + 2] == "$(" and quote != "'"
               or not heredoc and quote is None and text[cursor:cursor + 2] in {"<(", ">("}):
             start, end, depth = cursor + 2, cursor + 2, 1
@@ -4410,6 +4593,10 @@ def shell_expansions(text, *, heredoc=False):
                     inner_escape = False
                 elif inner == "\\" and inner_quote != "'":
                     inner_escape = True
+                elif (inner_quote is None and text.startswith("$'", end)
+                      or inner_quote != "'" and text.startswith("$((", end)):
+                    end, _ = GroupShellLexer.protected_word(text, end)
+                    continue
                 elif inner_quote:
                     if inner == inner_quote:
                         inner_quote = None
@@ -9367,15 +9554,81 @@ class GroupShellLexer(shlex.shlex):
     """Preserve raw shell words and split adjacent structural punctuation."""
 
     def __init__(self, *args, **kwargs):
+        self._raw_source = kwargs.pop("raw_source", None)
+        self._protected_words = kwargs.pop("protected_words", {})
         super().__init__(*args, **kwargs)
         self._word_cursor = 0
+        self.wordchars += "".join({word[0] for word in self._protected_words})
+
+    @staticmethod
+    def words(text):
+        lexer = shell_lexer(text, punctuation_chars="")
+        lexer.whitespace_split = True
+        return list(lexer)
+
+    @staticmethod
+    def protected_word(text, start):
+        """Keep shell quoting/expansion operators inside their own word."""
+        if text.startswith("$'", start):
+            end, pieces = start + 2, []
+            while end < len(text):
+                char = text[end]
+                if char == "'":
+                    return end + 1, "".join(pieces).split("\0", 1)[0]
+                if char == "\\" and end + 1 < len(text):
+                    following = text[end + 1]
+                    if following in "'\"?":
+                        piece, end = following, end + 2
+                    elif following == "c" and end + 2 < len(text):
+                        control = text[end + 2]
+                        piece, end = chr(127 if control == "?" else ord(control) & 31), end + 3
+                    else:
+                        initial = end
+                        piece, end, _ = producer_escape(text, end, mode="format")
+                        if following in "01234567" and len(piece) == 1:
+                            piece = chr(ord(piece) & 255)
+                        if end <= initial:
+                            raise ValueError("unparsed ANSI-C escape")
+                    pieces.append(piece)
+                    continue
+                pieces.append(char)
+                end += 1
+            raise ValueError("unclosed ANSI-C quote")
+        arithmetic = 3 if text.startswith("$((", start) else 2 if text.startswith("((", start) else 0
+        if not arithmetic:
+            return None
+        end, depth, quote, escaped = start + arithmetic, 2, None, False
+        while end < len(text):
+            char = text[end]
+            if escaped:
+                escaped = False
+            elif char == "\\" and quote != "'":
+                escaped = True
+            elif quote:
+                if char == quote:
+                    quote = None
+            elif text.startswith("$'", end):
+                end, _ = GroupShellLexer.protected_word(text, end)
+                continue
+            elif char in "'\"`":
+                quote = char
+            elif char in "()":
+                depth += 1 if char == "(" else -1
+                if depth == 0:
+                    return end + 1, text[start:end + 1]
+            end += 1
+        raise ValueError("unclosed arithmetic expansion")
 
     def read_token(self):
         if self.posix:
-            return super().read_token()
+            token = super().read_token()
+            if isinstance(token, str):
+                for word, decoded in self._protected_words.items():
+                    token = token.replace(word, decoded)
+            return token
         # Let shlex's POSIX quote state handle quotes inside an option word,
         # while retaining the raw source slice needed for descriptor adjacency.
-        source = self.instream.getvalue()
+        source = self._raw_source if self._raw_source is not None else self.instream.getvalue()
         start = self.instream.tell() - len(self._pushback_chars)
         while start < len(source) and source[start] in self.whitespace:
             start += 1
@@ -9393,7 +9646,7 @@ class GroupShellLexer(shlex.shlex):
         token = super().get_token()
         if self.posix or token == self.eof:
             return token
-        source = self.instream.getvalue()
+        source = self._raw_source if self._raw_source is not None else self.instream.getvalue()
         start = source.find(token, self._word_cursor)
         end = start + len(token) if start >= 0 else self._word_cursor
         punctuation = token and all(char in self.punctuation_chars for char in token)
@@ -9419,16 +9672,22 @@ class GroupShellLexer(shlex.shlex):
 
 def shell_lexer(text, *, posix=True, punctuation_chars=";&|<>()\n"):
     """Preserve word-internal hashes; only unquoted word-start # is a comment."""
-    cleaned, quote, escaped, boundary, comment = [], None, False, True, False
-    for char in text:
+    cleaned, masked, protected = [], [], {}
+    quote, escaped, boundary, comment, cursor, marker = None, False, True, False, 0, 0xe000
+    occupied = set(text)
+    while cursor < len(text):
+        char = text[cursor]
         if comment:
             if char != "\n":
+                cursor += 1
                 continue
             comment = False
         if escaped:
             escaped = False
             if char == "\n":
                 cleaned.pop()  # Shell continuation is removed before tokenization.
+                masked.pop()
+                cursor += 1
                 continue
             boundary = False
         elif char == "\\" and quote != "'":
@@ -9436,15 +9695,41 @@ def shell_lexer(text, *, posix=True, punctuation_chars=";&|<>()\n"):
         elif quote:
             if char == quote:
                 quote = None
+            elif quote == '"' and text.startswith("$((", cursor):
+                end, decoded = GroupShellLexer.protected_word(text, cursor)
+                while chr(marker) in occupied:
+                    marker += 1
+                word = chr(marker) * (end - cursor)
+                occupied.add(chr(marker))
+                protected[word] = decoded
+                cleaned.append(text[cursor:end])
+                masked.append(word)
+                cursor = end
+                continue
+        elif text.startswith(("$'", "$((", "(("), cursor):
+            end, decoded = GroupShellLexer.protected_word(text, cursor)
+            while chr(marker) in occupied:
+                marker += 1
+            word = chr(marker) * (end - cursor)
+            occupied.add(chr(marker))
+            protected[word] = decoded
+            cleaned.append(text[cursor:end])
+            masked.append(word)
+            boundary, cursor = False, end
+            continue
         elif char in {"'", '"'}:
             quote, boundary = char, False
         elif char == "#" and boundary:
             comment = True
+            cursor += 1
             continue
         else:
             boundary = char.isspace() or char in ";&|<>()"
         cleaned.append(char)
-    lexer = GroupShellLexer("".join(cleaned), posix=posix, punctuation_chars=punctuation_chars)
+        masked.append(char)
+        cursor += 1
+    lexer = GroupShellLexer("".join(masked), posix=posix, punctuation_chars=punctuation_chars,
+                            raw_source="".join(cleaned), protected_words=protected)
     lexer.commenters = ""
     return lexer
 

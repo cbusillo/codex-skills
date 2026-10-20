@@ -4487,6 +4487,35 @@ os.system(get())
         self.assertLessEqual(work[1][1], 6 * work[0][1])
 
 
+        # A captured receiver must not replay every prior self-member
+        # assignment under a new reference spelling. Abort the old traversal
+        # deterministically before it can hang this module.
+        for initial in ("{}", "getReceiver()"):
+            traversals = []
+            for count in (4, 8):
+                source = "let v=" + initial + ";" + "".join("v=v.a" + str(index) + ";" for index in range(count)) + "f(v);"
+                _, code, _, _ = receipts.javascript_projection(source)
+                work = [0]
+                owner_file = receipts.javascript_source_calls.__code__.co_filename
+                def executed(frame, event, arg):
+                    if frame.f_code.co_filename == owner_file:
+                        if event == "line":
+                            work[0] += 1
+                            if work[0] > 250_000:
+                                raise AssertionError("captured receiver traversal did not stay bounded")
+                        return executed
+                    return None
+                previous = sys.gettrace()
+                sys.settrace(executed)
+                try:
+                    calls = list(receipts.javascript_source_calls(source, code))
+                finally:
+                    sys.settrace(previous)
+                self.assertEqual(calls, [])
+                traversals.append(work[0])
+            with self.subTest(captured_receiver_work=initial):
+                self.assertLessEqual(traversals[1], 6 * traversals[0])
+
     def test_javascript_command_discovery_covers_noncanonical_tool_callees(self):
         writer = 'uv run /catalog/gh-plan.py --repo o/r claim 5'
         calls = (
@@ -4744,6 +4773,18 @@ os.system(get())
                 ('const o={};o.run=text;const {run}=o;o.run=eval;', 'run', False),
                 ('const o={};o.run=eval;const run=o.run;o.run=text;', 'run', owning),
                 ('const o={};o.run=text;const p=o;', 'p.run', False),
+                ('let o={};o.run=eval;const p=o;o={run:text};', 'p.run', owning),
+                ('let o={};const p=o;o={};o.run=eval;', 'p.run', False),
+                ('let o={child:{}};const p=o.child;o.child.run=eval;', 'p.run', owning),
+                ('let o={child:{run:eval}};const p=o.child;o.child={run:text};', 'p.run', owning),
+                ('let o={child:{run:eval}};const p=o.child;p.run=text;', 'o.child.run', False),
+                ('const o={};const p=o;p.run=eval;', 'o.run', owning),
+                ('const api={};api.call=eval;', 'api.call', owning),
+                ('function make(){return ()=>{}}const api={};api.call=make();', 'api.call', False),
+                ('const api={};api.apply=eval;', 'api.apply', owning),
+                ('function make(){return ()=>{}}const api={};api.apply=make();', 'api.apply', False),
+                ('const api={};api.bind=eval;', 'api.bind', owning),
+                ('function make(){return ()=>{}}const api={};api.bind=make();', 'api.bind', False),
                 ('let a={},b={};b.run=eval;function swap(){a=b;b=a}swap();', 'a.run', owning),
                 ('let a={},b={};b.run=text;function swap(){a=b;b=a}swap();', 'a.run', False),
                 ('let e=globalThis.eval;e=text;', 'e', False),
@@ -4766,6 +4807,9 @@ os.system(get())
                 ('function preview(){const globalThis={eval:text};return globalThis;}', 'globalThis.eval', owning),
             ):
                 cells.append((setup + 'await ' + callee + '(' + json.dumps(source) + ');', expected))
+            for member, args in (("call", "null," + json.dumps(source)),
+                                 ("apply", "null,[" + json.dumps(source) + "]")):
+                cells.append(("let o=eval;if(flag)o={" + member + ":eval};await o." + member + "(" + args + ");", owning))
             for setup, callee in (
                 ('const g=globalThis;async function run(g){await g.eval(SRC)}await run({eval:text});', ''),
                 ('async function run(globalThis){await globalThis.eval(SRC)}await run({eval:text});', ''),
@@ -6555,11 +6599,42 @@ os.system(get())
             ('zsh_pattern_suffix_domain', ["/bin/zsh -c 'hash echo=./run.sh; disable -ms echo; echo safe'"], False),
             ('zsh_uncertain_pattern_disable', ["/bin/zsh -c " + shlex.quote("hash echo=./run.sh; disable -m 'e(ch)o'; echo safe")], True),
             ('zsh_uncertain_pattern_restore', ["/bin/zsh -c " + shlex.quote("hash echo=./run.sh; disable echo; enable -m 'e(ch)o'; echo safe")], True),
+            ('ansi_literal_eval_reader', ["eval $'bash run.sh'"], True),
+            ('ansi_literal_child_reader', ["bash -c $'bash run.sh'"], True),
+            ('ansi_literal_producer', ["printf %s $'bash run.sh' | bash"], True),
         ]
         for harness in ("codex", "claude"):
             for label, commands, pending in hash_cases:
                 with self.subTest(harness=harness, hash_dispatch=label):
                     self.assertEqual(receipts.ownership_state(scripts(harness, [hash_owner, *commands]), harness)["pending"], pending)
+
+        # Shell lexical operators inside a word must not consume the next
+        # executable unit as a false quote, group or heredoc body.
+        ansi = "printf %s $'it\\'s'"
+        lexical_cases = [("ansi_data", ansi, False),
+                         ("ansi_substitution_data", "printf %s $'$(" + writer + ")'", False),
+                         ("arithmetic_data", "echo $((1<<2))", False),
+                         ("quoted_arithmetic_data", 'echo "$((1<<2))"', False),
+                         ("quoted_group_data", "echo '((1<<2))'", False),
+                         ("invalid_arithmetic_argument", "echo ((1<<2))\n" + writer, False),
+                         ("arithmetic_nested_writer", "echo $((1+$(" + writer + ")))", True),
+                         ("ansi_escaped_writer", "eval $'uv \\x72un /catalog/gh-plan.py --repo client/repo claim 12'", True)]
+        for label, prefix in (("ansi", ansi), ("shift", "echo $((1<<2))"), ("arithmetic_command", "((1<<2))")):
+            body = prefix + "\n" + writer
+            lexical_cases.extend(((label + "_root", body, True),
+                                  (label + "_child", "bash -c " + shlex.quote(body), True),
+                                  (label + "_stdin", "bash <<'BODY'\n" + body + "\nBODY", True)))
+        for harness in ("codex", "claude"):
+            for label, command, owning in lexical_cases:
+                rows = scripts(harness, [command])
+                rows.remove(terminal(rows, harness, "tool-0"))
+                with self.subTest(harness=harness, shell_word=label):
+                    state = receipts.ownership_state(rows, harness)
+                    self.assertEqual(bool(state["indices"]), owning)
+                    self.assertEqual(state["pending"], owning)
+            with self.subTest(harness=harness, ansi_detached_completion=True):
+                command = writer + "; " + ansi + "; nohup ./writer.sh &"
+                self.assertTrue(receipts.ownership_state(scripts(harness, [command]), harness)["pending"])
 
         for harness in ("codex", "claude"):
             for commands in (("bash run.sh\necho it's",), ("printf safe > run.sh\necho it's", "bash run.sh")):
@@ -6660,6 +6735,23 @@ os.system(get())
                     rows = history(harness, {})
                     if harness == "codex": rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
                     else: rows[1]["message"]["content"][0]["input"] = {"command": command}
+                    self.assertEqual(receipts.ownership_state(rows, harness)["pending"], pending)
+
+        create = 'uv run /catalog/gh-pr.py --repo client/repo create --title T'
+        completed = (
+            (create + " --body-file <(printf '%s\\n' \"$BODY\")", False),
+            (create + " --body-file <(printf '%s\\n' " + shlex.quote(writer) + ")", False),
+            (create + " --body B > >(printf done)", False),
+            (create + " --body-file <(" + writer + ")", True),
+            (create + ' --body-file <(tool=/catalog/gh-plan.py; uv run "$tool" --repo client/repo claim 12)', True),
+        )
+        for harness in ("codex", "claude"):
+            for command, pending in completed:
+                with self.subTest(harness=harness, completed_process_body=command):
+                    rows = history(harness, {})
+                    if harness == "codex": rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
+                    else: rows[1]["message"]["content"][0]["input"] = {"command": command}
+                    rows[2] = shell_result({"exit_code": 0}, harness, "tool-0")
                     self.assertEqual(receipts.ownership_state(rows, harness)["pending"], pending)
 
     def test_coherent_echo_modes_do_not_invent_ownership_in_generated_scripts(self):
