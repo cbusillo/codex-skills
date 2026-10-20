@@ -111,7 +111,8 @@ class ReceiptFixture:
                     elif method == "thread/queue/list": result = {"data": self.home_queues.get(str(native_home), self.queue_items), "nextCursor": None}
                     elif method == "thread/turns/list":
                         status = SESSIONS.native_helpers()[1].session_status({**self.entry, "transcript": str(native_path)})
-                        result = {"data": [{"id": status["turn_id"], "status": "completed" if status["safe_verdict"] else "inProgress"}] if status["turn_id"] else [], "nextCursor": None}
+                        # Native completion is independent of claim disposition.
+                        result = {"data": [{"id": status["turn_id"], "status": "completed" if status["turn_completed_at"] else "inProgress"}] if status["turn_id"] else [], "nextCursor": None}
                     elif method == "thread/timeline/list":
                         status = SESSIONS.native_helpers()[1].session_status({**self.entry, "transcript": str(native_path)})
                         result = {"data": [{"type": "turnStarted", "position": 0, "turnId": status["turn_id"]},
@@ -907,6 +908,71 @@ class FinishPreviewIntegrationTests(unittest.TestCase):
 
 
 class IdleReceiptIntegrationTests(unittest.TestCase):
+    def recovery_history(self, fixture, *, delegated):
+        reader = SESSIONS.native_helpers()[1]
+        records = reader.read_jsonl(fixture.transcript)
+        receipts = reader.claim_receipts
+        command = "uv run /catalog/gh-plan.py --repo example/task claim 1"
+        invocation = {"type": "function_call", "name": "exec_command", "call_id": "claim",
+                      "arguments": json.dumps({"cmd": command})}
+        result = {"operation": receipts.CLAIM_OPERATION, "ok": True,
+                  "claim": {"session": fixture.session},
+                  "claim_comment": {"url": "https://github.com/example/task/issues/1#issuecomment-10"}}
+        if delegated:
+            invocation.update(name="collaboration.spawn_agent", arguments=json.dumps({"task_name": "read-only"}))
+            result = {"task_name": "/root/read-only"}
+        proof = {"operation": receipts.CHECK_OPERATION, "ok": True, "claims_clear": True,
+                 "session_id": fixture.session, "harness": "codex", "coverage": {"complete": True},
+                 "released_claims": [{"repository": "example/task", "record": 1, "claim_comment": 10}]}
+        activity = [invocation, {"type": "function_call_output", "call_id": "claim", "output": json.dumps(result)},
+                    {"type": "function_call", "name": "exec_command", "call_id": "check",
+                     "arguments": json.dumps({"cmd": "uv run /catalog/check_claims.py"})},
+                    {"type": "function_call_output", "call_id": "check", "output": json.dumps(proof)}]
+        records[1:1] = [{"type": "response_item", "timestamp": "2026-10-01T01:59:59Z", "payload": item}
+                        for item in activity]
+        fixture.transcript.write_text("".join(json.dumps(row) + "\n" for row in records))
+        return records
+
+    def test_post_action_recovery_accepts_fresh_declaration_without_pre_exit_identity_or_children(self):
+        for delegated in (False, True):
+            with self.subTest(delegated=delegated), ReceiptFixture() as f:
+                records = self.recovery_history(f, delegated=delegated)
+                after = datetime(2026, 10, 1, 1, 59, 58, tzinfo=timezone.utc)
+                with patch.object(CLOSURE, "action_time", return_value=after):
+                    # The fresh tail omits session_meta and cannot independently
+                    # establish live closeout acceptance or delegated histories.
+                    tail = records[1:]
+                    status = SESSIONS.native_helpers()[1].summarize(tail, "codex")
+                    self.assertFalse(status["safe_verdict"])
+                    self.assertTrue(status["declared_safe_verdict"])
+                    closed = f.release.record_closure(f.log, f.entry, "supervisor")
+                    self.assertTrue(closed["process_exit_verified"])
+                    f.process_rows = [(f.entry["pid"], f.entry["tty"], "codex worker")]
+                    with self.assertRaises(ValueError):
+                        f.release.record_closure(f.log, f.entry, "supervisor")
+                with patch.object(CLOSURE, "action_time", return_value=datetime(2026, 10, 1, 2, 0, 2, tzinfo=timezone.utc)):
+                    with self.assertRaises(ValueError):
+                        CLOSURE.require_fresh_action_verdict(f.entry)
+
+    def test_idle_successor_proof_accepts_original_declaration_without_pre_exit_claim_check(self):
+        for delegated in (False, True):
+            with self.subTest(delegated=delegated), ReceiptFixture() as f:
+                records = self.recovery_history(f, delegated=delegated)
+                if not delegated:
+                    records = [r for r in records if (r.get("payload") or {}).get("call_id") != "check"]
+                    f.transcript.write_text("".join(json.dumps(row) + "\n" for row in records))
+                status = SESSIONS.native_helpers()[1].summarize(records, "codex")
+                self.assertFalse(status["safe_verdict"])
+                self.assertTrue(status["declared_safe_verdict"])
+                f.log.unlink()
+                closed = f.release.record_closure(f.log, f.entry, "supervisor")
+                self.assertIn("closure_evidence", closed)
+                self.assert_ended(f)
+                with f.transcript.open("a") as stream:
+                    stream.write(json.dumps({"type": "event_msg", "timestamp": "2026-10-01T02:00:02Z",
+                                             "payload": {"type": "task_started"}}) + "\n")
+                self.assert_live(f)
+
     def test_owned_recovery_ignores_absent_thread_in_unassociated_daemon(self):
         with ReceiptFixture() as f:
             other = f.root / "unassociated"
@@ -1505,7 +1571,7 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(SESSIONS.process_sessions(command, {"holder"}), [])
 
     async def observe(self, state, *, safe=True, after=None, changed=False, mismatch=False, with_peer=False, unsafe=False,
-                      receipt=None, proof_sessions=None, receipt_changed=False):
+                      receipt=None, proof_sessions=None, receipt_changed=False, snapshot_status=None):
         thread = {"id": "holder", "cwd": "/retained/issue-42", "path": "/fixture/transcript", "historyMode": "paginated", "status": {"type": state}}
         if mismatch: thread["id"] = "another-session"
         reads, calls, unexpected, observed_ids = 0, 0, [], set()
@@ -1539,8 +1605,8 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
             nonlocal calls
             calls += 1
             if with_peer: self.assertIn("peer", observed_ids)
-            result = {"/fixture/transcript": {"safe_verdict": safe, "timestamp": "2026-10-01T02:00:00Z",
-                                              "size": calls + int(bool(receipt)) if changed else 1}}
+            result = {"/fixture/transcript": {**(snapshot_status or {}), "safe_verdict": safe if snapshot_status is None else snapshot_status["safe_verdict"], "timestamp": "2026-10-01T02:00:00Z",
+                                             "size": calls + int(bool(receipt)) if changed else 1}}
             if include_status:
                 result["/fixture/transcript"]["status"] = {"turn_id": "actual-turn", "actual_turn_ids": ["actual-turn"]}
             return result
@@ -1581,6 +1647,15 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(peers, [])
         self.assertEqual(states["holder"]["state"], "ended")
 
+    async def test_ended_claim_recovery_does_not_require_pre_exit_release(self):
+        session_record = SESSIONS.native_helpers()[1]
+        from test_claim_receipts import history, claim
+        declared = session_record.summarize(history("codex", claim()), "codex")
+        self.assertFalse(declared["safe_verdict"])
+        peers, states = await self.observe("notLoaded", snapshot_status=declared)
+        self.assertEqual(peers, [])
+        self.assertEqual(states["holder"]["state"], "ended")
+
     async def test_released_idle_session_with_verified_closure_is_ended(self):
         peers, states = await self.observe("idle", receipt=True, proof_sessions=set())
         self.assertFalse(peers)
@@ -1608,10 +1683,12 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(peers[0]["sessionId"], "holder")
 
     async def test_idle_failure_unknown_and_changed_evidence_do_not_prove_end(self):
-        for kwargs in ({"safe": False}, {"changed": True}, {"mismatch": True}):
+        for kwargs in ({"safe": False}, {"changed": True}):
             with self.subTest(kwargs=kwargs):
                 _, states = await self.observe("notLoaded", **kwargs)
                 self.assertNotEqual(states.get("holder", {}).get("state"), "ended")
+        _, states = await self.observe("notLoaded", mismatch=True)
+        self.assertNotEqual(states.get("holder", {}).get("state"), "ended")
 
     async def test_resumed_while_reading_is_live(self):
         peers, states = await self.observe("notLoaded", after="active")
@@ -1646,6 +1723,143 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ObservationMergeTests(unittest.TestCase):
+
+    def test_pending_without_a_closeout_record_is_rechecked_from_live_native_evidence(self):
+        with ReceiptFixture() as f:
+            with CLOSURE.resume_guard(f.session, method="turn/start", home=f.home):
+                pass
+            CLOSURE.replace_rows([])
+            f.transcript.write_text(json.dumps({"type": "session_meta", "payload": {"id": f.session}}) + "\n")
+            before = CLOSURE.lease_path(f.session).read_bytes()
+            node = {"session_id": f.session, "harness": "codex", "transcript": str(f.transcript), "records": []}
+            def pending():
+                return SESSIONS.pending_ownership([node], [{"pending": True}])
+            f.native_state = "active"
+            self.assertTrue(pending())
+            f.native_state = "notLoaded"
+            self.assertFalse(pending())
+            self.assertNotEqual(f.observe()[1][f.session]["state"], "ended")
+            f.queue_items = [{"id": "new-work"}]
+            self.assertTrue(pending())
+            f.queue_items = []
+            self.assertFalse(pending())
+            self.assertEqual(CLOSURE.lease_path(f.session).read_bytes(), before)
+            self.assertFalse(f.mutations)
+
+    def test_live_claude_uncertainty_cannot_use_an_old_physical_exit(self):
+        node = {"session_id": "live-claude", "harness": "claude"}
+        with patch.object(CLOSURE, "ownership") as ownership:
+            self.assertFalse(SESSIONS._physical_quiescent(node, [], {}))
+        ownership.assert_not_called()
+
+    def test_unmanaged_completed_native_child_needs_positive_current_coverage(self):
+        with ReceiptFixture("11111111-2222-4333-8444-555555555555") as f:
+            CLOSURE.replace_rows([])
+            CLOSURE.lease_path(f.session).unlink()
+            node = {"session_id": f.session, "harness": "codex", "transcript": str(f.transcript), "records": []}
+            complete = {"peer_complete": True, "process_coverage": "complete"}
+            self.assertTrue(SESSIONS._physical_quiescent(node, [], complete))
+            self.assertFalse(CLOSURE.lease_path(f.session).exists())
+            f.commands = "456 codex resume " + f.session
+            self.assertFalse(SESSIONS._physical_quiescent(node, [], complete))
+
+            f.commands = ""
+            self.assertFalse(SESSIONS._physical_quiescent(node, [], {**complete, "peer_complete": False}))
+            f.execution_items = [{"id": "working", "type": "commandExecution", "status": "inProgress"}]
+            self.assertFalse(SESSIONS._physical_quiescent(node, [], complete))
+            f.execution_items = []
+            other = f.root / "unavailable-retained-home"
+            other.mkdir()
+            with CLOSURE.resume_guard(f.session, method="turn/start", home=other):
+                pass
+            self.assertFalse(SESSIONS._physical_quiescent(node, [], complete))
+
+    def test_active_check_binds_its_native_background_handle_instead_of_its_call_id(self):
+        import claim_receipts
+        from test_claim_receipts import cell_header, composed_result
+        with ReceiptFixture("11111111-2222-4333-8444-555555555555") as f:
+            f.native_state = "active"
+            original = [json.loads(line) for line in f.transcript.read_text().splitlines()][:2]
+            original.append({"type": "response_item", "payload": {"type": "custom_tool_call", "call_id": "call-check",
+                "name": "exec", "input": 'text(await tools.exec_command({cmd:"uv run check_claims.py"}));'}})
+            started = composed_result({"session_id": 123, "output": ""}, "call-check")
+            started["payload"]["output"].insert(0, cell_header())
+            current = [*original, started]
+            f.transcript.write_text("".join(json.dumps(row) + "\n" for row in current))
+            node = {"session_id": f.session, "harness": "codex", "transcript": str(f.transcript), "records": original}
+            pair = {"itemId": "exec-native-check", "processId": "123"}
+            f.rpc_results["thread/backgroundTerminals/list"] = {"data": [pair], "nextCursor": None}
+            import time
+            first_read = True
+            read_jsonl = SESSIONS.native_helpers()[1].read_jsonl
+            def startup_arrives(path):
+                nonlocal first_read
+                if first_read:
+                    first_read = False
+                    return original
+                return read_jsonl(path)
+            with patch.object(SESSIONS.native_helpers()[1], "read_jsonl", side_effect=startup_arrives):
+                self.assertTrue(SESSIONS._current_check_quiet(node, deadline_at=time.time() + 2))
+            with patch.object(SESSIONS.native_helpers()[1], "read_jsonl", return_value=original):
+                self.assertFalse(SESSIONS._current_check_quiet(node, deadline_at=time.time() + 0.1))
+            complete = "".join(json.dumps(row) + "\n" for row in current)
+            partial = "".join(json.dumps(row) + "\n" for row in original) + '{"type":"response_item"'
+            f.transcript.write_text(partial)
+            finished = False
+            def finish_append(path):
+                nonlocal finished
+                try:
+                    return read_jsonl(path)
+                finally:
+                    if not finished:
+                        finished = True
+                        f.transcript.write_text(complete)
+            with patch.object(SESSIONS.native_helpers()[1], "read_jsonl", side_effect=finish_append):
+                self.assertTrue(SESSIONS._current_check_quiet(node, deadline_at=time.time() + 2))
+            f.transcript.write_text(partial)
+            self.assertFalse(SESSIONS._current_check_quiet(node, deadline_at=time.time() + 0.1))
+            f.transcript.write_text(complete)
+            # Real native capture: the running command is absent from items;
+            # only the background registry contains its exec-* identity.
+            self.assertTrue(SESSIONS._current_check_quiet(node))
+            def append_poll(_request):
+                poll = {"payload": {"type": "custom_tool_call", "call_id": "poll-check", "name": "exec",
+                    "input": 'text(await tools.write_stdin({session_id:123}));'}}
+                result = composed_result({"session_id": 123, "output": ""}, "poll-check")
+                result["payload"]["output"].insert(0, cell_header())
+                f.transcript.write_text("".join(json.dumps(row) + "\n" for row in [*current, poll, result]))
+                return {"data": [pair], "nextCursor": None}
+            f.rpc_results["thread/backgroundTerminals/list"] = append_poll
+            self.assertTrue(SESSIONS._current_check_quiet(node))
+            f.transcript.write_text("".join(json.dumps(row) + "\n" for row in current))
+            f.rpc_results["thread/backgroundTerminals/list"] = {"data": [pair], "nextCursor": None}
+            for pairs in ([], [{**pair, "processId": "other"}], [pair, pair],
+                          [pair, {"itemId": "exec-other", "processId": "456"}]):
+                f.rpc_results["thread/backgroundTerminals/list"]["data"] = pairs
+                self.assertFalse(SESSIONS._current_check_quiet(node))
+            f.rpc_results["thread/backgroundTerminals/list"]["data"] = [pair]
+            f.queue_items = [{"id": "queued", "clientUserMessageId": "new", "input": []}]
+            self.assertFalse(SESSIONS._current_check_quiet(node))
+            f.queue_items = []
+            f.execution_items = [{"id": "other", "type": "dynamicToolCall", "status": "inProgress"}]
+            self.assertFalse(SESSIONS._current_check_quiet(node))
+            f.execution_items = []
+            extra = {"payload": {"type": "function_call", "call_id": "other", "name": "exec_command",
+                                 "arguments": json.dumps({"cmd": "ls"})}}
+            f.transcript.write_text("".join(json.dumps(row) + "\n" for row in [*current, extra]))
+            self.assertFalse(SESSIONS._current_check_quiet(node))
+            self.assertIsNone(claim_receipts.current_check_process(original, [*current, extra]))
+            f.transcript.write_text("".join(json.dumps(row) + "\n" for row in current))
+            self.assertFalse(SESSIONS._current_check_quiet(node, deadline_at=time.time() - 1))
+            async def delayed_thread(_request):
+                await asyncio.sleep(1.4)
+                return {"thread": {"id": f.session, "path": str(f.transcript),
+                    "historyMode": "paginated", "status": {"type": "active"}}}
+            f.rpc_results["thread/read"] = delayed_thread
+            # The caller's remaining budget covers the entire native sandwich;
+            # the former shorter connection/outer budgets failed this read.
+            self.assertTrue(SESSIONS._current_check_quiet(node, deadline_at=time.time() + 15))
+
     def setUp(self):
         shared = SESSIONS.process_liveness()
         self.enterContext(patch.object(shared, "process_arguments",
@@ -1784,7 +1998,7 @@ class ObservationMergeTests(unittest.TestCase):
                 path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
             with patch.object(SESSIONS, "codex_homes", return_value=[home]):
                 snapshot = SESSIONS.transcript_snapshot("holder", str(primary))
-            self.assertTrue(snapshot[str(primary.resolve())]["safe_verdict"])
+            self.assertTrue(snapshot[str(primary.resolve())]["declared_safe_verdict"])
             self.assertFalse(snapshot[str(sibling.resolve())]["safe_verdict"])
 
     def test_unknown_interactive_process_or_missing_process_inventory_prevents_native_end(self):

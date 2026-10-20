@@ -767,6 +767,11 @@ others. A missed target remains visible in the next check and handoff.
    qualify. Never infer completion from silence,
    idleness, or the screen; Claude Code redraws its screen and can hide the
    close-out message. If later transcript activity resumes work, keep it open.
+   Use `safe_verdict`, not declaration recognition alone. When
+   `verdict_recognition` is `claim_disposition_refused`, follow
+   [claim-gated verdicts](references/helpers.md#claim-gated-verdicts): nudge the
+   worker to complete claim disposition and keep the terminal open. A required
+   review wait still takes precedence; do not close that worker out.
 2. Inspect the input line before sending keys. `read` reports its visible
    style as `dim`, `non_dim`, `mixed`, `empty` or `unknown`; this is style
    evidence, never authorship or approval. Never record dim suggestions as

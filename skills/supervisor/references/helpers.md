@@ -123,14 +123,62 @@ fields unchanged. The tmux terminal id contains a launch nonce: never replace
 it with a pane number or a title. A mixed ledger may hold both backends; use
 the matching backend when reading or closing each terminal.
 
-Status and candidates expose `verdict_recognition`: `recognized` for a valid
-completed unqualified verdict, `unrecognized` when verdict wording is present
-but does not qualify, and `absent` when it is missing. A final verdict may share
+Status and candidates expose `verdict_recognition`: `recognized` for an accepted
+completed unqualified verdict, `claim_disposition_refused` when the declaration
+qualifies but claim/child coverage does not, `unrecognized` when verdict wording
+is present but does not qualify, and `absent` when it is missing. The refused
+case retains `declared_safe_verdict: true` and the actionable
+`claim_disposition.reason`; it is not a wording failure. A final verdict may share
 its line with `No Director action needed.` or `No Director decision needed.`;
 other accompanying prose stays unrecognized. For an ambiguous response, read
 the full transcript and handoff and ask the worker for a fresh standalone
 unqualified verdict if appropriate. Manual review does not override a refused
 parser result or any shutdown verification.
+
+### Claim-gated verdicts
+
+Read the refusal's `claim_disposition` and the owning issue before acting. Nudge
+that exact worker once to complete work-closeout's claim disposition for its
+native session and children: release its own claims or verify retained-PR
+handoffs, run the maintained check, and give a fresh standalone verdict. Missing
+repository context can be inventoried with additive `--repository`. Follow the
+[claim disposition contract](../../work-closeout/SKILL.md#claim-disposition)
+for complete inventory and live pending checks. Do not drop a child. The source worker coordinates any
+child-owned release through that child; the parent does not impersonate it.
+
+For no-GitHub exploration, local readable child histories with no ownership
+or shell activity satisfy the N/A path. The reader uses Claude's native child files and
+Codex's native parent/child index and rollouts. Missing, active or changed child
+history refuses acceptance; fix the identified local evidence before asking
+for another verdict. There is no GitHub read merely because delegation occurred.
+
+If an interrupted child has no native turn end, use the harness's built-in
+resume for that exact child when available. Have it reconcile its ownership
+and finish a quiet native turn, then rerun the parent's check. Do not delete
+history, synthesize completion events, or treat a closed edge alone as proof
+that background work ended. Codex's native `turn_aborted` already marks a turn
+end for child activity; it does not authorize the parent's safe verdict.
+Claude interrupted/resumed or legacy sidechain histories remain unqualified;
+when native resume cannot repair missing evidence, keep conditional/no with
+the blocker and next actor. A child's partial trailing record is read strictly
+by the Supervisor: the running check may inspect a complete prefix, but that
+prefix alone cannot authorize acceptance. Wait for a complete, quiet history.
+
+If the check cannot clear, have the worker record conditional/no, the exact
+blocker, next actor and retained artifacts on the item. Preserve its process and
+terminal, stop repeating the nudge, and continue independent work or other
+sessions while the missing evidence/read is repaired. This is the brief's
+refusal path, not an instruction to manufacture a passing verdict. Do not send
+`/exit` or `/quit` from a refused verdict or reinterpret its declaration as an
+all-clear. A pending review remains open under its brief.
+
+`release_session_claims finish` is available only **after actual verified process
+exit**. It repairs sessions that already ended; it is not an active-session
+escape from this gate. If a person separately requests a shutdown that cannot
+meet the existing rules, surface that decision under `DIRECTION.md` rather than
+inventing new exit authority. After verified recovery, a resumed source may
+read back the validated releases through work-closeout's check for normal
+acceptance. Unknown scope/identity and unsafe terminal cleanup remain preserved.
 
 A complete trailing Claude local `/exit` sequence (meta caveat, `/exit` command,
 one stdout wrapper) preserves the preceding close-out verdict, including when

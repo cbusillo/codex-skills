@@ -479,7 +479,9 @@ def verify_process_exit(entry, *, rows=None, ended_at=None, started_at=None,
 
 def require_safe_status(status):
     """Check the declaration only after the caller independently proves exit."""
-    if not status["safe_verdict"]:
+    # The caller has proved process exit. Preserve recovery for declarations
+    # made before the live claim-disposition check existed.
+    if not status.get("declared_safe_verdict", status["safe_verdict"]):
         raise ValueError("latest transcript lacks an unqualified Safe to exit: yes")
 
 

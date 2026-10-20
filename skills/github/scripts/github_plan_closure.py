@@ -133,7 +133,10 @@ def require_fresh_action_verdict(entry: dict) -> None:
     from github_plan_sessions import native_helpers
     records = native_helpers()[1].read_jsonl(Path(entry["transcript"]))
     tail = [r for r in records if r.get("timestamp") and stamp(r["timestamp"]) > after]
-    if not native_helpers()[1].summarize(tail, entry["harness"])["safe_verdict"]:
+    status = native_helpers()[1].summarize(tail, entry["harness"], inspect_claims=False)
+    # Post-exit recovery needs a fresh declaration, not the live claim gate.
+    # The tail deliberately excludes older identity and delegated histories.
+    if not status.get("declared_safe_verdict", status["safe_verdict"]):
         raise ValueError("native action needs a fresh final safe verdict before verified closure")
 
 
@@ -576,7 +579,7 @@ def transcript_facts(session: str, primary: str, *, include_status: bool = False
         identities = {r.get("payload", {}).get("id") for r in records if r.get("type") == "session_meta"}
         if identities != {session}:
             raise ValueError("native transcript identity mismatch")
-        status = native_helpers()[1].summarize(records, "codex")
+        status = native_helpers()[1].summarize(records, "codex", inspect_claims=False)
         after = path.stat()
         if transcript_identity(before) != transcript_identity(after):
             raise ValueError("native transcript is changing")
@@ -592,12 +595,16 @@ def transcript_facts(session: str, primary: str, *, include_status: bool = False
             snapshots[str(path)]["status"] = {key: status[key] for key in (
                 "safe_verdict", "timestamp", "turn_id", "turn_started_at", "turn_completed_at", "message_at", "actual_turn_ids", "background_tasks",
                 "active_realtime_sessions", "realtime_coverage")}
+            snapshots[str(path)]["status"]["declared_safe_verdict"] = status.get("declared_safe_verdict", status["safe_verdict"])
     return snapshots
 
 
 def transcripts(session: str, primary: str, *, include_status: bool = False, additional_homes: set[Path] | None = None) -> dict:
     snapshots = transcript_facts(session, primary, include_status=True, additional_homes=additional_homes)
-    if any(not snapshot["status"]["safe_verdict"] for snapshot in snapshots.values()):
+    # This wrapper supplies final-declaration evidence for independently
+    # verified post-exit closure; neutral readers keep the live claim verdict.
+    if any(not snapshot["status"].get("declared_safe_verdict", snapshot["status"]["safe_verdict"])
+           for snapshot in snapshots.values()):
         raise ValueError("native transcript lacks a final safe verdict")
     if not include_status:
         snapshots = {path: {key: value for key, value in snapshot.items() if key != "status"}
@@ -649,6 +656,7 @@ def verified_record(session: str, home: Path | None = None) -> dict | None:
         if (entry.get("harness") != "codex" or not isinstance(proof, dict) or entry.get("resumed_at")
                 or (home is not None and proof.get("codex_home") != str(home.resolve()))):
             return None
+
         import release_session_claims
         from github_plan_release import stamp
         ended = stamp(entry["ended_at"])
