@@ -929,8 +929,18 @@ def envelope(host, receipt, findings, reason, gaps, artifact, uncovered=()):
 def requested_python_version(config):
     """The structured preparation's Python version, the only declared interpreter."""
     prepare = config.get("prepare")
-    python = prepare.get("python") if isinstance(prepare, dict) else None
+    python = prepare.get("python") if isinstance(prepare, dict) and set(prepare) == {"python"} else None
     return python.get("version") if isinstance(python, dict) and "projectPath" not in python else None
+
+
+def has_odoo_manifest(paths):
+    fixture_roots = {"tests", "fixtures", "test-fixtures", "testdata", "assets"}
+    return any(Path(path).name == "__manifest__.py" and not fixture_roots.intersection(Path(path).parts) for path in paths if path)
+
+
+def is_odoo(repo):
+    paths = checked(["git", "-C", str(repo), "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "*__manifest__.py"])
+    return has_odoo_manifest(paths.decode().split("\0"))
 
 
 def plant_canaries(project, selected, language, receipt):
@@ -980,6 +990,12 @@ def scope_selection(args, host):
         path = host.normalize_inspection_lane_path(raw, repo)
         if path.is_file():
             selected.add(path.relative_to(repo).as_posix())
+    if config.get("lanes") and scope != "files":
+        selection = host.resolve_inspection_lane_selection(args, {
+            "worktree_root": str(repo), "scope": scope,
+            "_inspection_lanes": host.parse_inspection_lanes(config),
+        })
+        selected -= {entry["file"] for entry in selection["excluded_files"]}
     return repo, config, scope, selected
 
 
@@ -1001,8 +1017,7 @@ def select_backend(args, host, host_default=None):
             return "api", "selection_not_python_only"
         if requested_python_version(config) is None:
             return "api", "python_preparation_not_declared"
-        tracked = checked(["git", "-C", str(repo), "ls-files", "-z", "--", "*__manifest__.py", "__manifest__.py"])
-        if tracked.strip(b"\0"):
+        if is_odoo(repo):
             return "api", "odoo_not_yet_qualified"
         if lane_gaps(host, config, selected):
             return "api", "lane_not_pycharm"
@@ -1131,7 +1146,7 @@ def run(args, host):
         receipt["container_removed"] = False
         argv += ["--timeout", str(max(1, args.timeout_ms))]
         guardian = execute(argv, name, private, env, max(1, args.timeout_ms / 1000), receipt, lock_fd=lock.fileno())
-        gaps, uncovered = coverage_gaps(language, selected, expected, private / "results", any(Path(f).name == "__manifest__.py" for f in hashes))
+        gaps, uncovered = coverage_gaps(language, selected, expected, private / "results", has_odoo_manifest(hashes))
         gaps += lane_gaps(host, config, selected)
         if language == "python":
             gaps += python_proof_gaps(private, hashes, selected, canaries, requested_python, receipt)

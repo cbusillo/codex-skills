@@ -45,6 +45,43 @@ def license_boundary(text):
     return False
 
 
+class LicenseScanner:
+    """Observe every received line before other event parsing can fail.
+
+    An overlong line is discarded through its real newline, never reinterpreted
+    from a suffix. Later lines still get scanned, but the observation remains
+    incomplete because the discarded bytes cannot attest a non-licensing run.
+    """
+    def __init__(self, limit=65536):
+        self.pending = b""
+        self.limit = limit
+        self.discarding = False
+        self.complete = True
+        self.observed = False
+
+    def feed(self, data, *, final=False):
+        pieces = data.split(b"\n")
+        for index, piece in enumerate(pieces):
+            terminated = index < len(pieces) - 1
+            if self.discarding:
+                if terminated:
+                    self.discarding = False
+                continue
+            if len(self.pending) + len(piece) > self.limit:
+                self.complete = False
+                self.pending = b""
+                self.discarding = not terminated
+                continue
+            self.pending += piece
+            if license_boundary(self.pending.decode(errors="replace")):
+                self.observed = True
+            if terminated:
+                self.pending = b""
+        if final:
+            self.pending = b""
+        return self.observed
+
+
 class EngineObserver:
     def __init__(self, project, receipt):
         self.project = project

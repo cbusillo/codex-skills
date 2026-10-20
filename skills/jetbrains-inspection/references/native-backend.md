@@ -41,6 +41,12 @@ required addon dependency repositories, each as a clean pinned Git checkout.
 Omit them for ordinary Python projects.
 Record the framework commits and follow the tenant workspace's declared dependency
 locations and ref policy, rather than borrowing another tenant's roots. The
+runner compares the selected addon's manifest and `workspace.toml` build series
+with public `odoo/release.py`; an absent or mismatched declaration stays UNKNOWN.
+For a different tenant or branch, supply its matching roots with repeatable
+`--native-framework-root`, following that workspace's dependency refs.
+No framework Python is executed to discover its version.
+The
 canonical project content root includes `addons` as a source folder when present;
 it does not create separate addon content roots that would change scope paths.
 
@@ -92,7 +98,10 @@ limits inspection while other source remains available for references.
 Structured `prepare.python` runs the maintained environment generator in that
 snapshot, with an isolated preparation home. Otherwise the exact source
 worktree must already have its documented `.venv`. Native does not guess a
-Python version or read a desktop SDK table. A unique non-secret SDK entry is
+Python version. Command-string and nested-project preparation keep the existing
+automatic backend route; explicit native uses the prepared root `.venv` instead
+of treating those commands as a structured root generator. Native does not read a
+desktop SDK table. A unique non-secret SDK entry is
 added to the independent profile's table in place and removed after execution;
 unrelated entries remain. The snapshot gets canonical project and framework
 roots; its private `PyProjectModelSettings.usePyprojectToml=false` preserves that
@@ -103,13 +112,23 @@ A per-user lock shared with Qodana and the independent profile's lock allow one 
 The child has its own process group, nice 10, a 1,536 MiB JVM heap and two active
 processors. The latter is a JVM concurrency cap, not an OS CPU quota. System,
 cache, logs, temporary files and inspection results live in fresh private paths
-under the selected helper cache. Runs pause above load1 64 and resume below
-that threshold; the wall deadline continues while paused.
+under the selected helper cache. A run starting above load1 64 is refused before
+launch. An active run pauses above 64 and resumes below that threshold; its
+wall deadline continues while paused.
 
-A guardian keeps the lock and watches the invoking process's lifetime pipe.
+A guardian in a separate session keeps the locks and watches the invoking
+process's lifetime pipe, including when a harness kills the caller's whole group.
+An additional control lock belongs only to the guardian. Before the licensed
+engine can exec, a pipe gate waits for its PID, process-group ID, birth stamp
+and exact private-path identity to be durably journaled. The gate closes across
+exec, and the engine inherits only the global and profile locks.
 Parent exit, cancellation, timeout and licence events stop the owned process
 group, including while paused. Raw engine logs and the private project are
-deleted; only sanitized findings, coverage and cleanup receipts remain.
+deleted; only sanitized findings, coverage and cleanup receipts remain. Every
+received chunk is scanned for a licence event before another error can abort
+observation. After kill/wait, a bounded licence-only drain covers remaining pipe
+and log bytes. An incomplete observation cannot attest a known outcome without
+a licensing event; a detected event remains a stop even when other bytes are lost.
 Use `JETBRAINS_INSPECTION_CACHE_DIR` under the host's designated task-evidence
 root. The config, activation, plugin installation and independent home stay put.
 
@@ -134,7 +153,7 @@ uv run <skill-dir>/scripts/jb-inspect.py agent-inspect \
   --backend native --native-recover-only
 ```
 
-If a known nonlicensing terminal result was returned but its journal update
+If a known terminal result with no licensing event was returned but its journal update
 failed, reconcile that saved JSON envelope for the same run and backend:
 
 ```sh
@@ -152,12 +171,27 @@ than guessing or deleting the hold. A recorded Director confirmation after
 checking the independent product UI can resolve activation uncertainty using
 existing entitlements; never start a trial or inspect activation files. After
 that recorded confirmation and a recovery receipt proving SDK/private cleanup,
-the authorized continuation holds both worker locks and removes only the
-matching count-only run journal and activation-stop receipt. It does not
-change, copy or read product activation, account or credential files.
+the authorized continuation uses the supported exact-run release:
 
-A killed guardian may leave the engine holding both inherited locks until it
-exits, including the global lock that excludes Qodana. Do not bypass either.
+```sh
+uv run <skill-dir>/scripts/jb-inspect.py agent-inspect \
+  --backend native --native-recover-only --native-release-run <recorded-run-uuid>
+```
+
+Use that flag only after the Director's recorded UI confirmation on the owning
+item. It recovers SDK/private resources, verifies the exact run and any stop
+receipt, and removes only matching helper metadata. It never inspects or changes
+product activation, accounts or credentials and never launches an inspection.
+A stop receipt without a remaining journal can be released by the same exact-run
+command after that recorded confirmation. Never use the flag merely to retry.
+
+A killed guardian may leave the engine holding both inherited locks. Cleanup-only
+recovery first holds the separate control lock, proves the journaled PID birth,
+group and private-path identity, and stops that exact orphan group before taking
+the normal locks. A live guardian or an unproved/reused process identity is
+preserved. A dead leader with live, unproved descendants remains UNKNOWN.
+Recovery alone retains an unknown-outcome hold; it does not infer expired
+activation or authorize another licensed run.
 
 ## Coverage and qualification
 

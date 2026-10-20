@@ -45,7 +45,7 @@ def identity_from(record):
 
 
 def write_owner(path, identity):
-    # A write-once marker has no unjournaled temporary basename. The durable
+    # A write-once marker has no temporary basename absent from the journal. The durable
     # reservation permits recovery of this exact partial file before any source
     # is written, and O_EXCL never truncates an existing marker.
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
@@ -110,10 +110,30 @@ def reconcile_result(path, worker, record, common):
         raise LifecycleError("native_reconciliation_result_unproven") from None
 
 
-def recover(worker, receipt, common, write_record, remove_sdk, *, result_path=None):
+def release_stop(worker, run_id):
+    stop = worker / "native-activation-stop.json"
+    if stop.exists():
+        if stop.is_symlink():
+            raise LifecycleError("native_release_stop_mismatch")
+        try:
+            record = json.loads(stop.read_text())
+            if str(uuid.UUID(run_id)) != run_id or record.get("run_id") != run_id or type(record.get("boundary_event_count")) is not int or record["boundary_event_count"] != 1:
+                raise ValueError()
+        except (ValueError, TypeError, AttributeError, OSError):
+            raise LifecycleError("native_release_stop_mismatch") from None
+        stop.unlink()
+        return True
+    return False
+
+
+def recover(worker, receipt, common, write_record, remove_sdk, *, result_path=None, release_run=None):
     journal = worker / "native-run.json"
     if not journal.exists():
-        if result_path:
+        if release_run:
+            if not release_stop(worker, release_run):
+                raise LifecycleError("native_release_no_run")
+            receipt["director_confirmed_release"] = release_run
+        elif result_path:
             raise LifecycleError("native_reconciliation_no_run")
         return
     receipt.update(private_deleted=False, sdk_removed=False, custody_retained=True)
@@ -122,6 +142,8 @@ def recover(worker, receipt, common, write_record, remove_sdk, *, result_path=No
             raise LifecycleError("native_recovery_ownership_unproven")
         record = json.loads(journal.read_text())
         identity = identity_from(record)
+        if release_run is not None and release_run != identity["run_id"]:
+            raise LifecycleError("native_release_run_mismatch")
         receipt["recovered_run_id"] = identity["run_id"]
         if common.storage_identity(Path(identity["storage_anchor"])) != identity["storage_identity"]:
             raise LifecycleError("native_recovery_storage_changed")
@@ -140,6 +162,12 @@ def recover(worker, receipt, common, write_record, remove_sdk, *, result_path=No
         if private.exists():
             common.delete_private(private)
         receipt["private_deleted"] = True
+        if release_run is not None:
+            release_stop(worker, release_run)
+            receipt["director_confirmed_release"] = release_run
+            journal.unlink()
+            receipt["custody_retained"] = False
+            return
         if record.get("license_boundary") is True:
             write_record(worker / "native-activation-stop.json",
                          {"run_id": identity["run_id"], "boundary_event_count": 1})
@@ -152,7 +180,7 @@ def recover(worker, receipt, common, write_record, remove_sdk, *, result_path=No
     except Exception as error:
         # Recovery cannot attest absence after any failed operation. Never use
         # an exception-name prefix to infer which resources were removed.
-        code = str(error)
+        code = str(error).replace("qodana_", "native_")
         receipt["recovery_failure"] = code if re.fullmatch(r"native_[a-z_]+", code) else type(error).__name__
         raise LifecycleError("native_recovery_failed") from None
 
@@ -190,7 +218,7 @@ class RunContext:
             "backend_revision": self.receipt["backend_revision"],
         }
         self.journal = worker / "native-run.json"
-        record = {**self.identity, "schema_version": 2, "phase": "reserved", "sdk_attempted": False, "private_materialized": False}
+        record = {**self.identity, "schema_version": 2, "phase": "reserved", "sdk_attempted": False, "private_materialized": False, "guardian_pid": os.getpid()}
         self.write_record(self.journal, record)
         self.record = record
         self.receipt.update(private_deleted=False, custody_retained=True)
@@ -203,18 +231,23 @@ class RunContext:
         self.sdk_lease = (config, interpreter, sdk_name, self.identity["table_existed"])
         self.receipt["sdk_removed"] = False
 
+    def engine_spawned(self, identity):
+        self.phase("engine_running", engine_identity=identity)
+
     def attempt(self, operation, callback):
         try:
             callback()
             return True
-        except Exception:
+        except Exception as error:
             # Each finalization action is independent, including under disk
             # exhaustion. Only a bounded operation name leaves this boundary.
             self.failures.append(operation)
+            self.receipt.setdefault("finalization_failure_types", {})[operation] = type(error).__name__
             return False
 
     def finish(self, findings, reason, *, known_terminal):
         if self.finalized:
+            self.receipt.update(terminal_reason=reason, terminal_outcome_known=known_terminal)
             return reason, self.receipt.get("findings_artifact")
         artifact = None
         licensing = bool(self.receipt.get("license_boundary_observed"))
@@ -223,7 +256,7 @@ class RunContext:
         stop_durable = False
         try:
             if self.record is not None and known_terminal:
-                self.attempt("terminal_record", lambda: self.phase("terminal", outcome=reason, license_boundary=licensing))
+                self.attempt("terminal_record", lambda: self.phase("terminal", outcome=reason, license_boundary=licensing, worker_exited=self.receipt.get("worker_exited", True)))
             if licensing and self.worker is not None:
                 stop_durable = self.attempt("activation_stop", lambda: self.write_record(
                     self.worker / "native-activation-stop.json",

@@ -108,8 +108,8 @@ Use the script-backed helper to run and interpret JetBrains inspections through
 native PyCharm, Qodana or the Inspection API. Prefer it over direct curl or MCP
 tool calls.
 
-On macOS, `agent-inspect` defaults to isolated native PyCharm for Odoo repositories
-and Python-only selections assigned to root PyCharm lanes when an eligible
+On macOS, `agent-inspect` defaults to isolated native PyCharm for Python/Odoo XML
+selections assigned to root PyCharm lanes when an eligible
 independent worker, interpreter and profile are configured. Otherwise the
 existing Qodana/API selection remains available. Read
 [native PyCharm](references/native-backend.md) before configuring, diagnosing

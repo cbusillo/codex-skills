@@ -542,7 +542,7 @@ def main() -> int:
             return emit(result, args.json, classify_closeout_exit(result), command=args.command_input)
         if args.command == "agent":
             qodana_options = bool(args.qodana_recover_only or args.qodana_image or args.qodana_license_file or args.qodana_plugin_zip or args.qodana_uv)
-            native_options = bool(args.native_worker or args.native_recover_only or args.native_framework_root or args.native_reconcile_result)
+            native_options = bool(args.native_worker or args.native_recover_only or args.native_framework_root or args.native_reconcile_result or args.native_release_run)
             if native_options and qodana_options:
                 return emit_agent_usage_error("Native and Qodana options cannot be combined.")
             if args.backend in {"api", "native"} and qodana_options:
@@ -835,6 +835,7 @@ def build_parser() -> argparse.ArgumentParser:
     agent.add_argument("--native-worker", help="Independent Director-activated worker directory; config and credentials remain in place.")
     agent.add_argument("--native-recover-only", action="store_true", help="Clean only the journaled native run and exact helper SDK, without inspection or clearing activation stops.")
     agent.add_argument("--native-reconcile-result", help="Saved terminal native result for the same interrupted run; requires --native-recover-only and never clears licensing stops.")
+    agent.add_argument("--native-release-run", metavar="UUID", help="Release only this recovered run's helper metadata after recorded Director UI confirmation; requires --native-recover-only and never starts inspection.")
     agent.add_argument("--native-framework-root", action="append", default=[], help="Existing Odoo framework source root, including odoo/release.py; repeat for explicit roots.")
     agent.add_argument("--qodana-image", help="Pinned Community Docker image repository@sha256:digest.")
     agent.add_argument("--qodana-license-file", action="append", default=[], help="Removed: returns UNKNOWN without accessing the file. Use an independently Director-activated headless profile; see qodana-backend.md#director-activation.")

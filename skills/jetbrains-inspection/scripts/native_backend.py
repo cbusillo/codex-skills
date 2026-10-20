@@ -12,6 +12,7 @@ opened, staged or transferred. The profile lock is shared with its UI launcher.
 from __future__ import annotations
 
 import contextlib
+import ast
 import importlib.util
 import json
 import os
@@ -23,6 +24,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 import urllib.parse
 import uuid
 from pathlib import Path
@@ -55,16 +57,13 @@ proof: Any = sibling_module("native_proof", "native_coverage.py")
 lifecycle: Any = sibling_module("native_custody", "native_lifecycle.py")
 license_boundary = observations.license_boundary
 
-def is_odoo(repo):
-    paths = common.checked(["git", "-C", str(repo), "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "*__manifest__.py"])
-    fixture_roots = {"tests", "fixtures", "test-fixtures", "testdata", "assets"}
-    return any(not fixture_roots.intersection(Path(path).parts) for path in paths.decode().split("\0") if path)
+is_odoo = common.is_odoo
 
 
 def select_backend(args, host, host_default=None):
     if args.qodana_recover_only or args.qodana_image or args.qodana_license_file or args.qodana_plugin_zip or args.qodana_uv:
         return "qodana", "qodana_options_supplied"
-    if args.native_worker or args.native_recover_only or args.native_framework_root or args.native_reconcile_result:
+    if args.native_worker or args.native_recover_only or args.native_framework_root or args.native_reconcile_result or getattr(args, "native_release_run", None):
         return "native", "native_options_supplied"
     if host_default:
         return host_default, "host_default"
@@ -94,9 +93,13 @@ def eligibility_reason(args, host, repo, settings):
     try:
         worker, _app, roots = worker_settings(args, host)
         launcher_paths(worker)
+        if settings.get("prepare") and common.requested_python_version(settings) is None:
+            return "native_preparation_shape_unsupported"
         if is_odoo(repo) and (not roots or not any((root / "odoo/release.py").is_file() for root in roots) or any(not root.is_dir() for root in roots)):
             return "native_odoo_framework_required"
-        if not (repo / ".venv/bin/python").is_file() and not settings.get("prepare"):
+        if is_odoo(repo):
+            framework_context(repo, common.scope_selection(args, host)[3], roots)
+        if not (repo / ".venv/bin/python").is_file() and common.requested_python_version(settings) is None:
             return "native_python_environment_required"
         common.profile_for(repo, args.profile or settings.get("profile", ""))
         return None
@@ -104,6 +107,50 @@ def eligibility_reason(args, host, repo, settings):
         return str(error).replace("qodana_", "native_")
     except (host.InspectError, OSError, ValueError):
         return "native_configuration_unavailable"
+
+
+def framework_context(repo, selected, roots):
+    """Compare declared tenant/addon series to public framework source, without executing it."""
+    core = [root for root in roots if (root / "odoo/release.py").is_file()]
+    if len(core) != 1:
+        raise Blocked("native_odoo_framework_ambiguous")
+    try:
+        release = ast.parse((core[0] / "odoo/release.py").read_text())
+        version = next(node.value for node in release.body if isinstance(node, ast.Assign)
+                       and any(isinstance(target, ast.Name) and target.id == "version_info" for target in node.targets))
+        if not isinstance(version, ast.Tuple) or len(version.elts) < 2:
+            raise Blocked("native_odoo_version_unproven")
+        series = ".".join(str(ast.literal_eval(value)) for value in version.elts[:2])
+        declared = {}
+        workspace = repo / "workspace.toml"
+        if workspace.is_file():
+            value = tomllib.loads(workspace.read_text()).get("build", {}).get("odoo_version")
+            if value:
+                declared["workspace.toml"] = str(value)
+        for source in selected:
+            directory = (repo / source).parent
+            while directory.is_relative_to(repo):
+                manifest = directory / "__manifest__.py"
+                if manifest.is_file():
+                    common.require_public_input(manifest)
+                    value = ast.literal_eval(ast.parse(manifest.read_text()).body[0].value).get("version")
+                    if value:
+                        declared[manifest.relative_to(repo).as_posix()] = str(value)
+                    break
+                if directory == repo:
+                    break
+                directory = directory.parent
+        if not declared or not re.fullmatch(r"\d+\.\d+", series):
+            raise Blocked("native_odoo_version_unproven")
+        for value in declared.values():
+            match = re.match(r"^(\d+\.\d+)(?:\.|$)", value)
+            if not match:
+                raise Blocked("native_odoo_version_unproven")
+            if match.group(1) != series:
+                raise Blocked("native_odoo_version_mismatch")
+        return {"framework_series": series, "declared_versions": declared}
+    except (SyntaxError, ValueError, AttributeError, IndexError, StopIteration, TypeError):
+        raise Blocked("native_odoo_version_unproven") from None
 
 
 def runtime_storage(host, worker):
@@ -131,9 +178,9 @@ def runtime_storage(host, worker):
 
 
 @contextlib.contextmanager
-def profile_lock(worker):
+def profile_lock(worker, name="worker.lock"):
     import fcntl
-    path = worker / "worker.lock"
+    path = worker / name
     if not worker.is_dir() or worker.is_symlink():
         raise Blocked("native_worker_missing")
     try:
@@ -252,28 +299,99 @@ def sdk_tree(path):
         raise Blocked("native_sdk_table_malformed") from None
 
 
-def recover_run(worker, receipt=None, result_path=None):
+def recover_run(worker, receipt=None, result_path=None, release_run=None):
     current = receipt if receipt is not None else {"private_deleted": True, "sdk_removed": True}
     try:
-        lifecycle.recover(worker, current, common, write_record, remove_sdk, result_path=result_path)
+        lifecycle.recover(worker, current, common, write_record, remove_sdk, result_path=result_path, release_run=release_run)
     except lifecycle.LifecycleError as error:
         raise Blocked(str(error)) from None
 
 
-def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, receipt: dict[str, Any], *, lock_fd: int, global_lock_fd: int | None = None, require_completion=True):
+def process_identity(pid, private):
+    result = common.command(["ps", "-p", str(pid), "-o", "pid=,pgid=,lstart=,stat=,command="], timeout=2)
+    if result.returncode or not result.stdout.strip():
+        return None
+    fields = result.stdout.decode(errors="replace").strip().split(None, 8)
+    if len(fields) != 9:
+        raise Blocked("native_recovery_process_identity_unproven")
+    if fields[7].startswith("Z"):
+        return None
+    if int(fields[0]) != pid or int(fields[1]) != pid or not re.search(re.escape(str(private)) + r"(?=/|\s|$)", fields[8]):
+        raise Blocked("native_recovery_process_identity_changed")
+    return {"pid": pid, "pgid": int(fields[1]), "started": " ".join(fields[2:7]), "private": str(private)}
+
+
+def stop_orphan(worker, receipt):
+    """The control lock proves no live guardian owns this journal."""
+    journal = worker / "native-run.json"
+    if not journal.exists():
+        return False
+    receipt.update(private_deleted=False, sdk_removed=False, custody_retained=True)
+    if journal.is_symlink():
+        raise Blocked("native_recovery_ownership_unproven")
+    try:
+        record = json.loads(journal.read_text())
+        identity = lifecycle.identity_from(record)
+        if common.storage_identity(Path(identity["storage_anchor"])) != identity["storage_identity"]:
+            raise Blocked("native_recovery_storage_changed")
+        lifecycle.prove_private(identity, record.get("private_materialized", False))
+        engine = record.get("engine_identity")
+        if not engine or record.get("worker_exited") is True:
+            return False
+        pid = engine["pid"]
+        if type(pid) is not int or pid < 1 or engine["pgid"] != pid or engine["private"] != identity["private"]:
+            raise Blocked("native_recovery_process_identity_unproven")
+        current = process_identity(pid, Path(identity["private"]))
+        if current is None:
+            try:
+                os.killpg(pid, 0)
+            except ProcessLookupError:
+                return False
+            raise Blocked("native_recovery_process_group_unproven")
+        if current != engine:
+            raise Blocked("native_recovery_process_identity_changed")
+        os.killpg(pid, signal.SIGKILL)
+        receipt["orphan_group_stopped"] = pid
+        return True
+    except lifecycle.LifecycleError as error:
+        raise Blocked(str(error)) from None
+    except (KeyError, TypeError, ValueError):
+        raise Blocked("native_recovery_journal_malformed") from None
+
+
+LAUNCH_BARRIER = "import os,sys; fd=int(sys.argv[1]); allowed=os.read(fd,1)==b'1'; os.close(fd); sys.exit(125) if not allowed else os.execvpe(sys.argv[2],sys.argv[2:],os.environ)"
+
+
+def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, receipt: dict[str, Any], *, lock_fd: int, global_lock_fd: int | None = None, require_completion=True, on_spawn=None):
     """One guarded process group; preparation never uses IDE event parsing."""
     process = None
     receipt["worker_exited"] = True
+    pid_key, exited_key = ("worker_pid", "worker_exited") if require_completion else ("preparation_pid", "preparation_exited")
+    gate_read, gate_write = os.pipe() if require_completion else (None, None)
     stdout = None
     paused = False
     log_offsets, log_framers = {}, {}
+    log_license_scanners = {}
+    log_identities = {}
+    observation_failures = set()
     output_framer = observations.LineFramer()
+    output_license_scanner = observations.LicenseScanner()
     observer = observations.EngineObserver(private / "project", receipt)
     selector = selectors.DefaultSelector()
+    receipt["license_observation_complete"] = not require_completion
 
-    def consume(framer, data, final=False):
+    def scan_license(scanner, data, final=False):
+        if scanner.feed(data, final=final):
+            receipt["license_boundary_observed"] = True
+
+    def consume(framer, scanner, data, final=False):
         if not require_completion:
             return
+        # Scan the whole received chunk before ERROR, cancellation, oversized
+        # lines or any other ordinary observation can abort processing it.
+        scan_license(scanner, data, final)
+        if receipt.get("license_boundary_observed"):
+            raise Blocked("native_owner_activation_required")
         lines, partial = framer.feed(data, final=final)
         for line in lines:
             observer.observe(line)
@@ -287,29 +405,143 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
             if path.is_symlink():
                 raise Blocked("native_log_path_unsafe")
             offset = log_offsets.get(path, 0)
-            if path.stat().st_size < offset:
+            status = path.stat()
+            identity = status.st_dev, status.st_ino
+            if path in log_identities and log_identities[path] != identity:
+                observation_failures.add("log_replaced")
+                raise Blocked("native_log_replaced")
+            log_identities[path] = identity
+            if status.st_size < offset:
+                observation_failures.add("log_truncated")
                 raise Blocked("native_log_truncated")
             framer = log_framers.setdefault(path, observations.LineFramer())
+            scanner = log_license_scanners.setdefault(path, observations.LicenseScanner())
             with path.open("rb") as stream:
                 stream.seek(offset)
                 while True:
                     check_lifetime(parent_fd, deadline)
                     data = stream.read(1024 * 1024)
-                    consume(framer, data)
+                    log_offsets[path] = stream.tell()
+                    consume(framer, scanner, data)
                     if not final or len(data) < 1024 * 1024:
                         break
                 log_offsets[path] = stream.tell()
             if final:
-                consume(framer, b"", final=True)
+                consume(framer, scanner, b"", final=True)
+
+    def drain_licenses(stream):
+        """Bounded post-exit observation, independent of the execution deadline.
+
+        No ordinary observer runs here. Any unreadable, truncated or oversized
+        source leaves the terminal outcome unproved as non-licensing.
+        """
+        limit = time.monotonic() + 2
+        remaining = 4 * 1024 * 1024
+        complete = not observation_failures
+        failures = set(observation_failures)
+
+        def incomplete(reason):
+            nonlocal complete
+            complete = False
+            failures.add(reason)
+
+        def allowed():
+            return remaining > 0 and time.monotonic() < limit
+
+        try:
+            if stream is None:
+                incomplete("stdout_unavailable")
+            else:
+                os.set_blocking(stream.fileno(), False)
+                while allowed():
+                    try:
+                        data = os.read(stream.fileno(), min(65536, remaining))
+                    except BlockingIOError:
+                        incomplete("stdout_eof_unproved")
+                        break
+                    if not data:
+                        break
+                    remaining -= len(data)
+                    scan_license(output_license_scanner, data)
+                else:
+                    incomplete("drain_bound")
+                scan_license(output_license_scanner, b"", final=True)
+        except Exception:
+            incomplete("stdout_read_failed")
+
+        try:
+            paths = []
+            for path in (private / "logs").glob("*.log"):
+                if len(paths) == 64:
+                    incomplete("log_count_bound")
+                    break
+                paths.append(path)
+            if set(log_identities) - set(paths):
+                incomplete("log_disappeared")
+            for path in paths:
+                try:
+                    if not allowed():
+                        incomplete("drain_bound")
+                        break
+                    if path.is_symlink():
+                        incomplete("log_path_unsafe")
+                        continue
+                    offset = log_offsets.get(path, 0)
+                    scanner = log_license_scanners.setdefault(path, observations.LicenseScanner())
+                    status = path.stat()
+                    replaced = path in log_identities and log_identities[path] != (status.st_dev, status.st_ino)
+                    if replaced or status.st_size < offset:
+                        incomplete("log_replaced" if replaced else "log_truncated")
+                        offset = 0
+                        scanner = observations.LicenseScanner()
+                        log_license_scanners[path] = scanner
+                    with path.open("rb") as log:
+                        log.seek(offset)
+                        while allowed():
+                            data = log.read(min(65536, remaining))
+                            if not data:
+                                break
+                            remaining -= len(data)
+                            log_offsets[path] = log.tell()
+                            scan_license(scanner, data)
+                        else:
+                            incomplete("drain_bound")
+                    scan_license(scanner, b"", final=True)
+                except Exception:
+                    incomplete("log_read_failed")
+        except Exception:
+            incomplete("logs_unavailable")
+        if not output_license_scanner.complete or any(not scanner.complete for scanner in log_license_scanners.values()):
+            incomplete("line_over_limit")
+        receipt["license_observation_complete"] = complete
+        if failures:
+            receipt["license_observation_failures"] = sorted(failures)
 
     try:
-        process = subprocess.Popen(argv, cwd=private, env=env, stdin=subprocess.DEVNULL,
+        check_lifetime(parent_fd, deadline)
+        inherited = (lock_fd,) if global_lock_fd is None else (lock_fd, global_lock_fd)
+        launch = argv
+        if require_completion:
+            inherited += (gate_read,)
+            launch = [sys.executable, "-c", LAUNCH_BARRIER, str(gate_read), *argv]
+        process = subprocess.Popen(launch, cwd=private, env=env, stdin=subprocess.DEVNULL,
                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                    start_new_session=True,
-                                   pass_fds=(lock_fd,) if global_lock_fd is None else (lock_fd, global_lock_fd))
-        receipt["worker_pid"] = process.pid
-        receipt["worker_exited"] = False
+                                   pass_fds=inherited)
+        receipt[pid_key] = process.pid
+        receipt[exited_key] = False
         stdout = process.stdout
+        if gate_read is not None:
+            os.close(gate_read)
+            gate_read = None
+        if on_spawn is not None:
+            on_spawn(process.pid)
+        check_lifetime(parent_fd, deadline)
+        if gate_write is not None:
+            os.write(gate_write, b"1")
+            receipt["launch_gate_released"] = True
+            os.close(gate_write)
+            gate_write = None
         if stdout is None:
             raise Blocked("native_output_pipe_unavailable")
         os.set_blocking(stdout.fileno(), False)
@@ -318,7 +550,7 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
             check_lifetime(parent_fd, deadline)
             for _key, _event in selector.select(0.1):
                 chunk = os.read(stdout.fileno(), 65536)
-                consume(output_framer, chunk)
+                consume(output_framer, output_license_scanner, chunk)
                 if not chunk:
                     selector.unregister(stdout)
             read_logs()
@@ -331,8 +563,8 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
                         break
                     if not chunk:
                         break
-                    consume(output_framer, chunk)
-                consume(output_framer, b"", final=True)
+                    consume(output_framer, output_license_scanner, chunk)
+                consume(output_framer, output_license_scanner, b"", final=True)
                 read_logs(final=True)
                 break
             load = os.getloadavg()[0]
@@ -343,13 +575,16 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
             elif load <= LOAD_LIMIT and paused:
                 os.killpg(process.pid, signal.SIGCONT)
                 paused = False
-        receipt["engine_exit_code"] = process.returncode
+        receipt["engine_exit_code" if require_completion else "preparation_exit_code"] = process.returncode
         receipt["completion_observed"] = observer.completion if require_completion else False
         if process.returncode != 0 or require_completion and not observer.completion:
-            raise Blocked("native_execution_incomplete")
+            raise Blocked("native_execution_incomplete" if require_completion else "native_preparation_failed")
     except observations.ObservationError as error:
         raise Blocked(str(error)) from None
     finally:
+        for gate in (gate_read, gate_write):
+            if gate is not None:
+                os.close(gate)
         selector.close()
         if process is not None:
             try:
@@ -357,9 +592,15 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
             except ProcessLookupError:
                 pass
             process.wait()
+            if require_completion:
+                drain_licenses(stdout if stdout is not None else process.stdout)
             if stdout is not None:
                 stdout.close()
-            receipt["worker_exited"] = True
+            receipt[exited_key] = True
+        elif require_completion:
+            # Popen never created a licensed process, hence no output can have
+            # been lost. The pre-armed hold can be reconciled as a failed spawn.
+            receipt["license_observation_complete"] = True
 
 
 def prepare_model(project: Path, sdk_name: str, framework_roots: list[Path], selected: set[str]):
@@ -532,14 +773,22 @@ def envelope(host: Any, receipt: dict[str, Any], findings: list[dict[str, Any]],
         action = "Use the intended repository under jetbrains.trustedAutoOpenRoots in the standard helper config; native preparation executes only for a trusted source root."
     elif reason == "native_python_environment_required":
         action = "Run the repository's documented Python setup in the exact worktree; native needs its .venv or declared structured prepare.python."
+    elif reason == "native_preparation_shape_unsupported":
+        action = "Keep the declared command or nested preparation on its existing backend, or prepare the exact root .venv and select --backend native explicitly. Native runs only structured root prepare.python inside its snapshot."
+    elif reason.startswith("native_odoo_"):
+        action = "Match the selected addon's version and workspace build.odoo_version to one Odoo core checkout plus the workspace's declared addon dependency roots. Supply those clean roots with --native-framework-root; preserve source version declarations."
     elif reason == "native_scope_unsupported":
         action = "Select .py and Odoo .xml files assigned to the root PyCharm lane; other language or nested-project models require their existing qualified backend."
     elif reason.startswith("native_recovery_") and reason != "native_recovery_only_no_inspection":
         action = "Restore the journaled storage and use --backend native --native-recover-only with the same independent worker. Preserve unproved state."
     elif reason == "native_interrupted_run_unresolved":
-        action = "Resources were recovered but the licensed run's outcome is unproved. Preserve the journal. Reconcile the original saved nonlicensing terminal JSON with --native-recover-only --native-reconcile-result; without that evidence, escalate the missing outcome for review. Never infer expired activation or delete the hold to retry."
+        action = "Resources were recovered but the licensed run's outcome is unproved. Preserve the journal. Reconcile the original saved terminal JSON with no licensing event with --native-recover-only --native-reconcile-result; without that evidence, escalate the missing outcome for review. Never infer expired activation or delete the hold to retry."
+    elif reason == "native_license_observation_unproven":
+        action = "The engine exited but licence observation was incomplete. Preserve its run hold and use --native-recover-only for resources. Escalate the missing outcome; exact-run release requires the Director's recorded independent-UI confirmation. No activation expiry is inferred."
     elif reason.startswith("native_reconciliation_"):
-        action = "Use --native-recover-only with the original terminal native result for this exact run/backend. Licensing results, unknown outcomes and activation stops cannot be reconciled as nonlicensing. See references/native-backend.md."
+        action = "Use --native-recover-only with the original terminal native result for this exact run/backend. Results with licensing events, unknown outcomes and activation stops cannot be reconciled as results without a licensing event. See references/native-backend.md."
+    elif reason.startswith("native_release_"):
+        action = "Preserve unmatched helper metadata. After the Director's recorded confirmation through the independent product UI, use --native-recover-only --native-release-run with the exact journal/stop run UUID. That command never inspects."
     elif reason == "native_sdk_table_malformed":
         action = "Preserve the independent profile's malformed non-secret SDK table and repair that metadata under the worker lock before reassessing. No SDK was registered; never reset the profile or inspect activation files."
     elif reason.startswith("native_cache_"):
@@ -587,18 +836,31 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
     try:
         if sys.platform != "darwin":
             raise Blocked("native_macos_not_available")
-        if args.native_reconcile_result and not args.native_recover_only:
+        release_run = getattr(args, "native_release_run", None)
+        if (args.native_reconcile_result or release_run) and not args.native_recover_only:
             raise Blocked("native_reconciliation_requires_recovery_only")
+        if args.native_reconcile_result and release_run:
+            raise Blocked("native_reconciliation_release_conflict")
         worker, app, framework = worker_settings(args, host)
         context.worker = worker
         if not args.native_recover_only:
             product = json.loads((app / "Contents/Resources/product-info.json").read_text())
             receipt.update(ide_version=product.get("version"), ide_build=product.get("buildNumber"))
         state_dir().mkdir(parents=True, exist_ok=True, mode=0o700)
-        global_lock = held_lock.enter_context(profile_lock(state_dir()))
+        held_lock.enter_context(profile_lock(worker, "native-control.lock"))
+        stopped = stop_orphan(worker, receipt) if args.native_recover_only else False
+        lock_deadline = time.monotonic() + (2 if stopped else 0)
+        while True:
+            try:
+                global_lock = held_lock.enter_context(profile_lock(state_dir()))
+                break
+            except Blocked as error:
+                if str(error) != "native_worker_busy" or time.monotonic() >= lock_deadline:
+                    raise
+                time.sleep(0.05)
         lock = held_lock.enter_context(profile_lock(worker))
         config, plugins, home = launcher_paths(worker)
-        recover_run(worker, receipt, getattr(args, "native_reconcile_result", None))
+        recover_run(worker, receipt, getattr(args, "native_reconcile_result", None), release_run)
         if (worker / "native-activation-stop.json").exists():
             raise Blocked("native_activation_stop_recorded")
         if args.native_recover_only:
@@ -615,6 +877,8 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
             raise Blocked("native_odoo_framework_unavailable")
         receipt.update(scope=scope, selected_file_count=len(selected), repo_head_sha=host.git_head_sha(repo))
         receipt["framework_revisions"] = [host.git_head_sha(root) for root in framework]
+        if is_odoo(repo):
+            receipt["odoo_context"] = framework_context(repo, selected, framework)
         if any(common.checked(["git", "-C", str(root), "status", "--porcelain", "--untracked-files=normal"]).strip() for root in framework):
             raise Blocked("native_framework_inputs_unproven")
         if not selected:
@@ -636,7 +900,8 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
             raise Blocked("native_odoo_framework_required")
         planned_private = state / ("private-" + receipt["run_id"])
         source_interpreter = repo / ".venv/bin/python"
-        interpreter = planned_private / "project/.venv/bin/python" if settings.get("prepare") else source_interpreter
+        requested = common.requested_python_version(settings)
+        interpreter = planned_private / "project/.venv/bin/python" if requested is not None else source_interpreter
         context.reserve(state, worker, config, interpreter)
         private = context.private
         sdk_name = context.identity["sdk_name"]
@@ -652,8 +917,7 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
         controls = plant_controls(project, receipt["run_id"], is_odoo(repo))
         check_lifetime(parent_fd, deadline)
         # Use the declared version, or the exact worktree's prepared venv.
-        requested = common.requested_python_version(settings)
-        if settings.get("prepare"):
+        if requested is not None:
             prepared = common.preparation(settings, private, "python", repo, uv_supplied=True)
             preparation_env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(private / "prepare-home"), "TMPDIR": str(private / "tmp")}
             preparation_env.update(preparation_caches)
@@ -690,7 +954,13 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
         with registered_sdk(config, interpreter, version, sdk_name,
                             on_attempt=lambda: context.sdk_attempt(config, interpreter, sdk_name)):
             context.phase("engine_running")
-            execute(argv, env, private, deadline, parent_fd, receipt, lock_fd=lock.fileno(), global_lock_fd=global_lock.fileno())
+            def record_engine(pid):
+                identity = process_identity(pid, private)
+                if identity is None:
+                    raise Blocked("native_engine_identity_unproven")
+                context.engine_spawned(identity)
+            execute(argv, env, private, deadline, parent_fd, receipt, lock_fd=lock.fileno(), global_lock_fd=global_lock.fileno(),
+                    on_spawn=record_engine)
         all_findings, registered, languages = read_results(private / "results", project)
         findings = [finding for finding in all_findings if finding["file"] in selected]
         trace_tools, trace_failed = proof.read_trace(private / "inspection-trace.json", project)
@@ -718,6 +988,8 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
             raise Blocked("native_profile_inputs_changed")
         if [host.git_head_sha(root) for root in framework] != receipt["framework_revisions"]:
             raise Blocked("native_framework_inputs_changed")
+        if is_odoo(repo) and framework_context(repo, selected, framework) != receipt["odoo_context"]:
+            raise Blocked("native_odoo_context_changed")
         if any(common.checked(["git", "-C", str(root), "status", "--porcelain", "--untracked-files=normal"]).strip() for root in framework):
             raise Blocked("native_framework_inputs_changed")
         if args.severity != "all":
@@ -731,6 +1003,10 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
         reason = "native_prerequisite_or_report_failed"
         known_terminal = True
     finally:
+        if receipt.get("license_boundary_observed"):
+            reason, known_terminal = "native_owner_activation_required", True
+        elif "worker_pid" in receipt and not receipt.get("license_observation_complete", False):
+            reason, known_terminal = "native_license_observation_unproven", False
         reason, artifact = context.finish(findings, reason, known_terminal=known_terminal)
         receipt["wall_seconds"] = round(time.monotonic() - started, 3)
     return envelope(host, receipt, findings, reason, gaps, artifact)
@@ -746,6 +1022,7 @@ def run(args, host):
     result_read, result_write = os.pipe()
     child = os.fork()
     if child == 0:
+        os.setsid()
         os.close(lifetime_write)
         os.close(result_read)
         def guardian_signal(_signum, _frame):

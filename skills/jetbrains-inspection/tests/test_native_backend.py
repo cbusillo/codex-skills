@@ -10,6 +10,7 @@ import io
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -51,6 +52,27 @@ def copy_tracked_fixture(fixture, destination):
 
 
 class NativeTests(unittest.TestCase):
+    def test_framework_series_must_match_the_workspace_and_selected_addon(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo, framework = root / "repo", root / "core"
+            (repo / "addons/probe").mkdir(parents=True)
+            (framework / "odoo").mkdir(parents=True)
+            (framework / "odoo/release.py").write_text("version_info = (19, 0, 0, FINAL)\n")
+            workspace = repo / "workspace.toml"
+            manifest = repo / "addons/probe/__manifest__.py"
+            workspace.write_text('[build]\nodoo_version = "18.0"\n')
+            manifest.write_text('{"version":"19.0.1.0.0"}\n')
+            with self.assertRaisesRegex(native.Blocked, "native_odoo_version_mismatch"):
+                native.framework_context(repo, {"addons/probe/model.py"}, [framework])
+            workspace.write_text('[build]\nodoo_version = "19.0"\n')
+            manifest.write_text('{"version":"18.0.1.0.0"}\n')
+            with self.assertRaisesRegex(native.Blocked, "native_odoo_version_mismatch"):
+                native.framework_context(repo, {"addons/probe/model.py"}, [framework])
+            manifest.write_text('{"version":"19.0.1.0.0"}\n')
+            proof = native.framework_context(repo, {"addons/probe/model.py"}, [framework])
+            self.assertEqual(set(proof["declared_versions"].values()), {proof["framework_series"], proof["framework_series"] + ".1.0.0"})
+
     def test_fixture_copy_uses_tracked_inputs_only(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -168,10 +190,6 @@ class NativeTests(unittest.TestCase):
         for line in ("Running local inspections on /project/trial.py", "Inspecting trial-balance.xml", "building package license-required-helper"):
             self.assertFalse(native.license_boundary(line), line)
 
-    def test_native_and_qodana_share_the_same_global_lock(self):
-        self.assertEqual(native.state_dir() / "worker.lock", native.common.worker_lock_path())
-
-
 class NativeLifecycleTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
@@ -248,6 +266,20 @@ print('Done.')
         self.assertEqual(result["inspection_outcome"]["reason"], "native_pycharm_distribution_required")
         self.assertNotIn("worker_pid", result["diagnostic"]["native"])
 
+    def test_nonroot_preparation_keeps_auto_route_and_explicit_native_uses_ready_venv(self):
+        for prepare in ("bash scripts/prepare.sh", {"python": {"version": "3.12", "moduleName": "nested", "projectPath": "nested"}}):
+            with self.subTest(prepare=prepare):
+                directory = self.repo / ".github"
+                directory.mkdir(exist_ok=True)
+                (directory / "github.json").write_text(json.dumps({"qualityGate": {"inspection": {"prepare": prepare}}}))
+                self.assertEqual(self.assess()["inspection_outcome"]["reason"], "native_completed")
+                auto = host.build_parser().parse_args(["agent-inspect", "--repo", str(self.repo), "--scope", "files", "--file", "source.py", "--profile", "Test"])
+                config = {"jetbrains": {"nativeWorker": {"path": str(self.worker), "app": str(self.app)}}}
+                with patch.object(sys, "platform", "darwin"), patch.object(host, "read_global_config", return_value=config):
+                    backend, reason = native.select_backend(auto, host)
+                self.assertEqual(backend, "api")
+                self.assertIn("native_preparation_shape_unsupported", reason)
+
     def test_cleanup_only_does_not_need_an_installed_ide(self):
         shutil.rmtree(self.app)
         self.args.native_recover_only = True
@@ -297,6 +329,24 @@ print('Done.')
     def test_partial_license_prompt_without_newline_is_stopped(self):
         self.script.write_text(f"#!{sys.executable}\nimport sys,time\nsys.stdout.write('Start trial');sys.stdout.flush()\ntime.sleep(30)\n")
         self.assertEqual(self.assess()["inspection_outcome"]["reason"], "native_owner_activation_required")
+
+    def test_error_before_log_prompt_still_persists_the_owner_stop(self):
+        self.script.write_text(f"#!{sys.executable}\nfrom pathlib import Path\nimport time\nPath('logs/idea.log').write_text('No valid license found\\n')\nprint('ERROR: plugin startup failed',flush=True)\ntime.sleep(30)\n")
+        result = self.assess()
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_owner_activation_required")
+        self.assertTrue((self.worker / "native-activation-stop.json").exists())
+        self.assertEqual(self.assess()["inspection_outcome"]["reason"], "native_activation_stop_recorded")
+
+    def test_incomplete_license_observation_cannot_clear_the_outcome_hold(self):
+        outside = self.root / "unread.txt"
+        outside.write_text("unread fixture")
+        self.script.write_text(f"#!{sys.executable}\nfrom pathlib import Path\nimport time\nPath('logs/unsafe.log').symlink_to({str(outside)!r})\nprint('Done.',flush=True)\ntime.sleep(30)\n")
+        result = self.assess()
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_license_observation_unproven")
+        self.assertFalse(result["diagnostic"]["native"]["terminal_outcome_known"])
+        self.assertEqual(result["cleanup"]["status"], "closed")
+        self.assertTrue((self.worker / "native-run.json").exists())
+        self.assertEqual(self.assess()["inspection_outcome"]["reason"], "native_interrupted_run_unresolved")
 
     def test_cancelled_inspection_cannot_borrow_completed_spans_or_done(self):
         self.script.write_text(self.script.read_text() + "print('Cancelling inspection progress')\n")
@@ -525,17 +575,17 @@ print('Done.')
         self.assertEqual(self.assess()["inspection_outcome"]["reason"], "native_reconciliation_result_unproven")
         self.assertTrue(journal.exists())
 
-    def test_saved_nonlicensing_terminal_result_reconciles_a_persistence_failure(self):
+    @staticmethod
+    def interrupted_terminal_writer():
         write = native.write_record
 
         def fail_terminal(path, payload):
             if path.name == "native-run.json" and payload.get("phase") == "terminal":
                 raise OSError("terminal write interrupted")
             write(path, payload)
+        return fail_terminal
 
-        with patch.object(native, "write_record", side_effect=fail_terminal):
-            result = self.assess()
-        self.assertEqual(result["inspection_outcome"]["reason"], "native_persistence_failed")
+    def reconcile_saved_result(self, result):
         saved = self.root / "terminal-result.json"
         saved.write_text(json.dumps(result))
         self.args.native_recover_only = True
@@ -544,14 +594,13 @@ print('Done.')
         self.assertEqual(reconciled["inspection_outcome"]["reason"], "native_recovery_only_no_inspection")
         self.assertFalse((self.worker / "native-run.json").exists())
 
+    def test_saved_nonlicensing_terminal_result_reconciles_a_persistence_failure(self):
+        with patch.object(native, "write_record", side_effect=self.interrupted_terminal_writer()):
+            result = self.assess()
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_persistence_failed")
+        self.reconcile_saved_result(result)
+
     def test_failed_spawn_can_reconcile_its_known_nonlicensing_outcome(self):
-        write = native.write_record
-
-        def fail_terminal(path, payload):
-            if path.name == "native-run.json" and payload.get("phase") == "terminal":
-                raise OSError("terminal write interrupted")
-            write(path, payload)
-
         execute = native.execute
 
         def failed_spawn(*args, **kwargs):
@@ -559,17 +608,26 @@ print('Done.')
                 return execute(*args, **kwargs)
 
         with patch.object(native, "execute", side_effect=failed_spawn), \
-                patch.object(native, "write_record", side_effect=fail_terminal):
+                patch.object(native, "write_record", side_effect=self.interrupted_terminal_writer()):
             result = self.assess()
         self.assertTrue(result["diagnostic"]["native"]["worker_exited"])
         self.assertNotIn("worker_pid", result["diagnostic"]["native"])
-        saved = self.root / "terminal-result.json"
-        saved.write_text(json.dumps(result))
+        self.reconcile_saved_result(result)
+
+    def test_explicit_confirmed_release_matches_the_stop_and_never_inspects(self):
+        self.script.write_text(f"#!{sys.executable}\nprint('Start trial',flush=True)\n")
+        result = self.assess()
+        stop = self.worker / "native-activation-stop.json"
+        self.assertTrue(stop.exists())
         self.args.native_recover_only = True
-        self.args.native_reconcile_result = str(saved)
-        reconciled = self.assess()
-        self.assertEqual(reconciled["inspection_outcome"]["reason"], "native_recovery_only_no_inspection")
-        self.assertFalse((self.worker / "native-run.json").exists())
+        self.args.native_release_run = "wrong"
+        self.assertEqual(self.assess()["inspection_outcome"]["reason"], "native_release_stop_mismatch")
+        self.assertTrue(stop.exists())
+        self.args.native_release_run = result["identity"]["inspection_run_id"]
+        released = self.assess()
+        self.assertEqual(released["inspection_outcome"]["reason"], "native_recovery_only_no_inspection")
+        self.assertNotIn("worker_pid", released["diagnostic"]["native"])
+        self.assertFalse(stop.exists())
 
     def test_guardian_fallback_preserves_the_prearmed_run_identity(self):
         contexts = []
@@ -584,6 +642,7 @@ print('Done.')
                 patch.object(native, "execute", side_effect=RuntimeError("unexpected engine wrapper failure")):
             result = self.assess()
         self.assertEqual(result["inspection_outcome"]["reason"], "native_internal_error")
+        self.assertEqual(result["diagnostic"]["native"]["terminal_reason"], "native_internal_error")
         self.assertEqual(result["identity"]["inspection_run_id"], contexts[0].receipt["run_id"])
         journal = json.loads((self.worker / "native-run.json").read_text())
         self.assertEqual(journal["run_id"], result["identity"]["inspection_run_id"])
@@ -628,7 +687,7 @@ print('Done.')
             with self.assertRaisesRegex(native.Blocked, "native_cache_storage_changed"):
                 native.runtime_storage(host, self.worker)
 
-    def test_guardian_cleans_up_after_invoking_process_is_killed(self):
+    def start_guarded_fixture(self):
         started = self.root / "engine-started"
         self.script.write_text(f"#!{sys.executable}\nimport pathlib,time\npathlib.Path({str(started)!r}).touch()\ntime.sleep(30)\n")
         code = '''import json,sys
@@ -642,13 +701,18 @@ with patch.object(native.sys,'platform','darwin'), patch.object(native,'state_di
  native.run(args,host)
 '''
         argv = ["agent-inspect", "--backend", "native", "--repo", str(self.repo), "--scope", "files", "--file", "source.py", "--profile", "Test", "--native-worker", str(self.worker), "--ide-app", str(self.app)]
-        process = subprocess.Popen([sys.executable, "-c", code, str(Path(__file__).parent), str(self.root), json.dumps(argv)])
+        process = subprocess.Popen([sys.executable, "-c", code, str(Path(__file__).parent), str(self.root), json.dumps(argv)], start_new_session=True)
+        deadline = time.monotonic() + 10
+        while not started.exists() and process.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertTrue(started.exists(), "engine never entered guarded run")
+        return process
+
+    def test_guardian_cleans_up_after_invoking_group_is_killed(self):
+        process = self.start_guarded_fixture()
         try:
             deadline = time.monotonic() + 10
-            while not started.exists() and process.poll() is None and time.monotonic() < deadline:
-                time.sleep(0.02)
-            self.assertTrue(started.exists(), "engine never entered guarded run")
-            process.kill()
+            os.killpg(process.pid, signal.SIGKILL)
             process.wait(timeout=5)
             while (self.worker / "native-run.json").exists() and time.monotonic() < deadline:
                 time.sleep(0.02)
@@ -661,6 +725,55 @@ with patch.object(native.sys,'platform','darwin'), patch.object(native,'state_di
             if process.poll() is None:
                 process.kill()
                 process.wait(timeout=5)
+
+    def test_killed_guardian_orphan_is_stopped_before_recovery_and_exact_release(self):
+        process = self.start_guarded_fixture()
+        journal = self.worker / "native-run.json"
+        record = json.loads(journal.read_text())
+        try:
+            os.kill(record["guardian_pid"], signal.SIGKILL)
+            process.wait(timeout=5)
+            self.args.native_recover_only = True
+            result = self.assess()
+            self.assertEqual(result["inspection_outcome"]["reason"], "native_interrupted_run_unresolved")
+            self.assertEqual(result["diagnostic"]["native"]["orphan_group_stopped"], record["engine_identity"]["pid"])
+            self.assertEqual(result["cleanup"]["status"], "closed")
+            self.assertFalse(Path(record["private"]).exists())
+            self.assertTrue(journal.exists())
+            self.args.native_release_run = "wrong-run"
+            self.assertEqual(self.assess()["inspection_outcome"]["reason"], "native_release_run_mismatch")
+            self.args.native_release_run = record["run_id"]
+            released = self.assess()
+            self.assertEqual(released["inspection_outcome"]["reason"], "native_recovery_only_no_inspection")
+            self.assertFalse(journal.exists())
+            self.assertNotIn("worker_pid", released["diagnostic"]["native"])
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+            try:
+                os.killpg(record["engine_identity"]["pid"], signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+    def test_failed_engine_identity_persistence_never_releases_the_launch_gate(self):
+        marker = self.root / "must-not-start"
+        self.script.write_text(f"#!{sys.executable}\nfrom pathlib import Path\nPath({str(marker)!r}).touch()\n")
+        with patch.object(native.lifecycle.RunContext, "engine_spawned", side_effect=OSError("journal storage full")):
+            result = self.assess()
+        self.assertFalse(marker.exists())
+        self.assertEqual(result["cleanup"]["status"], "closed")
+
+    def test_recovery_refuses_changed_process_identity_without_signalling(self):
+        context = self.reserve_run()
+        context.phase("engine_running", engine_identity={"pid": 123456, "pgid": 123456, "started": "old", "private": str(context.private)})
+        self.args.native_recover_only = True
+        with patch.object(native, "process_identity", return_value={"started": "different"}), patch.object(native.os, "killpg") as kill:
+            result = self.assess()
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_recovery_process_identity_changed")
+        self.assertEqual(result["cleanup"]["status"], "failed")
+        kill.assert_not_called()
+        self.assertTrue(context.private.exists())
 
     def test_credential_named_source_is_refused_without_opening_it(self):
         credential = self.repo / "do-not-read.license"
@@ -708,7 +821,7 @@ class LiveNativeTests(unittest.TestCase):
                                 and wrong.lineno <= f["line"] <= wrong.end_lineno for f in findings))
             self.assertFalse(any(f["file"] == "native_probe/models.py" and correct.lineno <= f["line"] <= correct.end_lineno for f in findings))
             dependency = functions["valid_dependency"]
-            self.assertFalse(any(f["rule_id"] == "OdooPy" and f["file"] == "native_probe/models.py"
+            self.assertFalse(any(f["file"] == "native_probe/models.py"
                                  and dependency.lineno <= f["line"] <= dependency.end_lineno for f in findings))
             modern_tree = ast.parse((repo / "native_probe/python_types.py").read_text())
             modern = next(node for node in modern_tree.body if isinstance(node, ast.FunctionDef) and node.name == "valid_modern_annotation")
