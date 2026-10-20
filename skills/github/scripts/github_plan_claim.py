@@ -653,18 +653,20 @@ def coordination(conflicts: list[dict[str, Any]], comments: list[dict[str, Any]]
                             c.get("branch") == record["branch"] and source.get("id") not in released_ids)]
             if matching:
                 action = "Contact this native session or coordinate an exact authored handoff on the work record; preserve its artifacts"
+                native = [c for c in matching if c.get("session") == record["session"]]
                 if source.get("id") in released_ids and any(
-                    c.get("source") == "native_recovery" and c.get("session") == record["session"]
-                    for c in matching
+                    c.get("source") == "native_recovery" for c in native
+                ) and not any(c.get("error") for c in matching) and all(
+                    c.get("source") in {"native_recovery", "native_action"} for c in native
                 ):
                     action = (
-                        "This claim already has an exact authored release. If the Supervisor verifies the source is still ended now, "
-                        "including clients/peers the helpers cannot observe, reconcile it with "
-                        "skills/supervisor/scripts/release_session_claims.py finish --confirm-session-ended, "
-                        "using the original private ledger and this exact source session. Preview first; apply only after "
-                        "the current closure guards pass. See skills/supervisor/references/helpers.md#release-a-verified-finished-session. "
-                        "Preserve its artifacts; a historical exit alone does not authorize reconciliation."
+                        "For this exact-released source, if the Supervisor verifies it is still ended now, follow "
+                        "skills/supervisor/references/helpers.md#release-a-verified-finished-session: "
+                        "skills/supervisor/scripts/release_session_claims.py finish --confirm-session-ended. "
+                        "Use ledger metadata for the current launch generation; preview before applying. Preserve its artifacts."
                     )
+                    if any(c.get("source") == "native_action" for c in native):
+                        action = "First check for a live native action or lease owner and coordinate with it. " + action
                 holders.append({**record, "claim_url": handoff_url(repo, number, source.get("id")),
                                 "next_action": action,
                                 **diagnostics(matching)})
