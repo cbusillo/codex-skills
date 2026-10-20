@@ -421,8 +421,11 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
     function_owners = {}
     bind_sites, sources, write_sites, qualifications = {}, {}, {}, {}
     reference_operands, receiver_edges, accessor_fields = {}, {}, {}
+    member_operands, raw_results, raw_sources = {}, {}, {}
+    field_remainders, field_delegates, replacements = {}, {}, {}
     escapes, affected, read_sites, body_reads, relation_origins = {}, {}, {}, {}, {}
     expression_roles, callable_arrows, implicit_sites, switch_regions = {}, set(), {}, []
+    opaque_activations = {}
 
     def grow(table, key, values, fact):
         values = tuple(values)
@@ -437,6 +440,8 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
                 origins.add(stack[-1])
         if len(selected) != before or new_origin:
             invalidate(fact)
+            if table is escapes:
+                invalidate(("escapes",))
 
     def watch_bucket(fact):
         # Notification and causal predecessor selection are distinct: table
@@ -460,6 +465,12 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
             for producer in tuple(relation_origins.get((fact, origin), ())):
                 token(producer)
         return eligible
+
+    def raw_result(value):
+        if value[0] != "unknown" or len(value) != 3:
+            return False
+        watch_bucket(("raw-result", value))
+        return raw_results.get(value, False)
 
     def role(span):
         begin, end = trim(*span)
@@ -524,6 +535,8 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
         return query(("predicate", item, nullish), lambda: compute_predicate(item, nullish))[0]
 
     def compute_predicate(item, nullish):
+        if item[0] == "index":
+            return frozenset({False if nullish else bool(item[1])}), True
         selected = set()
         if item[0] == "span":
             span, anchor = item[1:]
@@ -539,15 +552,6 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
                 token(("reference-operands", key))
                 for source in tuple(reference_operands.get(key, ())):
                     selected.update(predicate(source, nullish))
-                owner = lexical(raw, begin)
-                if not selected and name_is_parameter(raw, owner):
-                    index, path, defaults, rest = bindings_by_body[owner][raw]
-                    for active in anchor_context(anchor, owner):
-                        if active is not None and active[2] == owner:
-                            token(("anchor", active))
-                            for _, _, capture, actual in tuple(anchors[active]):
-                                source = actual[index] if isinstance(actual, Packet) else ("value", ("undefined",))
-                                selected.update(predicate(select_path(source, path, defaults, rest, begin, capture), nullish))
                 if selected:
                     return frozenset(selected), len(selected) == 1
         else:
@@ -557,6 +561,8 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
                 selected.add(nullish)
             elif value[0] == "string":
                 selected.add(False if nullish else bool(value[1]))
+            elif raw_result(value):
+                selected.update((False,) if nullish else (False, True))
             elif value[0] not in {"data", "unknown", "binding"}:
                 selected.add(not nullish)
             else:
@@ -657,7 +663,7 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
         return frozenset(result), exact and known, recipe(receiver_span, anchor)
 
     def lexical(name, position):
-        owner, trail = owners[position], []
+        owner, trail = syntax_owner(position), []
         while (owner, name) not in visible:
             trail.append((owner, name))
             if name in bound.get(owner, {}):
@@ -671,9 +677,16 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
             visible[item] = result
         return result
 
+    def syntax_owner(position):
+        original = owner = owners[position]
+        for begin, end, selected in facts.get("parameter_scopes", ()):
+            if begin <= position < end and original == owners[begin]:
+                owner = selected
+        return owner
+
     def function_owner(position):
         if position not in function_owners:
-            scope = owners[position]
+            scope = syntax_owner(position)
             while scope != -1 and scope not in functions:
                 scope = parents.get(scope, -1)
             function_owners[position] = scope
@@ -903,6 +916,10 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
         if span not in literal_cache:
             recipes = []
             members = javascript_literal_members(native, code, *span, _facts=recipes)
+            if code[span[0]:span[0] + 1] == "[" and recipes and trim(*recipes[-1][1])[0] == trim(*recipes[-1][1])[1]:
+                recipes.pop()
+                if members:
+                    members = members[:-1]
             literal_cache[span] = members, tuple(recipes)
         return literal_cache[span][0]
 
@@ -981,6 +998,8 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
         certain = (re.fullmatch(r"\s*(?:(?:const|let|var)\s+)?", prefix) is not None
                    or (begin_target, finish_target, match.start()) in facts.get("update_assignments", ()))
         for selected, path, defaults, rest in projected:
+            if selected[0] in facts.get("parameter_positions", ()):
+                continue
             event = (selected, path, defaults, rest, (match.end(), rhs_end), begin_target, context, certain)
             raw = code[slice(*selected)].strip()
             if re.fullmatch(r"[A-Za-z_$][\w$]*", raw):
@@ -998,8 +1017,8 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
         if begin == finish or code[following:following + 1] == "{" or opening in facts.get("headers", set()):
             continue
         parts = tuple(node_expression_parts(code, opening + 1, close))
-        if len(parts) == 1 and not native[slice(*parts[0])].strip():
-            parts = ()
+        if parts and trim(*parts[-1])[0] == trim(*parts[-1])[1]:
+            parts = parts[:-1]
         call_sites[opening] = (begin, finish, close, False, parts)
     for opening, (end, parts) in templates.items():
         begin, finish = callee(opening)
@@ -1043,6 +1062,15 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
         return query(("recipe", item), lambda: compute_recipe(item))
 
     def compute_recipe(item):
+        if item[0] == "index":
+            return data
+        if item[0] == "array-tail":
+            values, exact = set(), True
+            for source in tail_operands(*item[1:]):
+                selected, certain = value_of(source)
+                values.update(selected)
+                exact &= certain
+            return frozenset(values), exact
         if item[0] == "choice":
             token(("choices", item))
             values = set()
@@ -1105,7 +1133,26 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
             return frozenset(selected), exact
         if item[0] == "args":
             return frozenset({item}), True
-        return frozenset({item[1]}), item[1][0] != "unknown"
+        return frozenset({item[1]}), item[1][0] != "unknown" or raw_result(item[1])
+
+    def numeric_field(field):
+        return isinstance(field, str) and re.fullmatch(r"0|[1-9][0-9]*", field) is not None
+
+    def operand_keys(item, seen=frozenset()):
+        if item in seen:
+            return set(), False
+        if item[0] == "index":
+            return {str(item[1])}, True
+        if item[0] == "path" and not item[2] and item[4] is None:
+            return operand_keys(item[1], seen | {item})
+        if item[0] == "span":
+            begin, end = trim(*item[1])
+            raw = native[begin:end].strip()
+            if numeric_field(raw):
+                return {raw}, True
+        values, exact = value_of(item)
+        names = {value[1] for value in values if value[0] == "string"}
+        return names, exact and bool(values) and len(names) == len(values)
 
     def keys_for(raw, anchor, position):
         raw = raw.strip()
@@ -1114,12 +1161,22 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
                 return {"".join(javascript_string(atom[0]) for atom in re.finditer(JS_STRING, raw))}, True
         except ValueError:
             pass
-        if raw.isdigit():
+        if numeric_field(raw):
             return {raw}, True
         if re.fullmatch(r"[A-Za-z_$][\w$]*", raw):
             values, known = reference_value(raw, position, anchor)
             result = {root[1] for root in values if root[0] == "string"}
-            return result, known and len(result) == len(values)
+            if len(result) == len(values):
+                return result, known
+            key = raw, position, anchor
+            token(("reference-operands", key))
+            originals = tuple(reference_operands.get(key, ()))
+            exact = bool(originals)
+            for item in originals:
+                names, certain = operand_keys(item)
+                result.update(names)
+                exact &= certain
+            return result, exact
         return set(), False
 
     def select_path(item, path, defaults, rest, position, anchor):
@@ -1143,12 +1200,11 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
                 result.update(anchor_context(capture, owner, seen | {anchor}))
         return tuple(result) or (None,)
 
-    def parameter_value(name, owner, anchor):
-        result, exact = set(), True
+    def parameter_operands(name, owner, anchor):
+        result = set()
         for active in anchor_context(anchor, owner):
             if active is None or active[2] != owner:
-                result.add(("binding", owner, name))
-                exact = False
+                result.add(("value", ("binding", owner, name)))
                 continue
             token(("anchor", active))
             specs = bindings_by_body.get(owner, {})
@@ -1161,11 +1217,9 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
                     selected = ("args", active, index)
                 else:
                     selected = operands[index] if isinstance(operands, Packet) else ("value", ("undefined",))
-                    selected = select_path(selected, path, defaults, rest, owner, capture)
-                values, certain = value_of(selected)
-                result.update(values)
-                exact &= certain
-        return frozenset(result), exact
+                    selected = select_path(selected, path, defaults, rest, owner, active)
+                result.add(selected)
+        return result
 
     def reference_value(selected, position, anchor):
         return query(("reference", selected, position, anchor), lambda: compute_reference(selected, position, anchor))
@@ -1197,13 +1251,17 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
             resolved.append((write_at, context, certain, frozenset(values), exact))
             operand_origins.setdefault(resolved[-1], set()).update(originals)
         last = max((event_order(at, position) for at, context, certain, _, exact in resolved if certain and exact and ordering(context, position, at)[1]), default=None)
-        values, known = set(), True
+        values, known, selected_originals = set(), True, set()
         if last is None:
             if (owner, base) in declarations:
                 values.update(("callable", span, anchor) for span in declarations[owner, base])
+                selected_originals.update(("value", value) for value in values)
             elif name_is_parameter(base, owner):
-                initial, known = parameter_value(base, owner, anchor)
-                values.update(initial)
+                selected_originals.update(parameter_operands(base, owner, anchor))
+                for item in selected_originals:
+                    initial, certain = value_of(item)
+                    values.update(initial)
+                    known &= certain and all(value[0] != "binding" for value in initial)
             elif owner is None:
                 initial = roots_global(base)
                 if initial == ("global",):
@@ -1216,10 +1274,11 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
                     else:
                         values.add(("unknown", base))
                         known = False
+                selected_originals.update(("value", value) for value in values)
             elif not any(context == owners[position] and certain for _, context, certain, _, _ in resolved):
                 values.add(("binding", owner, base))
+                selected_originals.add(("value", ("binding", owner, base)))
                 known = False
-        selected_originals = set()
         for event in resolved:
             at, context, _, selected_values, exact = event
             if last is None or event_order(at, position) >= last or not ordering(context, position, at)[1]:
@@ -1315,7 +1374,17 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
         position = span[0]
         literal(span)
         entries = literal_cache[span][1]
+        if code[span[0]] == "[":
+            selected = array_contributions(root, position, anchor, effects_enabled=False)
+            fields = {str(index): item for _, index, item in selected if index is not None}
+            remaining = frozenset(item for _, index, item in selected if index is None)
+            if field_remainders.get(root) != remaining:
+                field_remainders[root] = remaining
+                invalidate(("field-remainders", root))
+            accessor_fields[root] = {}
+            return fields, not remaining
         fields, accessors, known, methods = {}, set(), True, {}
+        remaining, delegated = set(), set()
         for name, operand, key_recipe in entries:
             raw = native[slice(*operand)].strip()
             if code[slice(*operand)].lstrip().startswith("..."):
@@ -1331,8 +1400,13 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
                         for field in shared:
                             methods.pop(field, None)
                         known &= certain
+                        watch_bucket(("field-remainders", value))
+                        watch_bucket(("field-delegates", value))
+                        if field_remainders.get(value) or field_delegates.get(value) or not certain:
+                            delegated.add((recipe((start, operand[1]), anchor), operand[0], anchor))
                     else:
                         known = False
+                        delegated.add((recipe((start, operand[1]), anchor), operand[0], anchor))
                 continue
             # Preserve the existing callable syntax's plain accessor role;
             # the public member reader deliberately keeps original spans.
@@ -1357,6 +1431,8 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
             if key_recipe is not None:
                 names, exact = keys_for(native[slice(*key_recipe)], anchor, operand[0])
                 known &= exact
+                if not exact:
+                    remaining.add(recipe(operand, anchor))
             else:
                 names = {name} if name is not None else set()
                 known &= name is not None
@@ -1365,6 +1441,11 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
                 accessors.discard(field)
                 methods.pop(field, None)
         accessor_fields[root] = methods
+        for table, values, fact in ((field_remainders, frozenset(remaining), "field-remainders"),
+                                    (field_delegates, frozenset(delegated), "field-delegates")):
+            if table.get(root) != values:
+                table[root] = values
+                invalidate((fact, root))
         return fields, known
 
     def project(values, exact, field, position, anchor):
@@ -1399,11 +1480,49 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
             selected.update(value_of(value)[0])
         return "values", frozenset(selected or {("undefined",)}), exact
 
+    def field_presence(root, field, position, anchor, seen=frozenset()):
+        if root in seen:
+            return True, False
+        possible = definite = False
+        if root[0] == "aggregate":
+            fields, known = aggregate_fields(root, position)
+            possible = definite = field in fields
+            array = code[root[1][0]] == "["
+            if array and numeric_field(field):
+                index = int(field)
+                for _, selected, item in array_contributions(root, position, anchor):
+                    if selected == index:
+                        possible = definite = True
+                    elif selected is None:
+                        possible = True
+                        if item[0] == "array-tail" and item[2] is not None:
+                            low, _ = packet_length(item[3], len(code) + 1)
+                            definite |= item[2] <= index < item[2] + low
+                _, high = packet_length(packet(("array-at", root, position, anchor), ("array", root, position, anchor)), len(code) + 1)
+                if high is not None and index >= high:
+                    possible = definite = False
+            elif not array:
+                possible |= not known or bool(field_remainders.get(root)) or bool(field_delegates.get(root))
+        elif root[0] == "copy":
+            token(("copy", root))
+            entries = [field_presence(value, field, root[1], root[2], seen | {root})
+                       for source in copy_sources.get(root, ()) for value in value_of(source)[0]]
+            possible = any(entry[0] for entry in entries)
+            definite = bool(entries) and all(entry[1] for entry in entries)
+        else:
+            return True, False
+        watch_bucket(("effects", root))
+        if any(ordering(event[1], position, event[0])[0]
+               for name in (field, None) for event in effects.get((root, name), ())):
+            possible = True
+        return possible, definite
+
     def property_options(root, field, position, anchor, inherited=True, layout=False):
         options = []
+        originals = {}
         unordered = set()
         own_absent = None
-        tag = root[0]
+        tag = "string" if raw_result(root) else root[0]
         def add(at, certain, item, known=True, accessor=None):
             if accessor is not None:
                 kind, selected, exact = "accessor", accessor, known
@@ -1414,26 +1533,55 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
             else:
                 selected, exact = value_of(item)
                 kind = "values"
+            originals[len(options)] = item
             options.append((at, certain, kind, selected, known and exact))
         if layout and tag in {"copy", "args", "rest"}:
             options.append((-1, True, "values", empty, True))
         elif tag == "aggregate":
-            fields, known = aggregate_fields(root, position)
-            if field in fields:
-                add(-1, True, fields[field], known, accessor_fields.get(root, {}).get(field))
+            array = code[root[1][0]] == "["
+            if array and field is None:
+                for _, _, item in array_contributions(root, position, anchor):
+                    add(-1, False, item)
+            elif array and numeric_field(field):
+                selected = literal_packet(root)
+                _, known = query(("packet-select", selected.key, int(field)), lambda: packet_selection(selected, int(field)))
+                add(-1, True, selected[int(field)], known)
             else:
-                own_absent = known
+                fields, known = aggregate_fields(root, position)
+                if field is None:
+                    for name in fields:
+                        add(-1, False, ("snapshot-member", ("value", root), name, position, anchor), known)
+                elif field in fields:
+                    add(-1, True, fields[field], known, accessor_fields.get(root, {}).get(field))
+                else:
+                    own_absent = known
+            if not array:
+                watch_bucket(("field-remainders", root))
+                for item in field_remainders.get(root, ()):
+                    add(-1, False, item, True if layout else False)
+                watch_bucket(("field-delegates", root))
+                for source, at, capture in field_delegates.get(root, ()):
+                    values, certain = value_of(source)
+                    present = [field_presence(value, field, at, capture) for value in values]
+                    if field is not None and present and not any(possible for possible, _ in present):
+                        continue
+                    covered = certain and bool(present) and all(definite for _, definite in present)
+                    add(at, covered, ("snapshot-member", source, field, at, capture))
         elif tag == "copy":
-            token(("copy", root))
-            values, exact = set(), True
-            for source in copy_sources.get(root, ()):
-                selected, certain = value_of(("snapshot-member", source, field, root[1], root[2]))
-                values.update(selected)
-                exact &= certain
-            options.append((-1, True, "values", frozenset(values), exact))
+            if field is None:
+                for _, _, item in array_contributions(root, position, anchor):
+                    add(-1, False, item)
+            else:
+                token(("copy", root))
+                values, exact = set(), True
+                for source in copy_sources.get(root, ()):
+                    selected, certain = value_of(("snapshot-member", source, field, root[1], root[2]))
+                    values.update(selected)
+                    exact &= certain
+                options.append((-1, True, "values", frozenset(values), exact))
         elif tag == "args":
             token(("anchor", root[1]))
-            if field.isdigit():
+            if numeric_field(field):
                 values, exact = empty, True
                 if anchors[root[1]]:
                     values, exact = value_of(packet(("args", root[1], root[2]), ("args", root[1], root[2]))[int(field)])
@@ -1443,7 +1591,7 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
             source, path, defaults, rest, at, creation = item[1:]
             selected, exact = value_of(("path", source, path, defaults, None, at, creation))
             offset = rest[1]
-            target_field = str(int(field) + int(offset)) if offset is not None and str(offset).isdigit() and field.isdigit() else field
+            target_field = str(int(field) + int(offset)) if offset is not None and str(offset).isdigit() and numeric_field(field) else field
             values, known = project(selected, exact, target_field, position, creation)
             options.append((-1, True, "values", values, known))
         elif root == ("global",) and inherited:
@@ -1456,8 +1604,8 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
             allowed = {"assign", "defineProperty", "defineProperties"} if root[1] == "Object" else {"apply", "construct", "get", "set", "defineProperty"}
             if field in allowed:
                 options.append((-1, True, "values", frozenset({("intrinsic", root[1] + "." + field)}), True))
-        if field == "slice" and not options and (tag == "copy" or tag == "aggregate" and code[root[1][0]] == "["):
-            options.append((-1, True, "values", frozenset({("array-method", "slice")}), True))
+        if field in {"slice", "forEach"} and not options and (tag == "copy" or tag == "aggregate" and code[root[1][0]] == "["):
+            options.append((-1, True, "values", frozenset({("array-method", field)}), True))
         if field in {"call", "apply", "bind"} and not options and tag in {"handle", "callable", "bound", "intrinsic", "method", "array-method", "read-callable", "unknown"}:
             options.append((-1, True, "values", frozenset({("method", field)}), tag != "unknown"))
         if field == "constructor" and not options:
@@ -1471,7 +1619,13 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
         # make a Set depend on its own excluded, later publication.
         fact = ("effects", root, field)
         watch_bucket(fact)
-        for event in tuple(effects.get((root, field), ())):
+        watch_bucket(("effects", root, None))
+        if field is None:
+            watch_bucket(("effects", root))
+        selected_events = tuple(event for (selected, name), events in effects.items() if selected == root for event in events) if field is None else tuple(effects.get((root, field), ()))
+        event_fields = {event: name for (selected, name), events in effects.items() if selected == root for event in events} if field is None else {}
+        wildcard_events = tuple(effects.get((root, None), ())) if field is not None else ()
+        for event in (*selected_events, *wildcard_events):
             at, context, certain, item, effect_anchor, producer = event
             possible, definite = ordering(context, position, at)
             if not possible:
@@ -1481,7 +1635,15 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
             # legitimate loop backedges; only Define can replace that role.
             if layout and item[0] != "descriptor":
                 continue
-            for origin in tuple(effect_origins.get((root, field, event), ())):
+            delegated = item[1] if item[0] == "descriptor" else item
+            if event in wildcard_events and delegated[0] == "snapshot-member" and delegated[2] is None:
+                values, _ = value_of(delegated[1])
+                if values and not any(field_presence(value, field, delegated[3], delegated[4])[0] for value in values):
+                    continue
+                projected = ("snapshot-member", delegated[1], field, delegated[3], delegated[4])
+                item = ("descriptor", projected, item[2], item[3]) if item[0] == "descriptor" else projected
+            event_field = None if event in wildcard_events else event_fields.get(event, field)
+            for origin in tuple(effect_origins.get((root, event_field, event), ())):
                 token(origin)
             if producer is not None:
                 token(("qualification", producer))
@@ -1491,11 +1653,11 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
                            and states.get(producer, [None, False])[1])
             if function_owner(write_sites.get(at, at)) != function_owner(position):
                 unordered.add(at)
-            add(at, certain and definite, item)
+            add(at, certain and definite and field is not None and event not in wildcard_events, item)
         fact = ("escape", root)
         watch_bucket(fact)
         for event in tuple(escapes.get(root, ())):
-            at, context, origin = event
+            at, context, origin, _ = event
             possible, definite = ordering(context, position, at)
             if possible:
                 for producer in tuple(relation_origins.get((fact, event), ())):
@@ -1509,10 +1671,23 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
             grow(affected, value, origins, ("affected", value))
             options.append((-1, False, "values", frozenset({value}), False))
         last = max((event_order(at, position) for at, certain, _, _, exact in options if certain and exact), default=None)
+        if not layout and field is not None:
+            key = root, field, position, anchor
+            replaced = last is not None and last[0] >= 0
+            if replacements.get(key) != replaced:
+                replacements[key] = replaced
+                invalidate(("replacement", *key))
         selected_options = []
-        for at, _, kind, selected, certain in options:
+        selected_originals = set()
+        for index, (at, _, kind, selected, certain) in enumerate(options):
             if last is None or event_order(at, position) >= last or at in unordered:
                 selected_options.append((kind, selected, certain))
+                if index in originals:
+                    selected_originals.add(originals[index])
+        key = root, field, position, anchor, layout
+        if member_operands.get(key) != selected_originals:
+            member_operands[key] = selected_originals
+            invalidate(("member-operands", key))
         return selected_options
 
     def invoke_accessor(methods, root, position, anchor, actual=()):
@@ -1543,6 +1718,8 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
         return frozenset(values), exact
 
     def set_property(root, field, item, at, context, certain, anchor, producer=None):
+        if root[0] in {"undefined", "data", "string"} or raw_result(root):
+            return
         options = property_options(root, field, write_sites.get(at, at), anchor, layout=True)
         data_option = not options
         for kind, selected, known in options:
@@ -1553,9 +1730,13 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
                 data_option = True
         if data_option:
             publish(root, field, item, at, context, certain and all(kind != "accessor" and known for kind, _, known in options), anchor, producer)
+        if any(ordering(escaped_context, at, escaped_at)[0] for escaped_at, escaped_context, _, _ in tuple(escapes.get(root, ()))):
+            implicit_sites.setdefault(at, (at, at))
+            actual = packet((at, anchor, root, field, "opaque-setter"), ("sequence", ((item, False),)))
+            opaque_call(("value", root), actual, at, anchor, set())
 
     def publish(root, field, item, at, context, certain, anchor, producer=None):
-        if root[0] in {"undefined", "data", "string"}:
+        if root[0] in {"undefined", "data", "string"} or raw_result(root):
             return
         event = at, context, certain, item, anchor, producer
         key = root, field
@@ -1569,6 +1750,7 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
         if event not in selected or new_producer:
             selected.add(event)
             invalidate(fact)
+            invalidate(("effects", root))
 
     # Packet descriptors are structural graph edges, never runtime values or
     # expanded actual environments. Their leaves remain ordinary recipes.
@@ -1629,8 +1811,20 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
         return packet((site, anchor, frozenset(adapting), "bound-prefix", left.key, right.key if isinstance(right, Packet) else right),
             ("join", left, right))
 
-    def spread_packets(item):
+    def literal_packet(root):
+        literal(root[1])
+        pieces = []
+        for _, span, _ in literal_cache[root[1]][1]:
+            begin, end = trim(*span)
+            spread = code[begin:begin + 3] == "..."
+            pieces.append((recipe((begin + 3, end) if spread else span, root[2]), spread))
+        return packet(root, ("sequence", tuple(pieces)))
+
+    def spread_packets(item, position=None, capture=None):
         values, exact = value_of(item)
+        if position is None:
+            position = item[1][0] if item[0] == "span" else item[3] if item[0] == "snapshot-member" else 0
+            capture = item[2] if item[0] == "span" else item[4] if item[0] == "snapshot-member" else capture
         structural = False
         if item[0] == "span":
             begin, end = trim(*item[1])
@@ -1646,17 +1840,131 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
         for root in values:
             if root[0] == "args":
                 selected.append(packet(root, ("args", root[1], root[2])))
-            elif root[0] == "aggregate" and code[root[1][0]] == "[":
-                literal(root[1])
-                pieces = []
-                for _, span, _ in literal_cache[root[1]][1]:
-                    begin, end = trim(*span)
-                    spread = code[begin:begin + 3] == "..."
-                    pieces.append((recipe((begin + 3, end) if spread else span, root[2]), spread))
-                selected.append(packet(root, ("sequence", tuple(pieces))))
+            elif root[0] == "copy" or root[0] == "aggregate" and code[root[1][0]] == "[":
+                selected.append(packet(("array-at", root, position, capture), ("array", root, position, capture)))
             else:
                 opaque = True
         return tuple(selected), opaque
+
+    def array_length(root, position, anchor, limit, constraints, active, memo):
+        if root[0] == "aggregate":
+            low, high = packet_length(literal_packet(root), limit, constraints, active, memo)
+        else:
+            token(("copy", root))
+            lengths = [packet_length(child, limit, constraints, active, memo)
+                       for source in copy_sources.get(root, ())
+                       for child in spread_packets(source, root[1], root[2])[0]]
+            low = min((entry[0] for entry in lengths), default=0)
+            high = None if not lengths or any(entry[1] is None for entry in lengths) else max(entry[1] for entry in lengths)
+        watch_bucket(("effects", root))
+        for (selected, field), events in tuple(effects.items()):
+            if selected != root or not any(ordering(event[1], position, event[0])[0] for event in events):
+                continue
+            if numeric_field(field):
+                index = int(field) + 1
+                high = None if high is None or index > limit else max(high, index)
+                member_one(root, field, position, anchor)
+                token(("replacement", root, field, position, anchor))
+                if replacements.get((root, field, position, anchor), False):
+                    low = max(low, min(limit, index))
+            elif field is None or field == "length":
+                high = None
+        return low, high
+
+    def tail_operands(root, start, child, position, anchor):
+        def compute():
+            low, high = packet_length(child, len(code) + 1)
+            fields = []
+            watch_bucket(("effects", root))
+            if start is not None and high is not None and low == high:
+                for selected, field in tuple(effects):
+                    if selected != root or not numeric_field(field) or not start <= int(field) < start + high:
+                        continue
+                    member_one(root, field, position, anchor)
+                    token(("replacement", root, field, position, anchor))
+                    if replacements.get((root, field, position, anchor), False):
+                        fields.append(field)
+                if len(set(fields)) == high:
+                    return frozenset(("snapshot-member", ("value", root), field, position, anchor) for field in fields), True
+            return frozenset(packet_leaves(child)), False
+        return query(("array-tail", root, start, child.key, position, anchor), compute)[0]
+
+    def array_contributions(root, position, anchor, *, holes=False, effects_enabled=True):
+        key = "array-contributions", root, position, anchor, holes, effects_enabled
+        def compute():
+            result, visited = set(), set()
+            def add(site, index, item):
+                selected = ("snapshot-member", ("value", root), str(index), position, anchor) if index is not None else item
+                result.add((site, index, selected))
+            def tail(site, offset, child):
+                result.add((site, None, ("array-tail", root, offset, child, position, anchor)))
+            def walk(node, offset=0, spreading=False):
+                if node.key in visited:
+                    tail(position, offset, node)
+                    return
+                visited.add(node.key)
+                kind, *parts = node.form
+                if kind == "array":
+                    selected, at, capture = parts
+                    for site, index, item in array_contributions(selected, at, capture, holes=holes or spreading):
+                        if offset is not None and index is not None:
+                            add(site, offset + index, item)
+                        elif item[0] == "array-tail":
+                            _, _, inner, child, _, _ = item
+                            tail(site, None if offset is None or inner is None else offset + inner, child)
+                        else:
+                            child = packet(("array-contribution", item), ("sequence", ((item, False),)))
+                            tail(site, None, child)
+                    return
+                if kind != "sequence":
+                    for item in packet_leaves(node):
+                        result.add((position, None, item))
+                    return
+                for item, spread in parts[0]:
+                    site = item[1][0] if item[0] == "span" else position
+                    if not spread:
+                        empty_part = item[0] == "span" and trim(*item[1])[0] == trim(*item[1])[1]
+                        if holes or spreading or not empty_part:
+                            if offset is not None:
+                                add(site, offset, item)
+                            else:
+                                tail(site, None, packet(("array-contribution", item), ("sequence", ((item, False),))))
+                        offset = None if offset is None else offset + 1
+                        continue
+                    children, opaque = spread_packets(item)
+                    lengths = []
+                    for child in children:
+                        walk(child, offset, True)
+                        lengths.append(packet_length(child, len(code) + 1))
+                    if opaque:
+                        tail(site, None, packet(("opaque-array-contribution", item), ("sequence", ((item, False),))))
+                    if opaque or not lengths or any(high is None or low != high for low, high in lengths) or len({high for _, high in lengths}) != 1:
+                        offset = None
+                    elif offset is not None:
+                        offset += lengths[0][1]
+            if root[0] == "aggregate":
+                walk(literal_packet(root))
+            elif root[0] == "copy":
+                token(("copy", root))
+                for source in copy_sources.get(root, ()):
+                    children, opaque = spread_packets(source, root[1], root[2])
+                    for child in children:
+                        walk(child)
+                    if opaque:
+                        result.add((root[1], None, source))
+            else:
+                result.add((position, None, ("value", ("unknown",))))
+            if effects_enabled:
+                watch_bucket(("effects", root))
+                for (selected, field), events in tuple(effects.items()):
+                    if selected != root:
+                        continue
+                    for event in events:
+                        if ordering(event[1], position, event[0])[0] and (field is None or numeric_field(field)):
+                            add(event[0], int(field) if field is not None else None,
+                                ("snapshot-member", ("value", root), field, position, anchor))
+            return frozenset(result), False
+        return query(key, compute)[0]
 
     def packet_edges(actual, constraints):
         form = actual.form
@@ -1694,7 +2002,9 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
             total = None if left[1] is None or right[1] is None else left[1] + right[1]
             hi = None if total is None or total > limit else total
             return lo, hi
-        if kind == "sequence":
+        if kind == "array":
+            result = array_length(parts[0], parts[1], parts[2], limit, constraints, active, memo)
+        elif kind == "sequence":
             result = (0, 0)
             for item, spread in parts[0]:
                 if not spread:
@@ -1733,7 +2043,9 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
         visited.add(actual.key)
         kind, *parts = actual.form
         result = set()
-        if kind == "sequence":
+        if kind == "array":
+            result.update(item for _, _, item in array_contributions(parts[0], parts[1], parts[2], holes=True))
+        elif kind == "sequence":
             for item, spread in parts[0]:
                 result.add(item)
                 if spread:
@@ -1768,6 +2080,9 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
             visited[node.key] = at
             active = active | {node.key}
             kind, *parts = node.form
+            if kind == "array":
+                item = ("snapshot-member", ("value", parts[0]), str(at), parts[1], parts[2])
+                return [(item, selected)], True
             if kind == "args":
                 edges = packet_edges(node, selected)
                 if len(edges) > 1 and selected and parts[0] not in selected:
@@ -1841,7 +2156,12 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
     def array_operands(item):
         selected, opaque = spread_packets(item)
         if selected:
-            yield from selected
+            for actual in selected:
+                # Native apply reads the array-like arguments before the
+                # target runs, even when it does not consume its formals.
+                for operand in packet_leaves(actual):
+                    value_of(operand)
+                yield actual
         if opaque or not selected:
             yield packet(("opaque-array", item), ("sequence", ((item, False),)))
 
@@ -1863,6 +2183,13 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
                     return source_operand(recipe(defaults[-1][1], creation), constraints, seen | {item})
                 return source_operand(source, constraints, seen | {item})
             return [], False
+        if item[0] in {"snapshot-member", "descriptor"}:
+            result, exact = [], True
+            for source in original_operands(item):
+                variants, known = source_operand(source, constraints, seen | {item})
+                result.extend(variants)
+                exact &= known
+            return result, exact and bool(result)
         if item[0] != "span":
             return [], item == ("value", ("undefined",))
         span, creation = item[1:]
@@ -1870,6 +2197,15 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
         name = code[begin:end]
         owner = lexical(name, begin) if re.fullmatch(r"[A-Za-z_$][\w$]*", name) else None
         if not name_is_parameter(name, owner):
+            if member_span(begin, end) is not None:
+                originals = original_operands(item)
+                if originals:
+                    result, exact = [], True
+                    for source in originals:
+                        variants, known = source_operand(source, constraints, seen | {item})
+                        result.extend(variants)
+                        exact &= known
+                    return result, exact and bool(result)
             return [((span,), constraints)], True
         result, exact = [], True
         index, path, defaults, rest = bindings_by_body[owner][name]
@@ -1888,7 +2224,7 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
                     {**constraints, active: edge}, variants=True)
                 exact &= certain
                 for operand, branch in selected:
-                    operand = select_path(operand, path, defaults, rest, owner, edge[2])
+                    operand = select_path(operand, path, defaults, rest, owner, active)
                     variants, known = source_operand(operand, branch, seen | {item})
                     result.extend(variants)
                     exact &= known
@@ -1905,6 +2241,9 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
         used.add(actual.key)
         active = active | {actual.key}
         kind, *parts = actual.form
+        if kind == "array":
+            low, high = packet_length(actual, len(code) + 1, constraints)
+            return high if high is not None and low == high else None
         if kind == "args":
             edges = packet_edges(actual, constraints)
             if len(edges) > 1 and constraints and parts[0] not in constraints:
@@ -1947,6 +2286,20 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
         used.add(actual.key)
         active = active | {actual.key}
         kind, *parts = actual.form
+        if kind == "array":
+            high = source_layout(actual, constraints)
+            if high is None:
+                return [], False
+            result = [((), constraints)]
+            for index in range(high):
+                next_result = []
+                for spans, branch in result:
+                    variants, exact = source_operand(actual[index], branch)
+                    if not exact:
+                        return [], False
+                    next_result.extend((spans + tail, selected) for tail, selected in variants)
+                result = next_result
+            return result, True
         if kind == "args":
             edges = packet_edges(actual, constraints)
             if len(edges) > 1 and constraints and parts[0] not in constraints:
@@ -2012,6 +2365,7 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
             if item in visited:
                 continue
             visited.add(item)
+            pending.extend(original_operands(item))
             if item[0] == "choice":
                 pending.extend(choices.get(item, ()))
             elif item[0] == "path":
@@ -2030,6 +2384,44 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
                             for edge in anchors[active]:
                                 pending.extend(packet_leaves(edge[3]))
         return result
+
+    def original_operands(item):
+        result = set()
+        if item[0] == "array-tail":
+            result.update(tail_operands(*item[1:]))
+        elif item[0] == "snapshot-member":
+            source, field, site, anchor = item[1:]
+            values, _ = value_of(source)
+            for root in values:
+                member_one(root, field, site, anchor)
+                key = root, field, site, anchor, False
+                token(("member-operands", key))
+                result.update(member_operands.get(key, ()))
+        elif item[0] == "descriptor":
+            source, site, anchor = item[1:]
+            for root in value_of(source)[0]:
+                if root[0] == "aggregate":
+                    fields, _ = aggregate_fields(root, site)
+                    result.update(fields[field] for field in ("value", "get") if field in fields)
+        elif item[0] == "span":
+            values, _ = value_of(item)
+            span, anchor = item[1:]
+            begin, end = trim(*span)
+            selected = member_span(begin, end)
+            if selected is not None:
+                receiver, key, field = selected
+                roots, _ = expression(receiver, anchor)
+                fields, _ = keys_for(native[slice(*key)], anchor, begin) if key is not None else ({field}, True)
+                for root in roots:
+                    for field in fields:
+                        result.update(original_operands(("snapshot-member", ("value", root), field, begin, anchor)))
+            watch_bucket(("raw-sources",))
+            for key, sources_for_call in tuple(raw_sources.items()):
+                selected = set().union(*(set(sources_for_call.get(value, ())) for value in values))
+                if selected:
+                    token(("raw-sources", key))
+                    result.update(selected)
+        return result - {item}
 
     def plain_const_binding(owner, name):
         events = variable_events.get((owner, name), ())
@@ -2182,9 +2574,29 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
         # the settled invocation facts after the dependency queue is empty.
         sources[site, anchor] = set()
         begin, finish, end, tagged, parts = call_sites[site]
+        if anchor is not None and isinstance(anchor[1], tuple):
+            # A native array callback has a correlated original element and
+            # index. Reuse expression selection for this actual invocation;
+            # ordinary native body scheduling remains conservative.
+            for region, condition, nullish, truth in gate_regions:
+                if region[0] <= begin and end < region[1] and truth not in predicate(recipe(condition, anchor), nullish):
+                    return undefined
         targets, known, this = reference_call((begin, finish), anchor)
         actual = operands(parts, anchor, site)
-        values, exact = invoke_values(targets, this, actual, site, anchor, set())
+        outcomes = {}
+        values, exact = invoke_values(targets, this, actual, site, anchor, set(), outcomes)
+        result = ("unknown", site, anchor)
+        guaranteed = bool(outcomes.get(result)) and all(raw for raw, _ in outcomes[result])
+        if raw_results.get(result, False) != guaranteed:
+            raw_results[result] = guaranteed
+            invalidate(("raw-result", result))
+        originals = {value: frozenset(item for raw, items in producers if raw for item in items)
+                     for value, producers in outcomes.items()}
+        key = site, anchor
+        if raw_sources.get(key) != originals:
+            raw_sources[key] = originals
+            invalidate(("raw-sources", key))
+            invalidate(("raw-sources",))
         if not known and not values:
             values = frozenset({("unknown", site, anchor)})
         return values, exact and known
@@ -2193,22 +2605,79 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
         return query(("reached-values", item, site, anchor), lambda: compute_reached_values(item, site, anchor))[0]
 
     def compute_reached_values(item, site, anchor):
-        pending = list(value_of(item)[0])
-        seen = set()
+        pending, seen, reached = [item], set(), {}
         while pending:
-            root = pending.pop()
-            if root in seen:
+            selected = pending.pop()
+            if selected in reached:
                 continue
-            seen.add(root)
-            if root == ("global",):
-                pending.extend(("intrinsic", name) for name in ("String", "Object", "Reflect"))
-            elif root[0] == "aggregate":
-                fields, _ = aggregate_fields(root, site)
-                for field in fields:
-                    pending.extend(project(frozenset({root}), True, field, site, anchor)[0])
-        return frozenset(seen), False
+            values, _ = value_of(selected)
+            reached[selected] = values
+            for root in values:
+                if root in seen:
+                    continue
+                seen.add(root)
+                if root == ("global",):
+                    pending.extend(("value", ("intrinsic", name)) for name in ("String", "Object", "Reflect"))
+                if root[0] in {"aggregate", "global", "copy"}:
+                    fields = set(aggregate_fields(root, site)[0]) if root[0] == "aggregate" else set()
+                    if root[0] == "copy" or root[0] == "aggregate":
+                        fields.add(None)
+                    watch_bucket(("effects", root))
+                    fields.update(field for owner, field in effects if owner == root)
+                    for field in fields:
+                        pending.append(("snapshot-member", ("value", root), field, site, anchor))
+        return reached, False
 
-    def invoke_values(targets, this, actual, site, anchor, adapting):
+    def opaque_call(this, actual, site, anchor, active):
+        # Opaque implementations may share retained user operands. Identity of
+        # an unresolved receiver does not certify isolation from another one.
+        inputs = list(actual)
+        receivers, _ = value_of(this)
+        if any(value[0] in {"aggregate", "global", "intrinsic", "copy"} for value in receivers):
+            inputs.append(this)
+        watch_bucket(("escapes",))
+        for root, events in tuple(escapes.items()):
+            for at, context, origin, operand in tuple(events):
+                if origin == (site, anchor) or not ordering(context, site, at)[0]:
+                    continue
+                for producer in tuple(relation_origins.get((("escape", root), (at, context, origin, operand)), ())):
+                    if producer not in stack:
+                        token(producer)
+                inputs.append(("value", root) if root[0] in {"aggregate", "global", "copy"} else operand)
+        # Observe only user publications. Ambient builtin eval is not an
+        # escaped user capability, and known pre-observation overwrites apply.
+        watch_bucket(("effects", ("global",)))
+        inputs.extend(("snapshot-member", ("value", ("global",)), field, site, anchor)
+                      for root, field in tuple(effects) if root == ("global",))
+        for owner, name in variable_events:
+            if owner is None and roots_global(name) is None:
+                reference_value(name, site, anchor)
+                key = name, site, anchor
+                token(("reference-operands", key))
+                inputs.extend(reference_operands.get(key, ()))
+        reached = {}
+        for item in inputs:
+            reached.update(reached_values(item, site, anchor))
+        origin = site, anchor
+        for item, values in tuple(reached.items()):
+            for value in values:
+                if value[0] not in {"undefined", "data", "read-callable", "callable-data"}:
+                    grow(escapes, value, ((site, owners[site], origin, item),), ("escape", value))
+        handles = {value for values in reached.values() for value in values if value[0] == "handle"}
+        operands = [item for item, values in reached.items()
+                    if any(value[0] in {"string", "unknown", "binding"} for value in values)]
+        for handle in handles:
+            for item in operands:
+                co_packet = packet((site, anchor, "cooperand", item), ("sequence", ((item, False),)))
+                sources.setdefault((site, anchor), set()).add((handle[1], False, co_packet))
+        for value in {value for values in reached.values() for value in values if value[0] in {"callable", "bound"}}:
+            first_site, first_anchor = opaque_activations.setdefault(value, (site, anchor))
+            arguments = packet((value, "opaque-arguments"), ("sequence", ((("value", ("unknown",)), True),)))
+            invoke_values(frozenset({value}), ("value", ("unknown",)), arguments, first_site, first_anchor, active)
+
+    def invoke_values(targets, this, actual, site, anchor, adapting, outcomes=None, actual_options=(), identity=None):
+        outcomes = {} if outcomes is None else outcomes
+        identity = site if identity is None else identity
         returned, exact = set(), True
         for root in targets:
             transition = root
@@ -2216,12 +2685,12 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
                 exact = False
                 continue
             active = adapting | {transition}
-            tag = root[0]
+            tag = "string" if raw_result(root) else root[0]
             if tag == "binding" and plain_const_binding(root[1], root[2]):
                 continue
             if tag == "method":
                 target_values, target_exact = value_of(this)
-                callable_values = frozenset(value for value in target_values if value[0] in {"method", "handle", "callable", "bound", "intrinsic", "array-method", "read-callable", "unknown", "binding"})
+                callable_values = frozenset(value for value in target_values if not raw_result(value) and value[0] in {"method", "handle", "callable", "bound", "intrinsic", "array-method", "read-callable", "unknown", "binding"})
                 if not callable_values:
                     returned.add(("undefined",))
                     continue
@@ -2233,14 +2702,32 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
                     returned.add(("bound", site, anchor))
                     continue
                 next_this = actual[0] if actual else ("value", ("undefined",))
-                variants = array_operands(actual[1]) if root[1] == "apply" and len(actual) > 1 else (packet_view(actual, 1, site, anchor, active, "call"),)
+                variants = tuple(array_operands(actual[1])) if root[1] == "apply" and len(actual) > 1 else (packet_view(actual, 1, site, anchor, active, "call"),)
                 for selected in variants:
-                    values, certain = invoke_values(callable_values, next_this, selected, site, anchor, active)
+                    options = variants if root[1] == "apply" else tuple(packet_view(option, 1, site, anchor, active, "call") for option in actual_options)
+                    values, certain = invoke_values(callable_values, next_this, selected, site, anchor, active, outcomes, options, identity)
                     returned.update(values)
                     exact &= certain and target_exact
             elif tag == "array-method":
                 receiver_values, receiver_exact = value_of(this)
-                if not actual and receiver_values and all(value[0] in {"aggregate", "copy"} for value in receiver_values):
+                if root[1] == "forEach":
+                    if actual:
+                        callback, _ = value_of(actual[0])
+                        callback_this = actual[1] if len(actual) > 1 else ("value", ("undefined",))
+                        for receiver in receiver_values:
+                            for original, index, element in array_contributions(receiver, site, anchor):
+                                value_of(element)
+                                ordinal = ("index", index) if index is not None else ("value", ("data",))
+                                source = ("value", receiver)
+                                arguments = packet((site, anchor, "forEach-arguments", original, element, ordinal, source),
+                                    ("sequence", ((element, False), (ordinal, False), (source, False))))
+                                selected_identity = (identity[0] if isinstance(identity, tuple) else site, original)
+                                invoke_values(callback, callback_this, arguments, site, anchor, active, {}, (), selected_identity)
+                    returned.add(("undefined",))
+                elif not actual and receiver_values and all(value[0] in {"aggregate", "copy"} for value in receiver_values):
+                    for receiver in receiver_values:
+                        for _, _, element in array_contributions(receiver, site, anchor):
+                            value_of(element)
                     copy_root = ("copy", site, anchor)
                     selected = copy_sources.setdefault(copy_root, set())
                     if this not in selected:
@@ -2250,6 +2737,7 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
                     exact &= receiver_exact
                 else:
                     returned.add(("unknown", site, anchor))
+                    outcomes.setdefault(("unknown", site, anchor), set()).add((False, ()))
                     exact = False
             elif tag == "bound":
                 token(("bind", root[1], root[2]))
@@ -2263,7 +2751,8 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
                     bound_this = captured[0] if captured else ("value", ("undefined",))
                     prefix = packet_view(captured, 1, site, anchor, active, "bound-capture")
                     joined = packet_join(prefix, actual, site, anchor, active)
-                    values, certain = invoke_values(target_values, bound_this, joined, site, anchor, active)
+                    options = tuple(packet_join(prefix, option, site, anchor, active) for option in actual_options)
+                    values, certain = invoke_values(target_values, bound_this, joined, site, anchor, active, outcomes, options, identity)
                     returned.update(values)
                     exact &= certain and target_exact
             elif root == ("intrinsic", "Reflect.apply") or root == ("intrinsic", "Reflect.construct"):
@@ -2271,8 +2760,9 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
                     target_values, target_exact = value_of(actual[0])
                     index = 1 if root[1].endswith("construct") else 2
                     reflect_this = actual[1] if index == 2 and len(actual) > 1 else ("value", ("undefined",))
-                    for selected in array_operands(actual[index]) if index < len(actual) else ((),):
-                        values, certain = invoke_values(target_values, reflect_this, selected, site, anchor, active)
+                    variants = tuple(array_operands(actual[index])) if index < len(actual) else ((),)
+                    for selected in variants:
+                        values, certain = invoke_values(target_values, reflect_this, selected, site, anchor, active, outcomes, variants, identity)
                         returned.update(values)
                         exact &= certain and target_exact
             elif tag == "handle":
@@ -2304,18 +2794,33 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
                     converted = packet((site, anchor, "template-arguments"), ("sequence", pieces))
                 sources.setdefault((site, anchor), set()).add((root[1], direct, converted))
                 returned.add(("unknown", site, anchor))
+                outcomes.setdefault(("unknown", site, anchor), set()).add((False, ()))
                 exact = False
             elif root == ("intrinsic", "String.raw"):
-                returned.add(("data",))
+                value = ("unknown", site, anchor)
+                original = tuple(actual)
+                if site in call_sites and call_sites[site][3]:
+                    end = call_sites[site][2] + 1
+                    original = (recipe((call_sites[site][0], end), anchor), *tuple(actual)[1:])
+                    try:
+                        value = ("string", javascript_string("String.raw" + native[site:end]))
+                    except ValueError:
+                        pass
+                returned.add(value)
+                outcomes.setdefault(value, set()).add((True, original))
             elif root == ("intrinsic", "Reflect.get"):
                 if len(actual) < 2:
                     returned.add(("unknown", site, anchor))
                     exact = False
                     continue
                 receivers, receiver_exact = value_of(actual[0])
-                keys, key_exact = value_of(actual[1])
-                names = {value[1] for value in keys if value[0] == "string"}
-                exact &= receiver_exact and key_exact and len(names) == len(keys)
+                if actual[1][0] == "span":
+                    names, key_exact = keys_for(native[slice(*actual[1][1])], actual[1][2], site)
+                else:
+                    names, key_exact = operand_keys(actual[1])
+                if not key_exact:
+                    names.add(None)
+                exact &= receiver_exact and key_exact
                 for field in names:
                     values, certain = project(receivers, receiver_exact, field, site, anchor)
                     returned.update(values)
@@ -2330,42 +2835,72 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
                 begin = call_sites[site][0] if site in call_sites else site
                 prefix = code[starts[begin]:begin]
                 definite = certain and len(target_values) == 1 and re.fullmatch(r"\s*(?:(?:const|let|var)\s+[A-Za-z_$][\w$]*\s*=\s*)?(?:await\s*)?", prefix) is not None
+                def covers(option, index, field, *, key=False):
+                    low, _ = packet_length(option, len(code) + 1)
+                    if low <= index or not option:
+                        return False
+                    targets, exact = value_of(option[0])
+                    if not exact or targets != target_values:
+                        return False
+                    values, exact = value_of(option[index])
+                    if key:
+                        if option[index][0] == "span":
+                            names, exact = keys_for(native[slice(*option[index][1])], option[index][2], site)
+                            return exact and names == {field}
+                        return exact and values == frozenset({("string", field)})
+                    if not exact or not values:
+                        return False
+                    for value in values:
+                        fields, known = aggregate_fields(value, site) if value[0] == "aggregate" else ({}, False)
+                        if not known or field not in fields:
+                            return False
+                    return True
+                low, high = packet_length(actual, len(code) + 1)
                 if root[1] == "Object.assign":
-                    _, high = packet_length(actual, len(code) + 1)
-                    donors = tuple(actual[index] for index in range(1, high)) if high is not None else tuple(packet_view(actual, 1, site, anchor, active, "donors"))
-                    for donor in donors:
+                    donors = tuple((actual[index], definite and index < low, index) for index in range(1, high)) if high is not None else tuple((item, False, None) for item in packet_view(actual, 1, site, anchor, active, "donors"))
+                    for donor, present, index in donors:
                         values, certain = value_of(donor)
                         exact &= certain
-                        for value in values:
-                            if value[0] != "aggregate":
-                                continue
-                            fields, _ = aggregate_fields(value, site)
-                            for field in fields:
-                                item = ("snapshot-member", donor, field, site, anchor)
-                                value_of(item)
-                                for target in target_values:
-                                    set_property(target, field, item, at, context, definite, anchor)
+                        layouts = [aggregate_fields(value, site) if value[0] == "aggregate" else ({}, value[0] in {"undefined", "data", "string"}) for value in values]
+                        fields = set().union(*(set(fields) for fields, _ in layouts))
+                        if not certain or any(not known for _, known in layouts):
+                            fields.add(None)
+                        for field in fields:
+                            covered = present and certain and bool(layouts) and all(known and field in fields for fields, known in layouts) and all(covers(option, index, field) for option in actual_options)
+                            item = ("snapshot-member", donor, field, site, anchor)
+                            value_of(item)
+                            for target in target_values:
+                                set_property(target, field, item, at, context, covered, anchor)
                 else:
                     descriptors = []
                     if root[1] == "Object.defineProperties" and len(actual) >= 2:
-                        values, _ = value_of(actual[1])
-                        for value in values:
-                            if value[0] == "aggregate":
-                                fields, _ = aggregate_fields(value, site)
-                                descriptors.extend(fields.items())
+                        values, known = value_of(actual[1])
+                        layouts = [aggregate_fields(value, site) if value[0] == "aggregate" else ({}, False) for value in values]
+                        fields = set().union(*(set(fields) for fields, _ in layouts))
+                        if not known or any(not certain for _, certain in layouts):
+                            fields.add(None)
+                        for field in fields:
+                            covered = definite and low > 1 and known and bool(layouts) and all(certain and field in fields for fields, certain in layouts) and all(covers(option, 1, field) for option in actual_options)
+                            descriptors.append((field, ("snapshot-member", actual[1], field, site, anchor), covered))
                     elif len(actual) >= 3:
-                        key_values, _ = value_of(actual[1])
-                        descriptors.extend((value[1], actual[2]) for value in key_values if value[0] == "string")
-                    for field, descriptor in descriptors:
-                        if root[1] == "Reflect.set":
-                            item = descriptor
+                        key_values, known = value_of(actual[1])
+                        names = {value[1] for value in key_values if value[0] == "string"}
+                        # The existing key owner also handles numeric literals.
+                        if actual[1][0] == "span":
+                            numeric, certain = keys_for(native[slice(*actual[1][1])], actual[1][2], site)
+                            names, known = names | numeric, certain
                         else:
-                            item = ("descriptor", descriptor, site, anchor)
+                            known &= len(names) == len(key_values)
+                        if not names or not known:
+                            names.add(None)
+                        descriptors.extend((field, actual[2], definite and low > 2 and known and len(names) == 1 and field is not None and all(covers(option, 1, field, key=True) and packet_length(option, len(code) + 1)[0] > 2 for option in actual_options)) for field in names)
+                    for field, descriptor, covered in descriptors:
+                        item = descriptor if root[1] == "Reflect.set" else ("descriptor", descriptor, site, anchor)
                         for target in target_values:
                             if root[1] == "Reflect.set":
-                                set_property(target, field, item, at, context, definite, anchor)
+                                set_property(target, field, item, at, context, covered, anchor)
                             else:
-                                publish(target, field, item, at, context, definite, anchor)
+                                publish(target, field, item, at, context, covered, anchor)
             elif tag == "callable":
                 body = callable_body(root[1])
                 if body is None:
@@ -2375,13 +2910,17 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
                 # Materialize formal recipes through this same expression owner.
                 expression(root[1], root[2])
                 origin = anchor[0] if anchor is not None else site
-                invoked = origin, site, begin_body
+                invoked = origin, identity, begin_body
                 edge = site, anchor, root[2], actual
                 selected = anchors.setdefault(invoked, set())
                 grow(receiver_edges, invoked, ((edge, this, root[1] in callable_arrows),), ("receivers", invoked))
                 if edge not in selected:
                     selected.add(edge)
                     invalidate(("anchor", invoked))
+                    for index, path, defaults, rest in bindings_by_body.get(begin_body, {}).values():
+                        if path or defaults:
+                            operand = actual[index] if isinstance(actual, Packet) else ("value", ("undefined",))
+                            value_of(select_path(operand, path, defaults, rest, begin_body, invoked))
                     for nested in body_sites.get(begin_body, ()):
                         schedule(nested, invoked)
                     for event in body_effects.get(begin_body, ()):
@@ -2401,34 +2940,16 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
             elif tag in {"read-callable", "callable-data", "data", "string", "undefined"}:
                 returned.add(("undefined",))
             else:
-                # An unknown receiver can execute a passed capability on any
-                # co-operand. A known callable is scanned under its own anchor.
-                handles, operands_reached = set(), {}
-                for item in (this, *tuple(actual)):
-                    values = reached_values(item, site, anchor)
-                    operands_reached[item] = values
-                    origin = site, anchor
-                    for value in values:
-                        if value[0] in {"aggregate", "global", "intrinsic", "copy"}:
-                            grow(escapes, value, ((site, owners[site], origin),), ("escape", value))
-                for item in actual:
-                    values = operands_reached[item]
-                    handles.update(value for value in values if value[0] == "handle")
-                for handle in handles:
-                    co_operands = [item for item in actual if not any(value[0] == "handle" for value in operands_reached[item])]
-                    if not co_operands:
-                        sources.setdefault((site, anchor), set()).add((handle[1], False, packet((site, anchor, "no-cooperands"), ("sequence", ()))))
-                    for item in co_operands:
-                        co_packet = packet((site, anchor, "cooperand", item), ("sequence", ((item, False),)))
-                        sources.setdefault((site, anchor), set()).add((handle[1], False, co_packet))
+                opaque_call(this, actual, site, anchor, active)
                 origins = affected_at(root, site, anchor)
                 result = ("unknown", site, anchor)
                 if origins:
                     grow(affected, result, origins, ("affected", result))
                     capabilities = frozenset({("handle", "eval"), ("handle", "constructor"), ("handle", "import")})
-                    invoke_values(capabilities, this, actual, site, anchor, active)
+                    invoke_values(capabilities, this, actual, site, anchor, active, outcomes, (), identity)
                     returned.update(capabilities)
                 returned.add(result)
+                outcomes.setdefault(result, set()).add((False, ()))
                 exact = False
         return frozenset(returned), exact
 
@@ -2452,11 +2973,13 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
         if selected is None:
             return empty, True
         receiver_span, key_span, name = selected
-        names, _ = keys_for(native[slice(*key_span)], anchor, at) if key_span is not None else ({name}, True)
+        names, keys_exact = keys_for(native[slice(*key_span)], anchor, at) if key_span is not None else ({name}, True)
+        if not keys_exact:
+            names.add(None)
         roots, exact = expression(receiver_span, anchor)
         item = select_path(recipe(rhs, anchor), path, defaults, rest, rhs[1], anchor)
         producer = ("target", event, anchor)
-        qualified = roots, exact, certain
+        qualified = roots, exact, certain and keys_exact and len(names) == 1
         if qualifications.get(producer) != qualified:
             qualifications[producer] = qualified
             invalidate(("qualification", producer))
@@ -2482,6 +3005,8 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
                 body = callable_body(span)
                 if body is not None:
                     possible_bodies.add(body[0])
+                    if not body[2]:
+                        roots.add((body[0], body[1]))
     for events in variable_events.values():
         roots.update(event[4] for event in events)
     roots.update(event[4] for event in effect_sites)
@@ -2498,6 +3023,7 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
         if begin >= end or member_span(begin, end) is None or (begin, end) in targets:
             continue
         if re.search(r"\bdelete\s*$", code[starts[begin]:begin]):
+            read_sites[(span, "delete")] = function_owner(begin)
             continue
         read_sites[(span, "get")] = function_owner(begin)
         finish = node_expression_parts(code, starts[begin], len(code), ";\n", first=True)[0][1]
@@ -2555,6 +3081,19 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
                 return empty, True
         if kind == "get":
             expression(span, anchor)
+        elif kind == "delete":
+            begin, end = trim(*span)
+            receiver, key, field = member_span(begin, end)
+            roots, known = expression(receiver, anchor)
+            names, exact = keys_for(native[slice(*key)], anchor, begin) if key is not None else ({field}, True)
+            for root in roots:
+                if root != ("global",):
+                    continue
+                for name in names:
+                    previous = [event for event in tuple(effects.get((root, name), ())) if ordering(event[1], begin, event[0])[0] and event[0] < begin]
+                    ordinary = bool(previous) and all(event[3][0] != "descriptor" for event in previous)
+                    certain = known and exact and len(roots) == len(names) == 1 and ordinary and re.fullmatch(r"\s*delete\s*", code[starts[begin]:begin]) is not None
+                    publish(root, name, ("value", ("undefined",)), end - 1, owners[begin], certain, anchor)
         elif kind == "copy":
             values, _ = expression(span, anchor)
             for root in values:
@@ -2562,6 +3101,7 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
                     fields, _ = aggregate_fields(root, span[0])
                     for field in fields:
                         project(frozenset({root}), True, field, span[0], anchor)
+                    project(frozenset({root}), True, None, span[0], anchor)
         else:
             _, path, defaults, rest, rhs, _, _, _ = kind
             value_of(select_path(recipe(rhs, anchor), path, defaults, rest, rhs[1], anchor))
@@ -2735,6 +3275,7 @@ def javascript_bindings(code, *, _direct_eval_sites, sloppy=False, _facts=None):
     sites, declarations, mutable = {}, {}, set()
     target_spans, expression_spans, pattern_spans = set(), set(), set()
     records, ranges, functions, pairs, stack, callable_declarations = [], {}, set(), {}, [], []
+    parameter_scopes = []
     if _facts is not None:
         for position, char in enumerate(code):
             if char in "([{":
@@ -2761,6 +3302,8 @@ def javascript_bindings(code, *, _direct_eval_sites, sloppy=False, _facts=None):
     def parameters(opening, owner=None):
         for begin, end in node_expression_parts(code, opening + 1, len(code)):
             bind(begin, end, owner, "parameter")
+            if _facts is not None and owner is not None:
+                parameter_scopes.append((begin, end, owner))
 
     def body(opening):
         if _facts is None:
@@ -3044,6 +3587,8 @@ def javascript_bindings(code, *, _direct_eval_sites, sloppy=False, _facts=None):
         _facts.update(pairs=pairs, owners=owners, parents=parents, bound=bound, functions=functions,
                       declarations=declared, headers=headers, member_containers=member_containers,
                       targets=target_spans, expression_spans=seen, loops=tuple(loops),
+                      parameter_positions=frozenset(position for _, position, _, kind in records if kind == "parameter"),
+                      parameter_scopes=tuple(sorted(set(parameter_scopes), key=lambda scope: scope[1] - scope[0], reverse=True)),
                       update_assignments=frozenset(update_assignments))
     return {name: expression for name, expression in declarations.items()
             if len(sites.get(name, ())) == 1}, set(sites)
