@@ -86,6 +86,10 @@ class CommandPolicyHookTests(unittest.TestCase):
             "stdbuf -o0 pkill watcher", "sudo -u worker pkill watcher",
             "pgrep sleep | xargs -I{} kill {}",
             "kill 12345 0 > log", "kill 12345 -1 > log",
+            "sudo timeout 5 pkill watcher", "timeout 5 sudo pkill watcher",
+            "sudo env MODE=test pkill watcher", "nice -n5 pkill watcher",
+            "pgrep sleep | xargs -d '\\n' kill", "xargs -a pids kill",
+            "pgrep sleep | xargs --max-args 1 kill",
         ):
             with self.subTest(line=line):
                 result = bash(line)
@@ -104,6 +108,8 @@ class CommandPolicyHookTests(unittest.TestCase):
             "kill -0 12345 2>/dev/null && echo alive",
             "kill -TERM 12345 >/dev/null 2>&1",
             'kill 12345 > "task log.txt"',
+            "kill 12345 >| log", "kill $!", 'kill "$!"',
+            'uv run server.py & kill "$!"',
             "pgrep -f 'sleep 10'", "ps -axo pid,command", "kill -l",
             "git status", "rg 'pkill|killall' skills/",
             "printf '%s' 'kill $(pgrep sleep)'",

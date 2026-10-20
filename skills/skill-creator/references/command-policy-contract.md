@@ -70,8 +70,8 @@ Token matchers run against parsed argv. `shell_regex` runs against the shell tex
 the runtime is about to execute. If the runtime only has argv tokens, it may use
 `shlex.join(argv)` as a compatibility representation; the simulator must mirror
 the runtime's documented normalization.
-For the shared hook's command-position checks, use `\A` to anchor a policy to
-the whole simple command. Other regexes retain token-suffix matching, including
+For the shared hook's command-position checks, any `\A` in a pattern opts that
+entire pattern into matching only the whole simple command. Other regexes retain token-suffix matching, including
 the existing meaning of `^` at each token start.
 
 When multiple policies match, the primary policy is selected deterministically:

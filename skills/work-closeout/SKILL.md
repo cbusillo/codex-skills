@@ -49,7 +49,7 @@ policy:
       match:
         argv_prefix: ["pkill"]
       action: reject
-      message: &process_stop_route Pattern kills can stop other sessions on a shared host. Stop your own background task through the harness's task stop (TaskStop or Codex's task stop), or use kill <pid> with the literal positive numeric PID you recorded when you started it. Read a recorded pidfile first, then pass its numeric PID directly; do not use substitutions, variables, process groups or piped targets.
+      message: &process_stop_route Pattern kills can stop other sessions on a shared host. Stop your own background task through the harness's task stop (TaskStop or Codex's task stop), or use kill <pid> with the literal positive numeric PID you recorded when you started it, or the shell's own recorded last-background PID $!. Read a recorded pidfile first, then pass its numeric PID directly; do not use substitutions, other variables, process groups or piped targets.
     - id: reject-killall
       match:
         argv_prefix: ["killall"]
@@ -60,23 +60,24 @@ policy:
         shell_regex: >-
           (?x)\A(?:builtin\s+)?(?:\S*/)?kill(?=\s|$)
           (?!\s+(?:(?:-[sn]\s+[\w+-]+|--signal(?:=|\s+)[\w+-]+|-[\w+-]+)\s+)?
-          (?:--\s+)?[1-9]\d*(?:\s+[1-9]\d*)*
-          (?:\s+(?:[1-9]\d*\s+)?['"]?(?:[<>]{1,2}|[<>]&|&>+)['"]?\s+(?:'[^']*'|"[^"]*"|\S+))*\Z
+          (?:--\s+)?(?:[1-9]\d*|'\$!')(?:\s+(?:[1-9]\d*|'\$!'))*
+          (?:\s+(?:[1-9]\d*\s+)?['"]?(?:[<>]{1,2}|[<>]&|&>+|>\|)['"]?\s+(?:'[^']*'|"[^"]*"|\S+))*\Z
           |\s+(?:-[lL]|--(?:list|table|help|version))(?:\s|$))
       action: reject
       message: *process_stop_route
     - id: reject-wrapped-process-kills
       match:
         shell_regex: >-
-          (?x)\A(?:\S*/)?(?:
-          xargs(?:\s+(?:-[0prtx]+|['"]?-[IEnPLs][^\s'"]+['"]?|-[IEnPLs]\s+\S+|--[\w-]+))*
+          (?x)\A(?:(?:\S*/)?(?:
+          xargs(?:\s+(?:-[0prtx]+|['"]?-[IEnPLsad] (?:[^\s'"]+['"]?|\s+\S+)|--(?:arg-file|delimiter|max-(?:args|procs|lines|chars)|replace|eof)(?:=|\s+)\S+|--[\w-]+))*
           |sudo(?:\s+(?:-[ughp]\s+\S+|-\S+))*
           |timeout(?:\s+(?:-[ks]\s+\S+|-\S+))*\s+\S+
-          |nice(?:\s+(?:-n\s+-?\d+|--adjustment=-?\d+|-\d+))*
+          |nice(?:\s+(?:-n\s*-?\d+|--\w+=-?\d+|-\d+))*
           |caffeinate(?:\s+(?:-[dimsu]+|-[tw]\s+\d+))*
           |doas(?:\s+(?:-[uC]\s+\S+|-[Lnns]+))*
-          |stdbuf(?:\s+(?:-[ioe]\S+|--(?:input|output|error)=\S+))*
-          )\s+(?:\S*/)?(?:kill|pkill|killall)(?:\s|$)
+          |stdbuf(?:\s+(?:-[ioe]\S+|--\w+=\S+))*
+          |env(?:\s+-\S+)*(?:\s+[A-Za-z_]\w*=\S+)*
+          )\s+)+(?:\S*/)?(?:kill|pkill|killall)(?:\s|$)
       action: reject
       message: *process_stop_route
 ---
@@ -237,7 +238,7 @@ preserved, or intentionally left in place.
    the issue/plan/docs state or report safe-to-exit as conditional/no with the
    mismatch named.
 6. Classify this task's artifacts under the shared repository cleanup policy.
-   For processes, follow this skill's command policies: use the harness's task stop for your own task, or kill only a literal numeric PID recorded when you started it; never kill by pattern.
+   For processes, follow this skill's command policies: use the harness's task stop for your own task, or kill only an exact PID recorded when you started it; never kill by pattern.
    Clean only task-owned disposable output whose purpose is complete: transient logs,
    screenshots, temp scripts, generated scratch files, generated caches, stopped
    test containers, or other consumed temporary files.
