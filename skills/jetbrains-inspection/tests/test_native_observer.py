@@ -92,17 +92,22 @@ class ObserverTests(unittest.TestCase):
 
 
 class ProcessDrainTests(unittest.TestCase):
+    backend: Any
+    process_receipt: dict[str, Any]
+
     def setUp(self):
-        spec = importlib.util.spec_from_file_location("drain_test_backend", Path(__file__).parents[1] / "scripts/native_backend.py")
-        self.backend = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(self.backend)
+        backend_spec = importlib.util.spec_from_file_location("drain_test_backend", Path(__file__).parents[1] / "scripts/native_backend.py")
+        if backend_spec is None or backend_spec.loader is None:
+            raise ImportError("Drain fixture unavailable")
+        self.backend = importlib.util.module_from_spec(backend_spec)
+        backend_spec.loader.exec_module(self.backend)
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.private = Path(temporary.name).resolve()
         (self.private / "logs").mkdir()
 
     def run_process(self, code, *, lifetime=None):
-        receipt = {"load_pause_count": 0}
+        receipt: dict[str, Any] = {"load_pause_count": 0}
         self.process_receipt = receipt
         with (self.private / "worker.lock").open("w") as lock, \
                 patch.object(self.backend.os, "getloadavg", return_value=(1, 1, 1)):

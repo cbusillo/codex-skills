@@ -46,8 +46,7 @@ with public `odoo/release.py`; an absent or mismatched declaration stays UNKNOWN
 For a different tenant or branch, supply its matching roots with repeatable
 `--native-framework-root`, following that workspace's dependency refs.
 No framework Python is executed to discover its version.
-The
-canonical project content root includes `addons` as a source folder when present;
+The canonical project content root includes `addons` as a source folder when present;
 it does not create separate addon content roots that would change scope paths.
 
 `cacheRoot` is an existing host cache directory outside the activated worker.

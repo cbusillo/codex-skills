@@ -116,8 +116,12 @@ def framework_context(repo, selected, roots):
         raise Blocked("native_odoo_framework_ambiguous")
     try:
         release = ast.parse((core[0] / "odoo/release.py").read_text())
-        version = next(node.value for node in release.body if isinstance(node, ast.Assign)
-                       and any(isinstance(target, ast.Name) and target.id == "version_info" for target in node.targets))
+        version = None
+        for statement in release.body:
+            if isinstance(statement, ast.Assign):
+                if any(isinstance(target, ast.Name) and target.id == "version_info" for target in statement.targets):
+                    version = statement.value
+                    break
         if not isinstance(version, ast.Tuple) or len(version.elts) < 2:
             raise Blocked("native_odoo_version_unproven")
         series = ".".join(str(ast.literal_eval(value)) for value in version.elts[:2])
@@ -133,7 +137,10 @@ def framework_context(repo, selected, roots):
                 manifest = directory / "__manifest__.py"
                 if manifest.is_file():
                     common.require_public_input(manifest)
-                    value = ast.literal_eval(ast.parse(manifest.read_text()).body[0].value).get("version")
+                    expression = ast.parse(manifest.read_text()).body[0]
+                    if not isinstance(expression, ast.Expr) or not isinstance(expression.value, ast.Dict):
+                        raise Blocked("native_odoo_version_unproven")
+                    value = ast.literal_eval(expression.value).get("version")
                     if value:
                         declared[manifest.relative_to(repo).as_posix()] = str(value)
                     break
@@ -583,7 +590,7 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
         raise Blocked(str(error)) from None
     finally:
         for gate in (gate_read, gate_write):
-            if gate is not None:
+            if isinstance(gate, int):
                 os.close(gate)
         selector.close()
         if process is not None:
