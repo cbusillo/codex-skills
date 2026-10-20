@@ -1618,8 +1618,10 @@ class OwnReleaseTests(ReleaseHarness):
         self.handoff = Path(self.enterContext(tempfile.TemporaryDirectory())) / "handoff.md"
         # LP4214-C1 put this summary on the directive line by hand.
         self.handoff.write_text("LP4214-C1 Finish Line met: reviewed, tested and landed.\n\nSafe to exit: yes\n")
+        # The releasing worker runs as the claim's own native session.
+        os.environ["CLAUDE_CODE_SESSION_ID"] = fixtures.OTHER["session"]
         self.args = Namespace(repo="owner/repo", issue="42", claim_comment=1, session=fixtures.OTHER["session"],
-                              handoff_file=str(self.handoff), agent=None, dry_run=False)
+                              handoff_file=str(self.handoff), agent="claude", dry_run=False)
 
     def run_own_release(self):
         with patch.multiple(PLAN, default_repo=lambda _: "owner/repo", get_issue=self.f.get_issue,
@@ -1665,8 +1667,9 @@ class OwnReleaseTests(ReleaseHarness):
             "other session": lambda: setattr(self.args, "session", fixtures.OWNER["session"]),
             "missing claim": lambda: setattr(self.args, "claim_comment", 7),
             "foreign author": lambda: self.f.comments[0].update(user={"login": "foreign[bot]"}),
-            "not native": lambda: (setattr(self.args, "agent", "claude"),
-                                   os.environ.update(CLAUDE_CODE_SESSION_ID="another-native")),
+            "not native": lambda: os.environ.update(CLAUDE_CODE_SESSION_ID="another-native"),
+            "other family's session": lambda: (setattr(self.args, "agent", "codex"),
+                                               os.environ.update(CODEX_THREAD_ID="codex-thread")),
             "receipt in handoff": lambda: self.handoff.write_text(
                 "Done.\n<!-- " + release.RELEASE_MARKER + "{} -->\n"),
         }
