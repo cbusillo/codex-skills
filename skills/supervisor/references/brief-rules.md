@@ -118,8 +118,8 @@ Rules for this brief (every Supervisor brief carries them):
   supported route can run, record UNKNOWN with the helper's exact reason
   ([gate selection](../../repo-readiness/SKILL.md#gate-selection)); never
   report it as passed.
-- When you need Chris, post a comment on the item starting with "Owner
-  question:" quoting the exact stop-boundary line from the overall or
+- When you need Chris, post a comment on the item starting with
+  `Owner question:` quoting the exact stop-boundary line from the overall or
   repository DIRECTION.md, then continue with what you can. Only a reply from
   cbusillo or a recorded "Director decision" counts
   ([talking with the Director](../../references/talking-with-the-director.md)).
