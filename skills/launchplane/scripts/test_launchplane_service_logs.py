@@ -8,6 +8,7 @@
 import contextlib
 import importlib.util
 import io
+import itertools
 import json
 import shlex
 import subprocess
@@ -49,6 +50,7 @@ class ServiceLogTests(unittest.TestCase):
         image_id=False,
         containers=None,
         transport_stderr=b"",
+        log_reads=None,
     ):
         calls = []
         ids = [CONTAINER] if containers is None else containers
@@ -109,6 +111,8 @@ class ServiceLogTests(unittest.TestCase):
                     **kwargs,
                 )
             self.assertEqual(docker[:2], ["docker", "logs"])
+            if log_reads is not None:
+                log_reads.append(docker)
             if failure:
                 return REAL_POPEN(
                     [
@@ -258,12 +262,14 @@ class ServiceLogTests(unittest.TestCase):
                 self.assertEqual(calls, [])
 
     def test_provider_errors_never_escape_and_no_retries(self):
+        reads = []
         status, result, calls = self.run_reader(
-            failure=b"Cookie: session=provider-private"
+            failure=b"Cookie: session=provider-private",
+            log_reads=reads,
         )
         self.assertEqual(status, 1)
         self.assertLessEqual(len(calls), 3)
-        self.assertEqual(sum("docker logs" in call[-1] for call in calls), 1)
+        self.assertEqual(len(reads), 1)
         self.assertNotIn("provider-private", json.dumps(result))
         self.assertNotIn("ops-test", json.dumps(result))
 
@@ -378,7 +384,7 @@ class ServiceLogTests(unittest.TestCase):
     def test_local_parse_deadline_fails_closed(self):
         raw = b"2026-01-02T12:01:00Z event=started\n"
         with (
-            patch.object(reader.time, "monotonic", side_effect=[0, 2]),
+            patch.object(reader.time, "monotonic", side_effect=itertools.count(0, 2)),
             self.assertRaises(reader.LogReadError),
         ):
             reader.entries_from_stream(

@@ -43,6 +43,9 @@ DIAGNOSTIC_VALUE = re.compile(
 )
 SENSITIVE_WORDS = {
     "password",
+    "pass",
+    "cred",
+    "creds",
     "passwd",
     "passphrase",
     "pwd",
@@ -141,7 +144,8 @@ def sensitive(name: str) -> bool:
     )
     return any(
         part in SENSITIVE_WORDS or part.endswith(long_stems) or part == "privatekey"
-        for part in canonical
+        for original, singular in zip(parts, canonical, strict=True)
+        for part in (original, singular)
     ) or (
         canonical[-1] == "key" and (len(parts) == 1 or parts[-2] not in DIAGNOSTIC_KEYS)
     )
@@ -206,32 +210,115 @@ def shape_redact(text: str, *, diagnostic_value: bool = False) -> str:
     return OPAQUE.sub(opaque, text)
 
 
+def leading_literal(text: str, start: int = 0) -> tuple[object, int] | None:
+    try:
+        return json.JSONDecoder().raw_decode(text, start)
+    except (ValueError, RecursionError):
+        pass
+    if start >= len(text) or text[start] not in "[{(\"'":
+        return None
+    stack = []
+    quote = None
+    escaped = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+        elif char in "\"'":
+            quote = char
+        elif char in "[{(":
+            stack.append({"[": "]", "{": "}", "(": ")"}[char])
+        elif char in "]})" and (not stack or stack.pop() != char):
+            return None
+        if not quote and not stack:
+            try:
+                return ast.literal_eval(text[start : index + 1]), index + 1
+            except (ValueError, SyntaxError, RecursionError, TypeError, MemoryError):
+                return None
+    return None
+
+
+@dataclass(frozen=True)
+class PlainAnalysis:
+    cut: int | None = None
+    continuation: str | None = None
+    whole: bool = False
+
+
+@dataclass(frozen=True)
+class CleanRecord:
+    message: str
+    continuation: str | None = None
+
+
+def continuation_kind(rest: str) -> str | None:
+    rest = rest.strip()
+    if not rest:
+        return "next"
+    if re.fullmatch(r"(?:&[A-Za-z0-9_-]+\s+)?[|>][0-9+-]*(?:\s+#.*)?", rest):
+        return "block"
+    if rest[0] in "[{(\"'" and leading_literal(rest) is None:
+        return "block"
+    return None
+
+
+def analyze_plain(text: str) -> PlainAnalysis:
+    fields = list(FIELD.finditer(text))
+    descriptors = []
+    for field in fields:
+        if field["name"].strip("\"'").casefold() in PAIR_NAMES:
+            value = re.match(
+                r"[\"']?([A-Za-z_][A-Za-z0-9_.-]{0,127})", text[field.end() :]
+            )
+            if value:
+                descriptors.append((field, sensitive(value[1])))
+    secret_pair = any(secret for _, secret in descriptors)
+    public_pair = (
+        bool(descriptors)
+        and not secret_pair
+        and any(
+            field["name"].strip("\"'").casefold() in PAIR_VALUES for field in fields
+        )
+    )
+    cuts = []
+    continuation = None
+    for field in fields:
+        name = field["name"].strip("\"'")
+        if public_pair and name.casefold() in PAIR_NAMES:
+            continue
+        secret = sensitive(name) and (
+            field["sep"] in {"=", ":"} or name.startswith("--")
+        )
+        if secret or secret_pair and name.casefold() in PAIR_VALUES:
+            cuts.append(field.end())
+            continuation = continuation or continuation_kind(text[field.end() :])
+    if secret_pair:
+        return PlainAnalysis(0, continuation, True)
+    return PlainAnalysis(min(cuts) if cuts else None, continuation)
+
+
 def parse_literal(text: str) -> tuple[str, object, str] | None:
-    # JSON handles real structured logs; literal_eval handles Python repr data
-    # without executing calls. Both see only an already size-bounded record.
     positions = [text.find(char) for char in ("{", "[", "(") if char in text]
-    if text.lstrip().startswith(('{"', "{'", '["', "['", '("', "('")):
+    if text.lstrip().startswith(('"', "'")):
         positions.append(len(text) - len(text.lstrip()))
     if not positions:
         return None
     start = min(positions)
-    if any(
-        sensitive(match["name"].strip("\"'"))
-        and (match["sep"] in {"=", ":"} or match["name"].startswith("--"))
-        for match in FIELD.finditer(CONTROL.sub("", normalize(text[:start])))
-    ):
+    prefix = CONTROL.sub("", normalize(text[:start]))
+    if analyze_plain(prefix).cut is not None:
         return None
-    try:
-        value, end = json.JSONDecoder().raw_decode(text, start)
-        if isinstance(value, str) and (text[:start].strip() or text[end:].strip()):
-            return None
-        return text[:start], value, text[end:]
-    except (ValueError, RecursionError):
-        pass
-    try:
-        return text[:start], ast.literal_eval(text[start:]), ""
-    except (ValueError, SyntaxError, RecursionError, TypeError, MemoryError):
+    parsed = leading_literal(text, start)
+    if parsed is None:
         return None
+    value, end = parsed
+    if isinstance(value, str) and (prefix.strip() or text[end:].strip()):
+        return None
+    return prefix, value, text[end:]
 
 
 def project(value: object, depth: int, *, field: str = "") -> object:
@@ -275,61 +362,49 @@ def project(value: object, depth: int, *, field: str = "") -> object:
             )
         return output
     if isinstance(value, str):
-        return clean_record(value, depth + 1, diagnostic_value=diagnostic(field))
+        return clean_record(
+            value, depth + 1, diagnostic_value=diagnostic(field)
+        ).message
     return value if value is None or type(value) in {bool, int, float} else MASK
 
 
-def clean_record(text: str, depth: int = 0, *, diagnostic_value: bool = False) -> str:
+def clean_record(
+    text: str, depth: int = 0, *, diagnostic_value: bool = False
+) -> CleanRecord:
     if depth >= MAX_DEPTH:
-        return MASK
+        return CleanRecord(MASK)
     parsed = parse_literal(text)
+    if parsed is None:
+        text = CONTROL.sub("", normalize(text))
+        parsed = parse_literal(text)
     if parsed is not None:
         prefix, value, suffix = parsed
-        # A lone JSON string is a serialized record, not another quoting layer
-        # to preserve. Depth bounds prevent recursive string encodings looping.
         if not prefix and not suffix and isinstance(value, str):
-            return clean_record(value, depth + 1, diagnostic_value=diagnostic_value)
-        return (
-            clean_plain(CONTROL.sub("", normalize(prefix)))
-            + json.dumps(project(value, depth + 1), ensure_ascii=True)
-            + clean_plain(
-                CONTROL.sub("", normalize(suffix)), diagnostic_value=diagnostic_value
-            )
+            # A complete serialized record cannot open a stream continuation.
+            nested = clean_record(value, depth + 1, diagnostic_value=diagnostic_value)
+            return CleanRecord(nested.message)
+        left = clean_plain(CONTROL.sub("", normalize(prefix)))
+        right = clean_plain(
+            CONTROL.sub("", normalize(suffix)), diagnostic_value=diagnostic_value
         )
-    text = CONTROL.sub("", normalize(text))
-    parsed = parse_literal(text)
-    if parsed is not None:
-        prefix, value, suffix = parsed
-        return (
-            clean_plain(CONTROL.sub("", normalize(prefix)))
+        return CleanRecord(
+            left.message
             + json.dumps(project(value, depth + 1), ensure_ascii=True)
-            + clean_plain(
-                CONTROL.sub("", normalize(suffix)), diagnostic_value=diagnostic_value
-            )
+            + right.message,
+            right.continuation,
         )
+    plain = clean_plain(text, diagnostic_value=diagnostic_value)
     if text.lstrip().startswith(('{"', "{'", '["', "['", '("', "('")):
-        return MASK
-    return clean_plain(text, diagnostic_value=diagnostic_value)
+        return CleanRecord(MASK, plain.continuation)
+    return plain
 
 
-def clean_plain(text: str, *, diagnostic_value: bool = False) -> str:
-    for match in FIELD.finditer(text):
-        name = match["name"].strip("\"'")
-        if name.casefold() in PAIR_NAMES:
-            pair_value = re.match(
-                r"[\"']?([A-Za-z_][A-Za-z0-9_.-]{0,127})", text[match.end() :]
-            )
-            if pair_value and sensitive(pair_value[1]):
-                return shape_redact(text[: match.end()]) + MASK
-            if pair_value and any(
-                sibling["name"].strip("\"'").casefold() in PAIR_VALUES
-                for sibling in FIELD.finditer(text[match.end() :])
-            ):
-                continue
-        is_flag = name.startswith("--")
-        if sensitive(name) and (match["sep"] in {"=", ":"} or is_flag):
-            return shape_redact(text[: match.end()]) + MASK
-    return shape_redact(text, diagnostic_value=diagnostic_value)
+def clean_plain(text: str, *, diagnostic_value: bool = False) -> CleanRecord:
+    analysis = analyze_plain(text)
+    if analysis.cut is not None:
+        message = MASK if analysis.whole else shape_redact(text[: analysis.cut]) + MASK
+        return CleanRecord(message, analysis.continuation)
+    return CleanRecord(shape_redact(text, diagnostic_value=diagnostic_value))
 
 
 class Redactor:
@@ -399,23 +474,10 @@ class Redactor:
             return SafeRecord(MASK, matched, True)
         if pair and sensitive(pair[1].strip("\"' ,")):
             self.block_indent = indent
-        for match in FIELD.finditer(normalized):
-            if sensitive(match["name"].strip("\"'")) and match["sep"] in {"=", ":"}:
-                rest = normalized[match.end() :].strip()
-                incomplete = (
-                    rest.startswith(("{", "[", "'", chr(34)))
-                    and parse_literal(rest) is None
-                )
-                if (
-                    not rest
-                    or incomplete
-                    or re.fullmatch(
-                        r"(?:&[A-Za-z0-9_-]+\s+)?[|>][0-9+-]*(?:\s+#.*)?", rest
-                    )
-                ):
-                    self.block_indent = indent
-                    self.sensitive_indentation = True
-                    self.hide_next = not rest
-                break
-        message = clean_record(text)
+        clean = clean_record(text)
+        if clean.continuation:
+            self.block_indent = indent
+            self.sensitive_indentation = True
+            self.hide_next = clean.continuation == "next"
+        message = clean.message
         return SafeRecord(message, matched, message != raw)

@@ -155,6 +155,35 @@ class RedactionTests(unittest.TestCase):
                 (secret,),
                 ("restarted",),
             ),
+            (["data=" + secret + " key=DB_PASSWORD"], (secret,), ()),
+            (["default=" + secret + " name=SMTP_PASSWORD"], (secret,), ()),
+            (["val=" + secret + " variable=API_TOKEN"], (secret,), ()),
+            (["- {value: " + secret + ", name: DB_PASSWORD}"], (secret,), ()),
+            (
+                [
+                    "provider {'value': '"
+                    + secret
+                    + "', 'name': 'DB_PASSWORD'} rejected"
+                ],
+                (secret,),
+                (),
+            ),
+            (
+                ["bad env: ('API_TOKEN', '" + secret + "') rejected"],
+                (secret,),
+                ("rejected",),
+            ),
+            (
+                ["DB_PASS=" + secret, "SMTP_PASS=" + secret, "user=a pass=" + secret],
+                (secret,),
+                (),
+            ),
+            ([json.dumps({"db_pass": secret, "smtp_creds": secret})], (secret,), ()),
+            (
+                [json.dumps({"compass": "north", "bypass": "disabled"})],
+                (),
+                ("north", "disabled"),
+            ),
             (["PGPASSWORD=" + secret], (secret,), ()),
             (
                 [json.dumps({"secrets": {"odoo_admin": secret}, "event": "failed"})],
@@ -215,6 +244,40 @@ class RedactionTests(unittest.TestCase):
                     self.assertNotIn(value, rendered)
                 for value in present:
                     self.assertIn(value, rendered)
+
+    def test_complete_sensitive_records_preserve_later_tracebacks(self):
+        secret = "S3NTINEL-complete-record"
+        records = [
+            json.dumps({"session": secret}),
+            json.dumps({"body": json.dumps({"password": secret})}),
+            'password="' + secret + '"',
+            "token='" + secret + "'",
+            "password=" + secret,
+            json.dumps(json.dumps({"password": secret})),
+            "{'password': {'v': '" + secret + "'}, 'x': 1}",
+        ]
+        for record in records:
+            with self.subTest(record=record):
+                state = Redactor()
+                rendered = "\n".join(
+                    state.feed(line).message
+                    for line in [
+                        record,
+                        "Traceback (most recent call last):",
+                        '  File "/app/x.py", line 3',
+                        "    raise ValueError",
+                        "ValueError: boom",
+                    ]
+                )
+                self.assertNotIn(secret, rendered)
+                self.assertIn("/app/x.py", rendered)
+                self.assertIn("raise ValueError", rendered)
+                self.assertIn("ValueError: boom", rendered)
+        state = Redactor()
+        state.feed("password: |-")
+        self.assertNotIn(
+            secret, state.feed("  " + json.dumps({"innocent": secret})).message
+        )
 
     def test_provider_shapes_and_private_key_blocks(self):
         tokens = [

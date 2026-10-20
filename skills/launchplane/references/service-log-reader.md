@@ -84,7 +84,10 @@ name/key pairs and split value fragments, and recognizable token, authorization,
 shapes. It normalizes at most three percent/JSON escape layers and bounds structured
 nesting. Complete objects retain neighboring diagnostic fields such as trace IDs,
 commit SHAs, image digests and code paths. A plain sensitive assignment discards
-the rest of its record; malformed structured records are masked. Standalone
+the rest of its record; an unparsed sensitive name/value pair masks the whole
+record in either property order. Malformed structured records are masked.
+Complete structured or quoted values cannot open multiline continuation state;
+nested serialized fields are projected without changing that state. Standalone
 value/data/default fragments without an established ordinary name are masked,
 including reversed or window-truncated name/value output.
 
