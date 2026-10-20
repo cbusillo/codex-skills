@@ -3263,7 +3263,7 @@ def _claim_once(args: argparse.Namespace) -> None:
             check_issue_holds(label_issue)
             previous_labels = set(normalize_labels(issue.get("labels")))
             fresh_labels = set(normalize_labels(label_issue.get("labels")))
-            if (fresh_labels - previous_labels) & {label_map[key] for key in ("waiting", "blocked")}:
+            if (fresh_labels - previous_labels) & {label_map[key] for key in ("waiting", "blocked", "stale", "done")}:
                 raise PlanError("Issue acquired a new hold before claim label update")
             if can_update and not any(github_plan_claim.same_owner(record, claim)
                                       for record in github_plan_claim.records(label_status)):

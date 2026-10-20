@@ -3498,23 +3498,28 @@ class ClaimTests(unittest.TestCase):
                 self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
 
     def test_new_hold_after_status_is_preserved_before_label_mutation(self):
-        for retained in (False, True):
-            with self.subTest(retained=retained):
+        for retained, key, structured in product((False, True), ("waiting", "blocked", "stale", "done"), (False, True)):
+            with self.subTest(retained=retained, key=key, structured=structured):
                 self.setUp()
                 if retained: self.ordinary_handoff_fixture()
                 self.args.wait_resolved = "Previously reviewed absence of holds."
                 hold = wait_record.reviewed(evidence="New acceptance request after publication",
                     waiting_for="Client acceptance", ends_when="Client accepts the current result")
                 def add_hold():
-                    self.comments.append({"id": 900, "user": {"login": TEST_BOT}, "body": wait_record.marker(hold)})
-                    self.issue["labels"].append({"name": PLAN.DEFAULT_CONFIG["labels"]["waiting"]})
+                    if structured:
+                        self.comments.append({"id": 900, "user": {"login": TEST_BOT}, "body": wait_record.marker(hold)})
+                    self.issue["labels"].append({"name": PLAN.DEFAULT_CONFIG["labels"][key]})
                 self.after_status = add_hold
                 with self.assertRaises(PLAN.PlanError) as caught: self.run_claim()
                 self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
                 self.assertIn("status", self.events)
                 self.assertNotIn("labels", self.events)
-                self.assertIn(PLAN.DEFAULT_CONFIG["labels"]["waiting"], PLAN.normalize_labels(self.issue["labels"]))
-                self.assertIn(hold, wait_record.records(self.comments[-1]["body"]))
+                self.assertIn(PLAN.DEFAULT_CONFIG["labels"][key], PLAN.normalize_labels(self.issue["labels"]))
+                if structured: self.assertIn(hold, wait_record.records(self.comments[-1]["body"]))
+                self.after_status = lambda: None
+                self.args.wait_resolved = "Newly recorded hold reviewed for the permitted source work."
+                self.run_claim()
+                self.assertIn("metadata_readback", self.emitted.call_args.args[0]["completed_steps"])
 
     def test_unrelated_description_after_status_survives_label_update(self):
         for retained in (False, True):
