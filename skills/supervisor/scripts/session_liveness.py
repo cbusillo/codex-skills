@@ -61,6 +61,12 @@ def idle_terminal_command(command):
         arg in {"-l", "-i", "-il", "-li", "--login", "--interactive"} for arg in argv[1:])
 
 
+def versioned_claude(executable):
+    path = Path(executable)
+    return (path.parent.name == "versions" and path.parent.parent.name == "claude"
+            and re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][\w.-]+)?", path.name) is not None)
+
+
 def harness_family(executable):
     name = Path(executable).name.casefold()
     if name in {"codex-session.py", "codex_session_proxy.py"}:
@@ -71,7 +77,7 @@ def harness_family(executable):
         return None  # Repository utilities are not native harness executables.
     if name.startswith("codex"):
         return "codex"
-    return "claude" if name in {"claude", "claude.js"} else None
+    return "claude" if name in {"claude", "claude.js"} or versioned_claude(executable) else None
 
 
 ARGUMENT_BYTES = 2 * 1024 * 1024
@@ -130,45 +136,78 @@ def native_arguments(pid):
     return darwin_arguments(memoryview(data)[:size.value])
 
 
-def executable_arguments(words):
-    """Executable and immediate interpreter script, without prompt payload."""
-    if words and (Path(words[0]).name in {"node", "nodejs", "bun", "deno", "sh", "bash", "zsh"}
-                  or re.fullmatch(r"python(?:3(?:\.\d+)?)?", Path(words[0]).name)):
-        return words[:2] if len(words) > 1 else []
-    return words[:1]
+def interpreter_family(executable):
+    name = Path(executable).name
+    if name in {"node", "nodejs", "bun", "deno"}:
+        return "javascript"
+    if name in {"sh", "bash", "zsh"}:
+        return "shell"
+    return "python" if re.fullmatch(r"python(?:3(?:\.\d+)?)?", name) else None
+
+
+def execution_arguments(command):
+    """Find one executable/script prefix; later operands never supply identity."""
+    flat = isinstance(command, str)
+    words = command.split() if flat else list(command)
+    wrappers = {"codex-session.py", "codex_session_proxy.py"}
+
+    def candidate(value):
+        return harness_family(value) is not None or Path(value).name in wrappers
+
+    def path_span(index):
+        value = words[index]
+        end = index + 1
+        # Flat text can lose spaces inside a path. Extend only this anchored
+        # span, never across an option or a separate absolute/relative path.
+        if flat and "/" in value and not (candidate(value) or interpreter_family(value)):
+            while end < len(words) and not words[end].startswith(("-", "/", "./", "../")):
+                value += " " + words[end]
+                end += 1
+                if candidate(value) or interpreter_family(value):
+                    break
+        return value, end
+
+    if not words:
+        return [], [], False
+    executable, index = path_span(0)
+    identity = [executable]
+    interpreter = interpreter_family(executable)
+    uncertain = False
+    if interpreter:
+        while index < len(words) and words[index].startswith("-"):
+            option = words[index]
+            identity.append(option)
+            index += 1
+            uncertain = True
+            if option == "--":
+                break
+            code_mode = (interpreter == "shell" and not option.startswith("--") and "c" in option[1:]
+                         or interpreter == "python" and re.match(r"^-[bBdEhiIOqRsSuvVx]*[cm]", option)
+                         or interpreter == "javascript" and (option.partition("=")[0] in {"--eval", "--print"}
+                                                              or option.startswith(("-e", "-p"))))
+            if code_mode:
+                return [], identity, True
+        if index == len(words):
+            return [], [], uncertain  # Missing script cannot clear an earlier one.
+        script, index = path_span(index)
+        identity.append(script)
+    argv = [identity[-1], *words[index:]] if candidate(identity[-1]) else []
+    return argv, identity, uncertain
 
 
 def harness_arguments(command):
     """Keep full argv; identity parsing and guarded prefix binding are separate."""
-    words = command.split() if isinstance(command, str) else list(command)
-    positions = executable_arguments(words)
-    index = next((i for i, arg in enumerate(positions)
-                  if harness_family(arg) is not None or Path(arg).name in {"codex-session.py", "codex_session_proxy.py"}), None)
-    return [] if index is None else words[index:]
+    return execution_arguments(command)[0]
 
 
 def process_arguments(pid, command):
     """ps discovers candidates; only OS argument boundaries grant exemptions."""
     fallback = harness_arguments(command)
     if not fallback:
-        # A path before the executable may contain spaces. Discover broadly;
-        # only the bounded reader below establishes executable positions.
-        words = command.split() if isinstance(command, str) else list(command)
-        fallback = next((words[index:] for index, word in enumerate(words)
-                         if harness_arguments([word])), [])
-    if not fallback:
         return [], False
     try:
         native = native_arguments(pid)
-        argv = harness_arguments(native)
-        identity = executable_arguments(native)
-        if not argv and len(identity) == 2 and identity[1].startswith("-"):
-            # Interpreter flags obscure the script position. A later native
-            # candidate can veto, but cannot establish an invocation exemption.
-            uncertain = next((native[index:] for index in range(2, len(native))
-                              if harness_arguments([native[index]])), [])
-            if uncertain:
-                return uncertain, False
+        argv, identity, uncertain = execution_arguments(native)
         parts = Path(native[0]).parts if native else ()
         framework_helper = any(part.endswith(".framework") and "Helpers" in parts[index + 1:]
                                for index, part in enumerate(parts))
@@ -185,7 +224,7 @@ def process_arguments(pid, command):
             else:
                 consistent = bool(identity) and identity == list(command)[:len(identity)]
             return ([], True) if consistent else (fallback, False)
-        return argv, True
+        return argv, not uncertain
     except (OSError, ValueError, UnicodeError):
         pass
     return fallback, False
@@ -280,7 +319,7 @@ def uncertain_invocation(argv):
 
 def invocation(argv, *, bounded=True):
     """Return source candidates, command kind, and an exact native resume operand."""
-    if not bounded:
+    if not bounded or argv and versioned_claude(argv[0]):
         return uncertain_invocation(argv)
     if not argv:
         return [], None, None

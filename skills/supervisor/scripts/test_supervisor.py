@@ -1444,6 +1444,7 @@ class ProcessArgumentsTests(unittest.TestCase):
                          [helper, "--type=gpu-process", "--type=renderer"],
                          [prefix + "/Resources/CLI.app/Contents/MacOS/codex", "--type=gpu-process"],
                          ["codexPreview", "resume", self.source],
+                         ["/tools/codex Preview", "resume", self.source],
                          ["codex", "--config", "--type=gpu-process"],
                          ["node", helper, "--type=gpu-process"]):
                 with self.subTest(argv=argv), patch.object(session_liveness, "native_arguments", return_value=argv):
@@ -1462,10 +1463,53 @@ class ProcessArgumentsTests(unittest.TestCase):
                 with self.subTest(prefix=prefix, available=available), patch.object(session_liveness, "native_arguments", **kwargs):
                     self.assertFalse(sessions.process_absence_known(command))
                     self.assertEqual([peer["sessionId"] for peer in sessions.process_sessions(command, {self.source})], [self.source])
-                    with self.assertRaisesRegex(ValueError, "resumed harness"):
+                    with self.assertRaises(ValueError):
                         session_liveness.verify_process_exit(
                             {"session_id": self.source, "pid": 123, "tty": "source-tty"},
                             rows=[(456, "other", " ".join(argv))])
+
+        argv = ["/Tools With Spaces/bin/python3", "/Application Support/codex-session.py", "resume"]
+        for available in (True, False):
+            kwargs = {"return_value": argv} if available else {"side_effect": OSError("argv unavailable")}
+            with self.subTest(venv=available), patch.object(session_liveness, "native_arguments", **kwargs):
+                self.assertFalse(sessions.process_absence_known("456 " + " ".join(argv)))
+
+    def test_command_data_never_supplies_native_harness_ownership(self):
+        github = str(Path(__file__).resolve().parents[2] / "github/scripts")
+        with patch.object(sys, "path", [github, *sys.path]):
+            import github_plan_sessions as sessions
+        data = "resume " + self.source
+        cases = (["git", "-C", "/repo/codex-skills", "status", data],
+                 ["rg", "codex " + data, "fixture.log"],
+                 ["gh-plan", "--repo", "cbusillo/codex-skills", "show", "2285", data],
+                 ["python3", "-I", "tool.py", "--repo", "cbusillo/codex-skills", data],
+                 ["python3", "-m", "module", "/repo/codex-skills", data],
+                 ["zsh", "-lc", "git -C /repo/codex-skills status"],
+                 ["node", "--eval", "codex " + data])
+        for argv in cases:
+            for available in (True, False):
+                kwargs = {"return_value": argv} if available else {"side_effect": OSError("argv unavailable")}
+                with self.subTest(argv=argv, available=available), patch.object(session_liveness, "native_arguments", **kwargs):
+                    command = " ".join(argv)
+                    self.assertTrue(sessions.process_absence_known("456 " + command))
+                    self.assertEqual(sessions.process_sessions("456 " + command, {self.source}), [])
+                    session_liveness.verify_process_exit(
+                        {"session_id": self.source, "pid": 123, "tty": "source-tty"},
+                        rows=[(456, "other", command)])
+
+    def test_versioned_claude_resume_can_veto_but_cannot_grant_authority(self):
+        executable = "/fixture/claude/versions/1.2.3"
+        for available in (True, False):
+            argv = [executable, "--resume", self.source]
+            kwargs = {"return_value": argv} if available else {"side_effect": OSError("argv unavailable")}
+            with self.subTest(available=available), patch.object(session_liveness, "native_arguments", **kwargs):
+                with self.assertRaises(ValueError):
+                    session_liveness.verify_process_exit(
+                        {"session_id": self.source, "harness": "claude", "pid": 123, "tty": "source-tty"},
+                        rows=[(456, "other", " ".join(argv))])
+        with self.assertRaises(ValueError):
+            self.probe([executable, "--resume", self.other], harness="claude")
+        self.probe([executable, "--resume", self.other], harness="claude", guarded=True)
 
     def probe(self, argv, *, tty="source-tty", scope="session", guarded=False, harness="codex"):
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
