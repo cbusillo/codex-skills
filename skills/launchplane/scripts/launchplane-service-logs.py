@@ -20,25 +20,32 @@ MAX_WINDOW_NS = 24 * 60 * 60 * 10**9
 MAX_LINES = 1000
 MAX_CONTAINERS = 8
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+MAX_MESSAGE_BYTES = 4096
 SELECTOR = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
 IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,199}\Z")
 TIMESTAMP = re.compile(
     r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?(?:Z|[+-]\d\d:\d\d)\Z"
 )
-CONTROL = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|[\x00-\x08\x0b-\x1f\x7f-\x9f]")
-SECRET_NAME = r"[A-Za-z0-9_.-]*(?:password|passwd|pwd|token|secret|credential|cookie|authorization|key)[A-Za-z0-9_.-]*"
-ASSIGNMENT = re.compile(rf"""(?i)["']?\b{SECRET_NAME}["']?\s*[=:]\s*""")
+CONTROL = re.compile(
+    r"\x1b\[[0-?]*[ -/]*[@-~]|[\x00-\x08\x0b-\x1f\x7f-\x9f\u2028\u2029]"
+)
+SECRET_NAME = r"[A-Za-z0-9_.-]*(?:password|passwd|passphrase|pwd|token|secret|credential|cookie|auth|session|sid|private|key)[A-Za-z0-9_.-]*"
+ASSIGNMENT = re.compile(
+    rf"""(?i)(?:["']?\b{SECRET_NAME}["']?\s*[=:]\s*|--?{SECRET_NAME}(?:\s+|['"]\s*,\s*))"""
+)
+SECRET_FIELD = re.compile(rf"""(?i)["']{SECRET_NAME}["']""")
 HEADER = re.compile(
     r"(?i)\b(?:authorization|proxy-authorization|cookie|set-cookie)\s*:\s*.*"
 )
 BEARER = re.compile(r"(?i)\b(?:bearer|basic)\s+[^\s,;\"']+")
-URL_CREDENTIAL = re.compile(r"(\b[a-zA-Z][a-zA-Z0-9+.-]*://)[^\s/@]+@")
+URL_CREDENTIAL = re.compile(r"(\b[a-zA-Z][a-zA-Z0-9+.-]*://)[^\s]+@")
 TOKEN = re.compile(
-    r"\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|sk[-_][A-Za-z0-9_-]+|AKIA[A-Z0-9]{16}|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)\b"
+    r"\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|[sr]k[-_][A-Za-z0-9_-]+|(?:AKIA|ASIA)[A-Z0-9]{16}|AIza[A-Za-z0-9_-]{35}|xox[baprs]-[A-Za-z0-9-]+|glpat-[A-Za-z0-9_-]+|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)\b"
 )
-OPAQUE = re.compile(r"(?<![A-Za-z0-9+/=_-])[A-Za-z0-9+/=_-]{64,}(?![A-Za-z0-9+/=_-])")
-PEM_BEGIN = re.compile(r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----")
-PEM_END = re.compile(r"-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----")
+OPAQUE = re.compile(r"(?<![A-Za-z0-9+/=_-])[A-Za-z0-9+/=_-]{40,}(?![A-Za-z0-9+/=_-])")
+PEM_BEGIN = re.compile(r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----")
+PEM_END = re.compile(r"-----END (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----")
+INSPECT_FORMAT = '{"id":{{json .Id}},"image":{{json .Config.Image}},"image_digest":{{json .Image}},"project":{{json (index .Config.Labels "com.docker.compose.project")}},"service":{{json (index .Config.Labels "com.docker.compose.service")}},"created_at":{{json .Created}},"started_at":{{json .State.StartedAt}},"finished_at":{{json .State.FinishedAt}},"state":{{json .State.Status}},"exit_code":{{json .State.ExitCode}},"oom_killed":{{json .State.OOMKilled}}}'
 
 
 class LogReadError(ValueError):
@@ -48,7 +55,10 @@ class LogReadError(ValueError):
 def timestamp(value: str) -> int:
     if not TIMESTAMP.fullmatch(value):
         raise LogReadError("invalid_timestamp")
-    parsed = datetime.fromisoformat(value).astimezone(UTC)
+    try:
+        parsed = datetime.fromisoformat(value).astimezone(UTC)
+    except ValueError:
+        raise LogReadError("invalid_timestamp") from None
     fractional = re.search(r"\.(\d+)", value)
     nanos = int(fractional[1].ljust(9, "0")) if fractional else 0
     return int(parsed.replace(microsecond=0).timestamp()) * 10**9 + nanos
@@ -106,6 +116,14 @@ def read_remote(target: dict, docker: list[str], timeout: float) -> tuple[bytes,
                 "BatchMode=yes",
                 "-o",
                 "StrictHostKeyChecking=yes",
+                "-o",
+                "UpdateHostKeys=no",
+                "-o",
+                "ControlPath=none",
+                "-o",
+                "ClearAllForwardings=yes",
+                "-o",
+                "PermitLocalCommand=no",
                 "--",
                 target["ssh_host"],
                 shlex.join(command),
@@ -148,6 +166,8 @@ def read_remote(target: dict, docker: list[str], timeout: float) -> tuple[bytes,
 
 def redact(message: str) -> str:
     message = CONTROL.sub("", message)
+    if SECRET_FIELD.search(message):
+        return "[redacted-sensitive-fields]"
     # Unframed final PEM fragments can be all that survives --tail/rotation.
     if re.fullmatch(r"[A-Za-z0-9+/=]{16,}", message.strip()):
         return "[redacted]"
@@ -163,17 +183,36 @@ def redact(message: str) -> str:
 
 
 def entries_from_stream(
-    raw: bytes, stream: str, container: int, since: int, until: int
+    raw: bytes,
+    stream: str,
+    container: int,
+    since: int,
+    until: int,
+    patterns: tuple[re.Pattern, ...] = (),
 ) -> list[dict]:
     entries = []
     private_key = False
-    for line in raw.decode("utf-8", errors="replace").splitlines():
+    private_continuation = False
+    for line in raw.decode("utf-8", errors="replace").split("\n"):
         if not line:
             continue
         stamp, separator, message = line.partition(" ")
         if not separator:
             raise LogReadError("invalid_log_framing")
-        observed = timestamp(stamp)
+        try:
+            observed = timestamp(stamp)
+        except ValueError:
+            raise LogReadError("invalid_log_framing") from None
+        message = CONTROL.sub("", message)
+        sensitive = ASSIGNMENT.search(message)
+        private_continuation |= (
+            len(message.encode("utf-8")) > MAX_MESSAGE_BYTES
+            or bool(sensitive and not message[sensitive.end() :].strip())
+            or bool(
+                SECRET_FIELD.search(message)
+                and message.rstrip().endswith((":", ",", "{", "["))
+            )
+        )
         if PEM_BEGIN.search(message):
             private_key = True
         if PEM_END.search(message) and not private_key:
@@ -182,10 +221,18 @@ def entries_from_stream(
             for entry in entries:
                 entry["message"] = "[redacted-private-key]"
             private_key = True
-        safe_message = "[redacted-private-key]" if private_key else redact(message)
+        safe_message = (
+            "[redacted-private-key]"
+            if private_key
+            else "[redacted-continuation]"
+            if private_continuation
+            else redact(message)
+        )
         if PEM_END.search(message):
             private_key = False
-        if since <= observed < until:
+        if since <= observed < until and all(
+            pattern.search(message) for pattern in patterns
+        ):
             entries.append(
                 {
                     "timestamp": stamp,
@@ -195,6 +242,78 @@ def entries_from_stream(
                 }
             )
     return entries
+
+
+def inspect_containers(
+    target: dict, identities: list[str], timeout: float
+) -> list[dict]:
+    output, _ = read_remote(
+        target,
+        [
+            "docker",
+            "inspect",
+            "--type",
+            "container",
+            "--format",
+            INSPECT_FORMAT,
+            *identities,
+        ],
+        timeout,
+    )
+    records = [json.loads(line) for line in output.decode("utf-8").split("\n") if line]
+    if len(records) != len(identities):
+        raise LogReadError("invalid_container_identity")
+    for record, identity in zip(records, identities, strict=True):
+        if (
+            not isinstance(record, dict)
+            or record.get("id") != identity
+            or record.get("project") != target["compose_project"]
+            or record.get("service") != target["compose_service"]
+        ):
+            raise LogReadError("invalid_container_identity")
+        image = record.get("image")
+        if not isinstance(image, str):
+            raise LogReadError("invalid_container_identity")
+        image = image.split("@", 1)[0]
+        image = image.rsplit(":", 1)[0] if ":" in image.rsplit("/", 1)[-1] else image
+        if image != target["image_repository"]:
+            raise LogReadError("unexpected_service_image")
+        for field in ("created_at", "started_at", "finished_at"):
+            if not isinstance(record.get(field), str):
+                raise LogReadError("invalid_container_identity")
+            timestamp(record[field])
+        if (
+            record.get("state")
+            not in {
+                "created",
+                "restarting",
+                "running",
+                "removing",
+                "paused",
+                "exited",
+                "dead",
+            }
+            or type(record.get("exit_code")) is not int
+            or type(record.get("oom_killed")) is not bool
+            or not isinstance(record.get("image_digest"), str)
+            or not re.fullmatch(r"sha256:[a-f0-9]{64}", record["image_digest"])
+        ):
+            raise LogReadError("invalid_container_identity")
+    return [
+        {
+            field: record[field]
+            for field in (
+                "created_at",
+                "started_at",
+                "finished_at",
+                "state",
+                "exit_code",
+                "oom_killed",
+                "image_digest",
+            )
+        }
+        for record in records
+    ]
 
 
 def read_logs(args: argparse.Namespace) -> dict:
@@ -221,25 +340,26 @@ def read_logs(args: argparse.Namespace) -> dict:
             "--filter",
             f"label=com.docker.compose.service={target['compose_service']}",
             "--format",
-            "{{.ID}} {{.Image}}",
+            "{{.ID}}",
         ],
         args.timeout,
     )
     candidates = output.decode("utf-8").splitlines()
-    if not 1 <= len(candidates) <= MAX_CONTAINERS:
+    if not candidates:
         raise LogReadError("service_container_unavailable")
-    containers = []
     for candidate in candidates:
-        fields = candidate.split()
-        if len(fields) != 2 or not re.fullmatch(r"[a-f0-9]{64}", fields[0]):
+        if not re.fullmatch(r"[a-f0-9]{64}", candidate):
             raise LogReadError("invalid_container_identity")
-        image = fields[1].split("@", 1)[0]
-        image = image.rsplit(":", 1)[0] if ":" in image.rsplit("/", 1)[-1] else image
-        if image != target["image_repository"]:
-            raise LogReadError("unexpected_service_image")
-        containers.append(fields[0])
+    containers = candidates[:MAX_CONTAINERS]
+    coverage = inspect_containers(target, containers, args.timeout)
     entries = []
-    tail_limit_reached = False
+    patterns = tuple(
+        re.compile(
+            r"(?<![A-Za-z0-9_.:/-])" + re.escape(value) + r"(?![A-Za-z0-9_.:/-])"
+        )
+        for value in (args.operation_id, args.trace_id)
+        if value
+    )
     for index, container in enumerate(containers):
         stdout, stderr = read_remote(
             target,
@@ -251,26 +371,15 @@ def read_logs(args: argparse.Namespace) -> dict:
                 args.since,
                 "--until",
                 args.until,
-                "--tail",
-                str(args.lines),
                 container,
             ],
             args.timeout,
         )
-        tail_limit_reached |= (
-            len(stdout.splitlines()) + len(stderr.splitlines()) >= args.lines
-        )
         for stream, raw in (("stdout", stdout), ("stderr", stderr)):
-            entries.extend(entries_from_stream(raw, stream, index, since, until))
-    # Filter only redacted text. Selectors are literals with identifier boundaries.
-    for value in (args.operation_id, args.trace_id):
-        if value:
-            pattern = re.compile(
-                r"(?<![A-Za-z0-9_.:/-])" + re.escape(value) + r"(?![A-Za-z0-9_.:/-])"
+            entries.extend(
+                entries_from_stream(raw, stream, index, since, until, patterns)
             )
-            entries = [entry for entry in entries if pattern.search(entry["message"])]
     entries.sort(key=lambda entry: timestamp(entry["timestamp"]))
-    tail_limit_reached |= len(entries) > args.lines
     return {
         "ok": True,
         "since": args.since,
@@ -278,15 +387,21 @@ def read_logs(args: argparse.Namespace) -> dict:
         "entries": entries[-args.lines :],
         "redacted": True,
         "container_count": len(containers),
-        "tail_limit_reached": tail_limit_reached,
+        "containers": coverage,
+        "omitted_containers": len(candidates) - len(containers),
+        "tail_limit_reached": len(entries) > args.lines,
         # A retained-container tail cannot prove historical coverage or absence.
         "complete": False,
-        "coverage": "retained_container_tails_only",
+        "coverage": "retained_containers_only",
     }
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    class Parser(argparse.ArgumentParser):
+        def error(self, message: str) -> None:
+            raise LogReadError("invalid_arguments")
+
+    parser = Parser(description=__doc__)
     parser.add_argument("--config", required=True)
     parser.add_argument("--since", required=True, help="RFC3339 start, inclusive")
     parser.add_argument(
@@ -298,9 +413,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--trace-id", default="")
     parser.add_argument("--lines", type=int, default=200)
     parser.add_argument("--timeout", type=float, default=30)
-    args = parser.parse_args(argv)
     try:
+        args = parser.parse_args(argv)
         result = read_logs(args)
+    except KeyboardInterrupt:
+        print(json.dumps({"ok": False, "error": "interrupted", "complete": False}))
+        return 130
     except (ValueError, OSError, subprocess.SubprocessError) as error:
         code = (
             str(error)

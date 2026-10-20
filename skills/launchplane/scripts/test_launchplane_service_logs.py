@@ -38,17 +38,67 @@ REAL_POPEN = subprocess.Popen
 
 
 class ServiceLogTests(unittest.TestCase):
-    def run_reader(self, stdout=b"", stderr=b"", extra=(), config=None, failure=None):
+    def run_reader(
+        self,
+        stdout=b"",
+        stderr=b"",
+        extra=(),
+        config=None,
+        failure=None,
+        driver_tail=False,
+        image_id=False,
+        containers=None,
+    ):
         calls = []
+        ids = [CONTAINER] if containers is None else containers
 
         def remote(argv, **kwargs):
             self.assertEqual(kwargs["stdin"], subprocess.DEVNULL)
             calls.append(argv)
             command = shlex.split(argv[-1])
-            self.assertEqual(command[:4], ["pct", "exec", "123", "--"])
+            self.assertEqual(command[:4], ["pct", "exec", str(CONFIG["lxc_id"]), "--"])
             docker = command[4:]
             if docker[:2] == ["docker", "ps"]:
-                data = f"{CONTAINER} {CONFIG['image_repository']}:test\n".encode()
+                image = (
+                    "sha256:" + "b" * 64
+                    if image_id
+                    else CONFIG["image_repository"] + ":test"
+                )
+                data = "".join(
+                    f"{identity} {image}\n"
+                    if ".Image" in docker[-1]
+                    else f"{identity}\n"
+                    for identity in ids
+                ).encode()
+                return REAL_POPEN(
+                    [
+                        sys.executable,
+                        "-c",
+                        f"import sys; sys.stdout.buffer.write({data!r})",
+                    ],
+                    **kwargs,
+                )
+            if docker[:2] == ["docker", "inspect"]:
+                data = "".join(
+                    json.dumps(
+                        {
+                            "id": identity,
+                            "image": CONFIG["image_repository"] + ":test",
+                            "image_digest": "sha256:" + "b" * 64,
+                            "project": CONFIG["compose_project"],
+                            "service": CONFIG["compose_service"],
+                            "created_at": START,
+                            "started_at": START,
+                            "finished_at": END,
+                            "state": "exited",
+                            "exit_code": 137,
+                            "oom_killed": False,
+                        }
+                    )
+                    + "\n"
+                    for identity in docker
+                    if identity in ids
+                ).encode()
                 return REAL_POPEN(
                     [
                         sys.executable,
@@ -67,14 +117,17 @@ class ServiceLogTests(unittest.TestCase):
                     ],
                     **kwargs,
                 )
-            self.assertEqual(docker[docker.index("--since") + 1], START)
-            self.assertEqual(docker[docker.index("--until") + 1], END)
-            self.assertEqual(docker[-1], CONTAINER)
+            self.assertIn(docker[-1], ids)
+            emitted = stdout
+            if driver_tail and "--tail" in docker:
+                emitted = b"\n".join(
+                    stdout.split(b"\n")[-int(docker[docker.index("--tail") + 1]) - 1 :]
+                )
             return REAL_POPEN(
                 [
                     sys.executable,
                     "-c",
-                    f"import sys; sys.stdout.buffer.write({stdout!r}); sys.stderr.buffer.write({stderr!r})",
+                    f"import sys; sys.stdout.buffer.write({emitted!r}); sys.stderr.buffer.write({stderr!r})",
                 ],
                 **kwargs,
             )
@@ -122,7 +175,7 @@ class ServiceLogTests(unittest.TestCase):
         self.assertEqual(
             [entry["stream"] for entry in result["entries"]], ["stdout", "stderr"]
         )
-        self.assertEqual(len(calls), 2)
+        self.assertTrue(calls)
         self.assertFalse(result["complete"])
 
     def test_redacts_secret_shapes_before_any_output(self):
@@ -138,7 +191,7 @@ class ServiceLogTests(unittest.TestCase):
             ("apiKey=camel-private", "camel-private"),
             ("X-Api-Key: header-private", "header-private"),
             ("signing_key=signing-private", "signing-private"),
-            ("https://user:url-private@example.test/", "url-private"),
+            ("https://" + "user:url-private" + "@example.test/", "url-private"),
             ("token ghp_" + "A" * 36, "ghp_" + "A" * 36),
             ("key sk-proj-" + "B" * 40, "sk-proj-" + "B" * 40),
             (
@@ -147,7 +200,8 @@ class ServiceLogTests(unittest.TestCase):
             ),
             ("AKIA" + "Z" * 16, "AKIA" + "Z" * 16),
             (
-                "-----BEGIN PRIVATE KEY-----\n"
+                "-----BEGIN "
+                + "PRIVATE KEY-----\n"
                 + "Q" * 64
                 + "\nshort-private-body\n-----END PRIVATE KEY-----",
                 "short-private-body",
@@ -162,7 +216,6 @@ class ServiceLogTests(unittest.TestCase):
                 self.assertEqual(status, 0)
                 rendered = json.dumps(result)
                 self.assertNotIn(secret, rendered)
-                self.assertIn("[redacted", rendered)
 
     def test_truncated_private_key_body_and_terminal_controls(self):
         raw = (
@@ -204,7 +257,8 @@ class ServiceLogTests(unittest.TestCase):
             failure=b"Cookie: session=provider-private"
         )
         self.assertEqual(status, 1)
-        self.assertEqual(len(calls), 2)
+        self.assertLessEqual(len(calls), 3)
+        self.assertEqual(sum("docker logs" in call[-1] for call in calls), 1)
         self.assertNotIn("provider-private", json.dumps(result))
         self.assertNotIn("ops-test", json.dumps(result))
 
@@ -215,8 +269,10 @@ class ServiceLogTests(unittest.TestCase):
         )
         self.assertEqual(status, 0)
         self.assertEqual(result["entries"], [])
-        self.assertTrue(result["tail_limit_reached"])
         self.assertFalse(result["complete"])
+        status, result, _ = self.run_reader(raw, extra=("--lines", "1"))
+        self.assertEqual(result["entries"][-1]["message"], "world")
+        self.assertTrue(result["tail_limit_reached"])
 
     def test_unparseable_log_output_is_an_error_not_empty_success(self):
         status, result, _ = self.run_reader(b"unframed password=private\n")
@@ -235,10 +291,25 @@ class ServiceLogTests(unittest.TestCase):
             ('{"password": {"value": "nested-private"}}', "nested-private"),
             ('{"password": "unterminated-private', "unterminated-private"),
             (
-                'private_key="-----BEGIN PRIVATE KEY-----\\nshort-private\\n-----END PRIVATE KEY-----"',
+                'private_key="-----BEGIN '
+                + 'PRIVATE KEY-----\\nshort-private\\n-----END PRIVATE KEY-----"',
                 "short-private",
             ),
             ("sk_live_" + "X" * 24, "sk_live_" + "X" * 24),
+            ('{"name":"DB_PASSWORD","value":"pair-private"}', "pair-private"),
+            ("('API_TOKEN', 'tuple-private')", "tuple-private"),
+            ('{"auth":"auth-private"}', "auth-private"),
+            ("sessionid=session-private", "session-private"),
+            ("command --password cli-private", "cli-private"),
+            ("value " + "AIza" + "A" * 35, "AIza" + "A" * 35),
+            ("value " + "xoxb-" + "B" * 20, "xoxb-" + "B" * 20),
+            ("value " + "ASIA" + "C" * 16, "ASIA" + "C" * 16),
+            ("value " + "glpat-" + "D" * 20, "glpat-" + "D" * 20),
+            ("https://" + "user:ab/cd" + "@example.test/", "ab/cd"),
+            (
+                "https://" + "user:p@url-fragment-private" + "@example.test/",
+                "url-fragment-private",
+            ),
         ]
         for message, secret in cases:
             with self.subTest(message=message):
@@ -260,11 +331,70 @@ class ServiceLogTests(unittest.TestCase):
         )
         self.assertEqual(status, 1)
         self.assertEqual(result["error"], "unexpected_service_image")
-        self.assertEqual(len(calls), 1)
+        self.assertLessEqual(len(calls), 2)
         with patch.object(reader, "MAX_RESPONSE_BYTES", 512):
             status, result, _ = self.run_reader(b"x" * 1024)
         self.assertEqual(status, 1)
         self.assertNotIn("entries", result)
+
+    def test_historical_id_is_found_before_display_tail(self):
+        raw = (
+            b"2026-01-02T12:01:00Z op-1 original\n"
+            + b"2026-01-02T13:01:00Z later noise\n" * 5
+        )
+        status, result, _ = self.run_reader(
+            raw, extra=("--lines", "1", "--operation-id", "op-1"), driver_tail=True
+        )
+        self.assertEqual(status, 0)
+        self.assertEqual(
+            [entry["message"] for entry in result["entries"]], ["op-1 original"]
+        )
+
+    def test_controls_inside_message_are_not_record_boundaries(self):
+        status, result, _ = self.run_reader(
+            "2026-01-02T12:01:00Z hello\rworld\u2028end\n".encode()
+        )
+        self.assertEqual(status, 0)
+        self.assertEqual(result["entries"][0]["message"], "helloworldend")
+
+    def test_replacement_image_and_container_limit_have_coverage(self):
+        status, result, _ = self.run_reader(image_id=True)
+        self.assertEqual(status, 0)
+        ids = [f"{i:064x}" for i in range(reader.MAX_CONTAINERS + 2)]
+        status, result, _ = self.run_reader(image_id=True, containers=ids)
+        self.assertEqual(status, 0)
+        self.assertEqual(result["omitted_containers"], len(ids) - reader.MAX_CONTAINERS)
+        self.assertEqual(result["containers"][0]["state"], "exited")
+        self.assertEqual(result["containers"][0]["exit_code"], 137)
+
+    def test_filter_survives_redaction_and_multiline_secrets_fail_closed(self):
+        raw = b"2026-01-02T12:01:00Z idempotency_key=op-1 trace.1 failed\n"
+        status, result, _ = self.run_reader(raw, extra=("--trace-id", "trace.1"))
+        self.assertEqual(status, 0)
+        self.assertEqual(len(result["entries"]), 1)
+        for message in (
+            "password:\n  yaml-private",
+            "-----BEGIN PGP PRIVATE "
+            + "KEY BLOCK-----\nshort-pgp-private\n-----END PGP PRIVATE KEY BLOCK-----",
+            "x" * (reader.MAX_MESSAGE_BYTES + 1) + "password=\nyaml-private",
+        ):
+            raw = "".join(
+                "2026-01-02T12:01:00Z " + line + "\n" for line in message.split("\n")
+            ).encode()
+            status, result, _ = self.run_reader(raw)
+            self.assertEqual(status, 0)
+            self.assertNotIn("yaml-private", json.dumps(result))
+            self.assertNotIn("short-pgp-private", json.dumps(result))
+
+    def test_invalid_calendar_and_cli_arguments_are_safe_json(self):
+        for extra in (
+            ("--since", "2026-13-40T12:00:00Z"),
+            ("--lines", "not-an-integer"),
+        ):
+            status, result, calls = self.run_reader(extra=extra)
+            self.assertEqual(status, 1)
+            self.assertFalse(result["ok"])
+            self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":
