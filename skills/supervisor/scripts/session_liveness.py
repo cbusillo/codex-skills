@@ -181,6 +181,18 @@ def execution_arguments(command):
             uncertain = True
             if option == "--":
                 break
+            # Node's preload operand precedes the main script. It is not the
+            # script slot and cannot hide a later native CLI entrypoint.
+            if Path(executable).name in {"node", "nodejs"}:
+                preload = option.partition("=")[0] in {"-r", "--require", "--import", "--loader", "--experimental-loader"}
+                if preload and "=" not in option:
+                    if index == len(words):
+                        return [], [], True
+                    identity.append(words[index])
+                    index += 1
+                    continue
+                if preload or option.startswith("-r"):
+                    continue
             code_mode = (interpreter == "shell" and not option.startswith("--") and "c" in option[1:]
                          or interpreter == "python" and re.match(r"^-[bBdEhiIOqRsSuvVx]*[cm]", option)
                          or interpreter == "javascript" and (option.partition("=")[0] in {"--eval", "--print"}

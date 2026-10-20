@@ -1511,6 +1511,28 @@ class ProcessArgumentsTests(unittest.TestCase):
             self.probe([executable, "--resume", self.other], harness="claude")
         self.probe([executable, "--resume", self.other], harness="claude", guarded=True)
 
+    def test_node_preload_values_do_not_hide_or_supply_the_main_harness(self):
+        github = str(Path(__file__).resolve().parents[2] / "github/scripts")
+        with patch.object(sys, "path", [github, *sys.path]):
+            import github_plan_sessions as sessions
+        for preload in (["-r", "bootstrap.js"], ["--require", "bootstrap.js"],
+                        ["-rbootstrap.js"], ["--require=bootstrap.js"],
+                        ["--import", "bootstrap.js"], ["--loader=bootstrap.js"],
+                        ["--experimental-loader", "bootstrap.js"]):
+            for available in (True, False):
+                for script in ("/fixture/claude.js", "/fixture/codex.js"):
+                    resume = ["--resume", self.source] if script.endswith("claude.js") else ["resume", self.source]
+                    argv = ["node", *preload, script, *resume]
+                    kwargs = {"return_value": argv} if available else {"side_effect": OSError("argv unavailable")}
+                    with self.subTest(preload=preload, available=available, script=script), patch.object(session_liveness, "native_arguments", **kwargs):
+                        with self.assertRaises(ValueError):
+                            session_liveness.verify_process_exit(
+                                {"session_id": self.source, "pid": 123, "tty": "source-tty"},
+                                rows=[(456, "other", " ".join(argv))])
+            argv = ["node", *preload, "ordinary.js", "--repo", "codex-skills"]
+            with patch.object(session_liveness, "native_arguments", return_value=argv):
+                self.assertTrue(sessions.process_absence_known("456 " + " ".join(argv)))
+
     def probe(self, argv, *, tty="source-tty", scope="session", guarded=False, harness="codex"):
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
         entry = {"session_id": self.source, "harness": harness, "pid": 123, "tty": "source-tty"}
