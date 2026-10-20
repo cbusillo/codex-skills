@@ -633,8 +633,7 @@ def ended_ownership(comments: list[dict[str, Any]], inventory: dict[str, Any]) -
 def coordination(conflicts: list[dict[str, Any]], comments: list[dict[str, Any]], repo: str, number: int) -> list[dict[str, Any]]:
     def diagnostics(matching):
         errors = list(dict.fromkeys(str(c["error"]) for c in matching if c.get("error")))
-        return {"error": "\n".join(errors),
-                "next_action": "Resolve the reported native error, then recheck this claim; preserve its artifacts"} if errors else {}
+        return {"error": "\n".join(errors)} if errors else {}
 
     holders = []
     released_ids = {comments[i]["id"] for i, _, _ in exact_released_sources(comments)}

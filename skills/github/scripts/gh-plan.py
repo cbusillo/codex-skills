@@ -2899,8 +2899,12 @@ def _claim_once(args: argparse.Namespace) -> None:
         source_author = next(c for c in source_comments if c.get("id") == args.resume_from)["user"]["login"]
         observed_waits = {}
         released_target_sessions = set()
-        session_owners = {record["session"]: (source_comments, issue_repo, source_number)
-                          for comment in source_comments for record in github_plan_claim.records(comment.get("body") or "")}
+        session_owners = {}
+        def retain_session_owner(record, owner_comments, owner_repo, owner_number):
+            session_owners.setdefault(record["session"], {})[(owner_repo, owner_number)] = owner_comments
+        for comment in source_comments:
+            for record in github_plan_claim.records(comment.get("body") or ""):
+                retain_session_owner(record, source_comments, issue_repo, source_number)
         target_session_comments = list(source_comments)
         if source_number != number:
             target_session_comments.extend(current_comments)
@@ -2914,7 +2918,7 @@ def _claim_once(args: argparse.Namespace) -> None:
             target, sections, target_comments = handoff_record(pull)
             for comment in target_comments:
                 for record in github_plan_claim.records(comment.get("body") or ""):
-                    session_owners.setdefault(record["session"], (target_comments, target_repo, pull["number"]))
+                    retain_session_owner(record, target_comments, target_repo, pull["number"])
             target_session_comments.extend(target_comments)
             # PR status may name the canonical issue being claimed. Keep its
             # holder prose conservative rather than applying issue exclusions.
@@ -2923,7 +2927,7 @@ def _claim_once(args: argparse.Namespace) -> None:
                 refuse(competing, owner_comments=target_comments, owner_repo=target_repo, owner_number=pull["number"])
             for _, record, _ in github_plan_claim.exact_released_sources(target_comments):
                 released_target_sessions.add(record["session"])
-                session_owners.setdefault(record["session"], (target_comments, target_repo, pull["number"]))
+                retain_session_owner(record, target_comments, target_repo, pull["number"])
             if not refresh_pr or pull["number"] == target_number:
                 target_status = sections.get("Current Status", "")
                 target_wait = current_wait(target, target_comments, target_repo)
@@ -2963,8 +2967,13 @@ def _claim_once(args: argparse.Namespace) -> None:
                         if peer.get("sessionId") in session_owners.keys() | {source_session}
                         and peer.get("sessionId") != claim["session"]]
         if live_sources:
-            owner_comments, owner_repo, owner_number = session_owners[live_sources[0]["session"]]
-            refuse(live_sources, owner_comments=owner_comments, owner_repo=owner_repo, owner_number=owner_number)
+            owners = {}
+            for source in live_sources:
+                for owner, owner_comments in session_owners[source["session"]].items():
+                    owners.setdefault(owner, (owner_comments, []))[1].append(source)
+            refuse(live_sources, coordination=[holder
+                for (owner_repo, owner_number), (owner_comments, sources) in owners.items()
+                for holder in github_plan_claim.coordination(sources, owner_comments, owner_repo, owner_number)])
         retain_released_sources(released_target_sessions, target_inventory)
         check_phase_peers(target_inventory)
         _, own_comments = github_plan_claim.discussion_evidence("", current_comments, claim)
@@ -3034,11 +3043,12 @@ def _claim_once(args: argparse.Namespace) -> None:
         return recovery
 
     def refuse(competing_claims: list[dict[str, Any]], *, owner_comments: list[dict[str, Any]] | None = None,
-               owner_repo: str | None = None, owner_number: int | None = None) -> None:
+               owner_repo: str | None = None, owner_number: int | None = None,
+               coordination: list[dict[str, Any]] | None = None) -> None:
         raise ClassifiedPlanError(
             "claim_conflict", "Another worker or ambiguous ownership evidence holds this issue; preserve it for owner review",
             payload={"competing_evidence": competing_claims, "claim_recovery": claim_recovery(),
-                     "coordination": github_plan_claim.coordination(
+                     "coordination": coordination if coordination is not None else github_plan_claim.coordination(
                          competing_claims, comments if owner_comments is None else owner_comments,
                          owner_repo or issue_repo, number if owner_number is None else owner_number)},
         )

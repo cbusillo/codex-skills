@@ -153,6 +153,14 @@ def validate_closure(entry, supervisor_session, *, native=None, process=None):
     ended = release.stamp(entry["ended_at"])
     if ended > datetime.now(timezone.utc):
         raise ValueError("closure timestamp is in the future")
+    private = entry.get("_closure_source") if process is None else None
+    if private is not None:
+        private_path = Path(private["path"])
+        original, saved = _saved_closure(private_path, entry["session_id"])
+        if saved != private["source"]:
+            raise ValueError("private closure source changed after recording")
+        import github_plan_native
+        process = github_plan_native._source_process(entry, saved)
     status = verify_closed(entry, supervisor_session, ended_at=ended, native=native, process=process)
     if not status["timestamp"] or release.stamp(status["timestamp"]) > ended:
         raise ValueError("transcript resumed after the recorded closure")
@@ -172,6 +180,8 @@ def validate_closure(entry, supervisor_session, *, native=None, process=None):
             raise ValueError("native transcript changed during closure verification")
     # Optional host/boot/account fingerprints belong to idle admission only.
     # Ordinary release still revalidates exit and every required native copy.
+    if private is not None and _saved_closure(private_path, entry["session_id"])[0] != original:
+        raise ValueError("private closure source changed during verification")
     return status
 
 
@@ -213,7 +223,10 @@ def record_closure(path, entry, supervisor_session, *, persist=True):
             native = asyncio.run(github_plan_native.prove_end(entry))
             if persist:
                 github_plan_native.resolve_pending(entry["session_id"], native)
-        closed = _record_closure(path, entry, supervisor_session, persist=persist, native=native)
+        closed, source = _record_closure(path, entry, supervisor_session, persist=persist, native=native)
+        if not shared:
+            # Keep the private identity, never a process proof, for later boundaries.
+            closed["_closure_source"] = {"path": str(path.resolve()), "source": source}
         if native is not None and not persist:
             # Keep only the source/action identities for this read-only preview.
             # The native proof itself never leaves the ownership guard.
@@ -252,13 +265,18 @@ def _closure_identity(entry):
     return identity
 
 
+def _saved_closure(path, session, *, create=False):
+    """Read the recorder's selected saved identity under its store lock."""
+    with closure.store_lock(path, create=create):
+        original = closure.selected_source_rows(json.loads(path.read_text()), session) if path.exists() else []
+    return original, session_record.normalize_ledger_entry(path, original[0]) if original else None
+
+
 def _record_closure(path, entry, supervisor_session, *, persist=True, native=None):
-    """Observe exit now; never replace an older actual closure time on retry."""
-    with closure.store_lock(path, create=persist):
-        original = closure.selected_source_rows(json.loads(path.read_text()), entry["session_id"]) if path.exists() else []
-        existing = [session_record.normalize_ledger_entry(path, row) for row in original]
+    """Return closure and saved identity; preserve the actual end time on retry."""
+    original, saved = _saved_closure(path, entry["session_id"], create=persist)
+    existing = [saved] if saved is not None else []
     import github_plan_native
-    saved = session_record.normalize_ledger_entry(path, original[0]) if len(original) == 1 else None
     if native is not None:
         process = native["snapshot"]["process"]
         if saved != process.saved:
@@ -306,7 +324,7 @@ def _record_closure(path, entry, supervisor_session, *, persist=True, native=Non
                 # fingerprint can be recomputed later; never restore the stale one.
                 durable = {key: value for key, value in closed.items() if not key.startswith("_")}
                 closure.replace_rows([durable if row.get("session_id") == entry["session_id"] else row for row in current])
-        return closed
+        return closed, ({k: v for k, v in closed.items() if not k.startswith("_")} if recovered and persist else saved)
     # Keep the generation's verified process cutoff even when a later turn
     # replaces its closure time. Native proof may have outlived the dead pane.
     entry = {k: v for k, v in entry.items() if k != "tty_exited_at"}
@@ -324,7 +342,7 @@ def _record_closure(path, entry, supervisor_session, *, persist=True, native=Non
             closed["closure_proof_unavailable"] = True
     validate_closure(closed, supervisor_session, native=native, process=process)
     if not persist:
-        return closed
+        return closed, saved
     # Slow native/process/transcript verification owns only this source. The
     # shared store lock covers a fresh read/compare/write, preserving launches
     # and closures published for other sources while verification was running.
@@ -340,7 +358,7 @@ def _record_closure(path, entry, supervisor_session, *, persist=True, native=Non
             os.replace(temporary, path)
         finally:
             temporary.unlink(missing_ok=True)
-    return closed
+    return closed, session_record.normalize_ledger_entry(path, {k: v for k, v in closed.items() if not k.startswith("_")})
 
 
 def scan_start(entries):
@@ -921,8 +939,10 @@ def main():
                         owned.append(entry)
                 entries = owned
             else:
-                entries = [{k: v for k, v in e.items() if not k.startswith("_")}
-                           for e in session_record.load_ledger(args.closed_log, closed_log=True)]
+                private = args.closed_log.resolve() != closure.closed_log().resolve()
+                entries = [{**{k: v for k, v in saved.items() if not k.startswith("_")},
+                            **({"_closure_source": {"path": str(args.closed_log.resolve()), "source": saved}} if private else {})}
+                           for saved in session_record.load_ledger(args.closed_log, closed_log=True)]
             entries = [{**e, "_backfill": True} for e in entries]
             if args.session_id:
                 entries = [e for e in entries if e["session_id"] == args.session_id]
