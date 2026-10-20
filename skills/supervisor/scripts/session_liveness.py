@@ -130,13 +130,18 @@ def native_arguments(pid):
     return darwin_arguments(memoryview(data)[:size.value])
 
 
+def executable_arguments(words):
+    """Executable and immediate interpreter script, without prompt payload."""
+    if words and (Path(words[0]).name in {"node", "nodejs", "bun", "deno", "sh", "bash", "zsh"}
+                  or re.fullmatch(r"python(?:3(?:\.\d+)?)?", Path(words[0]).name)):
+        return words[:2] if len(words) > 1 else []
+    return words[:1]
+
+
 def harness_arguments(command):
     """Keep full argv; identity parsing and guarded prefix binding are separate."""
     words = command.split() if isinstance(command, str) else list(command)
-    positions = words[:1]
-    if words and (Path(words[0]).name in {"node", "nodejs", "bun", "deno", "sh", "bash", "zsh"}
-                  or re.fullmatch(r"python(?:3(?:\.\d+)?)?", Path(words[0]).name)):
-        positions = words[:2]
+    positions = executable_arguments(words)
     index = next((i for i, arg in enumerate(positions)
                   if harness_family(arg) is not None or Path(arg).name in {"codex-session.py", "codex_session_proxy.py"}), None)
     return [] if index is None else words[index:]
@@ -146,9 +151,41 @@ def process_arguments(pid, command):
     """ps discovers candidates; only OS argument boundaries grant exemptions."""
     fallback = harness_arguments(command)
     if not fallback:
+        # A path before the executable may contain spaces. Discover broadly;
+        # only the bounded reader below establishes executable positions.
+        words = command.split() if isinstance(command, str) else list(command)
+        fallback = next((words[index:] for index, word in enumerate(words)
+                         if harness_arguments([word])), [])
+    if not fallback:
         return [], False
     try:
-        return harness_arguments(native_arguments(pid)), True
+        native = native_arguments(pid)
+        argv = harness_arguments(native)
+        identity = executable_arguments(native)
+        if not argv and len(identity) == 2 and identity[1].startswith("-"):
+            # Interpreter flags obscure the script position. A later native
+            # candidate can veto, but cannot establish an invocation exemption.
+            uncertain = next((native[index:] for index in range(2, len(native))
+                              if harness_arguments([native[index]])), [])
+            if uncertain:
+                return uncertain, False
+        parts = Path(native[0]).parts if native else ()
+        framework_helper = any(part.endswith(".framework") and "Helpers" in parts[index + 1:]
+                               for index, part in enumerate(parts))
+        helper_role = (len(native) > 1 and native[1] in {
+            "--type=gpu-process", "--type=utility", "--type=renderer"}
+            and sum(arg.startswith("--type") for arg in native[1:]) == 1)
+        if not argv or framework_helper and helper_role:
+            # Never clear an earlier candidate using a replacement process.
+            # ps rewrites prompt control characters; compare only the complete
+            # executable/script prefix and retain all PID/launch/daemon checks.
+            prefix = " ".join(identity)
+            if isinstance(command, str):
+                consistent = bool(identity) and (command == prefix or command.startswith(prefix + " "))
+            else:
+                consistent = bool(identity) and identity == list(command)[:len(identity)]
+            return ([], True) if consistent else (fallback, False)
+        return argv, True
     except (OSError, ValueError, UnicodeError):
         pass
     return fallback, False

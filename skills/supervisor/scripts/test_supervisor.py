@@ -1402,6 +1402,70 @@ class ProcessArgumentsTests(unittest.TestCase):
         with patch.object(session_liveness, "native_arguments", return_value=["codex", "resume", self.source]):
             self.assertFalse(sessions.process_absence_known(command))
             self.assertEqual([peer["sessionId"] for peer in sessions.process_sessions(command, {self.source})], [self.source])
+        # A different process at the same PID cannot erase the earlier candidate.
+        with patch.object(session_liveness, "native_arguments", return_value=["/usr/bin/true"]):
+            self.assertFalse(sessions.process_absence_known(command))
+        for native in (["node"], ["node", "/tools/other.js"]):
+            with self.subTest(native=native), patch.object(session_liveness, "native_arguments", return_value=native):
+                self.assertFalse(sessions.process_absence_known("456 node /tools/codex.js resume " + self.source))
+        for native, earlier in ((["/tools/code"], "/tools/codex"),
+                                (["node", "/tools/code"], "node /tools/codex.js")):
+            with self.subTest(native=native), patch.object(session_liveness, "native_arguments", return_value=native):
+                self.assertFalse(sessions.process_absence_known("456 " + earlier + " resume " + self.source))
+        for argv in ([executable, "--message", "first line\nsecond line"],
+                     ["node", "/tools/worker.js", "codex", "first line\nsecond line"]):
+            with self.subTest(argv=argv), patch.object(session_liveness, "native_arguments", return_value=argv):
+                rendered = "456 " + " ".join(argv).replace("\n", "?")
+                self.assertTrue(sessions.process_absence_known(rendered))
+        argv = ["codex", "resume", self.source, "first line\nsecond line"]
+        with patch.object(session_liveness, "native_arguments", return_value=argv):
+            rendered = "456 " + " ".join(argv).replace("\n", "?")
+            self.assertFalse(sessions.process_absence_known(rendered))
+            self.assertEqual([peer["sessionId"] for peer in sessions.process_sessions(rendered, {self.source})], [self.source])
+
+    def test_framework_helpers_clear_only_with_bounded_matching_role_identity(self):
+        github = str(Path(__file__).resolve().parents[2] / "github/scripts")
+        with patch.object(sys, "path", [github, *sys.path]):
+            import github_plan_sessions as sessions
+        for prefix in ("/Applications/Example.app/Contents", "/Relocated Folder/Other.app/Contents"):
+            helper = prefix + "/Frameworks/Runtime.framework/Versions/Current/Helpers/Codex (Service).app/Contents/MacOS/Codex (Service)"
+            for role in ("gpu-process", "utility", "renderer"):
+                argv = [helper, "--type=" + role, "--service-argument"]
+                command = "456 " + " ".join(argv)
+                with self.subTest(prefix=prefix, role=role), patch.object(session_liveness, "native_arguments",
+                        side_effect=lambda pid: argv if pid == 456 else ["codex", "app-server"]):
+                    self.assertTrue(sessions.process_absence_known(command))
+                    self.assertEqual(sessions.process_sessions(command, {self.source}), [])
+                    self.assertFalse(sessions.process_absence_known(command + "\n789 codex app-server"))
+                with patch.object(session_liveness, "native_arguments", side_effect=OSError("argv unavailable")):
+                    self.assertFalse(sessions.process_absence_known(command))
+            for argv in ([helper, "--type=unknown"], [helper, "--type="],
+                         [helper, "--other", "--type=gpu-process"],
+                         [helper, "--type=gpu-process", "--type=renderer"],
+                         [prefix + "/Resources/CLI.app/Contents/MacOS/codex", "--type=gpu-process"],
+                         ["codexPreview", "resume", self.source],
+                         ["codex", "--config", "--type=gpu-process"],
+                         ["node", helper, "--type=gpu-process"]):
+                with self.subTest(argv=argv), patch.object(session_liveness, "native_arguments", return_value=argv):
+                    self.assertFalse(sessions.process_absence_known("456 " + " ".join(argv)))
+
+    def test_spaced_cli_paths_keep_native_resume_and_unavailable_argv_vetoes(self):
+        github = str(Path(__file__).resolve().parents[2] / "github/scripts")
+        with patch.object(sys, "path", [github, *sys.path]):
+            import github_plan_sessions as sessions
+        for prefix in (["/Tools With Spaces/bin/codex"], ["node", "/Application Support/bin/codex.js"],
+                       ["node", "--inspect", "/Application Support/bin/codex.js"]):
+            argv = [*prefix, "resume", self.source]
+            command = "456 " + " ".join(argv)
+            for available in (True, False):
+                kwargs = {"return_value": argv} if available else {"side_effect": OSError("argv unavailable")}
+                with self.subTest(prefix=prefix, available=available), patch.object(session_liveness, "native_arguments", **kwargs):
+                    self.assertFalse(sessions.process_absence_known(command))
+                    self.assertEqual([peer["sessionId"] for peer in sessions.process_sessions(command, {self.source})], [self.source])
+                    with self.assertRaisesRegex(ValueError, "resumed harness"):
+                        session_liveness.verify_process_exit(
+                            {"session_id": self.source, "pid": 123, "tty": "source-tty"},
+                            rows=[(456, "other", " ".join(argv))])
 
     def probe(self, argv, *, tty="source-tty", scope="session", guarded=False, harness="codex"):
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
