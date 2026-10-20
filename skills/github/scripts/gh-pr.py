@@ -213,7 +213,7 @@ def main() -> int:
     )
 
 
-def parse_args() -> argparse.Namespace:
+def build_parser() -> argparse.ArgumentParser:
     parser = github_api_core.TerminalArgumentParser(
         description="Handle GitHub PR reads, writes, checks, merge, and rate limits with transport-aware defaults.",
     )
@@ -319,7 +319,11 @@ def parse_args() -> argparse.Namespace:
     p = sub.add_parser("rate-limit", help="Show REST and GraphQL rate-limit buckets.")
     p.set_defaults(func=cmd_rate_limit)
 
-    return parser.parse_args()
+    return parser
+
+
+def parse_args() -> argparse.Namespace:
+    return build_parser().parse_args()
 
 
 def read_operation() -> str:

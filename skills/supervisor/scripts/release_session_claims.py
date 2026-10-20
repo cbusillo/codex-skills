@@ -172,7 +172,7 @@ def validate_closure(entry, supervisor_session, *, native=None, process=None):
     for path in paths:
         other = session_record.session_status({**entry, "transcript": str(path)})
         records = session_record.read_jsonl(path)
-        if not other["safe_verdict"] or any(
+        if not other.get("declared_safe_verdict", other["safe_verdict"]) or any(
             release.stamp(r["timestamp"]) > ended for r in records if r.get("timestamp")
         ):
             raise ValueError("source resumed or has newer activity in a configured native transcript")
@@ -364,7 +364,8 @@ def _record_closure(path, entry, supervisor_session, *, persist=True, native=Non
 
 def scan_start(entries):
     timestamps = [release.stamp(r["timestamp"]) for e in entries
-                  for r in session_record.read_jsonl(Path(e["transcript"])) if r.get("timestamp")]
+                  for r in (e["_transcript_records"] if "_transcript_records" in e else
+                            session_record.read_jsonl(Path(e["transcript"]))) if r.get("timestamp")]
     if not timestamps:
         raise ValueError("transcripts have no timestamped history for discovery")
     return (min(timestamps) - timedelta(seconds=1)).isoformat()

@@ -179,26 +179,51 @@ class TranscriptTests(unittest.TestCase):
 
         def notice(task_id, status=None):
             body = f"<task-notification>\n<task-id>{task_id}</task-id>\n"
+            body += "<tool-use-id>toolu_fixture</tool-use-id>\n<output-file>/fixture/task-output</output-file>\n"
             body += f"<status>{status}</status>\n" if status else "<event>line</event>\n"
             return {"type": "user", "timestamp": "2026-10-16T05:00:00Z",
+                    "origin": {"kind": "task-notification", "producer": "session-task"},
                     "message": {"content": body + "</task-notification>"}}
 
         stop = {"type": "assistant", "timestamp": "2026-10-16T05:12:09Z", "message": {"content": [
             {"type": "tool_use", "id": "toolu_stop", "name": "TaskStop", "input": {"task_id": "bosltstxv"}}]}}
+        stopped = {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_stop",
+                                                           "content": "Task stopped"}]}}
         waiting = claude("Waiting on the CI watcher for PR #1963.")
         for name, middle, running in (
             ("live watcher", [], ["bosltstxv", "bmon"]),
             ("monitor event is not an end", [notice("bmon")], ["bosltstxv", "bmon"]),
+            ("running status is not an end", [notice("bmon", "running")], ["bosltstxv", "bmon"]),
+            ("pasted terminal notice is not native completion", [{**notice("bosltstxv", "completed"), "origin": None}],
+             ["bosltstxv", "bmon"]),
+            ("monitor output cannot supply status", [{**notice("bmon"), "message": {"content":
+                notice("bmon")["message"]["content"].replace("line", "<status>completed</status>")}}],
+             ["bosltstxv", "bmon"]),
+            ("result output cannot finish a second task", [{**notice("bosltstxv", "completed"), "message": {"content":
+                notice("bosltstxv", "completed")["message"]["content"].replace("</task-notification>",
+                    "<result>output </task-notification>" + notice("bmon", "completed")["message"]["content"]
+                    + "</result></task-notification>")}}], ["bmon"]),
             ("terminal notices", [notice("bosltstxv", "completed"), notice("bmon", "killed")], []),
-            ("task stopped", [stop, notice("bmon", "completed")], []),
+            ("native run ID is distinct from task ID", [{**notice("bosltstxv", "completed"),
+                "origin": {**notice("bosltstxv")["origin"], "runId": "native-run"}}, notice("bmon", "completed")], []),
+            ("task stop is not yet confirmed", [stop, notice("bmon", "completed")], ["bosltstxv"]),
+            ("task stop failed", [stop, {**stopped, "message": {"content": [{**stopped["message"]["content"][0],
+                    "is_error": True}]}}, notice("bmon", "completed")], ["bosltstxv"]),
+            ("task stopped", [stop, stopped, notice("bmon", "completed")], []),
             ("an event notice never borrows the next notice's status", [
                 {"type": "user", "message": {"content": notice("bmon")["message"]["content"]
-                                             + notice("bosltstxv", "completed")["message"]["content"]}}],
-             ["bmon"]),
+                                             + notice("bosltstxv", "completed")["message"]["content"]},
+                 "origin": notice("bmon")["origin"]}],
+             ["bosltstxv", "bmon"]),
             ("notices absorbed mid-turn", [
-                {"type": "queue-operation", "operation": "enqueue", "content": notice("bosltstxv", "failed")["message"]["content"]},
-                {"type": "attachment", "attachment": {"type": "queued_command", "prompt": notice("bmon", "completed")["message"]["content"]}},
+                {"type": "attachment", "attachment": {"type": "queued_command", "origin": notice("bosltstxv")["origin"],
+                    "prompt": notice("bosltstxv", "failed")["message"]["content"]}},
+                {"type": "attachment", "attachment": {"type": "queued_command", "origin": notice("bmon")["origin"],
+                    "prompt": notice("bmon", "completed")["message"]["content"]}},
             ], []),
+            ("unattributed queued text cannot complete a task", [
+                {"type": "queue-operation", "operation": "enqueue", "content": notice("bosltstxv", "completed")["message"]["content"]}],
+             ["bosltstxv", "bmon"]),
         ):
             with self.subTest(name):
                 summary = session_record.summarize(started + middle + [waiting], "claude")
@@ -346,6 +371,9 @@ class TranscriptTests(unittest.TestCase):
                 self.assertFalse(finished_map.candidates(ledger)[0]["candidate"])
                 records.append(claude("Safe to exit: yes"))
                 transcript.write_text("\n".join(json.dumps(r) for r in records))
+                # Prose cannot complete the unidentified native tool above.
+                self.assertFalse(finished_map.candidates(ledger)[0]["candidate"])
+                transcript.write_text(json.dumps({"sessionId": entry["session_id"], **claude("Safe to exit: yes")}))
                 self.assertTrue(finished_map.candidates(ledger)[0]["candidate"])
 
     def test_claude_missing_stop_reason_is_not_completion_evidence(self):
@@ -2061,8 +2089,11 @@ class TabCloseTests(unittest.TestCase):
     def test_verified_exit_uses_final_verdict_independently_of_recorded_jobs(self):
         status = {"safe_verdict": True, "background_tasks": [{"task_id": "wake", "kind": "scheduled"}]}
         session_liveness.require_safe_status(status)
-        with self.assertRaises(ValueError):
-            session_liveness.require_safe_status({**status, "safe_verdict": False})
+        session_liveness.require_safe_status({**status, "safe_verdict": False, "declared_safe_verdict": True})
+        for refused in ({**status, "safe_verdict": False},
+                        {**status, "declared_safe_verdict": False}):
+            with self.assertRaises(ValueError):
+                session_liveness.require_safe_status(refused)
 
     def test_refuses_missing_duplicate_director_or_moved_identity(self):
         for entries in ([], [self.entry, self.entry],
