@@ -223,12 +223,12 @@ def shell_texts(name, value):
 
 
 
-def javascript_projection(native):
+def javascript_projection(native, *, _facts=None):
     """Share inert-atom discovery without dropping any executable suffix."""
     atoms, code = [], list(native)
     string_token = re.compile(JS_STRING)
     regex = re.compile(r"/(?:\\[^\r\n\u2028\u2029]|\[(?:\\[^\r\n\u2028\u2029]|[^\]\\\r\n\u2028\u2029])*\]|[^/\\[\r\n\u2028\u2029])+/[A-Za-z]*")
-    complete = True
+    complete, templates = True, {}
     parentheses, control_ends = [], set()
 
     def previous(cursor):
@@ -252,16 +252,19 @@ def javascript_projection(native):
 
     def template(start):
         nonlocal complete
-        cursor, part = start + 1, start
+        cursor, part, operands = start + 1, start, []
         while cursor < len(native):
             if native[cursor] == "\\":
                 cursor += 2
             elif native[cursor] == "`":
                 mask(part, cursor + 1)
+                templates[start] = cursor + 1, tuple(operands)
                 return cursor + 1
             elif native.startswith("${", cursor):
                 mask(part, cursor + 2)
+                begin = cursor + 2
                 cursor = scan(cursor + 2, interpolation=True)
+                operands.append((begin, cursor - 1))
                 part = cursor - 1 if cursor and native[cursor - 1] == "}" else cursor
             else:
                 cursor += 1
@@ -337,7 +340,9 @@ def javascript_projection(native):
         # escaping the checker or being mistaken for a completed projection.
         complete = False
     code = "".join(code)
-    regions = [(start, end) for start, end, _, _, _ in javascript_source_calls(native, code, literal_atoms=atoms)]
+    if _facts is not None:
+        _facts.update(templates=templates)
+    regions = [(start, end) for start, end, _, _, _ in javascript_source_calls(native, code, literal_atoms=atoms, templates=templates)]
     return atoms, code, regions, complete
 
 
@@ -362,6 +367,9 @@ def javascript_literal_members(native, code, begin, end):
         else:
             name = native[slice(*parts[0])].strip()
             operand = (parts[0][1] + 1, finish) if len(parts) > 1 else (start, finish)
+            method = re.match(r"(?:async\s+)?\*?\s*([A-Za-z_$][\w$]*)\s*\(", code[start:finish]) if len(parts) == 1 else None
+            if method:
+                name = method[1]
             if not re.fullmatch(r"[A-Za-z_$][\w$]*|\d+", name):
                 computed = name[1:-1].strip() if name.startswith("[") and name.endswith("]") else name
                 try:
@@ -372,12 +380,12 @@ def javascript_literal_members(native, code, begin, end):
     return values
 
 
-def javascript_source_calls(native, code, *, global_this=False, literal_atoms=()):
+def javascript_source_calls(native, code, *, global_this=False, literal_atoms=(), templates=None):
     """Select invoked source handles using the binding scanner's shared sites."""
     names = {"eval": "eval", "Function": "constructor", "AsyncFunction": "constructor"}
     facts = {}
     javascript_bindings(code, _facts=facts)
-    pairs, owners, parents, bound = (facts[name] for name in ("pairs", "owners", "parents", "bound"))
+    pairs, owners, parents, bound, functions, declarations = (facts[name] for name in ("pairs", "owners", "parents", "bound", "functions", "declarations"))
     reference = re.compile(r"(?<![\w.$])([A-Za-z_$][\w$]*(?:\s*(?:\?\.|\.)\s*[A-Za-z_$][\w$]*|\s*(?:\?\.\s*)?\[[^]\n]*\])*)")
     visible, assignments, member_indexes = {}, {}, {}
     cuts = 0
@@ -533,13 +541,15 @@ def javascript_source_calls(native, code, *, global_this=False, literal_atoms=()
 
     def callable_body(rhs):
         begin, end = unwrapped_span(*rhs)
-        function = re.match(r"(?:async\s+)?function\b\s*\*?\s*(?:[A-Za-z_$][\w$]*\s*)?\(", code[begin:end])
+        function = re.match(r"(?P<async>async\s+)?(?:function\b\s*(?P<generator>\*)?\s*(?:[A-Za-z_$][\w$]*\s*)?|(?P<method_generator>\*)?\s*[A-Za-z_$][\w$]*\s*)\(", code[begin:end])
         if function:
             closing = pairs.get(begin + function.end() - 1)
             body = closing + 1 if closing is not None else end
             while body < end and code[body].isspace():
                 body += 1
-            return (body, end, True) if code[body:body + 1] == "{" and pairs.get(body) == end - 1 else None
+            if code[body:body + 1] == "{" and pairs.get(body) == end - 1:
+                return (body, end, True, bool(function["async"]), bool(function["generator"] or function["method_generator"]),
+                        tuple(node_expression_parts(code, begin + function.end(), closing)))
         starts = [begin]
         asynchronous = re.match(r"async\b\s*", code[begin:end])
         if asynchronous:
@@ -560,18 +570,35 @@ def javascript_source_calls(native, code, *, global_this=False, literal_atoms=()
                 continue
             block = code[body:body + 1] == "{"
             if not block or pairs.get(body) == finish - 1:
-                return body, finish, block
+                parameters = tuple(node_expression_parts(code, parameter + 1, closing)) if code[parameter:parameter + 1] == "(" else ((parameter, following),)
+                return body, finish, block, bool(asynchronous and parameter != begin), False, parameters
         return None
 
-    def tagged_receiver(rhs):
+    def invoked_receiver(rhs):
         begin, end = unwrapped_span(*rhs)
+        awaited = re.match(r"await\b\s*", code[begin:end])
+        if awaited:
+            begin, end = unwrapped_span(begin + awaited.end(), end)
         tag = reference.match(code, begin, end)
         if tag is None:
             return None
         template = tag.end()
         while template < end and native[template].isspace():
             template += 1
-        if not (native[template:template + 1] == "`" and re.fullmatch(JS_STRING, native[template:end])):
+        tagged = native[template:template + 1] == "`"
+        if tagged:
+            described = (templates or {}).get(template)
+            if described is not None:
+                if described[0] != end:
+                    return None
+                operands = (None, *described[1])
+            elif re.fullmatch(JS_STRING, native[template:end]):
+                operands = (None,)
+            else:
+                return None
+        elif code[template:template + 1] == "(" and pairs.get(template) == end - 1:
+            operands = tuple(node_expression_parts(code, template + 1, end - 1))
+        else:
             return None
         selected = canonical(native[begin:tag.end()])
         # The intrinsic's literal result remains data only while neither its
@@ -579,21 +606,23 @@ def javascript_source_calls(native, code, *, global_this=False, literal_atoms=()
         roots, known = receiver_reference(selected, begin)
         if roots == frozenset({("intrinsic-raw",)}) and known:
             return frozenset({("data", rhs)}), True
-        return reachable(("tagged-result", rhs), lambda: callable_results(receiver_reference(selected, begin)[0], rhs),
+        return reachable(("invoked-result", rhs), lambda: callable_results(receiver_reference(selected, begin)[0], rhs, operands, bool(awaited)),
                          (frozenset(), False), receiver=True)
 
-    def callable_results(roots, capture):
+    def callable_results(roots, capture, operands, awaited):
         returned = set()
         if not roots:
             returned.add(("unknown", capture))
 
-        def include(rhs):
+        def values_of(rhs):
+            if rhs is None:
+                return frozenset({("data", capture)})
             values, _ = receiver_expression(rhs)
             possible = members(*rhs).get("")
             if possible:
                 values = frozenset(root for root in values if root[0] != "handle")
-                returned.update(("handle", kind, adapters) for kind, adapters in possible)
-            returned.update(values)
+                values |= frozenset(("handle", kind, adapters) for kind, adapters in possible)
+            return values
         for root in roots:
             if root[0] == "intrinsic-raw":
                 returned.add(("data", capture))
@@ -605,25 +634,27 @@ def javascript_source_calls(native, code, *, global_this=False, literal_atoms=()
             if body is None:
                 returned.add(("unknown", capture))
                 continue
-            begin, end, block = body
+            begin, end, block, asynchronous, generator, parameters = body
+            if generator or asynchronous and not awaited:
+                returned.add(("data", capture))
+                continue
+            arguments = {name: operand for parameter, operand in zip(parameters, operands)
+                         for name, _ in javascript_binding_names(code, *parameter)}
+            def include(rhs):
+                for value in values_of(rhs):
+                    if value[0] == "binding" and value[1] == begin and value[2] in arguments:
+                        returned.update(values_of(arguments[value[2]]))
+                    else:
+                        returned.add(value)
             if not block:
                 include((begin, end))
                 continue
             # Scope ownership excludes return statements of nested callables.
             # Branch blocks remain possible return paths of this same body.
-            nested = set()
-            for match in re.finditer(r"\bfunction\b(?:\s*\*\s*|\s+)?(?:[A-Za-z_$][\w$]*\s*)?\(|=>", code[begin + 1:end - 1]):
-                at = begin + 1 + match.end()
-                if match[0] != "=>":
-                    closing = pairs.get(at - 1)
-                    at = closing + 1 if closing is not None else end
-                while at < end and code[at].isspace():
-                    at += 1
-                nested.add(at)
             for statement in re.finditer(r"(?<![\w.$])return\b", code[begin + 1:end - 1]):
                 at = begin + 1 + statement.start()
                 owner = owners[at]
-                while owner != begin and owner != -1 and owner not in nested:
+                while owner != -1 and owner not in functions:
                     owner = parents.get(owner, -1)
                 if owner != begin:
                     continue
@@ -637,7 +668,7 @@ def javascript_source_calls(native, code, *, global_this=False, literal_atoms=()
 
     def compute_members(begin, end, suffix):
         begin, end = unwrapped_span(begin, end)
-        tagged = tagged_receiver((begin, end))
+        tagged = invoked_receiver((begin, end))
         if tagged is not None:
             roots, exact = tagged
             if suffix:
@@ -705,7 +736,7 @@ def javascript_source_calls(native, code, *, global_this=False, literal_atoms=()
     def compute_receiver_expression(rhs):
         begin, end = unwrapped_span(*rhs)
         aggregate = literal_members((begin, end))
-        tagged = tagged_receiver((begin, end))
+        tagged = invoked_receiver((begin, end))
         if tagged is not None:
             result = tagged
         elif aggregate is not None:
@@ -726,6 +757,12 @@ def javascript_source_calls(native, code, *, global_this=False, literal_atoms=()
     def receiver_reference(selected, position):
         return reachable(("receiver-reference", selected, position), lambda: compute_receiver_reference(selected, position), (frozenset(), False), receiver=True)
 
+    def global_receiver(base):
+        return (("global",) if base in {"globalThis", "global", "window", "self"}
+                else ("handle", names[base]) if base in names
+                else ("intrinsic-string",) if base == "String"
+                else ("callable-data",) if base == "text" else None)
+
     def receiver_projection(roots, known, suffix, position):
         for field in suffix.split("."):
             projected, definite = set(), known
@@ -741,6 +778,8 @@ def javascript_source_calls(native, code, *, global_this=False, literal_atoms=()
                         options.append((-1, True, values, exact))
                 elif root == ("intrinsic-string",) and field == "raw":
                     options.append((-1, True, frozenset({("intrinsic-raw",)}), True))
+                elif root == ("global",) and global_receiver(field) is not None:
+                    options.append((-1, True, frozenset({global_receiver(field)}), True))
                 elif field == "constructor":
                     values, exact = inherited_receiver(root, field)
                     options.append((-1, True, values, exact))
@@ -781,16 +820,16 @@ def javascript_source_calls(native, code, *, global_this=False, literal_atoms=()
             last = max((event[2] for event, (_, exact) in resolved
                         if event[3] == scope and event[4] and exact), default=-1)
             roots = set()
-            intrinsic = owner is None and base in {*names, "text", "String", "globalThis", "global", "window", "self"}
-            known = last >= 0 or intrinsic
+            intrinsic = global_receiver(base) if owner is None else None
+            declared = declarations.get((owner, base), ())
+            known = last >= 0 or intrinsic is not None or bool(declared)
             initialized = owner is not None and owner == scope and any(
                 event[3] == scope and event[4] for event in candidates)
-            if last < 0 and (intrinsic or not initialized):
-                roots.add(("global",) if owner is None and base in {"globalThis", "global", "window", "self"}
-                          else ("handle", names[base]) if owner is None and base in names
-                          else ("intrinsic-string",) if owner is None and base == "String"
-                          else ("callable-data",) if owner is None and base == "text"
-                          else ("binding", owner, base))
+            if last < 0:
+                if declared:
+                    roots.update(("callable", span) for span in declared)
+                elif intrinsic is not None or not initialized:
+                    roots.add(intrinsic if intrinsic is not None else ("binding", owner, base))
             for event, (values, exact) in resolved:
                 if event[3] != scope or event[2] >= last:
                     roots.update(values)
@@ -1064,7 +1103,7 @@ def javascript_bindings(code, *, sloppy=False, _facts=None):
     the direct-eval invalidation that consumes source-handle discovery itself.
     """
     sites, declarations, mutable = {}, {}, set()
-    records, ranges, functions, pairs, stack = [], {}, set(), {}, []
+    records, ranges, functions, pairs, stack, callable_declarations = [], {}, set(), {}, [], []
     if _facts is not None:
         for position, char in enumerate(code):
             if char in "([{":
@@ -1117,6 +1156,18 @@ def javascript_bindings(code, *, sloppy=False, _facts=None):
             functions.add(owner)
         if function[1]:
             bind(function.start(1), function.end(1), kind="function")
+            if owner in pairs:
+                begin = function.start()
+                before = begin
+                while before and code[before - 1].isspace():
+                    before -= 1
+                if code[max(0, before - 5):before] == "async" and (before == 5 or not re.match(r"[\w$]", code[before - 6])):
+                    begin = before - 5
+                    before = begin
+                    while before and code[before - 1].isspace():
+                        before -= 1
+                if not before or code[before - 1] in ";{}" or "\n" in code[before:begin] and code[before - 1] in ")]":
+                    callable_declarations.append((function[1], function.start(1), (begin, pairs[owner] + 1)))
         parameters(function.end() - 1, owner)
     for arrow in re.finditer(r"=>", code):
         owner = None
@@ -1206,7 +1257,10 @@ def javascript_bindings(code, *, sloppy=False, _facts=None):
                 while owner != -1 and owner not in functions:
                     owner = parents.get(owner, -1)
             bound.setdefault(owner, {}).setdefault(name, set()).add(position)
-        _facts.update(pairs=pairs, owners=owners, parents=parents, bound=bound)
+        declared = {}
+        for name, position, span in callable_declarations:
+            declared.setdefault((owners[position], name), []).append(span)
+        _facts.update(pairs=pairs, owners=owners, parents=parents, bound=bound, functions=functions, declarations=declared)
     return {name: expression for name, expression in declarations.items()
             if len(sites.get(name, ())) == 1}, set(sites)
 
@@ -1752,11 +1806,12 @@ def javascript_generated_sources(value):
     patch_literals = []
     while pending:
         current, inherited, inherited_globals, generated, fallback, sloppy, global_this = pending.pop()
-        current_atoms, current_code, regions, _ = javascript_projection(current)
+        projection_facts = {}
+        current_atoms, current_code, regions, _ = javascript_projection(current, _facts=projection_facts)
         local_capabilities = javascript_capabilities(current_code, current) or global_this and bool(re.search(r"\bthis\b", current_code))
         root_capabilities |= local_capabilities
         declarations, bound = javascript_bindings(current_code, sloppy=sloppy)
-        source_calls = list(javascript_source_calls(current, current_code, global_this=global_this, literal_atoms=current_atoms))
+        source_calls = list(javascript_source_calls(current, current_code, global_this=global_this, literal_atoms=current_atoms, templates=projection_facts["templates"]))
         direct_eval = any(direct for _, _, _, direct, _ in source_calls)
         bindings = {name: text for name, text in inherited.items() if name not in bound and not direct_eval}
 
@@ -4763,15 +4818,22 @@ def executor_commands(argv):
 
 def shell_expansions(text, *, heredoc=False):
     """Read substitutions; unquoted heredoc body quotes do not suppress them."""
-    quote, escaped, cursor = None, False, 0
+    quote, escaped, boundary, cursor = None, False, True, 0
     while cursor < len(text):
         char = text[cursor]
         if escaped:
             escaped = False
+            if char != "\n":
+                boundary = False
         elif char == "\\" and quote != "'":
             escaped = True
+        elif not heredoc and quote is None and boundary and char == "#":
+            end = text.find("\n", cursor)
+            cursor = len(text) if end < 0 else end
+            continue
         elif not heredoc and quote is None and text.startswith("$'", cursor):
             cursor, _ = GroupShellLexer.protected_word(text, cursor)
+            boundary = False
             continue
         elif (quote != "'" and text.startswith(("$((", "$["), cursor)
               and (protected := GroupShellLexer.protected_word(text, cursor)) is not None):
@@ -4779,6 +4841,7 @@ def shell_expansions(text, *, heredoc=False):
             bracket = text.startswith("$[", cursor)
             yield from shell_expansions(text[cursor + (2 if bracket else 3):end - (1 if bracket else 2)])
             cursor = end
+            boundary = False
             continue
         elif (text[cursor:cursor + 2] == "$(" and quote != "'"
               or not heredoc and quote is None and text[cursor:cursor + 2] in {"<(", ">("}):
@@ -4805,6 +4868,7 @@ def shell_expansions(text, *, heredoc=False):
                 end += 1
             yield text[start:end - 1] if depth == 0 else text[start:]
             cursor = end
+            boundary = False
             continue
         elif (heredoc or quote != "'") and char == "`":
             start, end, inner_escape = cursor + 1, cursor + 1, False
@@ -4818,12 +4882,16 @@ def shell_expansions(text, *, heredoc=False):
                 end += 1
             yield text[start:end]
             cursor = end + 1
+            boundary = False
             continue
         elif quote:
             if char == quote:
                 quote = None
         elif not heredoc and char in "'\"":
             quote = char
+            boundary = False
+        else:
+            boundary = char.isspace() or char in ";&|<>()"
         cursor += 1
 
 

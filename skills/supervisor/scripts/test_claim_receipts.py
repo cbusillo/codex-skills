@@ -207,6 +207,8 @@ def ordinary_read_history(harness):
                 'python3 -m py_compile /repo/test_sample.py', 'timeout 60 cat /repo/test_sample.py',
                 "python3 - <<'PY'\nline='gh-plan.py claim'\nif 'claim' in line: print(line)\nPY",
                 'timeout 60 rg -n "gh-plan.py.*claim" skills',
+                '# then `gh pr create --fill` after CI is green\ngit status',
+                '# then $(uv run gh-plan.py claim 1) later\nls',
                 'bash -lc "sed -n 1,80p /repo/gh-plan.py | grep claim"')
     for index, command in enumerate(commands):
         identifier = f"read-{index}"
@@ -4352,9 +4354,9 @@ os.system(get())
         for count in (16, 64):
             source = data + 'const ap=tools.apply_patch;' + 'text(data.k0);' * count
             processed = []
-            def project(value):
+            def project(value, **kwargs):
                 processed.append(len(value))
-                return original_projection(value)
+                return original_projection(value, **kwargs)
             with patch.object(receipts, 'javascript_projection', side_effect=project):
                 self.assertEqual(list(receipts.javascript_possible_patches(source)), [])
             totals.append(sum(processed))
@@ -4391,9 +4393,9 @@ os.system(get())
             source = data + ''.join('globalThis.a' + str(index) + '=data;' for index in range(count))
             source += 'await Function("return 0")();'
             processed = []
-            def project(value):
+            def project(value, **kwargs):
                 processed.append(len(value))
-                return original_projection(value)
+                return original_projection(value, **kwargs)
             with patch.object(receipts, 'javascript_projection', side_effect=project):
                 list(receipts.javascript_generated_sources(source))
             totals.append(sum(processed))
@@ -4490,10 +4492,10 @@ os.system(get())
         # A captured receiver must not replay every prior self-member
         # assignment under a new reference spelling. Abort the old traversal
         # deterministically before it can hang this module.
-        for initial, scoped in (("{}", False), ("getReceiver()", False), ("{}", True), ("getReceiver()", True), ("eval", "wrapper"), ("text", "wrapper"), ("eval", "tag"), ("text", "tag")):
+        for initial, scoped in (("{}", False), ("getReceiver()", False), ("{}", True), ("getReceiver()", True), ("eval", "wrapper"), ("text", "wrapper"), ("eval", "tag"), ("text", "tag"), ("eval", "call"), ("text", "call")):
             traversals = []
             for count in (4, 8):
-                writes = ("const tag=()=>v;" + "".join("function s" + str(index) + "(){v=tag`x`;}" for index in range(count)) if scoped == "tag" else
+                writes = ("const tag=()=>v;" + "".join("function s" + str(index) + "(){v=tag" + ("`x`" if scoped == "tag" else "()") + ";}" for index in range(count)) if scoped in {"tag", "call"} else
                           "".join("function s" + str(index) + "(){v={x:v};}" for index in range(count)) if scoped == "wrapper" else
                           "".join("function s" + str(index) + "(){v=v.next;}" for index in range(count)) if scoped
                           else "".join("v=v.a" + str(index) + ";" for index in range(count)))
@@ -4515,7 +4517,7 @@ os.system(get())
                     calls = list(receipts.javascript_source_calls(source, code))
                 finally:
                     sys.settrace(previous)
-                if scoped in {"wrapper", "tag"} and initial == "eval":
+                if scoped in {"wrapper", "tag", "call"} and initial == "eval":
                     self.assertTrue(calls)
                 else:
                     self.assertEqual(calls, [])
@@ -4616,6 +4618,9 @@ os.system(get())
                     self.assertEqual(receipts.ownership_state(rows, 'codex')['pending'], owning)
 
     def test_generated_source_bindings_respect_eval_and_constructor_scope(self):
+        for source in ("function f(){", "async function f(){", "const f=function named(){", "const f=()=>{"):
+            with self.subTest(incomplete_callable=source):
+                self.assertEqual(receipts.javascript_projection(source)[2], [])
         writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 5'
         source = 'return tools.exec_command({cmd:c});'
         async_source = '(async()=>{await tools.exec_command({cmd:c});})()'
@@ -4905,6 +4910,59 @@ os.system(get())
                 ("let F=eval;F=String.raw`x`;", "F(SRC)", False),
             ):
                 cells.append((setup + "await " + invoke.replace("SRC", json.dumps(source)) + ";", expected))
+            # Calls and tags use the same finite callable/result facts.
+            for setup, invoke, expected in (
+                ("globalThis.String.raw=()=>eval;const F=String.raw`x`;", "F(SRC)", owning),
+                ("let F=eval;globalThis.String.raw=()=>eval;F=String.raw`x`;", "F(SRC)", owning),
+                ("window.String.raw=()=>eval;const F=String.raw`x`;", "F(SRC)", owning),
+                ("self.String.raw=()=>eval;const F=String.raw`x`;", "F(SRC)", owning),
+                ("const S=globalThis.String;S.raw=()=>eval;const F=String.raw`x`;", "F(SRC)", owning),
+                ("globalThis.String={raw:()=>eval};const F=String.raw`x`;", "F(SRC)", owning),
+                ("const String={raw:()=>eval};const F=globalThis.String.raw`x`;", "F(SRC)", False),
+                ("const F=globalThis.String.raw`x`;", "F(SRC)", False),
+                ("const tag=async()=>eval;const F=tag`x`;", "F(SRC)", False),
+                ("const tag=async()=>eval;const F=await tag`x`;", "F(SRC)", owning),
+                ("const tag=async()=>text;const F=await tag`x`;", "F(SRC)", False),
+                ("const tag=function*(){return eval};const F=tag`x`;", "F(SRC)", False),
+                ("const tag=function*(){return eval};const F=await tag`x`;", "F(SRC)", False),
+                ("const tag=async function*(){return eval};const F=await tag`x`;", "F(SRC)", False),
+                ("function tag(){return eval}const F=tag`x`;", "F(SRC)", owning),
+                ("function tag(){return text}const F=tag`x`;", "F(SRC)", False),
+                ("const F=tag`x`;function tag(){return eval}", "F(SRC)", owning),
+                ("const String={raw(){return eval}};const F=String.raw`x`;", "F(SRC)", owning),
+                ("const String={raw(){return text}};const F=String.raw`x`;", "F(SRC)", False),
+                ("const String={async raw(){return eval}};const F=await String.raw`x`;", "F(SRC)", owning),
+                ("const String={*raw(){return eval}};const F=String.raw`x`;", "F(SRC)", False),
+                ("const tag=()=>{const o={m(){return eval}};return text};const F=tag`x`;", "F(SRC)", False),
+                ("const tag=()=>{class C{m(){return eval}}return text};const F=tag`x`;", "F(SRC)", False),
+                ("const get=()=>eval;const F=get();", "F(SRC)", owning),
+                ("function get(){return eval}const F=get();", "F(SRC)", owning),
+                ("const get=()=>text;const F=get();", "F(SRC)", False),
+                ("const get=async()=>eval;const F=get();", "F(SRC)", False),
+                ("const get=async()=>eval;const F=await get();", "F(SRC)", owning),
+                ("const get=function*(){return eval};const F=get();", "F(SRC)", False),
+                ("const tag=(s,e)=>e;const F=tag`${eval}`;", "F(SRC)", owning),
+                ("const tag=(s,e)=>e;const F=tag`${text}`;", "F(SRC)", False),
+                ("const tag=(s,e)=>text;const F=tag`${eval}`;", "F(SRC)", False),
+                ("const tag=(s,e)=>e;const F=tag`${'safe'}`;", "F(SRC)", False),
+                ("const tag=async(s,e)=>e;const F=await tag`${eval}`;", "F(SRC)", owning),
+                ("const tag=async(s,e)=>e;const F=tag`${eval}`;", "F(SRC)", False),
+                ("const tag=async(s,e)=>e;const F=await tag`${text}`;", "F(SRC)", False),
+                ("const tag=async(s,e)=>text;const F=await tag`${eval}`;", "F(SRC)", False),
+                ("const get=e=>e;const F=get(eval);", "F(SRC)", owning),
+                ("const get=e=>e;const F=get(text);", "F(SRC)", False),
+                ("const get=e=>text;const F=get(eval);", "F(SRC)", False),
+                ("const get=async e=>e;const F=await get(eval);", "F(SRC)", owning),
+                ("const get=async e=>e;const F=get(eval);", "F(SRC)", False),
+                ("const get=async e=>e;const F=await get(text);", "F(SRC)", False),
+                ("const get=async e=>text;const F=await get(eval);", "F(SRC)", False),
+                ("const get=function*(e){return e};const F=await get(eval);", "F(SRC)", False),
+                ("const get=()=>eval.call;const F=get();", "F(null,SRC)", owning),
+                ("const get=()=>eval.apply;const F=get();", "F(null,[SRC])", owning),
+                ("const get=()=>eval;const F=get();", "F.bind(null)(SRC)", owning),
+                ("const get=()=>text.call;const F=get();", "F(null,SRC)", False),
+            ):
+                cells.append((setup + "try{await " + invoke.replace("SRC", json.dumps(source)) + ";}catch{}", expected))
             for handle in ("eval", "text"):
                 for reverse in (False, True):
                     definitions = ["function first(){v=v.next;}", "function second(){v=v.next;}",
@@ -6730,6 +6788,17 @@ os.system(get())
                          ("backtick_data", "echo `printf %s gh-plan.py-claim`", False),
                          ("single_quoted_backtick", "echo '`" + writer + "`'", False),
                          ("escaped_backtick", "echo \\`" + writer + "\\`", False),
+                         ("comment_backtick_pr", "# then `gh pr create --fill` after CI is green\ngit status", False),
+                         ("comment_backtick_claim", "# claim with `gh-plan.py claim 2216` later\nls", False),
+                         ("comment_dollar_claim", "# then $(" + writer + ") later\ngit status", False),
+                         ("comment_apostrophe_writer", "# don't claim yet\necho `" + writer + "`", True),
+                         ("inline_comment_writer", "ls # note\necho `" + writer + "`", True),
+                         ("word_hash_writer", "echo word#`" + writer + "`", True),
+                         ("quoted_word_hash_writer", 'echo "x"#`' + writer + '`', True),
+                         ("escaped_space_hash_writer", "echo x\\ #`" + writer + "`", True),
+                         ("quoted_hash_writer", 'echo "#`' + writer + '`"', True),
+                         ("escaped_hash_writer", "echo \\#`" + writer + "`", True),
+                         ("comment_no_newline", "# `" + writer + "`", False),
                          ("case_arithmetic_data", 'case "$m" in claim) ((n++));; esac', False),
                          ("child_quoted_substitution_data", "bash -c " + shlex.quote("printf %s '$(" + writer + ")'"), False),
                          ("skipped_child_subshell_expansion", "false && bash -c " + shlex.quote('out="$((cd /repo && ' + writer + ') 2>&1)"'), False),

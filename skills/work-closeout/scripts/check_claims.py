@@ -60,6 +60,9 @@ def retained_handoff(comments, source, pulls, *, repo, number, is_pr):
     """Use the successor's own handoff contract, not a second prose heuristic."""
     candidates = [c for c in comments if (c.get("user") or {}).get("login") ==
                   (source.get("user") or {}).get("login")]
+    if not is_pr:
+        released = claim.released_source(comments, source["id"])
+        candidates = claim.handoff_candidates(comments, released)
     verified = []
     for pull in pulls:
         for handoff in reversed(candidates):
@@ -78,8 +81,13 @@ def retained_handoff(comments, source, pulls, *, repo, number, is_pr):
                                    for side in ("head", "base"))):
                         raise ValueError("retained PR claim no longer matches its repository")
                 else:
-                    claim.retained_handoff(comments, source["id"], handoff["id"], pulls, pull["number"],
-                        issue_repo=repo, issue_number=number, target_repo=repo)
+                    # Closeout covers every pull, including separate authored
+                    # handoffs. A successor selects just one of those handoffs.
+                    retained = claim.retained_handoff(released, [handoff], [pull],
+                        issue_repo=repo, issue_number=number, target_repo=repo, selected_id=handoff["id"])
+                    if (retained is None or retained["open_conflicts"]
+                            or pull["number"] not in {p["number"] for p in retained["qualified"]}):
+                        continue
                 verified.append(handoff)
                 break
             except ValueError:
