@@ -7,6 +7,7 @@
 
 import io
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -34,6 +35,18 @@ Still open from yesterday:
 Chris answered "Should we keep the canary?" with "yes, keep it". Why did CI fail earlier? A flaky
 runner; the rerun passed. See https://github.com/OWNER/REPO/actions?query=branch%3Amain for the log.
 Nothing is needed from you."""
+
+
+# Real-shaped replies the first review found mis-sorted.
+MISSED_ASKS = [
+    "> **Q590 — Keep the watcher?**\n\nShould I move the nightly sync to the CM host? I recommend yes.",
+    "I recommend moving the sync to the CM host. Is that okay? Ongoing cost: none.",
+    "I recommend moving the nightly sync to the CM host. Let me know if I should proceed.",
+]
+PLAIN_STATUS = [
+    "Can the train merge yet? No, CI is still running. I am watching it; nothing is needed from you.",
+    "Yesterday Chris asked: ‘Should I retire the old watcher service?’ He approved it; it is retired.",
+]
 
 
 def stop(**fields):
@@ -75,9 +88,17 @@ class GuardTests(unittest.TestCase):
     def test_status_report_with_quoted_old_question_passes(self):
         self.assertEqual(self.run_hook(stop(last_assistant_message=STATUS_WITH_QUOTED_QUESTION)), "")
 
+    def test_review_shapes_are_sorted(self):
+        for message in MISSED_ASKS:
+            self.assertIn("block", self.run_hook(stop(last_assistant_message=message)), message)
+        for message in PLAIN_STATUS:
+            self.assertEqual(self.run_hook(stop(last_assistant_message=message)), "", message)
+
     def test_log_records_no_message_text(self):
         self.run_hook(stop(last_assistant_message=UNNUMBERED_QUESTION))
-        self.assertEqual(set(self.logged()[0]), {"time", "session", "verdict"})
+        record = self.logged()[0]
+        self.assertEqual((set(record), record["session"], record["verdict"]), ({"time", "session", "verdict"}, "s1", "caught"))
+        self.assertNotIn("nightly", guard.log_path(self.env).read_text())
 
     def test_transcript_is_read_when_the_message_field_is_missing(self):
         transcript = Path(self.home.name, "t.jsonl")
@@ -88,7 +109,9 @@ class GuardTests(unittest.TestCase):
         self.assertIn("block", self.run_hook(stop(transcript_path=str(transcript))))
 
     def test_errors_and_unreadable_input_fail_open(self):
-        for payload in ("not json", stop(transcript_path="/nonexistent/t.jsonl"),
+        fifo = Path(self.home.name, "fifo")
+        os.mkfifo(fifo)  # Opening a FIFO with no writer would hang the hook.
+        for payload in ("not json", stop(transcript_path="/nonexistent/t.jsonl"), stop(transcript_path=str(fifo)),
                         stop(last_assistant_message=None), {"hook_event_name": "SubagentStop",
                                                            "last_assistant_message": UNNUMBERED_ASK}):
             self.assertEqual(self.run_hook(payload), "")

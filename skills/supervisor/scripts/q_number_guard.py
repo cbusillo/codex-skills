@@ -6,7 +6,8 @@
 """Stop hook: send back, once, a reply that asks the Director to decide without a bold Q number.
 
 `hook` reads Claude Code's Stop input on stdin. Any error, or a message it
-cannot read, lets the stop proceed, so the hook can never wedge a session.
+cannot read, lets the stop proceed; the settings entry's short `timeout` bounds
+a stalled stdin, after which Claude Code also lets the stop proceed.
 `report` prints the logged verdict counts for a date range.
 """
 
@@ -24,22 +25,25 @@ from pathlib import Path
 from typing import Mapping
 
 NUMBERED = re.compile(r"[*][*]Q[0-9]{3,}\b")
-# Quoted material repeats old questions; only the reply's own words count.
-QUOTED = re.compile(r"```.*?```|`[^`\n]*`|^[ \t]*>.*$|\"[^\"\n]*\"|“[^”\n]*”|https?://\S+",
-                    re.DOTALL | re.MULTILINE)
+# Quoted material repeats old questions; only the reply's own words count. Only a
+# code fence spans lines, so a blockquote never hides the text after it.
+QUOTED = re.compile(r"(?s:```.*?```)|`[^`\n]*`|^[ \t]*>.*$|\"[^\"\n]*\"|“[^”\n]*”|‘[^’\n]*’|https?://\S+",
+                    re.MULTILINE)
 # A clause, so a lead-in such as "One decision:" does not hide "should I ...?".
 SENTENCE = re.compile(r"[^.!?:;\n]*[?]")
 ADDRESSED = re.compile(
-    r"\b(you|your|chris|director)\b"
+    r"\b(you|your|chris|director|ok|okay|sound good|any objections?)\b"
     r"|^\W*(should|shall|may|can|could|do|does|want|ok|okay|approve|which|go ahead|proceed|merge|land)\b",
     re.IGNORECASE,
 )
 # Asks that need no question mark, in the Supervisor's usual phrasings.
 ASK = re.compile(
-    r"\b(reply yes|say yes|say the word|your call|needs your (decision|approval|answer|ok)"
+    r"\b(reply yes|say yes|say the word|let me know (if|whether|which)|your call|needs your (decision|approval|answer|ok)"
     r"|waiting on your (decision|approval|answer)|for you to decide)\b",
     re.IGNORECASE,
 )
+# A status report answers its own question in place: "Can the train merge yet? No, CI is running."
+ANSWERED = re.compile(r"\s*[*_]*(yes|no|not yet)\b", re.IGNORECASE)
 REASON = (
     "Your reply asks Chris to decide something but has no bold Q number. Every question "
     "to him starts with a bold Q### from the shared counter (talking-with-the-director.md): "
@@ -52,7 +56,8 @@ def asks_director(message: str) -> bool:
     text = QUOTED.sub(" ", message)
     if NUMBERED.search(text):
         return False
-    questions = (match[0].strip(" \t*_-") for match in SENTENCE.finditer(text))
+    questions = (match[0].strip(" \t*_-") for match in SENTENCE.finditer(text)
+                 if not ANSWERED.match(text, match.end()))
     return any(ADDRESSED.search(question) for question in questions) or bool(ASK.search(text))
 
 
@@ -64,8 +69,11 @@ def last_message(payload: Mapping) -> str | None:
     path = payload.get("transcript_path")
     if not isinstance(path, str) or not path:
         return None
+    path = Path(path).expanduser()
+    if not path.is_file():  # A FIFO or device could block until the harness timeout.
+        return None
     text = None
-    with open(Path(path).expanduser(), encoding="utf-8") as transcript:
+    with open(path, encoding="utf-8") as transcript:
         for line in transcript:
             try:
                 entry = json.loads(line)
