@@ -493,7 +493,10 @@ def read_results(results: Path, project: Path, selected: set[str]) -> tuple[list
     descriptions = results / ".descriptions.xml"
     if descriptions.is_file():
         root = ElementTree.parse(descriptions).getroot()
-        registered = {name for node in root.iter("inspection") if isinstance(name := node.get("shortName"), str) and name}
+        for node in root.iter("inspection"):
+            short_name = node.get("shortName")
+            if short_name:
+                registered.add(short_name)
     for path in sorted(results.glob("*.xml")):
         if path.is_symlink():
             raise Blocked("native_report_path_unsafe")
@@ -627,9 +630,9 @@ def _run(args: Any, host: Any, parent_fd: int | None) -> dict[str, Any]:
                "nice": NICE, "active_processors": ACTIVE_PROCESSORS, "heap_limit_mib": HEAP_LIMIT_MIB,
                "helper_revision": host.helper_revision(), "backend_revision": "sha256:" + common.digest(Path(__file__))}
     findings, gaps, reason, artifact = [], [], "native_prerequisite_failed", None
-    private: Path | None = None
+    cleanup_private: Path | None = None
     journal: Path | None = None
-    worker: Path | None = None
+    cleanup_worker: Path | None = None
     held_lock = contextlib.ExitStack()
     started = time.monotonic()
     deadline = started + max(1, args.timeout_ms / 1000)
@@ -637,6 +640,7 @@ def _run(args: Any, host: Any, parent_fd: int | None) -> dict[str, Any]:
         if sys.platform != "darwin":
             raise Blocked("native_macos_not_available")
         worker, app, framework = worker_settings(args, host)
+        cleanup_worker = worker
         if not args.native_recover_only:
             product = json.loads((app / "Contents/Resources/product-info.json").read_text())
             receipt.update(ide_version=product.get("version"), ide_build=product.get("buildNumber"))
@@ -663,7 +667,7 @@ def _run(args: Any, host: Any, parent_fd: int | None) -> dict[str, Any]:
             raise Blocked("native_odoo_framework_unavailable")
         receipt.update(scope=scope, selected_file_count=len(selected), repo_head_sha=host.git_head_sha(repo))
         receipt["framework_revisions"] = [host.git_head_sha(root) for root in framework]
-        if any(common.checked(["git", "-C", str(root), "status", "--porcelain", "--untracked-files=no"]).strip() for root in framework):
+        if any(common.checked(["git", "-C", str(root), "status", "--porcelain", "--untracked-files=normal"]).strip() for root in framework):
             raise Blocked("native_framework_inputs_unproven")
         if not selected:
             raise Blocked("native_scope_empty")
@@ -680,12 +684,16 @@ def _run(args: Any, host: Any, parent_fd: int | None) -> dict[str, Any]:
             expected |= NAMED_PYTHON
         if is_odoo(repo):
             expected |= NAMED_ODOO
-        restricted = {name for tool in ElementTree.parse(profile).iter("inspection_tool")
-                      if isinstance(name := tool.get("class"), str) and name in expected and any(scope.get("enabled") == "false" for scope in tool.findall("scope"))}
+        restricted: set[str] = set()
+        for profile_tool in ElementTree.parse(profile).iter("inspection_tool"):
+            tool_name = profile_tool.get("class")
+            if tool_name and tool_name in expected and any(child.get("enabled") == "false" for child in profile_tool.findall("scope")):
+                restricted.add(tool_name)
         receipt["profile_sha256"] = common.digest(profile)
         if is_odoo(repo) and not framework:
             raise Blocked("native_odoo_framework_required")
         private = state / ("private-" + receipt["run_id"])
+        cleanup_private = private
         sdk_name = "jb-native-" + receipt["run_id"]
         source_interpreter = repo / ".venv/bin/python"
         interpreter = private / "project/.venv/bin/python" if settings.get("prepare") else source_interpreter
@@ -767,7 +775,7 @@ def _run(args: Any, host: Any, parent_fd: int | None) -> dict[str, Any]:
         receipt["coverage"]["profile_requested"] = sorted(profile_requested)
         receipt["coverage"]["not_applicable"] = sorted(profile_requested - expected)
         gaps = ["execution_unproven:" + name for name in receipt["coverage"]["unproven"]]
-        gaps += ["inspection_execution_failed:" + tool + ":" + path for tool, path in sorted(trace_failed) if path in allowed]
+        gaps += ["inspection_execution_failed:" + failed_tool + ":" + failed_file for failed_tool, failed_file in sorted(trace_failed) if failed_file in allowed]
         if set(receipt.get("inspected_files", [])) - allowed:
             gaps.append("native_unselected_file_traversal")
         restricted, _ = migrate_expected(restricted, registered)
@@ -790,7 +798,7 @@ def _run(args: Any, host: Any, parent_fd: int | None) -> dict[str, Any]:
             raise Blocked("native_profile_inputs_changed")
         if [host.git_head_sha(root) for root in framework] != receipt["framework_revisions"]:
             raise Blocked("native_framework_inputs_changed")
-        if any(common.checked(["git", "-C", str(root), "status", "--porcelain", "--untracked-files=no"]).strip() for root in framework):
+        if any(common.checked(["git", "-C", str(root), "status", "--porcelain", "--untracked-files=normal"]).strip() for root in framework):
             raise Blocked("native_framework_inputs_changed")
         if args.severity != "all":
             findings = [finding for finding in findings if finding["severity"].lower() == args.severity.lower()]
@@ -802,19 +810,19 @@ def _run(args: Any, host: Any, parent_fd: int | None) -> dict[str, Any]:
     except (host.InspectError, OSError, ValueError, ElementTree.ParseError, subprocess.SubprocessError):
         reason = "native_prerequisite_or_report_failed"
     finally:
-        if receipt.get("license_boundary_observed") and worker is not None:
+        if receipt.get("license_boundary_observed") and cleanup_worker is not None:
             # Count-only persistent stop, never preserve raw licensing output.
-            write_record(worker / "native-activation-stop.json", {"run_id": receipt["run_id"], "boundary_event_count": 1})
-        if private is not None and private.exists():
+            write_record(cleanup_worker / "native-activation-stop.json", {"run_id": receipt["run_id"], "boundary_event_count": 1})
+        if cleanup_private is not None and cleanup_private.exists():
             if findings:
-                artifact_path = private.parent / (receipt["run_id"] + ".findings.json")
+                artifact_path = cleanup_private.parent / (receipt["run_id"] + ".findings.json")
                 artifact_path.write_text(json.dumps(findings))
                 artifact = str(artifact_path)
             try:
                 if journal is not None:
-                    common.delete_private(private)
+                    common.delete_private(cleanup_private)
                 else:
-                    shutil.rmtree(private)
+                    shutil.rmtree(cleanup_private)
                 receipt["private_deleted"] = True
             except OSError:
                 reason = "native_cleanup_failed"
