@@ -1388,6 +1388,21 @@ class ProcessArgumentsTests(unittest.TestCase):
     source = "01a1514c-fa7f-7be3-95ba-4d25df73d07e"
     other = "01970242-7941-7f0c-b461-16aa5723fb51"
 
+    def test_authoritative_non_harness_argv_clears_an_ambiguous_ps_candidate(self):
+        github = str(Path(__file__).resolve().parents[2] / "github/scripts")
+        with patch.object(sys, "path", [github, *sys.path]):
+            import github_plan_sessions as sessions
+        executable = "/Applications/Example.app/Contents/Frameworks/Codex Framework.framework/Helpers/report_helper"
+        command = f"456 {executable} --message resume {self.source}"
+        with patch.object(session_liveness, "native_arguments", return_value=[executable, "--message", "resume " + self.source]):
+            self.assertTrue(sessions.process_absence_known(command))
+            self.assertEqual(sessions.process_sessions(command, {self.source}), [])
+        with patch.object(session_liveness, "native_arguments", side_effect=OSError("argv unavailable")):
+            self.assertFalse(sessions.process_absence_known(command))
+        with patch.object(session_liveness, "native_arguments", return_value=["codex", "resume", self.source]):
+            self.assertFalse(sessions.process_absence_known(command))
+            self.assertEqual([peer["sessionId"] for peer in sessions.process_sessions(command, {self.source})], [self.source])
+
     def probe(self, argv, *, tty="source-tty", scope="session", guarded=False, harness="codex"):
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
         entry = {"session_id": self.source, "harness": harness, "pid": 123, "tty": "source-tty"}

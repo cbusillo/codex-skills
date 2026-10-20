@@ -148,9 +148,7 @@ def process_arguments(pid, command):
     if not fallback:
         return [], False
     try:
-        argv = harness_arguments(native_arguments(pid))
-        if argv:
-            return argv, True
+        return harness_arguments(native_arguments(pid)), True
     except (OSError, ValueError, UnicodeError):
         pass
     return fallback, False
