@@ -180,12 +180,13 @@ unclear code stand by explaining it.
   dependency. Inside an addon, use relative imports. Versioned migration
   scripts are the exception: Odoo loads them as standalone modules.
 - On custom models, name relational fields for the records they hold: `partner`
-  and `partners`, not `partner_id` and `partner_ids`. Keep the `_id` names the
-  framework looks up: `company_id` (company checks), `currency_id`
-  (`fields.Monetary`), `parent_id` (`_parent_store`), and `partner_id` and
-  `user_id` on `mail.thread` models. Never rename a field on a core model, and
-  keep upstream names where another module expects them. House rule:
-  `order.partner.name` says what the field holds; upstream uses `_id`.
+  and `partners`, not `partner_id` and `partner_ids`. Keep the `_id` and `_ids`
+  names the framework looks up: `company_id` or `company_ids` (company
+  checks), `currency_id` (`fields.Monetary`), `parent_id` (`_parent_store`),
+  and `partner_id`, `partner_ids`, and `user_id` on `mail.thread` models.
+  Never rename a field on a core model, and keep upstream names where another
+  module expects them. House rule: `order.partner.name` says what the field
+  holds; upstream uses `_id`.
 
 ## JavaScript
 
