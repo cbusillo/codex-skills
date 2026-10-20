@@ -3072,7 +3072,7 @@ def _claim_once(args: argparse.Namespace) -> None:
                          for branch in sorted(permitted & present)]
             if uncertain:
                 refuse(uncertain, owner_comments=source_comments, owner_number=source_number)
-        live_sources = [{"source": "source_session", "session": peer["sessionId"],
+        live_sources = [{"source": peer.get("source", "source_session"), "session": peer["sessionId"],
                          "certainty": "visible_in_native_inventory",
                          **({"error": peer["error"]} if "error" in peer else {})}
                         for peer in target_inventory["sessions"]
