@@ -37,6 +37,14 @@ CLAUDE_AUTOCOMPACT_OPTION = "--autocompact"
 CODEX_PROMPT_WINDOW = 20.0
 # The catalog's Chrome opt-in; with it, browser tools come only from the pinned server.
 CHROME_OPT_IN = Path(__file__).resolve().parents[3] / ".local" / "chrome.toml"
+# Every brief carries the reviewed rules, by link or as an unchanged copy (Q587).
+BRIEF_RULES = Path(__file__).resolve().parents[1] / "references" / "brief-rules.md"
+BRIEF_RULES_URL = "https://github.com/cbusillo/codex-skills/blob/main/skills/supervisor/references/brief-rules.md"
+# A link to main or an absolute catalog path stays current; a pinned commit or relative path does not.
+BRIEF_RULES_LINK = re.compile(
+    r"(?:https://github\.com/[\w.-]+/[\w.-]+/blob/main/|(?<![^\s(<\[`'\"])/(?:[^\s:()<>\[\]`'\"]+/)?)"
+    + re.escape("skills/supervisor/references/brief-rules.md")
+)
 
 
 
@@ -290,6 +298,22 @@ def validate_text(text, allow_tabs=False):
     allowed = "\n\t" if allow_tabs else "\n"
     if not text or any(ord(c) < 32 and c not in allowed for c in text):
         raise ValueError("text must be nonempty with no terminal control characters")
+
+
+def brief_rules_block():
+    """Return the marked rules block from the catalog's brief rules reference."""
+    text = BRIEF_RULES.read_text(encoding="utf-8")
+    start, end = "<!-- brief-rules:start -->", "<!-- brief-rules:end -->"
+    if text.count(start) != 1 or text.count(end) != 1:
+        raise ValueError(f"{BRIEF_RULES} needs exactly one marked rules block")
+    return text.split(start, 1)[1].split(end, 1)[0].strip()
+
+
+def validate_brief_rules(brief):
+    if BRIEF_RULES_LINK.search(brief) or " ".join(brief_rules_block().split()) in " ".join(brief.split()):
+        return
+    raise ValueError(f"brief must link the current Supervisor brief rules ({BRIEF_RULES_URL} or {BRIEF_RULES}) "
+                     "or include their rules block unchanged")
 
 
 def launch_parts(command_text):
@@ -1085,6 +1109,7 @@ def prepare_launches(args):
         if not brief.strip():
             raise ValueError("brief must be nonempty")
         validate_text(brief, allow_tabs=True)
+        validate_brief_rules(brief)
     apps = [gui_launch.declared_app(brief) for brief in briefs]
     if any(apps):
         if len(files) != 1 or getattr(args, "account_provider", None) != "openai":

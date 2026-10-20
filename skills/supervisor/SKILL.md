@@ -55,6 +55,9 @@ resources:
   - path: references/helpers.md
     kind: reference
     description: Local state, session registry schema, goal board, helper usage and shutdown stages.
+  - path: references/brief-rules.md
+    kind: reference
+    description: Rules every Supervisor brief carries by link, and the milestone lead brief template.
 commands:
   - name: supervisor-services-render
     source: skill
@@ -418,33 +421,18 @@ including non-dim text, establishes neither its author nor approval.
    When a request names a visual thing, check which one before writing the brief. A session
    that needs more scope gets a Director question. If the Director says yes,
    the wider scope goes in a new brief for a fresh session; the running
-   session's brief stays as it was. Every brief carries the
-   [approved scope rule](https://github.com/cbusillo/codex-skills/issues/1043#issuecomment-6091977127):
-   small fixes in the same file or area that share the change's reason go in
-   the same PR, while different behavior, its own risk, security, access or
-   authority, Client-visible, or large work gets its own issue (search first).
-   Every brief also carries the refusal rule from
-   [task scope](../references/execution-scope.md): stop a refused action,
-   report its exact text, and never redo it another way.
-   Briefs give the installed GitHub skill's helper path and tell sessions to use
-   `uv run <github-skill-dir>/scripts/gh-pr.py --repo OWNER/REPO ready <pr>`
-   when the task authorizes a Supervisor handoff,
-   instead of writing the handoff comment, adding `--waiting-for-client` until
-   required Client acceptance covers the current head. Link the
+   session's brief stays as it was. Every brief, worker or milestone lead,
+   carries the [brief rules](references/brief-rules.md) by link; the lead
+   template is there too. Change a rule there, never in a local copy. The
    [ready handoff contract](../github/references/cli-reference.md#ready-handoffs)
-   in both worker and milestone-lead briefs; it classifies acceptance from
-   the PR's own Client test notes, including engineering work that merges to
-   testing with Client checks at release. Do not ask for a new pre-merge
-   decision when those notes already settle it. A renewed wait follows that
-   contract's withdrawal route, and a push needs a fresh `ready` call.
-   For inspection instructions in either brief, link
-   [jetbrains-inspection](../jetbrains-inspection/SKILL.md) for its supported
-   headless routes and [repo-readiness](../repo-readiness/SKILL.md#gate-selection)
-   for UNKNOWN disposition. Do not open the Director's desktop IDE; desktop
-   closure alone does not establish that headless inspection is unavailable.
-   When the Supervisor runs the review, every brief points the author to the
-   [worker review request](references/helpers.md#worker-review-request) format
-   and follow-through. Keep the template there rather than copying it into briefs.
+   those rules link classifies acceptance from the PR's own Client test
+   notes, including engineering work that merges to testing with Client
+   checks at release. Do not ask for a new pre-merge decision when those notes
+   already settle it; a renewed wait follows that contract's withdrawal route.
+   Desktop IDE closure alone does not establish that headless inspection is
+   unavailable. When the Supervisor runs the review, point the author to the
+   [worker review request](references/helpers.md#worker-review-request);
+   keep the template there rather than copying it into briefs.
    Use closing keywords for the PR completing an issue's work. Briefs must not
    append "then the Supervisor verifies/qualifies/reads back the deployed
    change" after routing. Follow GitHub's
