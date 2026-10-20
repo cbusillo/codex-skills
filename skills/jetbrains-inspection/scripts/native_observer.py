@@ -100,9 +100,6 @@ class EngineObserver:
                     if relative not in self.receipt.setdefault("inspected_files", []):
                         self.receipt["inspected_files"].append(relative)
             return
-        if license_boundary(line):
-            self.receipt["license_boundary_observed"] = True
-            raise ObservationError("native_owner_activation_required")
         plugin = re.search(r"Odoo IDE \(([0-9][\w.+-]*)\)", line)
         if plugin:
             self.receipt["odoo_plugin_version"] = plugin.group(1)

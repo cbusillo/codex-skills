@@ -193,10 +193,20 @@ command after that recorded confirmation. Never use the flag merely to retry.
 A killed guardian may leave the engine holding both inherited locks. Cleanup-only
 recovery first holds the separate control lock, proves the journaled PID birth,
 group and private-path identity, and stops that exact orphan group before taking
-the normal locks. A live guardian or an unproved/reused process identity is
-preserved. A dead leader with live, unproved descendants remains UNKNOWN.
+the normal locks. A live guardian or an unproved process identity is preserved.
+A different process birth at the journaled PID proves reuse; recovery sends it
+no signal and proceeds with resource disposal while retaining the outcome hold.
+Birth comparisons require the same recorded UTC/C-locale clock; legacy or
+incomparable observations remain unproved.
+The same birth with a changed command/group remains unproved. A dead leader
+with live, unproved descendants remains UNKNOWN.
 Recovery alone retains an unknown-outcome hold; it does not infer expired
 activation or authorize another licensed run.
+
+Log observation follows file identity through ordinary size-based rotation,
+preserving offsets and partial licence lines across a rename. A disappeared
+observed inode, truncation, unsafe path or bounded-drain failure still leaves
+licence observation incomplete and preserves the outcome hold.
 
 ## Coverage and qualification
 

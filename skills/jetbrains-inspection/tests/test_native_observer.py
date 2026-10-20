@@ -187,7 +187,44 @@ class ProcessDrainTests(unittest.TestCase):
             receipt, _ = self.run_process("import time;time.sleep(30)")
         self.assertTrue(receipt.get("license_boundary_observed"))
         self.assertFalse(receipt.get("license_observation_complete", False))
-        self.assertIn("log_replaced", receipt["license_observation_failures"])
+        self.assertIn("log_disappeared", receipt["license_observation_failures"])
+
+    def test_rotation_preserves_partial_prompt_and_complete_observation(self):
+        log = self.private / "logs/idea.log"
+        log.write_text("ordinary fixture log\nYour lic")
+        observe = self.backend.observations.EngineObserver.observe
+
+        def rotate_then_fail(events, line, **kwargs):
+            if line == "Your lic":
+                rotated = log.with_name("idea.1.log")
+                log.rename(rotated)
+                with rotated.open("a") as output:
+                    output.write("ense has expired\n")
+                log.write_text("new ordinary fixture log\n")
+                raise self.backend.observations.ObservationError("native_engine_error")
+            return observe(events, line, **kwargs)
+
+        with patch.object(self.backend.observations.EngineObserver, "observe", new=rotate_then_fail):
+            receipt, _ = self.run_process("import time;time.sleep(30)")
+        self.assertTrue(receipt.get("license_boundary_observed"))
+        self.assertTrue(receipt.get("license_observation_complete"))
+
+    def test_normal_log_rotation_does_not_leave_an_unknown_outcome_hold(self):
+        log = self.private / "logs/idea.log"
+        log.write_text("ordinary fixture log\n")
+        observe = self.backend.observations.EngineObserver.observe
+
+        def rotate_then_fail(events, line, **kwargs):
+            if line == "ordinary fixture log":
+                log.rename(log.with_name("idea.1.log"))
+                log.write_text("new ordinary fixture log\n")
+                raise self.backend.observations.ObservationError("native_engine_error")
+            return observe(events, line, **kwargs)
+
+        with patch.object(self.backend.observations.EngineObserver, "observe", new=rotate_then_fail):
+            receipt, _ = self.run_process("import time;time.sleep(30)")
+        self.assertFalse(receipt.get("license_boundary_observed", False))
+        self.assertTrue(receipt.get("license_observation_complete"))
 
 
 if __name__ == "__main__":

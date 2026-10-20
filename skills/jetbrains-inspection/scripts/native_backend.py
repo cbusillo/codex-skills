@@ -136,15 +136,18 @@ def framework_context(repo, selected, roots):
             if shared:
                 def git_common(root):
                     return Path(common.checked(["git", "-C", str(root), "rev-parse", "--path-format=absolute", "--git-common-dir"]).decode().strip()).resolve()
-                primary = git_common(repo).parent
-                candidates = {(repo / shared["path"]).resolve(), (primary / shared["path"]).resolve()}
-                expected_repositories = {git_common(path) for path in candidates if path.is_dir()}
-                matching = [root for root in roots if git_common(root) in expected_repositories]
-                if len(matching) != 1:
-                    raise Blocked("native_odoo_dependency_unproven")
-                dependency = matching[0]
-                expected_commit = common.checked(["git", "-C", str(dependency), "rev-parse", "--verify", "--end-of-options", str(shared["ref"]) + "^{commit}"]).decode().strip()
-                actual_commit = common.checked(["git", "-C", str(dependency), "rev-parse", "HEAD"]).decode().strip()
+                try:
+                    primary = git_common(repo).parent
+                    candidates = {(repo / shared["path"]).resolve(), (primary / shared["path"]).resolve()}
+                    expected_repositories = {git_common(path) for path in candidates if path.is_dir()}
+                    matching = [root for root in roots if git_common(root) in expected_repositories]
+                    if len(matching) != 1:
+                        raise Blocked("native_odoo_dependency_unproven")
+                    dependency = matching[0]
+                    expected_commit = common.checked(["git", "-C", str(dependency), "rev-parse", "--verify", "--end-of-options", str(shared["ref"]) + "^{commit}"]).decode().strip()
+                    actual_commit = common.checked(["git", "-C", str(dependency), "rev-parse", "HEAD"]).decode().strip()
+                except common.Blocked:
+                    raise Blocked("native_odoo_dependency_unproven") from None
                 if expected_commit != actual_commit:
                     raise Blocked("native_odoo_dependency_revision_mismatch")
                 dependencies["shared_addons"] = {"declared_ref": shared["ref"], "resolved_commit": expected_commit, "checkout": str(dependency)}
@@ -331,8 +334,12 @@ def recover_run(worker, receipt=None, result_path=None, release_run=None):
         raise Blocked(str(error)) from None
 
 
+PROCESS_BIRTH_CLOCK = "ps-lstart-utc"
+
+
 def process_identity(pid, private):
-    result = common.command(["ps", "-p", str(pid), "-o", "pid=,pgid=,lstart=,stat=,command="], timeout=2)
+    result = common.command(["ps", "-p", str(pid), "-o", "pid=,pgid=,lstart=,stat=,command="],
+                            timeout=2, env={"PATH": os.defpath, "LC_ALL": "C", "TZ": "UTC"})
     if result.returncode or not result.stdout.strip():
         return None
     fields = result.stdout.decode(errors="replace").strip().split(None, 8)
@@ -340,9 +347,11 @@ def process_identity(pid, private):
         raise Blocked("native_recovery_process_identity_unproven")
     if fields[7].startswith("Z"):
         return None
-    if int(fields[0]) != pid or int(fields[1]) != pid or not re.search(re.escape(str(private)) + r"(?=/|\s|$)", fields[8]):
-        raise Blocked("native_recovery_process_identity_changed")
-    return {"pid": pid, "pgid": int(fields[1]), "started": " ".join(fields[2:7]), "private": str(private)}
+    if int(fields[0]) != pid:
+        raise Blocked("native_recovery_process_identity_unproven")
+    private_match = bool(re.search(re.escape(str(private)) + r"(?=/|\s|$)", fields[8]))
+    return {"pid": pid, "pgid": int(fields[1]), "started": " ".join(fields[2:7]),
+            "birth_clock": PROCESS_BIRTH_CLOCK, "private": str(private) if private_match else None}
 
 
 def stop_orphan(worker, receipt):
@@ -372,6 +381,13 @@ def stop_orphan(worker, receipt):
             except ProcessLookupError:
                 return False
             raise Blocked("native_recovery_process_group_unproven")
+        if (engine.get("birth_clock") == current.get("birth_clock") == PROCESS_BIRTH_CLOCK
+                and current["started"] != engine["started"]):
+            # POSIX forbids reuse of a PID while its matching process group
+            # exists. A different birth proves the old group is gone; never
+            # signal the unrelated replacement. The outcome hold remains.
+            receipt["orphan_pid_reused"] = pid
+            return False
         if current != engine:
             raise Blocked("native_recovery_process_identity_changed")
         os.killpg(pid, signal.SIGKILL)
@@ -396,7 +412,7 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
     paused = False
     log_offsets, log_framers = {}, {}
     log_license_scanners = {}
-    log_identities = {}
+    log_identities = set()
     observation_failures = set()
     output_framer = observations.LineFramer()
     output_license_scanner = observations.LicenseScanner()
@@ -428,28 +444,25 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
         for path in (private / "logs").glob("*.log"):
             if path.is_symlink():
                 raise Blocked("native_log_path_unsafe")
-            offset = log_offsets.get(path, 0)
-            status = path.stat()
-            identity = status.st_dev, status.st_ino
-            if path in log_identities and log_identities[path] != identity:
-                observation_failures.add("log_replaced")
-                raise Blocked("native_log_replaced")
-            log_identities[path] = identity
-            if status.st_size < offset:
-                observation_failures.add("log_truncated")
-                raise Blocked("native_log_truncated")
-            framer = log_framers.setdefault(path, observations.LineFramer())
-            scanner = log_license_scanners.setdefault(path, observations.LicenseScanner())
             with path.open("rb") as stream:
+                status = os.fstat(stream.fileno())
+                identity = status.st_dev, status.st_ino
+                log_identities.add(identity)
+                offset = log_offsets.get(identity, 0)
+                if status.st_size < offset:
+                    observation_failures.add("log_truncated")
+                    raise Blocked("native_log_truncated")
+                framer = log_framers.setdefault(identity, observations.LineFramer())
+                scanner = log_license_scanners.setdefault(identity, observations.LicenseScanner())
                 stream.seek(offset)
                 while True:
                     check_lifetime(parent_fd, deadline)
                     data = stream.read(1024 * 1024)
-                    log_offsets[path] = stream.tell()
+                    log_offsets[identity] = stream.tell()
                     consume(framer, scanner, data)
                     if not final or len(data) < 1024 * 1024:
                         break
-                log_offsets[path] = stream.tell()
+                log_offsets[identity] = stream.tell()
             if final:
                 consume(framer, scanner, b"", final=True)
 
@@ -500,8 +513,7 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
                     incomplete("log_count_bound")
                     break
                 paths.append(path)
-            if set(log_identities) - set(paths):
-                incomplete("log_disappeared")
+            seen = set()
             for path in paths:
                 try:
                     if not allowed():
@@ -510,29 +522,32 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
                     if path.is_symlink():
                         incomplete("log_path_unsafe")
                         continue
-                    offset = log_offsets.get(path, 0)
-                    scanner = log_license_scanners.setdefault(path, observations.LicenseScanner())
-                    status = path.stat()
-                    replaced = path in log_identities and log_identities[path] != (status.st_dev, status.st_ino)
-                    if replaced or status.st_size < offset:
-                        incomplete("log_replaced" if replaced else "log_truncated")
-                        offset = 0
-                        scanner = observations.LicenseScanner()
-                        log_license_scanners[path] = scanner
                     with path.open("rb") as log:
+                        status = os.fstat(log.fileno())
+                        identity = status.st_dev, status.st_ino
+                        seen.add(identity)
+                        offset = log_offsets.get(identity, 0)
+                        scanner = log_license_scanners.setdefault(identity, observations.LicenseScanner())
+                        if status.st_size < offset:
+                            incomplete("log_truncated")
+                            offset = 0
+                            scanner = observations.LicenseScanner()
+                            log_license_scanners[identity] = scanner
                         log.seek(offset)
                         while allowed():
                             data = log.read(min(65536, remaining))
                             if not data:
                                 break
                             remaining -= len(data)
-                            log_offsets[path] = log.tell()
+                            log_offsets[identity] = log.tell()
                             scan_license(scanner, data)
                         else:
                             incomplete("drain_bound")
                     scan_license(scanner, b"", final=True)
                 except Exception:
                     incomplete("log_read_failed")
+            if log_identities - seen:
+                incomplete("log_disappeared")
         except Exception:
             incomplete("logs_unavailable")
         if not output_license_scanner.complete or any(not scanner.complete for scanner in log_license_scanners.values()):
@@ -790,7 +805,7 @@ def envelope(host: Any, receipt: dict[str, Any], findings: list[dict[str, Any]],
     verdict = "GREEN" if clean and not findings else "RED" if clean else "UNKNOWN"
     action = "Fix current findings." if verdict == "RED" else "None." if verdict == "GREEN" else "Resolve the reported native prerequisite or execution-coverage gap before a fresh assessment."
     if reason in {"native_owner_activation_required", "native_activation_stop_recorded"}:
-        action = "Owner question: the Director must restore JBTEST-D1 activation through the product UI using existing entitlements. Stop licensed runs; never start a trial or copy credentials."
+        action = "Owner question: the Director must restore the configured independent worker's activation through the product UI using existing entitlements. Stop licensed runs; never start a trial or copy credentials."
     elif reason in {"native_worker_not_configured", "native_app_not_configured"}:
         action = "Configure jetbrains.nativeWorker.path/app in the shared helper config for the independently Director-activated worker, or supply --native-worker and --ide-app. See references/native-backend.md."
     elif reason == "native_trusted_root_required":
@@ -800,7 +815,9 @@ def envelope(host: Any, receipt: dict[str, Any], findings: list[dict[str, Any]],
     elif reason == "native_preparation_shape_unsupported":
         action = "Keep the declared command or nested preparation on its existing backend, or prepare the exact root .venv and select --backend native explicitly. Native runs only structured root prepare.python inside its snapshot."
     elif reason.startswith("native_odoo_"):
-        action = "Match the selected addon's version and workspace build.odoo_version to one Odoo core checkout plus the workspace's declared addon dependency roots. Supply those clean roots with --native-framework-root; preserve source version declarations."
+        action = "Run the workspace's documented dependency sync so its declared addon refs resolve locally. Match the selected addon's version and workspace build.odoo_version to one Odoo core checkout plus the declared addon dependency roots. Supply those clean roots with --native-framework-root; preserve source version declarations."
+    elif reason == "native_scope_too_large":
+        action = "Reduce the selected scope or set --max-files to the intended file limit before reassessing."
     elif reason == "native_scope_unsupported":
         action = "Select .py and Odoo .xml files assigned to the root PyCharm lane; other language or nested-project models require their existing qualified backend."
     elif reason.startswith("native_recovery_") and reason != "native_recovery_only_no_inspection":
@@ -980,7 +997,7 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
             context.phase("engine_running")
             def record_engine(pid):
                 identity = process_identity(pid, private)
-                if identity is None:
+                if identity is None or identity["pgid"] != pid or identity["private"] != str(private):
                     raise Blocked("native_engine_identity_unproven")
                 context.engine_spawned(identity)
             execute(argv, env, private, deadline, parent_fd, receipt, lock_fd=lock.fileno(), global_lock_fd=global_lock.fileno(),
@@ -1023,7 +1040,10 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
     except Blocked as error:
         reason = str(error).replace("qodana_", "native_")
         known_terminal = True
-    except (host.InspectError, OSError, ValueError, ElementTree.ParseError, subprocess.SubprocessError):
+    except host.InspectError as error:
+        reason = "native_scope_too_large" if error.payload.get("error_reason") == "inspection_lane_scope_too_large" else "native_prerequisite_or_report_failed"
+        known_terminal = True
+    except (OSError, ValueError, ElementTree.ParseError, subprocess.SubprocessError):
         reason = "native_prerequisite_or_report_failed"
         known_terminal = True
     finally:

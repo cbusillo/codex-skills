@@ -52,6 +52,15 @@ def copy_tracked_fixture(fixture, destination):
 
 
 class NativeTests(unittest.TestCase):
+    def test_process_reader_reports_foreign_group_and_command_before_matching(self):
+        result = subprocess.CompletedProcess([], 0, b"123456 42 Tue Oct 20 12:00:00 2026 S unrelated-process\n")
+        with patch.object(native.common, "command", return_value=result) as command:
+            identity = native.process_identity(123456, Path("/private/owned"))
+        self.assertEqual(identity["pgid"], 42)
+        self.assertIsNone(identity["private"])
+        self.assertEqual(command.call_args.kwargs["env"]["TZ"], "UTC")
+        self.assertEqual(command.call_args.kwargs["env"]["LC_ALL"], "C")
+
     def test_framework_dependency_must_match_the_workspaces_declared_git_ref(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -76,6 +85,12 @@ class NativeTests(unittest.TestCase):
             workspace.write_text(declaration.format("main"))
             context = native.framework_context(repo, {"model.py"}, [framework, shared])
             self.assertEqual(context["dependency_revisions"]["shared_addons"]["resolved_commit"], revisions[-1])
+            workspace.write_text(declaration.format("missing-ref"))
+            with self.assertRaisesRegex(native.Blocked, "native_odoo_dependency_unproven"):
+                native.framework_context(repo, {"model.py"}, [framework, shared])
+            shutil.rmtree(shared / ".git")
+            with self.assertRaisesRegex(native.Blocked, "native_odoo_dependency_unproven"):
+                native.framework_context(repo, {"model.py"}, [framework, shared])
 
     def test_framework_series_must_match_the_workspace_and_selected_addon(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -113,6 +128,7 @@ class NativeTests(unittest.TestCase):
             copy_tracked_fixture(fixture, output)
             self.assertEqual({p.name for p in output.iterdir()}, {"control.py"})
             self.assertEqual((output / "control.py").read_text(), "pass\n")
+
     def test_native_is_default_for_odoo_xml_without_desktop_or_docker(self):
         args = host.build_parser().parse_args(["agent-inspect", "--repo", "/fixture"])
         with patch.object(sys, "platform", "darwin"), \
@@ -311,6 +327,13 @@ print('Done.')
         result = self.assess()
         self.assertEqual(result["inspection_outcome"]["reason"], "native_recovery_only_no_inspection")
         self.assertEqual(result["cleanup"]["status"], "closed")
+
+    def test_lane_scope_limit_keeps_its_specific_reason(self):
+        error = host.InspectError("fixture scope exceeds limit", payload={"error_reason": "inspection_lane_scope_too_large"})
+        with patch.object(native.common, "scope_selection", side_effect=error):
+            result = self.assess()
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_scope_too_large")
+        self.assertNotIn("worker_pid", result["diagnostic"]["native"])
 
     def test_oversized_file_cannot_borrow_its_controls_execution_proof(self):
         (self.repo / "source.py").write_bytes(b"#" * (native.common.MAX_ANALYZED_FILE_KB * 1024 + 1))
@@ -789,16 +812,46 @@ with patch.object(native.sys,'platform','darwin'), patch.object(native,'state_di
         self.assertFalse(marker.exists())
         self.assertEqual(result["cleanup"]["status"], "closed")
 
-    def test_recovery_refuses_changed_process_identity_without_signalling(self):
-        context = self.reserve_run()
-        context.phase("engine_running", engine_identity={"pid": 123456, "pgid": 123456, "started": "old", "private": str(context.private)})
-        self.args.native_recover_only = True
-        with patch.object(native, "process_identity", return_value={"started": "different"}), patch.object(native.os, "killpg") as kill:
+    def test_foreign_launch_identity_never_releases_the_engine_gate(self):
+        marker = self.root / "must-not-start"
+        self.script.write_text(f"#!{sys.executable}\nfrom pathlib import Path\nPath({str(marker)!r}).touch()\n")
+        with patch.object(native, "process_identity", return_value={"pgid": 42, "private": None}):
             result = self.assess()
-        self.assertEqual(result["inspection_outcome"]["reason"], "native_recovery_process_identity_changed")
-        self.assertEqual(result["cleanup"]["status"], "failed")
-        kill.assert_not_called()
-        self.assertTrue(context.private.exists())
+        self.assertFalse(marker.exists())
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_engine_identity_unproven")
+        self.assertEqual(result["cleanup"]["status"], "closed")
+
+    def test_reused_pid_recovers_resources_but_keeps_hold_until_exact_release(self):
+        for pgid, private in ((123456, None), (123456, "same"), (42, None)):
+            with self.subTest(pgid=pgid, private=private):
+                context = self.reserve_run()
+                identity = {"pid": 123456, "pgid": 123456, "started": "old", "birth_clock": native.PROCESS_BIRTH_CLOCK, "private": str(context.private)}
+                context.phase("engine_running", engine_identity=identity)
+                self.args.native_recover_only = True
+                current = {**identity, "started": "later", "pgid": pgid, "private": str(context.private) if private else None}
+                with patch.object(native, "process_identity", return_value=current), patch.object(native.os, "killpg") as kill:
+                    result = self.assess()
+                    self.assertEqual(result["inspection_outcome"]["reason"], "native_interrupted_run_unresolved")
+                    self.assertEqual(result["cleanup"]["status"], "closed")
+                    self.assertFalse(context.private.exists())
+                    self.args.native_release_run = context.identity["run_id"]
+                    self.assertEqual(self.assess()["inspection_outcome"]["reason"], "native_recovery_only_no_inspection")
+                kill.assert_not_called()
+                self.args.native_release_run = None
+
+    def test_recovery_refuses_unproved_identity_without_signalling(self):
+        for pgid, same_path, started in ((123456, False, "old"), (42, True, "old"), (123456, True, "different-unclocked")):
+            with self.subTest(pgid=pgid):
+                context = self.reserve_run()
+                context.phase("engine_running", engine_identity={"pid": 123456, "pgid": 123456, "started": "old", "private": str(context.private)})
+                self.args.native_recover_only = True
+                current = {"pid": 123456, "pgid": pgid, "started": started, "private": str(context.private) if same_path else None}
+                with patch.object(native, "process_identity", return_value=current), patch.object(native.os, "killpg") as kill:
+                    result = self.assess()
+                self.assertEqual(result["inspection_outcome"]["reason"], "native_recovery_process_identity_changed")
+                self.assertEqual(result["cleanup"]["status"], "failed")
+                kill.assert_not_called()
+                self.assertTrue(context.private.exists())
 
     def test_credential_named_source_is_refused_without_opening_it(self):
         credential = self.repo / "do-not-read.license"
