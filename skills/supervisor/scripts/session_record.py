@@ -24,9 +24,12 @@ MEMORY_CITATION_TAIL = re.compile(
 SAFE = re.compile(r"^(?:\*\*)?Safe to exit: yes\.?(?:\*\*)?$")
 NO_DIRECTOR_ACTION = re.compile(r"^No Director (?:action|decision) needed\.\s+")
 # A terminal Claude Code task notice carries <status>; Monitor event notices do not.
-TASK_NOTICE = re.compile(r"<task-notification>(.*?)</task-notification>", re.DOTALL)
-TASK_NOTICE_ID = re.compile(r"<task-id>([^<]+)</task-id>")
-TASK_NOTICE_STATUS = re.compile(r"<status>(?:completed|failed|killed|stopped)</status>")
+TASK_TERMINAL_NOTICE = re.compile(
+    r"\A\s*<task-notification>\s*<task-id>([^<>\s]+)</task-id>\s*"
+    r"(?:<(tool-use-id|output-file)>[^<]*</\2>\s*)*"
+    r"<status>(?:completed|failed|killed|stopped)</status>\s*"
+    r"(?=<summary>|<result>|</task-notification>)"
+)
 
 
 def validate_record(record: dict) -> None:
@@ -248,10 +251,10 @@ def track_claude_background_tasks(record: dict, running: dict, scheduled: dict, 
     }.get(record.get("type"))
     if (isinstance(notice_text, str) and isinstance(origin, dict)
             and origin.get("kind") == "task-notification" and origin.get("producer") == "session-task"):
-        for notice in TASK_NOTICE.findall(notice_text):
-            task_id = TASK_NOTICE_ID.search(notice)
-            if task_id and TASK_NOTICE_STATUS.search(notice):
-                running.pop(task_id.group(1).strip(), None)
+        # Only the leading structural header attests completion. Event/result
+        # payloads can contain arbitrary task-like text, including other IDs.
+        if notice := TASK_TERMINAL_NOTICE.match(notice_text):
+            running.pop(notice[1], None)
     if record.get("type") == "assistant":
         for block in message.get("content") or []:
             if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") in {"CronCreate", "CronDelete", "CronList", "TaskStop"}:

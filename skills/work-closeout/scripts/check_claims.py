@@ -198,7 +198,7 @@ def check(reader, owner, entry, actor, *, reader_for_repo=None, read_timeout=Non
                       | set(entry.get("_extra_repositories", [])))
     entries = [{**entry, "session_id": node["session_id"], "_transcript_records": node["records"]} for node in histories]
     try:
-        since = release.stamp(sessions.scan_start(entries))
+        since = min(release.stamp(sessions.scan_start([native_entry])) for native_entry in entries)
     except (ValueError, TypeError):
         since = None  # Unknown history can never justify a suspension exclusion.
     inventory = github_identity.automation_repositories(deadline_at=reader.deadline_at,

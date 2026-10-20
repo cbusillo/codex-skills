@@ -381,24 +381,33 @@ def _current_check_quiet(node, *, deadline_at=None):
     import claim_receipts
     calls = [call for record in node["records"]
              for call in claim_receipts.calls_and_results(record, "codex")[0]]
-    if not calls or not claim_receipts.isolated_command(calls[-1][1], calls[-1][2], "check_claims.py"):
+    if (not calls or calls[-1][1] not in {"exec", "functions.exec"}
+            or not claim_receipts.single_composed_call(calls[-1][2], "exec_command")
+            or not claim_receipts.isolated_command(calls[-1][1], calls[-1][2], "check_claims.py")):
         return False
     import claim_history
     primary = Path(node["transcript"]).resolve()
-    try:
-        current = claim_history.root_records(primary, "codex", node["session_id"], native_helpers()[1].read_jsonl(primary))
-        process = claim_receipts.current_check_process(node["records"], current)
-    except (OSError, ValueError, KeyError, TypeError):
-        return False
-    if process is None:
-        return False
     async def read():
+        until = deadline_at if deadline_at is not None else time.time() + github_plan_native.read_timeout()
+        async with asyncio.timeout(github_plan_native.read_timeout(until)):
+            while True:
+                current = claim_history.root_records(primary, "codex", node["session_id"], native_helpers()[1].read_jsonl(primary))
+                process = claim_receipts.current_check_process(node["records"], current)
+                if process is not None:
+                    break
+                if current[:len(node["records"])] != node["records"]:
+                    return False
+                for appended in current[len(node["records"]):]:
+                    calls, results = claim_receipts.calls_and_results(appended, "codex")
+                    if calls or results or (appended.get("payload") or {}).get("type") in {"task_started", "user_message"}:
+                        return False
+                await asyncio.sleep(0.05)
         homes = [home for home in codex_homes(strict=True, configured_only=True)
                  if any(primary.is_relative_to((home / root).resolve()) for root in ("sessions", "archived_sessions"))]
         if len(homes) != 1:
             return False
-        async with asyncio.timeout(github_plan_native.read_timeout(deadline_at)), \
-                github_plan_native.connection(homes[0], deadline_at=deadline_at) as request:
+        async with asyncio.timeout(github_plan_native.read_timeout(until)), \
+                github_plan_native.connection(homes[0], deadline_at=until) as request:
             before = await github_plan_native.read_thread_facts(request, node["session_id"], include_active=True)
             after = await github_plan_native.read_thread_facts(request, node["session_id"], include_active=True)
             background = before["background"]
@@ -409,7 +418,7 @@ def _current_check_quiet(node, *, deadline_at=None):
                     and not before["realtime"] and before["goal"] != "active"
                     and claim_receipts.current_check_process(node["records"], claim_history.root_records(
                         primary, "codex", node["session_id"], native_helpers()[1].read_jsonl(primary))) == process
-                    and (deadline_at is None or time.time() < deadline_at))
+                    and time.time() < until)
     try:
         return asyncio.run(read())
     except (OSError, ValueError, KeyError, TypeError, ImportError, TimeoutError, subprocess.SubprocessError):

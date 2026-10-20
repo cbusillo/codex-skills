@@ -67,6 +67,10 @@ class ClaimCloseoutTests(unittest.TestCase):
             self.assertTrue(clear["claims_clear"], clear)
             self.assertTrue(clear["coverage"]["complete"])
             self.assertEqual(clear["coverage"]["excluded_installations"], [installation])
+            for row in child:
+                row.pop("timestamp")
+            helper.check(self.reader, [], entry, ACTOR)
+            self.assertIsNone(self.inventory.call_args.kwargs["since"])
             root[:] = history("codex", native_claim(REPO))
             for row in root:
                 row["timestamp"] = "2026-02-01T00:00:00Z"

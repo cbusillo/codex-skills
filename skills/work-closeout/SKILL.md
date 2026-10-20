@@ -348,7 +348,7 @@ check before later native activity cannot attest current disposition. In Codex
 use one literal `text(await tools.exec_command({cmd: "CHECK COMMAND"}));`
 cell. Poll with one literal `text(await tools.write_stdin({session_id: PROCESS_ID}));`
 cell using its returned handle. Keep saved output and other polls separate.
-For long checks allow at least600seconds on Claude Bash, or collect Codex's
+For long checks allow at least 600 seconds on Claude Bash, or collect Codex's
 foreground process handle with its isolated polls. Do not background the check.
 Claude's records sharing one API message ID have one launch boundary: finish
 ownership before launching a separate check. Check one at a time.

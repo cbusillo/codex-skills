@@ -1774,6 +1774,19 @@ class ObservationMergeTests(unittest.TestCase):
             node = {"session_id": f.session, "harness": "codex", "transcript": str(f.transcript), "records": original}
             pair = {"itemId": "exec-native-check", "processId": "123"}
             f.rpc_results["thread/backgroundTerminals/list"] = {"data": [pair], "nextCursor": None}
+            import time
+            first_read = True
+            read_jsonl = SESSIONS.native_helpers()[1].read_jsonl
+            def startup_arrives(path):
+                nonlocal first_read
+                if first_read:
+                    first_read = False
+                    return original
+                return read_jsonl(path)
+            with patch.object(SESSIONS.native_helpers()[1], "read_jsonl", side_effect=startup_arrives):
+                self.assertTrue(SESSIONS._current_check_quiet(node, deadline_at=time.time() + 2))
+            with patch.object(SESSIONS.native_helpers()[1], "read_jsonl", return_value=original):
+                self.assertFalse(SESSIONS._current_check_quiet(node, deadline_at=time.time() + 0.1))
             # Real native capture: the running command is absent from items;
             # only the background registry contains its exec-* identity.
             self.assertTrue(SESSIONS._current_check_quiet(node))
@@ -1805,7 +1818,6 @@ class ObservationMergeTests(unittest.TestCase):
             self.assertFalse(SESSIONS._current_check_quiet(node))
             self.assertIsNone(claim_receipts.current_check_process(original, [*current, extra]))
             f.transcript.write_text("".join(json.dumps(row) + "\n" for row in current))
-            import time
             self.assertFalse(SESSIONS._current_check_quiet(node, deadline_at=time.time() - 1))
             async def delayed_thread(_request):
                 await asyncio.sleep(1.4)
