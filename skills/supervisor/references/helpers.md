@@ -1802,8 +1802,8 @@ ownership gates. Keep the original termination time across retries.
 
 For the successor, **`--resume-from` takes the original claim comment's numeric
 ID after that claim has been released; it never takes a branch**. It is also
-distinct from the release comment's ID. When retained PRs need a handoff, pass
-the new release comment's numeric ID as `--handoff-comment`. Inspect the
+distinct from the release comment's ID. The claim derives its qualified
+source-authored retained-PR handoff from that original ID. Inspect the
 supported route with the helper's help before putting it in a brief:
 
 Without a retained PR, continue the verified preserved branch using only the
@@ -1813,12 +1813,12 @@ released original claim ID:
 uv run skills/github/scripts/gh-plan.py --repo OWNER/REPO claim <canonical-issue> --worker <new-token> --session <successor-native-id> --branch <verified-preserved-branch> --resume-from <original-claim-comment-id> --next-action "Resume the preserved branch after checking its current state"
 ```
 
-With a retained-PR handoff, claim a **new task branch**, separate from every
-retained PR/source branch. The existing retained-handoff route preserves the
+For a different native session with a retained-PR handoff, claim a **new task
+branch**, separate from every retained PR/source branch. The existing retained-handoff route preserves the
 original worktrees and PRs; it does not authorize editing their branches.
 
 ```sh
-uv run skills/github/scripts/gh-plan.py --repo OWNER/REPO claim <canonical-issue> --worker <new-token> --session <successor-native-id> --branch work/<new-task-slug> --resume-from <original-claim-comment-id> --handoff-comment <release-comment-id> --next-action "Continue the prerequisite while preserving the retained PR work"
+uv run skills/github/scripts/gh-plan.py --repo OWNER/REPO claim <canonical-issue> --worker <new-token> --session <successor-native-id> --branch work/<new-task-slug> --resume-from <original-claim-comment-id> --next-action "Continue the prerequisite while preserving the retained PR work"
 ```
 
 Add the actual admission and existing wait-resolution evidence when required. Read

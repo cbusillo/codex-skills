@@ -290,15 +290,15 @@ active issue labels and continuing background jobs do not lift a hold.
    route with `--termination-record`, fresh source-host checks and preserved
    artifacts; it does not need a safe-exit verdict it never wrote.
    For an authorized PR-only conflict refresh of a finished session, claim its
-   canonical open planning issue with `--refresh-pr`, `--resume-from`, and
-   `--handoff-comment`; read Planning: Claim for the exact released-handoff
-   proof and supported route before using these flags. For PR-only work, use
+   canonical open planning issue with `--resume-from <original-claim-id>`;
+   read Planning: Claim for automatic retained-handoff qualification and the
+   supported route before claiming. For PR-only work, use
    [Planning: Claim](../github/references/cli-reference.md#planning-claim).
    Active ownership still refuses.
    For verified pushed WIP without a PR on this same issue, follow
    [Planning: Claim's existing resume-only procedure](../github/references/cli-reference.md#planning-claim).
    For ordinary successor work before a retained PR can be refreshed, use
-   `--resume-from` with `--handoff-comment` and omit `--refresh-pr`. Read
+   `--resume-from <original-claim-id>`. Read
    Planning: Claim for the exact released multi-branch handoff proof; all
    retained artifacts and their recorded waits are checked. This claim does
    not lift a product hold or authorize changing the retained PRs.
