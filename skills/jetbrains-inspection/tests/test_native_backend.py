@@ -906,9 +906,9 @@ class LiveNativeTests(unittest.TestCase):
             self.assertIsNotNone(result["diagnostic"]["native"]["repo_head_sha"])
             tree = ast.parse((repo / "native_probe/models.py").read_text())
             functions = {node.name: node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)}
-            def in_function(finding, node, source="native_probe/models.py"):
+            def in_function(finding, node, source_path="native_probe/models.py"):
                 start = min([node.lineno, *(decorator.lineno for decorator in node.decorator_list)])
-                return finding["file"] == source and start <= finding["line"] <= node.end_lineno
+                return finding["file"] == source_path and start <= finding["line"] <= node.end_lineno
             wrong, correct = functions["wrong_model"], functions["correct_model"]
             self.assertTrue(any(f["rule_id"] == "PyTypeCheckerInspection" and in_function(f, wrong) for f in findings))
             self.assertFalse(any(in_function(f, correct) for f in findings))
