@@ -425,6 +425,7 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
     bindings_by_body, body_sites, call_sites, body_effects = {}, {}, {}, {}
     function_owners = {}
     bind_sites, sources, write_sites, qualifications = {}, {}, {}, {}
+    pending_qualifications = {}
     source_admissions = {}
     reference_operands, receiver_edges, accessor_fields = {}, {}, {}
     member_operands, raw_results, raw_sources = {}, {}, {}
@@ -846,9 +847,11 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
         generation = state[4]
         active_positions[key] = len(stack)
         stack.append(key)
+        pending_qualifications[key] = {}
         try:
             values, exact = compute()
         finally:
+            proof = pending_qualifications.pop(key)
             stack.pop()
             active_positions.pop(key)
             state[3] = False
@@ -874,6 +877,11 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
                 values = state[0] | values
         changed = state[0] != values or state[1] != exact
         state[:3] = values, exact, generation == state[4]
+        # Possible effects grow; replacement proof belongs to this complete pass.
+        proof_key = ("writes", key)
+        if qualifications.get(proof_key, {}) != proof:
+            qualifications[proof_key] = proof
+            invalidate(("qualification", key), producer=key)
         if changed:
             for user in tuple(users.get(key, ())):
                 mark_dirty(user)
@@ -1416,19 +1424,29 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
         fields, exact = query(("fields", root), lambda: compute_fields(root))
         return fields if isinstance(fields, dict) else {}, exact
 
-    def event_presence(root, event, position):
-        at, context, certain, _, _, producer = event
+    def event_ordered(event, position, anchor):
+        owner = function_owner(write_sites.get(event[0], event[0]))
+        return owner == function_owner(position) and (owner == -1 or event[4] in anchor_context(anchor, owner))
+
+    def event_presence(root, field, event, position, anchor):
+        at, context, certain, item, effect_anchor, producer = event
         possible, definite = ordering(context, position, at)
-        if not possible:
-            return False, False
-        if not native_live(event[4]):
+        if not event_ordered(event, position, anchor):
+            possible, definite = True, False
+        if not possible or not native_live(effect_anchor):
             return False, False
         if producer is not None:
+            state = states.get(producer)
+            if state is not None and not state[2] and not state[3]:
+                query(producer, computations[producer])
             token(producer)
+            token(("qualification", producer))
+            state = states.get(producer)
+            assertion = root, field, at, context, item, effect_anchor
+            certain = certain and state is not None and state[2] and not state[3] and qualifications.get(("writes", producer), {}).get(assertion, False)
             if producer[0] == "target":
-                token(("qualification", producer))
                 roots, qualified, unconditional = qualifications.get(producer, (empty, False, False))
-                certain = unconditional and qualified and roots == frozenset({root}) and states.get(producer, [None, False])[1]
+                certain = certain and unconditional and qualified and roots == frozenset({root}) and state[1]
         return possible, certain and definite
 
     def deletion(event):
@@ -1445,8 +1463,8 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
             states.update({(False, False), (True, True), (True, False)})
         watch_bucket(("effects", root))
         events = [(event, name) for name in (field, None) for event in tuple(effects.get((root, name), ()))
-                  if event_presence(root, event, position)[0]]
-        for event, name in sorted(events, key=lambda selected: event_order(selected[0][0], position)):
+                  if event_presence(root, name, event, position, anchor)[0]]
+        for event, name in sorted(events, key=lambda selected: (not event_ordered(selected[0], position, anchor), event_order(selected[0][0], position))):
             item = event[3]
             if deletion(event):
                 selected = {(False, False)}
@@ -1470,7 +1488,7 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
                             for present, enumerable in states for attribute in attributes}
             else:
                 selected = {(True, enumerable if present else True) for present, enumerable in states}
-            if name is not None and event_presence(root, event, position)[1]:
+            if name is not None and event_presence(root, name, event, position, anchor)[1]:
                 states = selected
             else:
                 states.update(selected)
@@ -1485,7 +1503,7 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
             if selected != root:
                 continue
             for event in tuple(events):
-                if not event_presence(root, event, position)[0] or deletion(event):
+                if not event_presence(root, field, event, position, anchor)[0] or deletion(event):
                     continue
                 names.add(field)
                 known &= field is not None
@@ -1650,7 +1668,7 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
         else:
             return True, False
         watch_bucket(("effects", root))
-        eligible = [(event, *event_presence(root, event, position))
+        eligible = [(event, *event_presence(root, name, event, position, anchor))
                     for name in (field, None) for event in tuple(effects.get((root, name), ()))]
         prior = max((event_order(event[0], position) for event, possible, certain in eligible
                      if possible and certain and not deletion(event)), default=None)
@@ -1659,7 +1677,7 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
             if not admitted:
                 continue
             if deletion(event):
-                if prior is None or event_order(event[0], position) >= prior or not ordering(event[1], position, event[0])[1]:
+                if prior is None or event_order(event[0], position) >= prior or not ordering(event[1], position, event[0])[1] or not event_ordered(event, position, anchor):
                     definite = False
             else:
                 possible = True
@@ -1785,7 +1803,7 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
         wildcard_events = tuple(effects.get((root, None), ())) if field is not None else ()
         for event in (*selected_events, *wildcard_events):
             at, context, certain, item, effect_anchor, producer = event
-            possible, definite = event_presence(root, event, position)
+            possible, definite = event_presence(root, None if event in wildcard_events else event_fields.get(event, field), event, position, anchor)
             if not possible:
                 continue
             # An ordinary Set preserves the descriptor role. Selecting a Set
@@ -1803,7 +1821,7 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
             event_field = None if event in wildcard_events else event_fields.get(event, field)
             for origin in tuple(effect_origins.get((root, event_field, event), ())):
                 token(origin)
-            if function_owner(write_sites.get(at, at)) != function_owner(position):
+            if not event_ordered(event, position, anchor):
                 unordered.add(at)
             add(at, definite and field is not None and event not in wildcard_events, item)
         fact = ("escape", root)
@@ -1878,7 +1896,7 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
     def set_property(root, field, item, at, context, certain, anchor, producer=None):
         if root[0] in {"undefined", "data", "string"} or raw_result(root):
             return
-        options = property_options(root, field, write_sites.get(at, at), anchor, layout=True)
+        options = property_options(root, field, write_sites.get(at, at - 1), anchor, layout=True)
         data_option = not options
         for kind, selected, known in options:
             if kind == "accessor":
@@ -1897,7 +1915,12 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
     def publish(root, field, item, at, context, certain, anchor, producer=None):
         if root[0] in {"undefined", "data", "string"} or raw_result(root):
             return
+        producer = producer if producer is not None else stack[-1] if stack else None
         event = at, context, certain, item, anchor, producer
+        if producer in pending_qualifications:
+            assertion = root, field, at, context, item, anchor
+            proof = pending_qualifications[producer]
+            proof[assertion] = proof.get(assertion, True) and certain
         key = root, field
         selected = effects.setdefault(key, set())
         origin = stack[-1] if stack else None
@@ -2017,7 +2040,7 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
             high = None if not lengths or any(entry[1] is None for entry in lengths) else max(entry[1] for entry in lengths)
         watch_bucket(("effects", root))
         lengths = [(event, array_lengths[event]) for event in tuple(effects.get((root, "length"), ()))
-                   if event in array_lengths and event_presence(root, event, position)[1]]
+                   if event in array_lengths and event_presence(root, "length", event, position, anchor)[1]]
         last = max((event_order(event[0], position) for event, _ in lengths), default=None)
         if last is not None:
             selected_lengths = [length for event, length in lengths if event_order(event[0], position) == last]
@@ -2026,8 +2049,8 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
         for (selected, field), events in tuple(effects.items()):
             if selected != root:
                 continue
-            eligible = [event for event in tuple(events) if event_presence(root, event, position)[0]
-                        and (last is None or event_order(event[0], position) > last)]
+            eligible = [event for event in tuple(events) if event_presence(root, field, event, position, anchor)[0]
+                        and (last is None or event_order(event[0], position) > last or not event_ordered(event, position, anchor))]
             if not eligible:
                 continue
             if numeric_field(field):
@@ -2996,12 +3019,13 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
                 once = function_owner(site) == -1 and not any(phase(loop, site) is not None for loop in facts.get("loops", ()))
                 certain = definite and receiver_exact and len(receiver_values) == 1 and once and independent_statement(begin, r"\s*(?:(?:const|let|var)\s+[A-Za-z_$][\w$]*\s*=\s*)?(?:await\s*)?")
                 def write_native(receiver, field, item, *, remove=False, length=None):
-                    event = endpoint, owners[site], certain, item, anchor, None
+                    producer = stack[-1] if stack else None
+                    event = endpoint, owners[site], certain, item, anchor, producer
                     if remove and certain:
                         array_removals[event] = True
                     if length is not None and certain:
                         array_lengths[event] = length
-                    publish(receiver, field, item, endpoint, owners[site], certain, anchor)
+                    publish(receiver, field, item, endpoint, owners[site], certain, anchor, producer)
                 def collection(root, layouts):
                     layouts = tuple(layouts)
                     if copy_packets.get(root) != layouts:
