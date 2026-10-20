@@ -1375,6 +1375,12 @@ verification.
   a live promotion.
 - `POST /v1/work-graph/merge-train/controller/run-once`: Preferred merge-train
   controller path; call repeatedly to advance one safe phase at a time.
+- `POST /v1/product-review/withdrawal`: `product-review-withdrawal-dry-run`,
+  `-apply` and `-readback` withdraw only a pending labeled Client review request
+  on the Director's recorded decision. Refuses after a current-head Client
+  decision, adds no grant and records no acceptance. Read
+  [pending review withdrawal](references/write-action-helper-contract.md#pending-client-review-withdrawal)
+  before use; never hand-remove the label.
 - `POST /v1/previews/pr-feedback/remediation`: Contract-backed bounded preview
   feedback remediation path; dry-run before apply.
 - Launchplane host-only CLI helpers: Use only when you are explicitly on the

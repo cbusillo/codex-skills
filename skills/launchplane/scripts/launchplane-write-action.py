@@ -10119,6 +10119,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     from launchplane_runtime_setting_removal import add_parser as add_runtime_setting_removal_parser
     add_runtime_setting_removal_parser(subparsers)
 
+    from launchplane_review_withdrawal import add_parser as add_review_withdrawal_parser
+    add_review_withdrawal_parser(subparsers)
+
     subparsers.add_parser(
         "operator-config-diagnostic",
         help="Report private operator credential source presence without printing values.",
@@ -10990,6 +10993,9 @@ def main(argv: list[str]) -> int:
         )
         if args.command in runtime_setting_removal_commands:
             return execute_runtime_setting_removal(sys.modules[__name__], args)
+        from launchplane_review_withdrawal import COMMANDS as review_withdrawal_commands, execute as execute_review_withdrawal
+        if args.command in review_withdrawal_commands:
+            return execute_review_withdrawal(sys.modules[__name__], args)
         if args.command in NAMES_ONLY_READS:
             context = public_identifier(args.context)
             instance = public_identifier(args.instance) if args.command.startswith("instance-") else ""
