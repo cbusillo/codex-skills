@@ -311,8 +311,7 @@ the ordinary identity check; it does not need a spawned-child edge.
 Missing native identity or a different running harness refuses an all-clear.
 Preserve its coverage
 and released-claim links as closeout evidence; it proves claim disposition only,
-not readiness or permission to discard artifacts. With no GitHub work or claims,
-record this step as not applicable instead of requiring GitHub access.
+not readiness or permission to discard artifacts.
 
 For a held own claim, first finish or durably hand off its work and update Current
 Status with the next actor, action and retained artifacts. Use GitHub's maintained
@@ -375,8 +374,7 @@ exit still reads the original unqualified declaration and checks live activity,
 so historical ended sessions without a pre-exit receipt can release through the
 existing Supervisor attestation route.
 Physical native observation uses independently verified inactivity without
-requiring claim disposition. Claude process proof requires a retained matched
-launch record; a live Claude task clears through its bound terminal notice or
+requiring claim disposition. A live Claude task clears through its bound terminal notice or
 successful task stop. Recovery release still
 requires the original declaration and its existing attestation contract. Normal Supervisor
 close-out candidates and guarded terminal cleanup consume the accepted verdict.

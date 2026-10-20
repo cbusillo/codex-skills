@@ -238,14 +238,16 @@ def track_claude_background_tasks(record: dict, running: dict, scheduled: dict, 
             task_id = started.get("backgroundTaskId") or started.get("taskId")
             if isinstance(task_id, str) and task_id:
                 running[task_id] = record.get("timestamp")
-    # A notice absorbed mid-turn is written as a queue operation and an attachment, not a user record.
+    # A promoted native notice carries provenance outside its text. Queue text
+    # alone is also used for human input and cannot attest task completion.
     attachment = record.get("attachment")
+    origin = attachment.get("origin") if isinstance(attachment, dict) else record.get("origin")
     notice_text = {
         "user": text_content(message.get("content")),
-        "queue-operation": record.get("content"),
         "attachment": attachment.get("prompt") if isinstance(attachment, dict) else None,
     }.get(record.get("type"))
-    if isinstance(notice_text, str):
+    if (isinstance(notice_text, str) and isinstance(origin, dict)
+            and origin.get("kind") == "task-notification" and origin.get("producer") == "session-task"):
         for notice in TASK_NOTICE.findall(notice_text):
             task_id = TASK_NOTICE_ID.search(notice)
             if task_id and TASK_NOTICE_STATUS.search(notice):

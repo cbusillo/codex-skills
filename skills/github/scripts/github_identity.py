@@ -546,7 +546,7 @@ def app_installations(config: GitHubAppConfig, *, deadline_at: float | None = No
     raise GitHubAppError("App installation inventory is incomplete")
 
 
-def automation_repositories(*, deadline_at: float | None = None, environ=None) -> dict:
+def automation_repositories(*, deadline_at: float | None = None, since=None, required_repositories=(), environ=None) -> dict:
     """All existing writer-App installations; return metadata, never credentials.
 
     The reader App is a transport identity, not an ownership writer. Repository
@@ -560,6 +560,8 @@ def automation_repositories(*, deadline_at: float | None = None, environ=None) -
                    for suffix in ("ID", "INSTALLATION_ID", "PRIVATE_KEY_PATH"))):
         prefixes.append("GITHUB_CLIENT_APP")
     repositories, installations, apps = {}, [], set()
+    pending, excluded = [], []
+    required_accounts = {repo.split("/")[0].casefold() for repo in required_repositories}
     for prefix in prefixes:
         config = _github_app_config(prefix, values)
         if config is None:
@@ -570,44 +572,66 @@ def automation_repositories(*, deadline_at: float | None = None, environ=None) -
         apps.add(key)
         for row in app_installations(config, deadline_at=deadline_at):
             selected = replace(config, installation_id=str(row["id"]))
-            metadata = github_app_installation_metadata(selected)
-            if metadata["suspended"]:
-                raise GitHubAppError(f"ownership inventory installation {row['id']} is suspended")
+            try:
+                metadata = github_app_installation_metadata(selected)
+            except GitHubAppError as error:
+                pending.append({"app_id": config.app_id, "installation_id": row["id"], "reason": str(error)})
+                continue
             installations.append(metadata)
-            token = github_app_installation_token(selected)
-            headers = {"Accept": "application/vnd.github+json", "Authorization": f"Bearer {token}",
-                       "X-GitHub-Api-Version": "2022-11-28"}
-            total, seen = None, set()
-            for page in range(1, 101):
-                if deadline_at is not None and time.time() >= deadline_at:
-                    raise GitHubAppError("App repository inventory deadline exceeded")
-                payload = github_app_request(urllib.request.Request(
-                    f"{selected.api_url}/installation/repositories?per_page=100&page={page}",
-                    method="GET", headers=headers), operation=f"installation {row['id']} repository inventory")
-                batch = payload.get("repositories") if isinstance(payload, dict) else None
-                count = payload.get("total_count") if isinstance(payload, dict) else None
-                if (not isinstance(batch, list) or len(batch) > 100 or type(count) is not int or count < 0
-                        or total is not None and count != total):
-                    raise GitHubAppError("App repository inventory is malformed or changed")
-                total = count
-                for repository in batch:
-                    name = repository.get("full_name") if isinstance(repository, dict) else None
-                    if (not isinstance(name, str) or not REPOSITORY_PATTERN.fullmatch(name)
-                            or name.casefold() in seen
-                            or name.split("/")[0].casefold() != metadata["account"]["login"].casefold()):
-                        raise GitHubAppError("App repository inventory has invalid or repeated membership")
-                    seen.add(name.casefold())
-                    repositories.setdefault(name, set()).add(metadata["actor"])
-                if len(batch) < 100:
-                    if len(seen) != total:
-                        raise GitHubAppError("App repository inventory is incomplete")
-                    break
-            else:
-                raise GitHubAppError("App repository inventory is incomplete")
+            if metadata["suspended"]:
+                suspended_at = metadata.get("suspended_at")
+                suspended = datetime.fromisoformat(suspended_at.replace("Z", "+00:00")) if suspended_at else None
+                if (since is not None and suspended is not None and suspended <= since
+                        and metadata["account"]["login"].casefold() not in required_accounts):
+                    excluded.append({**metadata, "reason": "suspended throughout the native discovery window"})
+                else:
+                    pending.append({**metadata, "reason": "suspended installation may contain native source claims"})
+                continue
+            try:
+                names = _installation_repositories(selected, metadata, deadline_at)
+            except GitHubAppError as error:
+                pending.append({**metadata, "reason": str(error)})
+                continue
+            for name in names:
+                repositories.setdefault(name, set()).add(metadata["actor"])
     if deadline_at is not None and time.time() >= deadline_at:
         raise GitHubAppError("App ownership inventory deadline exceeded")
     return {"repositories": {repo: sorted(actors) for repo, actors in sorted(repositories.items())},
-            "installations": installations}
+            "installations": installations, "pending_installations": pending, "excluded_installations": excluded}
+
+
+def _installation_repositories(selected, metadata, deadline_at):
+    token = github_app_installation_token(selected)
+    headers = {"Accept": "application/vnd.github+json", "Authorization": f"Bearer {token}",
+               "X-GitHub-Api-Version": "2022-11-28"}
+    total, seen, names = None, set(), []
+    for page in range(1, 101):
+        if deadline_at is not None and time.time() >= deadline_at:
+            raise GitHubAppError("App repository inventory deadline exceeded")
+        payload = github_app_request(urllib.request.Request(
+            f"{selected.api_url}/installation/repositories?per_page=100&page={page}",
+            method="GET", headers=headers), operation=f"installation {selected.installation_id} repository inventory")
+        batch = payload.get("repositories") if isinstance(payload, dict) else None
+        count = payload.get("total_count") if isinstance(payload, dict) else None
+        if (not isinstance(batch, list) or len(batch) > 100 or type(count) is not int or count < 0
+                or total is not None and count != total):
+            raise GitHubAppError("App repository inventory is malformed or changed")
+        total = count
+        for repository in batch:
+            name = repository.get("full_name") if isinstance(repository, dict) else None
+            if (not isinstance(name, str) or not REPOSITORY_PATTERN.fullmatch(name)
+                    or name.casefold() in seen
+                    or name.split("/")[0].casefold() != metadata["account"]["login"].casefold()):
+                raise GitHubAppError("App repository inventory has invalid or repeated membership")
+            seen.add(name.casefold())
+            names.append(name)
+        if len(batch) < 100:
+            if len(seen) != total:
+                raise GitHubAppError("App repository inventory is incomplete")
+            break
+    else:
+        raise GitHubAppError("App repository inventory is incomplete")
+    return names
 
 
 def _request_app_login(config: GitHubAppConfig, *, now: int) -> str:
@@ -653,6 +677,14 @@ def github_app_installation_metadata(
     payload = _installation_payload(config, now=int(time.time() if now is None else now))
     permissions = payload.get("permissions")
     account = payload.get("account")
+    suspended_at = payload.get("suspended_at")
+    if suspended_at is not None:
+        try:
+            suspended = datetime.fromisoformat(suspended_at.replace("Z", "+00:00"))
+            if suspended.utcoffset() is None:
+                raise ValueError("missing timezone")
+        except (AttributeError, TypeError, ValueError) as error:
+            raise GitHubAppError("GitHub App suspension timestamp is malformed") from error
     if (
         not isinstance(permissions, dict)
         or any(not isinstance(key, str) or not key or not isinstance(value, str)
@@ -672,7 +704,8 @@ def github_app_installation_metadata(
         "account": {"login": account["login"], "type": account["type"]},
         "permissions": dict(permissions),
         "repository_selection": payload["repository_selection"],
-        "suspended": payload.get("suspended_at") is not None,
+        "suspended": suspended_at is not None,
+        "suspended_at": suspended_at,
     }
 
 

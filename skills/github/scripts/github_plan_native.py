@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import time
 import uuid
 from typing import NamedTuple
 from datetime import datetime
@@ -20,7 +21,7 @@ import github_plan_closure as closure
 
 
 @asynccontextmanager
-async def connection(home: Path, *, max_msg_size: int = 64 * 1024 * 1024):
+async def connection(home: Path, *, max_msg_size: int = 64 * 1024 * 1024, deadline_at=None):
     import aiohttp
     endpoint = closure.daemon_endpoint(home).resolve(strict=True)
     info = endpoint.stat()
@@ -28,7 +29,7 @@ async def connection(home: Path, *, max_msg_size: int = 64 * 1024 * 1024):
         raise ValueError("native socket ownership is unavailable")
     sequence = 0
     try:
-        async with asyncio.timeout(5):
+        async with asyncio.timeout(read_timeout(deadline_at)):
             async with aiohttp.ClientSession(connector=aiohttp.UnixConnector(path=str(endpoint))) as client:
                 async with client.ws_connect("http://localhost/", max_msg_size=max_msg_size) as ws:
                     async def request(method, params):
@@ -58,6 +59,10 @@ async def connection(home: Path, *, max_msg_size: int = 64 * 1024 * 1024):
         if isinstance(error, (OSError, ValueError)):
             raise  # Preserve existing known-absence and ordinary refusal handling.
         raise ValueError("native transport failed; preserve the uncertain operation and do not replay") from error
+
+
+def read_timeout(deadline_at=None):
+    return 5 if deadline_at is None else max(0, deadline_at - time.time())
 
 
 async def pages(request, method, session, **params):

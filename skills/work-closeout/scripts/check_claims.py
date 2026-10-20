@@ -194,24 +194,34 @@ def check(reader, owner, entry, actor, *, reader_for_repo=None, read_timeout=Non
             expected.extend(found)
     if read_timeout is not None:
         reader.deadline_at = time.time() + read_timeout
-    inventory = github_identity.automation_repositories(deadline_at=reader.deadline_at)
+    required_repos = ({r["repository"] for r in expected} | {repo for repo, _ in receipt_issues}
+                      | set(entry.get("_extra_repositories", [])))
+    entries = [{**entry, "session_id": node["session_id"], "_transcript_records": node["records"]} for node in histories]
+    try:
+        since = release.stamp(sessions.scan_start(entries))
+    except (ValueError, TypeError):
+        since = None  # Unknown history can never justify a suspension exclusion.
+    inventory = github_identity.automation_repositories(deadline_at=reader.deadline_at,
+        since=since, required_repositories=required_repos)
     writers = inventory["repositories"]
-    repos = (set(writers) | {r["repository"] for r in expected}
-             | {repo for repo, _ in receipt_issues} | set(entry.get("_extra_repositories", [])))
+    repos = set(writers) | required_repos
     owners = {owner} if isinstance(owner, str) else set(owner)
     owners.update(r.split("/")[0] for r in repos)
-    if any(not any(repo.split("/")[0].casefold() == account.casefold() for repo in repos) for account in owners):
+    known_accounts = {repo.split("/")[0].casefold() for repo in repos}
+    known_accounts.update(row["account"]["login"].casefold() for row in inventory["installations"])
+    if any(account.casefold() not in known_accounts for account in owners):
         raise ValueError("required account has no verified repository inventory")
     issues = {(r["repository"], r["record"]) for r in expected} | receipt_issues
-    readers, blocked = {}, []
-    complete = True
+    readers = {}
+    blocked = [f"installation {row['installation_id']}: ownership inventory pending: {row['reason']}"
+               for row in inventory.get("pending_installations", [])]
+    complete = not blocked
     for repo in sorted(repos):
         try:
             selected = (reader_for_repo or repository_reader)(repo, reader.deadline_at)
             readers[repo] = selected
             if repo in writers and selected.expected_actor not in writers[repo]:
                 raise ValueError("configured repository writer differs from verified App installation")
-            entries = [{**entry, "session_id": node["session_id"], "_transcript_records": node["records"]} for node in histories]
             found, _ = sessions.discover(selected, repo.split("/")[0], entries, repos=[repo])
             issues.update(found)
         except (ValueError, GitHubReadError, GitHubReadShapeError, github_identity.GitHubAppError) as error:
@@ -236,12 +246,13 @@ def check(reader, owner, entry, actor, *, reader_for_repo=None, read_timeout=Non
     observed = {(r["repository"], r["record"], r["claim_comment"]) for r in released}
     if any((r["repository"], r["record"], r["claim_comment"]) not in observed for r in expected) and not blocked:
         blocked.append("native source claims were not verified in the installed repository scope")
-    pending = native_ownership.pending_ownership(histories, states)
+    pending = native_ownership.pending_ownership(histories, states, deadline_at=reader.deadline_at)
     blocked.extend(f"{item['session_id']}: {item['reason']}" for item in pending)
     return {"operation": claim_receipts.CHECK_OPERATION, "ok": not blocked, "claims_clear": not blocked,
             "session_id": entry["session_id"], "harness": entry["harness"],
             "coverage": {"owners": sorted(owners), "repositories": sorted(repos), "complete": complete,
                          "installation_count": len(inventory["installations"]),
+                         "excluded_installations": inventory.get("excluded_installations", []),
                          "session_ids": sorted(native_sessions),
                          "histories": [{k: node[k] for k in ("session_id", "transcript", "digest")} for node in histories[1:]],
                          "scope": "all configured automation writer App installations plus explicitly added repositories"},

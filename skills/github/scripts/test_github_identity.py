@@ -665,6 +665,8 @@ def test_complete_writer_installation_inventory_and_live_failures() -> None:
                     "account": {"login": "first-owner" if i == 1 else "second-owner", "type": "User"},
                     "permissions": {"issues": "write"}, "repository_selection": "selected",
                     "suspended_at": "2026-01-01T00:00:00Z" if self.mode == "suspended" and i == 101 else None}
+                if self.mode == "malformed-suspension" and i == 101:
+                    payload["suspended_at"] = "unreadable"
             elif self.path.startswith("/installation/repositories?"):
                 installation = self.headers["Authorization"].split("installation-")[1].split("-")[0]
                 page = int(self.path.rsplit("=", 1)[1])
@@ -692,7 +694,7 @@ def test_complete_writer_installation_inventory_and_live_failures() -> None:
             assert "/app/installations?per_page=100&page=2" in InventoryHandler.visited
             assert "/installation/repositories?per_page=100&page=2" in InventoryHandler.visited
             assert "Authorization" not in json.dumps(report)
-            for mode in ("wrong-app", "repeat", "suspended", "truncated", "denied"):
+            for mode in ("wrong-app", "repeat"):
                 InventoryHandler.mode = mode
                 try:
                     github_identity.automation_repositories(environ=values)
@@ -700,6 +702,23 @@ def test_complete_writer_installation_inventory_and_live_failures() -> None:
                     pass
                 else:
                     raise AssertionError(f"incomplete {mode} inventory cleared")
+            for mode in ("suspended", "truncated", "denied", "malformed-suspension"):
+                InventoryHandler.mode = mode
+                pending = github_identity.automation_repositories(environ=values)
+                assert pending["pending_installations"]
+                assert "first-owner/last" in pending["repositories"]
+                assert pending["pending_installations"][0]["installation_id"] == 101
+            InventoryHandler.mode = "suspended"
+            since = datetime.fromisoformat("2026-02-01T00:00:00+00:00")
+            skipped = github_identity.automation_repositories(environ=values, since=since)
+            assert not skipped["pending_installations"]
+            assert skipped["excluded_installations"][0]["installation_id"] == 101
+            for required in (("SECOND-OWNER/held",), ("second-owner/explicit",)):
+                guarded = github_identity.automation_repositories(environ=values, since=since, required_repositories=required)
+                assert guarded["pending_installations"]
+                assert not guarded["excluded_installations"]
+            earlier = datetime.fromisoformat("2025-12-01T00:00:00+00:00")
+            assert github_identity.automation_repositories(environ=values, since=earlier)["pending_installations"]
             InventoryHandler.mode = "complete"
             assert github_identity.automation_repositories(environ=values) == report
             try:

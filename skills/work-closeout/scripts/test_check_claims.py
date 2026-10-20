@@ -37,6 +37,42 @@ def pull(number=2, branch=SOURCE["branch"], **changes):
 
 class ClaimCloseoutTests(unittest.TestCase):
 
+    def test_partial_installation_coverage_is_pending_and_rechecked_with_all_native_history(self):
+        from test_claim_receipts import history, claim as native_claim, SESSION as native_session
+        root, child = history("codex"), history("codex")
+        for row in root:
+            row["timestamp"] = "2026-02-01T00:00:00Z"
+        for row in child:
+            row["timestamp"] = "2026-01-01T00:00:00Z"
+        nodes = [{"session_id": identity, "harness": "codex", "records": rows,
+                  "transcript": f"/fixture/{identity}.jsonl", "digest": helper.claim_history.fingerprint(rows)}
+                 for identity, rows in ((native_session, root), ("child", child))]
+        entry = {"session_id": native_session, "harness": "codex", "_claim_histories": nodes,
+                 "_extra_repositories": ["explicit/site"]}
+        installation = {"installation_id": 101, "account": {"login": "suspended-owner"},
+                        "reason": "suspended installation may contain native source claims"}
+        self.inventory.return_value = {"repositories": {REPO: [ACTOR]}, "installations": [installation],
+                                       "pending_installations": [installation]}
+        with patch.object(helper.sessions, "discover", return_value=([], [REPO])):
+            pending = helper.check(self.reader, [], entry, ACTOR)
+            self.assertFalse(pending["claims_clear"], pending)
+            self.assertFalse(pending["coverage"]["complete"])
+            self.assertTrue(any("101" in reason for reason in pending["blocked"]))
+            query = self.inventory.call_args.kwargs
+            self.assertEqual(query["since"], helper.release.stamp("2025-12-31T23:59:59Z"))
+            self.assertEqual(query["required_repositories"], {"explicit/site"})
+            self.inventory.return_value = {"repositories": {REPO: [ACTOR]}, "installations": [installation],
+                "excluded_installations": [installation]}
+            clear = helper.check(self.reader, [], entry, ACTOR)
+            self.assertTrue(clear["claims_clear"], clear)
+            self.assertTrue(clear["coverage"]["complete"])
+            self.assertEqual(clear["coverage"]["excluded_installations"], [installation])
+            root[:] = history("codex", native_claim(REPO))
+            for row in root:
+                row["timestamp"] = "2026-02-01T00:00:00Z"
+            helper.check(self.reader, [], entry, ACTOR)
+            self.assertEqual(self.inventory.call_args.kwargs["required_repositories"], {REPO, "explicit/site"})
+
     def test_unrelated_helper_issue_number_is_not_a_claim_receipt(self):
         from test_claim_receipts import history, SESSION as native_session
         for harness in ("codex", "claude"):
@@ -263,7 +299,8 @@ class ClaimCloseoutTests(unittest.TestCase):
                 patch.object(helper.native_ownership, "observe", return_value=([], {}, {})), \
                 patch.object(helper.sessions, "discover", return_value=({(REPO, 1)}, [REPO])):
             self.assertTrue(helper.check(self.reader, [], entry, ACTOR)["pending"])
-            rows[-1:-1] = [{"type": "user", "timestamp": SOURCE["claimed_at"], "message": {"content":
+            rows[-1:-1] = [{"type": "user", "timestamp": SOURCE["claimed_at"],
+                "origin": {"kind": "task-notification", "producer": "session-task"}, "message": {"content":
                 "<task-notification><task-id>watcher</task-id><status>completed</status></task-notification>"}}]
             finished = helper.check(self.reader, [], entry, ACTOR)
             self.assertTrue(finished["claims_clear"], finished)

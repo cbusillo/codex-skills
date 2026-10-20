@@ -1731,32 +1731,11 @@ class ObservationMergeTests(unittest.TestCase):
             self.assertEqual(CLOSURE.lease_path(f.session).read_bytes(), before)
             self.assertFalse(f.mutations)
 
-    def test_claude_registry_absence_clears_only_a_fresh_matched_exit(self):
-        import github_plan_claim
-        import release_session_claims
-        source = {"harness": "claude", "session_id": "claude-owner"}
-        with patch.object(github_plan_claim, "active_claude_sessions", return_value=[]) as registry, \
-                patch.object(SESSIONS.github_plan_native, "verify_source_process", return_value={"generation": "ended"}) as proof, \
-                patch.object(CLOSURE, "receipt_current", return_value=True):
-            self.assertTrue(SESSIONS._claude_source_ended(source))
-            self.assertEqual(proof.call_count, 2)
-            registry.return_value = [{"sessionId": source["session_id"]}]
-            self.assertFalse(SESSIONS._claude_source_ended(source))
-            registry.return_value = []
-            proof.side_effect = ValueError("source process exit is unknown")
-            self.assertFalse(SESSIONS._claude_source_ended(source))
-            proof.side_effect = [{"generation": "ended"}, {"generation": "replacement"}]
-            self.assertFalse(SESSIONS._claude_source_ended(source))
-            self.assertFalse(SESSIONS._claude_source_ended({**source, "resumed_at": "later"}))
-        # Physical observation uses the matched process record even when no
-        # final declaration exists. It cannot authorize a recovery release.
-        closed = {**source, "pid": 123, "tty": "fixture-tty", "process_exit_verified": True,
-                  "ended_at": "2026-10-01T00:00:00Z", "transcript": "/fixture/no-verdict.jsonl"}
-        with patch.object(CLOSURE, "source_records", return_value={source["session_id"]: closed}), \
-                patch.object(release_session_claims, "inventory", return_value=[]), \
-                patch.object(github_plan_claim, "active_claude_sessions", return_value=[]), \
-                patch.object(CLOSURE, "receipt_current", return_value=True):
-            self.assertTrue(SESSIONS._claude_source_ended(closed))
+    def test_live_claude_uncertainty_cannot_use_an_old_physical_exit(self):
+        node = {"session_id": "live-claude", "harness": "claude"}
+        with patch.object(CLOSURE, "ownership") as ownership:
+            self.assertFalse(SESSIONS._physical_quiescent(node, [], {}))
+        ownership.assert_not_called()
 
     def test_unmanaged_completed_native_child_needs_positive_current_coverage(self):
         with ReceiptFixture("11111111-2222-4333-8444-555555555555") as f:
@@ -1798,6 +1777,17 @@ class ObservationMergeTests(unittest.TestCase):
             # Real native capture: the running command is absent from items;
             # only the background registry contains its exec-* identity.
             self.assertTrue(SESSIONS._current_check_quiet(node))
+            def append_poll(_request):
+                poll = {"payload": {"type": "custom_tool_call", "call_id": "poll-check", "name": "exec",
+                    "input": 'text(await tools.write_stdin({session_id:123}));'}}
+                result = composed_result({"session_id": 123, "output": ""}, "poll-check")
+                result["payload"]["output"].insert(0, cell_header())
+                f.transcript.write_text("".join(json.dumps(row) + "\n" for row in [*current, poll, result]))
+                return {"data": [pair], "nextCursor": None}
+            f.rpc_results["thread/backgroundTerminals/list"] = append_poll
+            self.assertTrue(SESSIONS._current_check_quiet(node))
+            f.transcript.write_text("".join(json.dumps(row) + "\n" for row in current))
+            f.rpc_results["thread/backgroundTerminals/list"] = {"data": [pair], "nextCursor": None}
             for pairs in ([], [{**pair, "processId": "other"}], [pair, pair],
                           [pair, {"itemId": "exec-other", "processId": "456"}]):
                 f.rpc_results["thread/backgroundTerminals/list"]["data"] = pairs
@@ -1814,6 +1804,17 @@ class ObservationMergeTests(unittest.TestCase):
             f.transcript.write_text("".join(json.dumps(row) + "\n" for row in [*current, extra]))
             self.assertFalse(SESSIONS._current_check_quiet(node))
             self.assertIsNone(claim_receipts.current_check_process(original, [*current, extra]))
+            f.transcript.write_text("".join(json.dumps(row) + "\n" for row in current))
+            import time
+            self.assertFalse(SESSIONS._current_check_quiet(node, deadline_at=time.time() - 1))
+            async def delayed_thread(_request):
+                await asyncio.sleep(1.4)
+                return {"thread": {"id": f.session, "path": str(f.transcript),
+                    "historyMode": "paginated", "status": {"type": "active"}}}
+            f.rpc_results["thread/read"] = delayed_thread
+            # The caller's remaining budget covers the entire native sandwich;
+            # the former shorter connection/outer budgets failed this read.
+            self.assertTrue(SESSIONS._current_check_quiet(node, deadline_at=time.time() + 15))
 
     def setUp(self):
         shared = SESSIONS.process_liveness()

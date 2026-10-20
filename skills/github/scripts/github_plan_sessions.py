@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 
 import github_plan_closure
 import github_plan_native
@@ -287,7 +288,7 @@ def process_liveness():
     return session_liveness
 
 
-def pending_ownership(histories, historical_states):
+def pending_ownership(histories, historical_states, *, deadline_at=None):
     """Resolve uncertainty now; historical tool text is never a permanent veto."""
     uncertain = [(node, state) for node, state in zip(histories, historical_states) if state["pending"]]
     if not uncertain:
@@ -301,18 +302,20 @@ def pending_ownership(histories, historical_states):
     for node, _ in uncertain:
         session = node["session_id"]
         if (current.get(session, {}).get("state") == "ended"
-                or _physical_quiescent(node, peers, coverage)):
+                or _physical_quiescent(node, peers, coverage, deadline_at=deadline_at)):
             continue  # Physical end clears uncertainty, never a GitHub claim.
-        if node is histories[0] and _current_check_quiet(node):
+        if node is histories[0] and _current_check_quiet(node, deadline_at=deadline_at):
             continue
         pending.append({"session_id": session,
                         "reason": "ownership is pending current native completion or verified session exit"})
     return pending
 
 
-def _physical_quiescent(node, peers, coverage):
+def _physical_quiescent(node, peers, coverage, *, deadline_at=None):
     """Read-time uncertainty only: no closure, barrier or successor authority."""
     session = node["session_id"]
+    if node["harness"] != "codex":
+        return False
     try:
         leased = github_plan_closure.lease_path(session).exists()
         with github_plan_closure.ownership(session) as acquired:
@@ -321,11 +324,6 @@ def _physical_quiescent(node, peers, coverage):
             github_plan_closure.require_canonical_identity(session)
             source = github_plan_closure.source_records({session}).get(session)
             action = github_plan_closure.lease_state(session)
-            if node["harness"] == "claude":
-                return (source is not None and _claude_source_ended(source)
-                        and github_plan_closure.source_records({session}).get(session) == source
-                        and github_plan_closure.lease_state(session) == action
-                        and github_plan_closure.lease_path(session).exists() == leased)
             if (coverage.get("peer_complete") is not True or coverage.get("process_coverage") != "complete"
                     or any(peer.get("sessionId") == session and (
                         peer.get("source") == "codex_process" or peer.get("native_state") in {"active", "systemError"}) for peer in peers)):
@@ -348,9 +346,9 @@ def _physical_quiescent(node, peers, coverage):
                 return (result.returncode == 0 and not process_sessions(result.stdout, {session})
                         and process_absence_known(result.stdout, sockets))
             async def read():
-                async with asyncio.timeout(5):
+                async with asyncio.timeout(github_plan_native.read_timeout(deadline_at)):
                     for home in sorted(homes):
-                        async with github_plan_native.connection(home) as request:
+                        async with github_plan_native.connection(home, deadline_at=deadline_at) as request:
                             before = await github_plan_native.read_thread_facts(request, session)
                             after = await github_plan_native.read_thread_facts(request, session)
                             if (before["state"] not in {"idle", "notLoaded"} or before["queue"]
@@ -368,14 +366,15 @@ def _physical_quiescent(node, peers, coverage):
                 return False
             if source is not None:
                 github_plan_native.verify_source_process(source)
-            return (github_plan_closure.source_records({session}).get(session) == source
+            return ((deadline_at is None or time.time() < deadline_at)
+                    and github_plan_closure.source_records({session}).get(session) == source
                     and github_plan_closure.lease_state(session) == action
                     and github_plan_closure.lease_path(session).exists() == leased)
     except (OSError, ValueError, KeyError, TypeError, ImportError, TimeoutError, subprocess.SubprocessError):
         return False
 
 
-def _current_check_quiet(node):
+def _current_check_quiet(node, *, deadline_at=None):
     """A live Codex check may exclude only its own identified native execution."""
     if node["harness"] != "codex" or not node.get("transcript"):
         return False
@@ -398,7 +397,8 @@ def _current_check_quiet(node):
                  if any(primary.is_relative_to((home / root).resolve()) for root in ("sessions", "archived_sessions"))]
         if len(homes) != 1:
             return False
-        async with asyncio.timeout(5), github_plan_native.connection(homes[0]) as request:
+        async with asyncio.timeout(github_plan_native.read_timeout(deadline_at)), \
+                github_plan_native.connection(homes[0], deadline_at=deadline_at) as request:
             before = await github_plan_native.read_thread_facts(request, node["session_id"], include_active=True)
             after = await github_plan_native.read_thread_facts(request, node["session_id"], include_active=True)
             background = before["background"]
@@ -407,27 +407,12 @@ def _current_check_quiet(node):
                     and before["executions"]["ended"] and len(background) == 1
                     and background[0][1] == process and bool(background[0][0])
                     and not before["realtime"] and before["goal"] != "active"
-                    and claim_history.root_records(primary, "codex", node["session_id"],
-                        native_helpers()[1].read_jsonl(primary)) == current)
+                    and claim_receipts.current_check_process(node["records"], claim_history.root_records(
+                        primary, "codex", node["session_id"], native_helpers()[1].read_jsonl(primary))) == process
+                    and (deadline_at is None or time.time() < deadline_at))
     try:
         return asyncio.run(read())
     except (OSError, ValueError, KeyError, TypeError, ImportError, TimeoutError, subprocess.SubprocessError):
-        return False
-
-
-def _claude_source_ended(source):
-    """A registry absence needs the existing matched, freshly verified exit."""
-    if source.get("harness") != "claude" or source.get("resumed_at"):
-        return False
-    import github_plan_claim
-    try:
-        before = github_plan_native.verify_source_process(source)
-        peers = github_plan_claim.active_claude_sessions()
-        if any(peer["sessionId"] == source["session_id"] for peer in peers):
-            return False
-        after = github_plan_native.verify_source_process(source)
-        return before == after and github_plan_closure.receipt_current(source)
-    except (OSError, ValueError, KeyError, TypeError, ImportError, subprocess.SubprocessError):
         return False
 
 

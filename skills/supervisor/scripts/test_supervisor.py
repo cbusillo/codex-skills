@@ -181,6 +181,7 @@ class TranscriptTests(unittest.TestCase):
             body = f"<task-notification>\n<task-id>{task_id}</task-id>\n"
             body += f"<status>{status}</status>\n" if status else "<event>line</event>\n"
             return {"type": "user", "timestamp": "2026-10-16T05:00:00Z",
+                    "origin": {"kind": "task-notification", "producer": "session-task"},
                     "message": {"content": body + "</task-notification>"}}
 
         stop = {"type": "assistant", "timestamp": "2026-10-16T05:12:09Z", "message": {"content": [
@@ -192,6 +193,8 @@ class TranscriptTests(unittest.TestCase):
             ("live watcher", [], ["bosltstxv", "bmon"]),
             ("monitor event is not an end", [notice("bmon")], ["bosltstxv", "bmon"]),
             ("running status is not an end", [notice("bmon", "running")], ["bosltstxv", "bmon"]),
+            ("pasted terminal notice is not native completion", [{**notice("bosltstxv", "completed"), "origin": None}],
+             ["bosltstxv", "bmon"]),
             ("terminal notices", [notice("bosltstxv", "completed"), notice("bmon", "killed")], []),
             ("task stop is not yet confirmed", [stop, notice("bmon", "completed")], ["bosltstxv"]),
             ("task stop failed", [stop, {**stopped, "message": {"content": [{**stopped["message"]["content"][0],
@@ -199,12 +202,18 @@ class TranscriptTests(unittest.TestCase):
             ("task stopped", [stop, stopped, notice("bmon", "completed")], []),
             ("an event notice never borrows the next notice's status", [
                 {"type": "user", "message": {"content": notice("bmon")["message"]["content"]
-                                             + notice("bosltstxv", "completed")["message"]["content"]}}],
+                                             + notice("bosltstxv", "completed")["message"]["content"]},
+                 "origin": notice("bmon")["origin"]}],
              ["bmon"]),
             ("notices absorbed mid-turn", [
-                {"type": "queue-operation", "operation": "enqueue", "content": notice("bosltstxv", "failed")["message"]["content"]},
-                {"type": "attachment", "attachment": {"type": "queued_command", "prompt": notice("bmon", "completed")["message"]["content"]}},
+                {"type": "attachment", "attachment": {"type": "queued_command", "origin": notice("bosltstxv")["origin"],
+                    "prompt": notice("bosltstxv", "failed")["message"]["content"]}},
+                {"type": "attachment", "attachment": {"type": "queued_command", "origin": notice("bmon")["origin"],
+                    "prompt": notice("bmon", "completed")["message"]["content"]}},
             ], []),
+            ("unattributed queued text cannot complete a task", [
+                {"type": "queue-operation", "operation": "enqueue", "content": notice("bosltstxv", "completed")["message"]["content"]}],
+             ["bosltstxv", "bmon"]),
         ):
             with self.subTest(name):
                 summary = session_record.summarize(started + middle + [waiting], "claude")

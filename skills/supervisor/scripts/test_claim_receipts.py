@@ -269,10 +269,12 @@ class ReceiptTests(unittest.TestCase):
         self.assertTrue(receipts.ownership_state(records, "claude")["pending"])
         for task, status, pending in (("other", "completed", True), ("watcher", "running", True),
                                       ("watcher", "completed", False), ("watcher", "failed", False)):
-            notice = {"type": "user", "message": {"content":
+            notice = {"type": "user", "origin": {"kind": "task-notification", "producer": "session-task"}, "message": {"content":
                 f"<task-notification><task-id>{task}</task-id><status>{status}</status></task-notification>"}}
             with self.subTest(task=task, status=status):
                 self.assertEqual(receipts.ownership_state(records[:-1] + [notice], "claude")["pending"], pending)
+            if not pending:
+                self.assertTrue(receipts.ownership_state(records[:-1] + [{**notice, "origin": None}], "claude")["pending"])
         stop = {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "stop",
             "name": "TaskStop", "input": {"task_id": "watcher"}}]}}
         for result, pending in (([], True), ([{"type": "user", "message": {"content": [{"type": "tool_result",
