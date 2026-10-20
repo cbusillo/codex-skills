@@ -125,12 +125,29 @@ def framework_context(repo, selected, roots):
         if not isinstance(version, ast.Tuple) or len(version.elts) < 2:
             raise Blocked("native_odoo_version_unproven")
         series = ".".join(str(ast.literal_eval(value)) for value in version.elts[:2])
-        declared = {}
+        declared, dependencies = {}, {}
         workspace = repo / "workspace.toml"
         if workspace.is_file():
-            value = tomllib.loads(workspace.read_text()).get("build", {}).get("odoo_version")
+            workspace_config = tomllib.loads(workspace.read_text())
+            value = workspace_config.get("build", {}).get("odoo_version")
             if value:
                 declared["workspace.toml"] = str(value)
+            shared = workspace_config.get("repos", {}).get("shared_addons")
+            if shared:
+                def git_common(root):
+                    return Path(common.checked(["git", "-C", str(root), "rev-parse", "--path-format=absolute", "--git-common-dir"]).decode().strip()).resolve()
+                primary = git_common(repo).parent
+                candidates = {(repo / shared["path"]).resolve(), (primary / shared["path"]).resolve()}
+                expected_repositories = {git_common(path) for path in candidates if path.is_dir()}
+                matching = [root for root in roots if git_common(root) in expected_repositories]
+                if len(matching) != 1:
+                    raise Blocked("native_odoo_dependency_unproven")
+                dependency = matching[0]
+                expected_commit = common.checked(["git", "-C", str(dependency), "rev-parse", "--verify", "--end-of-options", str(shared["ref"]) + "^{commit}"]).decode().strip()
+                actual_commit = common.checked(["git", "-C", str(dependency), "rev-parse", "HEAD"]).decode().strip()
+                if expected_commit != actual_commit:
+                    raise Blocked("native_odoo_dependency_revision_mismatch")
+                dependencies["shared_addons"] = {"declared_ref": shared["ref"], "resolved_commit": expected_commit, "checkout": str(dependency)}
         for source in selected:
             directory = (repo / source).parent
             while directory.is_relative_to(repo):
@@ -155,7 +172,7 @@ def framework_context(repo, selected, roots):
                 raise Blocked("native_odoo_version_unproven")
             if match.group(1) != series:
                 raise Blocked("native_odoo_version_mismatch")
-        return {"framework_series": series, "declared_versions": declared}
+        return {"framework_series": series, "declared_versions": declared, "dependency_revisions": dependencies}
     except (SyntaxError, ValueError, AttributeError, IndexError, StopIteration, TypeError):
         raise Blocked("native_odoo_version_unproven") from None
 

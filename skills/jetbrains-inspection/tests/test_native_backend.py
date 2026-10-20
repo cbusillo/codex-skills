@@ -52,6 +52,31 @@ def copy_tracked_fixture(fixture, destination):
 
 
 class NativeTests(unittest.TestCase):
+    def test_framework_dependency_must_match_the_workspaces_declared_git_ref(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            repo, framework, shared = root / "repo", root / "core", root / "shared"
+            for path in (repo, framework, shared):
+                path.mkdir()
+                subprocess.run(["git", "init", "--quiet", "--initial-branch=main", str(path)], check=True)
+            (framework / "odoo").mkdir()
+            (framework / "odoo/release.py").write_text("version_info = (19, 0, 0, FINAL)\n")
+            value = shared / "addon.py"
+            revisions = []
+            for text in ("pass\n", "changed = True\n"):
+                value.write_text(text)
+                subprocess.run(["git", "-C", str(shared), "add", "addon.py"], check=True)
+                subprocess.run(["git", "-C", str(shared), "-c", "user.name=Fixture", "-c", "user.email=fixture@localhost", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "commit", "--quiet", "-m", "Fixture"], check=True)
+                revisions.append(subprocess.check_output(["git", "-C", str(shared), "rev-parse", "HEAD"], text=True).strip())
+            workspace = repo / "workspace.toml"
+            declaration = '[build]\nodoo_version = "19.0"\n[repos.shared_addons]\npath = "../shared"\nref = "{}"\n'
+            workspace.write_text(declaration.format(revisions[0]))
+            with self.assertRaisesRegex(native.Blocked, "native_odoo_dependency_revision_mismatch"):
+                native.framework_context(repo, {"model.py"}, [framework, shared])
+            workspace.write_text(declaration.format("main"))
+            context = native.framework_context(repo, {"model.py"}, [framework, shared])
+            self.assertEqual(context["dependency_revisions"]["shared_addons"]["resolved_commit"], revisions[-1])
+
     def test_framework_series_must_match_the_workspace_and_selected_addon(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
