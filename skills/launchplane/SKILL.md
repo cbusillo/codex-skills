@@ -889,6 +889,14 @@ workflow and delegate protected workflow dispatch and watching to `github`.
 
 ## Runtime Management (Admin)
 
+When diagnosing a Launchplane operation, first read its service logs with
+`scripts/launchplane-service-logs.py --config <private-log-target.json>
+--since <RFC3339> --until <RFC3339> [--operation-id <id>] [--trace-id <id>]`.
+Read [the service-log reader contract](references/service-log-reader.md) before
+using it. It reuses an existing SSH read path, emits bounded redacted JSON and
+changes no service state. Removed containers and rotated logs remain unknown;
+an empty filtered tail never proves that an operation did not run.
+
 Mutate runtime environments, managed secrets, and product config.
 
 - **Safety**: Strictly follow the `references/operator-contract.md`.
