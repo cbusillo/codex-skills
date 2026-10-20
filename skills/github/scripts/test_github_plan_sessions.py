@@ -262,6 +262,51 @@ class FinishPreviewIntegrationTests(unittest.TestCase):
         self.assertFalse(f.mutations)
         return code, json.loads(output.getvalue())
 
+    def test_invalid_private_transcript_account_reports_refusal_without_side_effects(self):
+        for case in ("supervisor-ledger", "private-finish", "backfill-selected", "backfill-unrelated",
+                     "valid-private-offline"):
+            with self.subTest(case=case), ReceiptFixture() as f:
+                closed = CLOSURE.log_rows()[0]
+                invalid = {**f.entry, "transcript": "~q526-absent-account/rollout.jsonl"}
+                invalid_closed = {**closed, "transcript": invalid["transcript"]}
+                ledger_rows = [invalid] if case == "supervisor-ledger" else [f.entry]
+                private_rows = ([closed, {**invalid_closed, "session_id": "unrelated-source"}]
+                                if case == "backfill-unrelated" else
+                                [invalid_closed] if case in {"private-finish", "backfill-selected"} else [closed])
+                ledger = f.root / "supervisor-ledger.json"
+                private = f.root / "private-closed.json"
+                ledger.write_text(json.dumps(ledger_rows))
+                private.write_text(json.dumps(private_rows))
+                private.chmod(0o600)
+                if case == "valid-private-offline":
+                    f.log.write_text("{")
+                mode = "backfill" if case.startswith("backfill") else "finish"
+                argv = ["helper", mode, "--supervisor-session", "supervisor", "--owner", "owner",
+                        "--session-id", f.session, "--confirm-session-ended", "--transcript-root",
+                        str(f.home / "sessions"), "--closed-log", str(private)]
+                argv += ["--ledger", str(ledger)] if mode == "finish" else ["--checkout-root", str(f.root)]
+                paths = (ledger, private, f.log, CLOSURE.lease_path(f.session))
+                before = {path: path.read_bytes() for path in paths}
+                reader = Mock()
+                output = io.StringIO()
+                with patch.object(f.release.sys, "argv", argv), \
+                        patch.object(f.release.github_identity, "automation_login", return_value="fixture-bot"), \
+                        patch.object(f.release, "automation_only_gh_prefix_args", return_value=[]), \
+                        patch.object(f.release, "GitHubReader", return_value=reader), \
+                        patch.object(f.release, "discover", return_value=([], ["owner/repo"])), \
+                        patch.object(f.release, "comment") as write, patch.object(f.release, "run_release") as run, \
+                        patch("pwd.getpwnam", side_effect=KeyError("fixture account absent")), redirect_stdout(output):
+                    code = f.release.main()
+                report = json.loads(output.getvalue())
+                valid = case == "valid-private-offline"
+                self.assertEqual(code, 0 if valid else 1)
+                self.assertEqual(report["ok"], valid)
+                write.assert_not_called()
+                run.assert_not_called()
+                self.assertFalse(reader.method_calls)
+                self.assertFalse(f.mutations)
+                self.assertEqual({path: path.read_bytes() for path in paths}, before)
+
     def test_pending_preview_consumes_release_without_changing_native_or_closure_state(self):
         with ReceiptFixture() as f:
             self.pending(f)

@@ -631,23 +631,27 @@ def ended_ownership(comments: list[dict[str, Any]], inventory: dict[str, Any]) -
 
 
 def coordination(conflicts: list[dict[str, Any]], comments: list[dict[str, Any]], repo: str, number: int) -> list[dict[str, Any]]:
+    def diagnostics(matching):
+        errors = list(dict.fromkeys(str(c["error"]) for c in matching if c.get("error")))
+        return {"error": "\n".join(errors),
+                "next_action": "Resolve the reported native error, then recheck this claim; preserve its artifacts"} if errors else {}
+
     holders = []
-    diagnostic = next(({"error": c["error"]} for c in conflicts if c.get("error")), {})
-    repair = "Correct the reported native source metadata, then recheck this claim; preserve its artifacts"
     released_ids = {comments[i]["id"] for i, _, _ in exact_released_sources(comments)}
     for source in comments:
         for record in records(source.get("body") or ""):
-            if any(c.get("id") == source.get("id") or c.get("record") == record
-                   or c.get("session") == record["session"] or (
-                       c.get("branch") == record["branch"] and source.get("id") not in released_ids) for c in conflicts):
+            matching = [c for c in conflicts if c.get("id") == source.get("id") or c.get("record") == record
+                        or c.get("session") == record["session"] or (
+                            c.get("branch") == record["branch"] and source.get("id") not in released_ids)]
+            if matching:
                 holders.append({**record, "claim_url": f"https://github.com/{repo}/issues/{number}#issuecomment-{source.get('id')}",
-                                "next_action": repair if diagnostic else "Contact this native session or coordinate an exact authored handoff on the work record; preserve its artifacts",
-                                **diagnostic})
+                                "next_action": "Contact this native session or coordinate an exact authored handoff on the work record; preserve its artifacts",
+                                **diagnostics(matching)})
     if not holders:
         holders = [{"worker": "unknown", "session": c.get("session", "unknown"),
                     "branch": c.get("branch", "unknown"), "work_record": f"https://github.com/{repo}/issues/{number}",
-                    "next_action": repair if diagnostic else "Identify the artifact's owning native session on the work record and coordinate a handoff; preserve it",
-                    **diagnostic}
+                    "next_action": "Identify the artifact's owning native session on the work record and coordinate a handoff; preserve it",
+                    **diagnostics([c])}
                    for c in conflicts]
     return holders
 

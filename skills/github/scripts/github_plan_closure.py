@@ -35,7 +35,7 @@ def require_canonical_identity(session: str) -> None:
     from github_plan_sessions import process_liveness
     canonical = process_liveness().native_uuid(session)
     if canonical is not None and canonical != session:
-        raise ValueError("use the canonical native thread UUID")
+        raise ValueError(f"use the canonical native thread UUID {canonical}")
 
 
 def lease_path(session: str) -> Path:
@@ -727,19 +727,19 @@ def selected_source_rows(rows, session):
     """Validate the selected source without interpreting other sessions' facts."""
     if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
         raise ValueError("closure log must contain session objects")
-    for row in rows:
+    for index, row in enumerate(rows):
         if row.get("record_kind") in {"managed_launch", "managed_proxy"} and "session_id" not in row:
             continue
         if not isinstance(row.get("session_id"), str) or not row["session_id"].strip():
-            raise ValueError("closure log has an ambiguous session identity")
+            raise ValueError(f"closure log row {index + 1} has an ambiguous session identity")
     selected = [row for row in rows if row.get("session_id") == session]
     if len(selected) > 1:
-        raise ValueError("duplicate selected closure session_id")
+        raise ValueError(f"duplicate selected closure session_id {session}")
     for row in selected:
         if row.get("harness") not in {"claude", "codex"}:
-            raise ValueError("selected closure harness must be claude or codex")
+            raise ValueError(f"selected closure {session} harness must be claude or codex")
         if not isinstance(row.get("transcript"), str) or not row["transcript"].strip():
-            raise ValueError("selected closure requires its transcript")
+            raise ValueError(f"selected closure {session} requires its transcript")
     return selected
 
 
@@ -770,8 +770,8 @@ def source_records(sessions: set[str]) -> dict:
             LOG_CACHE.set((before, rows))
             return selected
         raise ValueError("closed-session log changed during source verification")
-    except RuntimeError as error:
-        raise ValueError(f"invalid closed-session source metadata: {error}") from error
+    except (ValueError, RuntimeError) as error:
+        raise ValueError(f"closed-session source {closed_log()}: {error}") from error
 
 
 def log_identity(info: os.stat_result) -> tuple:
