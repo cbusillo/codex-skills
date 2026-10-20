@@ -124,18 +124,10 @@ For generic-web deploy recovery, read the owning
 before a read, dry run or apply. It defines both original-deploy and service-owned
 reference requests, their reviewed-evidence binding and apply eligibility.
 
-Local bearer-token denial is not the same as missing credentials. For new or
-higher-authority runtime records, including authz grants, private health
-endpoint records, provider targets, route records, and admin/workflow grants,
-first classify the result as a scope denial against an existing capability or a
-capability gap. A capability gap escalates to the owning Launchplane
-authorization-architecture issue; it is not resolved by finding another
-credential. GitHub workflows, Actions secrets, and OIDC roles are transport for
-capabilities Launchplane already granted, never authorization authority for a
-denied action. Use a Launchplane-owned reconciliation entrypoint only when it
-already exists, is sanctioned for that record type, is admin-initiated, and
-is run unmodified. Do not open-code denied routes, infer grants from checked-in
-examples, or author a workflow to carry a denied call.
+For refused or unsupported operations, follow
+[Blocked Work Continuation](../SKILL.md#blocked-work-continuation),
+[runtime authority guidance](../SKILL.md#runtime-management-admin)
+and [Sanctioned Reconciliation And Break-Glass](../SKILL.md#sanctioned-reconciliation-and-break-glass).
 
 ## Safety & Redaction
 

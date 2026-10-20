@@ -28,7 +28,6 @@ existing Director-agent identity dependency. It adds no permission or provider
 fallback. Source contract agreement does not prove deployed compatibility;
 confirm normal service delivery before operational use.
 
-
 Each command requires `--payload-file /absolute/private/request.json`. Its
 exact fields are `product`, `context`, `instance` (only `testing`),
 `endpoint_key`, `edge_endpoint_key`, `access_list_id`, `certificate_id`,
@@ -86,7 +85,7 @@ source and caller delivery.
 `disposable-lane-inspect`, `disposable-lane-collect` and
 `disposable-lane-record` call the producer's `record_disposable_lane_safety`
 service API with the existing Director-agent identity. They add no permission
-or provider fallback. The `prepare-rebuild` mode is not wrapped. An observation
+or provider fallback. An observation
 is short-lived safety evidence for one lane. It is never an access grant.
 
 Clear and prepare-rebuild have no installed catalog command. For the producer's
@@ -180,7 +179,7 @@ nonzero exit.
 ## Dokploy inventory read
 
 `dokploy-inventory-read --limit 25` reads `GET /v1/dokploy/inventory`
-using existing private admin configuration. This bounded local extension requires
+using existing private admin configuration. This bounded helper binding requires
 the service's existing global `dokploy_target.inspect` read boundary; it creates
 no grant. It includes empty/untracked projects, environments and targets, without
 depending on product records. All provider operations behind the service are GETs.
@@ -212,7 +211,7 @@ uv run scripts/launchplane-write-action.py context-secrets-read --context exampl
 uv run scripts/launchplane-write-action.py instance-secrets-read --context example-site --instance testing
 ```
 
-These four local extensions use the existing authenticated GET routes under
+These four helper bindings use the existing authenticated GET routes under
 `/v1/contexts/{context}` and `/v1/contexts/{context}/instances/{instance}`.
 They add no permission, workflow fallback or direct storage access. A denial
 retains its error code and trace, with no second request.
@@ -451,7 +450,7 @@ installed local helper bindings.
   An omitted field reads as `held`; any other value or type fails the whole
   read with `invalid_response`. A malformed or secret-looking value fails the
   whole read.
-- The shared ready-handoff acceptance reader uses the bounded local-extension
+- The shared ready-handoff acceptance reader uses the bounded helper
   `repo-product-mapping-read` route internally to resolve a repository's product
   before `product-profile-read`. The dedicated mapping read is GET-only; it is
   not an exposed write-action CLI command. An absent or ambiguous mapping,
@@ -901,7 +900,7 @@ plan evidence returns an invalid response with its validated trace.
 
 ### Reviewed route-authority record repairs
 
-These are bounded local extensions using the same configured identity and
+These are bounded helper bindings using the same configured identity and
 existing service APIs. Source delivery grants no execution authority. A service
 denial stops the operation; preserve its action, requested scope and trace on
 the source and owning authorization issues. Never substitute a workflow,
@@ -1422,14 +1421,8 @@ repository bindings, branch bindings, tenant/domain lists, lanes, provider targe
 ids, authz grants, or admin identities into product-config requests unless
 they came from Launchplane records or explicit scoped admin input.
 
-If a denied or unsupported operation concerns authz grants, private health
-endpoint records, provider targets, route records, or admin/workflow grants,
-do not widen the local helper and do not substitute GitHub CI authority. An
-already-sanctioned, Launchplane-owned reconciliation entrypoint may be run
-unmodified when an admin initiates it for that record. Otherwise this is a
-capability gap: block and escalate the affected work to the owning
-authorization-architecture issue with the denied operation, record type, and
-trace ID, then continue independent work when possible.
+For refused or unsupported operations, follow
+[Blocked Work Continuation](../SKILL.md#blocked-work-continuation).
 
 ## Merge-Train Policy Import
 
@@ -1533,9 +1526,8 @@ receives HTTP success but the response cannot be safely projected, the helper
 reports `accepted_unverified`; read back the current record and do not retry
 until the outcome is known.
 
-An `authorization_denied` response is an authority or capability gap. Preserve
-the trace and route the blocked work to the owning authorization redesign; do
-not add a grant, borrow workflow identity, or use a raw API fallback.
+For an `authorization_denied` response, follow
+[Blocked Work Continuation](../SKILL.md#blocked-work-continuation).
 
 ## Generic-Web Deploy Recovery
 
@@ -1706,7 +1698,7 @@ Use `path-check --product P --path testing|promote` first to ask whether the
 caller's own identity can take a product along that path. It makes one GET to
 `/v1/products/{product}/path-check` with the `path` query parameter, requiring
 `product_environment.read` on the product's lane contexts. This is a bounded
-local extension; it writes nothing and grants no authority.
+helper binding; it writes nothing and grants no authority.
 
 For Odoo operation prerequisites, select `--path testing --intent
 provision|generation|testing-replacement`. Optional `--source-mode ssh|container-export`,
@@ -1902,7 +1894,7 @@ where supported.
 ## Managed runtime sync
 
 `live-target-runtime-sync-dry-run` and `live-target-runtime-sync-apply` use the
-existing `POST /v1/live-target-runtime/apply` local extension. Pass `--product`,
+existing `POST /v1/live-target-runtime/apply` helper binding. Pass `--product`,
 `--context`, and `--instance`; values come from Launchplane's managed records,
 never CLI input. The service checks `live_target_runtime.plan` for dry runs and
 `.apply` for writes on product/context. The helper's apply command requires both
@@ -1997,7 +1989,7 @@ needs service-wide policy read authority to show full scopes.
 ## Runtime-setting removal review
 
 `runtime-setting-removal-dry-run` and `runtime-setting-removal-readback` are
-bounded local extensions of `POST /v1/admin/runtime-settings/removal`. They
+bounded helper bindings of `POST /v1/admin/runtime-settings/removal`. They
 let the Director agent review removing stored plain runtime settings and read
 back the result. There is no apply command. Apply belongs to the signed-in
 admin in Launchplane, and a dry-run digest does not authorize it.

@@ -15,14 +15,14 @@ from __future__ import annotations
 import re
 
 OPERATION_PATHS = {
-    'prepare_testing_private_ingress': '/v1/products/{product}/testing-private-ingress',
-    'record_disposable_lane_safety': '/v1/disposable-lanes/observations',
-    'read_agent_context': '/v1/agent/context',
-    'evaluate_agent_write_intent': '/v1/agent/write-intents/evaluate',
-    'apply_product_config': '/v1/product-config/apply',
-    'apply_odoo_addon_settings': '/v1/product-config/odoo-addon-settings/apply',
-    'write_merge_train_controller_run_once': '/v1/work-graph/merge-train/controller/run-once',
-    'remediate_preview_pr_feedback': '/v1/previews/pr-feedback/remediation',
+    "prepare_testing_private_ingress": "/v1/products/{product}/testing-private-ingress",
+    "record_disposable_lane_safety": "/v1/disposable-lanes/observations",
+    "read_agent_context": "/v1/agent/context",
+    "evaluate_agent_write_intent": "/v1/agent/write-intents/evaluate",
+    "apply_product_config": "/v1/product-config/apply",
+    "apply_odoo_addon_settings": "/v1/product-config/odoo-addon-settings/apply",
+    "write_merge_train_controller_run_once": "/v1/work-graph/merge-train/controller/run-once",
+    "remediate_preview_pr_feedback": "/v1/previews/pr-feedback/remediation",
 }
 
 HELPER_OPERATIONS = {
