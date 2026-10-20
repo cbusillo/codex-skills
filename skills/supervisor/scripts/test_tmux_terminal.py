@@ -970,7 +970,8 @@ for line in sys.stdin:
         pane_id = self.terminal.select(row["session_id"])["pane_id"]
         inventory = session_liveness.inventory
         send, run = self.terminal.send, self.terminal.run
-        quitting, uncertain_seen, source_present = False, False, True
+        quitting, uncertain_seen = False, False
+        reads = 0
 
         async def quit_then_wait(*args, **kwargs):
             nonlocal quitting
@@ -993,9 +994,9 @@ for line in sys.stdin:
             return result
 
         def reaping():
-            nonlocal source_present
-            if source_present:
-                source_present = False
+            nonlocal reads
+            reads += 1
+            if reads == 1:
                 return [(row["pid"], row["tty"].removeprefix("/dev/"), "fixture-agent")]
             return inventory()
 
@@ -1004,7 +1005,7 @@ for line in sys.stdin:
                 patch.object(session_liveness, "inventory", side_effect=reaping):
             self.ended(row)
         self.assertTrue(uncertain_seen)
-        self.assertFalse(source_present)
+        self.assertGreater(reads, 1)
 
     def test_split_linked_window_and_stale_identity_are_preserved(self):
         row = self.launch()
