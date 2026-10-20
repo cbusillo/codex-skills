@@ -53,7 +53,7 @@ unclear code stand by explaining it.
 
   ```python
   for record in self:
-      if not record.attachment.store_fname:
+      if not record.attachment_id.store_fname:
           self._reset_image_details(record)
           continue
   ```
@@ -120,7 +120,7 @@ unclear code stand by explaining it.
 
   ```python
   raise ValidationError(
-      self.env._("%(name)s already uses location %(location)s.", name=other.display_name, location=record.location)
+      self.env._("%(name)s already uses location %(location)s.", name=other.display_name, location=record.location_id.display_name)
   )
   ```
 
@@ -180,14 +180,9 @@ unclear code stand by explaining it.
 - Import another addon as `odoo.addons.<addon>` only when it is a manifest
   dependency. Inside an addon, use relative imports. Versioned migration
   scripts are the exception: Odoo loads them as standalone modules.
-- On custom models, name relational fields for the records they hold: `partner`
-  and `partners`, not `partner_id` and `partner_ids`. Keep the `_id` and `_ids`
-  names the framework looks up: `company_id` or `company_ids` (company
-  checks), `currency_id` (`fields.Monetary`), `parent_id` (`_parent_store`),
-  and `partner_id`, `partner_ids`, and `user_id` on `mail.thread` models.
-  Never rename a field on a core model, and keep upstream names where another
-  module expects them. House rule: `order.partner.name` says what the field
-  holds; upstream uses `_id`.
+- New relational fields use Odoo's `_id`/`_ids` convention (Odoo 19 coding
+  guidelines); existing fields are not renamed, because renames need
+  migrations and break other modules.
 
 ## JavaScript
 
