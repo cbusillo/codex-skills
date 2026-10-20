@@ -652,8 +652,21 @@ def coordination(conflicts: list[dict[str, Any]], comments: list[dict[str, Any]]
                         or c.get("session") == record["session"] or (
                             c.get("branch") == record["branch"] and source.get("id") not in released_ids)]
             if matching:
+                action = "Contact this native session or coordinate an exact authored handoff on the work record; preserve its artifacts"
+                if source.get("id") in released_ids and any(
+                    c.get("source") == "native_recovery" and c.get("session") == record["session"]
+                    for c in matching
+                ):
+                    action = (
+                        "This claim already has an exact authored release. If the Supervisor verifies the source is still ended now, "
+                        "including clients/peers the helpers cannot observe, reconcile it with "
+                        "skills/supervisor/scripts/release_session_claims.py finish --confirm-session-ended, "
+                        "using the original private ledger and this exact source session. Preview first; apply only after "
+                        "the current closure guards pass. See skills/supervisor/references/helpers.md#release-a-verified-finished-session. "
+                        "Preserve its artifacts; a historical exit alone does not authorize reconciliation."
+                    )
                 holders.append({**record, "claim_url": handoff_url(repo, number, source.get("id")),
-                                "next_action": "Contact this native session or coordinate an exact authored handoff on the work record; preserve its artifacts",
+                                "next_action": action,
                                 **diagnostics(matching)})
     if not holders:
         holders = [{"worker": "unknown", "session": c.get("session", "unknown"),
