@@ -112,8 +112,8 @@ def test_agent_operator_contract_routes_every_local_consumer() -> None:
     assert context_helper.build_context_url(
         "https://launchplane.example.invalid", context_args
     ) == (
-        "https://launchplane.example.invalid/v1/agent/context"
-        "?repository=example%2Frepo"
+        "https://launchplane.example.invalid"
+        f"{contract.operation_path('read_agent_context')}?repository=example%2Frepo"
     )
 
 

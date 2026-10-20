@@ -840,9 +840,10 @@ work, do not continue from the latest operational finding alone. Before the next
 slice, state how it fits the active Launchplane plan, issue graph, rollout
 sequence, or product ownership boundary.
 
-Before designing a deploy, testing or promotion workflow in a product
-repository, or proposing a grant, read `cbusillo/launchplane`'s `DIRECTION.md`
-at `origin/main`; only the overall direction file is loaded at session start.
+Before Launchplane operational work, including apply, mutate, repair,
+retirement, policy changes, workflow design or grant proposals, read the
+Director's overall direction and `cbusillo/launchplane`'s `DIRECTION.md` at
+`origin/main`. Do this even when working from a product repository.
 
 If an operational finding changes the plan, update the owning GitHub plan issue
 or PR before treating the new path as canonical. Prefer explicit blocker,
@@ -980,11 +981,12 @@ Launchplane by editing provider configuration directly.
 ### Blocked Work Continuation
 
 Apply the wrong-refusal rule in the Director's overall `DIRECTION.md`
-(Stop Boundaries), loaded under Rollout Plan Alignment. Keep the actual refused
+(Stop Boundaries), read under Rollout Plan Alignment. Keep the actual refused
 operation stopped and preserve its trace, source URL and any uncertain-effect
-evidence while fixing the owning tool. Use `github-plan` to track the repair
-and any native dependency on it; follow the same direction source for work
-priority and escalation. Reconcile uncertain effects before reexecution.
+evidence. That source owns the distinction between a wrong refusal and one
+that correctly protects a stop boundary, and the required response to each.
+Use `github-plan` to track a required repair and any native dependency on it.
+Reconcile uncertain effects before reexecution.
 
 ### Sanctioned Reconciliation And Break-Glass
 

@@ -2,8 +2,7 @@
 
 The [Launchplane producer contract](https://github.com/cbusillo/launchplane/blob/main/contracts/agent-operator-contract.json)
 is the source for operation modes, supported surfaces, reviewed evidence,
-idempotency and protected-workflow bindings. Read it at the qualified producer
-revision when selecting a surface or changing a caller. The catalog keeps no
+idempotency and protected-workflow bindings. Read it when selecting a surface or changing a caller. The catalog keeps no
 copy and makes no whole-contract freshness claim.
 
 `scripts/launchplane_contract.py` holds only this client's installed HTTP
@@ -31,7 +30,7 @@ For a protected workflow, resolve its binding from the producer and delegate
 dispatch and watching to the GitHub skill's `github_workflow_babysit.py`.
 
 For private testing activation and transport planning, read the producer's
-`docs/private-testing-transport.md` at the qualified service revision. For
+`docs/private-testing-transport.md`. For
 installed disposable-lane inspect, collect and record commands, read the
 [disposable lane contract](write-action-helper-contract.md#disposable-lane-observations).
 Clear and prepare-rebuild still need their separate consumer implementation;
