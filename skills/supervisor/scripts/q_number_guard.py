@@ -61,7 +61,7 @@ def asks_director(message: str) -> bool:
                  if not ANSWERED.match(text, match.end()))
     # "Nothing is waiting on your approval" reports that there is no ask.
     return (any(ADDRESSED.search(question) for question in questions)
-            or any(not NEGATED.search(text, 0, ask.start()) for ask in ASK.finditer(text)))
+            or any(not NEGATED.search(text, endpos=ask.start()) for ask in ASK.finditer(text)))
 
 
 def last_message(payload: Mapping) -> str | None:
