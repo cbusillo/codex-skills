@@ -333,6 +333,25 @@ print('Done.')
         self.assertFalse(list((self.root / "cache/native").glob("private-*")))
         self.assertEqual((self.repo / "source.py").read_text(), "print(missing)\n")
 
+    def test_guardian_reaps_under_an_ignored_parent_sigchld_without_changing_it(self):
+        original = signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+        try:
+            result = self.assess()
+            self.assertEqual(signal.getsignal(signal.SIGCHLD), signal.SIG_IGN)
+        finally:
+            signal.signal(signal.SIGCHLD, original)
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_completed")
+        self.assertEqual(result["cleanup"]["status"], "closed")
+
+    def test_exit_observer_registration_failure_never_releases_the_launch_gate(self):
+        marker = self.root / "must-not-launch"
+        self.script.write_text(f"#!{sys.executable}\nfrom pathlib import Path\nPath({str(marker)!r}).touch()\n")
+        with patch.object(native, "ChildExitObserver", side_effect=OSError(errno.EPERM, "registration unavailable")):
+            result = self.assess()
+        self.assertFalse(marker.exists())
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_exit_observer_unavailable")
+        self.assertEqual(result["cleanup"]["status"], "closed")
+
     def test_another_ide_distribution_is_refused_before_launch(self):
         (self.app / "Contents/Resources/product-info.json").write_text(json.dumps({"productCode": "WS", "envVarBaseName": "WEBSTORM"}))
         result = self.assess()

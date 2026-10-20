@@ -16,6 +16,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 from typing import Any
+from types import SimpleNamespace
 
 spec = importlib.util.spec_from_file_location("observer_test", Path(__file__).parents[1] / "scripts/native_observer.py")
 if spec is None or spec.loader is None:
@@ -116,8 +117,138 @@ class ProcessDrainTests(unittest.TestCase):
         stream = os.fdopen(reader, "rb")
         self.addCleanup(stream.close)
         process = Mock(pid=123456, stdout=stream, returncode=None)
-        process.wait.return_value = 0
+
+        def reap(*_args, **_kwargs):
+            process.returncode = 0
+            return 0
+
+        process.wait.side_effect = reap
         return process
+
+    @staticmethod
+    def kqueue_api():
+        queue = Mock()
+        api = SimpleNamespace(kqueue=Mock(return_value=queue), kevent=Mock(), KQ_FILTER_PROC=object(),
+                              KQ_EV_ADD=1, KQ_EV_ONESHOT=2, KQ_NOTE_EXIT=4, KQ_EV_ERROR=8)
+        return queue, api
+
+    def test_kqueue_exit_edge_is_latched_until_reaping(self):
+        queue, api = self.kqueue_api()
+        pid = os.getpid()
+        event = SimpleNamespace(ident=pid, filter=api.KQ_FILTER_PROC, flags=0, fflags=api.KQ_NOTE_EXIT)
+        queue.control.side_effect = [[], [event], []]
+        with patch.object(self.backend, "os", SimpleNamespace()), patch.object(self.backend, "select", api):
+            watch = self.backend.ChildExitObserver(pid)
+            try:
+                self.assertTrue(watch.exited())
+                self.assertTrue(watch.exited())
+                self.assertEqual(queue.control.call_count, 2)
+            finally:
+                watch.close()
+        queue.close.assert_called_once()
+
+    def test_kqueue_registration_failure_closes_its_queue(self):
+        queue, api = self.kqueue_api()
+        queue.control.side_effect = PermissionError(errno.EPERM, "registration refused")
+        with patch.object(self.backend, "os", SimpleNamespace()), patch.object(self.backend, "select", api):
+            with self.assertRaises(PermissionError):
+                self.backend.ChildExitObserver(os.getpid())
+        queue.close.assert_called_once()
+
+    def test_waitid_keeps_the_child_waitable_and_latches_exit(self):
+        pid = os.getpid()
+        waitid = Mock(side_effect=[None, SimpleNamespace(si_pid=pid)])
+        api = SimpleNamespace(waitid=waitid, **{key: getattr(os, key) for key in ("P_PID", "WEXITED", "WNOHANG", "WNOWAIT")})
+        with patch.object(self.backend, "os", api):
+            watch = self.backend.ChildExitObserver(pid)
+            try:
+                self.assertFalse(watch.exited())
+                self.assertTrue(watch.exited())
+                self.assertTrue(watch.exited())
+                self.assertEqual(waitid.call_count, 2)
+                self.assertTrue(waitid.call_args.args[2] & os.WNOWAIT)
+                self.assertTrue(waitid.call_args.args[2] & os.WNOHANG)
+            finally:
+                watch.close()
+
+    def test_completed_leader_disposes_sleeping_and_stopped_descendants(self):
+        for engine in (False, True):
+            for stopped in (False, True):
+                with self.subTest(engine=engine, stopped=stopped):
+                    marker = self.private / "descendant.pid"
+                    marker.unlink(missing_ok=True)
+                    code = f'''import os,signal,time
+from pathlib import Path
+child=os.fork()
+if child == 0:
+    if {stopped!r}:
+        os.kill(os.getpid(),signal.SIGSTOP)
+    time.sleep(30)
+    os._exit(0)
+Path({str(marker)!r}).write_text(str(child))
+if {stopped!r}:
+    os.waitpid(child,os.WUNTRACED)
+print('Done.',flush=True)
+os._exit(0)
+'''
+                    receipt = {"load_pause_count": 0}
+                    try:
+                        with (self.private / "worker.lock").open("w") as lock, \
+                                patch.object(self.backend.os, "getloadavg", return_value=(1, 1, 1)):
+                            self.backend.execute([sys.executable, "-c", code], {}, self.private,
+                                                 time.monotonic() + 5, None, receipt,
+                                                 lock_fd=lock.fileno(), require_completion=engine)
+                        self.assertTrue(receipt["process_custody_closed"])
+                        self.assertEqual(receipt["engine_exit_code" if engine else "preparation_exit_code"], 0)
+                    finally:
+                        if not receipt.get("process_custody_closed") and marker.exists():
+                            pid = int(marker.read_text())
+                            identity = self.backend.process_identity(pid, self.private)
+                            if identity and identity["private"] == str(self.private):
+                                os.kill(pid, signal.SIGKILL)
+                            group = receipt.get("worker_pid" if engine else "preparation_pid")
+                            if group:
+                                self.backend.group_gone(group)
+
+    def test_licence_line_stays_open_until_descendants_are_stopped(self):
+        release, written = self.private / "release", self.private / "written"
+        code = f'''import os,time
+from pathlib import Path
+if os.fork() == 0:
+    while not Path({str(release)!r}).exists():
+        time.sleep(.005)
+    os.write(1,b'ense has expired')
+    Path({str(written)!r}).touch()
+    time.sleep(30)
+    os._exit(0)
+os.write(1,b'Your lic')
+os._exit(0)
+'''
+        original = self.backend.ChildExitObserver
+
+        class ReleaseAtCleanup(original):
+            def close(self):
+                release.touch()
+                deadline = time.monotonic() + 2
+                while not written.exists() and time.monotonic() < deadline:
+                    time.sleep(.005)
+                super().close()
+
+        with patch.object(self.backend, "ChildExitObserver", ReleaseAtCleanup):
+            receipt, _ = self.run_process(code)
+        self.assertTrue(written.exists())
+        self.assertTrue(receipt["license_boundary_observed"])
+        self.assertTrue(receipt["license_observation_complete"])
+
+    def test_failed_exit_observation_still_stops_and_drains_the_child(self):
+        watch = Mock(kind="fixture")
+        watch.exited.side_effect = OSError(errno.EIO, "exit observation unavailable")
+        with patch.object(self.backend, "ChildExitObserver", return_value=watch):
+            receipt, reason = self.run_process("import time;time.sleep(30)")
+        self.assertEqual(reason, "native_exit_observation_unproven")
+        self.assertTrue(receipt["process_custody_closed"])
+        self.assertTrue(receipt["license_observation_complete"])
+        watch.close.assert_called_once()
 
     def test_cleanup_signal_exit_races_preserve_abort_and_run_finalizers(self):
         for error in (PermissionError(errno.EPERM, "exiting"), ProcessLookupError(errno.ESRCH, "gone")):
@@ -130,6 +261,7 @@ class ProcessDrainTests(unittest.TestCase):
                     raise self.backend.Blocked("native_timeout")
 
                 with patch.object(self.backend.subprocess, "Popen", return_value=process), \
+                        patch.object(self.backend, "ChildExitObserver", return_value=Mock(kind="fixture")), \
                         patch.object(self.backend.os, "killpg", side_effect=error), \
                         patch.object(self.backend, "group_gone", return_value=True) as proof, \
                         (self.private / "worker.lock").open("w") as lock:
@@ -156,6 +288,7 @@ class ProcessDrainTests(unittest.TestCase):
                     raise self.backend.Blocked("native_timeout")
 
                 with patch.object(self.backend.subprocess, "Popen", return_value=process), \
+                        patch.object(self.backend, "ChildExitObserver", return_value=Mock(kind="fixture")), \
                         patch.object(self.backend.os, "killpg", side_effect=PermissionError(errno.EPERM, "denied")), \
                         patch.object(self.backend, "group_gone", return_value=True) as proof, \
                         (self.private / "worker.lock").open("w") as lock:
@@ -174,15 +307,13 @@ class ProcessDrainTests(unittest.TestCase):
     def load_signal_case(self, failed_signal, *, exited):
         process = self.simulated_process()
         receipt = {"load_pause_count": 0}
-        polls = 0
-        exit_poll = 2 if failed_signal == signal.SIGSTOP else 3
+        observations = 0
+        exit_observation = 2 if failed_signal == signal.SIGSTOP else 3
 
-        def poll():
-            nonlocal polls
-            polls += 1
-            if exited and polls >= exit_poll:
-                process.returncode = 0
-            return process.returncode
+        def observe():
+            nonlocal observations
+            observations += 1
+            return exited and observations >= exit_observation
 
         def send(_pid, operation):
             if operation == failed_signal:
@@ -194,12 +325,15 @@ class ProcessDrainTests(unittest.TestCase):
                 self.addCleanup(os.close, os.dup(descriptor))
             return process
 
-        loads = iter((65, 1)) if failed_signal == signal.SIGCONT else iter((65,))
-        process.poll.side_effect = poll
+        high, low = self.backend.LOAD_LIMIT + 1, self.backend.LOAD_LIMIT
+        loads = iter((high, low)) if failed_signal == signal.SIGCONT else iter((high,))
+        watch = Mock(kind="fixture")
+        watch.exited.side_effect = observe
         outcome = None
         with patch.object(self.backend.subprocess, "Popen", side_effect=spawn), \
+                patch.object(self.backend, "ChildExitObserver", return_value=watch), \
                 patch.object(self.backend.os, "killpg", side_effect=send), \
-                patch.object(self.backend.os, "getloadavg", side_effect=lambda: (next(loads, 1), 1, 1)), \
+                patch.object(self.backend.os, "getloadavg", side_effect=lambda: (next(loads, low), low, low)), \
                 patch.object(self.backend, "group_gone", return_value=True), \
                 (self.private / "worker.lock").open("w") as lock:
             try:

@@ -221,6 +221,18 @@ none of their errors proves exit. Finalization bounds the leader reap as well
 as group proof, and attempts licence draining even if signalling or reaping
 fails. Both successful reaping and group absence are required to close custody.
 A failed load-control signal aborts a still-live worker into this finalization.
+Leader exit is observed without reaping, so the original PID still reserves the
+owned group while cleanup stops any sleeping or paused descendants. The exit
+observer must register before the launch gate opens; registration failures
+abort that launch. Its exit state stays latched across load-control checks.
+The guardian resets its own SIGCHLD disposition without changing the caller's.
+Only the post-group drain finalizes licence lines, including output inherited
+by descendants.
+
+The observer uses [waitid with WNOWAIT](https://docs.python.org/3.13/library/os.html#os.waitid)
+when available. Python 3.12 on macOS uses
+[kqueue process-exit events](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/kqueue.2.html),
+preserving the declared Python minimum. Neither mechanism reaps before cleanup.
 If recovery cannot prove the group or identity, run a read-only census with
 `ps -axo pid=,pgid=,stat=,command=` against the reported PID/PGID. Let unrelated
 processes finish, and bring the Director one recommendation before ending an

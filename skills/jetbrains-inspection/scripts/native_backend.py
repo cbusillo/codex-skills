@@ -17,6 +17,7 @@ import importlib.util
 import json
 import os
 import re
+import select
 import selectors
 import shutil
 import signal
@@ -450,9 +451,45 @@ def stop_orphan(worker, receipt):
 LAUNCH_BARRIER = "import os,sys; fd=int(sys.argv[1]); allowed=os.read(fd,1)==b'1'; os.close(fd); sys.exit(125) if not allowed else os.execvpe(sys.argv[2],sys.argv[2:],os.environ)"
 
 
+class ChildExitObserver:
+    """Observe exit without releasing the child PID that pins our group."""
+    def __init__(self, pid):
+        self.pid, self.complete, self.queue = pid, False, None
+        self.kind = "waitid" if all(hasattr(os, name) for name in ("waitid", "P_PID", "WEXITED", "WNOHANG", "WNOWAIT")) else "kqueue"
+        if self.kind == "kqueue":
+            if not hasattr(select, "kqueue"):
+                raise Blocked("native_exit_observer_unavailable")
+            self.queue = select.kqueue()
+            try:
+                self.queue.control([select.kevent(pid, filter=select.KQ_FILTER_PROC,
+                                   flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                                   fflags=select.KQ_NOTE_EXIT)], 0, 0)
+            except OSError:
+                self.queue.close()
+                raise
+
+    def exited(self):
+        if not self.complete:
+            if self.queue is None:
+                event = os.waitid(os.P_PID, self.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+                self.complete = event is not None and event.si_pid == self.pid
+            else:
+                for event in self.queue.control(None, 1, 0):
+                    if event.flags & select.KQ_EV_ERROR:
+                        raise OSError(event.data, "process exit observation failed")
+                    if event.ident == self.pid and event.filter == select.KQ_FILTER_PROC and event.fflags & select.KQ_NOTE_EXIT:
+                        self.complete = True
+        return self.complete
+
+    def close(self):
+        if self.queue is not None:
+            self.queue.close()
+
+
 def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, receipt: dict[str, Any], *, lock_fd: int, global_lock_fd: int | None = None, require_completion=True, on_spawn=None, on_exit=None):
     """One guarded process group; preparation never uses IDE event parsing."""
     process = None
+    exit_watch = None
     receipt["worker_exited"] = True
     pid_key, exited_key = ("worker_pid", "worker_exited") if require_completion else ("preparation_pid", "preparation_exited")
     gate_read, gate_write = os.pipe()
@@ -468,6 +505,13 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
     selector = selectors.DefaultSelector()
     receipt["license_observation_complete"] = not require_completion
 
+    def leader_exited():
+        try:
+            return exit_watch.exited()
+        except OSError as error:
+            receipt["exit_observer_errno"] = error.errno
+            raise Blocked("native_exit_observation_unproven") from None
+
     def scan_license(scanner, data, final=False):
         if scanner.feed(data, final=final):
             receipt["license_boundary_observed"] = True
@@ -477,7 +521,9 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
             return
         # Scan the whole received chunk before ERROR, cancellation, oversized
         # lines or any other ordinary observation can abort processing it.
-        scan_license(scanner, data, final)
+        # Leader exit does not end streams inherited by descendants. Only the
+        # post-group drain may finalize the independent licence-line scanner.
+        scan_license(scanner, data)
         if receipt.get("license_boundary_observed"):
             raise Blocked("native_owner_activation_required")
         lines, partial = framer.feed(data, final=final)
@@ -626,6 +672,12 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
         if gate_read is not None:
             os.close(gate_read)
             gate_read = None
+        try:
+            exit_watch = ChildExitObserver(process.pid)
+            receipt["exit_observer"] = exit_watch.kind
+        except OSError as error:
+            receipt["exit_observer_errno"] = error.errno
+            raise Blocked("native_exit_observer_unavailable") from None
         if on_spawn is not None:
             on_spawn(process.pid)
         check_lifetime(parent_fd, deadline)
@@ -646,7 +698,7 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
                 if not chunk:
                     selector.unregister(stdout)
             read_logs()
-            if process.poll() is not None:
+            if leader_exited():
                 while True:
                     check_lifetime(parent_fd, deadline)
                     try:
@@ -662,21 +714,18 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
             load = os.getloadavg()[0]
             if load > LOAD_LIMIT and not paused:
                 if not send_group_signal(process.pid, signal.SIGSTOP, receipt):
-                    if process.poll() is not None:
+                    if leader_exited():
                         continue
                     raise Blocked("native_process_signal_failed")
                 paused = True
                 receipt["load_pause_count"] += 1
             elif load <= LOAD_LIMIT and paused:
                 if not send_group_signal(process.pid, signal.SIGCONT, receipt):
-                    if process.poll() is not None:
+                    if leader_exited():
                         continue
                     raise Blocked("native_process_signal_failed")
                 paused = False
-        receipt["engine_exit_code" if require_completion else "preparation_exit_code"] = process.returncode
         receipt["completion_observed"] = observer.completion if require_completion else False
-        if process.returncode != 0 or require_completion and not observer.completion:
-            raise Blocked("native_execution_incomplete" if require_completion else "native_preparation_failed")
     except observations.ObservationError as error:
         raise Blocked(str(error)) from None
     finally:
@@ -684,9 +733,14 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
             if isinstance(gate, int):
                 os.close(gate)
         selector.close()
+        if exit_watch is not None:
+            try:
+                exit_watch.close()
+            except OSError as error:
+                receipt["exit_observer_close_errno"] = error.errno
         if process is not None:
             if process.returncode is None:
-                # Until wait/poll reaps this leader its PID cannot be reused.
+                # The non-reaping observer keeps this PID pinned even on exit.
                 send_group_signal(process.pid, signal.SIGKILL, receipt)
             try:
                 process.wait(timeout=2)
@@ -695,6 +749,7 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
                 reaped = False
                 receipt["process_reap_failure"] = {"kind": type(error).__name__, "errno": getattr(error, "errno", None)}
             receipt["process_reaped"] = reaped
+            receipt["engine_exit_code" if require_completion else "preparation_exit_code"] = process.returncode
             absent = group_gone(process.pid, receipt=receipt)
             closed = reaped and absent
             receipt["process_custody_closed"] = closed
@@ -714,6 +769,8 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
             # Popen never created a licensed process, hence no output can have
             # been lost. The pre-armed hold can be reconciled as a failed spawn.
             receipt["license_observation_complete"] = True
+    if process.returncode != 0 or require_completion and not observer.completion:
+        raise Blocked("native_execution_incomplete" if require_completion else "native_preparation_failed")
 
 
 def prepare_model(project: Path, sdk_name: str, framework_roots: list[Path], selected: set[str]):
@@ -914,6 +971,8 @@ def envelope(host: Any, receipt: dict[str, Any], findings: list[dict[str, Any]],
         action = "Preserve the SDK, private directory and journal until the process group is proved gone. Use --backend native --native-recover-only with the same independent worker; resource recovery does not clear an unknown licensed outcome."
     elif reason == "native_process_signal_failed":
         action = "The load-control signal failed while its leader was still live. Bounded finalization attempted termination, reaping, group proof and licence drain. Check process_signals in the receipt before a fresh assessment; retained custody requires --native-recover-only first."
+    elif reason in {"native_exit_observer_unavailable", "native_exit_observation_unproven"}:
+        action = "Restore non-reaping child-exit observation in the documented native Python setup (waitid/WNOWAIT or kqueue/NOTE_EXIT). Registration is required before the launch gate opens. Preserve any held custody and use --native-recover-only first; never substitute a reaping poll before stopping the owned group."
     report = f"{verdict}: native PyCharm; {reason}; {len(findings)} findings; {len(gaps)} proof gaps; {len(receipt.get('coverage', {}).get('unproven', []))} inspections unproven."
     return {"schema_version": host.AGENT_RESULT_SCHEMA_VERSION, "command": "agent-inspect", "backend": "native",
             "status": {"GREEN": "clean", "RED": "findings"}.get(verdict, "error"),
@@ -1143,6 +1202,7 @@ def run(args, host):
     child = os.fork()
     if child == 0:
         os.setsid()
+        signal.signal(signal.SIGCHLD, signal.SIG_DFL)
         os.close(lifetime_write)
         os.close(result_read)
         def guardian_signal(_signum, _frame):
@@ -1176,4 +1236,9 @@ def run(args, host):
             return json.loads(data)
     finally:
         os.close(lifetime_write)
-        os.waitpid(child, 0)
+        try:
+            os.waitpid(child, 0)
+        except ChildProcessError:
+            # The invoker may deliberately auto-reap children. The guardian
+            # resets its own SIGCHLD, and its result pipe remains authoritative.
+            pass
