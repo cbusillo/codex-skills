@@ -334,6 +334,27 @@ class PaneParserTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.terminal.list()
 
+    def test_exit_wait_refuses_persistent_unknown_pane_or_source_pid(self):
+        row = {"session_id": self.identity, "pid": 789, "tty": "ttys987",
+               "window_id": "$1", "tab_id": "@1", "tmux_socket": "fixture"}
+        unknown = dict(zip(tmux_terminal.PANE_FIELDS, self.dead.rstrip("\n").split("\t")))
+        unknown.update(pane_dead="0", pane_pid="")
+        for obstruction in ("unknown", "source_pid"):
+            with self.subTest(obstruction=obstruction):
+                waiter = TmuxFixture(methodName="runTest")
+                waiter.terminal, waiter.socket, waiter.root = self.terminal, "fixture", Path("fixture")
+                snapshots = self.pane_line(unknown) if obstruction == "unknown" else self.dead
+                processes = [] if obstruction == "unknown" else [(row["pid"], "other-tty", "fixture-agent")]
+                ticks = iter((0, 0, float("inf")))
+                clock = SimpleNamespace(monotonic=lambda: next(ticks), sleep=lambda _seconds: None)
+                with patch.object(self.terminal, "send", new_callable=AsyncMock), \
+                        patch.object(self.terminal, "run", return_value=SimpleNamespace(
+                            returncode=0, stdout=snapshots, stderr="")), \
+                        patch.object(session_liveness, "inventory", return_value=processes), \
+                        patch(__name__ + ".time", clock):
+                    with self.assertRaises(AssertionError):
+                        waiter.ended(row)
+
     def test_interrupted_terminal_cleanup_retains_physical_close_contract(self):
         entry = {"supervisor_owned": True, "tmux_session_id": self.identity, "pid": 789,
                  "tty": "ttys987", "window_id": "$1", "tab_id": "@1", "tmux_socket": "fixture",
@@ -736,15 +757,14 @@ for line in sys.stdin:
         deadline = time.monotonic() + 10
         last_error = None
         while time.monotonic() < deadline:
-            if self.terminal.select(row["session_id"])["dead"]:
-                # tmux's dead flag alone is not the shutdown procedure's
-                # process-exit proof, especially while a Linux PTY is reaped.
-                try:
+            try:
+                if self.terminal.select(row["session_id"])["dead"]:
+                    # An uncertain pane snapshot cannot prove exit. A dead
+                    # flag still needs the independent process-exit proof.
                     self.terminal.verify_closed(row["session_id"], self.entry(row))
-                except ValueError as error:
-                    last_error = error
-                else:
                     return
+            except ValueError as error:
+                last_error = error
             time.sleep(0.05)
         self.fail(f"agent exit could not be verified: {last_error}; " + self.diagnostics())
 
@@ -947,19 +967,44 @@ for line in sys.stdin:
     def test_exit_wait_requires_process_proof_after_tmux_reports_dead(self):
         row = self.launch()
         self.wait_screen(row["session_id"], "READY:")
-        original = session_liveness.inventory
-        reads = 0
+        pane_id = self.terminal.select(row["session_id"])["pane_id"]
+        inventory = session_liveness.inventory
+        send, run = self.terminal.send, self.terminal.run
+        quitting, uncertain_seen, source_present = False, False, True
+
+        async def quit_then_wait(*args, **kwargs):
+            nonlocal quitting
+            await send(*args, **kwargs)
+            quitting = True
+
+        def pane_transition(command, *args, **kwargs):
+            nonlocal uncertain_seen
+            result = run(command, *args, **kwargs)
+            if command == "list-panes" and quitting and not uncertain_seen:
+                lines = result.stdout.splitlines()
+                for index, line in enumerate(lines):
+                    fields = dict(zip(tmux_terminal.PANE_FIELDS, line.split("\t")))
+                    if fields["pane_id"] == pane_id:
+                        fields.update(pane_pid="", pane_dead="0")
+                        lines[index] = PaneParserTests.pane_line(fields).rstrip("\n")
+                        uncertain_seen = True
+                        return SimpleNamespace(returncode=result.returncode,
+                                               stdout="\n".join(lines) + "\n", stderr=result.stderr)
+            return result
 
         def reaping():
-            nonlocal reads
-            reads += 1
-            if reads == 1:
+            nonlocal source_present
+            if source_present:
+                source_present = False
                 return [(row["pid"], row["tty"].removeprefix("/dev/"), "fixture-agent")]
-            return original()
+            return inventory()
 
-        with patch.object(session_liveness, "inventory", side_effect=reaping):
+        with patch.object(self.terminal, "send", side_effect=quit_then_wait), \
+                patch.object(self.terminal, "run", side_effect=pane_transition), \
+                patch.object(session_liveness, "inventory", side_effect=reaping):
             self.ended(row)
-        self.assertGreater(reads, 1)
+        self.assertTrue(uncertain_seen)
+        self.assertFalse(source_present)
 
     def test_split_linked_window_and_stale_identity_are_preserved(self):
         row = self.launch()
