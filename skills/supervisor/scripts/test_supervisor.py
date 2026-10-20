@@ -2879,7 +2879,8 @@ class TerminalTests(unittest.TestCase):
                 copy.write_text(f"<!-- brief-rules:start -->\n{edited}\n<!-- brief-rules:end -->\n")
                 stale = (None, "", "   \n", "Do the task.",
                          "Rules: https://github.com/o/r/blob/0a1b2c3/skills/supervisor/references/brief-rules.md",
-                         f"Rules: {iterm_tab.BRIEF_RULES_URL}.old",
+                         f"Rules: {iterm_tab.BRIEF_RULES_URL}.old", f"Rules: {iterm_tab.BRIEF_RULES_URL}%2Eold",
+                         f"Rules: {iterm_tab.BRIEF_RULES_URL}/other.md", f"Rules: {iterm_tab.BRIEF_RULES}/other.md",
                          "Rules: skills/supervisor/references/brief-rules.md",
                          f"Rules: {copy}", f"Rules: {root / 'missing' / copy.relative_to(root / 'old')}",
                          "Do the task.\n" + edited)
@@ -2898,6 +2899,7 @@ class TerminalTests(unittest.TestCase):
     def test_brief_links_or_includes_the_current_rules(self):
         rules = iterm_tab.brief_rules_block()
         for brief in (f"Do the task.\nRules for this brief: {iterm_tab.BRIEF_RULES_URL}",
+                      f"Read {iterm_tab.BRIEF_RULES_URL}. Then start.",
                       f"Do the task. Rules: ({iterm_tab.BRIEF_RULES}#rules-every-brief-carries)",
                       "Do the task.\n\n" + " ".join(rules.split())):
             with self.subTest(brief=brief):

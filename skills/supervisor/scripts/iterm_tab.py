@@ -40,8 +40,10 @@ CHROME_OPT_IN = Path(__file__).resolve().parents[3] / ".local" / "chrome.toml"
 # Every brief carries the reviewed rules, by link or as an unchanged copy (Q587).
 BRIEF_RULES = Path(__file__).resolve().parents[1] / "references" / "brief-rules.md"
 BRIEF_RULES_URL = "https://github.com/cbusillo/codex-skills/blob/main/skills/supervisor/references/brief-rules.md"
-# A link to main stays current; a pinned commit, relative path or renamed file does not.
-_BRIEF_RULES_TAIL = re.escape("skills/supervisor/references/brief-rules.md") + r"(?![\w-]|\.\w)"
+# A link to main stays current; a pinned commit, relative path or longer name does not.
+# The link ends at an anchor, whitespace, a closing delimiter or sentence punctuation.
+_BRIEF_RULES_TAIL = (re.escape("skills/supervisor/references/brief-rules.md")
+                     + r"(?=#|$|[\s)>\]`'\"]|[.,;:](?:\s|$))")
 BRIEF_RULES_URL_LINK = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/blob/main/" + _BRIEF_RULES_TAIL)
 # An absolute path counts only when that file holds the current rules block.
 BRIEF_RULES_PATH_LINK = re.compile(r"(?<![^\s(<\[`'\"])(/(?:[^\s:()<>\[\]`'\"]+/)?" + _BRIEF_RULES_TAIL + ")")
