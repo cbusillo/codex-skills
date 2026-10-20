@@ -559,7 +559,7 @@ def validate_markdown_links(skill_dir: Path) -> list[str]:
                 # Horizontal rules may surround Markdown rather than YAML metadata.
                 metadata = None
             if isinstance(metadata, dict):
-                line_offset = match.group(0).count("\n")
+                line_offset = match.group().count("\n")
                 text = text[match.end():]
         in_fence = False
         for line_number, line in enumerate(text.splitlines(), start=line_offset + 1):
