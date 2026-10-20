@@ -391,7 +391,8 @@ def javascript_literal_members(native, code, begin, end, *, _facts=None):
                         name = None
         values.append((name, operand))
         if _facts is not None:
-            _facts.append((name, operand, key_recipe))
+            prototype = object_ and len(parts) > 1 and name == "__proto__" and key_recipe is None
+            _facts.append((name, operand, key_recipe, prototype))
     return values
 
 
@@ -463,10 +464,7 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
         eligible = set()
         for origin in tuple(affected.get(root, ())):
             at, creation = origin
-            before, read = at, position
-            if creation is not None and anchor is not None and creation != anchor and creation[2] == anchor[2]:
-                before, read = creation[0], anchor[0]
-            if not ordering(owners[before], read, before)[0]:
+            if not relation_presence(at, owners[at], creation, position, anchor)[0]:
                 continue
             eligible.add(origin)
             for producer in tuple(relation_origins.get((fact, origin), ())):
@@ -1424,15 +1422,17 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
         fields, exact = query(("fields", root), lambda: compute_fields(root))
         return fields if isinstance(fields, dict) else {}, exact
 
-    def event_ordered(event, position, anchor):
-        owner = function_owner(write_sites.get(event[0], event[0]))
-        return owner == function_owner(position) and (owner == -1 or event[4] in anchor_context(anchor, owner))
+    def event_ordered(at, creation, position, anchor):
+        owner = function_owner(write_sites.get(at, at))
+        return owner == function_owner(position) and (owner == -1 or creation in anchor_context(anchor, owner))
+
+    def relation_presence(at, context, creation, position, anchor):
+        possible, definite = ordering(context, position, at) if event_ordered(at, creation, position, anchor) else (True, False)
+        return possible, definite
 
     def event_presence(root, field, event, position, anchor):
         at, context, certain, item, effect_anchor, producer = event
-        possible, definite = ordering(context, position, at)
-        if not event_ordered(event, position, anchor):
-            possible, definite = True, False
+        possible, definite = relation_presence(at, context, effect_anchor, position, anchor)
         if not possible or not native_live(effect_anchor):
             return False, False
         if producer is not None:
@@ -1442,11 +1442,22 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
             token(producer)
             token(("qualification", producer))
             state = states.get(producer)
+            if state is not None and not state[2] and not state[3] and stack:
+                # A refreshed producer can invalidate itself during its pass.
+                # Do not cache this reader's provisional lack of write proof.
+                mark_dirty(stack[-1])
             assertion = root, field, at, context, item, effect_anchor
             certain = certain and state is not None and state[2] and not state[3] and qualifications.get(("writes", producer), {}).get(assertion, False)
             if producer[0] == "target":
                 roots, qualified, unconditional = qualifications.get(producer, (empty, False, False))
-                certain = certain and unconditional and qualified and roots == frozenset({root}) and state[1]
+                complete = state is not None and state[1] and state[2] and not state[3]
+                qualified = unconditional and qualified and roots == frozenset({root})
+                proof = qualifications.get(("writes", producer))
+                if complete and qualified and proof is not None and assertion not in proof:
+                    # A settled ordinary target no longer publishes this event.
+                    # Present but uncertain assertions must remain possible.
+                    return False, False
+                certain = certain and qualified and state[1]
         return possible, certain and definite
 
     def deletion(event):
@@ -1464,7 +1475,7 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
         watch_bucket(("effects", root))
         events = [(event, name) for name in (field, None) for event in tuple(effects.get((root, name), ()))
                   if event_presence(root, name, event, position, anchor)[0]]
-        for event, name in sorted(events, key=lambda selected: (not event_ordered(selected[0], position, anchor), event_order(selected[0][0], position))):
+        for event, name in sorted(events, key=lambda selected: (not event_ordered(selected[0][0], selected[0][4], position, anchor), event_order(selected[0][0], position))):
             item = event[3]
             if deletion(event):
                 selected = {(False, False)}
@@ -1525,7 +1536,9 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
             return fields, not remaining
         fields, accessors, known, methods = {}, set(), True, {}
         remaining, delegated = set(), set()
-        for name, operand, key_recipe in entries:
+        for name, operand, key_recipe, prototype in entries:
+            if prototype:
+                continue
             raw = native[slice(*operand)].strip()
             if code[slice(*operand)].lstrip().startswith("..."):
                 start = operand[0] + code[slice(*operand)].find("...") + 3
@@ -1599,31 +1612,64 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
             known &= certain
         return frozenset(result), known
 
-    def descriptor_option(item, layout=False):
-        source, _, _ = item[1:]
-        if item in direct_accessors:
-            return "accessor", direct_accessors[item], True
+    def descriptor_option(item, layout=False, prior_layout=None):
+        source, at, capture = item[1:]
         if source in literal_getters:
-            return "accessor", (source, None), True
-        values, exact = value_of(source)
-        getters, setters, data_items = set(), set(), set()
-        for value in values:
-            fields, known = aggregate_fields(value, item[2]) if value[0] == "aggregate" else ({}, False)
+            return [("accessor", (source, None), True)]
+        direct = direct_accessors.get(item)
+        if direct is not None:
+            fields = {side: methods for side, methods in zip(("get", "set"), direct) if methods is not None}
+            alternatives, exact = [(fields, True, True)], True
+        else:
+            values, exact = value_of(source)
+            alternatives = [(*aggregate_fields(value, at), False) if value[0] == "aggregate" else ({}, False, False) for value in values]
+        options, covered = [], True
+        def methods(selected):
+            if selected is None:
+                return empty
+            return frozenset({selected}) if isinstance(selected, tuple) and selected[0] == "span" else frozenset(selected)
+        for fields, known, direct in alternatives:
             exact &= known
-            if "value" in fields:
-                data_items.add(fields["value"])
-            if "get" in fields:
-                getters.add(fields["get"])
-            if "set" in fields:
-                setters.add(fields["set"])
-        if getters or setters:
-            return "accessor", (frozenset(getters), frozenset(setters)), exact
-        if layout:
-            return "values", empty, exact
-        selected = set()
-        for value in data_items:
-            selected.update(value_of(value)[0])
-        return "values", frozenset(selected or {("undefined",)}), exact
+            generic = not ({"value", "writable", "get", "set"} & fields.keys())
+            accessor = bool({"get", "set"} & fields.keys()) or generic and prior_layout is not None and prior_layout[0] == "accessor"
+            if accessor:
+                pair = []
+                for index, side in enumerate(("get", "set")):
+                    if side in fields:
+                        pair.append(methods(fields[side]) if direct else frozenset({fields[side]}))
+                    elif prior_layout is not None and prior_layout[0] == "accessor":
+                        pair.append(methods(prior_layout[1][index]))
+                    else:
+                        pair.append(empty)
+                covered &= ("set" if layout else "get") in fields or prior_layout is not None
+                options.append(("accessor", tuple(pair)))
+            elif layout:
+                covered &= not generic or prior_layout is not None
+                if "writable" in fields:
+                    writable = predicate(fields["writable"])
+                elif prior_layout is not None:
+                    writable = {not (prior_layout[2] or prior_layout[0] == "accessor")}
+                else:
+                    writable = {True, False}
+                if True in writable or None in writable:
+                    options.append(("values", empty))
+                if False in writable or None in writable:
+                    # Read-only data intercepts Set without a setter. Its
+                    # ordinary read value and descriptor provenance stay data.
+                    options.append(("accessor", (None, None)))
+            else:
+                if "value" in fields:
+                    selected, certain = value_of(fields["value"])
+                    exact &= certain
+                    options.append(("values", selected))
+                else:
+                    covered &= bool(prior_layout and (prior_layout[2] or prior_layout[0] == "accessor"))
+                    options.append(("values", frozenset({("undefined",)})))
+            if not known:
+                # Unknown descriptor fields can supply either accessor side.
+                pair = tuple(frozenset({("snapshot-member", source, side, at, capture)}) for side in ("get", "set"))
+                options.append(("accessor", pair))
+        return [(kind, selected, exact and covered) for kind, selected in options] or [("values", frozenset({("unknown",)}), False)]
 
     def field_presence(root, field, position, anchor, seen=frozenset()):
         if root in seen:
@@ -1677,10 +1723,17 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
             if not admitted:
                 continue
             if deletion(event):
-                if prior is None or event_order(event[0], position) >= prior or not ordering(event[1], position, event[0])[1] or not event_ordered(event, position, anchor):
+                if prior is None or event_order(event[0], position) >= prior or not ordering(event[1], position, event[0])[1] or not event_ordered(event[0], event[4], position, anchor):
                     definite = False
             else:
                 possible = True
+        array = root[0] == "copy" or root[0] == "aggregate" and code[root[1][0]] == "["
+        if array and numeric_field(field):
+            for event in tuple(effects.get((root, "length"), ())):
+                admitted, _ = event_presence(root, "length", event, position, anchor)
+                if admitted and (event not in array_lengths or array_lengths[event] <= int(field)):
+                    if prior is None or not event_ordered(event[0], event[4], position, anchor) or event_order(event[0], position) >= prior:
+                        definite = False
         return possible, definite
 
     def property_options(root, field, position, anchor, inherited=True, layout=False):
@@ -1689,11 +1742,40 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
         unordered = set()
         own_absent = None
         tag = "string" if raw_result(root) else root[0]
+        def initial_layout(item):
+            if tag != "aggregate" or field is None:
+                return None
+            fields, known = aggregate_fields(root, position)
+            if not known or field_remainders.get(root) or field_delegates.get(root):
+                return None
+            before = write_sites.get(item[2], item[2] - 1)
+            fact = ("escape", root)
+            watch_bucket(fact)
+            for event in tuple(escapes.get(root, ())):
+                at, context, origin, _ = event
+                if relation_presence(at, context, origin[1], before, item[3])[0]:
+                    for producer in tuple(relation_origins.get((fact, event), ())):
+                        token(producer)
+                    return None
+            if affected_at(root, before, item[3]):
+                return None
+            # Only an unchanged own literal role proves omitted-component
+            # defaults. Other possible publications keep the role uncertain.
+            for name in (field, None):
+                for event in tuple(effects.get((root, name), ())):
+                    if event[3] != item and event_presence(root, name, event, before, item[3])[0]:
+                        return None
+            accessor = accessor_fields.get(root, {}).get(field)
+            absent = field not in fields and not (code[root[1][0]] == "[" and field == "length")
+            return ("accessor", accessor, False) if accessor is not None else ("values", empty, absent)
         def add(at, certain, item, known=True, accessor=None):
             if accessor is not None:
                 kind, selected, exact = "accessor", accessor, known
             elif item[0] == "descriptor":
-                kind, selected, exact = descriptor_option(item, layout)
+                for kind, selected, exact in descriptor_option(item, layout, initial_layout(item)):
+                    originals[len(options)] = item
+                    options.append((at, certain, kind, selected, known and exact))
+                return
             elif layout:
                 kind, selected, exact = "values", empty, True
             else:
@@ -1714,13 +1796,37 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
                 add(-1, True, selected[int(field)], known)
             else:
                 fields, known = aggregate_fields(root, position)
+                prototypes = [recipe(operand, root[2]) for _, operand, _, prototype in literal_cache[root[1]][1] if prototype]
                 if field is None:
+                    for item in prototypes:
+                        add(-1, False, item, False)
                     for name in fields:
                         add(-1, False, ("snapshot-member", ("value", root), name, position, anchor), known)
                 elif field in fields:
                     add(-1, True, fields[field], known, accessor_fields.get(root, {}).get(field))
                 else:
-                    own_absent = known
+                    writable = bool(prototypes) and layout and field is not None
+                    for item in prototypes if writable else ():
+                        values, exact = value_of(item)
+                        writable &= exact and bool(values)
+                        for value in values:
+                            if value == root or value[0] != "aggregate":
+                                writable = False
+                                continue
+                            own, certain = aggregate_fields(value, position)
+                            ordinary = field in own and own[field][0] != "descriptor" and field not in accessor_fields.get(value, {})
+                            writable &= certain and ordinary and field_presence(value, field, position, anchor)[1]
+                            # Literal data is writable. A possible Define or
+                            # deletion can remove that certificate; generic
+                            # data-descriptor layout omits writable attributes.
+                            for name in (field, None):
+                                for event in tuple(effects.get((value, name), ())):
+                                    if event_presence(value, name, event, position, anchor)[0] and (event[3][0] == "descriptor" or deletion(event)):
+                                        writable = False
+                            if writable:
+                                own_options = property_options(value, field, position, anchor, inherited=False, layout=True)
+                                writable &= bool(own_options) and all(kind == "values" and exact for kind, _, exact in own_options)
+                    own_absent = known and (not (inherited and prototypes) or writable)
             if not array:
                 watch_bucket(("field-remainders", root))
                 for item in field_remainders.get(root, ()):
@@ -1821,17 +1927,19 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
             event_field = None if event in wildcard_events else event_fields.get(event, field)
             for origin in tuple(effect_origins.get((root, event_field, event), ())):
                 token(origin)
-            if not event_ordered(event, position, anchor):
+            if not event_ordered(event[0], event[4], position, anchor):
                 unordered.add(at)
             add(at, definite and field is not None and event not in wildcard_events, item)
         fact = ("escape", root)
         watch_bucket(fact)
-        user_global = root != ("global",) or any(ordering(event[1], position, event[0])[0]
+        user_global = root != ("global",) or any(event_presence(root, name, event, position, anchor)[0]
             for name in (field, None) for event in tuple(effects.get((root, name), ())))
         for event in tuple(escapes.get(root, ())) if user_global else ():
             at, context, origin, _ = event
-            possible, definite = ordering(context, position, at)
+            possible, _ = relation_presence(at, context, origin[1], position, anchor)
             if possible:
+                if not event_ordered(at, origin[1], position, anchor):
+                    unordered.add(at)
                 for producer in tuple(relation_origins.get((fact, event), ())):
                     token(producer)
                 value = ("unknown", position, field, anchor)
@@ -1839,6 +1947,8 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
                 options.append((at, False, "values", frozenset({value}), False))
         origins = affected_at(root, position, anchor) if user_global else ()
         if origins:
+            if any(not event_ordered(at, creation, position, anchor) for at, creation in origins):
+                unordered.add(-1)
             value = ("unknown", position, field, anchor)
             grow(affected, value, origins, ("affected", value))
             options.append((-1, False, "values", frozenset({value}), False))
@@ -1906,7 +2016,8 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
                 data_option = True
         if data_option:
             publish(root, field, item, at, context, certain and all(kind != "accessor" and known for kind, _, known in options), anchor, producer)
-        if any(ordering(escaped_context, at, escaped_at)[0] for escaped_at, escaped_context, _, _ in tuple(escapes.get(root, ()))):
+        if any(relation_presence(escaped_at, escaped_context, origin[1], at, anchor)[0]
+               for escaped_at, escaped_context, origin, _ in tuple(escapes.get(root, ()))):
             implicit_sites.setdefault(at, (at, at))
             actual = packet((at, anchor, root, field, "opaque-setter"), ("sequence", ((item, False),)))
             observe_global(at, anchor)
@@ -1996,7 +2107,7 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
     def literal_packet(root):
         literal(root[1])
         pieces = []
-        for _, span, _ in literal_cache[root[1]][1]:
+        for _, span, _, _ in literal_cache[root[1]][1]:
             begin, end = trim(*span)
             spread = code[begin:begin + 3] == "..."
             pieces.append((recipe((begin + 3, end) if spread else span, root[2]), spread))
@@ -2050,7 +2161,7 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
             if selected != root:
                 continue
             eligible = [event for event in tuple(events) if event_presence(root, field, event, position, anchor)[0]
-                        and (last is None or event_order(event[0], position) > last or not event_ordered(event, position, anchor))]
+                        and (last is None or event_order(event[0], position) > last or not event_ordered(event[0], event[4], position, anchor))]
             if not eligible:
                 continue
             if numeric_field(field):
@@ -2156,8 +2267,8 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
                 for (selected, field), events in tuple(effects.items()):
                     if selected != root:
                         continue
-                    for event in events:
-                        if ordering(event[1], position, event[0])[0] and (field is None or numeric_field(field)):
+                    for event in tuple(events):
+                        if (field is None or numeric_field(field)) and event_presence(root, field, event, position, anchor)[0]:
                             add(event[0], int(field) if field is not None else None,
                                 ("snapshot-member", ("value", root), field, position, anchor))
                 _, high = array_length(root, position, anchor, len(code) + 1, {}, frozenset(), {})
@@ -2869,7 +2980,7 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
         watch_bucket(("escapes",))
         for root, events in tuple(escapes.items()):
             for at, context, origin, operand in tuple(events):
-                if operand is None or not native_live(origin[1]) or origin == (site, anchor) or not ordering(context, site, at)[0]:
+                if operand is None or not native_live(origin[1]) or origin == (site, anchor) or not relation_presence(at, context, origin[1], site, anchor)[0]:
                     continue
                 for producer in tuple(relation_origins.get((("escape", root), (at, context, origin, operand)), ())):
                     if producer not in stack:
@@ -3620,8 +3731,10 @@ def _javascript_recipe_graph(native, code, facts, *, global_this=False, literal_
                 names.add(None)
             for root in roots:
                 for name in names:
-                    previous = [event for event in tuple(effects.get((root, name), ())) if ordering(event[1], begin, event[0])[0] and event[0] < begin]
-                    ordinary = bool(previous) and all(event[3][0] != "descriptor" for event in previous)
+                    previous = [event for event in tuple(effects.get((root, name), ()))
+                                if event_presence(root, name, event, begin, anchor)[0]
+                                and (not event_ordered(event[0], event[4], begin, anchor) or event[0] < begin)]
+                    ordinary = any(event_ordered(event[0], event[4], begin, anchor) for event in previous) and all(event[3][0] != "descriptor" for event in previous)
                     certain = root == ("global",) and known and exact and len(roots) == len(names) == 1 and ordinary and independent_statement(begin, r"\s*delete\s*")
                     publish(root, name, ("value", ("undefined",)), end - 1, owners[begin], certain, anchor, ("evaluated-read", read, anchor))
         elif kind == "copy":
@@ -4365,9 +4478,10 @@ def javascript_inputs(native, atoms, code, declarations, bindings=None, *, _dire
 
     def aggregate(span):
         if span not in aggregates:
-            members_ = javascript_literal_members(native, code, *span)
+            entries = []
+            members_ = javascript_literal_members(native, code, *span, _facts=entries)
             aggregates[span] = (dict(members_) if members_ is not None
-                                and all(name is not None and name != "__proto__" for name, _ in members_) else None)
+                                and all(name is not None and not prototype for name, _, _, prototype in entries) else None)
         return aggregates[span]
 
     def origin(name, active=()):

@@ -4,6 +4,7 @@
 # ///
 """Native receipt fixtures exercise shutdown acceptance on both harnesses."""
 import json
+import os
 import argparse
 import shlex
 import sys
@@ -5021,6 +5022,15 @@ os.system(get())
             ('const o={get x(){return text},set x(v){}};Object.assign(o,{x:eval});o.x(SRC);', False),
             ('const o={get x(){return eval}};Object.defineProperty(o,"x",{value:text});o.x(SRC);', False),
             ('const o={run:text};lib.patch(o);const get=o.run;get()(SRC);', True),
+            ('const o={run:text};function f(k){if(k)o.run(SRC);lib.patch(o)}f(0);f(1);', True),
+            ('const o={run:text};function f(k){if(k)o.run(SRC);text(1)}f(0);f(1);', False),
+            ('const o={get run(){return text},set run(v){}};lib.patch(o);Object.defineProperty(o,"run",{enumerable:true});o.run(SRC);', True),
+            ('const o={get run(){return text},set run(v){}};text(1);Object.defineProperty(o,"run",{enumerable:true});o.run(SRC);', False),
+            ('const o={};Object.defineProperty(o,"run",{writable:false});try{o.run(SRC)}catch{}', False),
+            ('const o={get run(){return text}};lib.patch(o);Object.defineProperty(o,"run",{writable:false});o.run(SRC);', True),
+            ('const o={get run(){return text}};text(1);Object.defineProperty(o,"run",{writable:false});o.run(SRC);', False),
+            ('const o={};lib.patch(o);Object.defineProperty(o,"run",{writable:false});o.run(SRC);', True),
+            ('const o={};text(1);Object.defineProperty(o,"run",{writable:false});o.run(SRC);', False),
         ):
             cells.append((prefix + cell, owning))
         # Each capability has a harmless twin. Keep possible initial values,
@@ -5050,6 +5060,45 @@ os.system(get())
             ('const o={run:HANDLE};const d={run:text};function g(){delete d.run}function run(cb){cb()}run(g);Object.assign(o,d);o.run(SRC);', True),
             ('const o={run:text};if(flag)Object.defineProperty(o,"run",{get(){return HANDLE},set(v){}});o.run=text;o.run(SRC);', True),
             ('const o={run:HANDLE};function f(w,r){Object.assign(w,{run:text});r.run(SRC)}f({},o);f(o,{});', True),
+            ('const o={get run(){return text},set run(v){HANDLE(v)}};Object.defineProperty(o,"run",{get(){return text}});o.run=SRC;', True),
+            ('const o={get run(){return HANDLE},set run(v){}};Object.defineProperty(o,"run",{set(v){}});o.run(SRC);', True),
+            ('const o={run:text};let d={value:HANDLE};if(flag)d={get(){return text}};Object.defineProperty(o,"run",d);o.run(SRC);', True),
+            ('const o={get run(){return HANDLE},set run(v){}};Object.defineProperty(o,"run",{get:undefined});try{o.run(SRC)}catch{}', False),
+            ('const o={run:HANDLE};Object.defineProperty(o,"run",{writable:false});o.run=text;o.run(SRC);', True),
+            ('const o={run:text};Object.defineProperty(o,"run",{writable:false});o.run=HANDLE;o.run(SRC);', False),
+            ('const o={get run(){return HANDLE},set run(v){}};o.__defineSetter__("run",function(v){});o.run(SRC);', True),
+            ('const o={set run(v){HANDLE(v)}};o.__defineGetter__("run",()=>text);o.run=SRC;', True),
+            ('const o={};Object.defineProperty(o,"run",{value:text});o.run=HANDLE;o.run(SRC);', False),
+            ('const o={run:HANDLE};Object.defineProperty(o,"run",{writable:false});Object.defineProperty(o,"run",{writable:true});o.run=text;o.run(SRC);', False),
+            ('const d=[text];Object.defineProperty(d,"length",{value:1});d.length=0;const o={0:HANDLE};Object.assign(o,d);o[0](SRC);', True),
+            ('const o={run:HANDLE};let d={value:text};if(flag)d={enumerable:true};Object.defineProperty(o,"run",d);o.run(SRC);', True),
+            ('const o={run:text};for(const k of [0,1]){if(k)Object.defineProperty(o,"run",{writable:false});o.run=HANDLE;}o.run(SRC);', True),
+            ('const o={run:text};function f(){o.run=HANDLE}f();Object.defineProperty(o,"run",{writable:false});f();o.run(SRC);', True),
+            ('const o={run:text};function f(k){if(k)o.run(SRC);o.run=HANDLE}for(const k of [0,1])f(k);', True),
+            ('const o={run:text};lib.on("event",k=>{if(k)o.run(SRC);o.run=HANDLE});', True),
+            ('const a=[text];function f(k){if(k)a.forEach(e=>e(SRC));a[1]=HANDLE}f(0);f(1);', True),
+            ('const o={0:HANDLE};const d=[text];if(flag)d.length=0;Object.assign(o,d);o[0](SRC);', True),
+            ('const d=[text];if(flag)d.length=0;const o={0:HANDLE,...d};o[0](SRC);', True),
+            ('const p={run:HANDLE};const o={__proto__:p};o.run(SRC);', True),
+            ('const a=[];function f(r,w){r.forEach(e=>e(SRC));w[0]=HANDLE}f([],a);f(a,[]);', True),
+            ('const p={run:HANDLE};const o={["__proto__"]:p};o.run(SRC);', False),
+            ('const __proto__={run:HANDLE};const o={__proto__};o.run(SRC);', False),
+            ('const o={__proto__(){return HANDLE}};o.run(SRC);', False),
+            ('const d={0:text,length:1};d.length=0;const o={0:HANDLE};Object.assign(o,d);o[0](SRC);', False),
+            ('const d=[text];if(flag)d.length=0;d[0]=text;const o={0:HANDLE};Object.assign(o,d);o[0](SRC);', False),
+            ('const d=[text];d[0]=text;if(flag)d.length=0;const o={0:HANDLE};Object.assign(o,d);o[0](SRC);', True),
+            ('const p={run:HANDLE};const o={"__proto__":p};o.run(SRC);', True),
+            ('const p={run:HANDLE};const o={__proto__:p,run:text};o.run(SRC);', False),
+            ('const p={run:HANDLE};const o={run:text,__proto__:p};o.run(SRC);', False),
+            ('const p={run:HANDLE};const o={__proto__:p};o.run=text;o.run(SRC);', False),
+            ('const d=[text];if(flag)d.length=0;if(other)d[0]=text;const o={0:HANDLE};Object.assign(o,d);o[0](SRC);', True),
+            ('const p={get run(){return HANDLE},set run(v){}};const o={__proto__:p};o.run=text;o.run(SRC);', True),
+            ('const p={run:HANDLE};Object.defineProperty(p,"run",{writable:false});const o={__proto__:p};o.run=text;o.run(SRC);', True),
+            ('const p={run:HANDLE};const o={__proto__:p};Object.defineProperty(o,"run",{value:text});o.run(SRC);', False),
+            ('const o={run:HANDLE};Object.defineProperty(o,"run",{enumerable:true});o.run(SRC);', True),
+            ('const o={get run(){return text},set run(v){HANDLE(v)}};Object.defineProperty(o,"run",{enumerable:true});o.run=SRC;', True),
+            ('const o={get run(){return HANDLE}};Object.defineProperty(o,"run",{writable:false});try{o.run(SRC)}catch{}', False),
+            ('const o={run:HANDLE};Object.defineProperty(o,"run",{value:undefined});try{o.run(SRC)}catch{}', False),
             ('const cb=()=>{const ignored=make(HANDLE,SRC).x};lib.run(cb);', True),
             ('function cb(){const ignored=make(HANDLE,SRC).x}lib.run(cb);', True),
             ('const cb=()=>make(HANDLE,SRC).x;lib.run({nested:{cb}});', True),
@@ -5768,6 +5817,36 @@ os.system(get())
                 with self.subTest(source_handle=cell):
                     self.assertEqual(receipts.ownership_state(rows, 'codex')['pending'], expected)
 
+
+    def test_generated_replacement_readers_refresh_after_producer_settles(self):
+        writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 5'
+        embedded = 'tools.exec_command({cmd:' + json.dumps(writer) + '})'
+        cell = ('const SRC=' + json.dumps(embedded) + ';const o={run:eval};'
+                'Object.defineProperty(o,"run",{enumerable:true});o.run=text;o.run(SRC);')
+        # Hash order exposed a completed reader cached while its writer was
+        # dirty. Every order must consume the eventual complete write proof.
+        worker = """import json, sys
+from unittest.mock import patch
+import test_claim_receipts as tests
+case = tests.ReceiptTests('test_generated_source_bindings_respect_eval_and_constructor_scope')
+case.setUp()
+try:
+    rows = tests.history('codex', {})
+    rows[1]['payload'].update(name='functions.exec', arguments=json.loads(sys.stdin.read()))
+    rows[2] = tests.output({'exit_code': 0, 'output': ''}, 'codex', 'tool-0')
+    with patch.object(tests.receipts.subprocess, 'run', side_effect=AssertionError('native subprocess prohibited')):
+        print(json.dumps(tests.receipts.ownership_state(rows, 'codex')))
+finally:
+    case.doCleanups()
+"""
+        for seed in (0, 1, 2):
+            with self.subTest(hash_seed=seed):
+                child = subprocess.run([sys.executable, '-c', worker], input=json.dumps(cell),
+                                       text=True, capture_output=True, timeout=10,
+                                       cwd=Path(__file__).resolve().parent,
+                                       env={**os.environ, 'PYTHONHASHSEED': str(seed)})
+                self.assertEqual(child.returncode, 0, child.stderr)
+                self.assertFalse(json.loads(child.stdout)['pending'])
 
     def test_composed_regex_and_nested_templates_keep_executable_calls_visible(self):
         writer = 'uv run /catalog/gh-plan.py --repo client/repo claim 5 > claim.json'
