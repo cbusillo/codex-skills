@@ -1388,6 +1388,87 @@ class ProcessArgumentsTests(unittest.TestCase):
     source = "01a1514c-fa7f-7be3-95ba-4d25df73d07e"
     other = "01970242-7941-7f0c-b461-16aa5723fb51"
 
+    def setUp(self):
+        # Kernel existence is a fixture fact, never a host PID assumption.
+        self.enterContext(patch.object(session_liveness.os, "kill", return_value=None))
+        github = str(Path(__file__).resolve().parents[2] / "github/scripts")
+        with patch.object(sys, "path", [github, *sys.path]):
+            import github_plan_sessions as sessions
+        self.enterContext(patch.object(sessions.github_plan_closure, "managed_launch", return_value=False))
+
+    def test_only_kernel_absence_clears_stale_process_coverage(self):
+        github = str(Path(__file__).resolve().parents[2] / "github/scripts")
+        with patch.object(sys, "path", [github, *sys.path]):
+            import github_plan_sessions as sessions
+        commands = [
+            "/git-core/git-remote-https origin https://github.com/owner/codex-skills.git",
+            "/bin/gh repo view owner/codex-skills",
+            "python3 /abs/tool.py view owner/codex-skills",
+            "codex exec -- short-lived-work",
+            "codex resume " + self.source,
+        ]
+        for platform, argv_error in (("darwin", OSError(errno.EINVAL, "argv unavailable")),
+                                     ("linux", FileNotFoundError(errno.ENOENT, "argv unavailable"))):
+            for command in commands:
+                for outcome, absent in ((ProcessLookupError(errno.ESRCH, "gone"), True),
+                                        (None, False),
+                                        (PermissionError(errno.EPERM, "denied"), False),
+                                        (OSError(errno.EIO, "unknown"), False)):
+                    with self.subTest(platform=platform, command=command, absent=absent, outcome=type(outcome)), \
+                            patch.object(session_liveness.sys, "platform", platform), \
+                            patch.object(session_liveness, "native_arguments", side_effect=argv_error), \
+                            patch.object(session_liveness.os, "kill", side_effect=outcome) as existence:
+                        self.assertEqual(sessions.process_absence_known("456 " + command), absent)
+        # Positive source identity is not erased by later kernel absence.
+        command = "456 codex resume " + self.source
+        with patch.object(session_liveness.sys, "platform", "darwin"), \
+                patch.object(session_liveness, "native_arguments", side_effect=ProcessLookupError), \
+                patch.object(session_liveness.os, "kill", side_effect=ProcessLookupError):
+            self.assertTrue(sessions.process_absence_known(command))
+            self.assertEqual([p["sessionId"] for p in sessions.process_sessions(command, {self.source})], [self.source])
+            with self.assertRaises(ValueError):
+                session_liveness.verify_process_exit({"pid": 123, "tty": "source-tty", "session_id": self.source},
+                    rows=[(456, "other-tty", command.split(" ", 1)[1])])
+        # A live replacement cannot erase an earlier candidate.
+        with patch.object(session_liveness, "native_arguments", return_value=["/usr/bin/true"]):
+            self.assertFalse(sessions.process_absence_known(command))
+        for platform, row in (("win32", command), ("darwin", "codex resume " + self.source),
+                              ("darwin", "0 codex resume " + self.source)):
+            with self.subTest(platform=platform, row=row), \
+                    patch.object(session_liveness.sys, "platform", platform), \
+                    patch.object(session_liveness, "native_arguments", side_effect=OSError), \
+                    patch.object(session_liveness.os, "kill", side_effect=ProcessLookupError) as existence:
+                self.assertFalse(sessions.process_absence_known(row))
+                existence.assert_not_called()
+
+    def test_disappearing_snapshot_row_keeps_prior_source_peer(self):
+        github = str(Path(__file__).resolve().parents[2] / "github/scripts")
+        with patch.object(sys, "path", [github, *sys.path]):
+            import github_plan_sessions as sessions
+        for command, source_visible in (("/bin/gh repo view owner/codex-skills", False),
+                                        ("codex resume " + self.source, True)):
+            for native_complete in (False, True):
+                async def read(*_args):
+                    return [], {self.source: {"state": "ended"}}, {
+                        "status": "available" if native_complete else "incomplete",
+                        "peer_complete": native_complete, "socket": "/fixture/socket"}
+                with self.subTest(command=command, native_complete=native_complete), \
+                        patch.object(sessions, "codex_homes", return_value=[Path("/fixture")]), \
+                        patch.object(sessions, "observe_home", side_effect=read), \
+                        patch.object(sessions.github_plan_closure, "inherit_observed_leases"), \
+                        patch.object(sessions.subprocess, "run", side_effect=[
+                            SimpleNamespace(returncode=0, stdout="456 " + command),
+                            SimpleNamespace(returncode=0, stdout="")]), \
+                        patch.object(session_liveness.sys, "platform", "darwin"), \
+                        patch.object(session_liveness, "native_arguments", side_effect=OSError(errno.EINVAL, "unavailable")), \
+                        patch.object(session_liveness.os, "kill", side_effect=ProcessLookupError):
+                    peers, states, coverage = sessions._observe({self.source})
+                self.assertEqual(coverage["process_coverage"], "complete")
+                self.assertEqual(coverage["peer_complete"], native_complete)
+                self.assertEqual(bool(peers), source_visible)
+                self.assertEqual(states.get(self.source, {}).get("state"),
+                                 "live" if source_visible else "ended" if native_complete else None)
+
     def test_authoritative_non_harness_argv_clears_an_ambiguous_ps_candidate(self):
         github = str(Path(__file__).resolve().parents[2] / "github/scripts")
         with patch.object(sys, "path", [github, *sys.path]):

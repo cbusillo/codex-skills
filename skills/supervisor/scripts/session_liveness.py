@@ -49,6 +49,19 @@ def process_started_at(pid):
     return datetime.strptime(value, "%a %b %d %H:%M:%S %Y").replace(tzinfo=timezone.utc)
 
 
+def process_absent(pid):
+    """Only the kernel's missing-PID result establishes current absence."""
+    if sys.platform not in {"darwin", "linux"} or type(pid) is not int or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        pass
+    return False
+
+
 def idle_terminal_command(command):
     try:
         argv = shlex.split(command)
