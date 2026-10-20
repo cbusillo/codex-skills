@@ -2,7 +2,8 @@
 
 Use this style when you write Python, or Odoo JavaScript, in a repository
 whose agent instructions point here. Code should read like prose: names carry
-the meaning, functions are small, and nothing is said twice.
+the meaning, functions are small, and nothing is said twice. Rules marked
+"house rule" are this style's choice, not an Odoo or Python requirement.
 
 ## Names Instead Of Comments
 
@@ -11,8 +12,8 @@ unclear code stand by explaining it.
 
 - Write no docstrings.
 - Write no comment that restates the code.
-- Write no "why" comment that a better function name and parameters could
-  carry. Extract the step and name it for the reason:
+- Write no "why" comment that a name or structure could carry. Extract the
+  step and name it for the reason:
 
   ```python
   # Before
@@ -25,15 +26,19 @@ unclear code stand by explaining it.
   self._keep_source_date(invoice, source_date)
   ```
 
+- When a constraint cannot be carried by a name or by structure, enforce it
+  with a test whose name states it, such as
+  `test_provider_call_never_holds_import_lock`, or a predicate such as
+  `_shopify_null_means_unchanged`.
 - Keep history out of code: issue numbers, people, and "previously this did"
   belong in the commit and pull request.
 - Tool directives are not comments: a narrowly scoped `# noinspection`,
   `# noqa`, or `# type: ignore` for a confirmed false positive stays, without
   a prose justification line. A license header or generated-file marker that a
   tool or license requires also stays.
-- What remains is a one-line note of a fact outside the code that no name can
-  hold, such as a link to an upstream bug. Try the name first; a decision or
-  constraint that a name can state is not such a fact.
+- The one other comment allowed is a single line that links to an outside
+  source no name can hold: a vendor document, a specification, or an upstream
+  bug. It is a link, not prose.
 
 ## Shape
 
@@ -55,13 +60,18 @@ unclear code stand by explaining it.
       return self._matches_any_rule(product, self.excluded_by_rules)
   ```
 
-- Don't repeat yourself. Extract shared logic to a helper where every caller
-  can depend on it, such as a shared addon. "Duplicated to avoid coupling"
-  is not a reason.
+- Share one implementation of one rule. Two callers that touch the same data
+  but need different guarantees keep their own checks; never force a looser
+  caller through a stricter caller's preconditions.
+- A refactor for readability keeps every guard, handled exception, side
+  effect, and the order of steps. A helper and its callers agree on exactly
+  which exceptions it raises: a retry loop catches what the helper throws.
 - Return a dataclass or `NamedTuple` instead of a tuple of more than two
   values; the field names document the result.
 - Use verbs for functions, nouns for values, and no cryptic abbreviations.
-  Name constants (`REQUEST_LIMIT`) instead of leaving bare numbers.
+  Name constants (`REQUEST_LIMIT`) instead of leaving bare numbers. Database
+  identifiers stop at PostgreSQL's 63 bytes, so shorten constraint and index
+  names to fit.
 - Leave out explicit defaults and repeated attributes that change nothing.
 
 ## Types
@@ -69,12 +79,14 @@ unclear code stand by explaining it.
 - Annotate every function signature, parameters and return. Let locals infer
   unless the type is unclear, for example an empty container or a values dict
   you want checked.
-- Use `str | None`, built-in generics such as `list[str]`, and `Self`.
-- In Odoo code, use the PyCharm Odoo plugin's types as string annotations,
-  with no import: recordsets as `"odoo.model.product_template"`, values dicts
-  as `"odoo.values.sale_order"`. Prefer them to `cast(...)`. They are more
-  precise than core's own `odoo.orm.types` aliases, which type values as
-  `dict[str, Any]`.
+- Use `str | None` and built-in generics such as `list[str]`. Use `Self` from
+  `typing`; on a Python 3.10 target, import it from `typing_extensions` under
+  `TYPE_CHECKING`.
+- In Odoo code inspected by PyCharm, use the PyCharm Odoo plugin's types as
+  string annotations, with no import: recordsets as
+  `"odoo.model.product_template"`, values dicts as `"odoo.values.sale_order"`.
+  Prefer them to `cast(...)`. Only PyCharm resolves them; mypy and pyright
+  report them as unresolved. House rule.
 - Build reusable search domains with `fields.Domain(...)` and combine them
   with `&`, `|`, and `~`. An annotation alone does not make a list a `Domain`.
 - In tests, give the addon's `tests/fixtures/base.py` typed properties that
@@ -82,8 +94,10 @@ unclear code stand by explaining it.
 
 ## Strings, Errors, And Logging
 
-- Use f-strings, never `%` formatting or `str.format()`, except inside
-  translations.
+- Build ordinary strings with f-strings, not `%` or `str.format()`.
+- Pass a logging template and its arguments separately, never an f-string:
+  `_logger.info("Imported %s orders", count)`. Logging formats only the
+  messages it emits.
 - A translated string's first argument is a literal. Pass values as
   arguments, and name the placeholders when there is more than one, so
   translators can reorder them. Odoo's own lint rejects an f-string here:
@@ -100,22 +114,31 @@ unclear code stand by explaining it.
   already-translated message on unchanged.
 - Raise the specific exception. Never use a broad `except Exception` that
   neither re-raises nor logs, and never use a silent `pass`.
-- Log through the module's `_logger`; never `print`.
+- Diagnostics go through the module's `_logger`. A command-line tool's results
+  go to standard output, with `print` where that is the tool's output, and
+  keep any machine-readable format its callers read.
 - Use `pathlib.Path` for paths.
 - `fields.Datetime` holds naive UTC values and rejects a timezone-aware one.
-  Use `fields.Datetime.now()` for stored values, and
-  `fields.Datetime.context_timestamp(record, value)` to show a user local time.
+  Store `fields.Datetime.now()`. The web client shows datetime fields in the
+  user's time zone, so convert with
+  `fields.Datetime.context_timestamp(record, value)` only where the server
+  renders the text itself, and never write that result back.
 
 ## Odoo 19
 
-These rules were checked against Odoo 19.0 source; older patterns still fill
-examples online. The last two are house rules, not Odoo requirements.
-
+- `self` is a recordset of any size in computes, onchanges, constraints and
+  actions. Inside `for record in self:`, read and write through `record`,
+  never `self`. Every path of a compute assigns every computed field on every
+  record, and `@api.depends` names every field the result reads. Call
+  `self.ensure_one()` where a method handles only one record.
 - Declare SQL constraints as model attributes:
   `_name_uniq = models.Constraint("unique (name)", "Tag name already exists!")`.
   19.0 ignores `_sql_constraints` with a warning. Use `models.Index` and
   `models.UniqueIndex` for indexes.
 - Override `create` with `@api.model_create_multi` and `vals_list`.
+- Write x2many values with `Command` (`from odoo import Command`):
+  `Command.create(values)`, `Command.link(id)`, `Command.set(ids)`,
+  `Command.clear()`, never raw tuples such as `(0, 0, values)`.
 - Compute `display_name` with `_compute_display_name`; `name_get` is gone.
 - Use `self.env.cr`, `self.env.uid`, and `self.env.context`, not `_cr`, `_uid`,
   or `_context`.
@@ -135,9 +158,9 @@ examples online. The last two are house rules, not Odoo requirements.
   dependency. Inside an addon, use relative imports. Versioned migration
   scripts are the exception: Odoo loads them as standalone modules.
 - On custom models, name relational fields for the records they hold: `partner`
-  and `partners`, not `partner_id` and `partner_ids`. The ORM returns
-  recordsets, not ids. Never rename a field on a core model, and keep upstream
-  names where another module expects them.
+  and `partners`, not `partner_id` and `partner_ids`. Never rename a field on
+  a core model, and keep upstream names where another module expects them.
+  House rule; upstream Odoo uses `_id` and `_ids`.
 
 ## JavaScript
 
@@ -151,13 +174,15 @@ examples online. The last two are house rules, not Odoo requirements.
   components, and the same naming, early-return, and no-comment rules as
   Python.
 - Use 4-space indentation, double quotes, and no semicolons. Leave trailing
-  commas to the repository's formatter.
+  commas to the repository's formatter. House rule.
 
 ## Tooling
 
 - Run `uv run ruff format` and `uv run ruff check --fix`. Where a repository
-  sets no ruff configuration, use line length 133, target `py313`, select
-  `ANN`, `UP`, `B`, and `I`, and ignore `D`.
+  sets no ruff configuration, use line length 133, select `ANN`, `UP`, `B`, and
+  `I`, and ignore `D` and `UP037`, which would strip the quotes from the
+  PyCharm types. Set the target to the oldest Python version the code is
+  deployed on.
 - PyCharm inspection is the cleanup list. Leave touched files with no
   actionable warnings. Fix the cause before you add a `noinspection`.
 - Follow the [shared test rules](../../instructions/global.md#tests).
@@ -165,36 +190,3 @@ examples online. The last two are house rules, not Odoo requirements.
   generic and put addon-specific fixtures in the addon's `tests/fixtures/`.
   An addon that wants a curated test API gets one small
   `tests/common_imports.py` built with `build_common_imports`.
-
-## What Changed From The Old Guide
-
-The earlier guide lived in the archived `odoo-ai` repository under
-`docs/style/` and `docs/policies/`.
-
-| Rule | Now | Reason |
-| --- | --- | --- |
-| Prefer code that obviates comments | Kept, made strict | Comments are a second source of truth |
-| Reserve comments for "why", constraints, or decision links | Narrowed | A function name and parameters carry the why; only a fact no name can hold remains |
-| One-line justification on every `noinspection` | Dropped | The directive names the inspection; the justification is a comment |
-| No docstrings (2024 prompt files) | Kept | Names carry the purpose |
-| Type hints on every function signature, local inference | Kept | The old guide's boundary meant every signature; ruff `ANN` enforces it |
-| PyCharm Odoo plugin magic types over `cast` | Kept | Still resolved by the plugin and used across tenant code |
-| `fields.Domain` for reusable domains | Updated | Build with `fields.Domain(...)`; an annotation does not supply `&`, `\|`, `~` |
-| Timezone-aware datetimes | Updated | 19.0 `fields.Datetime` rejects aware values; store naive UTC |
-| f-strings only | Updated | Translations need a literal and arguments; Odoo's lint rejects f-strings there |
-| PEP 604 unions, early returns, small functions, DRY | Kept | The patterns in the hand-written code |
-| `<list>` root for list views, no `attrs` or `states` | Kept | 19.0's list view schema and view validation enforce both |
-| `_sql_constraints` (used in older code) | Replaced by `models.Constraint` | 19.0 no longer supports it |
-| Relational fields without `_id` on custom models | Kept | Records, not ids |
-| Local addon import rule | Kept, shortened | Same rule, fewer words |
-| Native ESM, no `odoo.define` or `@odoo-module` | Kept | 19.0 treats `static/src` files as modules |
-| Owl 2, Hoot | Kept | 19.0 bundles Owl 2.8 and Hoot |
-| JSDoc for hints when helpful | Updated | Types only, never prose |
-| Trailing commas enabled | Updated | The old guide and the IDE settings disagreed; the formatter decides |
-| Ruff format and check, line length 133 | Kept | Still the setting where repositories configure ruff |
-| Zero warnings on touched files, narrow suppressions | Kept | Inspection catches what tests miss |
-| Pydantic settings through `tools/platform/environment.py` | Dropped | That platform tooling was retired with `odoo-ai` |
-| Run Python through `uv run`, prefer MCP tools, container path mapping | Dropped | Tool use belongs to the catalog's skills, not a style page |
-| Recorded tours, `platform validate`, validation scenarios | Dropped | `odoo-devkit` and Launchplane own that workflow now |
-| `test_support` and `common_imports` | Kept, shortened | Still how shared addons and tenants structure tests |
-| Markdown table and doc-page rules | Dropped | Not code style |
