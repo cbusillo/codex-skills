@@ -83,6 +83,17 @@ class NativeTests(unittest.TestCase):
                 patch.object(native, "is_odoo", return_value=False):
             self.assertEqual(native.select_backend(args, host)[0], "native")
 
+    def test_odoo_other_languages_and_nested_lanes_keep_their_existing_route(self):
+        args = host.build_parser().parse_args(["agent-inspect", "--repo", "/fixture"])
+        for selected, lane_gaps in (({"assets/app.js"}, []), ({"nested/model.py"}, ["nested_lane"])):
+            with self.subTest(selected=selected), patch.object(sys, "platform", "darwin"), \
+                    patch.object(native.common, "scope_selection", return_value=(Path("/fixture"), {}, "files", selected)), \
+                    patch.object(native, "eligible", return_value=True), \
+                    patch.object(native, "is_odoo", return_value=True), \
+                    patch.object(native.common, "lane_gaps", return_value=lane_gaps), \
+                    patch.object(native.common, "select_backend", return_value=("api", "existing_lane")):
+                self.assertEqual(native.select_backend(args, host), ("api", "existing_lane"))
+
     def test_explicit_community_options_and_host_choice_still_work(self):
         args = host.build_parser().parse_args(["agent-inspect", "--qodana-recover-only"])
         self.assertEqual(native.select_backend(args, host)[0], "qodana")

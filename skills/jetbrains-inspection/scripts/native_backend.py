@@ -75,9 +75,9 @@ def select_backend(args, host, host_default=None):
         if not eligible(args, host, repo, config):
             backend, reason = common.select_backend(args, host)
             return backend, reason + ";native_ineligible=" + str(eligibility_reason(args, host, repo, config))
-        if selected and is_odoo(repo):
-            return "native", "odoo_native_route"
-        if selected and not common.lane_gaps(host, config, selected):
+        if selected and all(Path(f).suffix in {".py", ".xml"} for f in selected) and not common.lane_gaps(host, config, selected):
+            if is_odoo(repo):
+                return "native", "odoo_native_route"
             if all(f.endswith(".py") for f in selected):
                 return "native", "python_native_route"
     except (Blocked, host.InspectError, OSError, subprocess.SubprocessError, ValueError):
@@ -268,21 +268,20 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
     paused = False
     log_offsets, log_framers = {}, {}
     output_framer = observations.LineFramer()
-    observer = observations.EngineObserver(private / "project", receipt) if require_completion else None
+    observer = observations.EngineObserver(private / "project", receipt)
     selector = selectors.DefaultSelector()
 
     def consume(framer, data, final=False):
-        current = observer
-        if current is None:
+        if not require_completion:
             return
         lines, partial = framer.feed(data, final=final)
         for line in lines:
-            current.observe(line)
+            observer.observe(line)
         if partial:
-            current.observe(partial, partial=True)
+            observer.observe(partial, partial=True)
 
     def read_logs(final=False):
-        if observer is None:
+        if not require_completion:
             return
         for path in (private / "logs").glob("*.log"):
             if path.is_symlink():
@@ -345,8 +344,8 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
                 os.killpg(process.pid, signal.SIGCONT)
                 paused = False
         receipt["engine_exit_code"] = process.returncode
-        receipt["completion_observed"] = observer.completion if observer is not None else False
-        if process.returncode != 0 or observer is not None and not observer.completion:
+        receipt["completion_observed"] = observer.completion if require_completion else False
+        if process.returncode != 0 or require_completion and not observer.completion:
             raise Blocked("native_execution_incomplete")
     except observations.ObservationError as error:
         raise Blocked(str(error)) from None
