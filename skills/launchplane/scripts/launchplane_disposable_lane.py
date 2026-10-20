@@ -14,8 +14,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 PREFIX = "disposable-lane-"
-# Clear is not offered: the service's clear path checks neither the binding nor
-# lane ownership, so local inspect evidence cannot make it safe.
+# This consumer installs only these three modes; other producer modes need
+# their own consumer implementation.
 MODES = ("inspect", "collect", "record")
 COMMANDS = frozenset(PREFIX + mode for mode in MODES)
 TIMEOUTS = {PREFIX + "collect": 240.0, PREFIX + "inspect": 30.0, PREFIX + "record": 30.0}

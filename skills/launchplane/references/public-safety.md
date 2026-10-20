@@ -34,25 +34,11 @@ branch bindings, authz grants, and admin identities can steer production
 behavior. Committed files may describe generic schemas or fake/public-safe
 examples, but they must not become the source of truth for current live values.
 
-## Vendored Contract
+## Caller bindings
 
-`agent-operator-contract.json` is a narrow public-safe projection, not a dump of
-Launchplane runtime state. It may contain allow-listed operation paths,
-operation IDs, structural fingerprints, protected workflow filenames, semantic
-invariants, versions, a semantic digest, and source-SHA provenance. It must not
-contain real product, tenant, repository, branch, domain, lane, provider target,
-credential, admin identity, service URL, or runtime-topology values.
-
-Run `../scripts/check-agent-operator-contract.py` to reject malformed or unsafe
-content and then run the repository public-safety validator. Neither check
-proves that the artifact is fresh upstream.
-
-The separate freshness comparison may publish only the fixed public source
-repository/ref/path, schema and normalization versions, semantic digests,
-source-SHA provenance, classification, retryability, and bounded next action.
-It must not publish fetch URLs, credentials, response bodies, contract bodies,
-raw provider errors, private context, or local paths. `unknown` evidence carries
-only normalized public-safe error codes and never creates a drift issue.
+Read [the producer contract and caller bindings](agent-operator-contract.md)
+for operation-source and validation guidance. Run the repository public-safety
+validator when changing local bindings or published examples.
 
 ## Safe Examples
 

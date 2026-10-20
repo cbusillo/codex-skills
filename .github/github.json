@@ -15,7 +15,6 @@
     "launchplaneSkill": "skills/launchplane/SKILL.md",
     "launchplaneDeployIdentity": "skills/launchplane/references/deploy-identity.md",
     "launchplaneMergeTrain": "skills/launchplane/references/merge-train.md",
-    "launchplaneAgentOperatorContract": "skills/launchplane/references/agent-operator-contract.json",
     "launchplaneAgentOperatorContractGuide": "skills/launchplane/references/agent-operator-contract.md",
     "launchplaneContextContract": "skills/launchplane/references/context-helper-contract.md",
     "launchplaneOperatorContract": "skills/launchplane/references/operator-contract.md",
@@ -123,7 +122,6 @@
   "importantWorkflows": [
     "Validate Skills",
     "CodeQL",
-    "Launchplane Contract Freshness",
     "Launchplane Train Validation",
     "Merge-Train Reply Schema",
     "Update PEP 723 Dependencies"
