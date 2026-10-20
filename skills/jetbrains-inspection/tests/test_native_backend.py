@@ -968,6 +968,11 @@ with patch.object(native.sys,'platform','darwin'), patch.object(native,'state_di
                 self.assertEqual(self.assess(direct=True)["cleanup"]["status"], "closed")
                 self.args.native_release_run = None
 
+    def assert_numbered_recovery(self, result, identity):
+        for key in ("pid", "pgid"):
+            self.assertEqual(result["diagnostic"]["native"]["recovery_process"][key], identity[key])
+            self.assertIn(str(identity[key]), result["agent_result"]["next_action"])
+
     def test_recovery_refuses_unproved_identity_without_signalling(self):
         for pgid, same_path, started in ((123456, False, "old"), (42, True, "old"), (123456, True, "different-unclocked")):
             with self.subTest(pgid=pgid):
@@ -980,9 +985,7 @@ with patch.object(native.sys,'platform','darwin'), patch.object(native,'state_di
                 self.assertEqual(result["inspection_outcome"]["reason"], "native_recovery_process_identity_changed")
                 self.assertEqual(result["cleanup"]["status"], "failed")
                 recorded = json.loads(context.journal.read_text())["engine_identity"]
-                for key in ("pid", "pgid"):
-                    self.assertEqual(result["diagnostic"]["native"]["recovery_process"][key], recorded[key])
-                    self.assertIn(str(recorded[key]), result["agent_result"]["next_action"])
+                self.assert_numbered_recovery(result, recorded)
                 kill.assert_not_called()
                 self.assertTrue(context.private.exists())
 
@@ -996,9 +999,7 @@ with patch.object(native.sys,'platform','darwin'), patch.object(native,'state_di
             result = self.assess(direct=True)
         self.assertEqual(result["inspection_outcome"]["reason"], "native_recovery_process_identity_unproven")
         self.assertEqual(result["cleanup"]["status"], "failed")
-        for key in ("pid", "pgid"):
-            self.assertEqual(result["diagnostic"]["native"]["recovery_process"][key], identity[key])
-            self.assertIn(str(identity[key]), result["agent_result"]["next_action"])
+        self.assert_numbered_recovery(result, identity)
         kill.assert_not_called()
         self.assertTrue(context.private.exists())
 
