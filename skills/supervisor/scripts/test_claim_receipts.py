@@ -4490,10 +4490,11 @@ os.system(get())
         # A captured receiver must not replay every prior self-member
         # assignment under a new reference spelling. Abort the old traversal
         # deterministically before it can hang this module.
-        for initial, scoped in (("{}", False), ("getReceiver()", False), ("{}", True), ("getReceiver()", True), ("eval", "wrapper"), ("text", "wrapper")):
+        for initial, scoped in (("{}", False), ("getReceiver()", False), ("{}", True), ("getReceiver()", True), ("eval", "wrapper"), ("text", "wrapper"), ("eval", "tag"), ("text", "tag")):
             traversals = []
             for count in (4, 8):
-                writes = ("".join("function s" + str(index) + "(){v={x:v};}" for index in range(count)) if scoped == "wrapper" else
+                writes = ("const tag=()=>v;" + "".join("function s" + str(index) + "(){v=tag`x`;}" for index in range(count)) if scoped == "tag" else
+                          "".join("function s" + str(index) + "(){v={x:v};}" for index in range(count)) if scoped == "wrapper" else
                           "".join("function s" + str(index) + "(){v=v.next;}" for index in range(count)) if scoped
                           else "".join("v=v.a" + str(index) + ";" for index in range(count)))
                 source = "let v=" + initial + ";" + writes + ("f(v.x);" if scoped is True else "f(v);")
@@ -4514,7 +4515,7 @@ os.system(get())
                     calls = list(receipts.javascript_source_calls(source, code))
                 finally:
                     sys.settrace(previous)
-                if scoped == "wrapper" and initial == "eval":
+                if scoped in {"wrapper", "tag"} and initial == "eval":
                     self.assertTrue(calls)
                 else:
                     self.assertEqual(calls, [])
@@ -4831,8 +4832,79 @@ os.system(get())
                 ("const o=false;", "o.constructor", False),
                 ("const o=(/* 'decoy' */ ' ' /* \"decoy\" */);const F=o.constructor;", "F", False),
                 ("const undefined=Function;const F=undefined;", "F", owning),
+                ("const {value:o}={value:'safe'};const F=o.constructor;", "F", False),
+                ("const [o]=['safe'];const F=o.constructor.constructor;", "F", owning),
+                ("const String={raw:()=>eval};const F=String.raw`x`;", "F.constructor", owning),
+                ("const String={raw:()=>\"safe\"};const F=String.raw`x`;", "F.constructor", False),
+                ("const flag=true;let tag=()=>\"safe\";if(flag)tag=(()=>()=>eval)();const F=tag`x`;", "F.constructor", owning),
+                ("const flag=true;let tag=()=>\"safe\";if(flag)tag=()=>\"other\";const F=tag`x`;", "F.constructor", False),
+                ("const flag=true;if(flag)String.raw=()=>\"safe\";const F=String.raw`x`;", "F.constructor", False),
             ):
                 cells.append((setup + "await " + callee + '("tools","text",' + constructor_body + ')(tools,text);', expected))
+            # A call result is not an exact callable replacement merely
+            # because its expression starts with a function/arrow spelling.
+            for replacement in ("(()=>o)()", "function(){return o}()"):
+                for invoke in ("o.run(SRC)", "o.run.call(null,SRC)",
+                               "o.run.apply(null,[SRC])", "o.run.bind(null)(SRC)"):
+                    cells.append(("let o={run:eval};o=" + replacement + ";await "
+                                  + invoke.replace("SRC", json.dumps(source)) + ";", owning))
+            cells.append(("let o={run:eval};o=()=>{};await o.run(" + json.dumps(source) + ");", False))
+            # A definite write through a receiver that may name another
+            # object cannot retire this object's earlier source member.
+            uncertain = ("const flag=true;let o={run:eval};let alias=o;"
+                         "if(flag)alias={run:text};alias.run=text;")
+            for invoke in ("o.run(SRC)", "o.run.call(null,SRC)",
+                           "o.run.apply(null,[SRC])", "o.run.bind(null)(SRC)"):
+                cells.append((uncertain + "await " + invoke.replace("SRC", json.dumps(source)) + ";", owning))
+            for setup, invoke, expected in (
+                (uncertain + "const {run:e}=o;", "e.call(null,SRC)", owning),
+                (uncertain + "const {run:e}=o;", "e.apply(null,[SRC])", owning),
+                (uncertain + "const {run:e}=o;", "e.bind(null)(SRC)", owning),
+                ("let o={run:eval};const alias=o;alias.run=text;", "o.run(SRC)", False),
+                ("let o={run:eval};const alias=o;alias.run=text;const {run:e}=o;", "e.call(null,SRC)", False),
+                ("const flag=false;let o={run:text};let alias=o;if(flag)alias={run:text};alias.run=eval;", "o.run(SRC)", owning),
+                ("const o=getReceiver();o.run=eval;const alias=o;alias.run=text;", "o.run(SRC)", owning),
+            ):
+                cells.append((setup + "await " + invoke.replace("SRC", json.dumps(source)) + ";", expected))
+            # Destructuring captures the selected value, not its container.
+            for handle in ("eval", "text"):
+                for setup, invoke in (
+                    ("const {run:e}={run:HANDLE};", "e.call(null,SRC)"),
+                    ("const [e]=[HANDLE];", "e.apply(null,[SRC])"),
+                    ("const [e]=[HANDLE];", "e.bind(null)(SRC)"),
+                    ("const {run:e}={run:HANDLE};const alias=e;", "alias.call(null,SRC)"),
+                    ("const o={run:HANDLE};const {run:e}=o;o.run=text;", "e.call(null,SRC)"),
+                    ("const o={run:eval};o.run=HANDLE;const {run:e}=o;", "e.call(null,SRC)"),
+                ):
+                    cells.append((setup.replace("HANDLE", handle) + "await "
+                                  + invoke.replace("SRC", json.dumps(source)) + ";", owning and handle == "eval"))
+            # A shadowable tag can return a source handle even when the result
+            # binding has no earlier handle to preserve.
+            for setup, invoke, expected in (
+                ("const String={raw:()=>eval};let F=String.raw`x`;", "F(SRC)", owning),
+                ("const String={raw:()=>eval};let F=eval;F=String.raw`x`;", "F(SRC)", owning),
+                ("String.raw=()=>eval;const F=String.raw`x`;", "F(SRC)", owning),
+                ("const alias=String;alias.raw=()=>eval;const F=String.raw`x`;", "F(SRC)", owning),
+                ("const String={raw:()=>eval};const F=String.raw`x`;const alias=F;", "alias.call(null,SRC)", owning),
+                ("const tag=()=>eval;const F=tag`x`;", "F.apply(null,[SRC])", owning),
+                ("const tag=()=>({run:eval});const F=tag`x`;", "F.run(SRC)", owning),
+                ("const tag=()=>({run:text});const F=tag`x`;", "F.run(SRC)", False),
+                ("const tag=()=>{text(eval)};const F=tag`x`;", "F(SRC)", False),
+                ("const tag=()=>globalThis.eval;const F=tag`x`;", "F(SRC)", owning),
+                ("const tag=()=>eval.call;const F=tag`x`;", "F(null,SRC)", owning),
+                ("const tag=()=>text.call;const F=tag`x`;", "F(null,SRC)", False),
+                ("const g=globalThis;g.text=eval;const {run:e}={run:text};", "e.call(null,SRC)", owning),
+                ("const g=globalThis;if(flag)g.text=eval;const {run:e}={run:text};", "e.call(null,SRC)", owning),
+                ("const String={raw:function(){return eval}};const F=String.raw`x`;", "F(SRC)", owning),
+                ("const tag=()=>{if(flag){return eval}return text};const F=tag`x`;", "F(SRC)", owning),
+                ("const String={raw:()=>text};const F=String.raw`x`;", "F(SRC)", False),
+                ("const String={raw:()=>\"safe\"};const F=String.raw`x`;", "F(SRC)", False),
+                ("const String={raw:function(){text(eval);return text}};const F=String.raw`x`;", "F(SRC)", False),
+                ("const tag=()=>{function unused(){return eval}return text};const F=tag`x`;", "F(SRC)", False),
+                ("const F=String.raw`x`;", "F(SRC)", False),
+                ("let F=eval;F=String.raw`x`;", "F(SRC)", False),
+            ):
+                cells.append((setup + "await " + invoke.replace("SRC", json.dumps(source)) + ";", expected))
             for handle in ("eval", "text"):
                 for reverse in (False, True):
                     definitions = ["function first(){v=v.next;}", "function second(){v=v.next;}",
@@ -6655,6 +6727,9 @@ os.system(get())
                          ("ansi_control_tail_data", "printf %s $'\\c'", False),
                          ("ansi_control_escaped_quote_data", "printf %s $'\\c\\''", False),
                          ("ansi_control_character_data", "printf %s $'\\cX\\c?'", False),
+                         ("backtick_data", "echo `printf %s gh-plan.py-claim`", False),
+                         ("single_quoted_backtick", "echo '`" + writer + "`'", False),
+                         ("escaped_backtick", "echo \\`" + writer + "\\`", False),
                          ("case_arithmetic_data", 'case "$m" in claim) ((n++));; esac', False),
                          ("child_quoted_substitution_data", "bash -c " + shlex.quote("printf %s '$(" + writer + ")'"), False),
                          ("skipped_child_subshell_expansion", "false && bash -c " + shlex.quote('out="$((cd /repo && ' + writer + ') 2>&1)"'), False),
@@ -6681,6 +6756,9 @@ os.system(get())
             ("quoted_subshell_expansion", 'out="$((cd /repo && ' + writer + ') 2>&1)"'),
             ("nested_subshell_expansion", 'echo "$(printf %s $((cd /repo && ' + writer + ') 2>&1))"'),
             ("bracket_nested_writer", "echo $[1+$(" + writer + ")]"),
+            ("backtick_writer", "echo `" + writer + "`"),
+            ("quoted_backtick_writer", 'echo "`' + writer + '`"'),
+            ("backtick_escaped_inner_quote", "echo `printf '%s' '\\`\\`'; " + writer + "`"),
         ):
             lexical_cases.extend(((label + "_root", body, True),
                                   (label + "_child", "bash -c " + shlex.quote(body), True),

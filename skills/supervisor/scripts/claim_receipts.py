@@ -455,13 +455,13 @@ def javascript_source_calls(native, code, *, global_this=False, literal_atoms=()
         raw = re.sub(r"\?\.\s*(?=\[)", "", raw)
         return re.sub(r"\s+", "", re.sub(r"\[([^]\n]*)\]", member, raw)).replace("?.", ".")
 
-    def unwrapped_span(begin, end):
+    def unwrapped_span(begin, end, *, unwrap=True):
         while True:
             while begin < end and code[begin].isspace() and begin not in literal_starts:
                 begin += 1
             while end > begin and code[end - 1].isspace() and end not in literal_ends:
                 end -= 1
-            if code[begin:begin + 1] != "(" or pairs.get(begin) != end - 1:
+            if not unwrap or code[begin:begin + 1] != "(" or pairs.get(begin) != end - 1:
                 return begin, end
             begin, end = begin + 1, end - 1
 
@@ -480,6 +480,20 @@ def javascript_source_calls(native, code, *, global_this=False, literal_atoms=()
         for selected in trail:
             visible[selected] = result
         return visible.get(key, result)
+
+    def property_receiver(target, position, root):
+        roots, known = receiver_reference(target.rsplit(".", 1)[0], position)
+        return root in roots, known and roots == frozenset({root})
+
+    def global_candidates(base, position, scope):
+        # Bare globals and writes through a captured global receiver share the
+        # same ordered alternatives; aliases do not invent another namespace.
+        for target, suffix, at, context, certain, rhs in property_events.get(base, ()):
+            if context == scope and rhs[1] > position:
+                continue
+            reaches, exact = property_receiver(target, at, ("global",))
+            if reaches:
+                yield base, suffix, at, context, certain and exact, rhs
 
     # Index the existing RHS table once. Scope facts choose which same-named
     # binding a target can affect; a definite straight-line replacement can
@@ -508,16 +522,128 @@ def javascript_source_calls(native, code, *, global_this=False, literal_atoms=()
         for selected, suffix in targets:
             base = selected.split(".", 1)[0]
             owner = binding(base, match.start(1))
-            event = (selected, suffix, match.start(1), owners[match.start(1)], definite, (match.end(), end))
+            context = parents[match.start(1)] if raw.startswith("{") else owners[match.start(1)]
+            event = (selected, suffix, match.start(1), context, definite, (match.end(), end))
             assignments.setdefault((owner, selected), []).append(event)
             if "." in selected:
                 property_events.setdefault(selected.rsplit(".", 1)[1], []).append(event)
 
-    def members(begin, end, active=(), *, suffix=""):
+    def members(begin, end, *, suffix=""):
         return reachable(("members", begin, end, suffix), lambda: compute_members(begin, end, suffix), {})
+
+    def callable_body(rhs):
+        begin, end = unwrapped_span(*rhs)
+        function = re.match(r"(?:async\s+)?function\b\s*\*?\s*(?:[A-Za-z_$][\w$]*\s*)?\(", code[begin:end])
+        if function:
+            closing = pairs.get(begin + function.end() - 1)
+            body = closing + 1 if closing is not None else end
+            while body < end and code[body].isspace():
+                body += 1
+            return (body, end, True) if code[body:body + 1] == "{" and pairs.get(body) == end - 1 else None
+        starts = [begin]
+        asynchronous = re.match(r"async\b\s*", code[begin:end])
+        if asynchronous:
+            starts.insert(0, begin + asynchronous.end())
+        for parameter in starts:
+            if code[parameter:parameter + 1] == "(":
+                closing = pairs.get(parameter)
+                following = closing + 1 if closing is not None else end
+            else:
+                identifier = re.match(r"[A-Za-z_$][\w$]*", code[parameter:end])
+                following = parameter + identifier.end() if identifier else end
+            while following < end and code[following].isspace():
+                following += 1
+            if code[following:following + 2] != "=>":
+                continue
+            body, finish = unwrapped_span(following + 2, end, unwrap=False)
+            if body >= end:
+                continue
+            block = code[body:body + 1] == "{"
+            if not block or pairs.get(body) == finish - 1:
+                return body, finish, block
+        return None
+
+    def tagged_receiver(rhs):
+        begin, end = unwrapped_span(*rhs)
+        tag = reference.match(code, begin, end)
+        if tag is None:
+            return None
+        template = tag.end()
+        while template < end and native[template].isspace():
+            template += 1
+        if not (native[template:template + 1] == "`" and re.fullmatch(JS_STRING, native[template:end])):
+            return None
+        selected = canonical(native[begin:tag.end()])
+        # The intrinsic's literal result remains data only while neither its
+        # receiver nor its raw property acquired another possible identity.
+        roots, known = receiver_reference(selected, begin)
+        if roots == frozenset({("intrinsic-raw",)}) and known:
+            return frozenset({("data", rhs)}), True
+        return reachable(("tagged-result", rhs), lambda: callable_results(receiver_reference(selected, begin)[0], rhs),
+                         (frozenset(), False), receiver=True)
+
+    def callable_results(roots, capture):
+        returned = set()
+        if not roots:
+            returned.add(("unknown", capture))
+
+        def include(rhs):
+            values, _ = receiver_expression(rhs)
+            possible = members(*rhs).get("")
+            if possible:
+                values = frozenset(root for root in values if root[0] != "handle")
+                returned.update(("handle", kind, adapters) for kind, adapters in possible)
+            returned.update(values)
+        for root in roots:
+            if root[0] == "intrinsic-raw":
+                returned.add(("data", capture))
+                continue
+            if root[0] != "callable":
+                returned.add(("unknown", capture))
+                continue
+            body = callable_body(root[1])
+            if body is None:
+                returned.add(("unknown", capture))
+                continue
+            begin, end, block = body
+            if not block:
+                include((begin, end))
+                continue
+            # Scope ownership excludes return statements of nested callables.
+            # Branch blocks remain possible return paths of this same body.
+            nested = set()
+            for match in re.finditer(r"\bfunction\b(?:\s*\*\s*|\s+)?(?:[A-Za-z_$][\w$]*\s*)?\(|=>", code[begin + 1:end - 1]):
+                at = begin + 1 + match.end()
+                if match[0] != "=>":
+                    closing = pairs.get(at - 1)
+                    at = closing + 1 if closing is not None else end
+                while at < end and code[at].isspace():
+                    at += 1
+                nested.add(at)
+            for statement in re.finditer(r"(?<![\w.$])return\b", code[begin + 1:end - 1]):
+                at = begin + 1 + statement.start()
+                owner = owners[at]
+                while owner != begin and owner != -1 and owner not in nested:
+                    owner = parents.get(owner, -1)
+                if owner != begin:
+                    continue
+                value = begin + 1 + statement.end()
+                finish = node_expression_parts(code, value, end - 1, ";\n", first=True)[0][1]
+                if not code[value:finish].lstrip().startswith(";"):
+                    include((value, finish))
+        # User code can have other paths and transformations. Returned handles
+        # are possible values, never exact authority to retire an old handle.
+        return frozenset(returned), False
 
     def compute_members(begin, end, suffix):
         begin, end = unwrapped_span(begin, end)
+        tagged = tagged_receiver((begin, end))
+        if tagged is not None:
+            roots, exact = tagged
+            if suffix:
+                return projected_members(roots, suffix, end)
+            possible = frozenset((root[1], root[2] if len(root) > 2 else ()) for root in roots if root[0] == "handle")
+            return {"": possible} if possible else {"": None} if exact else {}
         aggregate = literal_members((begin, end))
         transformed = False
         if aggregate is None and code[begin:begin + 1] in {"{", "["} and begin in pairs:
@@ -525,7 +651,7 @@ def javascript_source_calls(native, code, *, global_this=False, literal_atoms=()
             selector = native[close:end].strip()
             if selector and reference.fullmatch("receiver" + code[close:end].strip()):
                 selected = canonical("receiver" + selector).removeprefix("receiver")
-                return selected_members((begin, close), selected + suffix, (), end)
+                return selected_members((begin, close), selected + suffix, end)
             aggregate = literal_members((begin, close))
             transformed = True
         if aggregate is not None:
@@ -533,7 +659,7 @@ def javascript_source_calls(native, code, *, global_this=False, literal_atoms=()
                 return {} if transformed else {"": None}
             field, _, remaining = suffix[1:].partition(".")
             if field in aggregate:
-                return selected_members(aggregate[field], "." + remaining if remaining else "", ())
+                return selected_members(aggregate[field], "." + remaining if remaining else "")
             if transformed:
                 return {}  # An absent projected prefix does not prove data.
             return projected_members(frozenset({(begin, end)}), suffix, end)
@@ -571,22 +697,25 @@ def javascript_source_calls(native, code, *, global_this=False, literal_atoms=()
             return frozenset(), False
         if isinstance(root[0], int) or root[0] == "data":
             return frozenset({("callable-data",)}), True
-        return frozenset({("handle", "constructor")}), root[0] in {"handle", "callable", "callable-data"}
+        return frozenset({("handle", "constructor")}), root[0] in {"handle", "callable", "callable-data", "intrinsic-string", "intrinsic-raw"}
 
-    def receiver_expression(rhs, active=()):
+    def receiver_expression(rhs):
         return reachable(("receiver-expression", rhs), lambda: compute_receiver_expression(rhs), (frozenset(), False), receiver=True)
 
-    def compute_receiver_expression(rhs, active=()):
+    def compute_receiver_expression(rhs):
         begin, end = unwrapped_span(*rhs)
         aggregate = literal_members((begin, end))
-        if aggregate is not None:
+        tagged = tagged_receiver((begin, end))
+        if tagged is not None:
+            result = tagged
+        elif aggregate is not None:
             result = frozenset({(begin, end)}), True
         elif re.fullmatch(JS_STRING, native[begin:end].strip()) or re.fullmatch(r"\s*(?:\d+(?:\.\d+)?|null|true|false)\s*", native[begin:end]):
             result = (frozenset() if native[begin:end].strip() == "null"
                       else frozenset({("data", rhs)})), True
         elif reference.fullmatch(code[begin:end]):
-            result = receiver_reference(canonical(native[begin:end]), begin, (*active, rhs))
-        elif re.match(r"(?:async\s+)?function\b|(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>", code[begin:end]):
+            result = receiver_reference(canonical(native[begin:end]), begin)
+        elif callable_body((begin, end)) is not None:
             result = frozenset({("callable", rhs)}), True
         else:
             # An unknown expression has one capture identity, not a projected
@@ -594,57 +723,72 @@ def javascript_source_calls(native, code, *, global_this=False, literal_atoms=()
             result = frozenset({("unknown", rhs)}), False
         return result
 
-    def receiver_reference(selected, position, active=()):
+    def receiver_reference(selected, position):
         return reachable(("receiver-reference", selected, position), lambda: compute_receiver_reference(selected, position), (frozenset(), False), receiver=True)
 
-    def compute_receiver_reference(selected, position, active=()):
-        base, dot, suffix = selected.partition(".")
-        if dot:
-            roots, known = receiver_reference(base, position, active)
-            for field in suffix.split("."):
-                projected, definite = set(), known
-                for root in roots:
-                    options = []
-                    if isinstance(root[0], int):
-                        operands = literal_members(root) or {}
-                        if field in operands:
-                            values, exact = receiver_expression(operands[field], active)
-                            options.append((-1, True, values, exact))
-                        elif field == "constructor":
-                            values, exact = inherited_receiver(root, field)
-                            options.append((-1, True, values, exact))
+    def receiver_projection(roots, known, suffix, position):
+        for field in suffix.split("."):
+            projected, definite = set(), known
+            for root in roots:
+                options = []
+                if isinstance(root[0], int):
+                    operands = literal_members(root) or {}
+                    if field in operands:
+                        values, exact = receiver_expression(operands[field])
+                        options.append((-1, True, values, exact))
                     elif field == "constructor":
                         values, exact = inherited_receiver(root, field)
                         options.append((-1, True, values, exact))
-                    for event in property_events.get(field, ()):
-                        target, _, at, context, certain, rhs = event
-                        if context == owners[position] and rhs[1] > position:
-                            continue
-                        parents_, _ = receiver_reference(target.rsplit(".", 1)[0], at, active)
-                        if root in parents_:
-                            values, exact = receiver_expression(rhs, active)
-                            options.append((at, certain and context == owners[position], values, exact))
-                    last = max((at for at, certain, _, exact in options if certain and exact), default=-1)
-                    for at, _, values, exact in options:
-                        if at >= last:
-                            projected.update(values)
-                            definite &= exact
-                    if not options and not isinstance(root[0], int):
-                        definite = False
-                roots, known = frozenset(projected), definite
-            result = roots, known
+                elif root == ("intrinsic-string",) and field == "raw":
+                    options.append((-1, True, frozenset({("intrinsic-raw",)}), True))
+                elif field == "constructor":
+                    values, exact = inherited_receiver(root, field)
+                    options.append((-1, True, values, exact))
+                for event in property_events.get(field, ()):
+                    target, _, at, context, certain, rhs = event
+                    if context == owners[position] and rhs[1] > position:
+                        continue
+                    reaches, receiver_exact = property_receiver(target, at, root)
+                    if reaches:
+                        values, exact = receiver_expression(rhs)
+                        options.append((at, certain and context == owners[position] and receiver_exact, values, exact))
+                last = max((at for at, certain, _, exact in options if certain and exact), default=-1)
+                for at, _, values, exact in options:
+                    if at >= last:
+                        projected.update(values)
+                        definite &= exact
+                if not options and not isinstance(root[0], int):
+                    definite = False
+            roots, known = frozenset(projected), definite
+        return roots, known
+
+    def compute_receiver_reference(selected, position):
+        base, dot, suffix = selected.partition(".")
+        if dot:
+            result = receiver_projection(*receiver_reference(base, position), suffix, position)
         else:
             owner, scope = binding(base, position), owners[position]
             candidates = [event for event in assignments.get((owner, base), ())
                           if event[3] != scope or event[-1][1] <= position]
-            resolved = [(event, receiver_expression(event[-1], active)) for event in candidates]
+            if owner is None:
+                candidates.extend(global_candidates(base, position, scope))
+            resolved = []
+            for event in candidates:
+                values, exact = receiver_expression(event[-1])
+                if event[1]:
+                    values, exact = receiver_projection(values, exact, event[1][1:], event[-1][0])
+                resolved.append((event, (values, exact)))
             last = max((event[2] for event, (_, exact) in resolved
                         if event[3] == scope and event[4] and exact), default=-1)
             roots = set()
-            known = last >= 0
-            if last < 0:
+            intrinsic = owner is None and base in {*names, "text", "String", "globalThis", "global", "window", "self"}
+            known = last >= 0 or intrinsic
+            initialized = owner is not None and owner == scope and any(
+                event[3] == scope and event[4] for event in candidates)
+            if last < 0 and (intrinsic or not initialized):
                 roots.add(("global",) if owner is None and base in {"globalThis", "global", "window", "self"}
                           else ("handle", names[base]) if owner is None and base in names
+                          else ("intrinsic-string",) if owner is None and base == "String"
                           else ("callable-data",) if owner is None and base == "text"
                           else ("binding", owner, base))
             for event, (values, exact) in resolved:
@@ -654,7 +798,7 @@ def javascript_source_calls(native, code, *, global_this=False, literal_atoms=()
             result = frozenset(roots), known
         return result
 
-    def projected_members(roots, suffix, position, active=()):
+    def projected_members(roots, suffix, position):
         values = {}
         for root in roots:
             result = reachable(("projected-member", root, suffix, position),
@@ -666,7 +810,7 @@ def javascript_source_calls(native, code, *, global_this=False, literal_atoms=()
                     values[name] = None
         return values
 
-    def compute_projected_member(root, suffix, position, active=()):
+    def compute_projected_member(root, suffix, position):
         nonlocal cuts
         field, _, remaining = suffix[1:].partition(".")
         tail = "." + remaining if remaining else ""
@@ -675,10 +819,10 @@ def javascript_source_calls(native, code, *, global_this=False, literal_atoms=()
         if isinstance(root[0], int):
             operands = literal_members(root) or {}
             if field in operands:
-                initial = selected_members(operands[field], tail, active, position)
+                initial = selected_members(operands[field], tail, position)
             elif field == "constructor":
                 inherited, _ = inherited_receiver(root, field)
-                initial = projected_members(inherited, tail, position, active) if tail else {"": None}
+                initial = projected_members(inherited, tail, position) if tail else {"": None}
             else:
                 initial = {"": None}
             alternatives.append((-1, True, initial))
@@ -690,18 +834,18 @@ def javascript_source_calls(native, code, *, global_this=False, literal_atoms=()
             inherited, exact = inherited_receiver(root, field)
             if not exact:
                 cuts += 1
-            initial = (projected_members(inherited, tail, position, active) if tail else
+            initial = (projected_members(inherited, tail, position) if tail else
                        {"": source_capability("constructor") if any(value[0] == "handle" for value in inherited) else None})
             alternatives.append((-1, True, initial))
         for event in property_events.get(field, ()):
             target, source_suffix, at, context, certain, rhs = event
             if context == owners[position] and rhs[1] > position:
                 continue
-            parents_, _ = receiver_reference(target.rsplit(".", 1)[0], at, active)
-            if root in parents_:
+            reaches, receiver_exact = property_receiver(target, at, root)
+            if reaches:
                 started = cuts
-                result = selected_members(rhs, source_suffix + tail, active, position if tail else None)
-                alternatives.append((at, certain and context == owners[position] and cuts == started, result))
+                result = selected_members(rhs, source_suffix + tail, position if tail else None)
+                alternatives.append((at, certain and context == owners[position] and receiver_exact and cuts == started, result))
         last = max((at for at, certain, result in alternatives if certain and "" in result), default=-1)
         for at, _, result in alternatives:
             if at >= last:
@@ -710,41 +854,31 @@ def javascript_source_calls(native, code, *, global_this=False, literal_atoms=()
                         values[name] = (values.get(name) or frozenset()) | capability if capability is not None else None
         return values
 
-    def selected_members(rhs, suffix, active=(), position=None):
-        return reachable(("selected-members", rhs, suffix, position), lambda: compute_selected_members(rhs, suffix, (), position), {})
+    def selected_members(rhs, suffix, position=None):
+        return reachable(("selected-members", rhs, suffix, position), lambda: compute_selected_members(rhs, suffix, position), {})
 
-    def compute_selected_members(rhs, suffix, active=(), position=None):
-        index = member_indexes.setdefault(rhs, {})
+    def compute_selected_members(rhs, suffix, position=None):
         # Capture the receiver binding at the RHS. Its members remain live at
         # the use site; rebinding that variable does not change the receiver.
         if suffix and position is not None:
             begin, end = unwrapped_span(*rhs)
             if reference.fullmatch(code[begin:end]):
-                roots, known = receiver_reference(canonical(native[begin:end]), begin, (*active, rhs))
-                projected = projected_members(roots, suffix, position, (*active, rhs))
+                roots, known = receiver_reference(canonical(native[begin:end]), begin)
+                projected = projected_members(roots, suffix, position)
                 if known or projected:
                     return projected
             if literal_members((begin, end)) is not None:
-                return projected_members(frozenset({(begin, end)}), suffix, position, (*active, rhs))
-            if None not in index:
-                aggregate = javascript_literal_members(native, code, begin, end)
-                index[None] = dict(aggregate) if aggregate is not None else None
-            operands = index[None]
-            if operands is not None:
-                name, _, remaining = suffix[1:].partition(".")
-                if name in operands:
-                    return selected_members(operands[name], "." + remaining if remaining else "", (*active, rhs), position)
-        return members(*rhs, active, suffix=suffix)
+                return projected_members(frozenset({(begin, end)}), suffix, position)
+        return members(*rhs, suffix=suffix)
 
-    def reference_members(selected, position, active=()):
+    def reference_members(selected, position):
         return reachable(("reference-members", selected, position), lambda: compute_reference_members(selected, position), {})
 
-    def compute_reference_members(selected, position, active=()):
-        nonlocal cuts
+    def compute_reference_members(selected, position):
         base, dot, suffix = selected.partition(".")
         if dot:
-            roots, known = receiver_reference(base, position, active)
-            projected = projected_members(roots, "." + suffix, position, active)
+            roots, known = receiver_reference(base, position)
+            projected = projected_members(roots, "." + suffix, position)
             if projected or known:
                 values = projected or {"": None}
                 return values
@@ -755,17 +889,14 @@ def javascript_source_calls(native, code, *, global_this=False, literal_atoms=()
                       for event in assignments.get((owner, ".".join(prefixes[:length])), ())
                       if event[3] != scope or event[-1][1] <= position]
         if owner is None and "." not in selected:
-            for receiver in ("globalThis", "global", "window", "self"):
-                for _, suffix, at, context, definite, rhs in assignments.get((None, receiver + "." + selected), ()):
-                    if context != scope or rhs[1] <= position:
-                        candidates.append((selected, suffix, at, context, definite, rhs))
+            candidates.extend(global_candidates(base, position, scope))
         # Missing provenance is unknown, not proof that a prior source handle
         # disappeared. A known data value uses None and can retire that handle.
         resolved, exact_values = {}, {}
         for target, source_suffix, at, _, _, rhs in candidates:
             suffix = selected[len(target):]
             started = cuts
-            resolved[at] = selected_members(rhs, source_suffix + suffix, active,
+            resolved[at] = selected_members(rhs, source_suffix + suffix,
                                            position if suffix and not source_suffix else None)
             exact_values[at] = cuts == started
         last = max((event[2] for event in candidates if event[3] == scope and event[4]
@@ -794,7 +925,7 @@ def javascript_source_calls(native, code, *, global_this=False, literal_atoms=()
             parent = selected.rsplit(".", 1)[0]
             values.update((name, frozenset((kind, (selected.rsplit(".", 1)[-1],))
                                            for kind, adapters in possible))
-                          for name, possible in reference_members(parent, position, active).items() if not name and possible)
+                          for name, possible in reference_members(parent, position).items() if not name and possible)
         return {name: value for name, value in values.items() if not name}
 
     def source_kind(expression, raw=None, position=0):
@@ -4675,7 +4806,7 @@ def shell_expansions(text, *, heredoc=False):
             yield text[start:end - 1] if depth == 0 else text[start:]
             cursor = end
             continue
-        elif heredoc and char == "`":
+        elif (heredoc or quote != "'") and char == "`":
             start, end, inner_escape = cursor + 1, cursor + 1, False
             while end < len(text):
                 if inner_escape:
