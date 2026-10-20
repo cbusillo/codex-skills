@@ -379,7 +379,7 @@ def javascript_source_calls(native, code, *, global_this=False):
     javascript_bindings(code, _facts=facts)
     pairs, owners, parents, bound = (facts[name] for name in ("pairs", "owners", "parents", "bound"))
     reference = re.compile(r"(?<![\w.$])([A-Za-z_$][\w$]*(?:\s*(?:\?\.|\.)\s*[A-Za-z_$][\w$]*|\s*(?:\?\.\s*)?\[[^]\n]*\])*)")
-    visible, assignments, member_cache, member_indexes, reference_cache = {}, {}, {}, {}, {}
+    visible, assignments, descendants, member_cache, member_indexes, reference_cache = {}, {}, {}, {}, {}, {}
 
     def canonical(raw):
         def member(match):
@@ -392,6 +392,16 @@ def javascript_source_calls(native, code, *, global_this=False):
             return "." + value
         raw = re.sub(r"\?\.\s*(?=\[)", "", raw)
         return re.sub(r"\s+", "", re.sub(r"\[([^]\n]*)\]", member, raw)).replace("?.", ".")
+
+    def unwrapped_span(begin, end):
+        while True:
+            while begin < end and code[begin].isspace():
+                begin += 1
+            while end > begin and code[end - 1].isspace():
+                end -= 1
+            if code[begin:begin + 1] != "(" or pairs.get(begin) != end - 1:
+                return begin, end
+            begin, end = begin + 1, end - 1
 
     def binding(name, position):
         owner = owners[position]
@@ -436,8 +446,10 @@ def javascript_source_calls(native, code, *, global_this=False):
         for selected, suffix in targets:
             base = selected.split(".", 1)[0]
             owner = binding(base, match.start(1))
-            assignments.setdefault((owner, selected), []).append((selected, suffix, match.start(1),
-                owners[match.start(1)], definite, (match.end(), end)))
+            event = (selected, suffix, match.start(1), owners[match.start(1)], definite, (match.end(), end))
+            assignments.setdefault((owner, selected), []).append(event)
+            for dot in re.finditer(r"\.", selected):
+                descendants.setdefault((owner, selected[:dot.start()]), []).append(event)
 
     def members(begin, end, active=()):
         key = begin, end
@@ -446,13 +458,16 @@ def javascript_source_calls(native, code, *, global_this=False):
         if key in active:
             return {}
         active = (*active, key)
-        while begin < end and code[begin].isspace():
-            begin += 1
-        while end > begin and code[end - 1].isspace():
-            end -= 1
+        begin, end = unwrapped_span(begin, end)
         values = {}
         aggregate = javascript_literal_members(native, code, begin, end)
         if aggregate is None and code[begin:begin + 1] in {"{", "["} and begin in pairs:
+            close = pairs[begin] + 1
+            suffix = native[close:end].strip()
+            if suffix and reference.fullmatch("receiver" + code[close:end].strip()):
+                values.update(selected_members((begin, close), canonical("receiver" + suffix).removeprefix("receiver"), active, end))
+                member_cache[key] = values
+                return values
             # An unknown transformation may preserve the literal receiver's
             # source handles. This is possible capability, not exact projection.
             aggregate = javascript_literal_members(native, code, begin, pairs[begin] + 1)
@@ -472,12 +487,30 @@ def javascript_source_calls(native, code, *, global_this=False):
         member_cache[key] = values
         return values
 
-    def selected_members(rhs, suffix, active):
+    def selected_members(rhs, suffix, active, position=None):
+        if rhs in active:
+            return {}
+        index = member_indexes.setdefault(rhs, {})
+        # Access through an object alias follows its current member writes;
+        # capturing the member value itself still uses its assignment site.
+        if suffix and position is not None:
+            begin, end = unwrapped_span(*rhs)
+            raw = native[begin:end]
+            if reference.fullmatch(code[begin:end]):
+                return reference_members(canonical(raw) + suffix, position, (*active, rhs))
+            if None not in index:
+                aggregate = javascript_literal_members(native, code, begin, end)
+                index[None] = dict(aggregate) if aggregate is not None else None
+            operands = index[None]
+            if operands is not None:
+                name, _, remaining = suffix[1:].partition(".")
+                if name in operands:
+                    return selected_members(operands[name], "." + remaining if remaining else "", (*active, rhs), position)
         values = members(*rhs, active)
-        if rhs not in member_indexes:
+        if "" not in index:
             if rhs not in member_cache:
                 return {}
-            index = {"": values}
+            index[""] = values
             for name, kind in values.items():
                 for dot in re.finditer(r"\.", name):
                     if dot.start():
@@ -485,8 +518,7 @@ def javascript_source_calls(native, code, *, global_this=False):
                         index.setdefault(prefix, {})[name[dot.start():]] = kind
                 if name:
                     index.setdefault(name, {})[""] = kind
-            member_indexes[rhs] = index
-        return member_indexes[rhs].get(suffix, {})
+        return index.get(suffix, {})
 
     def reference_members(selected, position, active=()):
         base, _, _ = selected.partition(".")
@@ -496,6 +528,8 @@ def javascript_source_calls(native, code, *, global_this=False):
         candidates = [event for length in range(1, len(prefixes) + 1)
                       for event in assignments.get((owner, ".".join(prefixes[:length])), ())
                       if event[3] != scope or event[2] < position]
+        deeper = {event[0] for event in descendants.get((owner, selected), ())
+                  if event[3] != scope or event[2] < position}
         if owner is None and "." not in selected:
             for receiver in ("globalThis", "global", "window", "self"):
                 for _, suffix, at, context, definite, rhs in assignments.get((None, receiver + "." + selected), ()):
@@ -503,13 +537,16 @@ def javascript_source_calls(native, code, *, global_this=False):
                         candidates.append((selected, suffix, at, context, definite, rhs))
         # Missing provenance is unknown, not proof that a prior source handle
         # disappeared. A known data value uses None and can retire that handle.
-        resolved = {event[2]: selected_members(event[5], event[1] + selected[len(event[0]):], active)
-                    for event in candidates}
+        resolved = {}
+        for target, source_suffix, at, _, _, rhs in candidates:
+            suffix = selected[len(target):]
+            resolved[at] = selected_members(rhs, source_suffix + suffix, active,
+                                           position if suffix and not source_suffix else None)
         last = max((event[2] for event in candidates if event[3] == scope and event[4]
                     and "" in resolved[event[2]]), default=-1)
         candidates = [event for event in candidates if event[3] != scope or event[2] >= last]
         signature = tuple(event[2] for event in candidates)
-        cache_key = owner, selected, signature, last
+        cache_key = owner, selected, signature, last, position
         if cache_key in reference_cache:
             return reference_cache[cache_key]
         values = {}
@@ -530,6 +567,9 @@ def javascript_source_calls(native, code, *, global_this=False):
             for name, kind in resolved[at].items():
                 if kind is not None or name not in values:
                     values[name] = kind
+        for target in sorted(deeper):
+            values.update((target[len(selected):] + name, kind)
+                          for name, kind in reference_members(target, position, active).items())
         # call/apply/bind preserve the source function's capability.
         if not values and selected.rsplit(".", 1)[-1] in {"call", "apply", "bind"}:
             parent = selected.rsplit(".", 1)[0]
@@ -548,6 +588,8 @@ def javascript_source_calls(native, code, *, global_this=False):
                 return kind
         if re.search(r"\.\s*constructor\s*$", expression):
             return "constructor"
+        if expression.lstrip().startswith(("[", "(", "{")):
+            return members(position, position + len(expression)).get("")
         return None
 
     def callee(opening):
@@ -1037,8 +1079,7 @@ def javascript_inputs(native, atoms, code, declarations, bindings=None):
         span = declarations[name]
         # Only a fresh literal allocation certifies receiver identity. A
         # call/global/parameter can alias another receiver and remains broad.
-        members_ = javascript_literal_members(native, code, *span)
-        result = span if members_ is not None and all(name != "__proto__" for name, _ in members_) else None
+        result = span if aggregate(span) is not None else None
         if result is None:
             alias = native[slice(*span)].strip()
             if re.fullmatch(r"[A-Za-z_$][\w$]*", alias):
@@ -2522,7 +2563,10 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
     languages = {}
 
     def embedded(body):
-        code, child_tokens, bodies = shell_source(body)
+        try:
+            code, child_tokens, bodies = shell_source(body)
+        except ValueError:
+            return None  # A malformed nested body cannot discard its caller.
         # One position domain, but embedded roots are entered only by their caller.
         scope = len(tokens)
         tokens.append(";")
@@ -2657,6 +2701,7 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                         argv = argv[len(prefix):]
                         word_literals = word_literals[len(prefix):]
             inline_body, body_scope, fresh_shell, child_shell = None, None, False, None
+            malformed_body = False
             if children is None and definition is None:
                 action, _, _, _ = shell_command_action(argv)
                 child = unwrapped_command(action, unwrap_code=False)
@@ -2673,9 +2718,13 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                     if word_literals[len(argv) - len(child) + child.index(child_body, 1)]:
                         body, fresh_shell, child_shell = child_body, True, Path(child[0]).name
                 if body is not None:
-                    body_scope, child_begin, child_end, children = embedded(body)
-                    inline_body = (child_begin, child_end, body_scope)
-            language = stdin_language(argv)
+                    parsed = embedded(body)
+                    if parsed is not None:
+                        body_scope, child_begin, child_end, children = parsed
+                        inline_body = (child_begin, child_end, body_scope)
+                    else:
+                        malformed_body = True
+            language = None if malformed_body else stdin_language(argv)
             input_positions = None
             redirection_owner = segment[0]
             if children is None and tokens[segment[0]] in {"}", ")", "done", "fi", "esac"}:
@@ -2976,11 +3025,17 @@ def heredoc_languages(tokens, source, *, file_commands=None, command_kinds=None,
                                    True if list_status is True and result is True else None)
                 else:
                     list_success, list_status = entry | positive, result
+                builtin_change = None
+                if action[:1] == ["enable"] and not flags.intersection("adfps"):
+                    dialects = frozenset({"bash"}) if "n" in flags else frozenset({"bash", "zsh"})
+                    builtin_change = (tuple(operands), "n" not in flags, dialects)
+                elif action[:1] == ["disable"] and not flags:
+                    builtin_change = (tuple(operands), False, frozenset({"zsh"}))
                 success_facts[node["index"]] = {"entry": entry, "success": set(list_success),
                                                 "children": child_success, "parent": parent, "stop": node["stop"],
                                                 "subshell": node["child_scope"] == "(" or asynchronous, "asynchronous": asynchronous,
                                                 "terminates": terminates, "overrides": installation, "builtin_action": builtin_action,
-                                                "action": action, "hash_changes": hash_changes(action), "builtin_change": (tuple(operands), "n" not in flags) if action[:1] == ["enable"] and not flags.intersection("adfps") else None,
+                                                "action": action, "hash_changes": hash_changes(action), "builtin_change": builtin_change,
                                                 "dispatch": dispatch, "redirections": redirections, "inline_body": node["inline_body"], "opaque_context": opaque_context,
                                                 "exports": (tuple(operands), "n" not in flags) if action[:1] == ["export"] and "f" in flags else (tuple(operands), True) if action[:1] in (["declare"], ["typeset"]) and {"f", "x"} <= flags else None, "removes": removes, "removal_patterns": "m" in flags, "definition": node["definition"], "pipeline": previous in {"|", "|&"}, "command": action[0] if action else None, "may_skip": may_skip,
                                                 "inherit_override": opaque_context or alias_installation or any(signal not in {"ERR", "ZERR"} for signal in signals)}
@@ -3630,6 +3685,7 @@ def shell_effect_order(tokens, events, *, success_facts=None):
     for name in "alias bg dirs disown fc fg history jobs popd pushd suspend unalias".split():
         builtin_defaults[name]["zsh"] = frozenset({True})
     builtin_defaults["shopt"] = {"bash": frozenset({True}), "zsh": frozenset({False})}
+    builtin_defaults["disable"] = {"bash": frozenset({False}), "zsh": frozenset({True})}
 
     def builtin_default(name, shell_context):
         dialects = {shell_context} if shell_context in {"bash", "zsh"} else {"bash", "zsh"}
@@ -3829,7 +3885,7 @@ def shell_effect_order(tokens, events, *, success_facts=None):
                 availability = visible_binding(command, scopes, builtin_states, builtin_default(command, shell_context))
                 available = frozenset(value for value, dialect in availability)
                 # Optional builds can execute an explicitly requested disabled builtin.
-                builtin_possible = True in available or dispatch.get("builtin_only") and command in bash_builtin_defaults
+                builtin_possible = True in available or dispatch.get("builtin_only") and command in builtin_defaults
                 # zsh command normally forces external dispatch; Bash may
                 # retain its builtin. Explicit builtin / command -p stay precise.
                 hash_dialects = {dialect for value, dialect in availability
@@ -3857,16 +3913,15 @@ def shell_effect_order(tokens, events, *, success_facts=None):
                             retained = frozenset(binding for binding in previous if binding[1] not in exact_dialects)
                             hashes[name, process] = retained | changed if exact else previous | changed
                     if facts.get("builtin_change"):
-                        names, enabled = facts["builtin_change"]
+                        names, enabled, dialects = facts["builtin_change"]
                         for name in names:
                             # enable cannot create an unknown builtin; dynamic
                             # loading requires a separately unsupported -f form.
-                            if name not in bash_builtin_defaults:
+                            if name not in builtin_defaults:
                                 continue
                             previous = visible_binding(name, scopes, builtin_states, builtin_default(name, shell_context))
-                            dialects = ({shell_context} if shell_context in {"bash", "zsh"} else {"bash", "zsh"}) if enabled else {"bash"}
                             if shell_context in {"bash", "zsh"}:
-                                dialects &= {shell_context}
+                                dialects = dialects & {shell_context}
                             changed = (frozenset(binding for binding in builtin_default(name, shell_context) if binding[1] in dialects)
                                        if enabled else frozenset((False, dialect) for dialect in dialects))
                             exact_dialects = {dialect for dialect in dialects
@@ -3897,7 +3952,7 @@ def shell_effect_order(tokens, events, *, success_facts=None):
                                       scope_prefix=(*scopes, body_scope), boundary=body_scope, shell_context=child_shell):
                         yield (dict(event, replaces=False, _replace_success=False)
                                if paths and event["kind"] == "write" else event)
-                elif facts.get("opaque_context"):
+                elif facts.get("opaque_context") or command and re.search(r"[$`]", command):
                     # Unknown same-context code can call visible functions, but
                     # a parsed literal body is traversed precisely above.
                     for name in {name for name, _ in functions}:
