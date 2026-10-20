@@ -77,18 +77,36 @@ class CommandPolicyHookTests(unittest.TestCase):
             "kill -TERM `pgrep sleep`", "builtin kill $(pgrep sleep)",
             "kill $(ps -axo pid,command | awk '/sleep/ {print $1}')",
             "bash <<'EOF'\nkill $(pgrep sleep)\nEOF",
+            'pids=$(pgrep -f vite); kill $pids',
+            'for p in $(pgrep -f watcher); do kill "$p"; done',
+            'pgrep sleep | while read p; do kill "$p"; done',
+            'kill "$task_pid"', 'kill "$(cat server.pid)"',
+            "kill 0", "kill -9 -1", "nice -n 5 pkill watcher",
+            "caffeinate -i killall watcher", "doas pkill watcher",
+            "stdbuf -o0 pkill watcher", "sudo -u worker pkill watcher",
+            "pgrep sleep | xargs -I{} kill {}",
         ):
             with self.subTest(line=line):
-                self.assertEqual(bash(line).returncode, 2)
+                result = bash(line)
+                self.assertEqual(result.returncode, 2)
+                blocked = command_policy_hook.blocking_policy(line)
+                self.assertIsNotNone(blocked)
+                if blocked is not None:
+                    self.assertIn(blocked[0]["message"], result.stderr)
 
     def test_recorded_pid_kills_and_process_reads_remain_allowed(self) -> None:
         for line in (
             "kill 12345", "kill -TERM 12345", "/bin/kill -s TERM 12345",
-            'kill "$task_pid"', 'task_pid=$!; kill "$task_pid"',
+            "builtin kill 12345", "kill -- 12345", "kill -0 12345",
+            "kill --signal=TERM 12345", "kill -TERM 12345 12346",
             "pgrep -f 'sleep 10'", "ps -axo pid,command", "kill -l",
             "git status", "rg 'pkill|killall' skills/",
             "printf '%s' 'kill $(pgrep sleep)'",
             "cat <<'EOF'\npkill sleep\nkill $(pgrep sleep)\nEOF",
+            "git ls-files | xargs grep -n kill", "xargs rg -w pkill",
+            "timeout 30 rg -n killall skills/", "sudo grep -r pkill /var/log",
+            "grep -n kill $(git ls-files)",
+            'git log -S kill -- "$(git rev-parse --show-toplevel)/hooks"',
         ):
             with self.subTest(line=line):
                 self.assertEqual(bash(line).returncode, 0)

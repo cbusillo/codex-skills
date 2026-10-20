@@ -70,6 +70,8 @@ Token matchers run against parsed argv. `shell_regex` runs against the shell tex
 the runtime is about to execute. If the runtime only has argv tokens, it may use
 `shlex.join(argv)` as a compatibility representation; the simulator must mirror
 the runtime's documented normalization.
+Token-position checks preserve the original command text, so `\A` and `^`
+anchors refer to the command's beginning rather than the beginning of an argument.
 
 When multiple policies match, the primary policy is selected deterministically:
 

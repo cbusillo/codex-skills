@@ -125,7 +125,10 @@ def match_policy(
         if command_texts is None:
             matched = pattern.search(shell) is not None
         else:
-            matched = any(pattern.match(text) for text in command_texts)
+            # Keep the original string when trying each token position, so
+            # anchors still mean the start of the command, not an argument.
+            command = command_texts[0] if command_texts else ""
+            matched = any(pattern.match(command, len(command) - len(text)) for text in command_texts)
         if matched:
             return PolicyMatch(skill, policy_id, "shell_regex", (1, 0, -skill_order, -index))
     return None
