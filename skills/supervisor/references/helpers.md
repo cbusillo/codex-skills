@@ -2238,10 +2238,11 @@ Follow the producer's `release_recovery_action`; confirmed receipts and related
 publications use its existing reuse and deduplication. A partial publication does
 not authorize changing the original related IDs or bypassing producer recovery.
 
-If an attestation cited a later end, resolve any uncertain write first. Preserve
-the mistaken evidence, post corrected evidence using the report's original time,
-and use its corrected `--evidence-comment` through the supported producer route.
-Do not move the recorded closure forward to match the mistaken attestation.
+An attestation whose `Ended at:` is later than the report's `ended_at` still
+qualifies once its validated release is confirmed: the producer checked source
+activity through that later time, and finish verifies the source is still ended.
+Do not post corrected evidence for it, and do not move the recorded closure
+forward to match it.
 
 Unresolved aliases remain unresolved until their canonical native identity and
 source relationship are verified. Do not infer that relationship from a shared

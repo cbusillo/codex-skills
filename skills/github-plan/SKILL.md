@@ -20,6 +20,10 @@ commands:
     source: repo
     example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "claim", "<issue>", "--worker", "<worker>", "--session", "<session-id>", "--branch", "work/issue-<number>", "--next-action", "<action>"]
     purpose: Rechecks ownership, records and reads back the claim, and activates planning state before a task worktree is created.
+  - name: github-plan-release
+    source: repo
+    example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "release", "<issue>", "--claim-comment", "<id>", "--session", "<native-id>", "--handoff-file", "<handoff.md>"]
+    purpose: Releases this session's own claim with the exact directive and its handoff, and reads it back.
   - name: github-plan-release-claim
     source: repo
     example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "release-claim", "<issue>", "--claim-comment", "<id>", "--evidence-comment", "<attestation-url>", "--role", "supervisor", "--session", "<native-id>", "--confirm-session-ended", "--dry-run"]
@@ -266,7 +270,9 @@ active issue labels and continuing background jobs do not lift a hold.
    [Planning: Claim](../github/references/cli-reference.md#planning-claim)
    for refusal, partial recovery, or release. Continue only on confirmed success;
    preserve competing or uncertain ownership for the Director to decide. Keep
-   Current Status current through handoff or completion.
+   Current Status current through handoff or completion, then release with the
+   claim's printed `release_command` (`gh-plan.py release`), never a
+   hand-written release comment.
    Claim waits come only from native blockers, labels and the structured wait
    record. Before a legacy record's first claim, run `gh-plan.py wait <issue>`,
    read its full evidence once and record every real wait/executing-session hold or verified

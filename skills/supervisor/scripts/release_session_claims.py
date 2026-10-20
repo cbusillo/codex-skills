@@ -622,13 +622,17 @@ def finished_claims(reader, entry, actor, issues, apply):
                             or not release.exact_source_release(source["id"], candidate, comments)):
                         continue
                     receipt = release.receipt_for(candidate)
-                    # Worker releases precede their end. A later validated
-                    # Supervisor receipt may still qualify after an earlier
-                    # ineligible naked release; inspect each canonical pair.
-                    cutoff = (release.stamp(receipt["evidence_at"]) if receipt is not None else
-                              release.stamp(candidate.get("updated_at") or candidate.get("created_at")))
-                    if (not release.related_sessions_match(candidate.get("body") or "", entry["session_id"])
-                            or cutoff > ended or receipt is not None and "_release_evidence" not in candidate):
+                    # Worker releases precede their end. A validated Supervisor
+                    # receipt may attest a later end than this verified closure:
+                    # its producer checked activity through that later time, and
+                    # this finish has verified the source is still ended. A later
+                    # receipt may also follow an earlier ineligible naked release;
+                    # inspect each canonical pair.
+                    if receipt is not None:
+                        eligible = "_release_evidence" in candidate
+                    else:
+                        eligible = release.stamp(candidate.get("updated_at") or candidate.get("created_at")) <= ended
+                    if not eligible or not release.related_sessions_match(candidate.get("body") or "", entry["session_id"]):
                         continue
                     evidence = candidate
                     break
