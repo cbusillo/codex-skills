@@ -4,6 +4,12 @@ description: Use for Launchplane-managed product/runtime state, secrets, config,
 metadata:
   short-description: Operate Launchplane-managed state
 resources:
+  - path: scripts/launchplane-service-logs.py
+    kind: script
+    description: Reads a bounded, redacted window of Launchplane's own retained service logs using an existing SSH identity.
+  - path: references/service-log-reader.md
+    kind: reference
+    description: Private target selection, existing read authority, redaction, bounds and coverage limits for service logs.
   - path: scripts/launchplane-owner-review.py
     kind: script
     description: Reads one scoped saved Client decision with its full prose and GitHub delivery receipt.
@@ -47,6 +53,11 @@ resources:
     kind: script
     description: Drives one labeled pull request through the merge train to a landed, failed, needs_owner, or error outcome.
 commands:
+  - name: launchplane-service-logs
+    source: skill
+    resource_path: scripts/launchplane-service-logs.py
+    example_argv: ["uv", "run", "scripts/launchplane-service-logs.py", "--config", "<private-log-target.json>", "--since", "<RFC3339>", "--until", "<RFC3339>"]
+    purpose: Reads Launchplane's own retained API or worker logs without a service mutation, credential input or new grant.
   - name: launchplane-domain-authority-dry-run
     source: skill
     resource_path: scripts/launchplane-write-action.py
@@ -888,6 +899,14 @@ surface. Repair missing references through the product repository's build/deploy
 workflow and delegate protected workflow dispatch and watching to `github`.
 
 ## Runtime Management (Admin)
+
+When diagnosing a Launchplane operation, first read its service logs with
+`scripts/launchplane-service-logs.py --config <private-log-target.json>
+--since <RFC3339> --until <RFC3339> [--operation-id <id>] [--trace-id <id>]`.
+Read [the service-log reader contract](references/service-log-reader.md) before
+using it. It reuses an existing SSH read path, emits bounded redacted JSON and
+changes no service state. Removed containers and rotated logs remain unknown;
+an empty filtered tail never proves that an operation did not run.
 
 Mutate runtime environments, managed secrets, and product config.
 
