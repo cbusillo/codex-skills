@@ -37,6 +37,17 @@ host: Any = load("native_test_host", SCRIPTS / "jb-inspect.py")
 native: Any = load("native_test_backend", SCRIPTS / "native_backend.py")
 
 
+def copy_tracked_fixture(fixture, destination):
+    repository = Path(subprocess.check_output(["git", "-C", str(fixture), "rev-parse", "--show-toplevel"], text=True).strip())
+    prefix = fixture.relative_to(repository).as_posix()
+    paths = subprocess.check_output(["git", "-C", str(repository), "ls-files", "-z", "--", prefix]).decode().split("\0")
+    for path in filter(None, paths):
+        relative = (repository / path).relative_to(fixture)
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(fixture / relative, target)
+
+
 PROJECT=Path('/private/run/project')
 
 def span(tool='PyCompatibilityInspection',file=None,error=None,duration=0):
@@ -84,6 +95,18 @@ class TraceTests(unittest.TestCase):
 
 
 class NativeTests(unittest.TestCase):
+    def test_fixture_copy_uses_tracked_inputs_only(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            fixture = root / "fixture"
+            fixture.mkdir()
+            subprocess.run(["git", "init", "--quiet", str(root)], check=True)
+            (fixture / "control.py").write_text("pass\n")
+            subprocess.run(["git", "-C", str(root), "add", "fixture/control.py"], check=True)
+            (fixture / "unrelated.py").write_text("must not enter qualification\n")
+            output = root / "output"
+            copy_tracked_fixture(fixture, output)
+            self.assertEqual({p.name for p in output.iterdir()}, {"control.py"})
     def test_native_is_default_for_odoo_xml_without_desktop_or_docker(self):
         args = host.build_parser().parse_args(["agent-inspect", "--repo", "/fixture"])
         with patch.object(native.sys, "platform", "darwin"), \
@@ -497,7 +520,7 @@ class LiveNativeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="fixture-", dir=cache) as temporary:
             repo = Path(temporary) / "project"
             fixture = Path(__file__).parent / "fixtures/native-odoo"
-            shutil.copytree(fixture, repo)
+            copy_tracked_fixture(fixture, repo)
             subprocess.run(["git", "init", "--quiet", str(repo)], check=True)
             subprocess.run(["git", "-C", str(repo), "add", "--all"], check=True)
             args = host.build_parser().parse_args(["agent-inspect", "--backend", "native", "--repo", str(repo),
