@@ -312,17 +312,10 @@ def remote_endpoints(argv: list[str]) -> list[str]:
 
 
 def prune_registrations(rows: list[dict]) -> list[dict]:
-    def alive(row):
-        if type(row.get("launch_pid")) is not int or row["launch_pid"] <= 0:
-            return True
-        try:
-            os.kill(row["launch_pid"], 0)
-            return True
-        except ProcessLookupError:
-            return False
-        except (OSError, KeyError, TypeError):
-            return True  # Unknown identity is never deleted as presumed dead.
-    return [row for row in rows if row.get("record_kind") not in {"managed_launch", "managed_proxy"} or alive(row)]
+    from github_plan_sessions import process_liveness
+    shared = process_liveness()
+    return [row for row in rows if row.get("record_kind") not in {"managed_launch", "managed_proxy"}
+            or not shared.process_absent(row.get("launch_pid"))]
 
 
 def register_proxy(home: str, endpoint: str) -> dict:

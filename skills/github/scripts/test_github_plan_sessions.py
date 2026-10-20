@@ -1124,6 +1124,21 @@ class IdleReceiptIntegrationTests(unittest.TestCase):
             self.assertTrue(any(r.get("launch_pid") == os.getpid() for r in CLOSURE.log_rows()))
 
     def test_registration_prunes_only_confirmed_dead_runtime_rows(self):
+        shared = SESSIONS.process_liveness()
+        for kind in ("managed_launch", "managed_proxy"):
+            for pid in (None, 0, -1, True, "456", 456):
+                row = {"record_kind": kind, "launch_pid": pid}
+                for platform in ("darwin", "linux", "win32"):
+                    for outcome in (None, ProcessLookupError(), PermissionError(), OSError()):
+                        with self.subTest(kind=kind, pid=pid, platform=platform, outcome=type(outcome)), \
+                                patch.object(shared.sys, "platform", platform), \
+                                patch.object(shared.os, "kill", side_effect=outcome):
+                            absent = (platform != "win32" and type(pid) is int and pid > 0
+                                      and isinstance(outcome, ProcessLookupError))
+                            self.assertEqual(CLOSURE.prune_registrations([row]), [] if absent else [row])
+        source = {"record_kind": "closure", "launch_pid": 456}
+        with patch.object(shared.os, "kill", side_effect=ProcessLookupError):
+            self.assertEqual(CLOSURE.prune_registrations([source]), [source])
         with ReceiptFixture() as f:
             with SESSIONS.subprocess.Popen([sys.executable, "-c", "pass"]) as child:
                 child.wait()
