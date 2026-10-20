@@ -4507,7 +4507,8 @@ os.system(get())
                     calls = list(receipts.javascript_source_calls(source, code))
                 finally:
                     sys.settrace(previous)
-                self.assertEqual(len(calls), count)
+                # An absent eval argument has no source to execute.
+                self.assertEqual(len(calls), count if operand else 0)
                 traversal.append(work[0])
             with self.subTest(aggregate_operand_work=operand):
                 self.assertLessEqual(traversal[1], 6 * traversal[0])
@@ -4735,6 +4736,8 @@ os.system(get())
             'let cmd="echo safe";for([cmd] of [[W]]){}await tools.exec_command({cmd});',
             'let cmd="echo safe";eval("cmd=W");await tools.exec_command({cmd});',
             'var cmd="echo safe";const source="cmd=W";eval(source);await tools.exec_command({cmd});',
+            'var cmd="echo safe";const sources=["cmd=W"];eval(sources[0]);await tools.exec_command({cmd});',
+            'var cmd="echo safe";eval((()=>"cmd=W")());await tools.exec_command({cmd});',
             'const cmd="echo safe";async function run(...cmd\n){await tools.exec_command({cmd:cmd[0]});}await run(W);',
             'const cmd="echo safe";const run=async(...cmd \n)=>{await tools.exec_command({cmd:cmd[0]});};await run(W);',
         )
@@ -4746,6 +4749,18 @@ os.system(get())
                 rows[2] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-0')
                 with self.subTest(cell=cell):
                     self.assertEqual(receipts.ownership_state(rows, 'codex')['pending'], owning)
+
+        controls = [('', operand) for operand in ('', '[][0]', '[   ][0]', '[,][0]', '42', 'null',
+                    '(()=>{return   ;})()', '(()=>{})()')]
+        controls.append(('const sources=[       ];', 'sources[0]'))
+        for setup, operand in controls:
+            cell = ('const W=' + json.dumps(writer) + ';var cmd="echo safe";' + setup + 'eval('
+                    + operand + ');await tools.exec_command({cmd});')
+            rows = history('codex', {})
+            rows[1]['payload'].update(name='functions.exec', arguments=cell)
+            rows[2] = output({'exit_code': 0, 'output': ''}, 'codex', 'tool-0')
+            with self.subTest(nonstring_eval=cell):
+                self.assertFalse(receipts.ownership_state(rows, 'codex')['pending'])
 
     def test_generated_source_bindings_respect_eval_and_constructor_scope(self):
         for source in ("function f(){", "async function f(){", "const f=function named(){", "const f=()=>{"):
@@ -4904,6 +4919,105 @@ os.system(get())
                 + invoke.replace('BODY', packet_body), True))
         cells.append(('const run=unknown;run(eval,'
             + json.dumps('tools.exec_command({cmd:' + json.dumps(writer) + '})') + ');', True))
+        # Reproduced review paths share the same native ownership verdict,
+        # including harmless alternatives that must stay clear.
+        embedded = 'tools.exec_command({cmd:' + json.dumps(writer) + '})'
+        prefix = 'const SRC=' + json.dumps(embedded) + ';'
+        review_cells = [
+        ('M1', 'bound_apply_clear', 'const b=text.bind(null);let args=["a"];if(flag)args=["b"];b.apply(null,args);', False),
+        ('M1', 'assign_apply_clear', 'const a={x:1},b={y:2};let parts=[{},a];if(extra)parts=[{},a,b];Object.assign.apply(null,parts);', False),
+        ('M1', 'bound_apply_eval', 'const b=eval.bind(null);let args=[SRC];if(flag)args=[SRC];b.apply(null,args);', True),
+        ('M1', 'bind_capture_clear', 'let args=[null,"a"];if(flag)args=[null,"b"];const b=text.bind.apply(text,args);b();', False),
+        ('M1', 'call_view_clear', 'let args=[null,"a"];if(flag)args=[null,"b"];text.call.apply(text,args);', False),
+        ('M1', 'reflect_assign_clear', 'const a={x:1},b={y:2};let parts=[{},a];if(extra)parts=[{},a,b];Reflect.apply(Object.assign,null,parts);', False),
+        ('M1', 'source_rest_writer', 'const B=' + packet_body + ';const run=(...a)=>Function(...a);let p=["c",B];if(flag)p=["d",B];run.apply(null,p)(' + json.dumps(writer) + ');', True),
+        ('L1', 'conditional', '(flag?text:eval)(SRC);', True),
+        ('L1', 'or', '(x||eval)(SRC);', True),
+        ('L1', 'nullish', '(x??eval)(SRC);', True),
+        ('L1', 'passed_handle', 'lib.run(x||eval,SRC);', True),
+        ('L1', 'reverse_conditional', '(flag?eval:text)(SRC);', True),
+        ('L1', 'return', 'const get=()=>flag?text:eval;const F=get();F(SRC);', True),
+        ('L1', 'data_property', 'const o={run:x||eval};o.run(SRC);', True),
+        ('L1', 'harmless_conditional', '(flag?text:console.log)(SRC);', False),
+        ('L1', 'truthy_left_retired', '(eval&&text)(SRC);', False),
+        ('L1', 'false_left_short_circuit', '(false&&eval)(SRC);', False),
+        ('L2', 'getter_this_eval', 'const o={h:eval,get x(){return this.h}};const F=o.x;await F(SRC);', True),
+        ('L2', 'method_this_eval', 'const o={h:eval,m(){return this.h}};const F=o.m();await F(SRC);', True),
+        ('L2', 'getter_this_text', 'const o={h:text,get x(){return this.h}};const F=o.x;await F(SRC);', False),
+        ('L2', 'method_this_text', 'const o={h:text,m(){return this.h}};const F=o.m();await F(SRC);', False),
+        ('L3', 'getter_retained_eval', 'const o={get x(){return eval},set x(v){}};o.x=text;const F=o.x;await F(SRC);', True),
+        ('L3', 'getter_retained_text', 'const o={get x(){return text},set x(v){}};o.x=eval;const F=o.x;await F(SRC);', False),
+        ('L3', 'setter_effect_eval', 'const o={set x(v){v(SRC)}};o.x=eval;', True),
+        ('L3', 'setter_effect_text', 'const o={set x(v){v(SRC)}};o.x=text;', False),
+        ('L4', 'switch_variable', 'let F=eval;switch(k){case 1:void 0;F=text;break;case 2:F(SRC)}', True),
+        ('L4', 'switch_member', 'const o={run:eval};switch(k){case 1:void 0;o.run=text;break;case 2:o.run(SRC)}', True),
+        ('L4', 'switch_variable_text', 'let F=text;switch(k){case 1:void 0;F=text;break;case 2:F(SRC)}', False),
+        ('L4', 'switch_member_text', 'const o={run:text};switch(k){case 1:void 0;o.run=text;break;case 2:o.run(SRC)}', False),
+        ('L4', 'switch_same_case_retirement', 'let F=eval;switch(k){case 1:void 0;F=text;F(SRC)}', False),
+        ('L5', 'constructor_tag', 'Function`' + embedded + '`();', True),
+        ('L5', 'eval_tag_data', 'eval`${SRC}`;', False),
+        ('L5', 'custom_tag_control', 'const run=(s,e,c)=>e(c);await run`${eval}${SRC}`;', True),
+        ('L6', 'unknown_string_mutator', 'lib.patch(String);const F=String.raw`x`;await F(SRC);', True),
+        ('L6', 'unknown_global_mutator', 'lib.patch(globalThis);const F=String.raw`x`;await F(SRC);', True),
+        ('L6', 'unknown_aggregate_mutator', 'const o={run:text};lib.patch(o);o.run(SRC);', True),
+            ('design', 'F1_saved_bind', 'let b=text.bind.bind(text.bind);while(c)b=b(text.bind);', False),
+            ('design', 'F2_opaque_callback_read', 'const make=(e,s)=>({get x(){e(s);return 0}});[0].forEach(()=>{const ignored=make(eval,SRC).x});', True),
+            ('design', 'F4_eval_first_only', 'function f(a){return eval(a,SRC)}f({});', False),
+            ('design', 'F5_member_receiver', 'const o={run:text,p:lib.patch};o.p();o.run(SRC);', True),
+            ('design', 'F5_call_receiver', 'const o={run:text};lib.patch.call(o);o.run(SRC);', True),
+            ('design', 'F5_reflect_receiver', 'const o={run:text};Reflect.apply(lib.patch,o,[]);o.run(SRC);', True),
+            ('design', 'F6_nested_handle', 'lib.run({f:eval},SRC);', True),
+            ('design', 'F7_donor_snapshot_writer', 'const donor={h:eval,get x(){return this.h}};const dst=Object.assign({},donor);dst.h=text;dst.x(SRC);', True),
+            ('design', 'F7_donor_snapshot_read', 'const donor={h:text,get x(){return this.h}};const dst=Object.assign({},donor);dst.h=eval;dst.x(SRC);', False),
+            ('cause', 'conditional_middle_comma', '(flag?eval,text:eval)(SRC);', True),
+            ('cause', 'shadowed_undefined', 'const run=undefined=>(undefined??text)(SRC);run(eval);', True),
+            ('cause', 'signed_numeric', '(-1||eval)(SRC);', False),
+            ('cause', 'repeated_console', 'console.log(SRC);console.log(SRC);', False),
+            ('cause', 'repeated_unknown', 'lib.read(SRC);lib.read(SRC);', False),
+            ('cause', 'native_setter', 'const o={};Object.defineProperty(o,"x",{set:eval});o.x=SRC;', True),
+            ('cause', 'native_reflect_setter', 'const o={};Object.defineProperty(o,"x",{set:eval});Reflect.set(o,"x",SRC);', True),
+            ('cause', 'supplied_function_default', 'const make=(e,s)=>({get x(){e(s);return 0}});function f(v=make(eval,SRC).x){text(v)}f(0);', False),
+            ('cause', 'selected_function_default', 'const make=(e,s)=>({get x(){e(s);return 0}});function f(v=make(eval,SRC).x){text(v)}f();', True),
+            ('cause', 'supplied_arrow_default', 'const make=(e,s)=>({get x(){e(s);return 0}});const f=(v=make(eval,SRC).x)=>text(v);f(0);', False),
+            ('cause', 'selected_arrow_default', 'const make=(e,s)=>({get x(){e(s);return 0}});const f=(v=make(eval,SRC).x)=>text(v);f();', True),
+            ('tag', 'tag_last_body_writer', 'Function`c${SRC}`();', True),
+            ('tag', 'tag_last_body_read', 'Function`c${SRC}${"return 0"}`();', False),
+            ('switch', 'same_case_identifier', 'let F=eval;switch(k){case 1:void 0;F=text;const showcase=0;F(SRC)}', False),
+            ('switch', 'same_case_property', 'let F=eval;switch(k){case 1:void 0;const o={case:0};F=text;o.case;F(SRC)}', False),
+            ('switch', 'same_case_control', 'let F=eval;switch(k){case 1:void 0;F=text;const value=0;F(SRC)}', False),
+        ]
+        cells.extend(((prefix if 'SRC' in cell else '') + cell, owning)
+                     for _, _, cell, owning in review_cells)
+        # A property Get executes even if its value is discarded. Merely
+        # defining a getter or taking an unselected operand stays inert.
+        for handle, owning in (('eval', True), ('text', False)):
+            setup = 'const src=' + json.dumps(embedded) + ';'
+            setup += 'const make=(e,s)=>({get x(){e(s);return 0}});'
+            for use in ('Object.assign({},make(H,src));',
+                        'text(make(H,src).x);',
+                        'const ignored=make(H,src).x;text("safe");',
+                        'make(H,src).x;',
+                        'const ignored={...make(H,src)};'):
+                cells.append((setup + use.replace('H', handle), owning))
+            cells.extend((
+                (setup + 'const ignored=make(' + handle + ',src);', False),
+                (setup + 'false&&make(' + handle + ',src).x;', False),
+                (setup + 'true||make(' + handle + ',src).x;', False),
+                (setup + 'const ignored=()=>make(' + handle + ',src).x;', False),
+            ))
+        for cell, owning in (
+            ('const x=false;(x&&eval)(SRC);', False),
+            ('const x=null;(x??eval)(SRC);', True),
+            ('const x=0;(x||eval)(SRC);', True),
+            ('const x=0;(x??eval)(SRC);', False),
+            ('const o={h:eval,m(){return ()=>this.h}};o.m()()(SRC);', True),
+            ('const o={h:text,m(){return ()=>this.h}};o.m()()(SRC);', False),
+            ('const o={get x(){return eval},set x(v){}};Reflect.set(o,"x",text);o.x(SRC);', True),
+            ('const o={get x(){return text},set x(v){}};Object.assign(o,{x:eval});o.x(SRC);', False),
+            ('const o={get x(){return eval}};Object.defineProperty(o,"x",{value:text});o.x(SRC);', False),
+            ('const o={run:text};lib.patch(o);const get=o.run;get()(SRC);', True),
+        ):
+            cells.append((prefix + cell, owning))
         for cell, owning in cells:
             rows = history('codex', {})
             rows[1]['payload'].update(name='functions.exec', arguments=cell)
