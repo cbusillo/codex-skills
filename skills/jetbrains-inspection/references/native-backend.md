@@ -45,6 +45,12 @@ runner compares the selected addon's manifest and `workspace.toml` build series
 with public `odoo/release.py`; an absent or mismatched declaration stays UNKNOWN.
 For a different tenant or branch, supply its matching roots with repeatable
 `--native-framework-root`, following that workspace's dependency refs.
+For a declared `repos.shared_addons`, the runner resolves its location from the
+source worktree or primary checkout, verifies the attached checkout belongs to
+that Git repository, and requires HEAD to match the declared ref. Linked
+checkouts are supported. Ref resolution uses existing local Git metadata; run
+the workspace's maintained dependency setup/sync before assessment rather than
+claiming those refs prove remote freshness. Context is checked again at the end.
 No framework Python is executed to discover its version.
 The canonical project content root includes `addons` as a source folder when present;
 it does not create separate addon content roots that would change scope paths.
