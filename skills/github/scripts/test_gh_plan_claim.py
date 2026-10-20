@@ -4124,12 +4124,122 @@ class ClaimTests(unittest.TestCase):
         self.assertNotIn("status", self.events)
 
     def test_retained_metadata_recovery_preserves_derived_scope(self):
-        self.refresh_fixture()
-        self.run_claim()
-        self.run_claim()
-        self.assertEqual(self.events.count("post"), 1)
-        self.args.resume_from = None
-        with self.assertRaises(PLAN.ClassifiedPlanError): self.run_claim()
+        cases = [(route, publication, "cleanup")
+                 for route in ("same", "parent", "cross_repository")
+                 for publication in ("partial", "complete")]
+        cases += [("same", "partial", control) for control in (
+            "numbered", "no_cleanup", "no_task_artifacts", "released", "competing",
+            "competing_lineage", "missing_handoff", "wrong_source", "malformed_handoff",
+            "withdrawn_handoff", "omit_resume")]
+        for route, publication, control in cases:
+            with self.subTest(route=route, publication=publication, control=control):
+                self.setUp()
+                if route == "parent":
+                    self.parent_handoff_fixture()
+                    source_repo, source_number = self.args.repo, self.parent["number"]
+                    source_comments = self.target_comments[
+                        f"/repos/{source_repo}/issues/{source_number}/comments"]
+                else:
+                    if route == "cross_repository": self.cross_repository_fixture()
+                    else: self.refresh_fixture()
+                    source_repo, source_number = PLAN.issue_ref(self.args.issue, self.args.repo)
+                    source_comments = self.comments
+                original = next(comment for comment in source_comments
+                                if comment["id"] == self.args.resume_from)
+                source = CLAIM.records(original["body"])[0]
+                closing = self.pulls[-1]
+                retained = next(pull for pull in [*self.pulls, *self.closed_pulls.values()]
+                                if pull["number"] != closing["number"])
+                release = next(comment for comment in source_comments
+                               if CLAIM.released_claim_id(comment["body"]) == original["id"])
+                release["body"] = (f"Released claim {original['id']}\n"
+                                   f"https://github.com/{self.args.repo}/pull/{retained['number']}")
+                corrected = {"id": max(comment["id"] for comment in source_comments) + 1,
+                             "user": {"login": TEST_BOT}, "body": (
+                                 f"Handoff from {source['worker']}\nSource claim {original['id']}; "
+                                 f"Session: {source['session']}; "
+                                 f"https://github.com/{self.args.repo}/pull/{retained['number']} "
+                                 f"https://github.com/{self.args.repo}/pull/{closing['number']}")}
+                source_comments.append(corrected)
+                self.comment_id_offset = corrected["id"]
+                self.args.branch = (f"work/issue-{self.issue['number']}-renewal" if control == "numbered"
+                                    else "work/retained-renewal")
+                expected_url = (f"https://github.com/{source_repo}/issues/{source_number}"
+                                f"#issuecomment-{corrected['id']}")
+                if publication == "partial":
+                    def interrupt_publication():
+                        raise PLAN.PlanError("Fixture interruption after publication")
+                    self.after_post = interrupt_publication
+                    with self.assertRaises(PLAN.PlanError): self.run_claim()
+                    self.assertIn("post", self.events)
+                    self.assertNotIn("status", self.events)
+                    self.assertNotIn("labels", self.events)
+                else:
+                    self.run_claim()
+                published = copy.deepcopy(self.comments[-1])
+                published_record = CLAIM.records(published["body"])[0]
+                self.assertEqual(published_record["retained_handoff"], expected_url)
+                self.after_post = lambda: None
+
+                if control not in {"no_task_artifacts", "released"}:
+                    self.inventory["local_branches"].append(self.args.branch)
+                    self.inventory["worktrees"].append({"branch": self.args.branch, "path": "/task/recovery"})
+                self.pulls.remove(closing)
+                closing.update(state="closed", merged_at="2026-10-02T03:00:00Z")
+                self.closed_pulls[closing["number"]] = closing
+                self.targets[str(closing["number"])]["state"] = "closed"
+                if control != "no_cleanup":
+                    branch = closing["head"]["ref"]
+                    for key in ("local_branches", "remote_branches"):
+                        self.inventory[key] = [candidate for candidate in self.inventory[key] if candidate != branch]
+                    self.inventory["worktrees"] = [tree for tree in self.inventory["worktrees"]
+                                                    if tree["branch"] != branch]
+
+                if control == "released":
+                    self.comments.append({"id": published["id"] + 1, "user": {"login": TEST_BOT},
+                                          "body": f"Released claim {published['id']}"})
+                elif control in {"competing", "competing_lineage"}:
+                    peer = ({**published_record, "retained_handoff": expected_url.rsplit("-", 1)[0] + f"-{release['id']}"}
+                            if control == "competing_lineage" else
+                        {**published_record, "session": "peer-native"})
+                    self.comments.append({"id": published["id"] + 1, "user": {"login": TEST_BOT},
+                                          "body": CLAIM.marker(peer)})
+                elif control in {"missing_handoff", "wrong_source", "malformed_handoff"}:
+                    if control == "wrong_source": published_record["resume_from"] = str(published["id"])
+                    elif control == "malformed_handoff": published_record["retained_handoff"] = "invalid-handoff"
+                    else:
+                        published_record["retained_handoff"] = expected_url.rsplit("-", 1)[0] + f"-{published['id']}"
+                    self.comments[-1]["body"] = CLAIM.marker(published_record)
+                elif control == "withdrawn_handoff": corrected["body"] = "Handoff withdrawn"
+                elif control == "omit_resume": self.args.resume_from = None
+
+                prior_comments = copy.deepcopy(self.comments)
+                artifacts = copy.deepcopy((self.inventory, self.pulls, self.closed_pulls,
+                                           self.targets, self.target_comments))
+                self.events = []
+                self.emitted.reset_mock()
+                if control in {"competing", "competing_lineage", "missing_handoff", "wrong_source",
+                               "malformed_handoff", "withdrawn_handoff", "omit_resume"}:
+                    with self.assertRaises(PLAN.PlanError): self.run_claim()
+                    self.assert_no_writes()
+                    self.emitted.assert_not_called()
+                    self.assertEqual(self.comments, prior_comments)
+                else:
+                    self.run_claim()
+                    result = self.emitted.call_args.args[0]
+                    self.assertIn("metadata_readback", result["completed_steps"])
+                    if control == "released":
+                        self.assertEqual(self.events.count("post"), 1)
+                        self.assertEqual(self.comments[:-1], prior_comments)
+                        self.assertEqual(result["claim"]["retained_handoff"],
+                                         expected_url.rsplit("-", 1)[0] + f"-{release['id']}")
+                    else:
+                        self.assertNotIn("post", self.events)
+                        self.assertEqual(self.comments, prior_comments)
+                        self.assertTrue(CLAIM.same_owner(result["claim"], published_record))
+                        self.assertEqual(result["claim"]["claimed_at"], published_record["claimed_at"])
+                self.assertEqual((self.inventory, self.pulls, self.closed_pulls,
+                                  self.targets, self.target_comments), artifacts)
 
     def test_success_records_and_reads_back_before_metadata(self):
         self.run_claim()

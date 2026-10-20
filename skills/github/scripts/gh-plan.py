@@ -2820,14 +2820,14 @@ def _claim_once(args: argparse.Namespace) -> None:
             target_pulls.append(retained_pull)
         prepared = {"source": source_info, "pulls": target_pulls,
                     "permitted": set(), "error": None, "targets": {}}
+        _, current_status, current_comments, _ = phase_records[(issue_repo.casefold(), number)]
+        candidate_owners = {}
         def usable(candidate: dict[str, Any]) -> bool:
             # Selection uses the existing artifact rules on raw checkout facts.
             # Fresh native/peer authority remains with the phase observer and
             # admission checks; this predicate grants no ownership.
             raw_inventory = phase["inventory"]
-            _, current_status, current_comments, _ = phase_records[(issue_repo.casefold(), number)]
-            candidate_claim = {**claim, "resume_from": str(args.resume_from), "retained_handoff": candidate["url"]}
-            _, own = github_plan_claim.discussion_evidence("", current_comments, candidate_claim)
+            candidate_claim, own = candidate_owners[candidate["url"]]
             scopes = {(issue_repo.casefold(), number): (issue_repo, current_comments, current_status),
                       (issue_repo.casefold(), source_number): (issue_repo, source_comments, source_status)}
             scopes.update({(target_repo.casefold(), pull["number"]): (target_repo, [], "")
@@ -2845,9 +2845,21 @@ def _claim_once(args: argparse.Namespace) -> None:
                     return False
             return True
         try:
+            owned_ids = []
+            if selection is None or selection["handoff"] is not None:
+                for candidate in candidates:
+                    url = github_plan_claim.handoff_url(issue_repo, source_number, candidate["id"])
+                    candidate_claim = {**claim, "resume_from": str(args.resume_from), "retained_handoff": url}
+                    _, own = github_plan_claim.discussion_evidence("", current_comments, candidate_claim)
+                    candidate_owners[url] = (candidate_claim, own)
+                    if any(record.get("_legacy") != "yes" for record in own):
+                        owned_ids.append(candidate["id"])
+            # A retry keeps its published lineage even if sibling cleanup makes
+            # an older handoff usable. Ownership and admission still run below.
+            selected_id = selection["handoff"] if selection else owned_ids[0] if len(owned_ids) == 1 else None
             handoff = (github_plan_claim.retained_handoff(source, candidates, target_pulls,
                 issue_repo=issue_repo, issue_number=source_number, target_repo=target_repo,
-                selected_id=selection["handoff"] if selection else None, usable=usable)
+                selected_id=selected_id, usable=usable)
                 if selection is None or selection["handoff"] is not None else None)
             record = source["record"]
             source_open = any(pull.get("state") == "open" and (pull.get("head") or {}).get("ref") == record["branch"]

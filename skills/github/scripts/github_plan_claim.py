@@ -790,6 +790,10 @@ def handoff_candidates(comments: list[dict[str, Any]], source: dict[str, Any]) -
     return found
 
 
+def handoff_url(repo: str, number: int, comment_id: int) -> str:
+    return f"https://github.com/{repo}/issues/{number}#issuecomment-{comment_id}"
+
+
 def retained_handoff(
     source: dict[str, Any], candidates: list[dict[str, Any]], pulls: list[dict[str, Any]], *,
     issue_repo: str, issue_number: int, target_repo: str, selected_id: int | None = None,
@@ -828,7 +832,7 @@ def retained_handoff(
                               and (pull["number"] not in named or (pull.get("user") or {}).get("login") != author)]
             candidate = {"comment": handoff, "named": named, "qualified": retained,
                          "permitted": permitted, "open_conflicts": open_conflicts,
-                         "url": f"https://github.com/{issue_repo}/issues/{issue_number}#issuecomment-{handoff['id']}"}
+                         "url": handoff_url(issue_repo, issue_number, handoff["id"])}
             if first is None:
                 first = candidate
             if not open_conflicts and (usable is None or usable(candidate)):
