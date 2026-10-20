@@ -10,11 +10,10 @@ from datetime import datetime
 import json
 import pathlib
 import re
-import shlex
 import shutil
 import subprocess
 import time
-from typing import Any
+from typing import Any, Callable
 
 
 MARKER = "github-plan:claim "
@@ -382,11 +381,10 @@ def exact_released_sources(comments: list[dict[str, Any]]) -> list[tuple[int, di
 
 def released_successor_route(
     conflicts: list[dict[str, Any]], comments: list[dict[str, Any]], *, issue_repo: str,
-) -> tuple[int, int] | None:
+) -> int | None:
     """Name the one released claim whose authored release retains every conflict.
 
-    The route is only a candidate: the caller reruns the full ordinary-successor
-    checks, which verify the retained PRs, their waits and live sessions.
+    This is a diagnostic only. An explicit resume rechecks the entire source.
     """
     from github_plan_release import effective_comments
     comments = effective_comments(comments)
@@ -405,7 +403,7 @@ def released_successor_route(
             c.get("source") == "current_status" and "text" in c
             or c.get("source") in {"local_branches", "remote_branches", "worktree"})]
         if named and tied and not untied:
-            candidates.add((source["id"], release["id"]))
+            candidates.add(source["id"])
     return next(iter(candidates)) if len(candidates) == 1 else None
 
 
@@ -654,7 +652,7 @@ def coordination(conflicts: list[dict[str, Any]], comments: list[dict[str, Any]]
                         or c.get("session") == record["session"] or (
                             c.get("branch") == record["branch"] and source.get("id") not in released_ids)]
             if matching:
-                holders.append({**record, "claim_url": f"https://github.com/{repo}/issues/{number}#issuecomment-{source.get('id')}",
+                holders.append({**record, "claim_url": handoff_url(repo, number, source.get("id")),
                                 "next_action": "Contact this native session or coordinate an exact authored handoff on the work record; preserve its artifacts",
                                 **diagnostics(matching)})
     if not holders:
@@ -730,7 +728,8 @@ def local_inventory(repo: str, number: int, *, cwd: pathlib.Path | None = None,
             "sessions": sessions, "session_coverage": coverage, "issue": number}
 
 
-def retained_branch(comments: list[dict[str, Any]], comment_id: int) -> str:
+def released_source(comments: list[dict[str, Any]], comment_id: int) -> dict[str, Any]:
+    """Resolve one authored release without changing route-specific chronology."""
     from github_plan_release import effective_comments
     comments = effective_comments(comments)
     original = next((c for c in comments if c.get("id") == comment_id), None)
@@ -748,7 +747,7 @@ def retained_branch(comments: list[dict[str, Any]], comment_id: int) -> str:
             continue
         if (released_claim_id(comment.get("body") or "") == comment_id
                 or legacy_release_worker(comment.get("body") or "") == parsed[0]["worker"]):
-            return parsed[0]["branch"]
+            return {"comment": original, "record": parsed[0], "author": author, "release": comment}
     raise ClaimProofError("claim_resume_source_unreleased", "Resume source claim has not been released by its author")
 
 
@@ -765,62 +764,45 @@ def handoff_pr_numbers(text: str, *, issue_repo: str, target_repo: str) -> set[i
     return numbers
 
 
-def retained_handoff(
-    comments: list[dict[str, Any]], source_id: int, handoff_id: int,
-    pulls: list[dict[str, Any]], target_number: int | None, *, issue_repo: str,
-    issue_number: int, target_repo: str,
-    allow_resume_only: bool = False,
-) -> set[str]:
-    """Bind retained PR identities to the exact author-released handoff."""
-    source_branch = retained_branch(comments, source_id)
-    source = next(c for c in comments if c.get("id") == source_id)
-    author = source["user"]["login"]
-    handoff = next((c for c in comments if c.get("id") == handoff_id), None)
-    if handoff is None or (handoff.get("user") or {}).get("login") != author:
-        raise ClaimProofError("claim_handoff_author_mismatch", "Refresh handoff must be a comment by the source claim author")
-    source_index, handoff_index = comments.index(source), comments.index(handoff)
-    if handoff_index <= source_index or not any(
-        (c.get("user") or {}).get("login") == author
-        and released_claim_id(c.get("body") or "") == source_id
-        for c in comments[source_index + 1:handoff_index + 1]
-    ):
-        raise ValueError("Refresh requires an exact source-claim release before or in the handoff")
+def handoff_candidates(comments: list[dict[str, Any]], source: dict[str, Any]) -> list[dict[str, Any]]:
+    """Authored exact-source handoffs in canonical discussion order."""
+    from github_plan_release import effective_comments
+    comments = effective_comments(comments)
+    source_id, record, author = source["comment"]["id"], source["record"], source["author"]
+    after_source = False
+    exact_release_seen = False
+    found = []
+    for comment in comments:
+        if comment.get("id") == source_id:
+            after_source = True
+            continue
+        if not after_source or (comment.get("user") or {}).get("login") != author:
+            continue
+        text = comment.get("body") or ""
+        exact_release_seen |= released_claim_id(text) == source_id
+        first_line = text.splitlines()[:1]
+        standalone = (first_line == [f"Handoff from {record['worker']}"]
+                      and re.search(rf"\bclaim:? {source_id}(?!\d)", text)
+                      and re.search(rf"(?<![\w-]){re.escape(record['session'])}(?![\w-])", text)
+                      and not records(text))
+        if exact_release_seen and (released_claim_id(first_line[0] if first_line else "") == source_id or standalone):
+            found.append(comment)
+    return found
 
-    handoff_text = handoff.get("body") or ""
-    source_record = records(source["body"])[0]
-    source_claim_match = re.search(rf"\bclaim:? {source_id}(?!\d)", handoff_text)
-    source_session_match = re.search(rf"(?<![\w-]){re.escape(source_record['session'])}(?![\w-])", handoff_text)
-    standalone = (handoff_text.splitlines()[:1] == [f"Handoff from {source_record['worker']}"]
-                  and source_claim_match and source_session_match
-                  and not records(handoff_text))
-    named = handoff_pr_numbers(handoff_text, issue_repo=issue_repo, target_repo=target_repo)
-    # A PR-only refresh can bind directly to the released source's own branch.
-    # Split branches and ordinary successor work still need the explicit
-    # session-bearing handoff. Never reinterpret a malformed canonical header.
-    source_pr_refresh = (target_number is not None
-                         and not re.match(r"(?i)^\s*Handoff\s+from\b", handoff_text)
-                         and not records(handoff_text)
-                         and any(pull["number"] == target_number
-                                 and pull["number"] in named
-                                 and pull.get("state") == "open"
-                                 and (pull.get("head") or {}).get("ref") == source_branch
-                                 for pull in pulls))
-    # An embedded release proves release, not the identity of a split handoff.
-    first_line_release = released_claim_id(handoff_text.splitlines()[0] if handoff_text else "")
-    if not (first_line_release == source_id or standalone or source_pr_refresh):
-        raise ValueError("Refresh handoff must identify the exact released source claim")
-    # The exact authored release above owns release state. The separate handoff
-    # binds source identity and retained PRs, not natural-language conditions.
-    direct_source_refresh = source_pr_refresh and not (first_line_release == source_id or standalone)
-    permitted = {source_branch}
-    target_found = False
-    attested = False
+
+def handoff_url(repo: str, number: int, comment_id: int) -> str:
+    return f"https://github.com/{repo}/issues/{number}#issuecomment-{comment_id}"
+
+
+def retained_handoff(
+    source: dict[str, Any], candidates: list[dict[str, Any]], pulls: list[dict[str, Any]], *,
+    issue_repo: str, issue_number: int, target_repo: str, selected_id: int | None = None,
+    usable: Callable[[dict[str, Any]], bool] | None = None,
+) -> dict[str, Any] | None:
+    """Prefer the first usable qualified handoff, preserving a selected ID."""
+    author = source["author"]
+    qualified = []
     for pull in pulls:
-        branch = (pull.get("head") or {}).get("ref", "")
-        if pull["number"] not in named:
-            continue
-        if direct_source_refresh and branch != source_branch:
-            continue
         if pull.get("state") != "open" and not (pull.get("state") == "closed" and pull.get("merged_at")):
             continue
         if (pull.get("user") or {}).get("login") != author:
@@ -834,25 +816,32 @@ def retained_handoff(
         if not pr_issue_reference(pull, issue_number, repo=issue_repo,
                                   local_references=issue_repo.casefold() == target_repo.casefold(), attestation=True):
             continue
-        permitted.add(branch)
-        attested = True
-        target_found |= pull["number"] == target_number and pull.get("state") == "open"
-    if target_number is not None and not target_found:
-        raise ValueError("Refresh target must be an open same-repository PR linked to the issue and attested in the released handoff")
-    if target_number is None and not attested:
-        message = "Retained handoff must attest a same-repository open or merged PR linked to the issue"
-        retained_pr = any((pull.get("head") or {}).get("ref") == source_branch or pull["number"] in named
-                          for pull in pulls)
-        if allow_resume_only and not retained_pr:
-            options = shlex.join(["--resume-from", str(source_id), "--branch", source_branch])
-            raise ClaimProofError("claim_handoff_pr_required",
-                message + ". For WIP without a PR, verify the source session has finished, "
-                "the handoff retains no PR at all, and the preserved branch is pushed, "
-                f"then use the existing same-record resume-only options `{options}` "
-                "without --handoff-comment or --refresh-pr. Ownership, waits, blockers and other artifact checks still apply.",
-                payload={"successor_route": {"resume_from": source_id, "branch": source_branch}})
-        raise ValueError(message)
-    return permitted
+        qualified.append(pull)
+    first = None
+    for handoff in candidates:
+        if selected_id is not None and handoff.get("id") != selected_id:
+            continue
+        named = handoff_pr_numbers(handoff.get("body") or "", issue_repo=issue_repo, target_repo=target_repo)
+        retained = [pull for pull in qualified if pull["number"] in named]
+        if retained:
+            permitted = {source["record"]["branch"], *(pull["head"]["ref"] for pull in retained)}
+            open_conflicts = [{"source": "open_pr", "number": pull["number"], "branch": pull["head"]["ref"],
+                               "certainty": "not_in_source_handoff"}
+                              for pull in pulls if pull.get("state") == "open"
+                              and (pull.get("head") or {}).get("ref") in permitted
+                              and (pull["number"] not in named or (pull.get("user") or {}).get("login") != author)]
+            candidate = {"comment": handoff, "named": named, "qualified": retained,
+                         "permitted": permitted, "open_conflicts": open_conflicts,
+                         "url": handoff_url(issue_repo, issue_number, handoff["id"])}
+            if first is None:
+                first = candidate
+            if not open_conflicts and (usable is None or usable(candidate)):
+                return candidate
+    if first is not None:
+        return first
+    if selected_id is not None:
+        raise ClaimProofError("claim_handoff_changed", "Selected source handoff no longer qualifies its retained work")
+    return None
 
 
 def recorded_claim_branches(status: str, comments: list[dict[str, Any]]) -> set[str]:
