@@ -4490,11 +4490,13 @@ os.system(get())
         # A captured receiver must not replay every prior self-member
         # assignment under a new reference spelling. Abort the old traversal
         # deterministically before it can hang this module.
-        for initial in ("{}", "getReceiver()"):
+        for initial, scoped in (("{}", False), ("getReceiver()", False), ("{}", True), ("getReceiver()", True), ("eval", "wrapper"), ("text", "wrapper")):
             traversals = []
             for count in (4, 8):
-                source = "let v=" + initial + ";" + "".join("v=v.a" + str(index) + ";" for index in range(count)) + "f(v);"
-                _, code, _, _ = receipts.javascript_projection(source)
+                writes = ("".join("function s" + str(index) + "(){v={x:v};}" for index in range(count)) if scoped == "wrapper" else
+                          "".join("function s" + str(index) + "(){v=v.next;}" for index in range(count)) if scoped
+                          else "".join("v=v.a" + str(index) + ";" for index in range(count)))
+                source = "let v=" + initial + ";" + writes + ("f(v.x);" if scoped is True else "f(v);")
                 work = [0]
                 owner_file = receipts.javascript_source_calls.__code__.co_filename
                 def executed(frame, event, arg):
@@ -4508,12 +4510,16 @@ os.system(get())
                 previous = sys.gettrace()
                 sys.settrace(executed)
                 try:
+                    _, code, _, _ = receipts.javascript_projection(source)
                     calls = list(receipts.javascript_source_calls(source, code))
                 finally:
                     sys.settrace(previous)
-                self.assertEqual(calls, [])
+                if scoped == "wrapper" and initial == "eval":
+                    self.assertTrue(calls)
+                else:
+                    self.assertEqual(calls, [])
                 traversals.append(work[0])
-            with self.subTest(captured_receiver_work=initial):
+            with self.subTest(captured_receiver_work=initial, cross_scope=scoped):
                 self.assertLessEqual(traversals[1], 6 * traversals[0])
 
     def test_javascript_command_discovery_covers_noncanonical_tool_callees(self):
@@ -4807,6 +4813,32 @@ os.system(get())
                 ('function preview(){const globalThis={eval:text};return globalThis;}', 'globalThis.eval', owning),
             ):
                 cells.append((setup + 'await ' + callee + '(' + json.dumps(source) + ');', expected))
+            constructor_body = json.dumps("return tools.exec_command({cmd:" + json.dumps(command) + "});")
+            for setup, callee, expected in (
+                ("const o={};const F=o.constructor.constructor;", "F", owning),
+                ("let F=Function;const o={};F=o.constructor.constructor;", "F", owning),
+                ("const f=async()=>{};const F=f.constructor;", "F", owning),
+                ("const o={};const F=o.constructor;", "F", False),
+                ("const o={constructor:text};const F=o.constructor;", "F", False),
+                ("const o={};", "o.constructor", False),
+                ("const o={constructor:text};", "o.constructor", False),
+                ("const o='safe';const F=o.constructor;", "F", False),
+                ("const o='safe';", "o.constructor", False),
+                ("const o='safe';const F=o.constructor.constructor;", "F", owning),
+                ("const o=1;const F=o.constructor;", "F", False),
+                ("const o=1;", "o.constructor", False),
+                ("const o=true;const F=o.constructor;", "F", False),
+                ("const o=false;", "o.constructor", False),
+                ("const o=(/* 'decoy' */ ' ' /* \"decoy\" */);const F=o.constructor;", "F", False),
+                ("const undefined=Function;const F=undefined;", "F", owning),
+            ):
+                cells.append((setup + "await " + callee + '("tools","text",' + constructor_body + ')(tools,text);', expected))
+            for handle in ("eval", "text"):
+                for reverse in (False, True):
+                    definitions = ["function first(){v=v.next;}", "function second(){v=v.next;}",
+                                   "function seed(){v={run:" + handle + "};}"]
+                    setup = "let v={run:text};" + "".join(reversed(definitions) if reverse else definitions) + "seed();"
+                    cells.append((setup + "await v.run(" + json.dumps(source) + ");", owning and handle == "eval"))
             for member, args in (("call", "null," + json.dumps(source)),
                                  ("apply", "null,[" + json.dumps(source) + "]")):
                 cells.append(("let o=eval;if(flag)o={" + member + ":eval};await o." + member + "(" + args + ");", owning))
@@ -5192,7 +5224,8 @@ os.system(get())
                             "nohup gh pr create --title x &",
                             "coproc uv run scripts/gh-plan.py --repo example/a claim 5",
                             "coproc JOB { uv run scripts/gh-plan.py --repo example/a claim 5; }",
-                            "gen() { uv run scripts/gh-plan.py --repo example/a claim 5; }; coproc gen"):
+                            "gen() { uv run scripts/gh-plan.py --repo example/a claim 5; }; coproc gen",
+                            "uv run scripts/gh-plan.py --repo example/a claim 5; ((nohup ./writer.sh &) &)"):
                 rows = history(harness, claim(), {**proof(), "harness": harness})
                 if harness == "codex":
                     rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
@@ -6616,13 +6649,39 @@ os.system(get())
                          ("arithmetic_data", "echo $((1<<2))", False),
                          ("quoted_arithmetic_data", 'echo "$((1<<2))"', False),
                          ("quoted_group_data", "echo '((1<<2))'", False),
-                         ("invalid_arithmetic_argument", "echo ((1<<2))\n" + writer, False),
                          ("arithmetic_nested_writer", "echo $((1+$(" + writer + ")))", True),
+                         ("bracket_arithmetic_data", "echo $[1<<2]", False),
+                         ("bracket_nested_data", "echo $[1+$(printf 2)]", False),
+                         ("ansi_control_tail_data", "printf %s $'\\c'", False),
+                         ("ansi_control_escaped_quote_data", "printf %s $'\\c\\''", False),
+                         ("ansi_control_character_data", "printf %s $'\\cX\\c?'", False),
+                         ("case_arithmetic_data", 'case "$m" in claim) ((n++));; esac', False),
+                         ("child_quoted_substitution_data", "bash -c " + shlex.quote("printf %s '$(" + writer + ")'"), False),
+                         ("skipped_child_subshell_expansion", "false && bash -c " + shlex.quote('out="$((cd /repo && ' + writer + ') 2>&1)"'), False),
+                         ("skipped_child_bracket_writer", "false && bash -c " + shlex.quote("echo $[1+$(" + writer + ")]"), False),
                          ("ansi_escaped_writer", "eval $'uv \\x72un /catalog/gh-plan.py --repo client/repo claim 12'", True)]
         for label, prefix in (("ansi", ansi), ("shift", "echo $((1<<2))"), ("arithmetic_command", "((1<<2))"),
                               ("ansi_multiline", "printf %s $'it\\'s\ndata'"),
-                              ("arithmetic_multiline", "echo $((1\n<<2))")):
+                              ("arithmetic_multiline", "echo $((1\n<<2))"),
+                              ("bracket_arithmetic", "echo $[1<<2]"),
+                              ("quoted_bracket_arithmetic", 'echo "$[1<<2]"'),
+                              ("ansi_control_tail", "printf %s $'\\c'"),
+                              ("ansi_control_escaped_quote", "printf %s $'\\c\\''"),
+                              ("ansi_control_character", "printf %s $'\\cX\\c?'"),
+                              ("time_arithmetic", "time ((x))"),
+                              ("function_arithmetic", "f() ((x));")):
             body = prefix + "\n" + writer
+            lexical_cases.extend(((label + "_root", body, True),
+                                  (label + "_child", "bash -c " + shlex.quote(body), True),
+                                  (label + "_stdin", "bash <<'BODY'\n" + body + "\nBODY", True)))
+        for label, body in (
+            ("case_arithmetic", 'case "$m" in claim) ((n++)); ' + writer + ' ;; esac'),
+            ("parenthesized_case_arithmetic", 'case "$m" in (claim) ((n++)); ' + writer + ' ;; esac'),
+            ("subshell_expansion", "out=$((cd /repo && " + writer + ") 2>&1)"),
+            ("quoted_subshell_expansion", 'out="$((cd /repo && ' + writer + ') 2>&1)"'),
+            ("nested_subshell_expansion", 'echo "$(printf %s $((cd /repo && ' + writer + ') 2>&1))"'),
+            ("bracket_nested_writer", "echo $[1+$(" + writer + ")]"),
+        ):
             lexical_cases.extend(((label + "_root", body, True),
                                   (label + "_child", "bash -c " + shlex.quote(body), True),
                                   (label + "_stdin", "bash <<'BODY'\n" + body + "\nBODY", True)))
@@ -6745,6 +6804,8 @@ os.system(get())
             (create + " --body-file <(printf '%s\\n' " + shlex.quote(writer) + ")", False),
             (create + " --body B > >(printf done)", False),
             (create + " --body-file <(" + writer + ")", True),
+            (create + " --body-file <((" + writer + ") | sort)", True),
+            (create + " --body-file <((printf '%s\\n' " + shlex.quote(writer) + ") | sort)", False),
             (create + ' --body-file <(tool=/catalog/gh-plan.py; uv run "$tool" --repo client/repo claim 12)', True),
         )
         for harness in ("codex", "claude"):
