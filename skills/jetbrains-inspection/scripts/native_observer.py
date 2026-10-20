@@ -27,7 +27,7 @@ class LineFramer:
         return [line.decode(errors="replace") for line in pieces], self.pending.decode(errors="replace")
 
 
-LOG_EVENT = re.compile(r"^\d{4}-\d\d-\d\d\s+[\d:, .]+\[\s*\d+\]\s+\w+\s+-\s+\S+\s+-\s+(.*)$")
+LOG_EVENT = re.compile(r"^\d{4}-\d\d-\d\d\s+[\d:, .]+\[\s*\d+]\s+\w+\s+-\s+\S+\s+-\s+(.*)$")
 LICENSE_PROMPT = re.compile(
     r"^(?:no valid licen[cs]e\b|checking trial availability\b|"
     r"(?:start|activate|try|begin|offer) (?:a |your |free )?trial\b|"

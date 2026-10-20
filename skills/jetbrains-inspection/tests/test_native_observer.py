@@ -7,9 +7,12 @@
 import importlib.util
 import unittest
 from pathlib import Path
+from typing import Any
 
 spec = importlib.util.spec_from_file_location("observer_test", Path(__file__).parents[1] / "scripts/native_observer.py")
-observer = importlib.util.module_from_spec(spec)
+if spec is None or spec.loader is None:
+    raise ImportError("Observer fixture unavailable")
+observer: Any = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(observer)
 
 

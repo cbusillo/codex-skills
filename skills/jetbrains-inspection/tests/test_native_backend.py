@@ -605,7 +605,7 @@ print('Done.')
 
     def test_missing_or_changed_host_cache_storage_is_not_recreated(self):
         missing = self.root / "unmounted/cache"
-        config = {"jetbrains": {"nativeWorker": {"cacheRoot": str(missing)}}}
+        config: dict[str, Any] = {"jetbrains": {"nativeWorker": {"cacheRoot": str(missing)}}}
         with patch.object(host, "read_global_config", return_value=config):
             with self.assertRaisesRegex(native.Blocked, "native_cache_root_unavailable"):
                 native.runtime_storage(host, self.worker)

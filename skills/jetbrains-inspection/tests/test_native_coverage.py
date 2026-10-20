@@ -23,7 +23,8 @@ def canary(tool, *, root=CONTROL_ROOT, file=None):
 
 
 class CoverageTests(unittest.TestCase):
-    def assess(self, requested, traces, *, selected=None, registered=None, findings=None, failed=(), languages=None):
+    @staticmethod
+    def assess(requested, traces, *, selected=None, registered=None, findings=None, failed=(), languages=None):
         return coverage.assess(
             set(requested), set(requested) if registered is None else set(registered), traces, set(failed),
             {"models.py"} if selected is None else set(selected),

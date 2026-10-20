@@ -272,13 +272,14 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
     selector = selectors.DefaultSelector()
 
     def consume(framer, data, final=False):
-        if observer is None:
+        current = observer
+        if current is None:
             return
         lines, partial = framer.feed(data, final=final)
         for line in lines:
-            observer.observe(line)
+            current.observe(line)
         if partial:
-            observer.observe(partial, partial=True)
+            current.observe(partial, partial=True)
 
     def read_logs(final=False):
         if observer is None:
@@ -344,7 +345,7 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
                 os.killpg(process.pid, signal.SIGCONT)
                 paused = False
         receipt["engine_exit_code"] = process.returncode
-        receipt["completion_observed"] = observer.completion if observer else False
+        receipt["completion_observed"] = observer.completion if observer is not None else False
         if process.returncode != 0 or observer is not None and not observer.completion:
             raise Blocked("native_execution_incomplete")
     except observations.ObservationError as error:
