@@ -85,6 +85,7 @@ class CommandPolicyHookTests(unittest.TestCase):
             "caffeinate -i killall watcher", "doas pkill watcher",
             "stdbuf -o0 pkill watcher", "sudo -u worker pkill watcher",
             "pgrep sleep | xargs -I{} kill {}",
+            "kill 12345 0 > log", "kill 12345 -1 > log",
         ):
             with self.subTest(line=line):
                 result = bash(line)
@@ -99,6 +100,10 @@ class CommandPolicyHookTests(unittest.TestCase):
             "kill 12345", "kill -TERM 12345", "/bin/kill -s TERM 12345",
             "builtin kill 12345", "kill -- 12345", "kill -0 12345",
             "kill --signal=TERM 12345", "kill -TERM 12345 12346",
+            "kill 12345 2>/dev/null || true",
+            "kill -0 12345 2>/dev/null && echo alive",
+            "kill -TERM 12345 >/dev/null 2>&1",
+            'kill 12345 > "task log.txt"',
             "pgrep -f 'sleep 10'", "ps -axo pid,command", "kill -l",
             "git status", "rg 'pkill|killall' skills/",
             "printf '%s' 'kill $(pgrep sleep)'",
@@ -110,6 +115,17 @@ class CommandPolicyHookTests(unittest.TestCase):
         ):
             with self.subTest(line=line):
                 self.assertEqual(bash(line).returncode, 0)
+
+    def test_legacy_command_policies_still_find_wrapped_commands(self) -> None:
+        for line in (
+            "timeout 60 git pull", "sudo git merge origin/main",
+            "xargs -n1 git rebase", "timeout 120 git -C /repo push origin br",
+            "nice git -c user.name=Fixture commit -m demo",
+            "caffeinate -i codex resume example",
+            "timeout 600 codex exec resume example",
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(bash(line).returncode, 2)
 
     def test_global_keyboard_synthesis_is_refused_without_sending_keys(self) -> None:
         apple = 'tell application "System Events" to tell process "Google Chrome"\nkeystroke "/path/proposal.json"\nkey code 36'

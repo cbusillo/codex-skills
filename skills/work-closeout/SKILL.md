@@ -60,7 +60,8 @@ policy:
         shell_regex: >-
           (?x)\A(?:builtin\s+)?(?:\S*/)?kill(?=\s|$)
           (?!\s+(?:(?:-[sn]\s+[\w+-]+|--signal(?:=|\s+)[\w+-]+|-[\w+-]+)\s+)?
-          (?:--\s+)?[1-9]\d*(?:\s+[1-9]\d*)*\Z
+          (?:--\s+)?[1-9]\d*(?:\s+[1-9]\d*)*
+          (?:\s+(?:[1-9]\d*\s+)?['"]?(?:[<>]{1,2}|[<>]&|&>+)['"]?\s+(?:'[^']*'|"[^"]*"|\S+))*\Z
           |\s+(?:-[lL]|--(?:list|table|help|version))(?:\s|$))
       action: reject
       message: *process_stop_route
