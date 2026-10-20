@@ -118,7 +118,7 @@ in place, with its shared exclusive lock and private system/cache/log paths;
 it never opens the desktop IDE. Never copy, export or move its config,
 activation, accounts, licence or credentials, or read activation-bearing files.
 On a licence prompt, lapsed activation or trial offer, stop the licensed run
-and post an Owner question on the item. The Director restores activation
+and post an `Owner question:` on the item. The Director restores activation
 through the normal product UI using existing entitlements.
 
 Other platforms retain the qualified local Qodana Python default; other
