@@ -177,6 +177,32 @@ class NativeFactsTests(unittest.IsolatedAsyncioTestCase):
         self.responses["thread/queue/list"] = {"data": [], "nextCursor": "repeated"}
         with self.assertRaises(ValueError): await NATIVE.read_queue(self.request, self.session)
 
+    async def test_long_session_reads_full_continuation_chain_within_caller_deadline(self):
+        total = 2101  # more than the 2,000 entries the old fixed page count allowed
+        async def chain(params):
+            start = int(params["cursor"] or 0)
+            end = min(start + params["limit"], total)
+            return {"data": [{"turnId": "turn", "item": {"id": f"command-{index}", "type": "commandExecution",
+                                                          "status": "completed"}} for index in range(start, end)],
+                    "nextCursor": str(end) if end < total else None}
+        self.responses["thread/items/list"] = chain
+        self.assertEqual(len((await NATIVE.read_executions(self.request, self.session))["items"]), total)
+        async def loop(params):
+            return {"data": [], "nextCursor": "b" if params["cursor"] == "a" else "a"}
+        async def malformed(params):
+            return {"data": [], "nextCursor": "next"} if params["cursor"] is None else {"nextCursor": None}
+        for refused in (loop, malformed):
+            with self.subTest(refused=refused.__name__):
+                self.responses["thread/items/list"] = refused
+                with self.assertRaises(ValueError): await NATIVE.read_executions(self.request, self.session)
+        async def endless(params):
+            await asyncio.sleep(0)
+            return {"data": [], "nextCursor": str(int(params["cursor"] or 0) + 1)}
+        self.responses["thread/items/list"] = endless
+        with self.assertRaises(TimeoutError):
+            async with asyncio.timeout(.05):
+                await NATIVE.read_executions(self.request, self.session)
+
     async def test_terminal_interrupted_collaborator_is_not_running_execution(self):
         self.responses["thread/items/list"]["data"] = [{"turnId": "old-turn", "item": {
             "id": "collaborator", "type": "collabAgentToolCall", "status": "interrupted"}}]
