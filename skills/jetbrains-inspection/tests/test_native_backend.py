@@ -6,6 +6,7 @@
 """Native routing, proof and exclusive-profile tests without a licensed IDE."""
 import importlib.util
 import ast
+import errno
 import io
 import json
 import os
@@ -52,6 +53,24 @@ def copy_tracked_fixture(fixture, destination):
 
 
 class NativeTests(unittest.TestCase):
+    def test_process_group_exit_waits_through_permission_transition(self):
+        with patch.object(native.os, "killpg", side_effect=[PermissionError(errno.EPERM, "exiting"), PermissionError(errno.EPERM, "exiting"), ProcessLookupError(errno.ESRCH, "gone")]), \
+                patch.object(native.time, "sleep"):
+            self.assertTrue(native.group_gone(123456))
+
+    def test_persistent_group_permission_failure_is_bounded_and_unproved(self):
+        receipt = {}
+        with patch.object(native.os, "killpg", side_effect=PermissionError(errno.EPERM, "denied")), \
+                patch.object(native.time, "monotonic", side_effect=[0, 1, 2]), patch.object(native.time, "sleep"):
+            self.assertFalse(native.group_gone(123456, receipt=receipt))
+        self.assertEqual(receipt["process_group_probe"], {"pgid": 123456, "last_errno": errno.EPERM})
+
+    def test_other_process_group_errors_never_prove_exit(self):
+        with patch.object(native.os, "killpg", side_effect=OSError(errno.EINVAL, "invalid")), \
+                patch.object(native.time, "sleep") as sleep:
+            self.assertFalse(native.group_gone(123456))
+        sleep.assert_not_called()
+
     def test_process_reader_reports_foreign_group_and_command_before_matching(self):
         result = subprocess.CompletedProcess([], 0, b"123456 42 Tue Oct 20 12:00:00 2026 S unrelated-process\n")
         with patch.object(native.common, "command", return_value=result):

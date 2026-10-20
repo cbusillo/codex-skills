@@ -213,6 +213,14 @@ Birth comparisons require the same recorded UTC/C-locale clock; legacy or
 incomparable observations remain unproved.
 The same birth with a changed command/group remains unproved. A dead leader
 with live, unproved descendants remains UNKNOWN.
+The group-exit check tolerates a transient permission error only within its
+bounded wait; only an absent process group proves exit. A persistent error
+retains the journal, SDK and private directory, with the PGID and last errno
+in the receipt. If recovery cannot prove that group gone, ask the Director to
+inspect the reported PGID with `ps -axo pid=,pgid=,stat=,command=` and confirm
+or end any remaining owned processes. Do not signal an unproved identity.
+After the group is gone, repeat `--native-recover-only`; the original licensed
+outcome hold still requires its separate reconciliation or Director decision.
 Recovery alone retains an unknown-outcome hold; it does not infer expired
 activation or authorize another licensed run.
 

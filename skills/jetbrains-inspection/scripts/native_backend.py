@@ -362,14 +362,23 @@ def process_identity(pid, private):
             "birth_clock": PROCESS_BIRTH_CLOCK, "private": str(private) if private_match else None}
 
 
-def group_gone(pid, seconds=2):
+def group_gone(pid, seconds=2, *, receipt=None):
+    probe = {"pgid": pid, "last_errno": None}
+    if receipt is not None:
+        receipt["process_group_probe"] = probe
     deadline = time.monotonic() + seconds
     while True:
         try:
             os.killpg(pid, 0)
-        except ProcessLookupError:
+        except ProcessLookupError as error:
+            probe["last_errno"] = error.errno
             return True
-        except OSError:
+        except PermissionError as error:
+            # macOS can briefly retain an exiting group without signalable
+            # members. EPERM is not exit proof; keep checking within the bound.
+            probe["last_errno"] = error.errno
+        except OSError as error:
+            probe["last_errno"] = error.errno
             return False
         if time.monotonic() >= deadline:
             return False
@@ -400,7 +409,7 @@ def stop_orphan(worker, receipt):
             raise Blocked("native_recovery_process_identity_unproven")
         current = process_identity(pid, Path(identity["private"]))
         if current is None:
-            if group_gone(pid):
+            if group_gone(pid, receipt=receipt):
                 return proof
             raise Blocked("native_recovery_process_group_unproven")
         if (engine.get("birth_clock") == current.get("birth_clock") == PROCESS_BIRTH_CLOCK
@@ -415,7 +424,7 @@ def stop_orphan(worker, receipt):
         os.killpg(pid, signal.SIGKILL)
         receipt["orphan_group_stopped"] = pid
         receipt["recovered_process_kind"] = process["kind"]
-        if not group_gone(pid):
+        if not group_gone(pid, receipt=receipt):
             raise Blocked("native_recovery_process_group_unproven")
         return proof
     except lifecycle.LifecycleError as error:
@@ -663,7 +672,7 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
                 except ProcessLookupError:
                     pass
             process.wait()
-            closed = group_gone(process.pid)
+            closed = group_gone(process.pid, receipt=receipt)
             receipt["process_custody_closed"] = closed
             if require_completion:
                 drain_licenses(stdout if stdout is not None else process.stdout)
@@ -856,6 +865,9 @@ def envelope(host: Any, receipt: dict[str, Any], findings: list[dict[str, Any]],
         action = "Reduce the selected scope or set --max-files to the intended file limit before reassessing."
     elif reason == "native_scope_unsupported":
         action = "Select .py and Odoo .xml files assigned to the root PyCharm lane; other language or nested-project models require their existing qualified backend."
+    elif reason == "native_recovery_process_group_unproven":
+        pgid = receipt.get("process_group_probe", {}).get("pgid", "<journaled-pgid>")
+        action = f"Preserve the SDK, private directory and journal. Ask the Director to inspect process group {pgid} with ps -axo pid=,pgid=,stat=,command= and confirm or end any remaining owned processes. Never signal a group whose journaled identity cannot be proved. After the group is gone, use --backend native --native-recover-only with the same independent worker; this does not release an unknown licensed outcome."
     elif reason.startswith("native_recovery_") and reason != "native_recovery_only_no_inspection":
         action = "Restore the journaled storage and use --backend native --native-recover-only with the same independent worker. Preserve unproved state."
     elif reason == "native_interrupted_run_unresolved":
@@ -946,7 +958,7 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
             framework = []
         elif not framework:
             raise Blocked("native_odoo_framework_required")
-        elif framework and not framework_available(framework):
+        elif not framework_available(framework):
             raise Blocked("native_odoo_framework_unavailable")
         receipt.update(scope=scope, selected_file_count=len(selected), repo_head_sha=host.git_head_sha(repo))
         receipt["framework_revisions"] = [host.git_head_sha(root) for root in framework]
