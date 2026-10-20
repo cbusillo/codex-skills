@@ -44,12 +44,12 @@ def scope(preview=False, **updates):
 
 
 def receipt(kind, **updates):
-    # Producer record_disposable_lane_safety results (Launchplane 07c93f7d9).
+    # Producer record_disposable_lane_safety results, including reviewed observation metadata.
     # Keep these independent of the consumer's field allowlists.
     result = {
         "inspect": {"mode": "inspect", "binding_sha256": BINDING, "usage": "unknown", "data": "unknown",
                     "production_resources": "unknown", "automatic_fact_collection": "limited_service_records",
-                    "source_coverage": COVERAGE},
+                    "source_coverage": COVERAGE, "observation_sha256": EVIDENCE_HASH, "observation": None},
         "collect": {"mode": "collect", "binding_sha256": BINDING, "observed_by": ACTOR,
                     "observer_kind": "director_agent", "usage": "in_use", "data": "unknown",
                     "production_resources": "shared",
@@ -156,6 +156,35 @@ def test_preview_record_sends_facts_and_reports_the_requested_reconcile():
     assert "PRIVATE_SENTINEL" not in text and "preview-12" not in text and "example-testing" not in text
 
 
+@pytest.mark.parametrize("observation", [None,
+    {"usage": "in_use", "data": "only_copy", "production_resources": "shared"},
+    {"usage": "unused", "data": "reproducible", "production_resources": "isolated"},
+])
+def test_inspect_keeps_stored_observation_separate_from_fresh_unknown_facts(observation):
+    code, output, calls, _ = invoke(responses=[receipt("inspect", observation=observation)])
+    assert code == 0 and len(calls) == 1
+    assert output["result"]["observation_sha256"] == EVIDENCE_HASH
+    assert output["result"]["observation"] == observation
+    assert all(output["result"][fact] == "unknown" for fact in lane.FACTS)
+
+
+@pytest.mark.parametrize("removed", [("observation_sha256", "observation"),
+                                    ("observation_sha256",), ("observation",)])
+def test_inspect_observation_metadata_is_absent_or_a_complete_pair(removed):
+    response = receipt("inspect")
+    for field in removed:
+        response["result"].pop(field)
+    code, output, calls, _ = invoke(responses=[response])
+    assert len(calls) == 1
+    if len(removed) == 1:
+        assert code != 0 and output["status"] == "invalid"
+        assert output["result"] == {}
+        return
+    assert code == 0
+    assert "observation" not in output["result"]
+    assert "observation_sha256" not in output["result"]
+
+
 @pytest.mark.parametrize("mode,body", [
     ("inspect", scope(instance="prod")),
     ("inspect", scope(preview=True, instance="prod")),
@@ -213,7 +242,14 @@ def test_clear_is_not_offered_until_the_service_binds_it():
 
 
 @pytest.mark.parametrize("updates", [{"usage": "unused"}, {"automatic_fact_collection": "unavailable"},
-                                     {"binding_sha256": "not-a-digest"}])
+    {"binding_sha256": "not-a-digest"}, {"observation_sha256": "not-a-digest"},
+    {"observation_sha256": None}, {"observation": "PRIVATE_SENTINEL"}, {"observation": []},
+    {"observation": {}},
+    {"observation": {"usage": "unknown", "data": "unknown", "production_resources": "shared", "extra": "x"}},
+    {"observation": {"usage": {}, "data": "unknown", "production_resources": "shared"}},
+    {"observation": {"usage": "unused", "data": "maybe", "production_resources": "shared"}},
+    {"unexpected": "PRIVATE_SENTINEL"}, {"provider_mutation": False},
+])
 def test_untrustworthy_inspect_is_invalid(updates):
     code, output, calls, _ = invoke("inspect", responses=[receipt("inspect", **updates)])
     assert code != 0 and len(calls) == 1

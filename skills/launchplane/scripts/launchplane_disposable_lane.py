@@ -102,7 +102,8 @@ UNUSED_REASON_BY_KIND = {"odoo-testing-never-served": "never_served", "odoo-test
 RECORDED_PREVIEW_FACTS = {"usage": {"in_use"}, "data": {"reproducible", "only_copy"},
                           "production_resources": {"isolated", "separation_ready", "shared"}}
 RESULT_FIELDS = {
-    "inspect": {"mode", "binding_sha256", *FACTS, "automatic_fact_collection", "source_coverage"},
+    "inspect": {"mode", "binding_sha256", *FACTS, "automatic_fact_collection", "source_coverage",
+                "observation_sha256", "observation"},
     "collect": {"mode", "binding_sha256", "observed_by", "observer_kind", *FACTS, *EVIDENCE,
                 "historical_usage_retained", "observed_at", "odoo_usage", "never_served_qualification",
                 "expires_at", "provider_mutation", "automatic_fact_collection", "source_coverage"},
@@ -332,6 +333,20 @@ def project(h: Any, response: dict[str, Any], mode: str, body: dict[str, Any], d
     if mode == "inspect":
         if any(value != "unknown" for value in facts.values()) or automatic != "limited_service_records":
             raise h.LaunchplaneSafetyError("invalid_response")
+        # Older producers omit both fields. Stored reports are not fresh disposal facts.
+        observation_fields = {"observation_sha256", "observation"}
+        if source.keys() & observation_fields:
+            if not observation_fields <= source.keys():
+                raise h.LaunchplaneSafetyError("invalid_response")
+            observation_digest = _digest(h, source["observation_sha256"])
+            observation = source["observation"]
+            if observation is not None:
+                if not isinstance(observation, dict) or observation.keys() != FACTS.keys():
+                    raise h.LaunchplaneSafetyError("invalid_response")
+                if any(not isinstance(value, str) or value not in FACTS[fact][0]
+                       for fact, value in observation.items()):
+                    raise h.LaunchplaneSafetyError("invalid_response")
+            result.update(observation_sha256=observation_digest, observation=observation)
         result["automatic_fact_collection"] = automatic
         h.assert_public_safe_shape(result)
         return result
@@ -360,7 +375,7 @@ def project(h: Any, response: dict[str, Any], mode: str, body: dict[str, Any], d
 
 def _readback(h: Any, call: Any, body: dict[str, Any], mode: str, digest: str,
               result: dict[str, object]) -> tuple[str, dict[str, object]]:
-    """Separate inspect POST. Only the binding can be read back; stored facts have no read route."""
+    """Separate inspect POST; verify binding, without attesting the submitted effect."""
     result["effect_readback"] = "unavailable"
     try:
         readback = call({**scope_of(body), "mode": "inspect"})
