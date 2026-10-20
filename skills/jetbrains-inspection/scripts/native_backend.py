@@ -126,6 +126,14 @@ def applicable_rules(requested, selected):
             and (not common.OTHER_LANGUAGE_RULE_RE.match(rule) or xml and rule.startswith("Xml"))}
 
 
+def applicable_files(tool, selected):
+    if tool.startswith("Py") or tool == "OdooPy":
+        return {path for path in selected if path.endswith(".py")}
+    if tool.startswith("Xml") or tool == "OdooXml":
+        return {path for path in selected if path.endswith(".xml")}
+    return set(selected)
+
+
 def worker_settings(args: Any, host: Any) -> tuple[Path, Path, list[Path]]:
     global_config = host.read_global_config()
     jetbrains = global_config.get("jetbrains", {})
@@ -479,11 +487,13 @@ def remove_sdk(config: Path, interpreter: Path, sdk_name: str, table_existed: bo
 
 
 def read_results(results: Path, project: Path, selected: set[str]) -> tuple[list[dict[str, Any]], set[str], set[str]]:
-    findings, executed, registered = [], set(), set()
+    findings: list[dict[str, Any]] = []
+    executed: set[str] = set()
+    registered: set[str] = set()
     descriptions = results / ".descriptions.xml"
     if descriptions.is_file():
         root = ElementTree.parse(descriptions).getroot()
-        registered = {node.get("shortName") for node in root.iter("inspection") if node.get("shortName")}
+        registered = {name for node in root.iter("inspection") if isinstance(name := node.get("shortName"), str) and name}
     for path in sorted(results.glob("*.xml")):
         if path.is_symlink():
             raise Blocked("native_report_path_unsafe")
@@ -516,7 +526,7 @@ def read_results(results: Path, project: Path, selected: set[str]) -> tuple[list
 UNUSED_SPLIT = frozenset({'PyUnusedLocalVariableInspection', 'PyUnusedParameterInspection', 'PyUnusedFunctionInspection'})
 
 
-def migrate_expected(requested, registered):
+def migrate_expected(requested: set[str], registered: set[str]) -> tuple[set[str], dict[str, list[str]]]:
     expected = set(requested)
     migrations = {}
     if 'PyUnusedLocalInspection' in expected and 'PyUnusedLocalInspection' not in registered and UNUSED_SPLIT <= set(registered):
@@ -526,12 +536,13 @@ def migrate_expected(requested, registered):
     return expected, migrations
 
 
-def trace_evidence(payload, project):
+def trace_evidence(payload: Any, project: Path) -> tuple[dict[str, set[str]], set[tuple[str, str]]]:
     """Return successful physical tool/file pairs; errors cannot borrow success."""
     if not isinstance(payload, dict) or not isinstance(payload.get('data'), list):
         raise ValueError('native_trace_invalid')
     project = Path(project)
-    success, failed = {}, set()
+    success: dict[str, set[str]] = {}
+    failed: set[tuple[str, str]] = set()
     for batch in payload['data']:
         if not isinstance(batch, dict) or not isinstance(batch.get('spans'), list):
             raise ValueError('native_trace_invalid')
@@ -570,7 +581,7 @@ def trace_evidence(payload, project):
     return success, failed
 
 
-def read_trace(path, project):
+def read_trace(path: Path, project: Path) -> tuple[dict[str, set[str]], set[tuple[str, str]]]:
     path = Path(path)
     if path.is_symlink():
         raise Blocked('native_trace_unsafe')
@@ -616,9 +627,9 @@ def _run(args: Any, host: Any, parent_fd: int | None) -> dict[str, Any]:
                "nice": NICE, "active_processors": ACTIVE_PROCESSORS, "heap_limit_mib": HEAP_LIMIT_MIB,
                "helper_revision": host.helper_revision(), "backend_revision": "sha256:" + common.digest(Path(__file__))}
     findings, gaps, reason, artifact = [], [], "native_prerequisite_failed", None
-    private = None
-    journal = None
-    worker = None
+    private: Path | None = None
+    journal: Path | None = None
+    worker: Path | None = None
     held_lock = contextlib.ExitStack()
     started = time.monotonic()
     deadline = started + max(1, args.timeout_ms / 1000)
@@ -669,8 +680,8 @@ def _run(args: Any, host: Any, parent_fd: int | None) -> dict[str, Any]:
             expected |= NAMED_PYTHON
         if is_odoo(repo):
             expected |= NAMED_ODOO
-        restricted = {tool.get("class") for tool in ElementTree.parse(profile).iter("inspection_tool")
-                      if tool.get("class") in expected and any(scope.get("enabled") == "false" for scope in tool.findall("scope"))}
+        restricted = {name for tool in ElementTree.parse(profile).iter("inspection_tool")
+                      if isinstance(name := tool.get("class"), str) and name in expected and any(scope.get("enabled") == "false" for scope in tool.findall("scope"))}
         receipt["profile_sha256"] = common.digest(profile)
         if is_odoo(repo) and not framework:
             raise Blocked("native_odoo_framework_required")
@@ -759,7 +770,9 @@ def _run(args: Any, host: Any, parent_fd: int | None) -> dict[str, Any]:
         gaps += ["inspection_execution_failed:" + tool + ":" + path for tool, path in sorted(trace_failed) if path in allowed]
         if set(receipt.get("inspected_files", [])) - allowed:
             gaps.append("native_unselected_file_traversal")
-        gaps += ["scoped_profile_execution_unproven:" + name for name in sorted(restricted)]
+        restricted, _ = migrate_expected(restricted, registered)
+        gaps += ["scoped_profile_execution_unproven:" + name for name in sorted(restricted)
+                 if not applicable_files(name, selected) <= trace_tools.get(name, set())]
         if not selected <= set(receipt.get("inspected_files", [])):
             gaps.append("native_selected_file_traversal_unproven")
         receipt["coverage"]["scope_failures"] = [gap for gap in gaps if not gap.startswith("execution_unproven:")]

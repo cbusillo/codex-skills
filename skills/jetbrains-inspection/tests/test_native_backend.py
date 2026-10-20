@@ -23,7 +23,7 @@ from contextlib import redirect_stdout
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 
 
-def load(name, path):
+def load(name, path) -> Any:
     spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
         raise ImportError("Fixture helper unavailable")
@@ -280,6 +280,20 @@ print('Done.')
         self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
         self.assertTrue(result["findings"])
         self.assertIn("OdooXml", result["coverage"]["unproven"])
+
+    def test_scoped_tool_can_be_proved_on_the_actual_selected_physical_file(self):
+        profile = self.repo / ".idea/inspectionProfiles/Test.xml"
+        profile.write_text(profile.read_text().replace('enabled="true"/>', 'enabled="true"><scope name="Generated" enabled="false"/></inspection_tool>'))
+        self.script.write_text(self.script.read_text() + '''
+import json
+trace={"data":[{"spans":[{"operationName":"inspectionRun","duration":1,"tags":[
+ {"key":"inspectionId","value":"PyUnresolvedReferencesInspection"},
+ {"key":"file","value":str(pathlib.Path(sys.argv[1])/'source.py')}]}]}]}
+(out.parent/'inspection-trace.json').write_text(json.dumps(trace))
+''')
+        result = self.assess()
+        self.assertEqual(result["agent_result"]["verdict"], "RED")
+        self.assertTrue(result["coverage"]["complete"])
 
     def test_clean_scope_can_use_private_execution_controls_without_reporting_them(self):
         original = self.script.read_text()
