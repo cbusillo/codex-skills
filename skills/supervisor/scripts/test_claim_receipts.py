@@ -410,6 +410,9 @@ class ReceiptTests(unittest.TestCase):
             "bash < <(cat <<'EOF'\nprintf ok\nEOF\ncat unknown.sh)",
             "bash --rcfile <(printf 'worker &') -ic 'printf done'",
             "source -- <(printf 'worker &')",
+            "flock --conflict-exit-code 42 /tmp/lock -c 'worker &'",
+            "flock /tmp/lock '-cworker &'",
+            "su --command='worker &' svc",
         ]
         for flags in ('-e', '-euo pipefail', '-o errexit', '-O extglob', '-s -- args'):
             commands += [f"bash {flags} <<'EOF'\nworker &\nEOF", f"bash {flags} <<< 'worker &'"]
