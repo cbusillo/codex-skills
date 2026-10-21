@@ -292,6 +292,8 @@ class ReceiptTests(unittest.TestCase):
             "cat >/tmp/run.sh <<'EOF'\nworker &\nEOF\ntimeout 60 /tmp/run.sh",
             "tee scripts/run.sh <<'EOF'\nworker &\nEOF\nbash scripts/run.sh",
             "cat <<'EOF' | tee scripts/run.sh\nworker &\nEOF\n./scripts/run.sh",
+            "cat >scripts/run.sh <<'EOF'\nworker &\nEOF\n. scripts/run.sh",
+            "cat >/tmp/run.sh <<'EOF'\nworker &\nEOF\nsource /tmp/run.sh",
         ]
         for flags in ('-e', '-euo pipefail', '-o errexit', '-O extglob', '-s -- args'):
             commands += [f"bash {flags} <<'EOF'\nworker &\nEOF", f"bash {flags} <<< 'worker &'"]
