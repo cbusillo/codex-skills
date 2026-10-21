@@ -7514,7 +7514,8 @@ class LifecycleTest(unittest.TestCase):
         ]
         jb_inspect.time.sleep = lambda seconds: None
         try:
-            result = jb_inspect.wait_for_matching_ide_identity(Namespace(port=None, background_open=True), {"ide": "PyCharm"}, 100)
+            with patch.object(jb_inspect, "now_ms", side_effect=[0, 0, 200]):
+                result = jb_inspect.wait_for_matching_ide_identity(Namespace(port=None, background_open=True), {"ide": "PyCharm"}, 100)
         finally:
             jb_inspect.discover_identities = original_discover
             jb_inspect.time.sleep = original_sleep
@@ -7534,7 +7535,8 @@ class LifecycleTest(unittest.TestCase):
         ]
         jb_inspect.time.sleep = lambda seconds: None
         try:
-            result = jb_inspect.wait_for_matching_ide_identity(Namespace(port=None, background_open=True), {"ide": "PyCharm"}, 100)
+            with patch.object(jb_inspect, "now_ms", side_effect=[0, 0, 200]):
+                result = jb_inspect.wait_for_matching_ide_identity(Namespace(port=None, background_open=True), {"ide": "PyCharm"}, 100)
         finally:
             jb_inspect.discover_identities = original_discover
             jb_inspect.discover_diagnostic_identities = original_diagnostic

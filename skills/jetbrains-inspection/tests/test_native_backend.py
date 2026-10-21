@@ -54,12 +54,14 @@ def copy_tracked_fixture(fixture, destination):
     return revision
 
 
-def hold_lock(path, seconds, held):
+def hold_lock(path, seconds, held, release_when=None):
     import fcntl
     with path.open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         held.set()
-        time.sleep(seconds)
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline and not (release_when and release_when.exists()):
+            time.sleep(0.02)
 
 
 class NativeTests(unittest.TestCase):
@@ -491,10 +493,19 @@ print('Done.')
         self.assertTrue(result["diagnostic"]["native"]["worker_exited"])
 
     def test_load_pause_resumes_and_exits_under_the_same_deadline(self):
+        resumed = self.root / "resumed"
         original = self.script.read_text()
-        self.script.write_text(original.replace("out=pathlib.Path", "import time;time.sleep(0.4)\nout=pathlib.Path"))
+        self.script.write_text(original.replace("out=pathlib.Path", f"import time\nfor _ in range(500):\n if pathlib.Path({str(resumed)!r}).exists(): break\n time.sleep(0.02)\nout=pathlib.Path"))
         loads = iter([(1, 1, 1), (native.LOAD_LIMIT + 1, 1, 1)])
-        result = self.assess(lambda: next(loads, (1, 1, 1)))
+
+        def load_then_mark_resume():
+            sample = next(loads, None)
+            if sample is None:
+                resumed.touch()
+                return 1, 1, 1
+            return sample
+
+        result = self.assess(load_then_mark_resume)
         self.assertEqual(result["diagnostic"]["native"]["load_pause_count"], 1)
         self.assertEqual(result["agent_result"]["verdict"], "RED")
 
@@ -778,25 +789,41 @@ print('Done.')
         self.assertEqual(result["inspection_outcome"]["reason"], "native_worker_busy")
         self.assertNotIn("worker_pid", result["diagnostic"]["native"])
 
-    def hold(self, path, seconds=60.0):
+    def hold(self, path, seconds=60.0, release_when=None):
         """Another process holds the lock until it exits, like a live run."""
         context = multiprocessing.get_context("fork")
         held = context.Event()
-        holder = context.Process(target=hold_lock, args=(path, seconds, held))
+        holder = context.Process(target=hold_lock, args=(path, seconds, held, release_when))
         holder.start()
         self.addCleanup(holder.join)
         self.addCleanup(holder.kill)
         self.assertTrue(held.wait(10))
         return holder
 
+    def mark_admission_waits(self):
+        marker = self.root / "admission-waited"
+        original = native.check_lifetime
+
+        def check_and_mark(parent_fd, deadline):
+            if deadline == float("inf"):
+                marker.touch()
+            return original(parent_fd, deadline)
+
+        patcher = patch.object(native, "check_lifetime", side_effect=check_and_mark)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return marker
+
     def queue_tickets(self):
         return list((self.root / "state/native-queue").glob("*.ticket"))
 
     def test_concurrent_requests_take_the_worker_in_turn_and_each_run_once(self):
         log = self.root / "engine.log"
+        waited = self.mark_admission_waits()
         original = self.script.read_text()
         self.script.write_text(original.replace("import pathlib,sys,json\n", "import pathlib,sys,json,time\n"
-            f"log=open({str(log)!r},'a');log.write(f'start {{time.time()}}\\n');log.flush();time.sleep(0.6)\n")
+            f"log=open({str(log)!r},'a');log.write(f'start {{time.time()}}\\n');log.flush()\n"
+            f"for _ in range(500):\n if pathlib.Path({str(waited)!r}).exists(): break\n time.sleep(0.02)\n")
             .replace("print('Done.')", "log.write(f'end {time.time()}\\n');log.close()\nprint('Done.')"))
         def helper(output):
             output.write_text(json.dumps(native.run(self.args, host)))
@@ -816,15 +843,18 @@ print('Done.')
         events = [line.split() for line in log.read_text().splitlines()]
         self.assertEqual([kind for kind, _ in events], ["start", "end", "start", "end"])
         self.assertLessEqual(float(events[1][1]), float(events[2][1]))
-        self.assertGreater(max(result["diagnostic"]["native"]["admission_wait_ms"] for result in results), 300)
+        self.assertTrue(waited.exists())
+        self.assertGreater(max(result["diagnostic"]["native"]["admission_wait_ms"] for result in results), 0)
         self.assertFalse(self.queue_tickets())
 
     def test_admission_waits_for_a_natural_release_then_inspects_once(self):
-        self.hold(self.worker / "worker.lock", 0.4)
+        waited = self.mark_admission_waits()
+        self.hold(self.worker / "worker.lock", 10, release_when=waited)
         result = self.assess()
         self.assertEqual(result["agent_result"]["verdict"], "RED")
         self.assertEqual(result["cleanup"]["status"], "closed")
-        self.assertGreaterEqual(result["diagnostic"]["native"]["admission_wait_ms"], 300)
+        self.assertTrue(waited.exists())
+        self.assertGreater(result["diagnostic"]["native"]["admission_wait_ms"], 0)
         self.assertEqual(result["agent_result"]["retry_policy"], {"retry": False, "max_attempts": 0, "wait_ms": 0})
 
     def test_admission_timeout_leaves_the_owner_untouched_and_launches_nothing(self):
@@ -858,8 +888,10 @@ print('Done.')
 
     def test_admission_after_waiting_still_honours_a_recorded_activation_stop(self):
         (self.worker / "native-activation-stop.json").write_text("{}")
-        self.hold(self.worker / "native-control.lock", 0.2)
+        waited = self.mark_admission_waits()
+        self.hold(self.worker / "native-control.lock", 10, release_when=waited)
         result = self.assess()
+        self.assertTrue(waited.exists())
         self.assertEqual(result["inspection_outcome"]["reason"], "native_activation_stop_recorded")
         self.assertNotIn("worker_pid", result["diagnostic"]["native"])
         self.assertTrue((self.worker / "native-activation-stop.json").exists())
