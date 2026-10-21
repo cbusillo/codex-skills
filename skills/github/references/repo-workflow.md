@@ -545,7 +545,8 @@ update. Both helpers refuse a refresh this section does not permit; name an
 explicit requirement GitHub cannot see with `--required-by` or
 `--refresh-required`. For a real conflict, merge the base locally with
 `git-commit-as-bot --worktree /absolute/task/path --git-command merge`, resolve it and continue with
-`git-commit-as-bot --worktree /absolute/task/path --git-command merge --continue`, then push with `git-push-as-bot`.
+`git-commit-as-bot --worktree /absolute/task/path --git-command merge --continue`, then push with
+`git-push-as-bot --worktree /absolute/task/path`.
 Re-read the PR to capture the new head SHA, then use `babysit-pr` to wait for
 checks and review evidence on that exact head. A check result for the old head
 does not qualify the updated branch. Do not update a fork or another person's

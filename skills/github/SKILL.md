@@ -831,8 +831,7 @@ and say why.
   and `scripts/git-push-as-bot`, with `--worktree /absolute/task/path` first.
   Supply the worker’s intended task path literally, independently of the current
   directory; do not derive it from `pwd` or Git discovery. Both helpers refuse
-  missing paths, primary checkouts, other workers’ checkouts and
-  default branches before identity selection or writes. Subdirectories are allowed.
+  missing paths, primary checkouts, other workers’ checkouts, and checked-out main/master or known default branches before identity selection or writes. Subdirectories are allowed.
   Never refresh your own PR branch merely because it is behind; require a real
   conflict or an explicit check requirement. The merge train owns freshness on
   train-routed PRs. Before a base update, apply the ownership and authorization
@@ -841,7 +840,7 @@ and say why.
   required for another reason, name it with `--required-by` or
   `--refresh-required`. For local integration,
   use `git-commit-as-bot --worktree /absolute/task/path --git-command merge|pull|rebase|cherry-pick|revert|am`
-  from the target directory, followed by that command's arguments, including
+  from that task worktree, followed by that command's arguments, including
   `--continue` after resolving
   conflicts. Existing commits retain their authors; newly created commits use
   the bot environment and recreated commits use the bot committer. This does

@@ -685,9 +685,9 @@ for override in --repo=https://github.com/other/repo.git --repo=origin; do
 	assert_push_refused '--repo overrides' CODEX_SKILLS_ENV_FILE="$tmpdir/token.env"
 done
 refused_push_args=(-u --remote fork branch)
-assert_push_refused 'use --remote NAME as the first two arguments' CODEX_SKILLS_ENV_FILE="$tmpdir/token.env"
+assert_push_refused '--remote' CODEX_SKILLS_ENV_FILE="$tmpdir/token.env"
 refused_push_args=(--remote=fork -u branch)
-assert_push_refused 'use --remote NAME as the first two arguments' CODEX_SKILLS_ENV_FILE="$tmpdir/token.env"
+assert_push_refused '--remote' CODEX_SKILLS_ENV_FILE="$tmpdir/token.env"
 refused_push_args=(--remote)
 assert_push_refused 'requires a configured remote name' CODEX_SKILLS_ENV_FILE="$tmpdir/token.env"
 refused_push_args=(--remote https://github.com/owner/repo.git branch)

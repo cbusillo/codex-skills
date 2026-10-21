@@ -2586,12 +2586,19 @@ catches a failed `cd` and refuses a different worker's checkout. It is not a
 claim lookup or a grant of branch ownership. The helpers check the physical
 current directory and Git checkout before loading private configuration,
 selecting an identity, changing a remote URL, committing or pushing. Missing,
-unavailable or relative expected paths, primary checkouts and
-default branches refuse with a diagnostic. Subdirectories and path aliases of
+unavailable or relative expected paths, primary checkouts, and checked-out
+main/master or known default branches refuse with a diagnostic. Subdirectories and path aliases of
 the expected linked task checkout are supported. Create the task worktree with
 [dev-worktree](worktrees.md) first; run `cd /absolute/task/path || exit 1`, then
 supply that same absolute path to each helper. Non-creating default-checkout
-synchronization keeps its documented raw `merge --ff-only` route.
+synchronization keeps its documented raw `merge --ff-only` route. Ref-only pushes,
+such as an approved release tag or remote branch deletion, also run from your
+own linked task worktree of the same repository. If its implementation worktree
+has already retired, create a focused release or cleanup worktree with
+`dev-worktree REPOSITORY TASK-SLUG origin/main`, then pass its absolute path.
+Tags are shared across worktrees; a release tag can target the approved merged
+commit while this helper runs on the release task branch. Existing release,
+branch-ownership and protected-branch authority still applies.
 
 `git-commit-as-bot --worktree /absolute/task/path <commit args>` defaults to identity selection for `origin`.
 For a fork contribution, pass `--repo UPSTREAM-OWNER/REPO` before the Git
@@ -2613,8 +2620,8 @@ PR write needs its own per-command approval opt-in. Do not apply `--repo` to
 the push helper. For local
 integration, use `git-commit-as-bot --worktree /absolute/task/path --git-command COMMAND <args>`, where COMMAND
 is `commit`, `merge`, `pull`, `rebase`, `cherry-pick`, `revert`, or `am`.
-Run the helper from the target directory; use `cd` first when working in
-another checkout. Conflict resolution uses the same mode with `--continue`. New commits use the
+Run the helper from the declared task worktree; use `cd /absolute/task/path || exit 1`
+when entering it. Conflict resolution uses the same mode with `--continue`. New commits use the
 bot environment; replayed commits preserve original authors and use the bot
 committer. Identity selection and credential stripping apply to every mode.
 Use `gh-pr.py update-branch` for authorized PR base updates; these commands do

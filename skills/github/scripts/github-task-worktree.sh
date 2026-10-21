@@ -26,8 +26,11 @@ require_task_worktree() {
 	esac
 	task_top=$(git rev-parse --show-toplevel 2>/dev/null) || task_top=
 	task_git_dir=$(git rev-parse --absolute-git-dir 2>/dev/null) || task_git_dir=
-	task_common_dir=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || task_common_dir=
-	if [ "$task_top" != "$expected_path" ] || [ -z "$task_git_dir" ] || [ "$task_git_dir" = "$task_common_dir" ]; then
+	task_common_dir=$(git rev-parse --git-common-dir 2>/dev/null) || task_common_dir=
+	if [ -n "$task_common_dir" ]; then
+		task_common_dir=$(CDPATH='' cd -- "$task_common_dir" 2>/dev/null && pwd -P) || task_common_dir=
+	fi
+	if [ "$task_top" != "$expected_path" ] || [ -z "$task_git_dir" ] || [ -z "$task_common_dir" ] || [ "$task_git_dir" = "$task_common_dir" ]; then
 		echo "error: expected your linked task worktree at $expected_worktree; primary and runtime checkouts cannot commit or push here" >&2
 		exit 1
 	fi

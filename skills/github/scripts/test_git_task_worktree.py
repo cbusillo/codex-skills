@@ -133,6 +133,21 @@ class TaskWorktreeTests(unittest.TestCase):
         self.assert_refuses(self.task, self.task, environment={"GIT_DIR": str(self.primary / ".git")})
         self.assert_refuses(self.task, self.task, environment={"GIT_WORK_TREE": str(self.peer)})
 
+    def test_failed_common_directory_discovery_cannot_admit_a_primary_checkout(self) -> None:
+        self.run_git(self.primary, "switch", "-qc", "work/primary")
+        commands = self.root / "commands"
+        commands.mkdir()
+        git = commands / "git"
+        git.write_text(
+            f"#!{sys.executable}\n"
+            "import subprocess, sys\n"
+            "if '--git-common-dir' in sys.argv:\n"
+            "    sys.exit(1)\n"
+            f"sys.exit(subprocess.call([{self.git!r}, *sys.argv[1:]]))\n"
+        )
+        git.chmod(0o700)
+        self.assert_refuses(self.primary, self.primary, environment={"PATH": f"{commands}{os.pathsep}{self.env['PATH']}"})
+
     def test_subdirectories_and_symlink_aliases_keep_all_integration_modes(self) -> None:
         nested = self.task / "nested"
         nested.mkdir()
@@ -153,6 +168,19 @@ class TaskWorktreeTests(unittest.TestCase):
         calls = [json.loads(line) for line in self.log.read_text().splitlines()]
         self.assertEqual(
             [call[call.index("push") + 1 :] for call in calls], [["-u", "origin", "HEAD"], ["fork", "--delete", "work/old"]]
+        )
+
+    def test_ref_only_pushes_work_after_implementation_worktree_retires(self) -> None:
+        self.run_git(self.primary, "tag", "v1.2.3", "main")
+        self.run_git(self.primary, "worktree", "remove", str(self.task))
+        release = self.root / "release"
+        self.run_git(self.primary, "worktree", "add", "-qb", "work/release", str(release), "main")
+        for arguments in (("origin", "v1.2.3"), ("--delete", "origin", "work/old")):
+            result = self.invoke(release, "git-push-as-bot", *arguments, expected=release)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        calls = [json.loads(line) for line in self.log.read_text().splitlines()]
+        self.assertEqual(
+            [call[call.index("push") + 1 :] for call in calls], [["origin", "v1.2.3"], ["--delete", "origin", "work/old"]]
         )
 
 
