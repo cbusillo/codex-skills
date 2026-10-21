@@ -445,18 +445,29 @@ def shell_texts(text: str, javascript: bool) -> tuple[list[str], bool]:
                 opaque = True
             else:
                 commands.append(command)
+        elif match[0].startswith("`") and "${" in match[0] and re.search(reference, match[0]):
+            opaque = True
     return commands, opaque
 
 
 def shell_groups(text: str) -> Iterator[list[str]]:
     pending = []
     lines = []
+    executable_body = []
+    consumes_script = False
+    expands_body = False
     for line in text.replace("\\\n", "").splitlines():
         if pending:
             if line.lstrip("\t") == pending[0]:
                 pending.pop(0)
+            elif consumes_script or (expands_body and ("$(" in line or "`" in line)):
+                executable_body.append(line)
             continue
         pending.extend(match[1] for match in re.finditer(r"<<-?\s*['\"]?([A-Za-z_][A-Za-z0-9_]*)['\"]?", line))
+        if pending:
+            consumer = shlex.split(line)[0] if line.strip() else ""
+            consumes_script = Path(consumer).name not in {"cat", "tee"}
+            expands_body = re.search(r"<<-?\s*[A-Za-z_]", line) is not None
         lines.append(line)
     lexer = shlex.shlex("\n".join(lines), posix=False, punctuation_chars=";&|()<>\n")
     lexer.whitespace = " \t\r"
@@ -472,6 +483,9 @@ def shell_groups(text: str) -> Iterator[list[str]]:
                 group.append(token)
         if group:
             yield shlex.split(" ".join(group))
+        script = "\n".join(executable_body)
+        if "gh-plan" in script and re.search(r"\bclaim\b", script):
+            raise ValueError("unsupported executable claim heredoc")
     except ValueError as error:
         if "gh-plan.py" in text and "claim" in text:
             raise ValueError("native claim shell syntax cannot be decoded") from error
@@ -509,6 +523,17 @@ def claim_arguments(argv: list[str]) -> list[str] | None:
     if not argv or Path(argv[0]).name != "gh-plan.py":
         return None
     return argv[1:]
+
+
+def has_opaque_claim_execution(argv: list[str]) -> bool:
+    if not argv or Path(argv[0]).name in {"rg", "grep", "git", "cat", "tee", "echo", "printf"}:
+        return False
+    helper = next((index for index, argument in enumerate(argv) if Path(argument).name == "gh-plan.py"), None)
+    if helper is not None and "claim" in argv[helper + 1 :]:
+        return True
+    if "claim" in argv and any("$" in argument or "`" in argument for argument in argv[: argv.index("claim")]):
+        return True
+    return any("gh-plan" in argument and re.search(r"\bclaim\b", argument) for argument in argv[1:])
 
 
 def invocation_target(arguments: list[str], session: str) -> dict | None:
@@ -664,11 +689,13 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
                     arguments = claim_arguments(argv)
                     if arguments is not None and "claim" in arguments and "--help" not in arguments and "-h" not in arguments:
                         invocations.append(arguments)
+                    elif arguments is None:
+                        opaque = opaque or has_opaque_claim_execution(argv)
         except ValueError as error:
             decode_failed = True
             reason = "decode_failure: " + str(error)
         opaque = opaque or (
-            repeated
+            (repeated or javascript)
             and any(
                 item is not None and item["known"] is None and not item["foreign"]
                 for arguments in invocations
@@ -679,8 +706,8 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
         found, unknown = resolve_invocations(invocations, blocks, session)
         targets.update(found)
         if opaque:
-            reason = "repeated_execution" if repeated else "computed"
-        if unknown and directory is not None:
+            reason = "unproven_execution_count" if repeated or (javascript and invocations) else "computed"
+        if (unknown or opaque) and directory is not None:
             try:
                 saved = persisted_output(records, directory, session, identifier)
                 blocks = [*blocks, *tool_outputs(saved).get(identifier, [])]

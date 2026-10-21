@@ -326,6 +326,12 @@ session, transcript, call ID and recovery, while still verifying every known
 target. Restore the missing native command/output on the claiming host. A
 plain nonzero exit or traceback never proves that an old helper did not post.
 Only structured native denials or explicit helper prewrite outcomes do that.
+Raw JavaScript does not prove how often a bare claim command executed. Use an
+explicit `--repo OWNER/REPO` or qualified record reference in literal commands;
+those targets remain bounded even inside loops. Bare or computed JavaScript
+claims, unsupported executable shell payloads and template interpolations stay
+conditional even when one helper receipt or rejection is present. Their known
+receipt targets are still checked, including receipts in advertised saved output.
 
 The check reads only those issues and PRs, including closed records. It never
 inventories App installations or scans other repositories. It verifies every
