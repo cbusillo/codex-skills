@@ -141,6 +141,7 @@ class ShellScript:
         self.bodies: list[tuple[str, bool, str, str, int]] = []
         self.substitutions: list[str] = []
         self.pending: list[tuple[str, bool, bool]] = []
+        self.background = False
         # Open contexts, innermost last: "(" for a subshell or `$(`, "((" for
         # `$((` arithmetic, '"' for a double quote, "`" for a backtick, "body"
         # for an expanding heredoc body; each with the index its substitution
@@ -188,6 +189,12 @@ class ShellScript:
             elif character == "#" and (self.index == 0 or shell[self.index - 1] in " \t\r\n;&|()"):
                 closing = shell.find("\n", self.index)
                 self.emit(len(shell) if closing < 0 else closing)
+            elif character == '&' and context != '((':
+                if shell.startswith(('&&', '&>'), self.index):
+                    self.emit(self.index + 2)
+                else:
+                    self.background |= self.index == 0 or shell[self.index - 1] not in '><|;'
+                    self.emit(self.index + 1)
             elif shell.startswith("((", self.index) and (self.index == 0 or shell[self.index - 1] in " \t\r\n;&|"):
                 self.stack.append(("((", None))  # An arithmetic command, as in `$((`.
                 self.emit(self.index + 2)
@@ -323,9 +330,14 @@ def reads_program_from_stdin(argv: list[str]) -> bool:
 def heredoc_script_readers(header: str, delimiter: str, occurrence: int) -> list[list[str]]:
     """Find the heredoc's consumer and downstream pipe readers, never neighboring commands."""
     try:
-        tokens = shell_tokens(header)
+        return script_readers(heredoc_commands(header, delimiter, occurrence))
     except ValueError:
         return []  # An enclosing substitution may have an open quote; its nested script is checked separately.
+
+
+def heredoc_commands(header: str, delimiter: str, occurrence: int) -> list[list[str]]:
+    """Bind raw pipeline commands; completion callers keep parse failures opaque."""
+    tokens = shell_tokens(header)
     markers = [
         index for index, token in enumerate(tokens[:-1]) if token == "<<"
         and (tokens[index + 1] in {delimiter, "-" + delimiter}
@@ -343,7 +355,7 @@ def heredoc_script_readers(header: str, delimiter: str, occurrence: int) -> list
             commands.append([])
         else:
             commands[-1].append(token)
-    return script_readers(commands)
+    return commands
 
 
 def script_readers(commands: list[list[str]]) -> list[list[str]]:

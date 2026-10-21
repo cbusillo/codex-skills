@@ -85,12 +85,12 @@ def shell_sources(text, *, depth=0):
         raise ValueError('shell nesting exceeds coverage')
     policy = shell_policy()
     parsed = policy.ShellScript(text)
-    yield parsed.text
+    yield parsed.text, parsed.background
     nested = list(parsed.substitutions)
+    for argv in literal_shell_commands(parsed.text):
+        nested.extend(shell_inputs(argv)[0])
     for body, expands, header, delimiter, occurrence in parsed.bodies:
-        readers = policy.heredoc_script_readers(header, delimiter, occurrence)
-        if (any(policy.reads_script_from_input(argv) for argv in readers)
-                or any(policy.reads_script_from_input(argv) for argv in policy.shell_commands(header))):
+        if any(shell_inputs(argv)[1] for argv in policy.heredoc_commands(header, delimiter, occurrence)):
             nested.append(body)
         elif expands:
             nested.extend(policy.ShellScript(body, expanding=True).substitutions)
@@ -99,16 +99,34 @@ def shell_sources(text, *, depth=0):
 
 
 def detached_shell(text):
-    for source in shell_sources(text):
-        lexer = shell_lexer(source)
-        lexer.whitespace_split = True
-        for token in lexer:
-            if re.fullmatch(r'[;&|<>()\n]+', token) and '&' in re.sub(r'&&|&>>?|[<>]&|\|&', '', token):
-                return True
+    for source, background in shell_sources(text):
+        if background:
+            return True
         if any((unwrapped_command(argv, stop_at={'coproc'}) or [])[:1] == ['coproc']
-               for argv in shell_commands('exec_command', {'cmd': source})):
+               for argv in literal_shell_commands(source)):
             return True
     return False
+
+
+def shell_inputs(argv):
+    """Keep explicit shell programs, including wrapped transports, as execution."""
+    programs, stdin = [], False
+    for index, token in enumerate(argv):
+        name = Path(token).name
+        tail = argv[index + 1:]
+        if name in {'bash', 'sh', 'zsh', 'dash', 'ksh'}:
+            body = shell_c_body(argv[index:])
+            if body is not None:
+                programs.append(body)
+            reads = body is None and shell_policy().reads_program_from_stdin(argv[index:])
+            stdin |= reads
+            if reads and '<<<' in tail and tail.index('<<<') + 1 < len(tail):
+                programs.append(tail[tail.index('<<<') + 1])
+        elif name in {'eval', 'ssh'}:
+            if tail:
+                programs.append(' '.join(tail))
+            stdin |= name == 'ssh'
+    return programs, stdin
 
 
 def shell_commands(name, value, *, depth=0):
@@ -118,29 +136,29 @@ def shell_commands(name, value, *, depth=0):
             sources = list(shell_sources(text))
         except (OSError, ValueError, RecursionError):
             continue
-        for source in sources:
-            lexer = shell_lexer(source)
-            lexer.whitespace = " \t\r"
-            lexer.whitespace_split = True
-            command = []
+        for source, _background in sources:
             try:
-                for word in lexer:
-                    if word and all(c in ";&|\n" for c in word):
-                        if command:
-                            yield command
-                        command = []
-                    elif word and all(c in "<>" for c in word):
-                        next(lexer, None)
-                    else:
-                        command.append(word)
-                if command:
-                    body = shell_c_body(unwrapped_command(command))
-                    if body is not None and depth < 16:
-                        yield from shell_commands("exec_command", {"cmd": body}, depth=depth + 1)
-                    else:
-                        yield command
+                yield from literal_shell_commands(source)
             except ValueError:
                 continue  # Discovery is a hint, never execution-end proof.
+
+
+def literal_shell_commands(text):
+    lexer = shell_lexer(text)
+    lexer.whitespace = ' \t\r'
+    lexer.whitespace_split = True
+    command = []
+    for word in lexer:
+        if word and all(c in ';&|\n' for c in word):
+            if command:
+                yield command
+            command = []
+        elif word and all(c in '<>' for c in word) and word != '<<<':
+            next(lexer, None)
+        else:
+            command.append(word)
+    if command:
+        yield command
 
 
 def execution_call(name):

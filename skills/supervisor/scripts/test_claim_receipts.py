@@ -218,7 +218,10 @@ class ReceiptTests(unittest.TestCase):
     def test_native_completed_shell_data_is_not_unfinished_execution(self):
         commands = [r'printf "%s" "x\\\""',
                     "python3 - <<'EOF'\n# person's text and example: worker &\nprint('done')\nEOF\nprintf done",
-                    'printf "%s" "v1/session\\|/v1/products\\\""']
+                    'printf "%s" "v1/session\\|/v1/products\\\""',
+                    "bash scripts/setup.sh\npython3 - <<'EOF'\nmask = a & b\nEOF",
+                    r'printf %s \&', 'x=$((mask & 1))',
+                    'case a in a) printf x ;& b) printf y ;; esac']
         for command in commands:
             with self.subTest(command=command):
                 rows = history('claude', {})
@@ -230,7 +233,12 @@ class ReceiptTests(unittest.TestCase):
                     'worker &>log &\nprintf done', 'bash <<\'EOF\'\nworker &\nEOF',
                     'ssh host <<\'EOF\'\nworker &\nEOF', 'x="$(worker &)"',
                     'x="`worker &`"', 'cat <<EOF\n$(worker &)\nEOF',
-                    'python3 - <<\'EOF\'\nprint("data")\nEOF\nworker &', 'printf "unterminated']
+                    'python3 - <<\'EOF\'\nprint("data")\nEOF\nworker &', 'printf "unterminated',
+                    "bash -lc 'cd /repo && worker &'", "sh -c 'worker &' ; printf done",
+                    "eval 'worker &'", "ssh host 'worker &'", "bash <<< 'worker &'",
+                    "timeout 60 ssh host <<'EOF'\nworker &\nEOF",
+                    "env ssh host <<'EOF'\nworker &\nEOF", "sudo -u svc /usr/bin/ssh host <<'EOF'\nworker &\nEOF",
+                    "dash <<'EOF'\nworker &\nEOF", "ksh <<'EOF'\nworker &\nEOF"]
         for command in commands:
             with self.subTest(command=command):
                 rows = history('claude', {})
