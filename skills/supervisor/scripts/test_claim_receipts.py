@@ -316,14 +316,15 @@ class ReceiptTests(unittest.TestCase):
         startup["payload"]["output"].insert(0, cell_header())
         wait = {"payload": {"type": "function_call", "namespace": "clock", "name": "sleep",
                 "call_id": "timer", "arguments": json.dumps({"duration_ms": 20})}}
-        result = {"payload": {"type": "function_call_output", "call_id": "timer", "output": "native wait result"}}
-        ended = {"payload": {"type": "item_completed", "thread_id": SESSION, "turn_id": "turn",
+        result = {"type": "response_item", "payload": {"type": "function_call_output", "call_id": "timer", "output": "native wait result"}}
+        ended = {"type": "event_msg", "payload": {"type": "item_completed", "thread_id": SESSION, "turn_id": "turn",
             "item": {"type": "Extension", "kind": "clock.sleep", "id": "timer", "durationMs": 20},
             "started_at_ms": 100, "completed_at_ms": 120}}
         prefix = [*initial, startup, wait]
         self.assertIsNone(receipts.current_check_process(prefix, prefix))
         current = [*prefix, result, ended]
         self.assertEqual(receipts.current_check_process(initial, current), "123")
+        self.assertEqual(receipts.current_check_process(initial, [*prefix, ended, result]), "123")
         self.assertEqual(receipts.current_check_process(current, current), "123")
         for label, change in (
                 ("missing result", lambda rows: rows.pop(-2)),
