@@ -1576,6 +1576,43 @@ class OwnReleaseTests(ReleaseHarness):
         self.assertEqual((parsed.claim_comment, parsed.session),
                          (result["claim_comment"]["comment"]["id"], result["claim"]["session"]))
 
+    def test_release_discovers_other_branch_prs_from_source_links(self) -> None:
+        self.f.pulls = [
+            {"number": 99, "state": "open", "user": {"login": BOT}, "created_at": "2026-10-01T01:00:00Z",
+             "body": "Refs #42", "head": {"ref": "work/another-branch", "repo": {"full_name": "owner/repo"}},
+             "base": {"repo": {"full_name": "owner/repo"}}, "html_url": "https://github.com/owner/repo/pull/99"},
+        ]
+        cross_repo = copy.deepcopy(self.f.pulls[0])
+        cross_repo.update(number=77, body="Refs owner/repo#42", html_url="https://github.com/owner/other/pull/77")
+        for side in ("head", "base"):
+            cross_repo[side]["repo"]["full_name"] = "owner/other"
+        self.f.closed_pulls[77] = cross_repo
+        self.f.timelines["/repos/owner/repo/issues/42/timeline"] = [
+            {"event": "cross-referenced", "source": {"issue": {
+                "number": 77, "user": {"login": BOT}, "created_at": cross_repo["created_at"],
+                "pull_request": {"url": "https://api.github.com/repos/owner/other/pulls/77"}}}},
+        ]
+        with patch.object(PLAN, "api_json", side_effect=self.f.read_api):
+            self.run_own_release()
+        named = self.f.comments[-1]["body"]
+        for pull in [*self.f.pulls, cross_repo]:
+            self.assertIn(pull["html_url"], named)
+
+    def test_release_does_not_name_unrelated_foreign_or_preclaim_prs(self) -> None:
+        self.f.pulls = [
+            {"number": n, "state": "open", "user": {"login": author}, "created_at": created,
+             "body": body, "head": {"ref": "work/other", "repo": {"full_name": "owner/repo"}},
+             "base": {"repo": {"full_name": "owner/repo"}}, "html_url": f"https://github.com/owner/repo/pull/{n}"}
+            for n, author, created, body in [
+                (98, BOT, "2026-10-01T01:00:00Z", "Unrelated"),
+                (99, "someone-else", "2026-10-01T01:00:00Z", "Refs #42"),
+                (100, BOT, "2026-09-30T01:00:00Z", "Refs #42"),
+            ]
+        ]
+        self.run_own_release()
+        for pull in self.f.pulls:
+            self.assertNotIn(pull["html_url"], self.f.comments[-1]["body"])
+
     def test_dry_run_shows_the_body_without_writing(self):
         self.args.dry_run = True
         self.run_own_release()

@@ -2363,6 +2363,47 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
             "release_refusal_scope": github_plan_release.ISSUE_REFUSAL_SCOPE if isinstance(exc, github_plan_release.IssueReleaseRefusal) else "session_or_unknown"}) from exc
 
 
+def release_retained_prs(issue: dict[str, Any], source: dict[str, Any], actor: str) -> list[str]:
+    repo, number = issue["repo"], issue["number"]
+    record = github_plan_release.source_record(source)
+    started = github_plan_release.stamp(record["claimed_at"])
+    _, pulls = collect_paged_rest_items(f"/repos/{repo}/pulls", query={"state": "open"},
+                                      bucket="rest_core", step_prefix="release_retained_prs")
+    _, timeline = collect_paged_rest_items(f"/repos/{repo}/issues/{number}/timeline", query={},
+                                         bucket="rest_core", step_prefix="release_source_links")
+    by_url = {f"https://api.github.com/repos/{repo}/pulls/{pull['number']}": pull for pull in pulls}
+    for event in timeline:
+        if event.get("event") != "cross-referenced":
+            continue
+        linked = (event.get("source") or {}).get("issue") or {}
+        url = (linked.get("pull_request") or {}).get("url", "")
+        if not re.fullmatch(r"https://api\.github\.com/repos/[\w.-]+/[\w.-]+/pulls/[1-9]\d*", url):
+            continue
+        if url not in by_url and (linked.get("user") or {}).get("login") == actor:
+            _, by_url[url] = api_json("GET", url.removeprefix("https://api.github.com"),
+                                     bucket="rest_core", failed_step="release_linked_pr")
+    retained = []
+    for pull in by_url.values():
+        if pull.get("state") != "open" or (pull.get("user") or {}).get("login") != actor:
+            continue
+        head_repo = ((pull.get("head") or {}).get("repo") or {}).get("full_name", "")
+        base_repo = ((pull.get("base") or {}).get("repo") or {}).get("full_name", "")
+        if not head_repo or head_repo.casefold() != base_repo.casefold():
+            continue
+        source_branch = head_repo.casefold() == repo.casefold() and (pull.get("head") or {}).get("ref") == record["branch"]
+        subject = "pull_request" in issue and head_repo.casefold() == repo.casefold() and pull["number"] == number
+        linked_source = github_plan_claim.pr_issue_reference(
+            pull, number, repo=repo, local_references=head_repo.casefold() == repo.casefold(),
+            attestation=True, record_kind="pr" if "pull_request" in issue else "issue")
+        if not source_branch and not subject:
+            if not linked_source:
+                continue
+            if github_plan_release.stamp(pull.get("created_at")) < started:
+                continue
+        retained.append(f"https://github.com/{head_repo}/pull/{pull['number']}")
+    return sorted(set(retained))
+
+
 def cmd_release(args: argparse.Namespace) -> None:
     """Release this session's own claim with the exact directive its consumers read."""
     repo = default_repo(args.repo)
@@ -2386,7 +2427,7 @@ def cmd_release(args: argparse.Namespace) -> None:
         raise PlanError("Handoff must be narrative; it cannot carry a release receipt or ownership record")
     completed = []
 
-    def snapshot():
+    def snapshot() -> dict[str, Any]:
         record, _status, comments, _can_update = claim_snapshot(args.issue, repo, allow_closed=True)
         source = next((c for c in comments if c.get("id") == args.claim_comment), None)
         records = github_plan_claim.records((source or {}).get("body") or "")
@@ -2396,14 +2437,18 @@ def cmd_release(args: argparse.Namespace) -> None:
                             "an ended session's claim uses release-claim")
         confirmed = next((c for c in comments if c.get("id") != source["id"]
                           and github_plan_release.exact_source_release(source["id"], c, comments)), None)
-        return record, confirmed
+        return {"issue": record, "release": confirmed, "source": source}
 
-    issue, existing = snapshot()
+    preflight = snapshot()
+    issue, existing = preflight["issue"], preflight["release"]
     completed.append("release_preflight")
     if existing is not None:
         emit({"ok": True, "release_state": "already_released", "source_claim": args.claim_comment,
               "release_comment": {"id": existing["id"], "url": existing.get("html_url")}, "completed_steps": completed})
         return
+    retained_prs = release_retained_prs(issue, preflight["source"], expected_actor)
+    if retained_prs:
+        body += "\n\nRetained PR handoff: " + ", ".join(retained_prs)
     if args.dry_run:
         emit({"ok": True, "dry_run": True, "release_body": body, "release_state": "not_started",
               "source_claim": args.claim_comment, "completed_steps": completed})
@@ -2412,7 +2457,7 @@ def cmd_release(args: argparse.Namespace) -> None:
         repo=issue["repo"], gh_cmd=gh_cmd, operation=CURRENT_OPERATION, expected_actor=expected_actor,
         completed_steps=completed, failed_step="post_release", dedupe_body=True)
     completed.append("post_release")
-    _issue, existing = snapshot()
+    existing = snapshot()["release"]
     if existing is None or existing["id"] != result["comment"]["id"]:
         raise PlanError("Release readback is not an exact release of this claim; inspect the record before any retry",
                         payload={"release_comment": result["comment"], "completed_steps": completed})
@@ -2429,6 +2474,16 @@ def claim_reference(args: argparse.Namespace) -> argparse.Namespace:
 
 def cmd_claim(args: argparse.Namespace) -> None:
     """One explicit claim attempt; released work uses --resume-from ORIGINAL."""
+    source = getattr(args, "resume_from", None)
+    if isinstance(source, str):
+        if source.isdecimal() and int(source) > 0:
+            args.resume_from = int(source)
+        else:
+            match = re.fullmatch(r"https://github\.com/([\w.-]+/[\w.-]+)/issues/([1-9]\d*)#issuecomment-([1-9]\d*)", source)
+            if not match:
+                raise PlanError("--resume-from requires a positive claim comment ID or an exact source issue claim URL")
+            args.resume_from = int(match[3])
+            args.resume_issue = (match[1], int(match[2]))
     claim_once(claim_reference(args))
 
 
@@ -2547,6 +2602,16 @@ def claim_once(args: argparse.Namespace) -> None:
     ) -> tuple[int, list[dict[str, Any]], str]:
         """Resolve proof on this record or its native parent, never a prose link."""
         nonlocal resume_source_number
+        explicit_issue = getattr(args, "resume_issue", None)
+        if explicit_issue is not None:
+            source_repo, source_number = explicit_issue
+            if record_kind != "pr" or source_repo.casefold() != issue_repo.casefold() or source_number == number:
+                raise PlanError("A source issue claim URL requires a PR-only claim in that same repository")
+            source, source_status, source_comments, _ = read_record(source_number, source_repo, allow_closed=True)
+            if "pull_request" in source:
+                raise PlanError("Resume source must be an issue")
+            resume_source_number = source_number
+            return source_number, source_comments, source_status
         if resume_source_number is None and any(c.get("id") == args.resume_from for c in current_comments):
             resume_source_number = number
         if resume_source_number == number or record_kind != "issue":
@@ -2751,6 +2816,9 @@ def claim_once(args: argparse.Namespace) -> None:
         source_number, source_comments, source_status = source_info
         try:
             source = github_plan_claim.released_source(source_comments, args.resume_from)
+            if getattr(args, "resume_issue", None) and not github_plan_release.exact_source_release(
+                    source["comment"]["id"], source["release"], source_comments):
+                raise github_plan_claim.ClaimProofError("claim_resume_source_unreleased", "PR-only source requires an exact authored, timestamp-proved release")
             # Canonical native releases are freshly validated again by the
             # observer's owner callback. Equivalent replacement receipts may
             # attest a later end; ordinary worker releases keep their exact ID.
@@ -2768,7 +2836,7 @@ def claim_once(args: argparse.Namespace) -> None:
         except ValueError as error:
             phase["source_error"] = error
             return None
-        if record_kind == "pr":
+        if record_kind == "pr" and source_number == number:
             if selection is None:
                 selection = {"source": projection, "mode": "plain", "handoff": None, "next_pr": None}
             return None
@@ -2858,6 +2926,8 @@ def claim_once(args: argparse.Namespace) -> None:
                 return None
             if handoff is None:
                 raise github_plan_claim.ClaimProofError("claim_handoff_pr_required", "Released retained work has no qualified handoff")
+            if record_kind == "pr" and not any(pull["number"] == number for pull in handoff["qualified"]):
+                raise github_plan_claim.ClaimProofError("claim_handoff_pr_required", "Source release must retain the claimed PR")
             claim["resume_from"] = str(args.resume_from)
             claim["retained_handoff"] = handoff["url"]
             prepared.update(permitted=handoff["permitted"],
@@ -2906,12 +2976,14 @@ def claim_once(args: argparse.Namespace) -> None:
         )
         phase["inventory"] = github_plan_claim.local_inventory(target_repo, number)
         prepared = prepare_handoff(source_info, phase["open_pulls"])
-        if record_kind == "issue":
+        inherited_source = any(record.get("retained_handoff") for comment in current_comments
+                               for record in github_plan_claim.records(comment.get("body") or ""))
+        if record_kind == "issue" or getattr(args, "resume_issue", None) or inherited_source:
             traversal = {}
             try:
                 check_inherited_sources(current_comments, current_status,
                                         node_issue=current_issue, traversal=traversal)
-                if handoff_id or args.resume_from:
+                if (handoff_id or args.resume_from) and (record_kind == "issue" or getattr(args, "resume_issue", None)):
                     source_number, source_comments, source_status = source_info
                     source_issue = read_record(source_number, issue_repo, allow_closed=True)[0]
                     check_handoff_successors(source_number, source_comments=source_comments,
@@ -3122,7 +3194,9 @@ def claim_once(args: argparse.Namespace) -> None:
     def check_pr_artifacts(status_to_check: str, current_comments: list[dict[str, Any]]) -> None:
         fresh_inventory = inventory
         fresh_pulls = phase["open_pulls"]
-        if phase["canonical_issue"] is not None:
+        source_issue_url = (f"https://github.com/{issue_repo}/issues/{resume_source_number}"
+                            if retained_mode and record_kind == "pr" else None)
+        if phase["canonical_issue"] is not None and phase["canonical_issue"] != source_issue_url:
             raise ClassifiedPlanError("claim_issue_record_required",
                 "PR has a canonical implementation issue; claim that issue instead",
                 payload={"canonical_issue": phase["canonical_issue"]})
@@ -6671,7 +6745,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--session", required=True)
     p.add_argument("--branch", required=True, help="Exact branch for this claim; create or continue its verified worktree only after claim succeeds")
     p.add_argument("--next-action", required=True)
-    p.add_argument("--resume-from", type=int, help="Original released structured claim comment ID; resolve its retained handoff automatically")
+    p.add_argument("--resume-from", help="Original released claim comment ID, or its exact source issue claim URL for PR-only work")
     p.add_argument("--planning-checkout", help="Canonical planning repository checkout for cross-repository ownership inventory")
     p.add_argument("--wait-resolved", help="Existing resolution evidence for a recorded wait/hold; grants no new authority")
     p.add_argument("--admission", choices=github_plan_claim.ADMISSIONS,

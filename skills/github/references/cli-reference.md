@@ -895,7 +895,17 @@ base; forks use a canonical planning issue. The PR's remote source head is its
 work record; local source branches/worktrees and live peers remain competing
 evidence unless owned or covered by an exact authored release. `--resume-from`
 works for released PR claims without inferring a retained-issue handoff from
-the subject PR itself. `release-claim` accepts the same PR references and attestation URLs on either
+the subject PR itself. For a PR retained by a released source issue, pass the
+source claim's exact URL to `--resume-from`, for example
+`--resume-from https://github.com/OWNER/REPO/issues/123#issuecomment-456`.
+The source must be an issue in the PR's repository with an exact authored,
+timestamp-proved release and a qualified handoff naming this PR. The helper
+reuses retained-handoff provenance, checks the source family and retained PR
+owners on both readbacks, and preserves every artifact and product hold.
+This route permits a PR-only claim when that released source is also its
+canonical implementation issue; other canonical issues still require their
+own claim. Use a new task branch separate from every retained source branch.
+`release-claim` accepts the same PR references and attestation URLs on either
 issue or PR timeline comments. It checks the claimed source branch against the closed-session attestation. A
 later update to a separate Dependabot work-record branch does not count as
 source-session activity; source-branch activity, ownership and peer checks
@@ -1071,6 +1081,12 @@ Current Status, write the handoff to a file and release with the
 It posts the exact directive with the handoff below it through the same bot
 identity and reads it back; do not hand-write the release comment.
 Release affects that exact comment, not another worker's record.
+Before posting, `release` inventories open PRs on the claim's source branch
+and source-linked PRs opened by its author during the claim, including other
+branches and repositories found through the source record's reference timeline.
+It adds their exact URLs to the authored retained-PR handoff. Keep the source
+work-record link in every PR opened under a claim; unlinked work cannot be
+attributed to the session. Discovery failures stop release before posting.
 Retained artifacts stay preserved and reported; positive live activity and an
 open PR's handoff/waits remain independent checks.
 The release directive is an unquoted, unindented line exactly
