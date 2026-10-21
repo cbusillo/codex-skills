@@ -96,6 +96,34 @@ class ClaimCloseoutTests(unittest.TestCase):
                 self.assertEqual(report["pending"][0]["transcript"], node["transcript"])
                 self.assertEqual(report["pending"][0]["pending_invocations"], [tool["id"]])
 
+    def test_claude_pending_child_is_identified_by_transcript_despite_shared_session_id(self):
+        from test_claim_history import records
+        from test_claim_receipts import SESSION as native_session
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve() / (native_session + ".jsonl")
+            child = root.parent / native_session / "subagents/agent-worker.jsonl"
+            child.parent.mkdir(parents=True)
+            rows = records("claude", native_session, {})
+            tool = rows[1]["message"]["content"][0]
+            tool["input"] = {"command": "uv run worker.py &"}
+            child.write_text("".join(json.dumps(r) + "\n" for r in rows))
+            root_rows = records("claude", native_session)
+            root.write_text("".join(json.dumps(r) + "\n" for r in root_rows))
+            nodes = helper.claim_history.collect(root, "claude", native_session, root_rows, helper.transcript_snapshot)
+            with patch.object(helper.native_ownership, "pending_ownership", wraps=CURRENT_NATIVE_PENDING), \
+                    patch.object(helper.native_ownership, "observe", return_value=([], {}, {})), \
+                    patch.object(helper.sessions, "discover", return_value=([], [REPO])):
+                report = helper.check(self.reader, [], {"session_id": native_session, "harness": "claude",
+                                                       "_claim_histories": nodes}, ACTOR)
+            self.assertFalse(report["claims_clear"], report)
+            self.assertEqual([p["transcript"] for p in report["pending"]], [str(child)])
+            self.assertEqual(report["pending"][0]["pending_invocations"], [tool["id"]])
+            rows.pop()  # An unfinished native child must refuse during collection too.
+            child.write_text("".join(json.dumps(r) + "\n" for r in rows))
+            with self.assertRaises(ValueError) as error:
+                helper.claim_history.collect(root, "claude", native_session, root_rows, helper.transcript_snapshot)
+            self.assertIn(str(child), str(error.exception))
+
     def test_partial_installation_coverage_is_pending_and_rechecked_with_all_native_history(self):
         from test_claim_receipts import history, claim as native_claim, SESSION as native_session
         root, child = history("codex"), history("codex")

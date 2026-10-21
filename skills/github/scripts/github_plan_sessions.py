@@ -320,7 +320,7 @@ def pending_ownership(histories, historical_states, *, deadline_at=None):
     remaining = [node for node, _ in uncertain if current.get(node["session_id"], {}).get("state") != "ended"]
     quiet = _physical_quiescent(remaining, peers, coverage, deadline_at=deadline_at)
     pending = []
-    for node, _ in uncertain:
+    for node, state in uncertain:
         session = node["session_id"]
         if (current.get(session, {}).get("state") == "ended"
                 or session in quiet):
@@ -328,6 +328,8 @@ def pending_ownership(histories, historical_states, *, deadline_at=None):
         if node is histories[0] and _current_check_quiet(node, peers=peers, coverage=coverage, deadline_at=deadline_at):
             continue
         pending.append({"session_id": session,
+                        "transcript": node.get("transcript"),
+                        "pending_invocations": state.get("pending_invocations", []),
                         "reason": "ownership is pending current native completion or verified session exit",
                         "native_coverage": {**{key: coverage.get(key) for key in
                             ("status", "peer_complete", "process_coverage", "source_count", "unavailable_source_count")},

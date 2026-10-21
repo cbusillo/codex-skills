@@ -243,7 +243,7 @@ def collect(path, harness, session, records, read, *, homes=None):
         import session_record
         activity = session_record.summarize(logical_records, harness, inspect_claims=False)
         if not activity["at_turn_end"] or activity["background_tasks"]:
-            raise ValueError(f"native child {child_id} still has unfinished work")
+            raise ValueError(f"native child {child_id} ({child}) still has unfinished work")
         nodes.append({"session_id": child_id, "harness": harness, "transcript": str(child),
                       "records": logical_records, "digest": fingerprint(raw_records)})
     return nodes
