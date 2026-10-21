@@ -3217,8 +3217,14 @@ def call_gh(
     timeout_seconds: Optional[float] = None,
     allow_escape_sequences: bool = False,
     conditional_cache: bool = True,
+    cache_body_filter: Optional[Callable[[Any], bool]] = None,
+    response_observer: Optional[Callable[[subprocess.CompletedProcess], None]] = None,
 ) -> ApiResult:
-    """Execute a fresh GET, reusing its body only after same-identity HTTP 304."""
+    """Execute a fresh GET, reusing its body only after same-identity HTTP 304.
+
+    The optional observer serves the raw CLI adapter in memory only; neither
+    response bytes nor callbacks enter ApiResult serialization or telemetry.
+    """
     # Explicit read hints never authorize a mutation through the reader.
     mutation = bool(is_write) or reader_request_is_write(method, path, body)
     try:
@@ -3237,7 +3243,7 @@ def call_gh(
         failed_step=failed_step, is_write=is_write, operation=operation,
         actor=actor, expected_actor=expected_actor, host=host, bucket=bucket,
         graphql_operation=graphql_operation, timeout_seconds=timeout_seconds,
-        allow_escape_sequences=allow_escape_sequences,
+        allow_escape_sequences=allow_escape_sequences, response_observer=response_observer,
     )
     def transport(headers: dict[str, str]) -> ApiResult:
         return _call_gh_uncached(method, path, body, **{**kwargs, "extra_headers": headers})
@@ -3246,6 +3252,7 @@ def call_gh(
         headers=extra_headers or {}, api_version=api_version,
         host=host or DEFAULT_HOST, actor=actor, expected_actor=expected_actor,
         identity_scope=json.dumps([gh_cmd, gh_prefix_args or []]),
+        body_filter=cache_body_filter,
         enabled=conditional_cache and not allow_escape_sequences and not github_identity.active_auth_fallback_allowed()
         and not github_identity.own_user_opted_in(),
     )
@@ -3271,6 +3278,7 @@ def _call_gh_uncached(
     graphql_operation: Optional[GraphQLOperation] = None,
     timeout_seconds: Optional[float] = None,
     allow_escape_sequences: bool = False,
+    response_observer: Optional[Callable[[subprocess.CompletedProcess], None]] = None,
 ) -> ApiResult:
     """
     Execute a single GitHub REST API call via gh CLI.
@@ -3381,7 +3389,6 @@ def _call_gh_uncached(
         proc = subprocess.run(
             cmd,
             input=stdin_bytes,
-            env={**os.environ, "GITHUB_API_TRANSPORT": "1"},
             # Without a body the child must not inherit an open, idle stdin from an agent host.
             stdin=None if stdin_bytes is not None else subprocess.DEVNULL,
             stdout=subprocess.PIPE,
@@ -3451,6 +3458,8 @@ def _call_gh_uncached(
             ),
         )
 
+    if response_observer is not None:
+        response_observer(proc)
     raw_stdout = proc.stdout.decode(errors="replace")
     raw_stderr = proc.stderr.decode(errors="replace").strip()
     reported_actor = actor_from_gh_stderr(raw_stderr)

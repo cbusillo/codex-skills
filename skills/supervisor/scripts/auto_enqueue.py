@@ -252,6 +252,7 @@ class Live:
     def __init__(self, deadline):
         self.deadline = deadline
         self.mergeability_reads_remaining = 20
+        self.open_prs = {}
         self.reader = GitHubReader(
             operation="github.pr.view",
             gh_prefix_args=automation_only_gh_prefix_args(),
@@ -320,7 +321,13 @@ class Live:
         self.open_prs = github_open_prs.scan(self.reader, repos)
 
     def open_pulls(self, repo):
-        return self.open_prs[repo]
+        value = self.open_prs[repo]
+        # The catalog supports package and standalone imports of the shared reader.
+        if isinstance(value, github_open_prs.GitHubReadError):
+            raise GitHubReadError(str(value), result=value.result, diagnostics=value.diagnostics)
+        if isinstance(value, Exception):
+            raise GitHubReadShapeError(str(value))
+        return value
 
     def batch(self, repo, numbers):
         if numbers:
@@ -755,6 +762,13 @@ def run_pass(io, args, emit, *, state=None):
             if held(read_holds(args.hold_file), repo):
                 emit("held", {"repository": repo})
                 report_skips('repository_held')
+                continue
+            try:
+                io.open_pulls(repo)
+            except (GitHubReadError, GitHubReadShapeError) as error:
+                if isinstance(error, GitHubReadError) and not transient_read_error(error):
+                    raise
+                emit("skip_inventory_unavailable", {"repository": repo, "detail": exception_message(error)})
                 continue
             response = io.train(target)
             others = [

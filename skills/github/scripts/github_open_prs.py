@@ -9,19 +9,20 @@ from __future__ import annotations
 import json
 import re
 
+import github_api
 import github_pr_batch as batch
-from github_read import GitHubReadShapeError
+from github_read import GitHubReadError, GitHubReadShapeError
 
 FIELDS = """number title body isDraft createdAt state headRefOid headRefName baseRefName
  headRepository { nameWithOwner } author { __typename login } updatedAt url"""
 
 
-def scan(reader, repositories):
-    """One query for the ordinary pass; paginate only overflowing connections.
+class InventoryUnavailable(ValueError):
+    """This repository is skipped until the next pass; no eligibility is inferred."""
 
-    Partial, changing or malformed inventories fail closed before publication.
-    Keep the reader's identity, retry budget and deadline for every page.
-    """
+
+def scan(reader, repositories):
+    """One ordinary-pass query; isolate unavailable or changing repositories."""
     repos = list(dict.fromkeys(repositories))
     if any(not isinstance(repo, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo) for repo in repos):
         raise ValueError("open-PR scan requires OWNER/REPO names")
@@ -45,34 +46,60 @@ def scan(reader, repositories):
                 '{ totalCount pageInfo { hasNextPage endCursor } nodes { '
                 + FIELDS + ' ' + batch.connection("labels", "name").replace("first:100", "first:20") + ' } } }'
             )
-        data = batch.query(reader, 'query { ' + ' '.join(selections) + ' rateLimit { cost remaining resetAt } }')
+        response = reader.graphql_json(
+            'query { ' + ' '.join(selections) + ' rateLimit { cost remaining resetAt } }', {},
+            step="open_prs", retry_policy=github_api.RetryPolicy(max_wait_seconds=30, max_attempts=1),
+        )
+        if not response.ok:
+            error = GitHubReadError("open-PR scan unavailable", result=response, diagnostics=reader.diagnostics())
+            result.update(dict.fromkeys(cursors, error))
+            return result
+        body = response.body if isinstance(response.body, dict) else {}
+        data = body.get("data") if isinstance(body.get("data"), dict) else {}
+        errors = body.get("errors") or []
+        invalid = set()
+        for error in errors:
+            path = error.get("path") if isinstance(error, dict) else None
+            if not isinstance(path, list) or not path or path[0] not in aliases:
+                invalid.update(aliases)
+            else:
+                invalid.add(path[0])
+        cost = (data.get("rateLimit") or {}).get("cost")
+        previous = reader.batch_diagnostic.get("cost", 0)
+        reader.batch_diagnostic["cost"] = previous + cost if type(previous) is int and type(cost) is int else None
         pending = {}
         for alias, repo in aliases.items():
-            repository = data.get(alias)
-            if not isinstance(repository, dict) or str(repository.get("nameWithOwner", "")).casefold() != repo.casefold():
-                raise GitHubReadShapeError("open-PR repository unavailable or mismatched")
-            nodes, cursor, total = batch.page(repository.get("pullRequests"))
-            if total != totals.setdefault(repo, total):
-                raise GitHubReadShapeError("open-PR inventory changed during pagination")
-            for node in nodes:
-                number = node.get("number")
-                if type(number) is not int or number <= 0 or any(pr["number"] == number for pr in result[repo]) or node.get("state") != "OPEN":
-                    raise GitHubReadShapeError("invalid or duplicate open PR")
-                labels = batch.complete(reader, repo, node, "labels")
-                result[repo].append({
-                    "number": number, "title": node["title"], "body": node["body"],
-                    "state": "open", "draft": node["isDraft"], "created_at": node["createdAt"],
-                    "user": batch.rest_author(node["author"]), "labels": labels,
-                    "html_url": node["url"], "head": {"sha": node["headRefOid"], "ref": node["headRefName"],
-                        "repo": {"full_name": (node["headRepository"] or {}).get("nameWithOwner")}},
-                    "base": {"ref": node["baseRefName"]},
-                })
-            if cursor:
-                if cursor in seen[repo]:
-                    raise GitHubReadShapeError("open-PR cursor repeated")
-                seen[repo].add(cursor)
-                pending[repo] = cursor
-            elif len(result[repo]) != total:
-                raise GitHubReadShapeError("incomplete open-PR inventory")
+            try:
+                repository = data.get(alias)
+                if alias in invalid or not isinstance(repository, dict) or str(repository.get("nameWithOwner", "")).casefold() != repo.casefold():
+                    raise InventoryUnavailable("open-PR repository unavailable or mismatched")
+                nodes, cursor, total = batch.page(repository.get("pullRequests"))
+                if total != totals.setdefault(repo, total):
+                    raise InventoryUnavailable("open-PR inventory changed during pagination")
+                for node in nodes:
+                    number = node.get("number")
+                    if type(number) is not int or number <= 0 or any(pr["number"] == number for pr in result[repo]) or node.get("state") != "OPEN":
+                        raise InventoryUnavailable("invalid or duplicate open PR")
+                    labels = batch.complete(reader, repo, node, "labels")
+                    result[repo].append({
+                        "number": number, "title": node["title"], "body": node["body"],
+                        "state": "open", "draft": node["isDraft"], "created_at": node["createdAt"],
+                        "user": batch.rest_author(node["author"]), "labels": labels,
+                        "html_url": node["url"], "head": {"sha": node["headRefOid"], "ref": node["headRefName"],
+                            "repo": {"full_name": (node["headRepository"] or {}).get("nameWithOwner")}},
+                        "base": {"ref": node["baseRefName"]},
+                    })
+                if cursor:
+                    if cursor in seen[repo]:
+                        raise InventoryUnavailable("open-PR cursor repeated")
+                    seen[repo].add(cursor)
+                    pending[repo] = cursor
+                elif len(result[repo]) != total:
+                    raise InventoryUnavailable("incomplete open-PR inventory")
+            except GitHubReadError as error:
+                result[repo] = error
+            except (InventoryUnavailable, GitHubReadShapeError, KeyError, TypeError, ValueError):
+                result[repo] = InventoryUnavailable("open-PR inventory unavailable; retry next pass")
         cursors = pending
-    raise GitHubReadShapeError("open-PR pagination exceeded bound")
+    result.update({repo: InventoryUnavailable("open-PR pagination exceeded bound") for repo in cursors})
+    return result

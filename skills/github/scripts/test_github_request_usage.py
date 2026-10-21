@@ -60,7 +60,7 @@ class UsageTests(unittest.TestCase):
         self.assertNotIn("must-not-be-recorded", ledger.read_text())
         self.assertNotIn("token", ledger.read_text())
 
-    def test_hourly_rates_use_the_requested_window_and_keep_unknown_graphql_cost(self):
+    def test_hourly_rates_use_requested_window_and_preserve_unknown_cost(self):
         for status in (200, 304):
             usage.record_response(method="GET", path="/repos/example/app", status=status,
                                   headers={}, operation="github.read", actor="fixture-bot", now=1000)
@@ -68,6 +68,10 @@ class UsageTests(unittest.TestCase):
         self.assertEqual(consumer["http_requests_per_hour"], 4)
         self.assertEqual(consumer["primary_requests_per_hour"], 2)
         self.assertIsNone(usage.report(since=1000, now=1000)["consumers"][0]["http_requests_per_hour"])
+        usage.record_response(method="POST", path="/graphql", status=200,
+                              headers={"x-ratelimit-resource": "graphql"}, operation="github.query", actor="fixture-bot", now=1000)
+        graphql = next(c for c in usage.report(since=900, now=2700)["consumers"] if c["bucket"] == "graphql")
+        self.assertIsNone(graphql["primary_requests_per_hour"])
 
     def test_shared_budget_survives_stale_replies_and_expires_at_reset(self):
         for remaining in (800, 4000):

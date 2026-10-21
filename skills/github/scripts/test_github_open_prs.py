@@ -10,7 +10,7 @@ from unittest.mock import Mock
 
 import github_api
 import github_open_prs
-from github_read import GitHubReadShapeError
+from github_read import GitHubReadError
 
 
 def connection(nodes, total=None, cursor=None):
@@ -58,25 +58,35 @@ class DiscoveryTests(unittest.TestCase):
                        {"r0": repository("example/app", [node(8)], total=2)})
         result = github_open_prs.scan(value, ["example/app", "example/empty"])
         self.assertEqual([p["number"] for p in result["example/app"]], [7, 8])
-        document = value.graphql_json.call_args_list[1].args[0]
-        self.assertNotIn('name:"empty"', document)
 
     def test_incomplete_or_changing_results_never_publish_inventory(self):
         cases = [None, repository("example/wrong", []), repository("example/app", [node()], total=2),
                  repository("example/app", [node(), node()])]
         for bad in cases:
-            with self.subTest(bad=bad), self.assertRaises(GitHubReadShapeError):
-                github_open_prs.scan(reader({"r0": bad}), ["example/app"])
+            with self.subTest(bad=bad):
+                self.assertIsInstance(github_open_prs.scan(reader({"r0": bad}), ["example/app"])["example/app"], github_open_prs.InventoryUnavailable)
         for second in [repository("example/app", [node(8)], total=3),
                        repository("example/app", [node(8)], total=2, cursor="next")]:
             value = reader({"r0": repository("example/app", [node()], total=2, cursor="next")}, {"r0": second})
-            with self.assertRaises(GitHubReadShapeError):
-                github_open_prs.scan(value, ["example/app"])
+            self.assertIsInstance(github_open_prs.scan(value, ["example/app"])["example/app"], github_open_prs.InventoryUnavailable)
         partial = reader()
         partial.graphql_json.side_effect = None
         partial.graphql_json.return_value = github_api.ApiResult(ok=True, status=200, body={"data": {}, "errors": [{"message": "denied"}]})
-        with self.assertRaises(GitHubReadShapeError):
-            github_open_prs.scan(partial, ["example/app"])
+        self.assertIsInstance(github_open_prs.scan(partial, ["example/app"])["example/app"], github_open_prs.InventoryUnavailable)
+
+    def test_partial_execution_and_transport_errors_preserve_other_repositories(self):
+        value = reader()
+        value.graphql_json.side_effect = None
+        value.graphql_json.return_value = github_api.ApiResult(ok=True, status=200, body={
+            "data": {"r0": None, "r1": repository("example/good", [node()])},
+            "errors": [{"path": ["r0"], "message": "not accessible"}]})
+        inventory = github_open_prs.scan(value, ["example/missing", "example/good"])
+        self.assertIsInstance(inventory["example/missing"], github_open_prs.InventoryUnavailable)
+        self.assertEqual(len(inventory["example/good"]), 1)
+        value.graphql_json.return_value = github_api.ApiResult(ok=False, status=503, body=None)
+        inventory = github_open_prs.scan(value, ["example/app"])
+        self.assertIsInstance(inventory["example/app"], GitHubReadError)
+        self.assertEqual(inventory["example/app"].result.status, 503)
 
     def test_labels_paginate_before_discovery_can_admit_a_pr(self):
         pr = copy.deepcopy(node())

@@ -133,6 +133,7 @@ class Fake:
         self.review_gaps = {}
         self.active = False
         self.calls = 0
+        self.discovered = []
         self.before = lambda _self: None
         self.targets = [copy.deepcopy(TARGET)]
         self.after_label_action = "idle"
@@ -143,8 +144,8 @@ class Fake:
     def discover(self, repos):
         self.discovered = repos
 
-    def open_pulls(self, repo):
-        return self.pages(f"/repos/{repo}/pulls", state="open")
+    def open_pulls(self, _repo):
+        return copy.deepcopy(list(self.pulls.values()))
 
     def policies(self, _owner):
         return copy.deepcopy(self.targets)
@@ -1285,12 +1286,43 @@ class EnqueueTests(unittest.TestCase):
             any(event == "skipped" and data["pr"] == 1 for event, data in self.events)
         )
 
+    def test_unavailable_inventory_skips_only_its_repository(self):
+        fake = Fake(count=1)
+        healthy = {**TARGET, "repo": "example/healthy"}
+        fake.targets = [TARGET, healthy]
+        def inventory(repo):
+            if repo == REPO:
+                raise watch.GitHubReadShapeError("inventory changed")
+            return [pr()]
+        fake.open_pulls = inventory
+        self.run_pass(fake)
+        self.assertEqual(fake.discovered, [REPO, healthy["repo"]])
+        self.assertEqual(fake.writes, [1])
+        self.assertTrue(any(event == "skip_inventory_unavailable" and data["repository"] == REPO for event, data in self.events))
+        self.assertTrue(all(data["repository"] == healthy["repo"] for event, data in self.events if event == "enqueued"))
+        self.args.repo = [healthy["repo"]]
+        self.run_pass(fake)
+        self.assertEqual(fake.discovered, [healthy["repo"]])
+
+    def test_live_discovery_adapts_standalone_reader_errors(self):
+        live = object.__new__(watch.Live)
+        live.reader = Mock()
+        error = watch.github_open_prs.GitHubReadError("unavailable",
+            result=watch.github_api.ApiResult(ok=False, status=503, body=None), diagnostics={})
+        with patch.object(watch.github_open_prs, "scan", return_value={REPO: error}) as scan:
+            live.discover([REPO])
+        scan.assert_called_once_with(live.reader, [REPO])
+        with self.assertRaises(watch.GitHubReadError) as caught:
+            live.open_pulls(REPO)
+        self.assertEqual(caught.exception.result.status, 503)
+
     def test_repository_filter_cannot_create_enrollment(self):
         fake = Fake()
         self.args.repo = ["example/not-enrolled"]
         self.run_pass(fake)
         self.assertEqual(fake.writes, [])
         self.assertEqual(fake.calls, 0)
+        self.assertEqual(fake.discovered, [])
 
     def test_lock_refuses_second_watcher_and_pause_updates_use_same_inode(self):
         with watch.hold_lock(self.path):

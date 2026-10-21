@@ -254,14 +254,16 @@ permission and actor failures never become cached success.
 Plain JSON `gh-with-env-token api repos/OWNER/REPO/...` GETs under the selected
 App identity also use this conditional cache and record each response once.
 `--method GET` and `-X GET` are supported; formatting, custom headers, pagination,
-input, hostname overrides, credential/log surfaces and alternate identities keep
-their original CLI route. The adapter never retries a completed failed request
+input, hostname overrides, downloads, credential/log surfaces and alternate identities keep
+their original CLI route. Fresh response bytes and gh error output are preserved; non-JSON bodies are not cached.
+The adapter never retries a completed failed request
 or serves a body after a provider/authentication failure.
 
 The Supervisor auto-enqueue and pending-review helpers discover open PRs across
 repositories with one GraphQL query per ordinary pass. Additional pages are read
-only for overflowing PR/label connections; partial or changing inventories fail
-closed. This replaces discovery alone: controller policy, ready receipts,
+only for overflowing PR/label connections; partial or changing inventories skip
+only the affected repositories until the next pass. Discovery snapshots may precede
+controller reads; they never replace final freshness checks. This replaces discovery alone: controller policy, ready receipts,
 Client acceptance, reviews, checks and final fresh pre-write reads still decide
 eligibility. The final auto-enqueue queue-inventory recheck stays live REST.
 

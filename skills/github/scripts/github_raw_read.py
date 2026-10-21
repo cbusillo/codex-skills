@@ -7,15 +7,17 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import urllib.parse
+from typing import Callable
 
 import github_api
 import github_http_cache
 
 
-def endpoint(args):
-    """Decline CLI formatting, pagination, input and header options unchanged."""
+def endpoint(args: list[str]) -> str | None:
+    """Decline CLI formatting, pagination, input and download options unchanged."""
     if args[:1] != ["api"]:
         return None
     operands = []
@@ -37,42 +39,63 @@ def endpoint(args):
     url = urllib.parse.urlsplit(path)
     if url.scheme or url.netloc or url.fragment or not github_http_cache.repository_from_path(path):
         return None
-    # Credential and log surfaces retain the original uncached route.
-    if any(part in url.path.split("/") for part in ("secrets", "tokens", "logs")):
+    if any(part in urllib.parse.unquote(url.path).split("/") for part in
+           ("secrets", "tokens", "logs", "tarball", "zipball", "zip", "download")):
         return None
     return path
 
 
-def read(args, *, gh_cmd, actor, host):
+def response_body(raw: bytes) -> bytes:
+    """Strip gh's include headers without decoding or changing body bytes."""
+    while raw.startswith(b"HTTP/"):
+        separators = [(raw.find(value), value) for value in (b"\r\n\r\n", b"\n\n") if value in raw]
+        if not separators:
+            return raw
+        index, separator = min(separators)
+        header, body = raw[:index], raw[index + len(separator):]
+        parts = header.splitlines()[0].split()
+        status = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+        if 100 <= status < 400 and body.lstrip(b"\r\n").startswith(b"HTTP/"):
+            raw = body.lstrip(b"\r\n")
+        else:
+            return body
+    return raw
+
+
+def read(args: list[str], *, gh_cmd: str, actor: str, host: str,
+         observer: Callable[[subprocess.CompletedProcess], None] | None = None) -> github_api.ApiResult | None:
     path = endpoint(args)
     if path is None:
         return None
-    def transport(headers):
-        return github_api._call_gh_uncached(
-            "GET", path, gh_cmd=gh_cmd, gh_prefix_args=[], extra_headers=headers,
-            operation="github.raw.read", actor=actor, expected_actor=actor, host=host,
-            is_write=False,
-        )
-    return github_http_cache.request(
-        transport, method="GET", path=path, body=None, headers={},
-        api_version=github_api.DEFAULT_API_VERSION, host=host,
-        actor=actor, expected_actor=actor, identity_scope=json.dumps([gh_cmd, actor]), enabled=True,
+    # The actual gh executable retains the wrapper's selected App credentials.
+    return github_api.call_gh(
+        "GET", path, gh_cmd=gh_cmd, gh_prefix_args=[], operation="github.raw.read",
+        actor=actor, expected_actor=actor, host=host, response_observer=observer,
+        cache_body_filter=lambda body: isinstance(body, (dict, list)),
     )
 
 
-def main():
+def main() -> int:
     gh_cmd, actor, host, *args = sys.argv[1:]
-    result = read(args, gh_cmd=gh_cmd, actor=actor, host=host)
+    replies = []
+    result = read(args, gh_cmd=gh_cmd, actor=actor, host=host, observer=replies.append)
     if result is None:
         return 125  # Unsupported; the shell wrapper runs its original command.
+    if replies:
+        reply = replies[-1]
+        if result.status != 304:
+            # Preserve failures, non-JSON bodies and JSON bytes from gh exactly.
+            sys.stdout.buffer.write(response_body(reply.stdout))
+            sys.stderr.buffer.write(reply.stderr)
+            if not result.ok and not reply.stderr and result.failure:
+                print(f"gh: {result.failure.message} (HTTP {result.status})", file=sys.stderr)
+            return reply.returncode if reply.returncode else int(not result.ok)
     if not result.ok:
-        return github_api.emit_terminal(github_api.terminal_failure(
-            result.failure, operation="github.raw.read", actor=result.actor,
-            expected_actor=result.expected_actor, host=host, bucket=result.bucket,
-            exit_code=1,
-        ))
+        message = result.failure.message if result.failure else "GitHub read failed"
+        print(f"gh: {message} (HTTP {result.status})", file=sys.stderr)
+        return 1
     if result.body is not None:
-        print(result.body if isinstance(result.body, str) else json.dumps(result.body, ensure_ascii=False))
+        print(json.dumps(result.body, ensure_ascii=False))
     return 0
 
 

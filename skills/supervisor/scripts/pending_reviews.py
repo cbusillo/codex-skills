@@ -907,6 +907,8 @@ def sweep(io, entries, checkouts, logins, evidence, apply=False):
         print(f"Discovering Supervisor reviews in {repo}", file=sys.stderr, flush=True)
         try:
             pulls = inventory[repo]
+            if isinstance(pulls, Exception):
+                raise pulls
         except (GitHubReadError, GitHubReadShapeError, ValueError, KeyError, TypeError) as error:
             reports.append({"repository": repo, "status": "refused", "error": str(error)})
             continue
