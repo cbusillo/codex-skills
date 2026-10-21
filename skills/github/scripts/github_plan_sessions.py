@@ -77,7 +77,10 @@ def retained_homes(*, sources=(), actions=(), additional_homes=()) -> set[Path]:
             continue
         for identity in (source, source.get("resumed_generation")):
             if isinstance(identity, dict) and isinstance(identity.get("codex_home"), str):
-                candidate = Path(identity["codex_home"]).expanduser()
+                try:
+                    candidate = Path(identity["codex_home"]).expanduser()
+                except RuntimeError as error:
+                    raise ValueError("retained source home cannot be resolved") from error
                 if candidate.is_absolute():
                     homes.add(candidate)
     return {Path(home).expanduser().resolve() for home in homes}
@@ -133,11 +136,9 @@ async def observe_home(home: Path, sessions: set[str], proof_sessions: set[str] 
         state = thread.get("status", {}).get("type")
         source = github_plan_closure.RECEIPTS.get().get(session)
         recovering = source and (github_plan_closure.action_pending(session) or source.get("resumed_at"))
-        if prove and recovering:
-            # A recovering generation must never fall through to the ordinary
-            # authored-release path in another account, even after a clear.
-            if _source_home(source) != home.resolve():
-                return
+        if prove and recovering and _source_home(source) == home.resolve():
+            # Only the source home can author recovery proof. Other homes
+            # still take the ordinary presence and queue observation below.
             if state not in {"idle", "notLoaded"}:
                 live(session, thread)
                 return
@@ -407,9 +408,11 @@ def _process_scope_quiet(session, coverage, *, checker=False, checker_home=None)
         if not checker:
             return False
         bindings = set()
+        commands = {int(fields[0]): fields[1] for line in result.stdout.splitlines()
+                    if len(fields := line.split(None, 1)) == 2 and fields[0].isdigit()}
         for peer in named:
-            argv = process_liveness().native_arguments(peer["pid"])
-            if not github_plan_closure.managed_launch(peer["pid"], argv, sockets):
+            argv, bounded = process_liveness().process_arguments(peer["pid"], commands[peer["pid"]])
+            if not bounded or not github_plan_closure.managed_launch(peer["pid"], argv, sockets):
                 return False
             if checker_home is not None:
                 endpoint = github_plan_closure.guarded_launch_endpoint(peer["pid"], argv)
@@ -420,7 +423,8 @@ def _process_scope_quiet(session, coverage, *, checker=False, checker_home=None)
                 return False
             bindings.add(str(Path(endpoints[0][7:]).resolve()))
         # npm's wrapper/native child share one positively bound ingress.
-        # A second client is not this check's own execution.
+        # A second ingress is a separate client. Native execution is bound
+        # independently by the checker transcript and background registry.
         if len(bindings) != 1:
             return False
     return process_absence_known(result.stdout, sockets, homes={Path(home) for home in coverage["observed_homes"]})
@@ -772,6 +776,13 @@ def observe(sessions: set[str], proof_sessions: set[str] | None = None, *, _sour
 
 
 def _observe(sessions: set[str], proof_sessions: set[str] | None = None):
+    retained_sources, invalid_sources = [], {}
+    for session, source in github_plan_closure.RECEIPTS.get().items():
+        try:
+            retained_homes(sources=[source])
+            retained_sources.append(source)
+        except (OSError, ValueError, TypeError) as error:
+            invalid_sources[session] = str(error)
     async def run():
         actions = []
         for session in sessions:
@@ -781,10 +792,12 @@ def _observe(sessions: set[str], proof_sessions: set[str] | None = None):
                 actions.append(action)
             except (OSError, ValueError):
                 pass  # The canonical-identity/action barrier below reports it.
-        homes = observation_homes(sources=github_plan_closure.RECEIPTS.get().values(), actions=actions)
+        homes = observation_homes(sources=retained_sources, actions=actions)
         return await asyncio.gather(*(observe_home(home, sessions, proof_sessions) for home in sorted(homes)), return_exceptions=True)
 
-    peers, states = [], {}
+    peers = [{"sessionId": session, "cwd": "/", "state": "unknown", "source": "native_recovery", "error": error}
+             for session, error in invalid_sources.items()]
+    states = {}
     process_text = None
     sources = []
     try:

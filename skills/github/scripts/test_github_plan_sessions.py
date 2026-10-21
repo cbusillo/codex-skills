@@ -25,6 +25,8 @@ from aiohttp import web
 import github_plan_sessions as SESSIONS
 import github_plan_closure as CLOSURE
 
+NATIVE_PROCESS_ARGUMENTS = SESSIONS.process_liveness().process_arguments
+
 
 class ReceiptFixture:
     """A real read-only Unix daemon plus an actual shared closure receipt."""
@@ -2059,17 +2061,20 @@ class ObservationMergeTests(unittest.TestCase):
             node["records"] = original
             f.transcript.write_text("".join(json.dumps(row) + "\n" for row in current))
             f.rpc_results["thread/backgroundTerminals/list"] = {"data": [pair], "nextCursor": None}
-            summarize = SESSIONS.native_helpers()[1].summarize
+            open_path = Path.open
             appended = False
-            def poll_during_identity_read(*args, **kwargs):
+            from contextlib import contextmanager
+            @contextmanager
+            def poll_during_identity_read(path, *args, **kwargs):
                 nonlocal appended
-                result = summarize(*args, **kwargs)
-                if not appended:
-                    appended = True
-                    append_poll({})
-                return result
-            with patch.object(SESSIONS.native_helpers()[1], "summarize", side_effect=poll_during_identity_read):
+                with open_path(path, *args, **kwargs) as stream:
+                    yield stream
+                    if path == f.transcript and args == ("rb",) and not appended:
+                        appended = True
+                        append_poll({})
+            with patch.object(Path, "open", poll_during_identity_read):
                 self.assertTrue(SESSIONS._current_check_quiet(node))
+            self.assertTrue(appended)
             f.transcript.write_text("".join(json.dumps(row) + "\n" for row in current))
             for pairs in ([], [{**pair, "processId": "other"}], [pair, pair],
                           [pair, {"itemId": "exec-other", "processId": "456"}]):
@@ -2103,6 +2108,98 @@ class ObservationMergeTests(unittest.TestCase):
         shared = SESSIONS.process_liveness()
         self.enterContext(patch.object(shared, "process_arguments",
             side_effect=lambda _pid, command: (shared.harness_arguments(command), True)))
+
+    def test_checker_normalizes_guarded_npm_wrapper_and_child_as_one_ingress(self):
+        from test_claim_receipts import cell_header, composed_result
+        with ReceiptFixture("11111111-2222-4333-8444-555555555555") as f:
+            original = [json.loads(line) for line in f.transcript.read_text().splitlines()][:2]
+            original.append({"type": "response_item", "payload": {"type": "custom_tool_call", "call_id": "call-check",
+                "name": "exec", "input": 'text(await tools.exec_command({cmd:"uv run check_claims.py"}));'}})
+            started = composed_result({"session_id": 123, "output": ""}, "call-check")
+            started["payload"]["output"].insert(0, cell_header())
+            f.transcript.write_text("".join(json.dumps(row) + "\n" for row in [*original, started]))
+            f.native_state = "active"
+            f.rpc_results["thread/backgroundTerminals/list"] = {
+                "data": [{"itemId": "exec-native-check", "processId": "123"}], "nextCursor": None}
+            node = {"session_id": f.session, "harness": "codex", "transcript": str(f.transcript), "records": original}
+            native = ["codex", "--remote", "unix://", "resume", f.session]
+            with patch.object(CLOSURE, "process_started_at", return_value=datetime.now(timezone.utc) - timedelta(seconds=2)), \
+                    patch.object(SESSIONS.process_liveness(), "process_absent", return_value=False):
+                f.managed(native)
+                argv = {456: ["/fixture/bin/node", "/fixture/npm/bin/codex.js", *native[1:]],
+                        457: ["/fixture/native/codex", *native[1:]]}
+                f.commands = "\n".join(str(pid) + " " + " ".join(args) for pid, args in argv.items())
+                fixture_run = SESSIONS.subprocess.run
+                def run(args, **kwargs):
+                    if args == ["ps", "-p", "457", "-o", "ppid="]:
+                        return SimpleNamespace(returncode=0, stdout="456")
+                    return fixture_run(args, **kwargs)
+                with patch.object(SESSIONS.process_liveness(), "native_arguments", side_effect=lambda pid: argv[pid]), \
+                        patch.object(SESSIONS.process_liveness(), "process_arguments", side_effect=NATIVE_PROCESS_ARGUMENTS), \
+                        patch.object(SESSIONS.subprocess, "run", side_effect=run):
+                    peers, _, coverage = f.observe()
+                    self.assertEqual(coverage["process_coverage"], "complete")
+                    self.assertTrue(SESSIONS._current_check_quiet(node, peers=peers, coverage=coverage))
+                    # A second positively registered ingress is a separate client.
+                    binding = f.root / "second-ingress.sock"
+                    sock = socket.socket(socket.AF_UNIX)
+                    f.stack.callback(sock.close)
+                    sock.bind(str(binding))
+                    binding.chmod(0o600)
+                    with patch.object(CLOSURE.os, "getpid", return_value=900):
+                        proxy = CLOSURE.register_proxy(str(f.home), str(binding))
+                    second = [native[0], "--remote", "unix://" + str(binding), "resume", f.session]
+                    with patch.object(CLOSURE.os, "getpid", return_value=458):
+                        CLOSURE.register_launch(second, str(f.home), proxy=proxy)
+                    argv[458] = second
+                    f.commands += "\n458 " + " ".join(second)
+                    self.assertEqual(f.observe()[2]["process_coverage"], "complete")
+                    self.assertFalse(SESSIONS._current_check_quiet(node))
+
+    def test_invalid_retained_home_isolates_only_its_source_and_never_proves_it(self):
+        for malformed in ("/malformed\0home", "~codex_scope_no_such_user/home"):
+            for resumed in (False, True):
+                with self.subTest(malformed=malformed, resumed=resumed), ReceiptFixture() as f:
+                    bad = "other-source"
+                    source = {**f.entry, "session_id": bad, "resumed_at": "2026-10-01T02:00:00Z"}
+                    target = source
+                    if resumed:
+                        source["resumed_generation"] = {"codex_home": str(f.home)}
+                        target = source["resumed_generation"]
+                    target["codex_home"] = malformed
+                    CLOSURE.replace_rows([*CLOSURE.log_rows(), source])
+                    f.native_state = "notLoaded"
+                    with CLOSURE.resume_guard(f.session, method="thread/resume", home=f.home):
+                        pass
+                    _, states, _ = SESSIONS.observe({f.session, bad}, set())
+                    self.assertEqual(states[f.session]["state"], "ended")
+                    self.assertFalse(CLOSURE.action_pending(f.session))
+                    self.assertEqual(states[bad]["state"], "live")
+                    self.assertEqual(CLOSURE.source_records({bad})[bad]["resumed_at"], source["resumed_at"])
+                    with self.assertRaises(ValueError):
+                        SESSIONS.retained_homes(sources=[source])
+
+    def test_recovering_non_source_home_observes_post_list_threads_and_queues(self):
+        for state in ("active", "idle", "notLoaded"):
+            with self.subTest(state=state), ReceiptFixture() as f:
+                other = f.root / "explicit-path-home"
+                f.add_home(other, copy_transcript=False)
+                f.native_state = "notLoaded"
+                f.rpc_results[str(other), "thread/loaded/list"] = {"data": [], "nextCursor": None}
+                f.rpc_results[str(other), "thread/read"] = {"thread": {"id": f.session,
+                    "cwd": "/fixture/shared-work", "path": str(f.transcript), "historyMode": "paginated",
+                    "status": {"type": state}}}
+                if state == "notLoaded":
+                    f.home_queues[str(other)] = [{"id": "queued", "clientUserMessageId": "new", "input": []}]
+                with CLOSURE.resume_guard(f.session, method="thread/resume", home=f.home):
+                    pass
+                peers, states, _ = f.observe()
+                self.assertTrue(CLOSURE.action_pending(f.session))
+                self.assertEqual(states[f.session]["state"], "live")
+                self.assertTrue(any(peer.get("home") == str(other) for peer in peers))
+                if state == "notLoaded":
+                    self.assertIn((str(other), "thread/queue/list"), f.home_requests)
+                self.assertFalse(f.mutations)
 
     def test_malformed_action_barrier_blocks_native_end_proof_without_writing(self):
         with ReceiptFixture() as f:
