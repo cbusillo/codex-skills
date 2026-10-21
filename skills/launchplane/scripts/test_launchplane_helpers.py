@@ -5731,9 +5731,9 @@ def test_context_projection_contract_and_secret_shape() -> None:
         {"result": {"context": raw_context}}, request=provider_context["request"]
     )
     assert payload["status"] == "available"
-    assert payload["generated_at"] == "2026-01-02T03:04:05Z"
-    assert payload["summary"]["state"] == "waiting"
-    assert payload["sections"]["work_graph"]["items"][0]["safe_to_start"] is False
+    assert payload["generated_at"] == provider_context["generated_at"]
+    assert payload["summary"] == provider_context["summary"]
+    assert payload["sections"]["work_graph"] == provider_context["sections"]["work_graph"]
     provider_payload = {"result": {"context": {"work_graph": {"status": "available", "items": [{"source_of_truth_url": "https://github.com/example/repo/issues/1", "state": "waiting", "safe_to_start": False, "next_action": "Wait for checks.", "api_key": "secret-value"}]}}}}
     try:
         context_helper.normalize_launchplane_payload(provider_payload, request={"repository": "example/repo"})
