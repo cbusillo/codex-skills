@@ -3,6 +3,12 @@
 Read before defining or diagnosing lane routing, preparation configuration,
 preparation receipts, or preparation override flags.
 
+For the macOS native backend's independently activated worker, host configuration,
+snapshot preparation and recovery, read [native PyCharm](native-backend.md).
+`jetbrains.nativeWorker` belongs in the shared helper config, not repository
+metadata or a desktop IDE profile. The API lane/lifecycle behavior below remains
+the route for other supported language models.
+
 The helper reads `.github/github.json` when present:
 
 - `qualityGate.inspection.scopePreference`
@@ -81,8 +87,9 @@ report their paths relative to the Git worktree. Ignore those generated files
 before preparing. The path must be relative and stay inside the exact worktree,
 including after symlink resolution. Git mutation checks still cover the whole
 worktree, and only the nested Python project receives SDK provisioning. Omit
-the field for root preparation. The opt-in Qodana backend currently refuses
-this nested preparation shape; use the configured desktop lanes for it.
+the field for root preparation. The Qodana and native backends currently refuse
+this nested preparation shape; the configured API lanes remain available.
+[SKILL.md](../SKILL.md) owns selection. This does not authorize opening a desktop IDE.
 
 An assessment invoked with `--native-project-scope --repo <projectPath>`
 opts into one declared nested project, uses that lane's IDE and

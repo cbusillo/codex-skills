@@ -182,18 +182,12 @@ class QodanaTests(unittest.TestCase):
         self.assertEqual(result["finding_count"], 0)
         self.assertEqual(sorted(p.name for p in (self.repo / "src").iterdir()), ["a.py", "b.py"])
 
-    def test_community_uncovered_inspection_blocks_green_until_accepted(self):
-        # Q481 pending: the result names DuplicatedCode and stays UNKNOWN on clean code.
+    def test_community_uncovered_inspection_blocks_green(self):
         self.enable_duplicated_code()
-        with patch.object(backend, "PYTHON_ACCEPTED_UNCOVERED", frozenset()):
-            pending = self.run_backend(self.clean_with_canary())
-        self.assertEqual(pending["agent_result"]["verdict"], "UNKNOWN")
-        self.assertEqual(pending["uncovered_inspections"], ["DuplicatedCode"])
-        self.assertIn("effective_profile_missing:DuplicatedCode", pending["proof_failures"])
-        with patch.object(backend, "PYTHON_ACCEPTED_UNCOVERED", frozenset({"DuplicatedCode"})):
-            accepted = self.run_backend(self.clean_with_canary())
-        self.assertEqual(accepted["agent_result"]["verdict"], "GREEN")
-        self.assertEqual(accepted["uncovered_inspections"], ["DuplicatedCode"])
+        result = self.run_backend(self.clean_with_canary())
+        self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+        self.assertEqual(result["uncovered_inspections"], ["DuplicatedCode"])
+        self.assertIn("effective_profile_missing:DuplicatedCode", result["proof_failures"])
 
     def test_zero_findings_without_canary_finding_never_green(self):
         result = self.run_backend(self.clean_with_canary(proven=()))
@@ -679,6 +673,26 @@ os.kill(os.getpid(), signal.SIGKILL)
         subprocess.run(["git", "-C", str(self.repo), "add", "addon/__manifest__.py"], check=True)
         self.assertEqual(self.select(*python), ("api", "odoo_not_yet_qualified"))
 
+    def test_test_and_control_manifests_do_not_change_python_backend_selection(self):
+        for directory in ("assets/control", "tests/fixtures/addon"):
+            path = self.repo / directory / "__manifest__.py"
+            path.parent.mkdir(parents=True)
+            path.write_text("{}\n")
+            subprocess.run(["git", "-C", str(self.repo), "add", str(path)], check=True)
+        self.assertEqual(self.select("--scope", "files", "--file", "src/a.py"), ("qodana", "python_qualified"))
+
+    def test_headless_scope_honors_lane_exclusions_and_explicit_file_override(self):
+        inspection = {"lanes": [{"id": "python", "ide": "PyCharm", "required": True,
+                                 "include": ["**/*.py"], "exclude": ["fixtures/**"]}]}
+        (self.repo / ".github/github.json").write_text(json.dumps({"qualityGate": {"inspection": inspection}}))
+        fixture = self.repo / "fixtures/defect.py"
+        fixture.parent.mkdir()
+        fixture.write_text("print(missing)\n")
+        args = host.build_parser().parse_args(["agent-inspect", "--repo", str(self.repo), "--scope", "whole_project"])
+        self.assertNotIn("fixtures/defect.py", backend.scope_selection(args, host)[3])
+        args.scope, args.files = "files", ["fixtures/defect.py"]
+        self.assertIn("fixtures/defect.py", backend.scope_selection(args, host)[3])
+
     def test_detached_monitor_deletes_copies_when_parent_is_killed_during_load_pause(self):
         import time
         state = self.root / "state"
@@ -918,9 +932,9 @@ class LiveDescriptorTests(unittest.TestCase):
                                      "skills/jetbrains-inspection/scripts/prepare-python-project.py", "--timeout-ms", "900000"],
                                     capture_output=True, text=True)
             envelope = json.loads(result.stdout)
-            # While Q481 is open, Community-uncovered inspections alone may leave a clean run UNKNOWN.
+            # Community-uncovered inspections keep an otherwise clean run UNKNOWN.
             pending = {"effective_profile_missing:" + rule
-                       for rule in backend.PYTHON_COMMUNITY_UNCOVERED - backend.PYTHON_ACCEPTED_UNCOVERED}
+                       for rule in backend.PYTHON_COMMUNITY_UNCOVERED}
             verdict = envelope["agent_result"]["verdict"]
             if verdict == "UNKNOWN":
                 self.assertEqual(envelope["diagnostic"]["error_reason"], "qodana_coverage_unproven")

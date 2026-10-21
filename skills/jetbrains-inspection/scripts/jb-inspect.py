@@ -541,13 +541,25 @@ def main() -> int:
             result = command_closeout(args, context)
             return emit(result, args.json, classify_closeout_exit(result), command=args.command_input)
         if args.command == "agent":
-            if args.backend == "api" and (args.qodana_recover_only or args.qodana_image or args.qodana_license_file or args.qodana_plugin_zip or args.qodana_uv):
-                return emit_agent_usage_error("Qodana options cannot be combined with --backend api.")
+            common_backend = qodana_backend_module()
+            qodana_options = common_backend.backend_options(args, "qodana")
+            native_options = common_backend.backend_options(args, "native")
+            if native_options and qodana_options:
+                return emit_agent_usage_error("Native and Qodana options cannot be combined.")
+            if args.backend in {"api", "native"} and qodana_options:
+                return emit_agent_usage_error(f"Qodana options cannot be combined with --backend {args.backend}.")
+            if args.backend in {"api", "qodana"} and native_options:
+                return emit_agent_usage_error(f"Native options cannot be combined with --backend {args.backend}.")
             backend_selection = "explicit"
             if args.backend == "auto":
                 host_default = os.environ.get("JB_INSPECT_DEFAULT_BACKEND")
-                args.backend, backend_selection = qodana_backend_module().select_backend(
-                    args, sys.modules[__name__], host_default if host_default in {"api", "qodana"} else None)
+                args.backend, backend_selection = native_backend_module().select_backend(
+                    args, sys.modules[__name__], host_default if host_default in {"api", "qodana", "native"} else None)
+            if args.backend == "native":
+                result = command_native(args)
+                result["backend_selection"] = backend_selection
+                print(public_json(result))
+                return 0
             if args.backend == "qodana":
                 # Keep headless runs outside all desktop configuration/lifecycle paths.
                 result = command_qodana(args)
@@ -605,6 +617,19 @@ def qodana_backend_module() -> Any:
 
 def command_qodana(args: argparse.Namespace) -> dict[str, Any]:
     return qodana_backend_module().run(args, sys.modules[__name__])
+
+
+def native_backend_module() -> Any:
+    spec = importlib.util.spec_from_file_location("jb_native_backend", Path(__file__).with_name("native_backend.py"))
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Native backend unavailable")
+    backend = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(backend)
+    return backend
+
+
+def command_native(args: argparse.Namespace) -> dict[str, Any]:
+    return native_backend_module().run(args, sys.modules[__name__])
 
 
 def error_payload(error: InspectError, args: argparse.Namespace | None = None) -> dict[str, Any]:
@@ -807,7 +832,12 @@ def build_parser() -> argparse.ArgumentParser:
         subparsers.choices[name].add_argument("--timeout-ms", type=int, default=DEFAULT_WAIT_TIMEOUT_MS)
         subparsers.choices[name].add_argument("--poll-ms", type=int, default=DEFAULT_POLL_MS)
     agent = subparsers.choices["agent-inspect"]
-    agent.add_argument("--backend", choices=("auto", "api", "qodana"), default="auto", help="Per-run backend. auto runs local Qodana for qualified Python selections and the Inspection API otherwise.")
+    agent.add_argument("--backend", choices=("auto", "api", "qodana", "native"), default="auto", help="Per-run backend. auto uses native PyCharm for Python/Odoo and the existing routes otherwise.")
+    agent.add_argument("--native-worker", help="Independent Director-activated worker directory; config and credentials remain in place.")
+    agent.add_argument("--native-recover-only", action="store_true", help="Clean only the journaled native run and exact helper SDK, without inspection or clearing activation stops.")
+    agent.add_argument("--native-reconcile-result", help="Saved terminal native result for the same interrupted run; requires --native-recover-only and never clears licensing stops.")
+    agent.add_argument("--native-release-run", metavar="UUID", help="Release only this recovered run's helper metadata after recorded Director UI confirmation; requires --native-recover-only and never starts inspection.")
+    agent.add_argument("--native-framework-root", action="append", default=[], help="Existing Odoo framework source root, including odoo/release.py; repeat for explicit roots.")
     agent.add_argument("--qodana-image", help="Pinned Community Docker image repository@sha256:digest.")
     agent.add_argument("--qodana-license-file", action="append", default=[], help="Removed: returns UNKNOWN without accessing the file. Use an independently Director-activated headless profile; see qodana-backend.md#director-activation.")
     agent.add_argument("--qodana-plugin-zip", action="append", default=[], help="Public plugin package for the disposable profile; does not supply entitlement.")
