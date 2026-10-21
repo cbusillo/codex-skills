@@ -1485,9 +1485,8 @@ class EnqueueTests(unittest.TestCase):
         self.assertEqual(fake.writes, [])
         self.assertTrue(any(event == "busy" for event, _ in self.events))
 
-    def test_label_added_after_controller_read_preserves_batch(self):
+    def test_label_added_after_discovery_is_rechecked_before_any_write(self):
         fake = Fake()
-        self.args.apply = False
         original_pages = fake.pages
 
         def label_during_read(path, **params):
@@ -1497,8 +1496,7 @@ class EnqueueTests(unittest.TestCase):
         fake.pages = label_during_read
         self.run_pass(fake)
         self.assertEqual(fake.writes, [])
-        self.assertTrue(any(event == "busy" for event, _ in self.events))
-        self.assertFalse(any(event == "batch" for event, _ in self.events))
+        self.assertTrue(any(event == "batch_stopped" for event, _ in self.events))
 
     def test_unknown_label_author_preserves_batch(self):
         fake = Fake()
