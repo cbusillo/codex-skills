@@ -1168,6 +1168,12 @@ verification.
   the saved dry-run evidence, `--expected-plan-digest`, reviewed
   acknowledgement and an idempotency key. The record change is intent only: run
   Odoo post-deploy for the lane afterwards.
+- `POST /v1/product-config/odoo-website-settings/apply`: Projected contract
+  path for a product's production website settings, bound to its current testing
+  artifact (`odoo-website-settings-dry-run` / `odoo-website-settings-apply`).
+  Apply has the same evidence gates as addon settings. It records inert intent;
+  the Client-accepted release applies it. A null `website_settings` withdraws
+  the pending intent.
 - `GET /v1/product-config/integration-allowances` and
   `POST /v1/product-config/integration-allowances/apply`: Bounded
   helper paths for a lane's non-production integration allowances
