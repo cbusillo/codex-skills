@@ -14,8 +14,6 @@ import subprocess
 import time
 from typing import Any, Callable
 
-import github_plan_lease
-
 
 MARKER = "github-plan:claim "
 EMPTY_HOLDERS = {"none", "unassigned", "unclaimed", "not assigned", "n/a", "-", "nobody", "no one", "no-one"}
@@ -587,6 +585,7 @@ def discussion_evidence(
 
 
 def expired_lease_sessions(comments: list[dict[str, Any]]) -> set[str]:
+    import github_plan_lease
     released = {comments[i]["id"] for i, _, _ in exact_released_sources(comments)}
     sessions = {r["session"] for c in comments if c.get("id") not in released for r in records(c.get("body") or "")}
     return {session for session in sessions if github_plan_lease.state(session) == github_plan_lease.EXPIRED}
@@ -621,12 +620,14 @@ def lease_takeovers(ended: list[dict[str, Any]]) -> str:
 
 
 def recorded_lease_minutes(session: str) -> float:
+    import github_plan_lease
     lease = github_plan_lease.read(session)
     return github_plan_lease.DEFAULT_LEASE_MINUTES if lease is None else lease.minutes
 
 
 def coordination(conflicts: list[dict[str, Any]], comments: list[dict[str, Any]], repo: str, number: int) -> list[dict[str, Any]]:
     def next_action(record):
+        import github_plan_lease
         if github_plan_lease.state(record["session"]) == github_plan_lease.UNKNOWN:
             return ("This host has no lease for that session. Coordinate with it; if it has ended, a Supervisor or "
                     "direction session releases it with gh-plan.py release-claim. Preserve its artifacts")
