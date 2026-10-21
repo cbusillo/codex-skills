@@ -6,6 +6,7 @@
 
 
 import json
+import copy
 import os
 from pathlib import Path
 import subprocess
@@ -202,6 +203,45 @@ class UvProbeTests(unittest.TestCase):
 
 
 class ReceiptTests(unittest.TestCase):
+    def test_claude_request_snapshots_are_data_before_and_after_a_check(self):
+        rows = history('claude', claim(), {**proof(('example/a', 1, 10)), 'harness': 'claude'})
+        snapshots = [{**copy.deepcopy(row), 'type': 'api-request-blob'} for row in rows[1:-1]]
+        rows[-1:-1] = snapshots
+        self.assertTrue(session_record.summarize(rows, 'claude')['safe_verdict'])
+        self.assertFalse(receipts.ownership_state(rows, 'claude')['pending'])
+        # A replayed result cannot complete the real call whose result is missing.
+        missing = history('claude', {})[:-1]
+        missing[-1]['type'] = 'api-request-blob'
+        self.assertTrue(receipts.ownership_state(missing, 'claude')['pending'])
+        self.assertEqual(list(receipts.outputs([missing[-1]], 'claude')), [])
+
+    def test_native_completed_shell_data_is_not_unfinished_execution(self):
+        commands = [r'printf "%s" "x\\\""',
+                    "python3 - <<'EOF'\n# person's text and example: worker &\nprint('done')\nEOF\nprintf done",
+                    'printf "%s" "v1/session\\|/v1/products\\\""']
+        for command in commands:
+            with self.subTest(command=command):
+                rows = history('claude', {})
+                rows[1]['message']['content'][0]['input']['command'] = command
+                self.assertFalse(receipts.ownership_state(rows, 'claude')['pending'])
+
+    def test_shell_detachment_and_unparsed_work_never_borrow_a_shell_result(self):
+        commands = ['worker &\nprintf done', '(worker &)', 'worker &; printf done',
+                    'worker &>log &\nprintf done', 'bash <<\'EOF\'\nworker &\nEOF',
+                    'ssh host <<\'EOF\'\nworker &\nEOF', 'x="$(worker &)"',
+                    'x="`worker &`"', 'cat <<EOF\n$(worker &)\nEOF',
+                    'python3 - <<\'EOF\'\nprint("data")\nEOF\nworker &', 'printf "unterminated']
+        for command in commands:
+            with self.subTest(command=command):
+                rows = history('claude', {})
+                rows[1]['message']['content'][0]['input']['command'] = command
+                self.assertTrue(receipts.ownership_state(rows, 'claude')['pending'])
+
+    def test_helper_after_heredoc_remains_visible_to_claim_discovery(self):
+        rows = history('claude', claim())
+        rows[1]['message']['content'][0]['input']['command'] = "cat <<'EOF'\nexample only\nEOF\nuv run gh-plan.py claim 1"
+        self.assertEqual(len(receipts.sources(rows, 'claude', SESSION)[0]), 1)
+
     def setUp(self):
         receipts.uv_run_options.cache_clear()
         mocked_help = patch.object(receipts, "runtime_uv_help", return_value=UV_RUN_HELP)

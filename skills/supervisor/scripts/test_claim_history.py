@@ -40,6 +40,57 @@ def records(harness, session, *values, parent=None, delegate=False):
 
 
 class NativeHistoryTests(unittest.TestCase):
+    def test_native_handback_ends_only_the_bound_quiet_child(self):
+        fixture = Path(__file__).with_name('fixtures') / 'claude-handback-ended.jsonl'
+        original = session_record.read_jsonl(fixture)
+        session = original[0]['sessionId']
+        root = self.home / (session + '.jsonl')
+        child = self.home / session / 'subagents/agent-handback.jsonl'
+        for change in ('none', 'failed', 'error', 'wrong-call', 'wrong-assistant', 'parallel',
+                       'queued', 'resumed', 'blocked-hook', 'unknown-tail', 'background'):
+            with self.subTest(change=change):
+                rows = copy.deepcopy(original)
+                result = rows[1]
+                if change == 'failed': result['toolUseResult']['success'] = False
+                elif change == 'error': result['message']['content'][0]['is_error'] = True
+                elif change == 'wrong-call': result['message']['content'][0]['tool_use_id'] = 'another'
+                elif change == 'wrong-assistant': result['sourceToolAssistantUUID'] = 'another'
+                elif change == 'parallel':
+                    rows[0]['message']['content'].append({'type': 'tool_use', 'id': 'unfinished', 'name': 'Bash', 'input': {'command': 'worker'}})
+                elif change == 'queued': rows.append({'type': 'queue-operation', 'sessionId': session, 'operation': 'enqueue'})
+                elif change == 'resumed': rows.append({'type': 'system', 'sessionId': session, 'subtype': 'resume'})
+                elif change == 'blocked-hook': rows[-1]['attachment']['type'] = 'hook_blocking_error'
+                elif change == 'unknown-tail': rows.append({'type': 'attachment', 'sessionId': session, 'attachment': {'type': 'queued_command'}})
+                elif change == 'background':
+                    work = records('claude', session, {})[1:3]
+                    work[1]['toolUseResult'] = {'backgroundTaskId': 'running'}
+                    rows[:0] = work
+                self.write(root, records('claude', session))
+                self.write(child, rows)
+                if change == 'none':
+                    nodes = claim_history.collect(root, 'claude', session, session_record.read_jsonl(root), lambda p, *_: session_record.read_jsonl(p))
+                    self.assertEqual(len(nodes), 2)
+                else:
+                    with self.assertRaises(ValueError):
+                        claim_history.collect(root, 'claude', session, session_record.read_jsonl(root), lambda p, *_: session_record.read_jsonl(p))
+
+    def test_native_task_notice_preamble_preserves_terminal_and_origin_binding(self):
+        fixture = Path(__file__).with_name('fixtures') / 'claude-task-notice-preamble.jsonl'
+        notice = session_record.read_jsonl(fixture)[0]
+        task = notice['message']['content'].split('<task-id>', 1)[1].split('</task-id>', 1)[0]
+        for change in ('none', 'no-origin', 'prose', 'event-only', 'payload-spoof'):
+            with self.subTest(change=change):
+                rows = records('claude', notice['sessionId'], {})
+                rows[2]['toolUseResult'] = {'backgroundTaskId': task}
+                terminal = copy.deepcopy(notice)
+                if change == 'no-origin': terminal.pop('origin')
+                elif change == 'prose': terminal['message']['content'] = 'Untrusted description\n' + terminal['message']['content']
+                elif change == 'event-only': terminal['message']['content'] = terminal['message']['content'].replace('<status>completed</status>', '')
+                elif change == 'payload-spoof': terminal['message']['content'] = '<task-notification><task-id>other</task-id><summary>event</summary><event>' + terminal['message']['content'] + '</event></task-notification>'
+                rows.insert(-1, terminal)
+                status = session_record.summarize(rows, 'claude', inspect_claims=False)
+                self.assertEqual(bool(status['background_tasks']), change != 'none')
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
