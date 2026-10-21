@@ -13,7 +13,7 @@ issues and add to one that fits, or open a normal issue in
 A report says what happened, which skill or helper and version, and a link to
 public evidence. Keep private names, hosts and paths out of it.
 
-The catalog owner's Supervisor reads this issue as foreign input, as
+The Supervisor of the Director who maintains the catalog reads this issue as foreign input, as
 [foreign notices](../SKILL.md#procedure) are read. It reproduces or checks
 each report against current code before acting, then answers on the issue
 with the outcome: a linked fix or issue, or why it is not a defect. A report

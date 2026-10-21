@@ -67,7 +67,7 @@ issue = "OWNER/direction#123"
 
 With no `[handoff]`, it prints `{"repository": "OWNER/direction", "source": "default"}`:
 use the open issue titled `Supervisor handoffs` there, and open it under
-`github-plan` if none exists. The helper refuses an issue outside OWNER's
+`github-plan` if none exists. The helper refuses an issue outside the Director's own
 account and a malformed value; fix the private config, or remove `[handoff]`
 to use the default. Lessons about shared skills that other Directors would
 also hit go to the [field reports](field-reports.md) issue.
