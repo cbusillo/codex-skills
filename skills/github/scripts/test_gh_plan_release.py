@@ -1593,6 +1593,11 @@ class OwnReleaseTests(ReleaseHarness):
                 "pull_request": {"url": "https://api.github.com/repos/owner/other/pulls/77"}}}},
         ]
         with patch.object(PLAN, "api_json", side_effect=self.f.read_api):
+            with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                self.run_own_release()
+            self.assertEqual(caught.exception.code, "release_pr_attribution_required")
+            self.f.assert_no_writes()
+            self.args.retained_pr = [self.f.pulls[0]["html_url"], cross_repo["html_url"]]
             self.run_own_release()
         named = self.f.comments[-1]["body"]
         for pull in [*self.f.pulls, cross_repo]:
@@ -1612,6 +1617,54 @@ class OwnReleaseTests(ReleaseHarness):
         self.run_own_release()
         for pull in self.f.pulls:
             self.assertNotIn(pull["html_url"], self.f.comments[-1]["body"])
+
+    def test_release_excludes_other_sessions_prs_without_transferring_ownership(self) -> None:
+        url = "https://github.com/owner/repo/pull/99"
+        self.f.pulls = [{"number": 99, "state": "open", "user": {"login": BOT},
+            "created_at": "2026-10-01T01:00:00Z", "body": "Parent: https://github.com/owner/repo/issues/42\nCloses #43",
+            "head": {"ref": "work/other-session", "repo": {"full_name": "owner/repo"}},
+            "base": {"repo": {"full_name": "owner/repo"}}}]
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_own_release()
+        self.assertEqual(caught.exception.code, "release_pr_attribution_required")
+        self.f.assert_no_writes()
+        self.args.exclude_pr = [url]
+        self.run_own_release()
+        self.assertNotIn(99, CLAIM.handoff_pr_numbers(self.f.comments[-1]["body"], issue_repo="owner/repo", target_repo="owner/repo"))
+
+    def test_release_carries_inherited_prs_created_before_this_claim(self) -> None:
+        predecessor = {**fixtures.OTHER, "session": "predecessor", "branch": "work/predecessor",
+                       "claimed_at": "2026-09-28T00:00:00Z"}
+        current = {**fixtures.OTHER, "resume_from": "11", "retained_handoff": CLAIM.handoff_url("owner/repo", 42, 13)}
+        self.f.comments = [self.comment(11, CLAIM.marker(predecessor), predecessor["claimed_at"]),
+                           self.comment(13, "Released claim 11\n\nRetained PR #99.", "2026-09-30T00:00:00Z"),
+                           self.comment(1, CLAIM.marker(current), current["claimed_at"])]
+        self.f.pulls = [{"number": 99, "state": "open", "user": {"login": BOT}, "created_at": "2026-09-29T00:00:00Z",
+            "body": "Refs #42", "head": {"ref": "work/retained", "repo": {"full_name": "owner/repo"}},
+            "base": {"repo": {"full_name": "owner/repo"}}}]
+        self.f.closed_pulls[99] = self.f.pulls[0]
+        with patch.object(PLAN, "api_json", side_effect=self.f.read_api):
+            self.run_own_release()
+        self.assertIn(99, CLAIM.handoff_pr_numbers(self.f.comments[-1]["body"], issue_repo="owner/repo", target_repo="owner/repo"))
+
+    def test_release_discovery_uses_server_clock_and_skips_only_missing_prs(self) -> None:
+        self.f.comments[0]["body"] = CLAIM.marker({**fixtures.OTHER, "claimed_at": "2026-10-01T01:00:00Z"})
+        self.f.pulls = [{"number": 99, "state": "open", "user": {"login": BOT}, "created_at": "2026-10-01T00:01:00Z",
+            "body": "Refs #42", "head": {"ref": "work/new-branch", "repo": {"full_name": "owner/repo"}},
+            "base": {"repo": {"full_name": "owner/repo"}}}]
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_own_release()
+        self.assertEqual(caught.exception.code, "release_pr_attribution_required")
+        self.args.retained_pr = ["https://github.com/owner/repo/pull/99"]
+        self.f.timelines["/repos/owner/repo/issues/42/timeline"] = [{"event": "cross-referenced", "source": {"issue": {
+            "user": {"login": BOT}, "pull_request": {"url": "https://api.github.com/repos/owner/other/pulls/77"}}}}]
+        with patch.object(PLAN, "api_json", side_effect=PLAN.PlanError("Unreadable", api_result={"status": 403})):
+            with self.assertRaises(PLAN.PlanError):
+                self.run_own_release()
+        self.f.assert_no_writes()
+        with patch.object(PLAN, "api_json", side_effect=self.f.read_api):
+            self.run_own_release()
+        self.assertIn(99, CLAIM.handoff_pr_numbers(self.f.comments[-1]["body"], issue_repo="owner/repo", target_repo="owner/repo"))
 
     def test_dry_run_shows_the_body_without_writing(self):
         self.args.dry_run = True

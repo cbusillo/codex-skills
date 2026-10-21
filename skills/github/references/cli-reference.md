@@ -1081,12 +1081,24 @@ Current Status, write the handoff to a file and release with the
 It posts the exact directive with the handoff below it through the same bot
 identity and reads it back; do not hand-write the release comment.
 Release affects that exact comment, not another worker's record.
-Before posting, `release` inventories open PRs on the claim's source branch
-and source-linked PRs opened by its author during the claim, including other
-branches and repositories found through the source record's reference timeline.
-It adds their exact URLs to the authored retained-PR handoff. Keep the source
-work-record link in every PR opened under a claim; unlinked work cannot be
-attributed to the session. Discovery failures stop release before posting.
+Before posting, `release` carries forward the claim's verified inherited
+retained handoff and inventories open PRs on its source branch. It also finds
+source-linked PRs opened since the claim comment's server timestamp, including
+other branches and repositories in the source record's reference timeline.
+Shared bot authorship does not identify a session: each other-branch candidate
+must be named in the handoff file or with `--retained-pr URL`. Use
+`--exclude-pr URL` for another session's work; exclusions never become retained
+handoff links. An unclassified candidate stops before posting and lists the
+exact URLs to account for. The source branch, subject PR, and inherited work
+cannot be excluded. These declarations affect only the source author's own
+release and add no ownership store or successor authority.
+Keep the source work-record link in every PR opened under a claim; unlinked
+work cannot be attributed to the session. Discovery skips a missing PR (404),
+and other read failures stop release before posting. Cross-repository retained
+links remain available to the existing issue-resume path; a PR-only source
+claim URL still requires a source in that PR's repository. The abandoned
+`release-claim` route keeps its existing explicit, attested `--retained-pr`
+contract.
 Retained artifacts stay preserved and reported; positive live activity and an
 open PR's handoff/waits remain independent checks.
 The release directive is an unquoted, unindented line exactly
