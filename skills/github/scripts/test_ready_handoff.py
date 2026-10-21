@@ -605,10 +605,17 @@ class ReadyTests(unittest.TestCase):
             "Nothing for Justin to test. No screen, menu or data changes.",
             "Nothing for Justin to test: no screen changes.",
             "Nothing to test: documentation only.",
+            "Nothing new to test: documentation only.",
+            "- Nothing else for Justin to test.",
         ):
             with self.subTest(invalid=invalid):
                 self.reader.pr["body"] = f"## Client test notes\n{invalid}"
                 self.assertIn(ready_handoff.NOTHING_TO_TEST, self.refuse())
+
+    def test_steps_that_start_with_nothing_still_need_the_client(self):
+        intent = ready_handoff.client_test_notes("Nothing changed in checkout; open the cart to test the new button.")
+        self.assertTrue(intent.review_required)
+        self.assertFalse(intent.error)
 
     def test_legacy_nothing_to_test_marker(self):
         for separator in (":", "."):

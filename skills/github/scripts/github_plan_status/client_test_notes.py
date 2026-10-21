@@ -23,7 +23,8 @@ INLINE_TEST_NOTES = re.compile(
 )
 ENGINEERING_RELEASE_TESTS = "Engineering: merge to testing; Client tests at release."
 # "Nothing for Justin to test." means the marker but would otherwise read as steps.
-NEAR_MISS_NOTHING_TO_TEST = re.compile(r"(?i)^nothing(?: for [^\n]*?)? to test\b")
+# One clause only, so "Nothing changed; open the cart to test it." stays real steps.
+NEAR_MISS_NOTHING_TO_TEST = re.compile(r"(?i)^nothing\b[^\n.,:;!?]{0,40}?\bto test\b")
 
 
 @dataclass(frozen=True)
