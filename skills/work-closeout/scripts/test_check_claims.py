@@ -1168,6 +1168,29 @@ class ClaimCloseoutTests(unittest.TestCase):
         rows = [{"payload": {"type": "custom_tool_call", "name": "exec", "call_id": "template", "input": source}}]
         self.assertTrue(helper.history.literal_targets(rows, SESSION)["unresolved_invocations"])
 
+    def test_python_fixture_data_is_distinct_from_process_execution(self) -> None:
+        data = "rows=[{'cmd':'uv run gh-plan.py claim 5'}]; print(history.literal_targets(rows,SESSION))"
+        cases = [
+            (data, False),
+            (data + "; subprocess.run(['git', 'status'])", False),
+            (data + "; subprocess.run(command)", True),
+            (data + "; from subprocess import run as launch; launch(command)", True),
+            (data + "; launch = subprocess.run; launch(command)", True),
+            (data + "; pool.map(subprocess.run, commands)", True),
+        ]
+        for source, unresolved in cases:
+            for command in (
+                "python3 - <<'PY'\n" + source + "\nPY",
+                "python3 -c " + json.dumps(source),
+                "uv run --python 3.13 python3 - <<'PY'\n" + source + "\nPY",
+                "uv run --script - <<'PY'\n" + source + "\nPY",
+            ):
+                rows = [
+                    {"message": {"content": [{"type": "tool_use", "name": "Bash", "id": "python", "input": {"command": command}}]}}
+                ]
+                with self.subTest(source=source, command=command):
+                    self.assertEqual(bool(helper.history.literal_targets(rows, SESSION)["unresolved_invocations"]), unresolved)
+
     def test_raw_javascript_does_not_prove_bare_claim_execution_count(self) -> None:
         command = 'tools.exec_command({cmd:"uv run gh-plan.py claim 5",workdir})'
         sources = [

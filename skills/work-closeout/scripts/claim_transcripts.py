@@ -450,22 +450,91 @@ def shell_texts(text: str, javascript: bool) -> tuple[list[str], bool]:
     return commands, opaque
 
 
+def has_executable_claim_source(text: str, consumer: str) -> bool:
+    if "gh-plan" not in text or re.search(r"\bclaim\b", text) is None:
+        return False
+    if not re.fullmatch(r"python(?:[0-9]+(?:\.[0-9]+)*)?", Path(consumer).name):
+        return True
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return True
+    launchers = {
+        "run",
+        "call",
+        "Popen",
+        "check_call",
+        "check_output",
+        "system",
+        "popen",
+        "exec",
+        "eval",
+        "spawn",
+        "exec_command",
+        "shell_command",
+    }
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            launchers.update(item.asname or item.name for item in node.names if item.name in launchers)
+        if isinstance(node, ast.Assign) and isinstance(node.value, (ast.Name, ast.Attribute)):
+            name = node.value.id if isinstance(node.value, ast.Name) else node.value.attr
+            if name in launchers:
+                launchers.update(target.id for target in node.targets if isinstance(target, ast.Name))
+    calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
+    direct = {id(node.func) for node in calls}
+    if any(id(node) not in direct and isinstance(node, ast.Attribute) and node.attr in launchers for node in ast.walk(tree)):
+        return True
+    for node in calls:
+        name = node.func.id if isinstance(node.func, ast.Name) else node.func.attr if isinstance(node.func, ast.Attribute) else ""
+        if name not in launchers:
+            continue
+        command = (
+            node.args[0] if node.args else next((item.value for item in node.keywords if item.arg in {"args", "command"}), None)
+        )
+        try:
+            value = ast.literal_eval(command)
+        except (ValueError, TypeError):
+            return True
+        if "gh-plan" in str(value) and re.search(r"\bclaim\b", str(value)):
+            return True
+    return False
+
+
+def script_consumer(argv: list[str]) -> str:
+    if argv and Path(argv[0]).name == "uv" and "run" in argv:
+        if "--script" in argv:
+            return "python"
+        return next(
+            (
+                argument
+                for argument in argv[argv.index("run") + 1 :]
+                if re.fullmatch(r"python(?:[0-9]+(?:\.[0-9]+)*)?", Path(argument).name)
+            ),
+            argv[0],
+        )
+    return argv[0] if argv else ""
+
+
 def shell_groups(text: str) -> Iterator[list[str]]:
     pending = []
     lines = []
-    executable_body = []
+    executable_bodies = []
+    body = []
+    consumer = ""
     consumes_script = False
     expands_body = False
     for line in text.replace("\\\n", "").splitlines():
         if pending:
             if line.lstrip("\t") == pending[0]:
                 pending.pop(0)
+                executable_bodies.append((consumer, "\n".join(body)))
+                body = []
             elif consumes_script or (expands_body and ("$(" in line or "`" in line)):
-                executable_body.append(line)
+                body.append(line)
             continue
         pending.extend(match[1] for match in re.finditer(r"<<-?\s*['\"]?([A-Za-z_][A-Za-z0-9_]*)['\"]?", line))
         if pending:
-            consumer = shlex.split(line)[0] if line.strip() else ""
+            consumer = script_consumer(shlex.split(line))
             consumes_script = Path(consumer).name not in {"cat", "tee"}
             expands_body = re.search(r"<<-?\s*[A-Za-z_]", line) is not None
         lines.append(line)
@@ -483,8 +552,9 @@ def shell_groups(text: str) -> Iterator[list[str]]:
                 group.append(token)
         if group:
             yield shlex.split(" ".join(group))
-        script = "\n".join(executable_body)
-        if "gh-plan" in script and re.search(r"\bclaim\b", script):
+        if body:
+            executable_bodies.append((consumer, "\n".join(body)))
+        if any(has_executable_claim_source(script, consumer) for consumer, script in executable_bodies):
             raise ValueError("unsupported executable claim heredoc")
     except ValueError as error:
         if "gh-plan.py" in text and "claim" in text:
@@ -533,7 +603,7 @@ def has_opaque_claim_execution(argv: list[str]) -> bool:
         return True
     if "claim" in argv and any("$" in argument or "`" in argument for argument in argv[: argv.index("claim")]):
         return True
-    return any("gh-plan" in argument and re.search(r"\bclaim\b", argument) for argument in argv[1:])
+    return any(has_executable_claim_source(argument, script_consumer(argv)) for argument in argv[1:])
 
 
 def invocation_target(arguments: list[str], session: str) -> dict | None:
