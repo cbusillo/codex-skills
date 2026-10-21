@@ -25,6 +25,12 @@
     "status",
     "trace_id"
   ],
+  "merge-train-policy-targets-read": [
+    "policy",
+    "status",
+    "targets",
+    "trace_id"
+  ],
   "path-check": [
     "check",
     "status",

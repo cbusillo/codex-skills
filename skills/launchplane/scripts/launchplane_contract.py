@@ -465,6 +465,7 @@ BOUNDED_READ_RESPONSE_FIELDS: dict[str, frozenset[str]] = {
             "status", "trace_id", "records", "result", "replayed", "original_trace_id",
         },
         "merge-train-policy-read": {"status", "trace_id", "record"},
+        "merge-train-policy-targets-read": {"status", "trace_id", "policy", "targets"},
         "path-check": {"status", "trace_id", "check"},
         "preview-history-read": {"status", "trace_id", "preview", "generations"},
         "private-health-endpoint-read": {

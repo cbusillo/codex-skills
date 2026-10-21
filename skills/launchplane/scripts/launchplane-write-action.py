@@ -108,7 +108,6 @@ MERGE_TRAIN_POLICY_RECORD_FIELDS = {
     "policy_sha256",
     "policy",
 }
-MERGE_TRAIN_POLICY_TARGETS_FIELDS = {"status", "trace_id", "policy", "targets"}
 MERGE_TRAIN_POLICY_SUMMARY_FIELDS = {"record_id", "updated_at", "policy_sha256"}
 MERGE_TRAIN_POLICY_TARGET_FIELDS = {
     "repository",
@@ -1645,7 +1644,12 @@ def _project_merge_train_policy_summary(value: object) -> dict[str, object]:
 
 
 def _project_merge_train_policy_targets(value: object) -> dict[str, object]:
-    source = _require_exact_fields(value, MERGE_TRAIN_POLICY_TARGETS_FIELDS)
+    source = _require_dict(value)
+    _require_read_fields(
+        "merge-train-policy-targets-read",
+        source,
+        required=frozenset({"status", "trace_id", "policy", "targets"}),
+    )
     if public_code(source.get("status")) != "ok":
         raise LaunchplaneSafetyError("invalid_response")
     targets = source.get("targets")
