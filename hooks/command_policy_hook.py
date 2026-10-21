@@ -523,15 +523,13 @@ def normalize_command(argv: list[str]) -> Command:
     raise ValueError("foreground wrapper nesting exceeds coverage")
 
 
-def shell_candidates(argv: list[str], *, conservative: bool = False) -> list[list[str]]:
+def shell_candidates(argv: list[str], *, include_nonliteral: bool = False) -> list[list[str]]:
     """One command-position view shared by source inputs and file references."""
     if not argv:
         return []
     if argv[0] in SHELLS:
         return [argv]
-    if not conservative:
-        return []
-    if any(char in argv[0] for char in "$`"):
+    if include_nonliteral and any(char in argv[0] for char in "$`"):
         return [["sh", *argv[1:]]]
     return [argv[index:] for index, word in enumerate(argv[1:], 1) if Path(word).name in SHELLS]
 
@@ -569,15 +567,15 @@ def command_input(argv: list[str], *, completion: bool = False) -> tuple[list[st
         if name in {"su", "runuser"} and not programs:
             kind = "shell"
     if completion and ("$" in name or "`" in name):
-        invocation = shell_invocation(shell_candidates(argv, conservative=True)[0])
+        invocation = shell_invocation(shell_candidates(argv, include_nonliteral=True)[0])
         if invocation.body is not None:
             programs.append(invocation.body)
         if invocation.stdin:
             kind = "unknown"
-    elif (completion or frames) and name not in SHELLS and kind == "data":
+    elif name not in SHELLS and kind == "data":
         # An unfamiliar launcher can contain a possible shell. This is a
         # conservative source hint, not authority to interpret the launcher.
-        for candidate in shell_candidates(argv, conservative=True):
+        for candidate in shell_candidates(argv, include_nonliteral=completion):
             invocation = shell_invocation(candidate)
             if invocation.body is not None:
                 programs.append(invocation.body)
@@ -587,6 +585,7 @@ def command_input(argv: list[str], *, completion: bool = False) -> tuple[list[st
         # xargs input constructs argv; it is not the shell's ordinary stdin.
         # Never pretend its tokenization/replacement preserved literal quoting.
         unproved = len(frames) != 1 or any(frame.unknown for frame in frames)
+        unproved |= name not in SHELLS and bool(shell_candidates(argv, include_nonliteral=True))
         unproved |= any(char in name for char in "$`")
         unproved |= any(frame.replacement and frame.replacement in name for frame in frames)
         if name in SHELLS:
@@ -610,15 +609,6 @@ def command_input(argv: list[str], *, completion: bool = False) -> tuple[list[st
         if kind != "possible" or not any(char in payload for char in "$`"):
             programs.append(payload)
     return programs, kind
-
-
-def shell_inputs(argv: list[str]) -> tuple[list[str], bool]:
-    programs, kind = command_input(argv)
-    return programs, kind == "shell"
-
-
-def reads_script_from_input(argv: list[str]) -> bool:
-    return command_input(argv)[1] == "shell"
 
 
 def reads_program_from_stdin(argv: list[str]) -> bool:
@@ -774,7 +764,7 @@ def program_references(command: list[str], written: set[str]) -> set[str]:
     if not argv:
         return set()
     references = {argv[0]}
-    for candidate in shell_candidates(argv, conservative=True):
+    for candidate in shell_candidates(argv, include_nonliteral=True):
         invocation = shell_invocation(candidate)
         if invocation.script is not None:
             references.add(invocation.script)
