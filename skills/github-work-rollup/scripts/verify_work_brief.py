@@ -24,7 +24,6 @@ SHORT_REF_RE = re.compile(r"\b([A-Za-z0-9_.-]+)#(\d+)\b")
 BARE_REF_RE = re.compile(r"(?<![#\w/])#([1-9]\d*)\b")
 NATURAL_REF_RE = re.compile(r"\b(?:PR|pull request|issue)\s+#?([1-9]\d*)\b", re.IGNORECASE)
 WORKFLOW_RUN_REF_RE = re.compile(r"\b(?:run|workflow run)\s+#?(?P<number>[1-9]\d*)\b", re.IGNORECASE)
-CAVEAT_MARKERS = ("source", "limitation", "confidence", "caveat", "incomplete", "partial")
 FALSE_CAVEAT_RE = re.compile(r"\b(?:no|without)\s+(?:source\s+)?(?:limitations?|caveats?|gaps?)\b")
 NOTE_KEYWORD_STOPWORDS = {
     "a",

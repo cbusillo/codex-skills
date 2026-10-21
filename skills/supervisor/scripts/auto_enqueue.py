@@ -28,7 +28,7 @@ from urllib.parse import quote
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT.parent))
 sys.path.insert(0, str(ROOT / "github/scripts"))
-from skills.github.scripts import github_api, github_pr_batch
+from skills.github.scripts import github_api, github_pr_batch, github_open_prs
 from skills.github.scripts.github_identity import automation_login
 from skills.github.scripts.ready_handoff import (
     latest_ready,
@@ -252,6 +252,7 @@ class Live:
     def __init__(self, deadline):
         self.deadline = deadline
         self.mergeability_reads_remaining = 20
+        self.open_prs = {}
         self.reader = GitHubReader(
             operation="github.pr.view",
             gh_prefix_args=automation_only_gh_prefix_args(),
@@ -315,6 +316,18 @@ class Live:
                     }
                 )
         return targets
+
+    def discover(self, repos):
+        self.open_prs = github_open_prs.scan(self.reader, repos)
+
+    def open_pulls(self, repo):
+        value = self.open_prs[repo]
+        # The catalog supports package and standalone imports of the shared reader.
+        if isinstance(value, github_open_prs.GitHubReadError):
+            raise GitHubReadError(str(value), result=value.result, diagnostics=value.diagnostics)
+        if isinstance(value, Exception):
+            raise GitHubReadShapeError(str(value))
+        return value
 
     def batch(self, repo, numbers):
         if numbers:
@@ -687,7 +700,7 @@ def report_ready_skips(io, target, args, emit, reason, *, pulls=None, queue=None
 
     if pulls is None:
         try:
-            pulls = io.pages(f"/repos/{target['repo']}/pulls", state="open")
+            pulls = io.open_pulls(target["repo"])
         except failures as error:
             unavailable(error)
             return
@@ -739,6 +752,8 @@ def run_pass(io, args, emit, *, state=None):
     state = PassState() if state is None else state
     targets = io.policies(args.owner)
     selected = {repo.casefold() for repo in args.repo}
+    io.discover([target["repo"] for target in targets
+                 if not selected or target["repo"].casefold() in selected])
     for target in targets:
         repo = target["repo"]
         if selected and repo.casefold() not in selected:
@@ -747,6 +762,13 @@ def run_pass(io, args, emit, *, state=None):
             if held(read_holds(args.hold_file), repo):
                 emit("held", {"repository": repo})
                 report_skips('repository_held')
+                continue
+            try:
+                io.open_pulls(repo)
+            except (GitHubReadError, GitHubReadShapeError) as error:
+                if isinstance(error, GitHubReadError) and not transient_read_error(error):
+                    raise
+                emit("skip_inventory_unavailable", {"repository": repo, "detail": exception_message(error)})
                 continue
             response = io.train(target)
             others = [
@@ -790,7 +812,7 @@ def run_pass(io, args, emit, *, state=None):
                 for item in queue
                 if needs_ready_handoff(item, target)
             }
-            pulls = io.pages(f"/repos/{repo}/pulls", state="open")
+            pulls = io.open_pulls(repo)
             report_skips('controller_ineligible',
                                pulls=[pr for pr in pulls if pr['number'] not in author_allowed], queue=queue)
             # Active candidates were checked above. Only controller-proven

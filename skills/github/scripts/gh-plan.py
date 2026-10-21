@@ -20,7 +20,6 @@ import shlex
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 import threading
 import urllib.parse
@@ -75,7 +74,7 @@ from github_direction_next import (
 SKILL_DIR = pathlib.Path(__file__).resolve().parents[1]
 BOT_GH = SKILL_DIR.parent / "github/scripts/gh-with-env-token"
 PEOPLE_RESOLVER = SKILL_DIR.parent / "people/scripts/resolve_person.py"
-API_VERSION_ARGS = ["-H", "X-GitHub-Api-Version: 2022-11-28"]
+API_VERSION_ARGS = ["-H", f"X-GitHub-Api-Version: {github_api_core.DEFAULT_API_VERSION}"]
 EXPECTED_ACTOR = github_identity.automation_login()
 CURRENT_OPERATION = "github.plan.unknown"
 CURRENT_TRANSPORT = "helper"
@@ -1336,11 +1335,6 @@ def rest_edit_issue(
     return actor, data
 
 
-def get_issue_compact(ref: str, repo: str) -> tuple[str, dict[str, Any]]:
-    actor, issue = get_issue(ref, repo)
-    return actor, compact_issue(issue)
-
-
 def compact_issue(issue: dict[str, Any]) -> dict[str, Any]:
     milestone = issue.get("milestone") or {}
     deps = issue.get("issue_dependencies_summary") or {}
@@ -1811,12 +1805,6 @@ def read_body(args: argparse.Namespace, fallback: str = "") -> str:
             return sys.stdin.read()
         return pathlib.Path(body_file).read_text()
     return fallback
-
-
-def write_temp_body(body: str) -> pathlib.Path:
-    with tempfile.NamedTemporaryFile("w", delete=False) as tmp:
-        tmp.write(body)
-        return pathlib.Path(tmp.name)
 
 
 def relationship_line(rel: str, target: dict[str, Any]) -> str:
@@ -5742,33 +5730,6 @@ def set_project_field(
         args.extend(["--text", value])
     try:
         actor, _, _ = run_raw(args, prefer_active=True)
-        return actor
-    except PlanError as exc:
-        if isinstance(exc, ClassifiedPlanError):
-            raise
-        raise project_error(str(exc)) from exc
-
-
-def clear_project_field(
-    *,
-    project: dict[str, Any],
-    item: dict[str, Any],
-    field: dict[str, Any],
-) -> str:
-    try:
-        actor, _, _ = run_raw([
-            "project",
-            "item-edit",
-            "--id",
-            item["id"],
-            "--project-id",
-            project["id"],
-            "--field-id",
-            field["id"],
-            "--clear",
-            "--format",
-            "json",
-        ], prefer_active=True)
         return actor
     except PlanError as exc:
         if isinstance(exc, ClassifiedPlanError):
