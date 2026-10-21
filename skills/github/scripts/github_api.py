@@ -1724,10 +1724,6 @@ def build_gh_command(
 _operation_rule_cache: dict[pathlib.Path, tuple[int, dict[str, OperationRetryRule]]] = {}
 
 
-def reset_operation_rule_cache() -> None:
-    _operation_rule_cache.clear()
-
-
 def operation_retry_rule(
     operation: Optional[str],
     *,

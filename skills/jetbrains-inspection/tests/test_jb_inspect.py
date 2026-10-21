@@ -4128,7 +4128,6 @@ class LifecycleTest(unittest.TestCase):
             ),
             patch.object(jb_inspect, "wait_for_exact_route_after_open", return_value=route),
             patch.object(jb_inspect, "ensure_exact_worktree", side_effect=jb_inspect.InspectError("wrong route", 3)),
-            patch.object(jb_inspect, "reclaim_close_proof", side_effect=lambda *args: cleanup_calls.append("reclaim")),
             patch.object(
                 jb_inspect,
                 "cleanup_lifecycle",
@@ -4465,7 +4464,6 @@ class LifecycleTest(unittest.TestCase):
             ),
             patch.object(jb_inspect, "wait_for_exact_route_after_open", return_value=route),
             patch.object(jb_inspect, "ensure_exact_worktree"),
-            patch.object(jb_inspect, "reclaim_close_proof", side_effect=lambda *args: cleanup_calls.append("reclaim")),
             patch.object(jb_inspect, "cleanup_lifecycle", side_effect=lambda *args: cleanup_calls.append("close")),
             patch.object(jb_inspect, "write_lease"),
         ):

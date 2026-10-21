@@ -1707,16 +1707,6 @@ def executive_item_refs(items: list[dict[str, Any]], limit: int = 3) -> str:
     return "; ".join(refs)
 
 
-def executive_item_topic(items: list[dict[str, Any]], limit: int = 2) -> str:
-    work_items = real_work_items(items)
-    if not work_items:
-        return "this work"
-    refs = [executive_item_ref(item) for item in work_items[:limit]]
-    if len(work_items) > limit:
-        refs.append("the rest of the active set")
-    return "; ".join(refs)
-
-
 def item_count_phrase(count: int, singular: str) -> str:
     suffix = "" if count == 1 else "s"
     return f"{count} {singular}{suffix}"

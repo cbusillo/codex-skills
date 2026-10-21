@@ -66,7 +66,6 @@ DEFAULT_CANCELLATION_SETTLE_TIMEOUT_MS = 10_000
 ALREADY_OPENING_RETRY_LIMIT = 15
 LOOPBACK_HOST = "127.0.0.1"
 READY_STATUS_VALUES = {"clean", "results_available"}
-USABLE_STATUS_VALUES = READY_STATUS_VALUES | {"findings"}
 REDACTED = "<redacted>"
 UNKNOWN_LOG_ENV = "JB_INSPECT_UNKNOWN_LOG"
 OUTCOME_LOG_ENV = "JB_INSPECT_OUTCOME_LOG"
@@ -107,15 +106,6 @@ REPOSITORY_PREPARATION_NOT_RUN = "not_run"
 REPOSITORY_PREPARATION_SKIPPED = "skipped_opt_out"
 REPOSITORY_PREPARATION_REUSED = "reused"
 REPOSITORY_PREPARATION_SUCCEEDED = "succeeded"
-REPOSITORY_PREPARATION_EXECUTION_STATES = frozenset(
-    {
-        REPOSITORY_PREPARATION_NOT_CONFIGURED,
-        REPOSITORY_PREPARATION_NOT_RUN,
-        REPOSITORY_PREPARATION_SKIPPED,
-        REPOSITORY_PREPARATION_REUSED,
-        REPOSITORY_PREPARATION_SUCCEEDED,
-    }
-)
 MAX_REPOSITORY_PREPARATION_COMMAND_LENGTH = 1024
 MAX_REPOSITORY_PREPARATION_OUTPUT_LENGTH = 16_384
 MAX_REPOSITORY_PREPARATION_GENERATED_STATE_PATHS = 25
@@ -10884,10 +10874,6 @@ def trusted_auto_open_roots() -> list[str]:
     return roots
 
 
-def trusted_auto_open_root_count() -> int:
-    return len(trusted_auto_open_roots())
-
-
 def ensure_trusted_auto_open_root(context: dict[str, Any]) -> None:
     worktree = lifecycle_target_path(context)
     roots = trusted_auto_open_roots()
@@ -11039,23 +11025,6 @@ def jetbrains_config_dirs(context: dict[str, Any]) -> list[Path]:
             "hint": ide_selection_advice("ide_selection_required", context) or "Set jetbrains.ide in repo metadata so the helper updates the intended JetBrains product instead of guessing across installed IDEs.",
         },
     )
-
-
-def ide_config_matches(config_name: str, ide: str) -> bool:
-    name = config_name.lower()
-    if not ide:
-        return True
-    normalized = ide.replace(" ", "")
-    aliases = {
-        "intellijidea": ("intellijidea", "idea"),
-        "intellij": ("intellijidea", "idea"),
-        "idea": ("intellijidea", "idea"),
-        "pycharm": ("pycharm",),
-        "pycharmce": ("pycharm",),
-        "webstorm": ("webstorm",),
-    }
-    needles = aliases.get(normalized, (normalized,))
-    return any(needle in name for needle in needles)
 
 
 def ensure_trusted_location_file(config_dir: Path, trust_root: Path) -> dict[str, Any]:
@@ -12404,11 +12373,6 @@ def reclaim_lifecycle_claim(
         "lease_id": lease.get("lease_id"),
     }
     return ownership_proven, close_proof, claim_metadata, claimed_route
-
-
-def reclaim_close_proof(lease: dict[str, Any], route: dict[str, Any]) -> str | None:
-    ownership_proven, close_proof, _, _ = reclaim_lifecycle_claim(lease, route)
-    return close_proof if ownership_proven is True else None
 
 
 def matching_route_for_ownership_probe(lease: dict[str, Any], routes: list[dict[str, Any]]) -> dict[str, Any] | None:

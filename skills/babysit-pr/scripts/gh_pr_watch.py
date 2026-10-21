@@ -673,20 +673,6 @@ def legacy_state_file_for(pr):
     return Path(f"/tmp/pr-babysit-{repo_slug}-pr{pr['number']}.json")
 
 
-def get_pr_checks(pr_spec, repo):
-    payload = pr_helper_json(
-        "checks",
-        pr_spec=pr_spec,
-        repo=repo,
-        allow_partial=True,
-    )
-    if not isinstance(payload.get("summary"), dict):
-        raise GhCommandError("REST-first PR helper did not return a check summary")
-    if not isinstance(payload.get("pr"), dict) or not payload.get("headSha"):
-        raise GhCommandError("REST-first PR helper did not return an exact check head SHA")
-    return payload
-
-
 def nonnegative_int(value):
     try:
         return max(int(value), 0)
