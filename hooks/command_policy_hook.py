@@ -92,15 +92,51 @@ def load_simulator() -> ModuleType:
     return module
 
 
+class LiteralToken(str):
+    pass
+
+
+class ShellLexer(shlex.shlex):
+    def __init__(self, text: str, *, posix: bool, punctuation_chars: str, literals: dict[str, str]) -> None:
+        super().__init__(text, posix=posix, punctuation_chars=punctuation_chars)
+        self.literals = literals
+
+    def get_token(self) -> str | None:
+        token = super().get_token()
+        if token is None:
+            return None
+        literal = False
+        for protected, value in self.literals.items():
+            if protected in token:
+                token = token.replace(protected, value)
+                literal = True
+        return LiteralToken(token) if literal else token
+
+
+def is_operator(token: str) -> bool:
+    return not isinstance(token, LiteralToken) and bool(OPERATORS.match(token))
+
+
+def is_redirection(token: str) -> bool:
+    return not isinstance(token, LiteralToken) and bool(re.fullmatch(r"[<>][<>&|]*|&>>?", token))
+
+
 def shell_lexer(text: str, *, posix: bool = True, punctuation_chars: str = ";&|<>()\n") -> shlex.shlex:
     chars, quote, escaped, boundary, comment = [], None, False, True, False
+    prefix = "__codex_shell_literal_"
+    while prefix in text:
+        prefix += "_"
+    protected = {char: f"{prefix}{ord(char)}__" for char in punctuation_chars} if posix else {}
     for char in text:
         if comment:
             if char != "\n":
                 continue
             comment = False
         if escaped:
-            chars.append(char)
+            if char == "\n":
+                chars.pop()
+            else:
+                chars.append(protected.get(char, char))
             escaped, boundary = False, False
             continue
         if char == "\\" and quote != "'":
@@ -113,9 +149,10 @@ def shell_lexer(text: str, *, posix: bool = True, punctuation_chars: str = ";&|<
         elif char == "#" and boundary:
             comment = True
             continue
-        chars.append(char)
+        chars.append(protected.get(char, char) if quote else char)
         boundary = quote is None and (char.isspace() or char in ";&|()")
-    lexer = shlex.shlex("".join(chars), posix=posix, punctuation_chars=punctuation_chars)
+    lexer = ShellLexer("".join(chars), posix=posix, punctuation_chars=punctuation_chars,
+                       literals={value: char for char, value in protected.items()})
     lexer.commenters = ""
     return lexer
 
@@ -131,7 +168,7 @@ def shell_commands(shell: str) -> list[list[str]]:
     """Split with shell operators and comments using one shared lexer."""
     commands: list[list[str]] = [[]]
     for token in shell_tokens(shell):
-        if OPERATORS.match(token):
+        if is_operator(token):
             commands.append([])
         else:
             commands[-1].append(token)
@@ -151,9 +188,8 @@ class ShellScript:
     full shell parser.
     """
 
-    def __init__(self, shell: str, expanding: bool = False, *, exact: bool = False) -> None:
+    def __init__(self, shell: str, expanding: bool = False) -> None:
         self.shell = shell
-        self.exact = exact
         self.text_parts: list[str] = []
         self.bodies: list[tuple[str, bool, str, str, int]] = []
         self.substitutions: list[str] = []
@@ -330,7 +366,7 @@ def without_redirections(argv: list[str]) -> list[str]:
         token = argv[cursor]
         if token.isdecimal() and cursor + 1 < len(argv) and argv[cursor + 1].startswith(("<", ">")):
             cursor += 1
-        elif re.fullmatch(r"[<>][<>&|]*|&>>?", token):
+        elif is_redirection(token):
             cursor += 3 if token == "<<" and argv[cursor + 1:cursor + 2] == ["-"] else 2
         else:
             words.append(token)
@@ -344,6 +380,7 @@ class ShellInvocation(NamedTuple):
     script: str | None
     index: int
     options_closed: bool = False
+    initializers: tuple[str, ...] = ()
 
     @property
     def stdin(self) -> bool:
@@ -389,6 +426,7 @@ def shell_invocation(argv: list[str]) -> ShellInvocation:
     if not argv or Path(argv[0]).name not in SHELLS:
         return ShellInvocation(None, "other", None, 0)
     cursor, command, stdin, options_closed = 1, False, False, False
+    initializers = []
     while cursor < len(argv):
         option = argv[cursor]
         if option == "--":
@@ -405,16 +443,18 @@ def shell_invocation(argv: list[str]) -> ShellInvocation:
             return ShellInvocation(None, "other", None, cursor)
         command |= option.startswith("-") and not option.startswith("--") and "c" in option[1:]
         stdin |= option.startswith("-") and not option.startswith("--") and "s" in option[1:]
+        if option in {"--rcfile", "--init-file"} and cursor + 1 < len(argv):
+            initializers.append(argv[cursor + 1])
         cursor += 1
         if option in {"--rcfile", "--init-file"} or not option.startswith("--") and option.endswith(("o", "O")):
             cursor += 1
     if command:
-        return ShellInvocation(argv[cursor] if cursor < len(argv) else None, "inline", None, cursor, options_closed)
+        return ShellInvocation(argv[cursor] if cursor < len(argv) else None, "inline", None, cursor, options_closed, tuple(initializers))
     if stdin or cursor < len(argv) and argv[cursor] in STDIN_PROGRAM_PATHS:
-        return ShellInvocation(None, "stdin", None, cursor, options_closed)
+        return ShellInvocation(None, "stdin", None, cursor, options_closed, tuple(initializers))
     if cursor >= len(argv):
-        return ShellInvocation(None, "implicit", None, cursor, options_closed)
-    return ShellInvocation(None, "script", argv[cursor], cursor, options_closed)
+        return ShellInvocation(None, "implicit", None, cursor, options_closed, tuple(initializers))
+    return ShellInvocation(None, "script", argv[cursor], cursor, options_closed, tuple(initializers))
 
 
 def shell_c_body(argv: list[str]) -> str | None:
@@ -524,6 +564,20 @@ def normalize_command(argv: list[str]) -> Command:
         elif head in {"timeout", "gtimeout"}:
             roles.add(head)
             argv = drop_flags(tail, {"-k", "--kill-after", "-s", "--signal"})[1:]
+        elif head == "flock":
+            cursor = 0
+            while cursor < len(tail) and tail[cursor].startswith("-"):
+                option = tail[cursor]
+                if option in {"-c", "--command"} or option.startswith("--command="):
+                    return finish([head, *tail])
+                cursor += 2 if option in {"-w", "--timeout", "-E", "--conflict-exit-code"} else 1
+                if option == "--":
+                    break
+            child = tail[cursor + 1:]
+            if not child or child[0] in {"-c", "--command"}:
+                return finish([head, *tail])
+            roles.add(head)
+            argv = child
         elif head in value_flags:
             roles.add(head)
             argv = drop_flags(tail, value_flags[head])
@@ -621,6 +675,8 @@ def command_input(argv: list[str], *, completion: bool = False, depth: int = 0,
             programs.append(" ".join(tail[:redirection]))
     elif name in {"source", "."}:
         words = without_redirections(tail)
+        if words[:1] == ["--"]:
+            words = words[1:]
         if not words or words[0] in STDIN_PROGRAM_PATHS:
             kind = "shell"
     elif name in {"su", "runuser", "script", "flock"}:
@@ -650,8 +706,6 @@ def command_input(argv: list[str], *, completion: bool = False, depth: int = 0,
             invocation = shell_invocation(candidate)
             if invocation.body is not None:
                 programs.append(invocation.body)
-            if invocation.stdin:
-                kind = "possible" if hints else kind
             if completion and any(Path(word).name == "xargs" for word in argv[:len(argv) - len(candidate)]):
                 kind = "opaque"
     if frames:
@@ -678,13 +732,12 @@ def command_input(argv: list[str], *, completion: bool = False, depth: int = 0,
             kind = "opaque" if completion else "data"
     if input_is_source(kind, completion=completion) and "<<<" in argv[:-1]:
         payload = argv[argv.index("<<<") + 1]
-        if kind != "possible" or not any(char in payload for char in "$`"):
-            programs.append(payload)
+        programs.append(payload)
     return programs, kind
 
 
 def input_is_source(kind: str, *, completion: bool) -> bool:
-    return kind == "shell" or completion and kind in {"possible", "unknown"}
+    return kind == "shell" or completion and kind == "unknown"
 
 
 def reads_program_from_stdin(argv: list[str]) -> bool:
@@ -723,25 +776,25 @@ def reads_program_from_stdin(argv: list[str]) -> bool:
 
 def heredoc_commands(header: str, delimiter: str, occurrence: int) -> BoundInput:
     tokens = shell_tokens(header)
-    tokens = [token.rstrip("\n") if token.rstrip("\n") in {"|", "|&"} else token for token in tokens]
+    tokens = [token.rstrip("\n") if is_operator(token) and token.rstrip("\n") in {"|", "|&"} else token for token in tokens]
     tokens = [token for index, token in enumerate(tokens)
               if token != "\n" or index == 0 or tokens[index - 1] not in {"|", "|&"}]
     markers = [
-        index for index, token in enumerate(tokens[:-1]) if token == "<<"
+        index for index, token in enumerate(tokens[:-1]) if is_redirection(token) and token == "<<"
         and (tokens[index + 1] in {delimiter, "-" + delimiter}
              or tokens[index + 1:index + 3] == ["-", delimiter])
     ]
     if len(markers) < -occurrence:
         return BoundInput([], False)
     marker = markers[occurrence]
-    start = max((index + 1 for index in range(marker) if OPERATORS.match(tokens[index])), default=0)
+    start = max((index + 1 for index in range(marker) if is_operator(tokens[index])), default=0)
     if marker and tokens[marker - 1] == ")":
         return BoundInput([[")"]], True)
     end = next((index for index in range(marker + 1, len(tokens))
-                if OPERATORS.match(tokens[index]) and tokens[index] not in {"|", "|&"}), len(tokens))
+                if is_operator(tokens[index]) and tokens[index] not in {"|", "|&"}), len(tokens))
     commands: list[list[str]] = [[]]
     for token in tokens[start:end]:
-        if token in {"|", "|&"}:
+        if is_operator(token) and token in {"|", "|&"}:
             commands.append([])
         else:
             commands[-1].append(token)
@@ -767,10 +820,10 @@ def script_readers(commands: list[list[str]]) -> list[list[str]]:
 def pipelines(shell: str) -> list[list[list[str]]]:
     stages: list[list[list[str]]] = [[[]]]
     for token in shell_tokens(shell):
-        token = token.rstrip("\n") if token.rstrip("\n") in {"|", "|&"} else token
-        if token in {"|", "|&"}:
+        token = token.rstrip("\n") if is_operator(token) and token.rstrip("\n") in {"|", "|&"} else token
+        if is_operator(token) and token in {"|", "|&"}:
             stages[-1].append([])
-        elif OPERATORS.match(token):
+        elif is_operator(token):
             stages.append([[]])
         else:
             stages[-1][-1].append(token)
@@ -817,7 +870,7 @@ def literal_pipeline_programs(shell: str) -> list[list[str]]:
 
 def written_files(command: list[str]) -> set[str]:
     paths = {str(Path(command[index + 1])) for index, token in enumerate(command[:-1])
-             if token in {">", ">>", ">|", "&>"}}
+             if is_redirection(token) and token in {">", ">>", ">|", "&>"}}
     argv = normalize_command(command).argv
     if argv and argv[0] == "tee":
         operands = without_redirections(argv)[1:]
@@ -851,20 +904,22 @@ def find_mapping(argv: list[str]) -> tuple[XargsInput, ...]:
     return (XargsInput("{}", False, False, tuple(argv), stdin_inherited=True),) if any("{}" in word for word in argv) else ()
 
 
-def program_references(command: list[str], written: set[str], *, hints: bool = True, depth: int = 0) -> set[str]:
+def program_references(command: list[str], written: set[str], *, depth: int = 0) -> set[str]:
     normalized = normalize_command(command)
     argv = normalized.argv
     if not argv:
         return set()
     references = {argv[0]}
     for child in find_commands(argv):
-        references.update(program_references(child, written, hints=False, depth=depth + 1))
-    for candidate in shell_candidates(argv, include_nonliteral=True, hints=hints):
+        references.update(program_references(child, written, depth=depth + 1))
+    for candidate in shell_candidates(argv, include_nonliteral=True, hints=False):
         invocation = shell_invocation(candidate)
+        scripts = list(invocation.initializers)
         if invocation.script is not None:
-            references.add(invocation.script)
-            if argv[0] in SHELLS and any(char in Path(invocation.script).name for char in "$`*?[{"):
-                references.update(written)
+            scripts.append(invocation.script)
+        references.update(scripts)
+        if argv[0] in SHELLS and any(char in Path(path).name for path in scripts for char in "$`*?[{"):
+            references.update(written)
         if normalized.xargs and (invocation.mode == "implicit" or invocation.script is not None
                 and any(frame.replacement and frame.replacement in invocation.script for frame in normalized.xargs)):
             references.update(written)
@@ -874,8 +929,8 @@ def program_references(command: list[str], written: set[str], *, hints: bool = T
         references.update(sources)
         if any(char in Path(source).name for source in sources for char in "$`*?[{"):
             references.update(written)
-    if command_input(command, completion=True, depth=depth, hints=hints)[1] in {"shell", "possible", "unknown"}:
-        references.update(argv[index + 1] for index, word in enumerate(argv[:-1]) if word == "<")
+    if command_input(command, completion=True, depth=depth)[1] in {"shell", "unknown"}:
+        references.update(argv[index + 1] for index, word in enumerate(argv[:-1]) if is_redirection(word) and word == "<")
     return {Path(path).name for path in references}
 
 
@@ -883,11 +938,13 @@ def input_redirection(argv: list[str]) -> int | None:
     binding, cursor = None, 0
     while cursor < len(argv):
         token = argv[cursor]
-        if not re.fullmatch(r"[<>][<>&|]*|&>>?", token):
+        if not is_redirection(token):
             cursor += 1
             continue
         descriptor = int(argv[cursor - 1]) if cursor and argv[cursor - 1].isdecimal() else (0 if token.startswith("<") else 1)
-        if descriptor == 0 and not (token in {"<&", ">&"} and argv[cursor + 1:cursor + 2] == ["0"]):
+        target = argv[cursor + 1:cursor + 2]
+        preserves_input = token in {"<&", ">&"} and target == ["0"] or token in {"<", "<>"} and bool(target) and target[0] in STDIN_PROGRAM_PATHS
+        if descriptor == 0 and not preserves_input:
             binding = cursor
         cursor += 3 if token == "<<" and argv[cursor + 1:cursor + 2] == ["-"] else 2
     return binding
@@ -910,7 +967,7 @@ def fd0_role(command: list[str]) -> str:
 
 
 def combine_input_kinds(kinds: list[str]) -> str:
-    return next((kind for kind in ("opaque", "shell", "unknown", "possible") if kind in kinds), "data")
+    return next((kind for kind in ("opaque", "shell", "unknown") if kind in kinds), "data")
 
 
 def inherited_input(source: str, executed_files: set[str], *, completion: bool, depth: int) -> str:
@@ -940,6 +997,8 @@ def stdin_kind(commands: list[list[str]], executed_files: set[str], *, completio
         argv = normalize_command(command).argv
         _, kind = command_input(command, completion=completion, depth=depth, executed_files=executed_files)
         if not argv:
+            if inherited and all(word in SHELL_KEYWORDS for word in command):
+                continue
             return "unknown"
         if not inherited and argv[0] in {"done", "fi", "esac", "}", ")"}:
             return "shell"
@@ -975,18 +1034,19 @@ def process_input(script: ShellScript, index: int, commands: list[list[str]], ex
     binding = input_redirection(command)
     if binding is not None and command[binding + 1:binding + 2] == [marker]:
         return command_input(command, completion=completion, executed_files=executed_files)[1]
-    for candidate in shell_candidates(argv, include_nonliteral=completion, hints=not script.exact):
-        if shell_invocation(candidate).script == marker:
-            return "shell" if argv[0] in SHELLS else "possible"
-    if argv[0] in {"source", "."} and without_redirections(argv)[1:2] == [marker]:
+    for candidate in shell_candidates(argv, include_nonliteral=completion, hints=False):
+        invocation = shell_invocation(candidate)
+        if invocation.script == marker or marker in invocation.initializers:
+            return "shell" if argv[0] in SHELLS else "unknown"
+    source_words = without_redirections(argv)[1:]
+    if source_words[:1] == ["--"]:
+        source_words = source_words[1:]
+    if argv[0] in {"source", "."} and source_words[:1] == [marker]:
         return "shell"
     if marker in without_redirections(argv):
         sources, _ = command_input(command, executed_files=executed_files)
-        for source in sources:
-            for child in shell_commands(ShellScript(source).command_text):
-                if any(re.search(r"\$(?:[0-9@*]|\{[0-9@*]\})", slot)
-                       for slot in program_references(child, set(), hints=False)):
-                    return "unknown" if completion else "shell"
+        if any(re.search(r"\$(?:[0-9@*]|\{(?:\d+|[@*])\})|\bfor\s+\w+\s*(?:;|\n|\bdo\b)", source) for source in sources):
+            return "unknown" if completion else "shell"
     return "data"
 
 
@@ -1001,11 +1061,11 @@ def execution_sources(shell: str, *, completion: bool = False, depth: int = 0,
         executed_files = set()
     if depth == 0:
         nodes = list(execution_sources(shell, completion=True, depth=depth + 1, executed_files=set()))
-        discovered = [(argv, node.exact) for node, _ in nodes if isinstance(node, ShellScript) for argv in shell_commands(node.command_text)]
-        written = set().union(*(written_files(argv) for argv, _ in discovered))
-        executed = set().union(*(program_references(command, written, hints=not precise) for command, precise in discovered))
+        discovered = [argv for node, _ in nodes if isinstance(node, ShellScript) for argv in shell_commands(node.command_text)]
+        written = set().union(*(written_files(argv) for argv in discovered))
+        executed = set().union(*(program_references(command, written) for command in discovered))
         executed_files = {Path(path).name for path in written} & executed
-    script = ShellScript(shell, exact=exact)
+    script = ShellScript(shell)
     opaque = ["unfinished shell syntax"] if script.stack or script.pending or script.incomplete else []
     try:
         commands = shell_commands(script.command_text)
@@ -1033,9 +1093,6 @@ def execution_sources(shell: str, *, completion: bool = False, depth: int = 0,
         nested.extend(ExecutionSource(source, inline=True) for source in sources)
         nested.extend(ExecutionSource(shlex.join(child), inline=True, exact=True, mapping=find_mapping(child))
                       for child in find_commands(argv))
-    if completion and any(argv[:1] == ["find"] and {"-exec", "-execdir"} & set(argv) for argv in inputs):
-        if any(argv and argv[0] in {"-exec", "-execdir", "-ok", "-okdir", "-o", "-a", "!", "\\("} for argv in inputs):
-            opaque.append("split find expression")
     for stages in pipelines(script.command_text):
         if len(stages) < 2:
             continue
@@ -1055,7 +1112,7 @@ def execution_sources(shell: str, *, completion: bool = False, depth: int = 0,
             nested.append(ExecutionSource(payload, inline=True))
         elif completion and force_input in {"shell", "unknown"} and not script.bodies:
             opaque.append("unresolved shell process-substitution input")
-    readers = []
+    readers, bound_commands = [], []
     for index, (body, expands, header, delimiter, occurrence) in enumerate(script.bodies):
         owner = script.body_owners.get(index)
         if owner is not None:
@@ -1067,6 +1124,7 @@ def execution_sources(shell: str, *, completion: bool = False, depth: int = 0,
                 header += script.text[len(header):]
             bound = heredoc_commands(header, delimiter, occurrence)
             if bound.active:
+                bound_commands.extend(bound.commands)
                 readers.extend([*argv, body] for argv in script_readers(bound.commands))
             kind = stdin_kind(bound.commands, executed_files, completion=completion, destination_kind=force_input) if bound.active else "data"
             if completion and kind == "opaque":
@@ -1080,6 +1138,9 @@ def execution_sources(shell: str, *, completion: bool = False, depth: int = 0,
                 nested.extend(ExecutionSource(source) for source in expanded.substitutions)
         except ValueError as error:
             opaque.append(str(error))
+    if completion and force_input in {"shell", "unknown"} and pipeline_payload(commands) is None:
+        if any(command not in bound_commands for command in commands):
+            opaque.append("unresolved process-substitution producer")
     yield script, readers
     if opaque:
         yield ValueError("; ".join(opaque)), []
@@ -1222,7 +1283,7 @@ def exception_cwd(shell: str, cwd: Path) -> Path | None:
         target = Path(path_text)
         if not target.is_absolute() or not target.is_dir():
             return None
-        if any(OPERATORS.match(token) and token != "&&" for token in shell_tokens(prefix["command"])):
+        if any(is_operator(token) and token != "&&" for token in shell_tokens(prefix["command"])):
             return None
         cwd = target
         shell = prefix["command"]
