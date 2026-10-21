@@ -873,7 +873,10 @@ uv run <skill-dir>/scripts/gh-plan.py claim <issue> \
 ```
 
 `--session` is the running session's native ID: `$CLAUDE_CODE_SESSION_ID` on
-Claude Code, `$CODEX_THREAD_ID` (or the root `$CODEX_SESSION_ID`) on Codex.
+Claude Code, the root `$CODEX_SESSION_ID` on Codex. A Codex child thread claims
+under its root, which refuses its own `$CODEX_THREAD_ID` with
+`session_not_root`: child hooks renew the root's lease, and the root's closeout
+check covers the claim.
 Once the running family is identified, a claim under any other value refuses
 with `session_not_native` and names the native ID, because `release-claim` can
 only release a session that exists. A harness that exposes no native ID claims
@@ -999,9 +1002,14 @@ open PRs. It reads no process, session registry or daemon: ownership lives in
 the claim comments and their exact releases
 ([Q621](https://github.com/cbusillo/codex-skills/issues/2453)).
 
-Each claim carries a host-local lease. The catalog's `PreToolUse` hook, and on
-Claude Code its lifecycle hook, renews the session's lease on activity without
-a GitHub write; `claim` renews the claimant's own. An unreleased claim of
+Each claim carries a host-local lease, renewed without a GitHub write: by the
+catalog's `PreToolUse` hook on shell commands on both harnesses, on Claude Code
+also after every tool call and on prompts, stops and subagent events, and by
+`claim` for the claimant. Subagent hooks report their parent's session ID, so
+delegated work renews the parent's lease. One quiet stretch longer than the
+lease, such as a single tool call or a wait with no other activity, or on Codex
+a long run of non-shell tools, lets a successor take over a live session; raise
+`GH_PLAN_CLAIM_LEASE_MINUTES` for such work. An unreleased claim of
 another session refuses while its lease is live, or unknown because this host
 holds no lease for it, such as a claim made on another host. After 30 minutes
 without activity (`GH_PLAN_CLAIM_LEASE_MINUTES`) the lease expires and a

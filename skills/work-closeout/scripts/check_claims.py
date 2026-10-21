@@ -201,6 +201,23 @@ def check(reader, owner, entries, actor, *, repositories=(), reader_for_repo=Non
             "released_claims": released, "blocked": blocked}
 
 
+def require_own_transcript(entry: dict) -> None:
+    identities = set()
+    with open(entry["transcript"], encoding="utf-8") as stream:
+        for line in stream:
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(record, dict):
+                continue
+            identities.add(record.get("sessionId"))
+            if record.get("type") == "session_meta" and isinstance(record.get("payload"), dict):
+                identities.add(record["payload"].get("id"))
+    if entry["session_id"] not in identities:
+        raise ValueError(f"transcript {entry['transcript']} does not belong to session {entry['session_id']}")
+
+
 def repository_reader(repo, deadline):
     # The shared reader selects the existing App by target repository, exactly
     # as the claim helper does. No credential/config mutation or fallback.
@@ -225,6 +242,8 @@ def main(argv=None):
             raise ValueError("pass one --transcript for each --session")
         entries = [{"session_id": session, "transcript": str(transcript.expanduser().resolve())}
                    for session, transcript in zip(args.session, args.transcript)]
+        for entry in entries:
+            require_own_transcript(entry)
         actor = github_identity.automation_login()
         if not actor:
             raise ValueError("configured automation identity is unavailable")

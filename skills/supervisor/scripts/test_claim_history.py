@@ -2,7 +2,6 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""Exercise native fork-root record selection."""
 import copy
 import json
 from pathlib import Path

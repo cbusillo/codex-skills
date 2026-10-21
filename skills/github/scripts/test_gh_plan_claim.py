@@ -3170,9 +3170,18 @@ class ClaimTests(unittest.TestCase):
                 self.assertIn(named, str(caught.exception))
             self.assert_no_writes()
 
+    def test_codex_child_thread_claims_under_its_root_session_so_its_lease_and_closeout_cover_it(self):
+        self.args.agent, self.args.session = "codex", "child-thread"
+        with patch.dict(os.environ, {"CODEX_THREAD_ID": "child-thread", "CODEX_SESSION_ID": "root-session"}, clear=True):
+            with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                self.run_claim()
+        self.assertEqual(caught.exception.code, "session_not_root")
+        self.assertIn("root-session", str(caught.exception))
+        self.assert_no_writes()
+
     def test_claim_accepts_native_ids_and_unreadable_ones(self):
         cases = (("claude", {"CLAUDE_CODE_SESSION_ID": "claude-native"}, "claude-native"),
-                 ("codex", {"CODEX_THREAD_ID": "thread", "CODEX_SESSION_ID": "root"}, "thread"),
+                 ("codex", {"CODEX_THREAD_ID": "thread", "CODEX_SESSION_ID": "thread"}, "thread"),
                  ("codex", {"CODEX_THREAD_ID": "thread", "CODEX_SESSION_ID": "root"}, "root"),
                  # Harnesses that expose no native ID keep claiming as before.
                  ("claude", {"CLAUDECODE": "1", "CODEX_THREAD_ID": "outer"}, "desktop-label"),

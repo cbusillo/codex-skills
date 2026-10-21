@@ -303,8 +303,10 @@ The check reads GitHub only. It inventories every installation of the
 configured automation writer Apps since the transcript's first timestamp,
 including closed issues and PR-only claims, and verifies that every claim
 naming the session has its exact authored release, or a validated Supervisor
-release, and that each retained PR has its handoff. Repeat `--session` and
-`--transcript` for a child session that claimed under its own ID.
+release, and that each retained PR has its handoff. Codex child threads and
+Claude subagents claim under the root session ID, so the root's check covers
+them; repeat `--session` and `--transcript` for any other session to include.
+A transcript that does not belong to its session refuses.
 `--repository OWNER/REPO` adds known context, and `--owner OWNER` asserts
 account coverage; neither narrows the installation inventory. Only exit 0 with
 `claims_clear: true` and complete coverage permits an all-clear. An unreleased
@@ -323,7 +325,8 @@ started before the verdict; leaving it running is a closeout problem, not
 something the check proves.
 
 A session that crashes cannot release. Its claim frees itself when its lease
-expires: the catalog's hooks renew a host-local lease on the session's activity,
+expires: the catalog's hooks renew a host-local lease on the session's activity
+(see [Planning: Claim](../github/references/cli-reference.md#planning-claim)),
 and after 30 minutes without activity a successor on the same host may take
 over, recording a `Lease takeover:` line in its claim. Set
 `GH_PLAN_CLAIM_LEASE_MINUTES` to change the period. A host with no lease for

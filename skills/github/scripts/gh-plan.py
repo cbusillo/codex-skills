@@ -3062,6 +3062,12 @@ def claim_once(args: argparse.Namespace) -> None:
             f"--session {claim['session']} is not this session's native ID ({found}). Claim with that native ID; "
             "release-claim can never release a claim made under an invented label.",
             payload={"native_sessions": native, "running_agent": agent})
+    root_session = native.get("CODEX_SESSION_ID")
+    if root_session and claim["session"] != root_session:
+        raise ClassifiedPlanError("session_not_root",
+            f"--session {claim['session']} is a Codex child thread. Claim under its root session {root_session} "
+            "(CODEX_SESSION_ID): child hooks renew the root's lease, and the root's closeout check covers its claims.",
+            payload={"native_sessions": native, "running_agent": agent})
 
     def check_agent(assigned_issue: dict[str, Any]) -> None:
         mismatch = github_agent.exclusion(assigned_issue, agent)

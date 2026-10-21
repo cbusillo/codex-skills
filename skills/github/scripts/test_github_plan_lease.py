@@ -62,5 +62,23 @@ class LeaseTests(unittest.TestCase):
             LEASE.state("session")
 
 
+    def test_a_redirected_or_shared_lease_store_is_refused(self):
+        shared = Path(os.environ["HOME"]) / "shared"
+        shared.mkdir()
+        LEASE.lease_directory().parent.mkdir(parents=True)
+        LEASE.lease_directory().symlink_to(shared)
+        with self.assertRaises(ValueError):
+            LEASE.renew("session")
+        LEASE.lease_directory().unlink()
+        LEASE.renew("session")
+        LEASE.lease_path("session").chmod(0o666)
+        with self.assertRaises(ValueError):
+            LEASE.state("session")
+        LEASE.lease_path("session").chmod(0o600)
+        LEASE.lease_directory().chmod(0o777)
+        with self.assertRaises(ValueError):
+            LEASE.state("session")
+
+
 if __name__ == "__main__":
     unittest.main()

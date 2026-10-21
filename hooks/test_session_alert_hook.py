@@ -44,7 +44,7 @@ class SessionAlertTests(unittest.TestCase):
 
     def test_claude_lifecycle_events_renew_the_parent_sessions_claim_lease(self):
         env = {**self.env, "CODEX_SKILLS_HARNESS": "claude"}
-        for event in ("UserPromptSubmit", "SubagentStop", "Stop"):
+        for event in ("PostToolUse", "UserPromptSubmit", "SubagentStop", "Stop"):
             session = f"claude-{event}"
             self.run_hook({"hook_event_name": event, "session_id": session, "agent_id": "child"}, env=env)
             with unittest.mock.patch.dict(os.environ, {"HOME": str(self.home)}):

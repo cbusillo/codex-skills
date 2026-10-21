@@ -437,6 +437,16 @@ class ClaimCloseoutTests(unittest.TestCase):
             self.assertFalse(result["claims_clear"])
             self.assertFalse(result["coverage"]["complete"])
 
+    def test_cli_refuses_a_transcript_of_another_session_before_reading_github(self):
+        other = self.entry("newer-session", "2026-03-01T00:00:00Z")
+        for transcript in (other["transcript"], str(self.folder / "missing.jsonl")):
+            with self.subTest(transcript=transcript), patch.object(helper, "GitHubReader") as reader, \
+                    contextlib.redirect_stdout(io.StringIO()) as output:
+                code = helper.main(["--session", SESSION, "--transcript", transcript])
+            self.assertNotEqual(code, 0)
+            self.assertFalse(json.loads(output.getvalue())["claims_clear"])
+            reader.assert_not_called()
+
     def test_cli_refuses_an_unpaired_transcript_before_reading_github(self):
         entry = self.entry()
         with patch.object(helper, "GitHubReader") as reader, contextlib.redirect_stdout(io.StringIO()):
