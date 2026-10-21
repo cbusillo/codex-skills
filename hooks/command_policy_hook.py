@@ -491,6 +491,8 @@ def normalize_command(argv: list[str]) -> Command:
                     break
                 if option.startswith("--"):
                     shell |= option in {"--login", "--shell"}
+                    if option == "--background":
+                        roles.add("detached")
                     cursor += option in long_values
                 else:
                     for position, flag in enumerate(option[1:], 1):
@@ -498,6 +500,8 @@ def normalize_command(argv: list[str]) -> Command:
                             cursor += position == len(option) - 1
                             break
                         shell |= flag in "is"
+                        if flag == "b":
+                            roles.add("detached")
             argv = tail[cursor:]
             if not without_redirections(argv):
                 return finish(["sh", *argv] if shell else [head, *tail])
@@ -557,7 +561,26 @@ def shell_candidates(argv: list[str], *, include_nonliteral: bool = False) -> li
     return [argv[index:] for index, word in enumerate(argv[1:], 1) if Path(word).name in SHELLS]
 
 
-def command_input(argv: list[str], *, completion: bool = False) -> tuple[list[str], str]:
+def ssh_command(argv: list[str]) -> tuple[list[str], bool]:
+    argv = without_redirections(argv)
+    cursor, background = 1, False
+    value_flags = set("BbcDEeFIiJLlmOoPpQRSWw")
+    while cursor < len(argv) and argv[cursor].startswith("-"):
+        option = argv[cursor]
+        cursor += 1
+        if option == "--":
+            break
+        for position, flag in enumerate(option[1:], 1):
+            if flag in value_flags:
+                cursor += position == len(option) - 1
+                break
+            background |= flag == "f"
+    return argv[cursor + 1:], background
+
+
+def command_input(argv: list[str], *, completion: bool = False, depth: int = 0) -> tuple[list[str], str]:
+    if depth >= 16:
+        raise ValueError("shell nesting exceeds coverage")
     normalized = normalize_command(argv)
     argv, frames = normalized.argv, normalized.xargs
     if not argv:
@@ -572,8 +595,11 @@ def command_input(argv: list[str], *, completion: bool = False) -> tuple[list[st
             kind = "shell"
     elif name in {"eval", "ssh"}:
         if name == "ssh":
-            tail = drop_flags(tail, {"-p", "-i", "-l", "-o", "-F", "-J", "-L", "-R", "-D", "-S", "-W", "-b", "-c", "-m"})[1:]
-            kind = "shell"
+            tail, _ = ssh_command(argv)
+            try:
+                kind = stdin_kind(shell_commands(" ".join(tail)), set(), completion=completion, depth=depth + 1) if tail else "shell"
+            except ValueError:
+                kind = "unknown"
         redirection = next((index for index, word in enumerate(tail) if word.startswith(("<", ">"))), len(tail))
         if tail[:redirection]:
             programs.append(" ".join(tail[:redirection]))
@@ -786,7 +812,9 @@ def program_references(command: list[str], written: set[str]) -> set[str]:
         invocation = shell_invocation(candidate)
         if invocation.script is not None:
             references.add(invocation.script)
-            if argv[0] in SHELLS and any(char in invocation.script for char in "$`*?[{"):
+            prefix = argv[:len(argv) - len(candidate)]
+            proven_slot = argv[0] in SHELLS or argv[0] == "find" and bool({"-exec", "-execdir"} & set(prefix))
+            if proven_slot and any(char in Path(invocation.script).name for char in "$`*?[{"):
                 references.update(written)
         if normalized.xargs and (invocation.mode == "implicit" or invocation.script is not None
                 and any(frame.replacement and frame.replacement in invocation.script for frame in normalized.xargs)):
@@ -795,20 +823,20 @@ def program_references(command: list[str], written: set[str]) -> set[str]:
         words = without_redirections(argv)[1:]
         sources = words[:1] if words[:1] != ["--"] else words[1:2]
         references.update(sources)
-        if any(char in source for source in sources for char in "$`*?[{"):
+        if any(char in Path(source).name for source in sources for char in "$`*?[{"):
             references.update(written)
     if command_input(command, completion=True)[1] in {"shell", "possible", "unknown"}:
         references.update(argv[index + 1] for index, word in enumerate(argv[:-1]) if word == "<")
     return {Path(path).name for path in references}
 
 
-def stdin_kind(commands: list[list[str]], executed_files: set[str], *, completion: bool = False) -> str:
+def stdin_kind(commands: list[list[str]], executed_files: set[str], *, completion: bool = False, depth: int = 0) -> str:
     if not commands or any(not argv for argv in commands):
         return "unknown"
     result = "data"
     for command in commands:
         argv = normalize_command(command).argv
-        _, kind = command_input(command, completion=completion)
+        _, kind = command_input(command, completion=completion, depth=depth)
         if not argv:
             return "unknown"
         if argv[0] in {"done", "fi", "esac", "}", ")"} or kind == "shell":
@@ -913,7 +941,8 @@ def execution_sources(shell: str, *, completion: bool = False, depth: int = 0,
 
 def detached_command(argv: list[str]) -> bool:
     command = normalize_command(argv)
-    return command.argv[:1] == ["coproc"] or "detached" in command.roles
+    return (command.argv[:1] == ["coproc"] or "detached" in command.roles
+            or command.argv[:1] == ["ssh"] and ssh_command(command.argv)[1])
 
 
 def simple_commands(shell: str) -> list[list[str]]:
