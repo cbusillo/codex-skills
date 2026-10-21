@@ -30,14 +30,17 @@ class Repository:
 
     def commit(self, files: Mapping[str, str | None]) -> None:
         for name, content in files.items():
-            path = self.root / name
-            if content is None:
-                path.unlink()
-                continue
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(content)
+            self.replace(self.root / name, content)
         self.git("add", "--all")
         self.git("commit", "--quiet", "--allow-empty", "--message", "change")
+
+    @staticmethod
+    def replace(path: Path, content: str | None) -> None:
+        if content is None:
+            path.unlink()
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
 
 
 class NewCommentsCheck(unittest.TestCase):
