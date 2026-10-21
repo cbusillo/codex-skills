@@ -118,6 +118,7 @@ class ClaimCloseoutTests(unittest.TestCase):
             self.assertFalse(report["claims_clear"], report)
             self.assertEqual([p["transcript"] for p in report["pending"]], [str(child)])
             self.assertEqual(report["pending"][0]["pending_invocations"], [tool["id"]])
+            self.assertTrue(any(str(child) in reason for reason in report["blocked"]))
             rows.pop()  # An unfinished native child must refuse during collection too.
             child.write_text("".join(json.dumps(r) + "\n" for r in rows))
             with self.assertRaises(ValueError) as error:
@@ -489,8 +490,7 @@ class ClaimCloseoutTests(unittest.TestCase):
                             "uv run scripts/gh-plan.py --repo test/a claim 1 &",
                             "uv run scripts/gh-plan.py claim test/a#1 > claim.json 2>&1 &",
                             "nohup gh pr create --title x &"):
-                if harness == "claude" and command.endswith("json"):
-                    continue  # Codex handle text is ordinary Claude Bash stdout.
+                redirected_claude = harness == "claude" and command.endswith("json")
                 rows = history(harness, {"operation": helper.claim_receipts.CLAIM_OPERATION})
                 if harness == "codex":
                     rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
@@ -501,13 +501,24 @@ class ClaimCloseoutTests(unittest.TestCase):
                 for row in rows:
                     row["timestamp"] = SOURCE["claimed_at"]
                 entry = {"session_id": native_session, "harness": harness, "_transcript_records": rows}
+                if redirected_claude:
+                    self.comments = [comment(10, helper.claim.marker({**SOURCE, "session": native_session}))]
                 with patch.object(helper.native_ownership, "pending_ownership", wraps=CURRENT_NATIVE_PENDING), \
                         patch.object(helper.native_ownership, "observe", return_value=([], {}, {})) as observed, \
-                        patch.object(helper.sessions, "discover", return_value=([], [REPO])):
+                        patch.object(helper.sessions, "discover", return_value=({(REPO, 1)} if redirected_claude else [], [REPO])):
                     report = helper.check(self.reader, [], entry, ACTOR)
                     self.assertFalse(report["claims_clear"], report)
-                    self.assertTrue(report["pending"], report)
-                    observed.assert_called_once()
+                    if redirected_claude:
+                        self.assertFalse(report["pending"], report)
+                        observed.assert_not_called()
+                        self.comments.append(comment(11, "Released claim 10\nSession: " + native_session,
+                                                     at="2026-01-01T00:02:00Z"))
+                        released = helper.check(self.reader, [], entry, ACTOR)
+                        self.assertTrue(released["claims_clear"], released)
+                        self.assertEqual([r["claim_comment"] for r in released["released_claims"]], [10])
+                    else:
+                        self.assertTrue(report["pending"], report)
+                        observed.assert_called_once()
         self.inventory.assert_called()
 
     def test_held_claim_blocks_even_when_hygiene_and_transcript_say_safe(self):
