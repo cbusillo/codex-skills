@@ -312,7 +312,7 @@ def test_rejects_unsupported_transport_before_execution() -> None:
         for flags in ([], ["--dry-run"], ["--allow-private-cloud"]):
             result = subprocess.run(
                 [sys.executable, str(SCRIPT), str(prompts), "--variant", "old=code-llm:gpt-5.4", *flags],
-                capture_output=True, text=True, check=False,
+                capture_output=True, text=True,
             )
             if result.returncode == 0 or "invalid variant" not in result.stderr or result.stdout:
                 raise AssertionError(f"unsupported transport must refuse before matrix execution: {result}")

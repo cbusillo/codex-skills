@@ -311,7 +311,7 @@ def summarize_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def row_key(budget_name: str, variant: dict[str, str]) -> tuple[str, str, str, str]:
-    return (budget_name, variant["name"], variant["provider"], variant["model"])
+    return budget_name, variant["name"], variant["provider"], variant["model"]
 
 
 def reusable_existing_row(
@@ -329,7 +329,7 @@ def read_existing_rows(path: Path) -> dict[tuple[str, str, str, str], list[dict[
     rows: dict[tuple[str, str, str, str], list[dict[str, Any]]] = {}
     if not path.exists():
         return rows
-    with path.open("r", encoding="utf-8") as handle:
+    with path.open(encoding="utf-8") as handle:
         for line in handle:
             if not line.strip():
                 continue
@@ -350,7 +350,7 @@ def read_existing_rows(path: Path) -> dict[tuple[str, str, str, str], list[dict[
 
 
 def sha256_text(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+    return hashlib.sha256(value.encode()).hexdigest()
 
 
 def append_jsonl(path: Path, payload: dict[str, Any]) -> None:
@@ -427,7 +427,7 @@ def discard_item() -> dict[str, Any]:
 
 
 def read_json(path: Path) -> dict[str, Any]:
-    with path.open("r", encoding="utf-8") as handle:
+    with path.open(encoding="utf-8") as handle:
         payload = json.load(handle)
     if not isinstance(payload, dict):
         raise ValueError(f"{path} did not contain a JSON object")
