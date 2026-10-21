@@ -21,7 +21,7 @@ BASE = "def total(values: list[int]) -> int:\n    return sum(values)\n"
 class Repository:
     def __init__(self, root: Path) -> None:
         self.root = root
-        self.git("init", "--quiet")
+        self.git("init", "--quiet", "--initial-branch", "main")
         self.git("config", "user.email", "test@example.com")
         self.git("config", "user.name", "Test")
 
@@ -174,6 +174,14 @@ class NewCommentsCheck(unittest.TestCase):
 
     def test_non_python_files_are_ignored(self) -> None:
         self.assertEqual(self.findings({"app.py": BASE}, {"run.sh": "# Shell note.\n"}), set())
+
+    def test_base_ahead_of_branch_compares_from_merge_base(self) -> None:
+        self.repository.commit({"app.py": "# Existing note.\n" + BASE})
+        self.repository.git("branch", "work")
+        self.repository.commit({"app.py": BASE})
+        self.repository.git("checkout", "--quiet", "work")
+        self.repository.commit({"other.py": BASE})
+        self.assertEqual(checker.scan(self.repository.root, "main"), [])
 
     def test_cli_exits_one_with_github_annotation(self) -> None:
         self.repository.commit({"app.py": BASE})

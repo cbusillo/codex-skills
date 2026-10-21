@@ -200,6 +200,7 @@ def file_findings(path: str, source: str, added: set[int], old: OldText) -> list
 
 
 def scan(repo: Path, base: str) -> list[Finding]:
+    base = git(repo, "merge-base", base, "HEAD").strip()
     files = parse_diff(git(repo, "diff", "--find-renames", "--unified=0", "--no-color", base, "HEAD", "--", "*.py"))
     old = OldText()
     for change in files:
@@ -223,7 +224,9 @@ def report(findings: list[Finding], output_format: str) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Fail on comments and docstrings that a diff adds to Python files.")
     parser.add_argument("--repo", type=Path, default=Path())
-    parser.add_argument("--base", required=True, help="Commit the diff starts from, such as HEAD^1 in CI")
+    parser.add_argument(
+        "--base", required=True, help="Branch or commit to compare with; the diff starts at its merge base with HEAD"
+    )
     parser.add_argument("--format", choices=("text", "github"), default="text")
     args = parser.parse_args(argv)
     try:
