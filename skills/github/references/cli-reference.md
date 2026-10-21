@@ -1002,6 +1002,15 @@ open PRs. It reads no process, session registry or daemon: ownership lives in
 the claim comments and their exact releases
 ([Q621](https://github.com/cbusillo/codex-skills/issues/2453)).
 
+Before posting, `claim` appends its session ID, exact repository and issue or
+PR number to `~/.code/skill-data/claim-log/<session-hash>.jsonl`. The private,
+append-only journal is synced before any claim write; a journal failure refuses
+before posting. Root and child agents using the same session ID share it.
+Closeout reads this journal plus recorded transcript claim results, then checks
+only those targets on GitHub. Keep the journal on the claiming host with the
+session, including interrupted attempts; it is discovery evidence, never proof
+of ownership or release. See [claim disposition](../../work-closeout/SKILL.md#claim-disposition).
+
 Each claim carries a host-local lease, renewed without a GitHub write: by the
 catalog's `PreToolUse` hook on shell commands on both harnesses, on Claude Code
 also after every tool call and on prompts, stops and subagent events, and by

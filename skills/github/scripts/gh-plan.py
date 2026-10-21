@@ -53,6 +53,7 @@ import github_next_reads
 import github_plan_claim
 import github_plan_closure
 import github_plan_lease
+import github_plan_claim_log
 import github_plan_wait
 import github_plan_trigger
 import github_plan_release
@@ -3067,6 +3068,7 @@ def claim_once(args: argparse.Namespace) -> None:
             f"--session {claim['session']} is a Codex child thread. Claim under its root session {root_session} "
             "(CODEX_SESSION_ID): child hooks renew the root's lease, and the root's closeout check covers its claims.",
             payload={"native_sessions": native, "running_agent": agent})
+    github_plan_claim_log.record(claim["session"], issue_repo, number)
     github_plan_lease.renew(claim["session"], minutes=github_plan_lease.lease_minutes())
 
     def check_agent(assigned_issue: dict[str, Any]) -> None:

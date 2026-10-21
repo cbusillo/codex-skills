@@ -205,6 +205,22 @@ class ClaimTests(unittest.TestCase):
                                 "repo": {"full_name": "owner/repo"}},
                        "base": {"repo": {"full_name": "owner/repo"}}}]
 
+    def test_journal_failure_refuses_before_any_claim_write(self) -> None:
+        with patch.object(PLAN.github_plan_claim_log, "record", side_effect=OSError("journal unavailable")):
+            with self.assertRaises((OSError, PLAN.PlanError)):
+                self.run_claim()
+        self.assert_no_writes()
+
+    def test_claim_target_is_journaled_before_the_post_even_when_readback_fails(self) -> None:
+        def post_then_interrupt() -> None:
+            import github_plan_claim_log
+            self.assertIn(("owner/repo", 42), github_plan_claim_log.read(OWNER["session"]))
+            raise OSError("connection lost after posting")
+        self.after_post = post_then_interrupt
+        with self.assertRaises((OSError, PLAN.PlanError)):
+            self.run_claim()
+        self.assertTrue(self.comments)
+
     def test_dependabot_pr_can_be_claimed_without_a_tracking_issue(self):
         self.pr_fixture("dependabot[bot]")
         original = copy.deepcopy(self.issue)

@@ -30,7 +30,7 @@ commands:
     source: skill
     resource_path: scripts/check_claims.py
     example_argv: ["uv", "run", "scripts/check_claims.py", "--owner", "OWNER", "--session", "<native-id>", "--transcript", "/absolute/native-transcript.jsonl"]
-    purpose: Inventories all configured writer App installations and refuses an all-clear until exact releases and retained PR handoffs are verified; never writes.
+    purpose: Reads only the session's journaled and transcript-recorded claim targets, then verifies exact releases and retained PR handoffs; never writes.
   - name: session-reminder-link
     source: skill
     resource_path: scripts/reminder_link.py
@@ -299,20 +299,28 @@ uv run <skill-dir>/scripts/check_claims.py \
   --session NATIVE_ID --transcript /absolute/native-transcript.jsonl
 ```
 
-The check reads GitHub only. It inventories every installation of the
-configured automation writer Apps since the transcript's first timestamp,
-including closed issues and PR-only claims, and verifies that every claim
-naming the session has its exact authored release, or a validated Supervisor
-release, and that each retained PR has its handoff. Codex child threads and
-Claude subagents claim under the root session ID, so the root's check covers
-them; repeat `--session` and `--transcript` for any other session to include.
-A transcript that does not belong to its session refuses.
-`--repository OWNER/REPO` adds known context, and `--owner OWNER` asserts
-account coverage; neither narrows the installation inventory. Only exit 0 with
-`claims_clear: true` and complete coverage permits an all-clear. An unreleased
-claim, unverified retained PR or incomplete read keeps the verdict
-conditional/no: record the reason and continue independent work. Do not turn a
-failed read into no claims. The Supervisor runs the same check for any session.
+The check takes its targets from the session's private host-local claim journal
+and recorded claim results in its own native transcript. `gh-plan.py claim`
+appends the exact repository and issue or PR number before it can post a claim;
+failed or interrupted attempts remain targets until GitHub readback accounts
+for them. Codex child threads and Claude subagents use the root session ID,
+so their targets enter the same journal even when their tool output is absent
+from the root transcript. Transcript results also cover claims made before the
+journal was introduced. Keep the journal with the session on its claiming host;
+checking from another host also needs that session's recorded claim results.
+
+The check reads only those issues and PRs, including closed records. It never
+inventories App installations or scans other repositories. It verifies every
+claim on each target against its exact authored release or validated Supervisor
+release, and checks each retained PR's handoff. Repeat `--session` and
+`--transcript` for any other session to include. A transcript belonging to
+another session, malformed local evidence or an incomplete GitHub read refuses.
+`--repository OWNER/REPO` and `--owner OWNER` are compatibility context flags;
+they cannot narrow the recorded targets or request a fleet scan. Only exit 0
+with `claims_clear: true` and complete coverage permits an all-clear. The result
+reports its GitHub reader `request_count`; an empty session needs no requests.
+Keep the verdict conditional/no on a held claim, unverified retained PR or
+incomplete read. The Supervisor runs the same check for any session.
 
 An open PR need not merge before a session exits. Its exact release names the
 retained PR, and the check verifies the same repository, source identity and

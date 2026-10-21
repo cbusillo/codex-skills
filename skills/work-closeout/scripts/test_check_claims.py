@@ -36,12 +36,14 @@ class ClaimCloseoutTests(unittest.TestCase):
 
     def setUp(self):
         self.folder = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.enterContext(patch.object(Path, "home", return_value=self.folder))
         self.source = comment(10, "Claimed by worker\n\n" + helper.claim.marker(SOURCE))
         self.release = comment(11, "Released claim 10\n\nSession: " + SESSION, at="2026-01-01T00:02:00Z")
         self.comments = [self.source]
         self.issue = {"body": "", "number": 1}
         self.pulls = []
         self.reader = Mock()
+        self.reader.requests = []
         self.reader.expected_actor = ACTOR
         self.reader.deadline_at = None
         self.reader.get_json.side_effect = self.get
@@ -267,175 +269,91 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.assertEqual(self.check(), [])
         self.reader.post_json.assert_not_called()
 
-    def test_partial_installation_coverage_is_pending_until_rechecked(self):
-        entries = [self.entry(SESSION, "2026-02-01T00:00:00Z"), self.entry("child", "2026-01-01T00:00:00Z")]
-        installation = {"installation_id": 101, "account": {"login": "suspended-owner"},
-                        "reason": "suspended installation may contain native source claims"}
-        self.inventory.return_value = {"repositories": {REPO: [ACTOR]}, "installations": [installation],
-                                       "pending_installations": [installation]}
-        with patch.object(helper.sessions, "discover", return_value=([], [REPO])):
-            pending = helper.check(self.reader, [], entries, ACTOR, repositories=["explicit/site"])
-            self.assertFalse(pending["claims_clear"], pending)
-            self.assertFalse(pending["coverage"]["complete"])
-            self.assertTrue(any("101" in reason for reason in pending["blocked"]))
-            query = self.inventory.call_args.kwargs
-            self.assertEqual(query["since"], helper.release.stamp("2025-12-31T23:59:59Z"))
-            self.assertEqual(query["required_repositories"], {"explicit/site"})
-            self.inventory.return_value = {"repositories": {REPO: [ACTOR]}, "installations": [installation],
-                                           "excluded_installations": [installation]}
-            clear = helper.check(self.reader, [], entries, ACTOR, repositories=["explicit/site"])
-            self.assertTrue(clear["claims_clear"], clear)
-            self.assertTrue(clear["coverage"]["complete"])
-            self.assertEqual(clear["coverage"]["excluded_installations"], [installation])
-            helper.check(self.reader, [], [self.entry("untimed", None), self.entry(SESSION, "2026-02-01T00:00:00Z")], ACTOR)
-            self.assertIsNone(self.inventory.call_args.kwargs["since"])
+    def receipt_entry(self, session: str = SESSION, records: tuple = ((REPO, 1),)) -> dict:
+        entry = self.entry(session)
+        with Path(entry["transcript"]).open("a") as stream:
+            for repo, number in records:
+                receipt = {"operation": "github.plan.claim", "claim": {**SOURCE, "session": session},
+                           "issue": {"repo": repo, "number": number}, "ok": True}
+                stream.write(json.dumps({"type": "response_item", "payload": {
+                    "type": "function_call_output", "output": json.dumps({"output": json.dumps(receipt)})}}) + "\n")
+        return entry
 
-    def test_global_inventory_accounts_for_cross_repo_closed_issues_and_prs(self):
-        records = [("test/a", 1), ("test/b", 5), ("test/b", 6)]
-        self.inventory.return_value["repositories"]["test/b"] = [ACTOR]
-        self.reader.paged_json.side_effect = lambda *_a, **_k: [{"full_name": "test/a"}, {"full_name": "test/b"}]
-        with patch.object(helper.sessions, "discover", return_value=(records, ["test/a", "test/b"])), \
-                patch.object(helper, "check_record", side_effect=[[], ValueError("held"), []]) as check:
-            result = helper.check(self.reader, "test", [self.entry()], ACTOR)
-        self.assertFalse(result["claims_clear"])
-        self.assertEqual(check.call_count, len(records))
-        self.assertTrue(any("held" in reason for reason in result["blocked"]), result)
+    def test_recorded_claims_never_inventory_other_repositories(self) -> None:
+        self.comments.append(self.release)
+        self.inventory.side_effect = AssertionError("fleet inventory is forbidden")
+        report = helper.check([self.receipt_entry()])
+        self.assertTrue(report["claims_clear"], report)
+        self.assertEqual([r["claim_comment"] for r in report["released_claims"]], [self.source["id"]])
+        self.assertEqual(self.reader.get_json.call_count + self.reader.paged_json.call_count, 3)
+        self.assertEqual(report["coverage"]["repositories"], [REPO])
 
-    def test_complete_discovery_reads_all_owner_repositories_and_closed_records(self):
-        def paged(path, **kwargs):
-            if path == "/installation/repositories":
-                return [{"full_name": "test/a"}, {"full_name": "test/b"}]
-            if path.endswith("/issues"):
-                return [{"number": 1, "state": "closed", "body": helper.claim.marker(SOURCE)}] if kwargs["params"].get("state") == "all" else []
-            if path.endswith("/issues/comments"):
-                return []
-            return self.comments
-        self.reader.paged_json.side_effect = paged
-        result = helper.check(self.reader, "test", [self.entry()], ACTOR, repositories=["test/b"])
-        self.assertFalse(result["claims_clear"])
-        self.assertEqual(len(result["blocked"]), len(result["coverage"]["repositories"]))
+    def test_recorded_claim_targets_include_closed_and_pr_only_work_across_sessions(self) -> None:
+        records = ((REPO, 1), ("second/b", 5), ("second/b", 6))
+        entries = [self.receipt_entry(records=records), self.receipt_entry("child", records=((REPO, 8),))]
+        with patch.object(helper, "check_record", return_value=[]) as check:
+            report = helper.check(entries)
+        self.assertTrue(report["claims_clear"], report)
+        self.assertEqual({(c.args[1], c.args[2], c.args[3]) for c in check.call_args_list},
+                         {(repo, number, SESSION) for repo, number in records} | {(REPO, 8, "child")})
 
-    def test_incomplete_app_inventory_refuses(self):
-        self.inventory.side_effect = helper.github_identity.GitHubAppError("inventory incomplete")
-        with self.assertRaises(helper.github_identity.GitHubAppError):
-            helper.check(self.reader, [], [self.entry()], ACTOR)
+    def test_journal_keeps_a_child_claim_when_the_root_transcript_has_no_receipt(self) -> None:
+        helper.claim_log.record(SESSION, REPO, 1)
+        report = helper.check([self.entry()])
+        self.assertFalse(report["claims_clear"], report)
+        self.comments.append(self.release)
+        self.assertTrue(helper.check([self.entry()])["claims_clear"])
 
-    def test_default_inventory_uses_its_resolved_client_actor(self):
+    def test_repeated_session_transcripts_union_their_targets(self) -> None:
+        first = self.receipt_entry(records=((REPO, 1),))
+        saved = self.folder / "earlier.jsonl"
+        Path(first["transcript"]).rename(saved)
+        first["transcript"] = str(saved)
+        second = self.receipt_entry(records=((REPO, 2),))
+        with patch.object(helper, "check_record", return_value=[]) as check:
+            self.assertTrue(helper.check([first, second])["claims_clear"])
+        self.assertEqual({call.args[2] for call in check.call_args_list}, {1, 2})
+
+    def test_invalid_transcript_or_journal_blocks_before_network_reads(self) -> None:
+        entry = self.receipt_entry()
+        for path in (Path(entry["transcript"]), helper.claim_log.log_path(SESSION, create=True)):
+            with path.open("a") as stream:
+                stream.write('{"truncated":')
+            with patch.object(helper, "repository_reader") as reader, self.assertRaises(ValueError):
+                helper.check([entry])
+            reader.assert_not_called()
+            path.write_text(json.dumps({"type": "session_meta", "payload": {"id": SESSION}}) + "\n")
+
+    def test_duplicate_receipts_check_a_record_once(self) -> None:
+        entry = self.receipt_entry(records=((REPO, 1), (REPO, 1)))
+        with patch.object(helper, "check_record", return_value=[]) as check:
+            self.assertTrue(helper.check([entry])["claims_clear"])
+        self.assertEqual(check.call_count, 1)
+
+    def test_recorded_claim_uses_the_target_repositories_writer(self) -> None:
         client_actor = "client-fixture[bot]"
-        self.inventory.return_value["repositories"][REPO] = [client_actor]
         self.reader.expected_actor = client_actor
         self.source["user"]["login"] = client_actor
         self.comments.append({**self.release, "user": {"login": client_actor}})
-        self.reader.paged_json.side_effect = self.canonical_pages
-        report = helper.check(self.reader, "test", [self.entry()], ACTOR)
-        self.assertTrue(report["claims_clear"])
-        self.assertEqual([r["claim_comment"] for r in report["released_claims"]], [self.source["id"]])
+        report = helper.check([self.receipt_entry()])
+        self.assertTrue(report["claims_clear"], report)
 
-    def test_discovery_finds_a_held_default_installation_claim(self):
-        self.reader.paged_json.side_effect = self.canonical_pages
-        report = helper.check(self.reader, [], [self.entry()], ACTOR)
+    def test_recorded_held_claim_and_failed_reads_cannot_clear(self) -> None:
+        entry = self.receipt_entry()
+        report = helper.check([entry])
         self.assertFalse(report["claims_clear"])
-        self.comments.append(self.release)
-        self.assertTrue(helper.check(self.reader, [], [self.entry()], ACTOR)["claims_clear"])
+        self.reader.get_json.side_effect = helper.GitHubReadError("unavailable", result=SimpleNamespace(status=403), diagnostics={})
+        report = helper.check([entry])
+        self.assertFalse(report["claims_clear"])
+        self.assertFalse(report["coverage"]["complete"])
 
-    def test_a_second_installation_and_its_client_actor_are_checked(self):
-        foreign, client_actor = "second/b", "client-fixture[bot]"
-        self.inventory.return_value = {"repositories": {REPO: [ACTOR], foreign: [client_actor]}, "installations": []}
-        def rows(identifier, actor):
-            source = comment(identifier, helper.claim.marker(SOURCE), actor)
-            return [source, comment(identifier + 1, f"Released claim {identifier}", actor, at="2026-01-01T00:02:00Z")]
-        local_comments, client_comments = rows(10, ACTOR), rows(20, client_actor)
-        client = Mock(expected_actor=client_actor)
-        def missing():
-            return helper.GitHubReadError("fixture record unavailable", result=SimpleNamespace(status=404), diagnostics={})
-        def client_get(path, **kw):
-            if path != f"/repos/{foreign}/issues/2": raise missing()
-            return {"body": "", "number": 2}
-        def local_get(path, **kw):
-            if path != f"/repos/{REPO}/issues/1": raise missing()
-            return {"body": "", "number": 1}
-        client.get_json.side_effect = client_get
-        self.reader.get_json.side_effect = local_get
-        def pages(repo, comments, endpoint, **kw):
-            if endpoint == "/installation/repositories":
-                if repo == foreign: raise AssertionError("foreign installation enumeration must not use the default token")
-                return [{"full_name": REPO}]
-            if endpoint.endswith("/issues/comments"):
-                return [{**c, "issue_url": f"https://api.github.com/repos/{repo}/issues/{2 if repo == foreign else 1}"} for c in comments]
-            if endpoint.endswith("/issues") or endpoint.endswith("/pulls"): return []
-            return comments
-        self.reader.paged_json.side_effect = lambda path, **kw: pages(REPO, local_comments, path, **kw)
-        client.paged_json.side_effect = lambda path, **kw: pages(foreign, client_comments, path, **kw)
-        entries = [self.entry()]
-        select = lambda repo, _: client if repo == foreign else self.reader
-        report = helper.check(self.reader, [], entries, ACTOR, reader_for_repo=select)
-        self.assertTrue(report["claims_clear"], report)
-        self.assertTrue(report["coverage"]["complete"], report)
-        self.assertEqual({r["repository"] for r in report["released_claims"]}, {REPO, foreign})
-        client_comments.pop()
-        held = helper.check(self.reader, [], entries, ACTOR, reader_for_repo=select)
-        self.assertFalse(held["claims_clear"], held)
-        client_comments.append(comment(21, "Released claim 20", ACTOR, at="2026-01-01T00:02:00Z"))
-        wrong_release = helper.check(self.reader, [], entries, ACTOR, reader_for_repo=select)
-        self.assertFalse(wrong_release["claims_clear"], wrong_release)
-        client_comments[-1]["user"]["login"] = client_actor
-        self.assertTrue(helper.check(self.reader, [], entries, ACTOR, reader_for_repo=select)["claims_clear"])
-        client.paged_json.side_effect = missing()
-        incomplete = helper.check(self.reader, [], entries, ACTOR, reader_for_repo=select)
-        self.assertFalse(incomplete["claims_clear"], incomplete)
-        self.assertFalse(incomplete["coverage"]["complete"], incomplete)
-        self.assertTrue(any(foreign in reason for reason in incomplete["blocked"]))
-        client.paged_json.side_effect = lambda path, **kw: pages(foreign, client_comments, path, **kw)
-        self.assertTrue(helper.check(self.reader, [], entries, ACTOR, reader_for_repo=select)["claims_clear"])
-
-    def test_child_session_claims_are_read_back_with_the_parent(self):
-        child = "native-child"
-        self.source["body"] = helper.claim.marker({**SOURCE, "session": child})
-        self.reader.paged_json.side_effect = self.canonical_pages
-        entries = [self.entry(), self.entry(child)]
-        self.assertFalse(helper.check(self.reader, [], entries, ACTOR)["claims_clear"])
-        self.comments.append({**self.release, "body": "Released claim 10\nSession: " + child})
-        report = helper.check(self.reader, [], entries, ACTOR)
-        self.assertTrue(report["claims_clear"], report)
-        self.assertEqual(report["session_ids"], sorted([SESSION, child]))
-        self.assertEqual([r["source_session"] for r in report["released_claims"]], [child])
-
-    def test_explicit_repository_adds_an_account_missing_from_the_arguments(self):
-        with patch.object(helper.sessions, "discover", return_value=([], ["second/b"])) as discover:
-            result = helper.check(self.reader, "test", [self.entry()], ACTOR, repositories=["second/b"],
-                                  reader_for_repo=lambda *_: self.reader)
-        self.assertEqual({call.args[1] for call in discover.call_args_list}, {"test", "second"})
-        self.assertIn("second/b", result["coverage"]["repositories"])
-        self.assertIn("second", result["coverage"]["owners"])
-
-    def test_cli_applies_its_read_deadline_before_reading_github(self):
+    def test_cli_empty_session_needs_no_github_reads(self) -> None:
         entry = self.entry()
-        def first_read(path, **kwargs):
-            self.assertIsNotNone(self.reader.deadline_at)
-            return self.paged(path, **kwargs)
-        self.reader.paged_json.side_effect = first_read
-        output = io.StringIO()
-        with patch.object(helper.github_identity, "automation_login", return_value=ACTOR), \
-                patch.object(helper, "GitHubReader", autospec=True, return_value=self.reader), \
-                patch.object(helper.sessions, "discover", return_value=([], [REPO])), contextlib.redirect_stdout(output):
+        with patch.object(helper, "repository_reader") as reader, contextlib.redirect_stdout(io.StringIO()) as output:
             code = helper.main(["--owner", "test", "--session", SESSION, "--transcript", entry["transcript"]])
         self.assertEqual(code, 0, output.getvalue())
-        report = json.loads(output.getvalue())
-        self.assertTrue(report["claims_clear"])
-        self.assertEqual(report["session_ids"], [SESSION])
-
-    def test_cli_has_no_all_clear_on_partial_inventory_or_auth_failure(self):
-        entry = self.entry()
-        for error in (ValueError("partial inventory"), OSError("permission denied")):
-            output = io.StringIO()
-            with patch.object(helper.github_identity, "automation_login", return_value=ACTOR), \
-                    patch.object(helper, "GitHubReader", return_value=self.reader), \
-                    patch.object(helper.sessions, "discover", side_effect=error), contextlib.redirect_stdout(output):
-                code = helper.main(["--owner", "test", "--session", SESSION, "--transcript", entry["transcript"]])
-            result = json.loads(output.getvalue())
-            self.assertNotEqual(code, 0)
-            self.assertFalse(result["claims_clear"])
-            self.assertFalse(result["coverage"]["complete"])
+        reader.assert_not_called()
+        self.inventory.assert_not_called()
 
     def test_cli_refuses_a_transcript_of_another_session_before_reading_github(self):
         other = self.entry("newer-session", "2026-03-01T00:00:00Z")
