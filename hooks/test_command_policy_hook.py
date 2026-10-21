@@ -784,6 +784,10 @@ class CommandPolicyHookTests(unittest.TestCase):
             "cat >notes.md <<'EOF'\ngh pr merge 17\nEOF\ngrep bash notes.md",
             "cat >notes.md <<'EOF'\ngh pr merge 17\nEOF\nfind . \\( -name '*.md' \\) -exec grep bash notes.md \\;",
             "grep bash <<< 'gh pr merge 17'",
+            "\"$PY\" --body-file body.md <<'EOF'\ngh pr merge 17\nEOF",
+            "BASH_ENV=<(printf 'gh pr merge 17') python3 -c 'print(1)'",
+            "ENV=<(printf 'gh pr merge 17') bash -c true",
+            "BASH_ENV=<(printf 'gh pr merge 17') zsh -c true",
             "python3 - <<-'EOF'\n\tlaunchplane merge-train run-once\n\tEOF",
             "printf '%s\\n' \"$((1 << 2))\" 'gh pr merge 17'",
         ):
@@ -836,6 +840,14 @@ class CommandPolicyHookTests(unittest.TestCase):
             ("ssh -p 2222 build-host 'gh api repos/o/r/pulls'", "gh api repos/o/r/pulls"),
             ("ssh build-host bash <<'EOF'\ngh api repos/o/r/pulls\nEOF", "gh api repos/o/r/pulls"),
             ("gh-with-env-token api repos/o/r/issues/1 --method PATCH -f body=x", "repos/o/r/issues/1"),
+            ("zsh --no-rcs -c 'gh pr merge 17'", "gh pr merge 17"),
+            ("zsh --no-rcs <<'EOF'\ngh pr merge 17\nEOF", "gh pr merge 17"),
+            ("ssh host '>x; gh pr merge 17'", "gh pr merge 17"),
+            ("eval '>x; gh pr merge 17'", "gh pr merge 17"),
+            ("eval 'printf ok;' >log 'gh pr merge 17'", "gh pr merge 17"),
+            ("BASH_ENV=<(printf 'gh pr merge 17') bash -c true", "gh pr merge 17"),
+            ("cat >run.sh <<'EOF'\ngh pr merge 17\nEOF\nBASH_ENV=run.sh bash -c true", "gh pr merge 17"),
+            ("flock -xw 10 /l bash <<'EOF'\ngh pr merge 17\nEOF", "gh pr merge 17"),
         ):
             with self.subTest(line=line):
                 result = bash(line)
