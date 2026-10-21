@@ -9,6 +9,7 @@ import io
 import json
 from pathlib import Path
 import tempfile
+import sqlite3
 import unittest
 from unittest.mock import Mock, patch
 from types import SimpleNamespace
@@ -37,6 +38,10 @@ class ClaimCloseoutTests(unittest.TestCase):
     def setUp(self):
         self.folder = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.enterContext(patch.object(Path, "home", return_value=self.folder))
+        self.native_index = sqlite3.connect(":memory:")
+        self.addCleanup(self.native_index.close)
+        self.native_index.executescript("CREATE TABLE threads(id TEXT,rollout_path TEXT); CREATE TABLE thread_spawn_edges(parent_thread_id TEXT,child_thread_id TEXT);")
+        self.enterContext(patch.object(helper.history.claim_history, "native_databases", side_effect=lambda *args, **kwargs: contextlib.nullcontext([self.native_index])))
         self.source = comment(10, "Claimed by worker\n\n" + helper.claim.marker(SOURCE))
         self.release = comment(11, "Released claim 10\n\nSession: " + SESSION, at="2026-01-01T00:02:00Z")
         self.comments = [self.source]
@@ -334,6 +339,8 @@ class ClaimCloseoutTests(unittest.TestCase):
         header["payload"]["source"] = {"subagent": {"thread_spawn": {"parent_thread_id": SESSION}}}
         rows[0] = json.dumps(header)
         (native / "child.jsonl").write_text("\n".join(rows) + "\n")
+        self.native_index.execute("INSERT INTO threads VALUES(?,?)", ("child", str(native / "child.jsonl")))
+        self.native_index.execute("INSERT INTO thread_spawn_edges VALUES(?,?)", (SESSION, "child"))
         with patch.object(helper, "check_record", return_value=[]) as check:
             self.assertTrue(helper.check([entry])["claims_clear"])
         self.assertIn(("second/b", 5, "child"), {(c.args[1], c.args[2], c.args[3]) for c in check.call_args_list})
@@ -344,7 +351,7 @@ class ClaimCloseoutTests(unittest.TestCase):
         subagents = Path(entry["transcript"]).with_suffix("") / "subagents"
         subagents.mkdir(parents=True)
         receipt = {"operation": "github.plan.claim", "claim": SOURCE, "issue": {"repo": REPO, "number": 1}}
-        (subagents / "agent-fixture.jsonl").write_text(json.dumps({"sessionId": SESSION, "type": "user", "message": {"content": [
+        (subagents / "agent-fixture.jsonl").write_text(json.dumps({"sessionId": SESSION, "agentId": "fixture", "type": "user", "message": {"content": [
             {"type": "tool_result", "content": json.dumps(receipt)}]}}) + "\n")
         report = helper.check([entry])
         self.assertFalse(report["claims_clear"], report)
@@ -367,22 +374,135 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.assertGreaterEqual(deadline, started + 123)
         self.assertLessEqual(deadline, helper.time.time() + 123)
 
+    def test_indexed_child_requires_its_advertised_grandchild_and_accepts_explicit_recovery(self) -> None:
+        root = self.entry()
+        child = self.receipt_entry("child", records=())
+        rows = [json.loads(line) for line in Path(child["transcript"]).read_text().splitlines()]
+        rows[0]["payload"].update(session_id=SESSION, source={"subagent": {"thread_spawn": {"parent_thread_id": SESSION}}})
+        rows.append({"type": "event_msg", "payload": {"type": "item_completed", "thread_id": "child", "item": {
+            "type": "SubAgentActivity", "kind": "started", "agent_thread_id": "grandchild", "agent_path": "/root/child/grandchild"}}})
+        Path(child["transcript"]).write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+        self.native_index.execute("INSERT INTO threads VALUES(?,?)", ("child", child["transcript"]))
+        self.native_index.execute("INSERT INTO thread_spawn_edges VALUES(?,?)", (SESSION, "child"))
+        with patch.object(helper, "repository_reader") as reader, self.assertRaises(ValueError):
+            helper.check([root])
+        reader.assert_not_called()
+        grandchild = self.receipt_entry("grandchild", records=((REPO, 1),))
+        rows = [json.loads(line) for line in Path(grandchild["transcript"]).read_text().splitlines()]
+        rows[0]["payload"].update(session_id=SESSION, source={"subagent": {"thread_spawn": {"parent_thread_id": "child"}}})
+        Path(grandchild["transcript"]).write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+        with patch.object(helper, "check_record", return_value=[]) as check:
+            self.assertTrue(helper.check([root, child, grandchild])["claims_clear"])
+        self.assertIn("grandchild", {call.args[3] for call in check.call_args_list})
+
+    def test_claude_saved_claim_output_is_read_and_foreign_fork_subagents_are_ignored(self) -> None:
+        root = self.entry()
+        path = Path(root["transcript"])
+        directory = path.with_suffix("")
+        output = directory / "tool-results/result.txt"
+        output.parent.mkdir(parents=True)
+        receipt = {"operation": "github.plan.claim", "claim": SOURCE, "issue": {"repo": REPO, "number": 1}}
+        output.write_text(json.dumps(receipt))
+        path.write_text(json.dumps({"sessionId": SESSION, "type": "user", "toolUseResult": {
+            "persistedOutputPath": str(output), "persistedOutputSize": output.stat().st_size},
+            "message": {"content": [{"type": "tool_result", "tool_use_id": "saved", "content": "preview omitted"}]}}) + "\n")
+        subagents = directory / "subagents"
+        subagents.mkdir()
+        (subagents / "agent-foreign.jsonl").write_text(json.dumps({"sessionId": "original-session", "agentId": "foreign"}) + "\n")
+        self.assertFalse(helper.check([root])["claims_clear"])
+        self.comments.append(self.release)
+        self.assertTrue(helper.check([root])["claims_clear"])
+        output.unlink()
+        with self.assertRaises(OSError):
+            helper.check([root])
+
+    def test_legacy_yielded_claim_receipt_is_recovered_from_later_native_output(self) -> None:
+        root = self.entry()
+        receipt = {"operation": "github.plan.claim", "claim": SOURCE, "issue": {"repo": REPO, "number": 1}}
+        rows = [
+            {"type": "custom_tool_call", "name": "exec", "call_id": "start", "input": 'text(await tools.exec_command({cmd:"uv run gh-plan.py claim 1 --session native-session"}));'},
+            {"type": "custom_tool_call_output", "call_id": "start", "output": [{"type": "input_text", "text": json.dumps({"session_id": 41, "output": ""})}]},
+            {"type": "custom_tool_call", "name": "exec", "call_id": "finish", "input": 'text(await tools.write_stdin({session_id:41,chars:""}));'},
+            {"type": "custom_tool_call_output", "call_id": "finish", "output": [{"type": "input_text", "text": json.dumps({"exit_code": 0, "output": json.dumps(receipt)})}]},
+        ]
+        with Path(root["transcript"]).open("a") as stream:
+            stream.write("\n".join(json.dumps({"type": "response_item", "payload": row}) for row in rows) + "\n")
+        self.assertFalse(helper.check([root])["claims_clear"])
+        self.comments.append(self.release)
+        self.assertTrue(helper.check([root])["claims_clear"])
+
+    def test_literal_repository_target_survives_a_truncated_claim_result(self) -> None:
+        root = self.entry()
+        with Path(root["transcript"]).open("a") as stream:
+            stream.write(json.dumps({"type": "response_item", "payload": {"type": "custom_tool_call", "name": "exec",
+                "call_id": "claim-call", "input": 'text(await tools.exec_command({cmd:"uv run gh-plan.py --repo test/a claim 1 --session native-session"}));'}}) + "\n")
+            stream.write(json.dumps({"type": "response_item", "payload": {"type": "custom_tool_call_output", "call_id": "claim-call", "output": 'Warning: truncated output\n{"claim":'}}) + "\n")
+        self.assertFalse(helper.check([root])["claims_clear"])
+        self.comments.append(self.release)
+        self.assertTrue(helper.check([root])["claims_clear"])
+
+    def test_real_codex_activity_requires_the_child_transcript(self) -> None:
+        entry = self.entry()
+        activity = {"type": "event_msg", "payload": {"type": "item_completed", "thread_id": SESSION,
+            "item": {"type": "SubAgentActivity", "kind": "started", "agent_thread_id": "child", "agent_path": "/root/child"}}}
+        with Path(entry["transcript"]).open("a") as stream:
+            stream.write(json.dumps(activity) + "\n")
+            stream.write(json.dumps({"type": "response_item", "payload": {"type": "function_call_output",
+                "output": json.dumps({"task_name": "/root/child"})}}) + "\n")
+        with patch.object(helper, "repository_reader") as reader, self.assertRaises(ValueError):
+            helper.check([entry])
+        reader.assert_not_called()
+
+    def test_real_claude_result_requires_its_subagent_transcript(self) -> None:
+        entry = self.entry()
+        Path(entry["transcript"]).write_text(json.dumps({"type": "user", "sessionId": SESSION,
+            "toolUseResult": {"status": "completed", "agentId": "agent-fixture"},
+            "message": {"content": [{"type": "tool_result", "tool_use_id": "agent-call", "content": "completed"}]}}) + "\n")
+        with patch.object(helper, "repository_reader") as reader, self.assertRaises(ValueError):
+            helper.check([entry])
+        reader.assert_not_called()
+
+    def test_unrelated_corrupt_codex_rollout_cannot_block_the_session(self) -> None:
+        entry = self.entry()
+        native = self.folder / "codex/sessions/2026/01/01"
+        native.mkdir(parents=True)
+        path = native / "root.jsonl"
+        Path(entry["transcript"]).rename(path)
+        entry["transcript"] = str(path)
+        (native / "unrelated.jsonl").write_bytes(b"\xff\xfe")
+        self.assertTrue(helper.check([entry])["claims_clear"])
+
+    def test_truncated_legacy_claim_result_cannot_mean_no_claims(self) -> None:
+        entry = self.entry()
+        with Path(entry["transcript"]).open("a") as stream:
+            stream.write(json.dumps({"type": "response_item", "payload": {"type": "custom_tool_call", "name": "exec",
+                "call_id": "claim-call", "input": 'text(await tools.exec_command({cmd:"uv run gh-plan.py claim 1 --session native-session"}));'}}) + "\n")
+            stream.write(json.dumps({"type": "response_item", "payload": {"type": "custom_tool_call_output", "call_id": "claim-call",
+                "output": 'Warning: truncated output\n{"claim":'}}) + "\n")
+        with patch.object(helper, "repository_reader") as reader, self.assertRaises(ValueError):
+            helper.check([entry])
+        reader.assert_not_called()
+
+    def test_unknown_write_without_its_target_cannot_use_another_journal_entry(self) -> None:
+        root = self.entry()
+        helper.claim_log.record(SESSION, REPO, 2)
+        result = {"operation": "github.plan.claim", "ok": False, "claim": SOURCE, "outcome_certainty": "unknown"}
+        rows = [
+            {"type": "custom_tool_call", "name": "exec", "call_id": "unknown", "input": 'text(await tools.exec_command({cmd:"uv run gh-plan.py claim 1 --session native-session"}));'},
+            {"type": "custom_tool_call_output", "call_id": "unknown", "output": json.dumps(result)},
+        ]
+        with Path(root["transcript"]).open("a") as stream:
+            stream.write("\n".join(json.dumps({"type": "response_item", "payload": row}) for row in rows) + "\n")
+        with patch.object(helper, "repository_reader") as reader, self.assertRaises(ValueError):
+            helper.check([root])
+        reader.assert_not_called()
+
     def test_product_agent_ids_are_not_native_children(self) -> None:
         entry = self.entry()
         with Path(entry["transcript"]).open("a") as stream:
             stream.write(json.dumps({"type": "response_item", "payload": {"type": "function_call_output", "output":
                 json.dumps({"agent_id": "product-agent"})}}) + "\n")
         self.assertTrue(helper.check([entry])["claims_clear"])
-
-    def test_missing_advertised_child_requires_its_native_transcript(self) -> None:
-        entry = self.entry()
-        with Path(entry["transcript"]).open("a") as stream:
-            stream.write(json.dumps({"type": "response_item", "payload": {"type": "function_call", "name": "collaboration.spawn_agent", "call_id": "spawn"}}) + "\n")
-            stream.write(json.dumps({"type": "response_item", "payload": {"type": "function_call_output", "call_id": "spawn", "output":
-                json.dumps({"agent_id": "missing-child"})}}) + "\n")
-        with patch.object(helper, "repository_reader") as reader, self.assertRaises(ValueError):
-            helper.check([entry])
-        reader.assert_not_called()
 
     def test_duplicate_receipts_check_a_record_once(self) -> None:
         entry = self.receipt_entry(records=((REPO, 1), (REPO, 1)))

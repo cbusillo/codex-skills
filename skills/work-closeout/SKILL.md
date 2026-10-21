@@ -307,12 +307,17 @@ failed or interrupted attempts remain targets until GitHub readback accounts
 for them. Codex child threads and Claude subagents use the root session ID,
 so their targets enter the same journal even when their tool output is absent
 from the root transcript. Closeout also reads linked local native child transcripts: Claude's sibling
-`subagents` directory and Codex descendants identified by rollout metadata in
-that transcript home's `sessions` and `archived_sessions` directories. This
-covers older child claims and mixed sessions predating the journal. An advertised
-Codex child missing its transcript refuses with the supported recovery: check on
+`subagents` directory and Codex descendants read through the existing native child index plus
+`SubAgentActivity.agent_thread_id` events, recursively. It never scans rollout
+directories. Claude saved tool output is read from the native advertised artifact
+in the session's own `tool-results` directory. This
+covers older child claims and mixed sessions predating the journal. An indexed or advertised child missing its transcript refuses with the
+supported recovery: check on
 the claiming host or pass the child's native `--session` and `--transcript`. Keep the journal with the session on its claiming host;
-checking from another host also needs that session's recorded claim results.
+checking from another host also needs that session's complete native lineage and
+recorded claim results. An unresolved claim invocation stays conditional; restore
+its complete native output. Literal repository-qualified claim targets can be
+read directly even when the command result was truncated. No shell text is executed.
 
 The check reads only those issues and PRs, including closed records. It never
 inventories App installations or scans other repositories. It verifies every
@@ -326,7 +331,10 @@ they cannot narrow the recorded targets or request a fleet scan. Only exit 0
 with `claims_clear: true` and complete coverage permits an all-clear. The result
 reports its GitHub reader `request_count`; an empty session needs no requests.
 Keep the verdict conditional/no on a held claim, unverified retained PR or
-incomplete read. The Supervisor runs the same check for any session.
+incomplete read. A later-deleted record or removed App access remains unreadable
+evidence, never a release. Preserve the journal and owning issue; restore the
+authorized read path, or record an irrecoverable-evidence decision for the
+Director. Do not silently retire the target or manufacture an all-clear. The Supervisor runs the same check for any session.
 
 An open PR need not merge before a session exits. Its exact release names the
 retained PR, and the check verifies the same repository, source identity and
