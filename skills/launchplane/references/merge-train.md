@@ -162,10 +162,10 @@ authority, mutation gate, and exact landing-SHA checkout handoff requirements.
   not clear the pending request. Only an accepted replay clears it;
   an unavailable read, lease refusal or denial keeps the file and stops.
   When Launchplane accepted the pass but the helper cannot project its reply
-  (`controller_reply_unreadable`, with the helper's `unrecognized_key` when it
-  has one), the pass happened, so the driver releases the request file and
-  stops. Read the PR and controller state for its effect, and fix the helper's
-  projection before relying on that reply shape.
+  (`controller_reply_unreadable`, with the helper's `projection_error_code`),
+  the pass happened, so the driver releases the request file and stops. Read
+  the PR and controller state for its effect, and compare the pinned reply
+  schema with Launchplane's before relying on that reply shape.
   A verified PR landing is still reported as landed with unresolved controller
   recovery attached, and recovery works after that PR has landed.
   At the deadline, final read-back has one fixed 15-second grace window;

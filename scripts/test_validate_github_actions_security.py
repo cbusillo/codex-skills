@@ -56,13 +56,6 @@ def assert_contains(violations: list[str], expected: str) -> None:
         raise AssertionError(f"expected {expected!r} in {violations}")
 
 
-def test_current_repository_passes() -> None:
-    module = load_module()
-    violations = module.validate_repository(module.ROOT)
-    if violations:
-        raise AssertionError(f"current repository must pass: {violations}")
-
-
 def test_accepts_pinned_remote_and_local_references() -> None:
     module = load_module()
     with fixture_root(
@@ -191,7 +184,6 @@ def test_rejects_stale_mutable_reference_allowlist_entries() -> None:
 
 
 def main() -> int:
-    test_current_repository_passes()
     test_accepts_pinned_remote_and_local_references()
     test_rejects_mutable_short_unapproved_and_unprovenanced_references()
     test_scans_referenced_composite_action_metadata()

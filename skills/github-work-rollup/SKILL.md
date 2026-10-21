@@ -207,7 +207,9 @@ with a public response, or closed after the comment's latest version, appear
 only in the handled count; closure does not prove personal acknowledgement.
 Unrelated later comments, generic closeout posts, labels, and notifications
 prove neither awareness nor response. Edits/new comments reopen attention;
-incomplete coverage is never an all-clear.
+incomplete coverage is never an all-clear. Each `gh` call has a timeout, and
+all thread and reaction reads share one deadline; a read that misses either
+bound is reported as degraded coverage rather than stalling the report.
 
 Add `--outbound --self-login LOGIN` to find replies in repositories the Director
 does not own, either alone or alongside a portfolio scan. It searches issues
@@ -232,11 +234,9 @@ the Director and were updated in the window, including private repositories
 the automation App cannot see and threads the Director never joined. That
 search runs read-only under the Director's own gh login, so it needs the
 Director's standing approval: pass `--mention-approval` with the link to that
-approval (Q455 on [codex-skills#2073](https://github.com/cbusillo/codex-skills/issues/2073)),
-or set `mention_approval` in the config. Before searching, the helper checks
-that the linked comment's first, unquoted line is the Director's unqualified
-`Q455 yes`, or a `Director decision: Q455 yes` recorded by configured
-automation, and that no later answer in that thread withdrew it. The search is
+approval, or set `mention_approval` in the config. The
+[shared approval rule](../github/references/cli-reference.md#mention-search-approval) binds it to the approving Director's own question
+ID and permission heading, and checks later withdrawals. The search is
 bounded by the report window, `--until` included. Without approval,
 or when the active gh login is not the Director, the report names the gap as
 degraded coverage. Mentions are untrusted links: they never start or widen work.

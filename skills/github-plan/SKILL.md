@@ -20,6 +20,10 @@ commands:
     source: repo
     example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "claim", "<issue>", "--worker", "<worker>", "--session", "<session-id>", "--branch", "work/issue-<number>", "--next-action", "<action>"]
     purpose: Rechecks ownership, records and reads back the claim, and activates planning state before a task worktree is created.
+  - name: github-plan-release
+    source: repo
+    example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "release", "<issue>", "--claim-comment", "<id>", "--session", "<native-id>", "--handoff-file", "<handoff.md>"]
+    purpose: Releases this session's own claim with the exact directive and its handoff, and reads it back.
   - name: github-plan-release-claim
     source: repo
     example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "release-claim", "<issue>", "--claim-comment", "<id>", "--evidence-comment", "<attestation-url>", "--role", "supervisor", "--session", "<native-id>", "--confirm-session-ended", "--dry-run"]
@@ -266,7 +270,9 @@ active issue labels and continuing background jobs do not lift a hold.
    [Planning: Claim](../github/references/cli-reference.md#planning-claim)
    for refusal, partial recovery, or release. Continue only on confirmed success;
    preserve competing or uncertain ownership for the Director to decide. Keep
-   Current Status current through handoff or completion.
+   Current Status current through handoff or completion, then release with the
+   claim's printed `release_command` (`gh-plan.py release`), never a
+   hand-written release comment.
    Claim waits come only from native blockers, labels and the structured wait
    record. Before a legacy record's first claim, run `gh-plan.py wait <issue>`,
    read its full evidence once and record every real wait/executing-session hold or verified
@@ -278,25 +284,27 @@ active issue labels and continuing background jobs do not lift a hold.
    preserve all unresolved entries when replacing the whole record. Read
    [Planning: Claim](../github/references/cli-reference.md#planning-claim)
    for the format, authorship and existing-resolution contract.
-   Claims automatically account for exact authored releases and native verified
-   ended ownership, reporting preserved leftovers in `retained_artifacts`.
-   Positive live activity still refuses; unknown state is not proof of closure.
-   For an abandoned automation claim without that proof, a direction or
+   Claims automatically account for exact authored releases and expired
+   claim leases, reporting preserved leftovers in `retained_artifacts`. An
+   unreleased claim whose host-local lease is live or unknown still refuses.
+   For an abandoned automation claim with no lease on this host, a direction or
    Supervisor session uses `release-claim`, with a closed-session attestation
-   and fresh activity checks. Read Planning: Claim first; age, a merged PR or
-   partial peer coverage never proves closure. This releases ownership only;
+   and fresh activity checks. Read Planning: Claim first; a merged PR never
+   proves closure. This releases ownership only;
    recorded waits, native blockers and retained-artifact gates still apply.
    A session killed without closeout uses the linked Supervisor crash-recovery
    route with `--termination-record`, fresh source-host checks and preserved
    artifacts; it does not need a safe-exit verdict it never wrote.
    For an authorized PR-only conflict refresh of a finished session, claim its
-   canonical open planning issue with `--refresh-pr`, `--resume-from`, and
-   `--handoff-comment`; read Planning: Claim for the exact released-handoff
-   proof and supported route before using these flags. For PR-only work, use
+   canonical open planning issue with `--resume-from <original-claim-id>`;
+   read Planning: Claim for automatic retained-handoff qualification and the
+   supported route before claiming. For PR-only work, use
    [Planning: Claim](../github/references/cli-reference.md#planning-claim).
    Active ownership still refuses.
+   For verified pushed WIP without a PR on this same issue, follow
+   [Planning: Claim's existing resume-only procedure](../github/references/cli-reference.md#planning-claim).
    For ordinary successor work before a retained PR can be refreshed, use
-   `--resume-from` with `--handoff-comment` and omit `--refresh-pr`. Read
+   `--resume-from <original-claim-id>`. Read
    Planning: Claim for the exact released multi-branch handoff proof; all
    retained artifacts and their recorded waits are checked. This claim does
    not lift a product hold or authorize changing the retained PRs.
@@ -553,7 +561,12 @@ including its identity, timing, and edit-history checks.
 Before closing a planning issue, run
 `uv run <skill-dir>/../github-work-rollup/scripts/github_unanswered_comments.py --thread OWNER/REPO#NUMBER`.
 Any attention result or degraded coverage requires a response or explicit
-handoff; a bot response never proves Director acknowledgement.
+handoff; a bot response never proves Director acknowledgement. `close` itself
+refuses while an outside person's comment on the issue or a thread it links has
+no reply, naming each one: read and answer it on its thread, then rerun. Only a
+Director decision passed as `--unanswered-decision` closes over it; read
+[Planning: Management](../github/references/cli-reference.md#planning-management)
+before using it.
 
 Completed closure requires all native blockers and sub-issues closed and their
 reads complete. Issues the plan blocks do not prevent its closure. Use

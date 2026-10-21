@@ -199,6 +199,7 @@ def test_own_user_sibling_writes_use_resolved_personal_actor() -> None:
                 args += ["--title", "New title"]
             with (
                 patch.dict(os.environ, {"GH_WITH_ENV_TOKEN_OWN_USER": "1"}),
+                patch.object(github_issue, "_close_attention", return_value={"result": "passed"}),
                 patch.object(sys, "argv", args),
                 patch.object(sys, "stdin", io.StringIO("")),
                 contextlib.redirect_stdout(io.StringIO()) as stdout,
@@ -1299,9 +1300,10 @@ def _run_cli(argv: list[str], stdin: Any, *, timeout: float, planning: bool = Fa
 
     sys.argv, sys.stdin = ["github_issue.py", *argv], stdin
     try:
-        worker = threading.Thread(target=target, daemon=True)
-        worker.start()
-        worker.join(timeout)
+        with patch.object(github_issue, "_close_attention", return_value={"result": "passed"}):
+            worker = threading.Thread(target=target, daemon=True)
+            worker.start()
+            worker.join(timeout)
     finally:
         sys.argv, sys.stdin = original_argv, original_stdin
     assert not worker.is_alive(), f"{argv[0]} did not return within {timeout}s"
@@ -1391,6 +1393,36 @@ def test_edit_body_file_can_clear_the_body() -> None:
         assert patches == [{"body": ""}], calls
 
     with_call_stub(_state_and_label_callback, run)
+
+
+def test_close_refuses_over_unanswered_outside_comment_before_any_write() -> None:
+    unanswered = {"repo": "owner/repo", "number": 42, "author": "client", "author_class": "person",
+                  "publicly_addressed": False, "later_reply_url": None, "created_at": "2026-10-17T17:33:49Z",
+                  "comment_url": "https://github.com/owner/repo/issues/42#issuecomment-1"}
+
+    def callback(method: str, path: str, _body: Any, **_kwargs: Any) -> github_api.ApiResult:
+        if path == "/user":
+            return success({"login": "fixture-automation"})
+        assert method == "GET", path
+        return success([] if "/dependencies/" in path or "/sub_issues" in path else issue_body())
+
+    def run(calls: list[dict[str, Any]]) -> None:
+        radar = {"status": "attention", "attention": [unanswered], "coverage": {"errors": []}}
+        with (
+            patch.object(github_issue.github_close_attention, "run_radar", return_value=radar),
+            patch.object(sys, "argv", ["gh-issue", "close", "owner/repo#42"]),
+            patch.object(sys, "stdin", io.StringIO("")),
+            contextlib.redirect_stdout(io.StringIO()) as stdout,
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            exit_code = github_issue.main()
+        payload = json.loads(stdout.getvalue())
+        assert exit_code != 0 and payload["ok"] is False, payload
+        assert payload["failed_step"] == "close_attention_preflight", payload
+        assert unanswered["comment_url"] in payload["error"], payload
+        assert not [call for call in calls if call["method"] != "GET"], calls
+
+    with_call_stub(callback, run)
 
 
 def test_close_rejects_comment_with_comment_file() -> None:
@@ -1686,6 +1718,7 @@ TESTS = [
     test_state_and_edit_commands_return_with_open_idle_stdin,
     test_explicit_comment_file_waits_for_slow_stdin_and_reads_paths,
     test_edit_body_file_can_clear_the_body,
+    test_close_refuses_over_unanswered_outside_comment_before_any_write,
     test_close_rejects_comment_with_comment_file,
     test_generic_cli_close_refreshes_a_nonplan_blockers_dependent_without_fact_edits,
     test_generic_close_without_a_matching_checkout_preserves_configuration_review,

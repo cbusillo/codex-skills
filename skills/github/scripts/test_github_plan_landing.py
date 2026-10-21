@@ -33,6 +33,9 @@ assert SPEC is not None and SPEC.loader is not None
 PLAN: Any = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = PLAN
 SPEC.loader.exec_module(PLAN)
+# These fakes model closure projection, not the comment radar; test_github_close_attention.py,
+# test_gh_plan_close_config.py and validate-gh-issue.sh cover the close comment check.
+PLAN.close_attention_preflight = lambda *_args, **_kwargs: {"result": "passed"}
 REPO = "fixture/catalog"
 
 

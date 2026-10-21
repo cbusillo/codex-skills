@@ -4,6 +4,9 @@ description: Use when the user requests a native reminder, including plain repea
 metadata:
   short-description: Close out workstreams cleanly
 resources:
+  - path: scripts/check_claims.py
+    kind: script
+    description: Reads a session's claim releases and retained PR handoffs on GitHub before a safe-exit verdict.
   - path: scripts/repo_cleanup.py
     kind: script
     description: Read-only cleanup inventory, fork dispositions, private snapshot revalidation, and post-action verification.
@@ -23,6 +26,11 @@ resources:
     kind: reference
     description: Read when the Director requests a native reminder, whether plain or for a session or repository.
 commands:
+  - name: closeout-check-claims
+    source: skill
+    resource_path: scripts/check_claims.py
+    example_argv: ["uv", "run", "scripts/check_claims.py", "--owner", "OWNER", "--session", "<native-id>", "--transcript", "/absolute/native-transcript.jsonl"]
+    purpose: Inventories all configured writer App installations and refuses an all-clear until exact releases and retained PR handoffs are verified; never writes.
   - name: session-reminder-link
     source: skill
     resource_path: scripts/reminder_link.py
@@ -43,6 +51,43 @@ commands:
     resource_path: scripts/repo_cleanup.py
     example_argv: ["uv", "run", "work-closeout/scripts/repo_cleanup.py", "forks", "--owner", "OWNER"]
     purpose: Reports the cleanup policy's keep, archive, or delete disposition for each fork without changing any repository.
+policy:
+  command_policies:
+    - id: reject-pkill
+      match:
+        argv_prefix: ["pkill"]
+      action: reject
+      message: &process_stop_route Pattern kills can stop other sessions on a shared host. Stop your own background task through the harness's task stop (TaskStop or Codex's task stop), or use kill <pid> with the literal positive numeric PID you recorded when you started it, or the shell's own recorded last-background PID $!. Read a recorded pidfile first, then pass its numeric PID directly; do not use substitutions, other variables, process groups or piped targets.
+    - id: reject-killall
+      match:
+        argv_prefix: ["killall"]
+      action: reject
+      message: *process_stop_route
+    - id: reject-nonliteral-kill-targets
+      match:
+        shell_regex: >-
+          (?x)\A(?:builtin\s+)?(?:\S*/)?kill(?=\s|$)
+          (?!\s+(?:(?:-[sn]\s+[\w+-]+|--signal(?:=|\s+)[\w+-]+|-[\w+-]+)\s+)?
+          (?:--\s+)?(?:[1-9]\d*|'\$!')(?:\s+(?:[1-9]\d*|'\$!'))*
+          (?:\s+(?:[1-9]\d*\s+)?['"]?(?:[<>]{1,2}|[<>]&|&>+|>\|)['"]?\s+(?:'[^']*'|"[^"]*"|\S+))*\Z
+          |\s+(?:-[lL]|--(?:list|table|help|version))(?:\s|$))
+      action: reject
+      message: *process_stop_route
+    - id: reject-wrapped-process-kills
+      match:
+        shell_regex: >-
+          (?x)\A((\S*/)?(
+          xargs(\s+(?>-[0prtx]+|'?-i\S*|['"]?-[IEnPLsadJ] ([^\s'"]+['"]?|\s+\S+)|--(arg-file|delimiter|max-(args|procs|lines|chars)|replace|eof)(=|\s+)\S+|--[\w-]+))*
+          |sudo(\s+(?>-[ughpDT]\s+\S+|-\S+))*
+          |timeout(\s+(?>-[ks]\s+\S+|-\S+))*\s+\S+
+          |nice(\s+(-n\s*-?\d+|--\w+(=|\s+)-?\d+|-\d+))*
+          |caffeinate(\s+(-[dimsu]+|-[tw]\s+\d+))*
+          |doas(\s+(-[uC]\s+\S+|-[Lnns]+))*
+          |stdbuf(\s+(-[ioe]\s*\S+|--\w+=\S+))*
+          |command|exec|nohup|time|env(\s+-\S+)*(\s+[A-Za-z_]\w*=\S+)*
+          )\s+)+(\S*/)?(kill|pkill|killall)(\s|$)
+      action: reject
+      message: *process_stop_route
 ---
 
 # Work Closeout
@@ -109,9 +154,10 @@ preserved, or intentionally left in place.
    with common triggers: docs routing, validation gates, primary commands,
    important workflows, health endpoints, repo relationships, JetBrains
    expectations, cleanup policy, and ownership boundaries. If metadata should
-   change, update it only with approval, including approval already given for
-   that metadata change and scope; otherwise record a concrete remaining item
-   before saying it is safe to exit.
+   change, maintain in-scope metadata under existing task or standing authority,
+   following [task scope](../references/execution-scope.md) for stop boundaries
+   or expanded scope. A read-only audit stays read-only; record any remaining
+   metadata work before saying it is safe to exit.
 
    Also read `cleanup`. During closeout, run or report repo-configured commands
    with `when: "routine"` as closeout evidence. Commands marked `explicit`,
@@ -200,6 +246,7 @@ preserved, or intentionally left in place.
    the issue/plan/docs state or report safe-to-exit as conditional/no with the
    mismatch named.
 6. Classify this task's artifacts under the shared repository cleanup policy.
+   For processes, follow this skill's command policies: use the harness's task stop for your own task, or kill only an exact PID recorded when you started it; never kill by pattern.
    Clean only task-owned disposable output whose purpose is complete: transient logs,
    screenshots, temp scripts, generated scratch files, generated caches, stopped
    test containers, or other consumed temporary files.
@@ -213,9 +260,80 @@ preserved, or intentionally left in place.
    stash, or overwrite unrelated IDE changes. Whole-worktree retirement requires
    the shared cleanup policy's protected-file, preservation, ownership, and
    authorization evidence.
-7. Do not remove user artifacts, broad system caches, unrelated untracked files,
-   or remote resources without explicit approval.
-8. Report final state concisely.
+7. Do not remove user artifacts, broad system caches, unrelated untracked files
+   or unrelated remote resources without explicit approval. Use `github` for
+   task-owned branch cleanup. Before deleting task-owned testing or preview
+   resources, establish disposability under current overall and repository
+   direction, including their in-use, only-copy, production-isolation and
+   live-data safeguards. For Launchplane-managed lanes, use the
+   [disposable-lane observations](../launchplane/references/write-action-helper-contract.md#disposable-lane-observations)
+   for that evidence. For Launchplane-managed resources, use
+   [contract-backed lifecycle routing](../launchplane/SKILL.md#contract-backed-lifecycle-and-repair-routing).
+   For other resources, use [infra-ops](../infra-ops/SKILL.md#workflow) for
+   documented provider lifecycle operations under existing task authority.
+8. Before a safe-exit all-clear, complete [claim disposition](#claim-disposition)
+   for this session on either harness. Updating status or preserving a
+   PR does not release ownership. Keep the claim while a required review is
+   pending and this session is expected to resume; end that turn without a
+   safe-exit all-clear.
+9. Report final state concisely.
+
+## Claim Disposition
+
+Before reporting `Safe to exit: yes`, account for every claim this session took,
+including earlier turns, other repositories and PR-only work. Ownership lives
+on GitHub: the claim comment, and its exact release.
+
+For a held claim, first finish or durably hand off its work and update Current
+Status with the next actor, action and retained artifacts. Then release it with
+the `release_command` the claim printed (`gh-plan.py release`), naming every
+retained PR's full URL in the handoff. An exact release frees the work for a
+successor at once. It releases ownership only. Never release another session's
+claim. Read the [claim contract](../github/references/cli-reference.md#planning-claim)
+before releasing or repairing a retained-PR handoff.
+
+Then read the record back:
+
+```bash
+uv run <skill-dir>/scripts/check_claims.py \
+  --session NATIVE_ID --transcript /absolute/native-transcript.jsonl
+```
+
+The check reads GitHub only. It inventories every installation of the
+configured automation writer Apps since the transcript's first timestamp,
+including closed issues and PR-only claims, and verifies that every claim
+naming the session has its exact authored release, or a validated Supervisor
+release, and that each retained PR has its handoff. Codex child threads and
+Claude subagents claim under the root session ID, so the root's check covers
+them; repeat `--session` and `--transcript` for any other session to include.
+A transcript that does not belong to its session refuses.
+`--repository OWNER/REPO` adds known context, and `--owner OWNER` asserts
+account coverage; neither narrows the installation inventory. Only exit 0 with
+`claims_clear: true` and complete coverage permits an all-clear. An unreleased
+claim, unverified retained PR or incomplete read keeps the verdict
+conditional/no: record the reason and continue independent work. Do not turn a
+failed read into no claims. The Supervisor runs the same check for any session.
+
+An open PR need not merge before a session exits. Its exact release names the
+retained PR, and the check verifies the same repository, source identity and
+independent issue link under the successor's handoff contract. A PR-only claim
+uses the PR itself as its work record. Preserve the branch, worktree and the
+next actor's custody.
+
+The check does not inspect processes. Stop or hand off any background work you
+started before the verdict; leaving it running is a closeout problem, not
+something the check proves.
+
+A session that crashes cannot release. Its claim frees itself when its lease
+expires: the catalog's hooks renew a host-local lease on the session's activity
+(see [Planning: Claim](../github/references/cli-reference.md#planning-claim)),
+and after 30 minutes without activity a successor on the same host may take
+over, recording a `Lease takeover:` line in its claim. Set
+`GH_PLAN_CLAIM_LEASE_MINUTES` when claiming to change the period the claim
+records. A host with no lease for
+the session keeps the claim; a Supervisor or direction session releases an
+ended session's claim there with `gh-plan.py release-claim`. The lease is crash
+recovery, not a substitute for releasing.
 
 ## Consuming Readiness Evidence
 
@@ -306,6 +424,10 @@ Safe to exit: yes
   post-turn trigger may still occur and the answer says so explicitly. Activity
   in detached `auto-review-<hex>` worktrees for older targets is not a gate.
 - PR, issue, and GitHub plan state is current.
+- This session's claims are released, with complete readback evidence
+  under Claim Disposition and verified retained-PR handoffs where needed, or
+  GitHub claim disposition is explicitly not applicable. Held or unread claims
+  prevent an all-clear even when every readiness and artifact check passes.
 - The branches and worktrees this task created or adopted are accounted for:
   eligible completed ones are removed under the shared cleanup policy, and each
   one that stays is named with its reason and what will remove it. Work from the

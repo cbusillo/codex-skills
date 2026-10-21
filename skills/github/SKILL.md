@@ -243,12 +243,12 @@ commands:
   - name: github-git-commit-as-bot
     source: skill
     resource_path: scripts/git-commit-as-bot
-    example_argv: ["scripts/git-commit-as-bot", "-m", "fix: describe change"]
+    example_argv: ["scripts/git-commit-as-bot", "--worktree", "/absolute/task/path", "-m", "fix: describe change"]
     purpose: Commits with the configured automation identity as author and committer while preserving normal git commit flags.
   - name: github-git-push-as-bot
     source: skill
     resource_path: scripts/git-push-as-bot
-    example_argv: ["scripts/git-push-as-bot", "-u", "origin", "task-branch"]
+    example_argv: ["scripts/git-push-as-bot", "--worktree", "/absolute/task/path", "-u", "origin", "task-branch"]
     purpose: Pushes GitHub branches using the configured automation token while restoring the normal remote URL afterward.
   - name: github-ci-diagnose
     source: skill
@@ -695,7 +695,7 @@ policy:
         - kind: script
           path: scripts/git-commit-as-bot
           example_argv:
-            ["scripts/git-commit-as-bot", "-m", "fix: describe change"]
+            ["scripts/git-commit-as-bot", "--worktree", "/absolute/task/path", "-m", "fix: describe change"]
           purpose: Commits with the configured automation identity as author and committer while preserving normal git commit flags.
     - id: prefer-bot-commit-helper-with-git-options
       match:
@@ -706,13 +706,13 @@ policy:
         - kind: script
           path: scripts/git-commit-as-bot
           example_argv:
-            ["scripts/git-commit-as-bot", "-m", "fix: describe change"]
+            ["scripts/git-commit-as-bot", "--worktree", "/absolute/task/path", "-m", "fix: describe change"]
           purpose: Commits with the configured automation identity as author and committer while preserving normal git commit flags.
     - id: prefer-bot-helper-for-commit-creating-git
       match:
         shell_regex: "(?:^|[;&|(`\\n]|\\s-[A-Za-z]*c\\s+['\"])\\s*(?:[A-Za-z_][A-Za-z0-9_]*=\\S*\\s+|(?:command|exec|time|nohup|env)\\s+)*(?:\\S*/)?git(?:\\s+(?:-[cC]\\s*(?:\"[^\"]*\"|'[^']*'|[^\\s;&|()'\"])+|--(?:git-dir|work-tree|namespace|config-env|exec-path|super-prefix|attr-source)(?:=|\\s+)(?:\"[^\"]*\"|'[^']*'|[^\\s;&|()'\"])+|--[a-z][a-z-]*(?:=(?:\"[^\"]*\"|'[^']*'|[^\\s;&|()'\"])+)?|-[pP]))*\\s+(?:merge(?!\\s+--ff-only(?=\\s|$)(?![^;&|\\n]*\\s--(?:ff|no-ff)(?:\\s|$)))|pull|rebase|cherry-pick|revert|am)(?![\\w-])(?!\\s+--(?:abort|quit)\\s*(?:$|[;&|\\n]))"
       action: require_preferred
-      message: Raw Git integration can create human-identity commits. Before PR updates apply the freshness, train ownership, branch ownership and authorization rules in references/repo-workflow.md Merge Readiness; use gh-pr.py update-branch only for permitted mergeable updates. For local integration run git-commit-as-bot --git-command COMMAND from the target directory. For non-creating sync use git fetch then git merge --ff-only REF, with --ff-only first. Existing branch and landing authorization applies.
+      message: Raw Git integration can create human-identity commits. Apply freshness, train, branch ownership and authorization rules in references/repo-workflow.md Merge Readiness before PR updates. Use gh-pr.py update-branch for permitted mergeable updates. For local integration use git-commit-as-bot --worktree /absolute/task/path --git-command COMMAND from that task. Non-creating sync uses git fetch then git merge --ff-only REF, with --ff-only first. Existing branch and landing authorization applies.
       preferred:
         - kind: script
           path: scripts/gh-pr.py
@@ -720,7 +720,7 @@ policy:
           purpose: Updates an authorized PR branch through GitHub as the automation identity.
         - kind: script
           path: scripts/git-commit-as-bot
-          example_argv: ["scripts/git-commit-as-bot", "--git-command", "merge", "--no-edit", "origin/main"]
+          example_argv: ["scripts/git-commit-as-bot", "--worktree", "/absolute/task/path", "--git-command", "merge", "--no-edit", "origin/main"]
           purpose: Runs the selected commit-creating Git command with the configured bot author and committer environment.
     - id: prefer-bot-push-helper
       match:
@@ -731,7 +731,7 @@ policy:
         - kind: script
           path: scripts/git-push-as-bot
           example_argv:
-            ["scripts/git-push-as-bot", "-u", "origin", "task-branch"]
+            ["scripts/git-push-as-bot", "--worktree", "/absolute/task/path", "-u", "origin", "task-branch"]
           purpose: Pushes to GitHub using the configured automation token while restoring the normal remote URL afterward.
     - id: prefer-bot-push-helper-with-git-options
       match:
@@ -742,7 +742,7 @@ policy:
         - kind: script
           path: scripts/git-push-as-bot
           example_argv:
-            ["scripts/git-push-as-bot", "-u", "origin", "task-branch"]
+            ["scripts/git-push-as-bot", "--worktree", "/absolute/task/path", "-u", "origin", "task-branch"]
           purpose: Pushes to GitHub using the configured automation token while restoring the normal remote URL afterward.
     - id: prefer-github-plan-milestone-helper
       match:
@@ -828,7 +828,10 @@ and say why.
   create a PR in another repository, run from it or pass `--repo` with an
   explicit `--head BRANCH`.
 - **Commits and pushes** by Code or spawned agents: `scripts/git-commit-as-bot`
-  and `scripts/git-push-as-bot`.
+  and `scripts/git-push-as-bot`, with `--worktree /absolute/task/path` first.
+  Supply the worker’s intended task path literally, independently of the current
+  directory; do not derive it from `pwd` or Git discovery. Both helpers refuse
+  missing paths, primary checkouts, other workers’ checkouts, and checked-out main/master or known default branches before identity selection or writes. Subdirectories are allowed.
   Never refresh your own PR branch merely because it is behind; require a real
   conflict or an explicit check requirement. The merge train owns freshness on
   train-routed PRs. Before a base update, apply the ownership and authorization
@@ -836,8 +839,8 @@ and say why.
   `gh-pr.py update-branch`. The helpers enforce this rule: when an update is
   required for another reason, name it with `--required-by` or
   `--refresh-required`. For local integration,
-  use `git-commit-as-bot --git-command merge|pull|rebase|cherry-pick|revert|am`
-  from the target directory, followed by that command's arguments, including
+  use `git-commit-as-bot --worktree /absolute/task/path --git-command merge|pull|rebase|cherry-pick|revert|am`
+  from that task worktree, followed by that command's arguments, including
   `--continue` after resolving
   conflicts. Existing commits retain their authors; newly created commits use
   the bot environment and recreated commits use the bot committer. This does
@@ -891,7 +894,7 @@ each target repository:
   Commits keep your git identity, and `gh-pr.py create` adds the
   AI-assistance sentence to the body unless it already says so.
   For a fork contribution, the commit's identity follows the fork's `origin`
-  unless `git-commit-as-bot --repo UPSTREAM-OWNER/REPO` names the pull
+  unless `git-commit-as-bot --worktree /absolute/task/path --repo UPSTREAM-OWNER/REPO` names the pull
   request's target; see
   [Primary App and contributor identity](references/cli-reference.md#primary-app-and-contributor-identity).
   `GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH=1` refuses even with the opt-in.
@@ -1061,6 +1064,9 @@ the landing route:
   `uv run ../github-work-rollup/scripts/github_unanswered_comments.py --thread OWNER/REPO#NUMBER`.
   An attention result or degraded coverage needs a response or explicit
   handoff first; a bot response never proves Director acknowledgement.
+  `gh-plan.py close` and `gh-issue close` refuse over an unanswered outside
+  comment on the issue or a thread it links; see
+  [Planning: Management](references/cli-reference.md#planning-management).
 
 For an authorized direct GitHub merge, when the user does not name a method,
 say you are using a normal merge commit and run `scripts/gh-pr.py merge <pr> --method merge`. Use `--method squash`

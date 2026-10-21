@@ -3,19 +3,18 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""Run the hermetic Launchplane agent/operator contract conformance gate."""
+"""Run the hermetic Launchplane local caller-binding gate."""
 
 from __future__ import annotations
 
 import json
 
-from launchplane_contract import ContractError, load_contract, validate_contract
+from launchplane_contract import ContractError, validate_local_bindings
 
 
 def main() -> int:
     try:
-        artifact = load_contract()
-        summary = validate_contract(artifact)
+        summary = validate_local_bindings()
     except ContractError as exc:
         print(
             json.dumps(
@@ -39,7 +38,7 @@ def main() -> int:
                 "status": "ok",
                 "contract": summary,
                 "summary": {
-                    "message": "Vendored contract and local consumers are consistent.",
+                    "message": "Local caller bindings are valid; producer compatibility is not proven.",
                     "hermetic_only": True,
                     "upstream_freshness_proven": False,
                 },

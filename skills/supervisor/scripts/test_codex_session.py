@@ -7,6 +7,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 from datetime import datetime, timezone
 import socket
@@ -62,6 +63,7 @@ class ResumeTests(unittest.TestCase):
 
     def setUp(self):
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="resume-", dir="/tmp"))).resolve()
+        self.enterContext(patch.dict(os.environ, {"HOME": str(self.root), "CODEX_HOME": str(self.root / "account")}))
         self.home = self.root / "account"
         self.native = str(uuid.uuid4())
         path = self.home / "sessions" / (self.native + ".jsonl")
@@ -75,7 +77,7 @@ class ResumeTests(unittest.TestCase):
         endpoint.chmod(0o600)
         self.log = self.root / "shared/closed.json"
         self.enterContext(patch.object(SESSION.closure, "closed_log", return_value=self.log))
-        self.homes = self.enterContext(patch.object(github_plan_sessions, "codex_homes", return_value=[self.home]))
+        self.homes = self.enterContext(patch.object(github_plan_sessions, "configured_homes", return_value=[self.home]))
         self.args = SimpleNamespace(command="resume", session_id=self.native, codex_home=self.home,
                                     message=None, message_file=None)
         self.child = MagicMock(pid=456)
@@ -146,6 +148,11 @@ class ResumeTests(unittest.TestCase):
 
     def test_source_validation_refuses_unconfigured_home_wrong_transcript_and_socket(self):
         with patch.object(SESSION, "run_client", new_callable=AsyncMock) as guarded:
+            self.args.session_id = self.native.replace("-", "")
+            with self.assertRaises(ValueError) as alias:
+                SESSION.run(self.args)
+            self.assertIn(self.native, str(alias.exception))
+            self.args.session_id = self.native
             self.homes.return_value = []
             with self.assertRaises(ValueError):
                 SESSION.run(self.args)

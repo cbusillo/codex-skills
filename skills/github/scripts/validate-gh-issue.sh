@@ -7,6 +7,22 @@ export CODEX_AUTOMATION_EMAIL=fixture-automation@example.invalid
 script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH='' cd -- "$script_dir/../.." && pwd)"
 tmpdir="$(mktemp -d)"
+# Sourced by the close fakes: answers the close comment check's reads (native
+# relationships, the closing issue, and the comment radar's thread reads).
+cat >"$tmpdir/gate-reads.sh" <<'EOF'
+case "$*" in
+	*'/dependencies/'* | *'/sub_issues'*) printf '[]\n'; exit 0 ;;
+	'api user') printf '{"login":"fixture-automation"}\n'; exit 0 ;;
+	*'--slurp'*) printf '[[]]\n'; exit 0 ;;
+esac
+if [[ "$*" =~ (^api\ repos|--method\ GET.*\ /repos)/owner/repo/issues/([0-9]+)$ ]]; then
+	number="${BASH_REMATCH[2]}"
+	printf '{"id":90%s,"number":%s,"title":"Issue title","body":"","state":"open","state_reason":null,"html_url":"https://github.com/owner/repo/issues/%s","user":{"login":"fixture-automation","type":"Bot"},"labels":[],"assignees":[],"milestone":null}\n' \
+		"$number" "$number" "$number"
+	exit 0
+fi
+EOF
+export GH_ISSUE_GATE_READS="$tmpdir/gate-reads.sh"
 export GITHUB_REPO_SNAPSHOT_POLICY_HELPER="$tmpdir/missing-policy.py"
 cleanup() {
 	rm -rf "$tmpdir"
@@ -358,6 +374,14 @@ grep -qx 'codex-token' "$env_log"
 
 export CODEX_SKILLS_ENV_FILE=/definitely/missing/codex-skills-test.env
 
+bot_original_directory=$PWD
+bot_primary="$tmpdir/bot-primary"
+bot_worktree="$tmpdir/bot-task"
+git init -q "$bot_primary"
+git -C "$bot_primary" -c user.name=Fixture -c user.email=fixture@example.invalid commit --allow-empty -qm seed
+git -C "$bot_primary" worktree add -qb work/task "$bot_worktree"
+cd "$bot_worktree"
+
 cat >"$tmpdir/record-git" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -398,7 +422,7 @@ chmod +x "$tmpdir/record-git"
 PATH="$tmpdir:$PATH" GIT_COMMIT_AS_BOT_GIT="$tmpdir/record-git" GH_ISSUE_TEST_LOG="$log" \
 	GH_ISSUE_ENV_LOG="$env_log" CODEX_AUTOMATION_LOGIN=fixture-automation \
 	CODEX_AUTOMATION_EMAIL=fixture-automation@example.invalid CODEX_GITHUB_TOKEN=must-not-reach-hook \
-	"$repo_root/github/scripts/git-commit-as-bot" -m "bot commit" >/dev/null
+	"$repo_root/github/scripts/git-commit-as-bot" --worktree "$bot_worktree" -m "bot commit" >/dev/null
 
 grep -q 'author=fixture-automation <fixture-automation@example.invalid> committer=fixture-automation <fixture-automation@example.invalid>' "$env_log"
 grep -q '^commit_tokens=||$' "$env_log"
@@ -411,14 +435,14 @@ for git_command in commit merge pull rebase cherry-pick revert am; do
 	    GH_ISSUE_ENV_LOG="$env_log" CODEX_AUTOMATION_LOGIN=fixture-automation \
 	    CODEX_AUTOMATION_EMAIL=fixture-automation@example.invalid CODEX_GITHUB_TOKEN=must-not-reach-hook \
 	    GH_TOKEN=must-not-reach-hook GITHUB_TOKEN=must-not-reach-hook \
-	    "$repo_root/github/scripts/git-commit-as-bot" --git-command "$git_command" --continue >/dev/null
+	    "$repo_root/github/scripts/git-commit-as-bot" --worktree "$bot_worktree" --git-command "$git_command" --continue >/dev/null
 	grep -qx "$git_command --continue" "$log"
 	grep -q '^author=fixture-automation <fixture-automation@example.invalid> committer=fixture-automation <fixture-automation@example.invalid>$' "$env_log"
 	grep -q '^commit_tokens=||$' "$env_log"
 done
 : >"$log"
 if GIT_COMMIT_AS_BOT_GIT="$tmpdir/record-git" GH_ISSUE_TEST_LOG="$log" \
-	"$repo_root/github/scripts/git-commit-as-bot" --git-command push origin branch >/dev/null 2>"$stderr_log"; then
+	"$repo_root/github/scripts/git-commit-as-bot" --worktree "$bot_worktree" --git-command push origin branch >/dev/null 2>"$stderr_log"; then
 	echo "error: commit wrapper accepted an unsupported command" >&2
 	exit 1
 fi
@@ -433,7 +457,7 @@ env -u CODEX_AUTOMATION_LOGIN -u CODEX_AUTOMATION_EMAIL -u CODE_HOME -u CODEX_SK
 	PATH="$tmpdir:$PATH" HOME="$commit_home" CODEX_HOME="$empty_codex_home_dir" \
 	GIT_COMMIT_AS_BOT_GIT="$tmpdir/record-git" GH_ISSUE_TEST_LOG="$log" \
 	GH_ISSUE_ENV_LOG="$env_log" \
-	"$repo_root/github/scripts/git-commit-as-bot" -m "home fallback" >/dev/null
+	"$repo_root/github/scripts/git-commit-as-bot" --worktree "$bot_worktree" -m "home fallback" >/dev/null
 
 grep -q 'author=home-bot <home-bot@example.invalid>' "$env_log"
 
@@ -442,7 +466,7 @@ if env -u CODEX_AUTOMATION_LOGIN -u CODEX_AUTOMATION_EMAIL \
 	PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
 	GIT_COMMIT_AS_BOT_GIT="$tmpdir/record-git" GH_ISSUE_TEST_LOG="$log" \
 	GH_ISSUE_ENV_LOG="$env_log" \
-	"$repo_root/github/scripts/git-commit-as-bot" -m "unconfigured" >/dev/null 2>"$stderr_log"; then
+	"$repo_root/github/scripts/git-commit-as-bot" --worktree "$bot_worktree" -m "unconfigured" >/dev/null 2>"$stderr_log"; then
 	echo "error: unconfigured git-commit-as-bot must fail closed" >&2
 	exit 1
 fi
@@ -474,7 +498,7 @@ PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/token.env" \
 	GIT_PUSH_AS_BOT_GIT="$tmpdir/record-git" GIT_PUSH_AS_BOT_GH="$tmpdir/login-gh" \
 	GH_TOKEN=inherited-token GIT_PUSH_AS_BOT_TOKEN=exported-by-caller GH_ISSUE_TEST_LOG="$log" \
 	GH_ISSUE_ENV_LOG="$env_log" \
-	"$repo_root/github/scripts/git-push-as-bot" -u origin branch >/dev/null
+	"$repo_root/github/scripts/git-push-as-bot" --worktree "$bot_worktree" -u origin branch >/dev/null
 
 grep -q '^remote=https://github.com/owner/repo.git$' "$env_log"
 grep -q '^askpass=.* prompt=0 token=codex-token$' "$env_log"
@@ -505,7 +529,7 @@ PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/app.env" \
 	GIT_PUSH_AS_BOT_IDENTITY_HELPER="$tmpdir/fake-app-identity.py" \
 	GIT_PUSH_AS_BOT_GIT="$tmpdir/record-git" GH_ISSUE_TEST_LOG="$log" \
 	GH_ISSUE_ENV_LOG="$env_log" \
-	"$repo_root/github/scripts/git-push-as-bot" -u origin branch >/dev/null
+	"$repo_root/github/scripts/git-push-as-bot" --worktree "$bot_worktree" -u origin branch >/dev/null
 
 grep -q '^askpass=.* prompt=0 token=app-installation-token$' "$env_log"
 grep -q '^push_env=||||$' "$env_log"
@@ -521,7 +545,7 @@ PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/app.env" \
 	GIT_PUSH_AS_BOT_GH="$tmpdir/login-gh" \
 	GIT_PUSH_AS_BOT_GIT="$tmpdir/record-git" GH_ISSUE_TEST_LOG="$log" \
 	GH_ISSUE_ENV_LOG="$env_log" \
-	"$repo_root/github/scripts/git-push-as-bot" -u origin branch >/dev/null 2>"$stderr_log"
+	"$repo_root/github/scripts/git-push-as-bot" --worktree "$bot_worktree" -u origin branch >/dev/null 2>"$stderr_log"
 
 grep -q '^askpass=.* prompt=0 token=human-token$' "$env_log"
 grep -q '^push_env=||||$' "$env_log"
@@ -533,7 +557,7 @@ PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/app.env" \
 	FAKE_APP_CONTRIBUTOR=1 GH_WITH_ENV_TOKEN_OWN_USER=1 GIT_COMMIT_AS_BOT_IDENTITY_HELPER="$tmpdir/fake-app-identity.py" \
 	GIT_COMMIT_AS_BOT_GIT="$tmpdir/record-git" GH_ISSUE_TEST_LOG="$log" \
 	GH_ISSUE_ENV_LOG="$env_log" CODEX_GITHUB_TOKEN=must-not-reach-hook \
-	"$repo_root/github/scripts/git-commit-as-bot" -m "person commit" >/dev/null 2>"$stderr_log"
+	"$repo_root/github/scripts/git-commit-as-bot" --worktree "$bot_worktree" -m "person commit" >/dev/null 2>"$stderr_log"
 
 grep -q '^author= <> committer= <>$' "$env_log"
 grep -q '^commit_tokens=||$' "$env_log"
@@ -545,7 +569,7 @@ PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/app.env" \
 	GIT_COMMIT_AS_BOT_IDENTITY_HELPER="$tmpdir/fake-app-identity.py" \
 	GIT_COMMIT_AS_BOT_GIT="$tmpdir/record-git" GH_ISSUE_TEST_LOG="$log" \
 	GH_ISSUE_ENV_LOG="$env_log" \
-	"$repo_root/github/scripts/git-commit-as-bot" -m "app commit" >/dev/null
+	"$repo_root/github/scripts/git-commit-as-bot" --worktree "$bot_worktree" -m "app commit" >/dev/null
 
 grep -q 'author=fixture-automation <fixture-automation@example.invalid>' "$env_log"
 
@@ -568,7 +592,7 @@ for refused_commit in "FAKE_APP_CONTRIBUTOR=1 GH_WITH_ENV_TOKEN_OWN_USER=1 CODEX
 		GIT_COMMIT_AS_BOT_IDENTITY_HELPER="$tmpdir/fake-app-identity.py" \
 		GIT_COMMIT_AS_BOT_GIT="$tmpdir/record-git" GH_ISSUE_TEST_LOG="$log" \
 		GH_ISSUE_ENV_LOG="$env_log" \
-		"$repo_root/github/scripts/git-commit-as-bot" -m "refused commit" >/dev/null 2>"$stderr_log"; then
+		"$repo_root/github/scripts/git-commit-as-bot" --worktree "$bot_worktree" -m "refused commit" >/dev/null 2>"$stderr_log"; then
 		echo "error: git-commit-as-bot must refuse: ${refused_commit#*|}" >&2
 		exit 1
 	fi
@@ -588,7 +612,7 @@ assert_push_refused() {
 		GIT_PUSH_AS_BOT_GH="$tmpdir/login-gh" \
 		GIT_PUSH_AS_BOT_GIT="$tmpdir/record-git" GH_ISSUE_TEST_LOG="$log" \
 		GH_ISSUE_ENV_LOG="$env_log" "$@" \
-		"$repo_root/github/scripts/git-push-as-bot" "${refused_push_args[@]}" >/dev/null 2>"$stderr_log"; then
+		"$repo_root/github/scripts/git-push-as-bot" --worktree "$bot_worktree" "${refused_push_args[@]}" >/dev/null 2>"$stderr_log"; then
 		echo "error: git-push-as-bot must refuse: $message" >&2
 		exit 1
 	fi
@@ -638,7 +662,7 @@ for named_push in "-u branch" "--delete branch"; do
 		GIT_PUSH_AS_BOT_IDENTITY_HELPER="$tmpdir/fake-app-identity.py" \
 		GIT_PUSH_AS_BOT_GIT="$tmpdir/record-git" GH_ISSUE_TEST_LOG="$log" \
 		GH_ISSUE_ENV_LOG="$env_log" \
-		"$repo_root/github/scripts/git-push-as-bot" --remote fork "${named_push_args[@]}" >/dev/null
+		"$repo_root/github/scripts/git-push-as-bot" --worktree "$bot_worktree" --remote fork "${named_push_args[@]}" >/dev/null
 	grep -q "push_args=.* push fork $named_push" "$env_log"
 	grep -q '^askpass=.* prompt=0 token=app-installation-token$' "$env_log"
 	grep -q '^push_env=||||$' "$env_log"
@@ -661,9 +685,9 @@ for override in --repo=https://github.com/other/repo.git --repo=origin; do
 	assert_push_refused '--repo overrides' CODEX_SKILLS_ENV_FILE="$tmpdir/token.env"
 done
 refused_push_args=(-u --remote fork branch)
-assert_push_refused 'use --remote NAME as the first two arguments' CODEX_SKILLS_ENV_FILE="$tmpdir/token.env"
+assert_push_refused '--remote' CODEX_SKILLS_ENV_FILE="$tmpdir/token.env"
 refused_push_args=(--remote=fork -u branch)
-assert_push_refused 'use --remote NAME as the first two arguments' CODEX_SKILLS_ENV_FILE="$tmpdir/token.env"
+assert_push_refused '--remote' CODEX_SKILLS_ENV_FILE="$tmpdir/token.env"
 refused_push_args=(--remote)
 assert_push_refused 'requires a configured remote name' CODEX_SKILLS_ENV_FILE="$tmpdir/token.env"
 refused_push_args=(--remote https://github.com/owner/repo.git branch)
@@ -690,7 +714,7 @@ run_config_push() {
 		GIT_PUSH_AS_BOT_GIT="$tmpdir/config-git" GIT_PUSH_AS_BOT_GH="$tmpdir/login-gh" \
 		REAL_PUSH_TEST_GIT="$real_git" REAL_PUSH_TEST_REPO="$real_repo" \
 		GH_ISSUE_ENV_LOG="$env_log" "$@" \
-		"$repo_root/github/scripts/git-push-as-bot" --remote fork --delete branch
+		"$repo_root/github/scripts/git-push-as-bot" --worktree "$bot_worktree" --remote fork --delete branch
 }
 assert_remote_restored() {
 	[[ "$("$real_git" -C "$real_repo" remote get-url origin)" == https://github.com/upstream/template.git ]]
@@ -729,6 +753,7 @@ for config_guard in pushurl rewrite; do
 	"$real_git" -C "$real_repo" remote set-url fork git@github.com:owner/repo.git
 	assert_remote_restored
 done
+
 # Missing or multiply configured remotes fail before mutating config or pushing.
 "$real_git" -C "$real_repo" remote remove fork
 : >"$env_log"
@@ -752,6 +777,7 @@ refused_push_args=(-u origin branch)
 printf 'GITHUB_APP_ID=1\nCODEX_GITHUB_TOKEN=codex-token\n' >"$tmpdir/partial-app.env"
 assert_push_refused 'incomplete GitHub App configuration' \
 	CODEX_SKILLS_ENV_FILE="$tmpdir/partial-app.env"
+cd "$bot_original_directory"
 
 : >"$env_log"
 PATH="$tmpdir:$PATH" CODEX_SKILLS_ENV_FILE="$tmpdir/missing.env" \
@@ -1364,6 +1390,7 @@ if [[ "$*" == *'--input -'* ]]; then
 	payload="$(cat)"
 fi
 printf '%s | %s\n' "$*" "$payload" >>"$GH_ISSUE_TEST_LOG"
+. "$GH_ISSUE_GATE_READS"
 case "$*" in
 	*'/user'*) printf '{"login":"fixture-automation"}\n' ;;
 	*'--method GET'*'/repos/owner/repo/issues/41'*) printf '{"id":9041,"number":41,"html_url":"https://github.com/owner/repo/issues/41"}\n' ;;
@@ -1429,12 +1456,49 @@ GH_ISSUE_GH="$tmpdir/record-gh" GH_ISSUE_TEST_LOG="$log" GH_ISSUE_ENV_LOG="$env_
 	>"$stdout_log" 2>"$stderr_log" </dev/null
 
 grep -q -- '--method PATCH.* /repos/owner/repo/issues/90' "$log"
-if grep -q '/comments' "$log"; then
+if grep -q -- '--method POST.*/comments' "$log"; then
 	echo "error: close without a comment must not call the comment REST endpoint" >&2
 	exit 1
 fi
 assert_helper_envelope "$stdout_log" github.issue.close 'https://github.com/owner/repo/issues/90'
 jq -e '.completed_steps == ["close_issue"]' "$stdout_log" >/dev/null
+
+# A Client's comment with no reply since it was posted blocks closure end to
+# end: the real comment radar reads it through the same fake gh route.
+cat >"$tmpdir/unanswered-gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$GH_ISSUE_TEST_LOG"
+case "$*" in
+	*'/issues/95/comments'*'--slurp'*)
+		printf '[[{"id":951,"node_id":"IC_951","body":"Can I send a corrected sheet?","user":{"login":"client-staff","type":"User"},"created_at":"2026-10-17T17:33:49Z","updated_at":"2026-10-17T17:33:49Z","html_url":"https://github.com/owner/repo/issues/95#issuecomment-951","issue_url":"https://api.github.com/repos/owner/repo/issues/95"}]]\n'
+		exit 0
+		;;
+	'api graphql'*)
+		printf '{"data":{"node":{"lastEditedAt":null,"editor":null,"reactions":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}\n'
+		exit 0
+		;;
+	*'/user'*) printf '{"login":"fixture-automation"}\n'; exit 0 ;;
+esac
+. "$GH_ISSUE_GATE_READS"
+printf 'unexpected gh args: %s\n' "$*" >&2
+exit 1
+EOF
+chmod +x "$tmpdir/unanswered-gh"
+
+: >"$log"
+if GH_ISSUE_GH="$tmpdir/unanswered-gh" GH_ISSUE_TEST_LOG="$log" \
+	"$repo_root/github/scripts/gh-issue" close 95 --repo owner/repo --reason completed \
+	>"$stdout_log" 2>"$stderr_log" </dev/null; then
+	echo "error: gh-issue close must refuse over an unanswered outside comment" >&2
+	exit 1
+fi
+assert_failure_envelope "$stdout_log" github.issue.close unanswered_comments close_attention_preflight not_started
+grep -q 'issuecomment-951' "$stdout_log"
+if grep -q -- '--method PATCH\|--method POST' "$log"; then
+	echo "error: a refused close must not write" >&2
+	exit 1
+fi
 
 : >"$log"
 : >"$env_log"
@@ -1496,6 +1560,7 @@ set -euo pipefail
 payload=''
 if [[ "$*" == *'--input -'* ]]; then payload="$(cat)"; fi
 printf '%s | %s\n' "$*" "$payload" >>"$GH_ISSUE_TEST_LOG"
+. "$GH_ISSUE_GATE_READS"
 case "$*" in
 	*'/user'*) printf '{"login":"fixture-automation"}\n' ;;
 	*'--method GET'*'/repos/owner/repo/issues/12/comments?'*) printf '[]\n' ;;
@@ -1557,6 +1622,7 @@ set -euo pipefail
 payload=''
 if [[ "$*" == *'--input -'* ]]; then payload="$(cat)"; fi
 printf '%s | %s\n' "$*" "$payload" >>"$GH_ISSUE_TEST_LOG"
+. "$GH_ISSUE_GATE_READS"
 case "$*" in
 	*'/user'*) printf '{"login":"fixture-automation"}\n' ;;
 	*'--method GET'*'/repos/owner/repo/issues/14/comments?'*) printf '[]\n' ;;

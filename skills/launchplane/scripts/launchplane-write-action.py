@@ -25,9 +25,12 @@ from pathlib import Path
 from typing import Any, cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from launchplane_contract import BOUNDED_READ_RESPONSE_FIELDS  # noqa: E402
 from launchplane_contract import helper_command_path  # noqa: E402
 from launchplane_contract import internal_helper_path  # noqa: E402
 from launchplane_inventory import project_inventory  # noqa: E402
+from launchplane_reply_schema import ReplySchemaError  # noqa: E402
+from launchplane_reply_schema import check_controller_reply  # noqa: E402
 from launchplane_safety import (  # noqa: E402
     LaunchplaneSafetyError,
     assert_public_safe_shape,
@@ -107,7 +110,6 @@ MERGE_TRAIN_POLICY_RECORD_FIELDS = {
     "policy_sha256",
     "policy",
 }
-MERGE_TRAIN_POLICY_TARGETS_FIELDS = {"status", "trace_id", "policy", "targets"}
 MERGE_TRAIN_POLICY_SUMMARY_FIELDS = {"record_id", "updated_at", "policy_sha256"}
 MERGE_TRAIN_POLICY_TARGET_FIELDS = {
     "repository",
@@ -179,105 +181,6 @@ REPOSITORY_INVENTORY_APPLY_RESULT_FIELDS = {
     "inventory_digest",
     "supersedes_record_id",
     "applied_at",
-}
-MERGE_TRAIN_RESULT_FIELDS = {
-    "active_action",
-    "active_phase",
-    "active_pull_request_number",
-    "active_record_id",
-    "base_branch",
-    "batch_id",
-    "blocking_reason",
-    "block_result",
-    "branch_update_result",
-    "candidate",
-    "candidate_record_id",
-    "candidate_ref",
-    "candidate_ref_cleanup_github_status_code",
-    "candidate_ref_cleanup_message",
-    "candidate_ref_cleanup_status",
-    "candidate_sha",
-    "candidate_status",
-    "cleanup_status",
-    "code",
-    "collapse_id",
-    "completed_disposition_count",
-    "completed_entry_count",
-    "completed_mutation_count",
-    "conflict_probe",
-    "controller_action",
-    "controller_reconciliation_status",
-    "details",
-    "dry_run_result",
-    "entries",
-    "error",
-    "github_status_code",
-    "heartbeat_at",
-    "landing_plan",
-    "landing_plan_record_id",
-    "landing_progress",
-    "landing_sha",
-    "last_action",
-    "last_controller_result",
-    "last_phase",
-    "last_pull_request_number",
-    "last_record_id",
-    "lease_acquired_at",
-    "lease_expires_at",
-    "lease_owner",
-    "merge_readiness",
-    "merge_train_batch_candidate_record_id",
-    "merge_train_batch_landing_plan_record_id",
-    "merge_train_stack_collapse_plan_record_id",
-    "message",
-    "mode",
-    "mutate",
-    "pull_requests",
-    "reason_code",
-    "reconciliation_detail",
-    "reconciliation_status",
-    "release_error_type",
-    "replacement_candidate_record_id",
-    "repository",
-    "retired_merge_train_batch_candidate_record_id",
-    "root_merge_commit",
-    "root_merge_commit_sha",
-    "source_of_truth_url",
-    "stack_collapse_plan",
-    "stack_collapse_plan_record_id",
-    "stack_discovery",
-    "status",
-    "step_payload",
-    "structural_provenance",
-    "superseded_candidate_record_id",
-    "superseded_merge_train_batch_candidate_record_id",
-    "trace_id",
-    "updated_at",
-    "workflow_run_url",
-}
-MERGE_TRAIN_BLOCKING_REASON_FIELDS = {"code", "message"}
-MERGE_TRAIN_CONFLICT_PROBE_FIELDS = {"status", "pull_request_numbers", "held_out"}
-MERGE_TRAIN_HELD_OUT_FIELDS = {
-    "pull_request_number", "head_sha", "reason", "conflicts_with",
-}
-MERGE_TRAIN_READINESS_FIELDS = {
-    "state",
-    "reason_codes",
-    "owner_states",
-    "technical_checks_state",
-    "engineering_review_state",
-    "policy_state",
-    "candidate_state",
-    "fence_state",
-}
-MERGE_TRAIN_STRUCTURAL_FIELDS = {
-    "status",
-    "reason_codes",
-    "effective_base_sha",
-    "effective_base_tree_sha",
-    "candidate_sha256",
-    "landing_plan_sha256",
-    "provenance_sha256",
 }
 PRODUCT_CONFIG_INTENT_FIELDS = {
     "schema_version",
@@ -805,24 +708,6 @@ def _optional_public_identifier(value: object) -> str | None:
     return public_identifier(value)
 
 
-class _UnknownResponseField(LaunchplaneSafetyError):
-    """Keep a bounded field name without retaining its rejected value."""
-
-    def __init__(self, key: object) -> None:
-        super().__init__("unsafe_response_shape")
-        self.unrecognized_key = ""
-        if (
-            isinstance(key, str)
-            and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,79}", key)
-            and not is_denied_key(key)
-        ):
-            try:
-                assert_public_safe_shape(key)
-                self.unrecognized_key = key
-            except LaunchplaneSafetyError:
-                pass
-
-
 def _project_records(records: object, allowed_keys: set[str]) -> dict[str, object]:
     if records is None:
         return {}
@@ -831,7 +716,7 @@ def _project_records(records: object, allowed_keys: set[str]) -> dict[str, objec
     for key, value in source.items():
         key = str(key)
         if key not in allowed_keys or is_denied_key(key):
-            raise _UnknownResponseField(key)
+            raise LaunchplaneSafetyError("unsafe_response_shape")
         projected[key] = public_identifier(value)
     return projected
 
@@ -1463,8 +1348,6 @@ def _project_merge_train_dry_run(value: object) -> dict[str, object]:
 
 def _project_merge_train_blocking_reason(value: object) -> dict[str, object]:
     source = _require_dict(value)
-    if any(str(key) not in MERGE_TRAIN_BLOCKING_REASON_FIELDS for key in source):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
     code = source.get("code")
     if not isinstance(code, str):
         raise LaunchplaneSafetyError("invalid_response")
@@ -1478,8 +1361,6 @@ def _project_merge_train_conflict_probe(value: object) -> dict[str, object] | No
     if value is None:
         return None
     source = _require_dict(value)
-    if any(str(key) not in MERGE_TRAIN_CONFLICT_PROBE_FIELDS for key in source):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
     numbers = source.get("pull_request_numbers")
     if not isinstance(numbers, list) or not isinstance(source.get("status"), str):
         raise LaunchplaneSafetyError("invalid_response")
@@ -1492,7 +1373,7 @@ def _project_merge_train_conflict_probe(value: object) -> dict[str, object] | No
             raise LaunchplaneSafetyError("invalid_response")
         held_out: list[dict[str, object]] = []
         for value in source["held_out"]:
-            entry = _require_exact_fields(value, MERGE_TRAIN_HELD_OUT_FIELDS)
+            entry = _require_dict(value)
             conflicts_with = entry.get("conflicts_with")
             if not isinstance(conflicts_with, list) or not isinstance(entry.get("reason"), str):
                 raise LaunchplaneSafetyError("invalid_response")
@@ -1510,8 +1391,6 @@ def _project_merge_train_readiness(value: object) -> dict[str, object] | None:
     if value is None:
         return None
     source = _require_dict(value)
-    if any(str(key) not in MERGE_TRAIN_READINESS_FIELDS for key in source):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
     projected: dict[str, object] = {}
     for key in (
         "state",
@@ -1531,14 +1410,20 @@ def _project_merge_train_readiness(value: object) -> dict[str, object] | None:
     return projected
 
 
+_STRUCTURAL_PROVENANCE_FIELDS = (
+    "status", "reason_codes", "effective_base_sha", "effective_base_tree_sha",
+    "candidate_sha256", "landing_plan_sha256", "provenance_sha256",
+)
+
+
 def _project_merge_train_structural_provenance(value: object) -> dict[str, object] | None:
     if value is None:
         return None
     source = _require_dict(value)
-    if any(str(key) not in MERGE_TRAIN_STRUCTURAL_FIELDS for key in source):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
     projected: dict[str, object] = {}
     for key, item in source.items():
+        if key not in _STRUCTURAL_PROVENANCE_FIELDS:
+            continue
         if key == "reason_codes":
             projected[key] = _public_code_list(item)
         elif not isinstance(item, str):
@@ -1552,9 +1437,6 @@ def _project_merge_train_structural_provenance(value: object) -> dict[str, objec
 
 def _project_merge_train_block_result(value: object) -> dict[str, object]:
     source = _require_dict(value)
-    allowed = {"status", "repository", "base_branch", "pull_request_number", "blocked_label", "train_should_continue", "detail"}
-    if any(str(key) not in allowed for key in source):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
     if (not isinstance(source.get("train_should_continue"), bool)
         or not isinstance(source.get("pull_request_number"), int)
         or isinstance(source.get("pull_request_number"), bool)):
@@ -1573,47 +1455,45 @@ def _project_merge_train_block_result(value: object) -> dict[str, object]:
 
 
 def _project_controller_last_result(value: object) -> dict[str, object]:
+    """Project the pass evidence the pinned schema declares; omitted fields stay omitted."""
     source = _require_dict(value)
-    identifiers = {
-        "repository", "base_branch", "policy_key", "policy_sha256", "pass_started_at",
-        "observed_at", "trace_id", "action", "reason_code", "record_id",
-        "source_failed_record_id", "candidate_sha", "observed_candidate_sha", "base_sha",
-        "check_retry_of", "infrastructure_retry_of", "batch_body_retry_of", "semantic_progress_at",
-    }
-    optional_identifiers = {"candidate_batch_id", "recovery_kind"}
-    fields = identifiers | {"candidate_checks_status", "base_checks_status", "reconciliation_required", "next_actor", "next_observation"}
-    if set(source) - (fields | optional_identifiers) or fields - set(source):
-        raise LaunchplaneSafetyError("invalid_response")
     assert_public_safe_shape(source)
     projected: dict[str, object] = {}
-    for key in identifiers | (optional_identifiers & source.keys()):
-        item = source[key]
-        if not isinstance(item, str) or len(item) > 256:
-            raise LaunchplaneSafetyError("invalid_response")
-        projected[key] = public_identifier(item) if item else ""
+    for key in (
+        "repository", "base_branch", "policy_key", "policy_sha256", "pass_started_at",
+        "observed_at", "trace_id", "action", "reason_code", "record_id",
+        "source_failed_record_id", "candidate_batch_id", "recovery_kind", "candidate_sha",
+        "observed_candidate_sha", "base_sha", "check_retry_of", "infrastructure_retry_of",
+        "batch_body_retry_of", "semantic_progress_at",
+    ):
+        if key in source:
+            item = source[key]
+            if not isinstance(item, str) or len(item) > 256:
+                raise LaunchplaneSafetyError("invalid_response")
+            projected[key] = public_identifier(item) if item else ""
     for key in ("candidate_checks_status", "base_checks_status"):
-        item = source[key]
-        if item not in ("not_observed", "unknown", "pending", "pass", "fail"):
+        if key in source:
+            if source[key] not in ("not_observed", "unknown", "pending", "pass", "fail"):
+                raise LaunchplaneSafetyError("invalid_response")
+            projected[key] = source[key]
+    if "next_actor" in source:
+        if source["next_actor"] not in ("controller", "provider", "repository_agent"):
             raise LaunchplaneSafetyError("invalid_response")
-        projected[key] = item
-    if source["next_actor"] not in ("controller", "provider", "repository_agent"):
-        raise LaunchplaneSafetyError("invalid_response")
-    projected["next_actor"] = source["next_actor"]
-    if not isinstance(source["reconciliation_required"], bool):
-        raise LaunchplaneSafetyError("invalid_response")
-    projected["reconciliation_required"] = source["reconciliation_required"]
-    observation = source["next_observation"]
-    if not isinstance(observation, str) or len(observation) > 256:
-        raise LaunchplaneSafetyError("invalid_response")
-    projected["next_observation"] = public_summary_string(observation)
+        projected["next_actor"] = source["next_actor"]
+    if "reconciliation_required" in source:
+        if not isinstance(source["reconciliation_required"], bool):
+            raise LaunchplaneSafetyError("invalid_response")
+        projected["reconciliation_required"] = source["reconciliation_required"]
+    if "next_observation" in source:
+        observation = source["next_observation"]
+        if not isinstance(observation, str) or len(observation) > 256:
+            raise LaunchplaneSafetyError("invalid_response")
+        projected["next_observation"] = public_summary_string(observation)
     return projected
 
 
 def _project_merge_train_result(result: object) -> dict[str, object]:
     source = _require_dict(result)
-    for key in source:
-        if str(key) not in MERGE_TRAIN_RESULT_FIELDS:
-            raise _UnknownResponseField(key)
     assert_public_safe_shape(source)
     projected: dict[str, object] = {}
     if "last_controller_result" in source:
@@ -1624,27 +1504,20 @@ def _project_merge_train_result(result: object) -> dict[str, object]:
         "mode",
         "controller_action",
         "reason_code",
-        "candidate_sha",
-        "landing_sha",
-        "root_merge_commit",
-        "root_merge_commit_sha",
         "candidate_ref_cleanup_status",
         "controller_reconciliation_status",
-        "status",
     ):
         if key in source:
             projected[key] = public_identifier(source[key])
     for key in (
         "active_action", "active_phase", "active_record_id",
-        "landing_plan_record_id", "merge_train_batch_landing_plan_record_id",
+        "merge_train_batch_landing_plan_record_id",
         "retired_merge_train_batch_candidate_record_id",
     ):
         if key in source:
             projected[key] = _optional_public_identifier(source[key])
     if "landing_progress" in source:
         projected["landing_progress"] = public_code(source["landing_progress"])
-    if "mutate" in source:
-        projected["mutate"] = _optional_bool(source["mutate"])
     if "candidate_ref_cleanup_github_status_code" in source:
         projected["candidate_ref_cleanup_github_status_code"] = _nonnegative_int(
             source["candidate_ref_cleanup_github_status_code"]
@@ -1667,9 +1540,6 @@ def _project_merge_train_result(result: object) -> dict[str, object]:
         projected["dry_run_result"] = _project_merge_train_dry_run(source["dry_run_result"])
     if "conflict_probe" in source:
         projected["conflict_probe"] = _project_merge_train_conflict_probe(source["conflict_probe"])
-    for key in ("workflow_run_url", "source_of_truth_url"):
-        if key in source:
-            projected[key] = public_url(source[key])
     for key in (
         "candidate",
         "landing_plan",
@@ -1776,7 +1646,12 @@ def _project_merge_train_policy_summary(value: object) -> dict[str, object]:
 
 
 def _project_merge_train_policy_targets(value: object) -> dict[str, object]:
-    source = _require_exact_fields(value, MERGE_TRAIN_POLICY_TARGETS_FIELDS)
+    source = _require_dict(value)
+    _require_read_fields(
+        "merge-train-policy-targets-read",
+        source,
+        required=frozenset({"status", "trace_id", "policy", "targets"}),
+    )
     if public_code(source.get("status")) != "ok":
         raise LaunchplaneSafetyError("invalid_response")
     targets = source.get("targets")
@@ -2125,6 +2000,37 @@ ODOO_ADDON_SETTINGS_SHOPIFY_FIELDS = {
     "api_token_secret_binding_id",
     "webhook_key_secret_binding_id",
     "test_store",
+}
+ODOO_WEBSITE_SETTINGS_RESULT_FIELDS = {
+    "product",
+    "context",
+    "instance",
+    "record_sha256_before",
+    "mode",
+    "plan_sha256",
+    "before",
+    "after",
+    "changed",
+    "applied",
+    "read_back_matches",
+    "activation",
+}
+ODOO_WEBSITE_SETTINGS_PAYLOAD_FIELDS = {
+    "product",
+    "context",
+    "instance",
+    "reason",
+    "website_settings",
+}
+ODOO_WEBSITE_SETTINGS_INTENT_FIELDS = {"artifact_id", "settings"}
+ODOO_WEBSITE_SETTINGS_FIELDS = {
+    "operation",
+    "website_id",
+    "public_origin",
+    "public_indexing_enabled",
+    "google_analytics_key",
+    "cookies_bar",
+    "block_third_party_domains",
 }
 
 
@@ -4025,6 +3931,57 @@ def _project_odoo_addon_settings_result(result: object) -> dict[str, object]:
     return projected
 
 
+def _project_odoo_website_settings_intent(value: object) -> dict[str, object] | None:
+    if value is None:
+        return None
+    intent = _require_dict(value)
+    settings = _require_dict(intent.get("settings"))
+    if any(str(key) not in ODOO_WEBSITE_SETTINGS_INTENT_FIELDS for key in intent) or any(
+        str(key) not in ODOO_WEBSITE_SETTINGS_FIELDS for key in settings
+    ):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    website_id = settings.get("website_id")
+    if isinstance(website_id, bool) or not isinstance(website_id, int) or website_id < 1:
+        raise LaunchplaneSafetyError("invalid_response")
+    analytics_key = settings.get("google_analytics_key", "")
+    projected_settings: dict[str, object] = {
+        "operation": public_code(settings.get("operation"), default="apply"),
+        "website_id": website_id,
+        "public_origin": _public_origin_url(settings.get("public_origin")),
+        "public_indexing_enabled": bool(_optional_bool(settings.get("public_indexing_enabled"))),
+        # A GA4 Measurement ID is published in every page; it is not a secret.
+        "google_analytics_key": public_identifier(analytics_key) if analytics_key else "",
+    }
+    # Collection-only rollback stores null consent controls; keep null distinct from false.
+    for key in ("cookies_bar", "block_third_party_domains"):
+        projected_settings[key] = _optional_bool(settings.get(key))
+    return {
+        "artifact_id": public_identifier(intent.get("artifact_id")),
+        "settings": projected_settings,
+    }
+
+
+def _project_odoo_website_settings_result(result: object) -> dict[str, object]:
+    source = _require_dict(result)
+    if any(str(key) not in ODOO_WEBSITE_SETTINGS_RESULT_FIELDS for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    projected: dict[str, object] = {
+        "mode": public_code(source.get("mode")),
+        "product": public_identifier(source.get("product")),
+        "context": public_identifier(source.get("context")),
+        "instance": public_identifier(source.get("instance")),
+        "record_sha256_before": _optional_sha256(source.get("record_sha256_before")),
+        "plan_sha256": _optional_sha256(source.get("plan_sha256")),
+        "before": _project_odoo_website_settings_intent(source.get("before")),
+        "after": _project_odoo_website_settings_intent(source.get("after")),
+        "activation": public_summary_string(source.get("activation")),
+    }
+    for key in ("changed", "applied", "read_back_matches"):
+        projected[key] = bool(_optional_bool(source.get(key)))
+    assert_public_safe_shape(projected)
+    return projected
+
+
 def _project_success_output(
     operation: str, provider_payload: dict[str, Any], *, request: dict[str, object] | None = None
 ) -> tuple[dict[str, object], dict[str, object]]:
@@ -4095,19 +4052,12 @@ def _project_success_output(
                 expected_config_result[f"{kind}_{disposition}_count"] = len(items)
         return records, expected_config_result
     if operation == "merge-train-controller-run-once":
-        records = _project_records(
-            provider_payload.get("records"),
-            {
-                "merge_train_batch_candidate_record_id",
-                "merge_train_batch_landing_plan_record_id",
-                "merge_train_stack_collapse_plan_record_id",
-                "superseded_merge_train_batch_candidate_record_id",
-                "merge_train_landing_plan_record_id",
-                "merge_train_stack_collapse_record_id",
-                "merge_train_feedback_record_id",
-                "retired_merge_train_batch_candidate_record_id",
-            },
-        )
+        # summarize_success already removed every field the pinned schema
+        # does not declare.
+        records = {
+            key: public_identifier(value)
+            for key, value in _require_dict(provider_payload.get("records")).items()
+        }
         return records, _project_merge_train_result(provider_payload.get("result"))
     if operation == "product-config-preflight":
         records = _project_records(
@@ -4165,6 +4115,11 @@ def _project_success_output(
             provider_payload.get("records"), {"product_profile", "context", "instance"}
         )
         return records, _project_odoo_addon_settings_result(provider_payload.get("result"))
+    if operation in {"odoo-website-settings-dry-run", "odoo-website-settings-apply"}:
+        records = _project_records(
+            provider_payload.get("records"), {"product_profile", "context", "instance"}
+        )
+        return records, _project_odoo_website_settings_result(provider_payload.get("result"))
     if operation in {"integration-allowances-dry-run", "integration-allowances-apply"}:
         records = _project_records(
             provider_payload.get("records"), {"product_profile", "context", "instance"}
@@ -4236,8 +4191,7 @@ def _project_success_output(
 def summarize_repository_inventory_read(
     *, request: dict[str, object], provider_payload: dict[str, Any]
 ) -> dict[str, object]:
-    if any(str(key) not in {"status", "trace_id", "read_model"} for key in provider_payload):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
+    _require_read_fields("repository-inventory-read", provider_payload)
     status = public_code(provider_payload.get("status"), default="ok")
     payload = base_payload(
         status=status, operation="repository-inventory-read", request=request
@@ -4255,6 +4209,14 @@ def summarize_repository_inventory_read(
     assert_public_safe_shape(payload["result"])
     assert_public_safe_shape(payload["summary"])
     return payload
+
+
+def _require_read_fields(
+    operation: str, provider_payload: dict[str, Any], *, required: frozenset[str] = frozenset()
+) -> None:
+    keys = set(map(str, provider_payload))
+    if keys.difference(BOUNDED_READ_RESPONSE_FIELDS[operation]) or required.difference(keys):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
 
 
 def _require_exact_fields(value: object, fields: set[str]) -> dict[str, Any]:
@@ -4313,6 +4275,17 @@ def http_error_recommendation(status: str) -> str:
 def summarize_success(
     *, operation: str, request: dict[str, object], provider_payload: dict[str, Any]
 ) -> dict[str, object]:
+    unrecognized: list[str] = []
+    if operation == "merge-train-controller-run-once":
+        try:
+            checked, unrecognized = check_controller_reply(provider_payload)
+        except ReplySchemaError as exc:
+            raise LaunchplaneSafetyError(exc.code) from exc
+        # Fields newer than the pin are never projected, but what Launchplane
+        # sent must still be safe to have read.
+        assert_public_safe_shape(provider_payload.get("records"))
+        assert_public_safe_shape(provider_payload.get("result"))
+        provider_payload = checked
     try:
         records, result = _project_success_output(operation, provider_payload, request=request)
     except TypeError as exc:
@@ -4329,6 +4302,14 @@ def summarize_success(
     }
     if operation == "merge-train-controller-run-once":
         summary.update(_controller_error_diagnostics(provider_payload))
+        if unrecognized:
+            # Newer than this skill's pinned schema: dropped from the result, not a failure.
+            summary["unrecognized_fields"] = ",".join(unrecognized)
+            cast(list[object], payload["warnings"]).append(warning(
+                "controller_reply_newer_than_pinned_schema",
+                "Launchplane sent reply fields this skill's pinned schema does not declare; "
+                "they were left out. Refresh the pin with sync-merge-train-reply-schema.py.",
+            ))
         controller_action = result.get("controller_action")
         if isinstance(controller_action, str):
             summary["controller_action"] = controller_action
@@ -4488,6 +4469,15 @@ def summarize_success(
                 if operation == "odoo-addon-settings-dry-run"
                 else "Check read_back_matches, then run Odoo post-deploy for the lane and verify "
                 "the settings in its database."
+            )
+        elif operation in {"odoo-website-settings-dry-run", "odoo-website-settings-apply"}:
+            summary["plan_sha256"] = result.get("plan_sha256")
+            summary["recommendation"] = (
+                "Save this redacted dry-run output, review before and after, then apply the exact "
+                "same private payload with --expected-plan-digest."
+                if operation == "odoo-website-settings-dry-run"
+                else "Check read_back_matches. The intent is inert until the Client accepts the "
+                "release; that acceptance applies it to the Odoo database."
             )
         elif operation in {
             "generic-web-deploy-recovery-dry-run",
@@ -4911,6 +4901,36 @@ def _require_apply_eligible_odoo_addon_settings_dry_run(
         raise ValueError("reviewed_dry_run_not_apply_eligible")
 
 
+def _require_apply_eligible_odoo_website_settings_dry_run(
+    args: argparse.Namespace,
+    *,
+    expected_plan_digest: str,
+    expected_product: str,
+    expected_context: str,
+) -> None:
+    evidence_path = str(getattr(args, "dry_run_evidence_file", "") or "").strip()
+    if not evidence_path:
+        raise ValueError("reviewed_dry_run_not_apply_eligible")
+    try:
+        evidence = read_payload_file(evidence_path)
+    except ValueError:
+        raise ValueError("reviewed_dry_run_not_apply_eligible") from None
+    result = evidence.get("result")
+    if not isinstance(result, dict):
+        raise ValueError("reviewed_dry_run_not_apply_eligible")
+    # The website result has no status field; the accepted envelope is the success signal.
+    if (
+        evidence.get("operation") != "odoo-website-settings-dry-run"
+        or evidence.get("status") != "accepted"
+        or result.get("mode") != "dry-run"
+        or result.get("plan_sha256") != expected_plan_digest
+        or result.get("product") != expected_product
+        or result.get("context") != expected_context
+        or result.get("instance") != "prod"
+    ):
+        raise ValueError("reviewed_dry_run_not_apply_eligible")
+
+
 def _require_apply_eligible_integration_allowances_dry_run(
     args: argparse.Namespace,
     *,
@@ -4991,10 +5011,7 @@ def _summarize_lane_config_read(
     project: Any,
     recommendation: str,
 ) -> dict[str, object]:
-    if any(
-        str(key) not in {"status", "trace_id", "records", "result"} for key in provider_payload
-    ):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
+    _require_read_fields(operation, provider_payload)
     status = public_code(provider_payload.get("status"), default="ok")
     payload = base_payload(status=status, operation=operation, request=request)
     payload["records"] = _project_records(
@@ -5088,8 +5105,7 @@ def _summarize_product_read(
     project: Any,
     recommendation: str | None = None,
 ) -> dict[str, object]:
-    if any(str(key) not in {"status", "trace_id", result_key} for key in provider_payload):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
+    _require_read_fields(operation, provider_payload)
     status = public_code(provider_payload.get("status"), default="ok")
     payload = base_payload(status=status, operation=operation, request=request)
     payload["result"] = project(provider_payload.get(result_key))
@@ -5260,8 +5276,7 @@ def summarize_protected_artifacts_read(
 def summarize_preview_history_read(
     *, request: dict[str, object], provider_payload: dict[str, Any]
 ) -> dict[str, object]:
-    if any(str(key) not in {"status", "trace_id", "preview", "generations"} for key in provider_payload):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
+    _require_read_fields("preview-history-read", provider_payload)
     status = public_code(provider_payload.get("status"), default="ok")
     payload = base_payload(status=status, operation="preview-history-read", request=request)
     payload["result"] = _project_preview_history(provider_payload)
@@ -5280,8 +5295,7 @@ def summarize_preview_history_read(
 def summarize_reconcile_requests_read(
     *, request: dict[str, object], provider_payload: dict[str, Any]
 ) -> dict[str, object]:
-    if any(str(key) not in {"status", "trace_id", "product", "requests"} for key in provider_payload):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
+    _require_read_fields("reconcile-requests-read", provider_payload)
     status = public_code(provider_payload.get("status"), default="ok")
     payload = base_payload(status=status, operation="reconcile-requests-read", request=request)
     target_key = request.get("target_key")
@@ -5309,9 +5323,11 @@ def _recovery_reference(value: object) -> str:
 def summarize_recovery_reference_read(
     *, request: dict[str, object], provider_payload: dict[str, Any]
 ) -> dict[str, object]:
-    fields = {"product", "context", "instance", "recovery_reference", "reservation_state", "reservation_attempt"}
-    if set(provider_payload) != fields:
-        raise LaunchplaneSafetyError("unsafe_response_shape")
+    _require_read_fields(
+        "generic-web-deploy-recovery-reference-read",
+        provider_payload,
+        required=BOUNDED_READ_RESPONSE_FIELDS["generic-web-deploy-recovery-reference-read"],
+    )
     if (
         provider_payload["product"] != request["product"]
         or provider_payload["instance"] != "testing"
@@ -5338,8 +5354,7 @@ def summarize_recovery_reference_read(
 def summarize_product_secret_bindings_read(
     *, request: dict[str, object], provider_payload: dict[str, Any]
 ) -> dict[str, object]:
-    if any(str(key) not in {"status", "trace_id", "product", "bindings"} for key in provider_payload):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
+    _require_read_fields("product-secret-bindings-read", provider_payload)
     status = public_code(provider_payload.get("status"), default="ok")
     payload = base_payload(
         status=status, operation="product-secret-bindings-read", request=request
@@ -5400,8 +5415,7 @@ def _project_target_replacement_recovery(value: object) -> dict[str, object] | N
 def summarize_target_replacement_operation_read(
     *, request: dict[str, object], provider_payload: dict[str, Any]
 ) -> dict[str, object]:
-    if any(str(key) not in {"status", "trace_id", "operation", "result", "recovery"} for key in provider_payload):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
+    _require_read_fields("target-replacement-operation-read", provider_payload)
     status = public_code(provider_payload.get("status"), default="ok")
     payload = base_payload(
         status=status, operation="target-replacement-operation-read", request=request
@@ -5518,11 +5532,13 @@ def summarize_merge_train_policy_read(
     *, request: dict[str, object], provider_payload: dict[str, Any]
 ) -> dict[str, object]:
     """Project one repository; never emit credential sources or the fleet."""
-    source = _require_exact_fields(provider_payload, {"status", "trace_id", "record"})
-    record = _require_dict(source.get("record"))
+    _require_read_fields(
+        "merge-train-policy-read", provider_payload, required=frozenset({"status", "trace_id", "record"})
+    )
+    record = _require_dict(provider_payload.get("record"))
     policy = _require_dict(record.get("policy"))
     policies = policy.get("policies")
-    if source.get("status") != "ok" or record.get("status") != "active" or not isinstance(policies, list) or not policies:
+    if provider_payload.get("status") != "ok" or record.get("status") != "active" or not isinstance(policies, list) or not policies:
         raise LaunchplaneSafetyError("invalid_response")
     repository = public_identifier(request.get("repository"))
     targets: list[dict[str, str]] = []
@@ -5558,7 +5574,7 @@ def summarize_merge_train_policy_read(
             "updated_at": public_timestamp(record.get("updated_at")),
             "policy_sha256": _project_sha256(record.get("policy_sha256")),
         },
-        "trace_id": public_trace_id(source.get("trace_id")),
+        "trace_id": public_trace_id(provider_payload.get("trace_id")),
     }
     assert_public_safe_shape(summary)
     payload = base_payload(status="available", operation="merge-train-policy-read", request=request)
@@ -6142,6 +6158,76 @@ def odoo_addon_settings_body(args: argparse.Namespace, *, mode: str) -> dict[str
             expected_product=identity["product"],
             expected_context=identity["context"].lower(),
             expected_instance=identity["instance"].lower(),
+        )
+        body["reviewed_plan_sha256"] = expected_plan_digest
+    return body
+
+
+def _odoo_website_settings_intent(value: object) -> dict[str, object] | None:
+    # Null withdraws the pending intent. The service owns GA4 and consent rules.
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("website_settings_required")
+    if any(str(key) not in ODOO_WEBSITE_SETTINGS_INTENT_FIELDS for key in value):
+        raise ValueError("unsupported_website_settings_field")
+    artifact_id = value.get("artifact_id")
+    if not isinstance(artifact_id, str) or not artifact_id.strip():
+        raise ValueError("artifact_id_required")
+    settings = value.get("settings")
+    if not isinstance(settings, dict):
+        raise ValueError("website_settings_required")
+    if any(str(key) not in ODOO_WEBSITE_SETTINGS_FIELDS for key in settings):
+        raise ValueError("unsupported_website_settings_field")
+    if settings.get("operation", "apply") != "apply":
+        raise ValueError("unsupported_website_settings_operation")
+    website_id = settings.get("website_id")
+    if isinstance(website_id, bool) or not isinstance(website_id, int) or website_id < 1:
+        raise ValueError("website_id_required")
+    origin = settings.get("public_origin")
+    try:
+        parts = urllib.parse.urlsplit(origin) if isinstance(origin, str) else None
+    except ValueError:
+        parts = None
+    if parts is None or parts.scheme != "https" or not parts.hostname:
+        raise ValueError("https_public_origin_required")
+    for key in ("public_indexing_enabled", "cookies_bar", "block_third_party_domains"):
+        if key in settings and not isinstance(settings[key], bool):
+            raise ValueError(f"{key}_boolean_required")
+    if not isinstance(settings.get("google_analytics_key", ""), str):
+        raise ValueError("google_analytics_key_string_required")
+    return {"artifact_id": artifact_id.strip(), "settings": settings}
+
+
+def odoo_website_settings_body(args: argparse.Namespace, *, mode: str) -> dict[str, object]:
+    payload = read_payload_file(args.payload_file)
+    if any(str(key) not in ODOO_WEBSITE_SETTINGS_PAYLOAD_FIELDS for key in payload):
+        raise ValueError("unsupported_payload_field")
+    body: dict[str, object] = {}
+    for field in ("product", "context", "reason"):
+        value = payload.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{field}_required")
+        body[field] = value.strip()
+    if payload.get("instance", "prod") != "prod":
+        raise ValueError("unsupported_instance")
+    body["instance"] = "prod"
+    if "website_settings" not in payload:
+        raise ValueError("website_settings_required")
+    body["website_settings"] = _odoo_website_settings_intent(payload["website_settings"])
+    body["mode"] = mode
+    if mode == "apply":
+        _require_idempotency(args)
+        if not args.reviewed_dry_run:
+            raise ValueError("reviewed_dry_run_required")
+        expected_plan_digest = args.expected_plan_digest.strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_plan_digest):
+            raise ValueError("invalid_expected_plan_digest")
+        _require_apply_eligible_odoo_website_settings_dry_run(
+            args,
+            expected_plan_digest=expected_plan_digest,
+            expected_product=cast(str, body["product"]),
+            expected_context=cast(str, body["context"]),
         )
         body["reviewed_plan_sha256"] = expected_plan_digest
     return body
@@ -7014,7 +7100,8 @@ def _preview_feedback_response_unverified(
 
 
 SIMPLE_APPLY_OPERATIONS = frozenset({
-    "odoo-addon-settings-apply", "integration-allowances-apply", "testing-hold-apply",
+    "odoo-addon-settings-apply", "odoo-website-settings-apply",
+    "integration-allowances-apply", "testing-hold-apply",
     "product-repository-identity-apply", "generic-web-deploy-recovery-apply",
     "repository-inventory-apply", "product-expected-config-apply",
 })
@@ -7135,8 +7222,6 @@ def execute_post(
                 ):
                     # Launchplane completed this request; only its reply is unreadable here.
                     summary["launchplane_status"] = "accepted"
-                if isinstance(exc, _UnknownResponseField) and exc.unrecognized_key:
-                    summary["unrecognized_key"] = exc.unrecognized_key
                 summary["recommendation"] = (
                     "The controller response could not be verified. Read the PR and controller "
                     "state before any retry; a mutating pass may have completed."
@@ -8865,8 +8950,7 @@ def read_production_backup_authority(
         timeout=timeout,
     )
     try:
-        if any(str(key) not in {"status", "trace_id", "authority"} for key in provider_payload):
-            raise LaunchplaneSafetyError("unsafe_response_shape")
+        _require_read_fields("production-backup-authority-read", provider_payload)
         return _project_production_backup_authority_read(provider_payload.get("authority"))
     except (LaunchplaneSafetyError, ValueError, TypeError) as exc:
         raise ServiceResponseError(service_response_diagnostics(provider_payload)) from exc
@@ -9559,8 +9643,7 @@ def execute_production_backup_authority_read(
             },
             timeout=args.timeout,
         )
-        if any(str(key) not in {"status", "trace_id", "authority"} for key in provider_payload):
-            raise LaunchplaneSafetyError("unsafe_response_shape")
+        _require_read_fields("production-backup-authority-read", provider_payload)
         status = public_code(provider_payload.get("status"), default="ok")
         payload = base_payload(status=status, operation=operation, request=request)
         try:
@@ -9615,16 +9698,6 @@ PRIVATE_HEALTH_ENDPOINT_PAYLOAD_FIELDS = {
 }
 PRIVATE_HEALTH_ENDPOINT_RECORD_FIELDS = PRIVATE_HEALTH_ENDPOINT_PAYLOAD_FIELDS | {"updated_at"}
 PRIVATE_HEALTH_ENDPOINT_RESULT_FIELDS = {"mode", "endpoint_key", "endpoint_status", "record"}
-PRIVATE_HEALTH_ENDPOINT_LIST_FIELDS = {
-    "status",
-    "trace_id",
-    "product",
-    "context",
-    "instance",
-    "limit",
-    "count",
-    "records",
-}
 PRIVATE_HEALTH_ENDPOINT_STATUSES = {"active", "disabled"}
 PRIVATE_HEALTH_ENDPOINT_PLAN_STATUSES = {"dry-run": "planned", "apply": "applied"}
 PRIVATE_HEALTH_ENDPOINT_MAX_RECORDS = 100
@@ -9851,8 +9924,7 @@ def read_private_health_endpoint(
         timeout=timeout,
     )
     try:
-        if any(str(key) not in {"status", "trace_id", "record"} for key in provider_payload):
-            raise LaunchplaneSafetyError("unsafe_response_shape")
+        _require_read_fields("private-health-endpoint-record-read", provider_payload)
         record = provider_payload.get("record")
         return _project_private_health_endpoint_record(record), _private_health_endpoint_url(record)
     except (LaunchplaneSafetyError, ValueError, TypeError) as exc:
@@ -9943,8 +10015,7 @@ def execute_private_health_endpoint_read(
             query=query,
             timeout=args.timeout,
         )
-        if any(str(key) not in PRIVATE_HEALTH_ENDPOINT_LIST_FIELDS for key in provider_payload):
-            raise LaunchplaneSafetyError("unsafe_response_shape")
+        _require_read_fields("private-health-endpoint-read", provider_payload)
         records = provider_payload.get("records")
         if not isinstance(records, list) or len(records) > PRIVATE_HEALTH_ENDPOINT_MAX_RECORDS:
             raise LaunchplaneSafetyError("invalid_response")
@@ -10068,10 +10139,7 @@ def _project_product_promotion_status(provider_payload: dict[str, Any]) -> dict[
     """Whether a testing-to-prod promotion could run and its evidence fingerprint. The
     release checklist, artifacts, commits, repository, workflow, live confirmations and
     every free-text reason are dropped."""
-    if any(
-        str(key) not in {"status", "trace_id", "promotion_status"} for key in provider_payload
-    ):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
+    _require_read_fields("product-promotion-status-read", provider_payload)
     source = _require_dict(provider_payload.get("promotion_status"))
     release_review = _require_dict(source.get("release_review") or {})
     blockers = release_review.get("blockers") or []
@@ -10240,6 +10308,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     add_workflow_rule_retirement_parser(subparsers)
     from launchplane_runtime_setting_removal import add_parser as add_runtime_setting_removal_parser
     add_runtime_setting_removal_parser(subparsers)
+
+    from launchplane_review_withdrawal import add_parser as add_review_withdrawal_parser
+    add_review_withdrawal_parser(subparsers)
 
     subparsers.add_parser(
         "operator-config-diagnostic",
@@ -10782,6 +10853,31 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Private saved JSON output from the reviewed addon-settings dry-run.",
     )
 
+    odoo_website_settings_dry_run = subparsers.add_parser(
+        "odoo-website-settings-dry-run",
+        help="Dry-run a product's pending production website settings intent from a private payload.",
+    )
+    odoo_website_settings_dry_run.add_argument(
+        "--payload-file", required=True, help="Private local JSON payload file."
+    )
+    odoo_website_settings_dry_run.set_defaults(idempotency_key="")
+
+    odoo_website_settings_apply = subparsers.add_parser(
+        "odoo-website-settings-apply",
+        help="Record reviewed website settings intent bound to the saved dry-run digest.",
+    )
+    odoo_website_settings_apply.add_argument(
+        "--payload-file", required=True, help="Private local JSON payload file."
+    )
+    odoo_website_settings_apply.add_argument("--idempotency-key", required=True)
+    odoo_website_settings_apply.add_argument("--reviewed-dry-run", action="store_true")
+    odoo_website_settings_apply.add_argument("--expected-plan-digest", required=True)
+    odoo_website_settings_apply.add_argument(
+        "--dry-run-evidence-file",
+        required=True,
+        help="Private saved JSON output from the reviewed website-settings dry-run.",
+    )
+
     for command in ("live-target-runtime-sync-dry-run", "live-target-runtime-sync-apply"):
         sync = subparsers.add_parser(command, help="Sync managed runtime values without deployment; key names only.")
         for name in ("product", "context", "instance"):
@@ -11112,6 +11208,9 @@ def main(argv: list[str]) -> int:
         )
         if args.command in runtime_setting_removal_commands:
             return execute_runtime_setting_removal(sys.modules[__name__], args)
+        from launchplane_review_withdrawal import COMMANDS as review_withdrawal_commands, execute as execute_review_withdrawal
+        if args.command in review_withdrawal_commands:
+            return execute_review_withdrawal(sys.modules[__name__], args)
         if args.command in NAMES_ONLY_READS:
             context = public_identifier(args.context)
             instance = public_identifier(args.instance) if args.command.startswith("instance-") else ""
@@ -11684,6 +11783,24 @@ def main(argv: list[str]) -> int:
                 "context": public_identifier(body["context"]),
                 "instance": public_identifier(body["instance"]),
                 "addon": "shopify",
+                "payload_source": "private_file",
+            }
+            return execute_post(
+                args=args,
+                operation=args.command,
+                path=helper_command_path(args.command),
+                request=request,
+                body=body,
+            )
+        if args.command in {"odoo-website-settings-dry-run", "odoo-website-settings-apply"}:
+            mode = "apply" if args.command == "odoo-website-settings-apply" else "dry-run"
+            body = odoo_website_settings_body(args, mode=mode)
+            request = {
+                "mode": mode,
+                "product": public_identifier(body["product"]),
+                "context": public_identifier(body["context"]),
+                "instance": "prod",
+                "withdraw": body["website_settings"] is None,
                 "payload_source": "private_file",
             }
             return execute_post(

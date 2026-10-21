@@ -244,7 +244,7 @@ routing does not resolve a conflict either.
 1. When the PR is this task's own, or the task authorizes refreshing it, merge
    the base through the local merge path in
    [Merge Readiness](../github/references/repo-workflow.md#merge-readiness):
-   `git-commit-as-bot --git-command merge`, resolve, `--continue`, then push
+   `git-commit-as-bot --worktree /absolute/task/path --git-command merge`, resolve, `--continue`, then push
    under [Fixes and pushes](#fixes-and-pushes) after focused checks on the
    resolution.
 2. Watch the new head. When the task hands off with `ready`, post a fresh
@@ -332,7 +332,8 @@ without unrelated changes; surface it instead.
 - Commit with `github/scripts/git-commit-as-bot` (for example
   `fix: address CI failure on OWNER/REPO#<n>` or
   `fix: address PR review feedback (OWNER/REPO#<n>)`) and push with
-  `github/scripts/git-push-as-bot`. Never force-push the PR head or use
+  `github/scripts/git-push-as-bot`, passing `--worktree /absolute/task/path`
+  first to both helpers. Never force-push the PR head or use
   destructive Git commands, and switch branches only to recover context.
 
 ## Merge Readiness

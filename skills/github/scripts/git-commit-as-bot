@@ -6,6 +6,11 @@ git_bin=${GIT_COMMIT_AS_BOT_GIT:-git}
 identity_helper=${GIT_COMMIT_AS_BOT_IDENTITY_HELPER:-$script_dir/github_identity.py}
 python_command=${GIT_COMMIT_AS_BOT_PYTHON:-}
 
+. "$script_dir/github-task-worktree.sh"
+[ "${1:-}" = --worktree ] || require_task_worktree ""
+require_task_worktree "${2:-}"
+shift 2
+
 # A caller's required automation auth holds even when local.env says otherwise,
 # and only the caller can opt in to committing as their own GitHub user.
 caller_require_automation_auth=${GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH:-}
@@ -53,7 +58,7 @@ else
 fi
 
 if [ "$#" -eq 0 ]; then
-	echo "usage: git-commit-as-bot [--repo OWNER/REPO] [--git-command commit|merge|pull|rebase|cherry-pick|revert|am] [--refresh-required REQUIREMENT] <git args...>" >&2
+	echo "usage: git-commit-as-bot --worktree /absolute/task/path [--repo OWNER/REPO] [--git-command commit|merge|pull|rebase|cherry-pick|revert|am] [--refresh-required REQUIREMENT] <git args...>" >&2
 	exit 2
 fi
 

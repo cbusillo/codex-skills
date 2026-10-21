@@ -645,8 +645,128 @@ def test_github_app_requires_explicit_api_url_for_enterprise_host() -> None:
             raise AssertionError("enterprise GitHub host defaulted to api.github.com")
 
 
+def test_complete_writer_installation_inventory_and_live_failures() -> None:
+    class InventoryHandler(TokenHandler):
+        mode = "complete"
+        visited = []
+        def do_GET(self):
+            type(self).visited.append(self.path)
+            if self.path == "/app":
+                payload = {"slug": "catalog-app"}
+            elif self.path.startswith("/app/installations?"):
+                page = int(self.path.rsplit("=", 1)[1])
+                ids = range(1, 101) if page == 1 else [101]
+                payload = [{"id": i, "app_id": 12345} for i in ids]
+                if self.mode == "wrong-app": payload[0]["app_id"] = 99999
+                if self.mode == "repeat" and page == 2: payload[0]["id"] = 1
+            elif self.path.startswith("/app/installations/"):
+                i = int(self.path.rsplit("/", 1)[1])
+                payload = {"id": i, "app_id": 12345, "app_slug": "catalog-app",
+                    "account": {"login": "first-owner" if i == 1 else "second-owner", "type": "User"},
+                    "permissions": {"issues": "write"}, "repository_selection": "selected",
+                    "suspended_at": "2026-01-01T00:00:00Z" if self.mode == "suspended" and i == 101 else None}
+                if self.mode == "malformed-suspension" and i == 101:
+                    payload["suspended_at"] = "unreadable"
+            elif self.path.startswith("/installation/repositories?"):
+                installation = self.headers["Authorization"].split("installation-")[1].split("-")[0]
+                page = int(self.path.rsplit("=", 1)[1])
+                names = ([f"first-owner/r{i}" for i in range(100)] if page == 1 else ["first-owner/last"]) if installation == "1" else (["second-owner/site"] if installation == "101" else [])
+                count = 101 if installation == "1" else len(names)
+                if self.mode == "denied" and installation == "101":
+                    self.send_response(403); self.end_headers(); return
+                if self.mode == "truncated" and installation == "101": count += 1
+                payload = {"total_count": count, "repositories": [{"full_name": name} for name in names]}
+            else:
+                raise AssertionError(self.path)
+            body = json.dumps(payload).encode()
+            self.send_response(200); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+    TokenHandler.requests = []
+    TokenHandler.expiries = [4_000_000_000]
+    server = ThreadingHTTPServer(("127.0.0.1", 0), InventoryHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+    try:
+        with tempfile.TemporaryDirectory() as directory:
+            values = app_environment(Path(directory), f"http://127.0.0.1:{server.server_port}")
+            report = github_identity.automation_repositories(environ=values)
+            assert len(report["installations"]) == 101
+            assert report["repositories"]["second-owner/site"] == ["catalog-app[bot]"]
+            assert "first-owner/last" in report["repositories"]
+            assert "/app/installations?per_page=100&page=2" in InventoryHandler.visited
+            assert "/installation/repositories?per_page=100&page=2" in InventoryHandler.visited
+            assert "Authorization" not in json.dumps(report)
+            for mode in ("wrong-app", "repeat"):
+                InventoryHandler.mode = mode
+                try:
+                    github_identity.automation_repositories(environ=values)
+                except github_identity.GitHubAppError:
+                    pass
+                else:
+                    raise AssertionError(f"incomplete {mode} inventory cleared")
+            for mode in ("suspended", "truncated", "denied", "malformed-suspension"):
+                InventoryHandler.mode = mode
+                pending = github_identity.automation_repositories(environ=values)
+                assert pending["pending_installations"]
+                assert "first-owner/last" in pending["repositories"]
+                assert pending["pending_installations"][0]["installation_id"] == 101
+            InventoryHandler.mode = "suspended"
+            since = datetime.fromisoformat("2026-02-01T00:00:00+00:00")
+            skipped = github_identity.automation_repositories(environ=values, since=since)
+            assert not skipped["pending_installations"]
+            assert skipped["excluded_installations"][0]["installation_id"] == 101
+            for required in (("SECOND-OWNER/held",), ("second-owner/explicit",)):
+                guarded = github_identity.automation_repositories(environ=values, since=since, required_repositories=required)
+                assert guarded["pending_installations"]
+                assert not guarded["excluded_installations"]
+            earlier = datetime.fromisoformat("2025-12-01T00:00:00+00:00")
+            assert github_identity.automation_repositories(environ=values, since=earlier)["pending_installations"]
+            InventoryHandler.mode = "complete"
+            assert github_identity.automation_repositories(environ=values) == report
+            try:
+                github_identity.automation_repositories(environ=values, deadline_at=0)
+            except github_identity.GitHubAppError:
+                pass
+            else:
+                raise AssertionError("expired inventory deadline cleared")
+    finally:
+        server.shutdown(); thread.join(); server.server_close()
+
+
+def test_writer_inventory_keeps_main_client_and_reader_roles_distinct() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        values = app_environment(root, "https://api.github.com")
+        values.update(GITHUB_CLIENT_APP_ID="54321", GITHUB_CLIENT_APP_OWNERS="second-owner",
+                      GITHUB_CLIENT_APP_PRIVATE_KEY_PATH=values["GITHUB_APP_PRIVATE_KEY_PATH"],
+                      GITHUB_READER_APP_ID="reader-only-with-no-writer-role")
+        def installations(config, **_kwargs):
+            return [{"id": int(config.app_id)}]
+        def metadata(config):
+            client = config.app_id == values["GITHUB_CLIENT_APP_ID"]
+            return {"actor": "client[bot]" if client else "main[bot]", "suspended": False,
+                    "account": {"login": "second-owner" if client else "first-owner"}}
+        def membership(request, **_kwargs):
+            client = request.get_header("Authorization") == "Bearer " + values["GITHUB_CLIENT_APP_ID"]
+            return {"total_count": 1, "repositories": [{"full_name": ("second-owner" if client else "first-owner") + "/repo"}]}
+        with patch.object(github_identity, "app_installations", side_effect=installations) as discovery, \
+                patch.object(github_identity, "github_app_installation_metadata", side_effect=metadata), \
+                patch.object(github_identity, "github_app_installation_token", side_effect=lambda config: config.app_id), \
+                patch.object(github_identity, "github_app_request", side_effect=membership):
+            report = github_identity.automation_repositories(environ=values)
+            assert report["repositories"] == {"first-owner/repo": ["main[bot]"], "second-owner/repo": ["client[bot]"]}
+            assert {call.args[0].app_id for call in discovery.call_args_list} == {values["GITHUB_APP_ID"], values["GITHUB_CLIENT_APP_ID"]}
+            values.pop("GITHUB_CLIENT_APP_PRIVATE_KEY_PATH")
+            try:
+                github_identity.automation_repositories(environ=values)
+            except github_identity.GitHubAppError:
+                pass
+            else:
+                raise AssertionError("partial configured Client writer was silently omitted")
+
+
 def main() -> None:
     tests = [
+        test_complete_writer_installation_inventory_and_live_failures,
+        test_writer_inventory_keeps_main_client_and_reader_roles_distinct,
         test_local_env_file_precedence_matches_shell,
         test_local_env_file_skips_homes_without_one,
         test_per_tool_overrides_win_over_shared_identity,

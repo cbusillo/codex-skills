@@ -66,7 +66,6 @@ DEFAULT_CANCELLATION_SETTLE_TIMEOUT_MS = 10_000
 ALREADY_OPENING_RETRY_LIMIT = 15
 LOOPBACK_HOST = "127.0.0.1"
 READY_STATUS_VALUES = {"clean", "results_available"}
-USABLE_STATUS_VALUES = READY_STATUS_VALUES | {"findings"}
 REDACTED = "<redacted>"
 UNKNOWN_LOG_ENV = "JB_INSPECT_UNKNOWN_LOG"
 OUTCOME_LOG_ENV = "JB_INSPECT_OUTCOME_LOG"
@@ -107,15 +106,6 @@ REPOSITORY_PREPARATION_NOT_RUN = "not_run"
 REPOSITORY_PREPARATION_SKIPPED = "skipped_opt_out"
 REPOSITORY_PREPARATION_REUSED = "reused"
 REPOSITORY_PREPARATION_SUCCEEDED = "succeeded"
-REPOSITORY_PREPARATION_EXECUTION_STATES = frozenset(
-    {
-        REPOSITORY_PREPARATION_NOT_CONFIGURED,
-        REPOSITORY_PREPARATION_NOT_RUN,
-        REPOSITORY_PREPARATION_SKIPPED,
-        REPOSITORY_PREPARATION_REUSED,
-        REPOSITORY_PREPARATION_SUCCEEDED,
-    }
-)
 MAX_REPOSITORY_PREPARATION_COMMAND_LENGTH = 1024
 MAX_REPOSITORY_PREPARATION_OUTPUT_LENGTH = 16_384
 MAX_REPOSITORY_PREPARATION_GENERATED_STATE_PATHS = 25
@@ -385,6 +375,7 @@ class IdeProduct:
     product_codes: tuple[str, ...]
     app_names: tuple[str, ...]
     aliases: tuple[str, ...]
+    launcher_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -459,6 +450,7 @@ IDE_PRODUCTS = {
         product_codes=("IU", "IC"),
         app_names=("IntelliJ IDEA",),
         aliases=("intellijidea", "intellij", "idea", "iu", "ic"),
+        launcher_names=("idea",),
     ),
     "pycharm": IdeProduct(
         key="pycharm",
@@ -467,6 +459,7 @@ IDE_PRODUCTS = {
         product_codes=("PY", "PC"),
         app_names=("PyCharm", "PyCharm CE"),
         aliases=("pycharm", "pycharmce", "py", "pc"),
+        launcher_names=("pycharm",),
     ),
     "webstorm": IdeProduct(
         key="webstorm",
@@ -475,8 +468,10 @@ IDE_PRODUCTS = {
         product_codes=("WS",),
         app_names=("WebStorm",),
         aliases=("webstorm", "ws"),
+        launcher_names=("webstorm",),
     ),
 }
+ALL_IDE_LAUNCHER_NAMES = tuple(name for product in IDE_PRODUCTS.values() for name in product.launcher_names)
 IDE_PRODUCT_BY_ALIAS = {
     alias: product
     for product in IDE_PRODUCTS.values()
@@ -541,13 +536,25 @@ def main() -> int:
             result = command_closeout(args, context)
             return emit(result, args.json, classify_closeout_exit(result), command=args.command_input)
         if args.command == "agent":
-            if args.backend == "api" and (args.qodana_recover_only or args.qodana_image or args.qodana_license_file or args.qodana_plugin_zip or args.qodana_uv):
-                return emit_agent_usage_error("Qodana options cannot be combined with --backend api.")
+            common_backend = qodana_backend_module()
+            qodana_options = common_backend.backend_options(args, "qodana")
+            native_options = common_backend.backend_options(args, "native")
+            if native_options and qodana_options:
+                return emit_agent_usage_error("Native and Qodana options cannot be combined.")
+            if args.backend in {"api", "native"} and qodana_options:
+                return emit_agent_usage_error(f"Qodana options cannot be combined with --backend {args.backend}.")
+            if args.backend in {"api", "qodana"} and native_options:
+                return emit_agent_usage_error(f"Native options cannot be combined with --backend {args.backend}.")
             backend_selection = "explicit"
             if args.backend == "auto":
                 host_default = os.environ.get("JB_INSPECT_DEFAULT_BACKEND")
-                args.backend, backend_selection = qodana_backend_module().select_backend(
-                    args, sys.modules[__name__], host_default if host_default in {"api", "qodana"} else None)
+                args.backend, backend_selection = native_backend_module().select_backend(
+                    args, sys.modules[__name__], host_default if host_default in {"api", "qodana", "native"} else None)
+            if args.backend == "native":
+                result = command_native(args)
+                result["backend_selection"] = backend_selection
+                print(public_json(result))
+                return 0
             if args.backend == "qodana":
                 # Keep headless runs outside all desktop configuration/lifecycle paths.
                 result = command_qodana(args)
@@ -605,6 +612,19 @@ def qodana_backend_module() -> Any:
 
 def command_qodana(args: argparse.Namespace) -> dict[str, Any]:
     return qodana_backend_module().run(args, sys.modules[__name__])
+
+
+def native_backend_module() -> Any:
+    spec = importlib.util.spec_from_file_location("jb_native_backend", Path(__file__).with_name("native_backend.py"))
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Native backend unavailable")
+    backend = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(backend)
+    return backend
+
+
+def command_native(args: argparse.Namespace) -> dict[str, Any]:
+    return native_backend_module().run(args, sys.modules[__name__])
 
 
 def error_payload(error: InspectError, args: argparse.Namespace | None = None) -> dict[str, Any]:
@@ -753,12 +773,14 @@ def ide_selection_advice(reason: str, context: Any) -> str | None:
 
 def hint_for_error_reason(reason: str, context: Any = None) -> str | None:
     if reason == "ide_launch_disabled":
-        return "Make the intended IDE available on the selected port, then run a fresh assessment; application launch is disabled."
+        return "Open the exact worktree in the intended IDE with the Inspection API plugin, pass --ide-launch to start the IDE when none is running, or use --backend native."
+    if reason == "ide_launch_refused":
+        return "The selected IDE app is running, or could not be proven absent, without a usable Inspection API identity. Enable or update the plugin there and restart it yourself, or use --backend native; the helper never launches or activates a running app."
     lane_advice = ide_selection_advice(reason, context)
     if lane_advice:
         return lane_advice
     return {
-        "inspection_api_unavailable": "Open the repo in the configured JetBrains IDE with the inspection plugin installed, or allow lifecycle open to start it.",
+        "inspection_api_unavailable": "Open the repo in the configured JetBrains IDE with the inspection plugin installed, or pass --ide-launch when that IDE is not running.",
         "invalid_api_response": "Check the installed inspection plugin version and IDE logs; the helper could not parse the API response.",
         "inspection_api_http_error": "Inspect the API error body and IDE logs for the failing endpoint.",
         "timeout": "Increase the timeout or check whether the IDE is indexing, opening, or blocked by a modal dialog.",
@@ -807,7 +829,12 @@ def build_parser() -> argparse.ArgumentParser:
         subparsers.choices[name].add_argument("--timeout-ms", type=int, default=DEFAULT_WAIT_TIMEOUT_MS)
         subparsers.choices[name].add_argument("--poll-ms", type=int, default=DEFAULT_POLL_MS)
     agent = subparsers.choices["agent-inspect"]
-    agent.add_argument("--backend", choices=("auto", "api", "qodana"), default="auto", help="Per-run backend. auto runs local Qodana for qualified Python selections and the Inspection API otherwise.")
+    agent.add_argument("--backend", choices=("auto", "api", "qodana", "native"), default="auto", help="Per-run backend. auto uses native PyCharm for Python/Odoo and the existing routes otherwise.")
+    agent.add_argument("--native-worker", help="Independent Director-activated worker directory; config and credentials remain in place.")
+    agent.add_argument("--native-recover-only", action="store_true", help="Clean only the journaled native run and exact helper SDK, without inspection or clearing activation stops.")
+    agent.add_argument("--native-reconcile-result", help="Saved terminal native result for the same interrupted run; requires --native-recover-only and never clears licensing stops.")
+    agent.add_argument("--native-release-run", metavar="UUID", help="Release only this recovered run's helper metadata after recorded Director UI confirmation; requires --native-recover-only and never starts inspection.")
+    agent.add_argument("--native-framework-root", action="append", default=[], help="Existing Odoo framework source root, including odoo/release.py; repeat for explicit roots.")
     agent.add_argument("--qodana-image", help="Pinned Community Docker image repository@sha256:digest.")
     agent.add_argument("--qodana-license-file", action="append", default=[], help="Removed: returns UNKNOWN without accessing the file. Use an independently Director-activated headless profile; see qodana-backend.md#director-activation.")
     agent.add_argument("--qodana-plugin-zip", action="append", default=[], help="Public plugin package for the disposable profile; does not supply entitlement.")
@@ -889,7 +916,8 @@ def add_common(command: argparse.ArgumentParser, include_scope: bool) -> None:
     command.add_argument("--project", help="Project name selector. Prefer project-key/path when possible.")
     command.add_argument("--session-id", help="Expected IDE session id for drift detection.")
     command.add_argument("--open", action="store_true", help="Open the repo in the preferred IDE if no route is available, then retry briefly.")
-    command.add_argument("--no-ide-launch", action="store_true", help="Require a running IDE; never fall back to launching an application when opening a project.")
+    command.add_argument("--ide-launch", dest="ide_launch", action="store_true", help="Allow launching the IDE app when none is running; never launches or activates an app that is already running.")
+    command.add_argument("--no-ide-launch", dest="ide_launch", action="store_false", help="Require a running IDE; the default.")
     command.add_argument("--no-worktree-check", action="store_true", help="Allow routes outside the current worktree.")
     if include_scope:
         command.add_argument("--native-project-scope", action="store_true", help="Assess the selected nested lane project with its native scope instead of dispatching the worktree lanes.")
@@ -5577,17 +5605,20 @@ def open_project_for_lifecycle(
     open_attempt = open_via_running_ide(args, context, attempts, "running_ide", lease)
     if open_attempt is not None:
         return open_method_for_outcome("running_ide", open_attempt), attempts, bool(open_attempt.get("ownership_registered"))
-    if getattr(args, "no_ide_launch", False):
-        if lease is not None and project_open_was_not_requested(attempts):
-            lease["open_not_attempted"] = True
-            lease["open_request_may_have_been_accepted"] = False
-            lease["open_attempts"] = attempts
+    if not getattr(args, "ide_launch", False):
+        record_open_not_attempted(lease, attempts)
         raise InspectError(
             "The running IDE did not accept the lifecycle open; application launch is disabled.",
             3,
             {"error_reason": "ide_launch_disabled", "open_attempts": attempts},
         )
-    bootstrap_attempt = bootstrap_ide_app(context, background=getattr(args, "background_open", False))
+    try:
+        bootstrap_attempt = bootstrap_ide_app(context, background=getattr(args, "background_open", False))
+    except InspectError as error:
+        if error.payload.get("error_reason") == "ide_launch_refused":
+            record_open_not_attempted(lease, attempts)
+            error.payload["open_attempts"] = attempts
+        raise
     attempts.append(bootstrap_attempt)
     timeout_ms = getattr(args, "prepare_timeout_ms", DEFAULT_PREPARE_TIMEOUT_MS)
     wait_for_matching_ide_identity(args, context, timeout_ms)
@@ -5599,6 +5630,13 @@ def open_project_for_lifecycle(
         3,
         auto_open_timeout_payload(args, context, timeout_ms) | {"open_attempts": attempts},
     )
+
+
+def record_open_not_attempted(lease: dict[str, Any] | None, attempts: list[dict[str, Any]]) -> None:
+    if lease is not None and project_open_was_not_requested(attempts):
+        lease["open_not_attempted"] = True
+        lease["open_request_may_have_been_accepted"] = False
+        lease["open_attempts"] = attempts
 
 
 def wait_for_lifecycle_open(
@@ -7406,6 +7444,7 @@ def attribution_classification(code: str, payload: dict[str, Any]) -> str:
         "ide_not_ready_timeout",
         "ide_open_failed",
         "ide_launch_disabled",
+        "ide_launch_refused",
         "project_open_blocked",
         "already_opening_stuck",
         PROJECT_OPEN_BLOCKED_REASON,
@@ -7845,6 +7884,7 @@ def outcome_bucket(payload: dict[str, Any], reason: str) -> str:
         "inspection_api_unavailable",
         "ide_open_failed",
         "ide_launch_disabled",
+        "ide_launch_refused",
         "untrusted_auto_open_root",
         "project_open_blocked",
         "ide_not_ready_timeout",
@@ -10854,10 +10894,6 @@ def trusted_auto_open_roots() -> list[str]:
     return roots
 
 
-def trusted_auto_open_root_count() -> int:
-    return len(trusted_auto_open_roots())
-
-
 def ensure_trusted_auto_open_root(context: dict[str, Any]) -> None:
     worktree = lifecycle_target_path(context)
     roots = trusted_auto_open_roots()
@@ -11009,23 +11045,6 @@ def jetbrains_config_dirs(context: dict[str, Any]) -> list[Path]:
             "hint": ide_selection_advice("ide_selection_required", context) or "Set jetbrains.ide in repo metadata so the helper updates the intended JetBrains product instead of guessing across installed IDEs.",
         },
     )
-
-
-def ide_config_matches(config_name: str, ide: str) -> bool:
-    name = config_name.lower()
-    if not ide:
-        return True
-    normalized = ide.replace(" ", "")
-    aliases = {
-        "intellijidea": ("intellijidea", "idea"),
-        "intellij": ("intellijidea", "idea"),
-        "idea": ("intellijidea", "idea"),
-        "pycharm": ("pycharm",),
-        "pycharmce": ("pycharm",),
-        "webstorm": ("webstorm",),
-    }
-    needles = aliases.get(normalized, (normalized,))
-    return any(needle in name for needle in needles)
 
 
 def ensure_trusted_location_file(config_dir: Path, trust_root: Path) -> dict[str, Any]:
@@ -11255,17 +11274,20 @@ LIFECYCLE_QUEUE_DIRNAME = "lifecycle-queue"
 LIFECYCLE_TICKET_GLOB = "*.ticket"
 
 
-class lifecycle_lock:
-    def __init__(self, timeout_ms: int = DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS):
-        self.timeout_ms = max(0, int(timeout_ms))
-        self.handle = None
+class fifo_turn:
+    """Hold one kernel-locked FIFO ticket in `directory` until exit."""
+
+    def __init__(self, directory: Path, label: str = "Inspection lifecycle", on_wait=None):
+        self.directory = directory
+        self.label = label
+        self.on_wait = on_wait
         self.ticket = None
         self.ticket_path = None
         self.queued_at = None
         self.waited_ms = 0
 
     @staticmethod
-    def _try_lock(handle):
+    def try_lock(handle):
         try:
             if fcntl is not None:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -11287,7 +11309,7 @@ class lifecycle_lock:
         return True
 
     @staticmethod
-    def _unlock(handle):
+    def unlock(handle):
         if fcntl is not None:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         elif msvcrt is not None:
@@ -11295,11 +11317,22 @@ class lifecycle_lock:
             msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
 
     def _register_lock(self, gate):
-        while not self._try_lock(gate):
+        while not self.try_lock(gate):
             time.sleep(0.05)
 
+    def __enter__(self):
+        try:
+            self._queue_turn()
+        except BaseException:
+            self._release_ticket()
+            raise
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self._release_ticket()
+
     def _queue_turn(self):
-        directory = lifecycle_lock_path().with_name(LIFECYCLE_QUEUE_DIRNAME)
+        directory = self.directory
         directory.mkdir(parents=True, exist_ok=True)
         registration = directory / "registration.lock"
         self.queued_at = time.monotonic()
@@ -11310,12 +11343,12 @@ class lifecycle_lock:
                 sequence = max((int(path.stem) for path in tickets), default=0) + 1
                 self.ticket_path = directory / f"{sequence:020d}.ticket"
                 self.ticket = self.ticket_path.open("x+", encoding="utf-8")
-                if not self._try_lock(self.ticket):
+                if not self.try_lock(self.ticket):
                     raise OSError("New lifecycle ticket is already locked")
                 if tickets:
-                    print(f"Inspection lifecycle queued behind {len(tickets)} caller(s).", file=sys.stderr, flush=True)
+                    print(f"{self.label} queued behind {len(tickets)} caller(s).", file=sys.stderr, flush=True)
             finally:
-                self._unlock(gate)
+                self.unlock(gate)
         while True:
             with registration.open("a+", encoding="utf-8") as gate:
                 self._register_lock(gate)
@@ -11326,12 +11359,14 @@ class lifecycle_lock:
                         self.waited_ms = round((time.monotonic() - self.queued_at) * 1000)
                         return
                     with predecessor.open("r+", encoding="utf-8") as holder:
-                        abandoned = self._try_lock(holder)
+                        abandoned = self.try_lock(holder)
                     if abandoned:
                         # Kernel ownership, rather than a PID or age, proves an abandoned ticket.
                         predecessor.unlink()
                 finally:
-                    self._unlock(gate)
+                    self.unlock(gate)
+            if self.on_wait is not None:
+                self.on_wait()
             time.sleep(0.05)
 
     def _release_ticket(self):
@@ -11344,18 +11379,31 @@ class lifecycle_lock:
                     self.ticket = None
                     ticket_path.unlink(missing_ok=True)
                 finally:
-                    self._unlock(gate)
+                    self.unlock(gate)
+
+
+class lifecycle_lock:
+    try_lock = staticmethod(fifo_turn.try_lock)
+    unlock = staticmethod(fifo_turn.unlock)
+
+    def __init__(self, timeout_ms: int = DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS):
+        self.timeout_ms = max(0, int(timeout_ms))
+        self.handle = None
+        self.turn = None
+        self.waited_ms = 0
 
     def __enter__(self):
         path = lifecycle_lock_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         self.handle = path.open("a+", encoding="utf-8")
         if fcntl is not None or msvcrt is not None:
+            self.turn = fifo_turn(path.with_name(LIFECYCLE_QUEUE_DIRNAME))
             try:
-                self._queue_turn()
+                self.turn.__enter__()
+                self.waited_ms = self.turn.waited_ms
                 deadline = time.monotonic() + (self.timeout_ms / 1000.0)
                 while True:
-                    if self._try_lock(self.handle):
+                    if self.try_lock(self.handle):
                         break
                     if self.timeout_ms == 0 or time.monotonic() >= deadline:
                         raise InspectError(
@@ -11371,7 +11419,7 @@ class lifecycle_lock:
                     time.sleep(min(0.25, max(0.0, deadline - time.monotonic())))
             except BaseException:
                 self.handle.close()
-                self._release_ticket()
+                self.turn.__exit__(None, None, None)
                 raise
         else:
             self.handle.close()
@@ -11380,10 +11428,11 @@ class lifecycle_lock:
 
     def __exit__(self, exc_type, exc, tb):
         if self.handle is not None:
-            self._unlock(self.handle)
+            self.unlock(self.handle)
         if self.handle is not None:
             self.handle.close()
-        self._release_ticket()
+        if self.turn is not None:
+            self.turn.__exit__(exc_type, exc, tb)
 
 
 def now_ms() -> int:
@@ -11645,15 +11694,20 @@ HELPER_FINALIZING_CACHE_PREFIX = ".inspection-finalizing-"
 def offline_ide_processes() -> list[int]:
     """A missing plugin identity does not prove the IDE process has exited."""
     try:
-        output = subprocess.check_output(["ps", "-axo", "pid=,comm="], text=True, timeout=5)
-        pids = []
-        for line in output.splitlines():
-            parts = line.strip().split(maxsplit=1)
-            if len(parts) == 2 and re.search(r"\.app/Contents/MacOS/(?:pycharm|idea|webstorm)$", parts[1], re.IGNORECASE):
-                pids.append(int(parts[0]))
-        return pids
+        return ide_launcher_pids(ALL_IDE_LAUNCHER_NAMES)
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         raise InspectError("Cannot prove IDE processes have exited; restore process discovery or use live IDE cleanup.", 3) from error
+
+
+def ide_launcher_pids(launcher_names: tuple[str, ...]) -> list[int]:
+    launcher = re.compile(rf"\.app/Contents/MacOS/(?:{'|'.join(map(re.escape, launcher_names))})$", re.IGNORECASE)
+    output = subprocess.check_output(["ps", "-axo", "pid=,comm="], text=True, timeout=5)
+    pids = []
+    for line in output.splitlines():
+        parts = line.strip().split(maxsplit=1)
+        if len(parts) == 2 and launcher.search(parts[1]):
+            pids.append(int(parts[0]))
+    return pids
 
 
 def offline_retirement_records(root: Path) -> list[str]:
@@ -12346,11 +12400,6 @@ def reclaim_lifecycle_claim(
     return ownership_proven, close_proof, claim_metadata, claimed_route
 
 
-def reclaim_close_proof(lease: dict[str, Any], route: dict[str, Any]) -> str | None:
-    ownership_proven, close_proof, _, _ = reclaim_lifecycle_claim(lease, route)
-    return close_proof if ownership_proven is True else None
-
-
 def matching_route_for_ownership_probe(lease: dict[str, Any], routes: list[dict[str, Any]]) -> dict[str, Any] | None:
     lease_target = lease.get("lifecycle_target_path") or lease.get("worktree_root") or lease.get("repo_path")
     for route in routes:
@@ -12514,64 +12563,16 @@ def ensure_exact_worktree(route: dict[str, Any], context: dict[str, Any], args: 
         )
 
 
-def open_in_ide(context: dict[str, Any], background: bool = False, method: str = "app_open") -> dict[str, Any]:
-    ide_app = resolved_ide_app_name(context)
-    ide_app_path = resolved_ide_app_path(context)
-    if not (ide_app or ide_app_path) or sys.platform != "darwin":
-        raise InspectError("Cannot auto-open IDE without a configured macOS IDE name.", 3)
-    target = lifecycle_target_path(context)
-    command = ["open"]
-    if background:
-        command.append("-g")
-    if ide_app_path:
-        command.extend(["-n", "-a", str(ide_app_path), str(target)])
-    else:
-        command.extend(["-a", str(ide_app), str(target)])
-    # JetBrains restores its cwd from PWD after LaunchServices starts it in /.
-    environment = {**os.environ, "PWD": "/"}
-    completed = subprocess.run(command, env=environment, check=False, capture_output=True, text=True)
-    if completed.returncode != 0:
-        raise InspectError(
-            "Failed to ask macOS to open the JetBrains IDE.",
-            3,
-            {
-                "command": command,
-                "returncode": completed.returncode,
-                "stdout": completed.stdout.strip(),
-                "stderr": completed.stderr.strip(),
-                "ide": context.get("ide"),
-                "ide_app": ide_app,
-                "ide_app_path": str(ide_app_path) if ide_app_path else None,
-                "worktree_root": context.get("worktree_root"),
-                "lifecycle_target_path": lifecycle_target_path(context),
-                "background_open": background,
-                "hint": "Check the configured JetBrains app name/path; product metadata uses the latest stable app, while exact EAP/version selection may require jetbrains.ideApp.",
-            },
-        )
-    return {
-        "method": method,
-        "accepted": True,
-        "target_worktree": lifecycle_target_path(context),
-        "requested_ide": context.get("ide"),
-        "ide_app": ide_app,
-        "ide_app_path": str(ide_app_path) if ide_app_path else None,
-        "background_open": background,
-        "command": command,
-    }
-
-
 def bootstrap_ide_app(context: dict[str, Any], background: bool = True) -> dict[str, Any]:
     ide_app = resolved_ide_app_name(context)
     ide_app_path = resolved_ide_app_path(context)
     if not (ide_app or ide_app_path) or sys.platform != "darwin":
         raise InspectError("Cannot auto-open IDE without a configured macOS IDE name.", 3)
+    refuse_launch_while_app_runs(context)
     command = ["open"]
     if background:
         command.extend(["-g", "-j"])
-    if ide_app_path:
-        command.extend(["-n", "-a", str(ide_app_path)])
-    else:
-        command.extend(["-a", str(ide_app)])
+    command.extend(["-a", str(ide_app_path or ide_app)])
     # JetBrains restores its cwd from PWD after LaunchServices starts it in /.
     environment = {**os.environ, "PWD": "/"}
     completed = subprocess.run(command, env=environment, check=False, capture_output=True, text=True)
@@ -12602,6 +12603,39 @@ def bootstrap_ide_app(context: dict[str, Any], background: bool = True) -> dict[
         "background_open": background,
         "command": command,
     }
+
+
+def refuse_launch_while_app_runs(context: dict[str, Any]) -> None:
+    product = launch_guard_product(context)
+    if product is None:
+        raise InspectError(
+            "Cannot identify the selected JetBrains product's launcher; refusing to launch it.",
+            3,
+            {"error_reason": "ide_launch_refused", "ide": context.get("ide"), "ide_app": resolved_ide_app_name(context)},
+        )
+    try:
+        pids = ide_launcher_pids(product.launcher_names)
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        raise InspectError(
+            "Cannot prove the selected JetBrains app is not running; refusing to launch it.",
+            3,
+            {"error_reason": "ide_launch_refused", "process_census_error": str(error)},
+        ) from error
+    if pids:
+        raise InspectError(
+            "The selected JetBrains app is already running without a usable Inspection API identity; refusing to launch or activate it.",
+            3,
+            {"error_reason": "ide_launch_refused", "running_app_pids": pids},
+        )
+
+
+def launch_guard_product(context: dict[str, Any]) -> IdeProduct | None:
+    selection = dict_field(context, "ide_selection")
+    return (
+        IDE_PRODUCTS.get(str(selection.get("product_key")))
+        or product_for_selector(resolved_ide_app_name(context))
+        or product_for_selector(clean_optional(context.get("ide")))
+    )
 
 
 def resolved_ide_app_name(context: dict[str, Any]) -> str | None:

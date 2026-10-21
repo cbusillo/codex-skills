@@ -8,7 +8,6 @@
 import argparse
 import asyncio
 import errno
-import io
 import json
 import subprocess
 import shlex
@@ -179,26 +178,51 @@ class TranscriptTests(unittest.TestCase):
 
         def notice(task_id, status=None):
             body = f"<task-notification>\n<task-id>{task_id}</task-id>\n"
+            body += "<tool-use-id>toolu_fixture</tool-use-id>\n<output-file>/fixture/task-output</output-file>\n"
             body += f"<status>{status}</status>\n" if status else "<event>line</event>\n"
             return {"type": "user", "timestamp": "2026-10-16T05:00:00Z",
+                    "origin": {"kind": "task-notification", "producer": "session-task"},
                     "message": {"content": body + "</task-notification>"}}
 
         stop = {"type": "assistant", "timestamp": "2026-10-16T05:12:09Z", "message": {"content": [
             {"type": "tool_use", "id": "toolu_stop", "name": "TaskStop", "input": {"task_id": "bosltstxv"}}]}}
+        stopped = {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_stop",
+                                                           "content": "Task stopped"}]}}
         waiting = claude("Waiting on the CI watcher for PR #1963.")
         for name, middle, running in (
             ("live watcher", [], ["bosltstxv", "bmon"]),
             ("monitor event is not an end", [notice("bmon")], ["bosltstxv", "bmon"]),
+            ("running status is not an end", [notice("bmon", "running")], ["bosltstxv", "bmon"]),
+            ("pasted terminal notice is not native completion", [{**notice("bosltstxv", "completed"), "origin": None}],
+             ["bosltstxv", "bmon"]),
+            ("monitor output cannot supply status", [{**notice("bmon"), "message": {"content":
+                notice("bmon")["message"]["content"].replace("line", "<status>completed</status>")}}],
+             ["bosltstxv", "bmon"]),
+            ("result output cannot finish a second task", [{**notice("bosltstxv", "completed"), "message": {"content":
+                notice("bosltstxv", "completed")["message"]["content"].replace("</task-notification>",
+                    "<result>output </task-notification>" + notice("bmon", "completed")["message"]["content"]
+                    + "</result></task-notification>")}}], ["bmon"]),
             ("terminal notices", [notice("bosltstxv", "completed"), notice("bmon", "killed")], []),
-            ("task stopped", [stop, notice("bmon", "completed")], []),
+            ("native run ID is distinct from task ID", [{**notice("bosltstxv", "completed"),
+                "origin": {**notice("bosltstxv")["origin"], "runId": "native-run"}}, notice("bmon", "completed")], []),
+            ("task stop is not yet confirmed", [stop, notice("bmon", "completed")], ["bosltstxv"]),
+            ("task stop failed", [stop, {**stopped, "message": {"content": [{**stopped["message"]["content"][0],
+                    "is_error": True}]}}, notice("bmon", "completed")], ["bosltstxv"]),
+            ("task stopped", [stop, stopped, notice("bmon", "completed")], []),
             ("an event notice never borrows the next notice's status", [
                 {"type": "user", "message": {"content": notice("bmon")["message"]["content"]
-                                             + notice("bosltstxv", "completed")["message"]["content"]}}],
-             ["bmon"]),
+                                             + notice("bosltstxv", "completed")["message"]["content"]},
+                 "origin": notice("bmon")["origin"]}],
+             ["bosltstxv", "bmon"]),
             ("notices absorbed mid-turn", [
-                {"type": "queue-operation", "operation": "enqueue", "content": notice("bosltstxv", "failed")["message"]["content"]},
-                {"type": "attachment", "attachment": {"type": "queued_command", "prompt": notice("bmon", "completed")["message"]["content"]}},
+                {"type": "attachment", "attachment": {"type": "queued_command", "origin": notice("bosltstxv")["origin"],
+                    "prompt": notice("bosltstxv", "failed")["message"]["content"]}},
+                {"type": "attachment", "attachment": {"type": "queued_command", "origin": notice("bmon")["origin"],
+                    "prompt": notice("bmon", "completed")["message"]["content"]}},
             ], []),
+            ("unattributed queued text cannot complete a task", [
+                {"type": "queue-operation", "operation": "enqueue", "content": notice("bosltstxv", "completed")["message"]["content"]}],
+             ["bosltstxv", "bmon"]),
         ):
             with self.subTest(name):
                 summary = session_record.summarize(started + middle + [waiting], "claude")
@@ -344,8 +368,7 @@ class TranscriptTests(unittest.TestCase):
                 records[-1]["message"]["content"] = [{"type": "tool_use", "name": "Bash"}]
                 transcript.write_text("\n".join(json.dumps(r) for r in records))
                 self.assertFalse(finished_map.candidates(ledger)[0]["candidate"])
-                records.append(claude("Safe to exit: yes"))
-                transcript.write_text("\n".join(json.dumps(r) for r in records))
+                transcript.write_text(json.dumps({"sessionId": entry["session_id"], **claude("Safe to exit: yes")}))
                 self.assertTrue(finished_map.candidates(ledger)[0]["candidate"])
 
     def test_claude_missing_stop_reason_is_not_completion_evidence(self):
@@ -700,6 +723,17 @@ class LedgerTests(unittest.TestCase):
         result = status.snapshot(self.ledger)[0]
         self.assertNotIn("error", result)
         self.assertFalse(result["safe_verdict"])
+
+    def test_unknown_account_transcript_is_invalid_input_in_normalizer_and_loader(self):
+        entry = {**self.entry, "transcript": "~q526-absent-account/rollout.jsonl"}
+        self.ledger.write_text(json.dumps([entry]))
+        before = self.ledger.read_bytes()
+        for normalize in (lambda: session_record.normalize_ledger_entry(self.ledger, entry),
+                          lambda: session_record.load_ledger(self.ledger)):
+            with self.subTest(consumer=normalize), patch("pwd.getpwnam", side_effect=KeyError("fixture account absent")):
+                with self.assertRaises(ValueError):
+                    normalize()
+                self.assertEqual(self.ledger.read_bytes(), before)
 
     def test_relative_path_and_duplicate_identity(self):
         self.assertEqual(
@@ -1358,11 +1392,15 @@ class AccountChoiceTests(unittest.TestCase):
             self.assertEqual(list(root.iterdir()), [])
 
 
+# Launch fixtures carry the rules link every Supervisor brief needs.
+BRIEF = f"brief under {iterm_tab.BRIEF_RULES_URL}"
+
+
 def fixture_briefs(command_files):
     files = command_files if isinstance(command_files, list) else [command_files]
     briefs = [path.with_suffix(".brief") for path in files]
     for path in briefs:
-        path.write_text("brief")
+        path.write_text(BRIEF)
     return briefs
 
 
@@ -1376,6 +1414,116 @@ def account_launch_args(command_file):
 class ProcessArgumentsTests(unittest.TestCase):
     source = "01a1514c-fa7f-7be3-95ba-4d25df73d07e"
     other = "01970242-7941-7f0c-b461-16aa5723fb51"
+
+    def setUp(self):
+        # Kernel existence is a fixture fact, never a host PID assumption.
+        self.enterContext(patch.object(session_liveness.os, "kill", return_value=None))
+
+    def test_kernel_process_details_bind_executable_incarnation_and_owner(self):
+        import ctypes
+        import struct
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder).resolve()
+            executable = root / "native-bin"
+            executable.touch()
+            process = root / "proc" / "123"
+            process.mkdir(parents=True)
+            (process / "exe").symlink_to(executable)
+            (process / "stat").write_text("123 (native process) S 42 " + "0 " * 17 + "789")
+            with patch.object(session_liveness.sys, "platform", "linux"), \
+                    patch.object(session_liveness, "PROC_ROOT", root / "proc"):
+                observed = session_liveness.native_process_details(123)
+                self.assertEqual(observed["executable"], str(executable))
+                self.assertEqual(observed["ppid"], 42)
+                self.assertEqual(observed["identity"]["startTicks"], int((process / "stat").read_text().split()[-1]))
+                (process / "stat").write_text("123 (native process) Z 42 " + "0 " * 17 + "789")
+                with self.assertRaises(ValueError):
+                    session_liveness.native_process_details(123)
+            library = Mock()
+            path_bytes = os.fsencode(executable) + b"\0"
+            kernel_identity = struct.pack("=16sQQQQQ", b"", 789, 42, 0, 0, 0)
+            def path(_pid, output, _size):
+                ctypes.memmove(output, path_bytes, len(path_bytes))
+                return len(path_bytes)
+            def info(_pid, _flavor, _arg, output, size):
+                ctypes.memmove(output, kernel_identity, len(kernel_identity))
+                return len(kernel_identity) if size == len(kernel_identity) else 0
+            library.proc_pidpath.side_effect = path
+            library.proc_pidinfo.side_effect = info
+            with patch.object(session_liveness.sys, "platform", "darwin"), \
+                    patch.object(ctypes, "CDLL", return_value=library), \
+                    patch.object(session_liveness.subprocess, "run", return_value=SimpleNamespace(stdout=f"{os.getuid()} 42")) as process_read:
+                observed = session_liveness.native_process_details(123)
+                self.assertEqual(observed["executable"], str(executable))
+                self.assertEqual(observed["identity"]["uniqueId"], struct.unpack("=16sQQQQQ", kernel_identity)[1])
+                self.assertEqual(observed["ppid"], 42)
+                process_read.return_value.stdout = f"{os.getuid() + 1} 42"
+                with self.assertRaises(ValueError):
+                    session_liveness.native_process_details(123)
+                library.proc_pidinfo.return_value = 0
+                library.proc_pidinfo.side_effect = None
+                with self.assertRaises(OSError):
+                    session_liveness.native_process_details(123)
+
+    def test_spaced_cli_paths_keep_native_resume_and_unavailable_argv_vetoes(self):
+        for prefix in (["/Tools With Spaces/bin/codex"], ["node", "/Application Support/bin/codex.js"],
+                       ["node", "--inspect", "/Application Support/bin/codex.js"]):
+            argv = [*prefix, "resume", self.source]
+            for available in (True, False):
+                kwargs = {"return_value": argv} if available else {"side_effect": OSError("argv unavailable")}
+                with self.subTest(prefix=prefix, available=available), patch.object(session_liveness, "native_arguments", **kwargs):
+                    with self.assertRaises(ValueError):
+                        session_liveness.verify_process_exit(
+                            {"session_id": self.source, "pid": 123, "tty": "source-tty"},
+                            rows=[(456, "other", " ".join(argv))])
+
+    def test_command_data_never_supplies_native_harness_ownership(self):
+        data = "resume " + self.source
+        cases = (["git", "-C", "/repo/codex-skills", "status", data],
+                 ["rg", "codex " + data, "fixture.log"],
+                 ["gh-plan", "--repo", "cbusillo/codex-skills", "show", "2285", data],
+                 ["python3", "-I", "tool.py", "--repo", "cbusillo/codex-skills", data],
+                 ["python3", "-m", "module", "/repo/codex-skills", data],
+                 ["zsh", "-lc", "git -C /repo/codex-skills status"],
+                 ["node", "--eval", "codex " + data])
+        for argv in cases:
+            for available in (True, False):
+                kwargs = {"return_value": argv} if available else {"side_effect": OSError("argv unavailable")}
+                with self.subTest(argv=argv, available=available), patch.object(session_liveness, "native_arguments", **kwargs):
+                    command = " ".join(argv)
+                    session_liveness.verify_process_exit(
+                        {"session_id": self.source, "pid": 123, "tty": "source-tty"},
+                        rows=[(456, "other", command)])
+
+    def test_versioned_claude_resume_can_veto_but_cannot_grant_authority(self):
+        executable = "/fixture/claude/versions/1.2.3"
+        for available in (True, False):
+            argv = [executable, "--resume", self.source]
+            kwargs = {"return_value": argv} if available else {"side_effect": OSError("argv unavailable")}
+            with self.subTest(available=available), patch.object(session_liveness, "native_arguments", **kwargs):
+                with self.assertRaises(ValueError):
+                    session_liveness.verify_process_exit(
+                        {"session_id": self.source, "harness": "claude", "pid": 123, "tty": "source-tty"},
+                        rows=[(456, "other", " ".join(argv))])
+        with self.assertRaises(ValueError):
+            self.probe([executable, "--resume", self.other], harness="claude")
+        self.probe([executable, "--resume", self.other], harness="claude", guarded=True)
+
+    def test_node_preload_values_do_not_hide_or_supply_the_main_harness(self):
+        for preload in (["-r", "bootstrap.js"], ["--require", "bootstrap.js"],
+                        ["-rbootstrap.js"], ["--require=bootstrap.js"],
+                        ["--import", "bootstrap.js"], ["--loader=bootstrap.js"],
+                        ["--experimental-loader", "bootstrap.js"]):
+            for available in (True, False):
+                for script in ("/fixture/claude.js", "/fixture/codex.js"):
+                    resume = ["--resume", self.source] if script.endswith("claude.js") else ["resume", self.source]
+                    argv = ["node", *preload, script, *resume]
+                    kwargs = {"return_value": argv} if available else {"side_effect": OSError("argv unavailable")}
+                    with self.subTest(preload=preload, available=available, script=script), patch.object(session_liveness, "native_arguments", **kwargs):
+                        with self.assertRaises(ValueError):
+                            session_liveness.verify_process_exit(
+                                {"session_id": self.source, "pid": 123, "tty": "source-tty"},
+                                rows=[(456, "other", " ".join(argv))])
 
     def probe(self, argv, *, tty="source-tty", scope="session", guarded=False, harness="codex"):
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
@@ -1422,9 +1570,6 @@ class ProcessArgumentsTests(unittest.TestCase):
                 session_liveness.verify_process_exit(entry, independent_harness=lambda *_args: True, **kwargs)
 
     def test_uncertain_resume_options_keep_source_operands_after_separator(self):
-        github = str(Path(__file__).resolve().parents[2] / "github/scripts")
-        with patch.object(sys, "path", [github, *sys.path]):
-            import github_plan_sessions as sessions
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
         entry = {"session_id": self.source, "harness": "codex", "pid": 123, "tty": "source-tty"}
         cases = ((["codex", "-m", "M", "resume", "--", self.source], False),
@@ -1438,13 +1583,6 @@ class ProcessArgumentsTests(unittest.TestCase):
                         session_liveness.verify_process_exit(entry, rows=[(456, tty, " ".join(argv))],
                             ended_at=cutoff, started_at=lambda _pid: cutoff + timedelta(seconds=1),
                             independent_harness=lambda *_args: True)
-                peers = sessions.process_sessions("456 " + " ".join(argv), {self.source})
-                self.assertEqual([peer["sessionId"] for peer in peers], [self.source])
-        with patch.object(session_liveness, "native_arguments", side_effect=OSError("argv unavailable")):
-            peers = sessions.process_sessions("456 codex -- please resume " + self.source, {self.source})
-            self.assertEqual([peer["sessionId"] for peer in peers], [self.source])
-        with patch.object(session_liveness, "native_arguments", return_value=["codex", "--", "please resume " + self.source]):
-            self.assertEqual(sessions.process_sessions("456 codex -- please resume " + self.source, {self.source}), [])
 
     def test_uncertain_delimiters_do_not_hide_source_veto_candidates(self):
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
@@ -1553,22 +1691,6 @@ class ProcessArgumentsTests(unittest.TestCase):
     def test_physical_scope_never_reads_argv_identity(self):
         _result, read = self.probe(["codex", "resume", self.source], scope="terminal")
         read.assert_not_called()
-
-    def test_observer_uses_actual_operands_and_keeps_unavailable_argv_unknown(self):
-        github = str(Path(__file__).resolve().parents[2] / "github/scripts")
-        with patch.object(sys, "path", [github, *sys.path]):
-            import github_plan_sessions as sessions
-        for argv, live in ((["codex", "resume", "--", self.source], True),
-                           (["codex", "exec", "resume", "--", self.source], True),
-                           (["codex", "resume " + self.source], False),
-                           (["codex", "exec", "--", "resume " + self.source], False),
-                           (["codex", "resume", "--last", self.source], False)):
-            with self.subTest(argv=argv), patch.object(session_liveness, "native_arguments", return_value=argv):
-                peers = sessions.process_sessions("456 " + " ".join(argv), {self.source})
-                self.assertEqual(bool(peers), live)
-        for command in ("codex exec -- fresh", "codex app-server --listen unix:///observed"):
-            with self.subTest(command=command), patch.object(session_liveness, "native_arguments", side_effect=OSError("argv unavailable")):
-                self.assertFalse(sessions.process_absence_known("456 " + command, {"/observed"}))
 
     def test_known_options_and_late_last_preserve_native_positional_roles(self):
         for prefix in (["codex", "--model", "model with spaces", "resume"],
@@ -2501,7 +2623,7 @@ class TerminalTests(unittest.TestCase):
             launch.write_text("cd / && exec " + shlex.quote(str(child)))
             args = account_launch_args(launch)
             args.account_provider, args.account_config = "google", config_path
-            brief = "--Google brief\nKeep $(touch injected) literal."
+            brief = "--Google brief\nKeep $(touch injected) literal.\n" + BRIEF
             args.brief_file[0].write_text(brief)
             terminal, window, app = launch_terminal_fixture()
             with (patch.dict("sys.modules", {"iterm2": SimpleNamespace()}),
@@ -2571,7 +2693,7 @@ class TerminalTests(unittest.TestCase):
             launch = root / "launch.txt"
             launch.write_text("cd / && exec " + shlex.quote(str(child)))
             brief = root / "brief.txt"
-            content = "--Don't substitute $(touch injected) or `touch injected`\n\tFollow the issue."
+            content = "--Don't substitute $(touch injected) or `touch injected`\n\tFollow the issue.\n" + BRIEF
             brief.write_text(content)
             args = account_launch_args(launch)
             args.brief_file = [brief]
@@ -2630,7 +2752,20 @@ class TerminalTests(unittest.TestCase):
                 patch.object(account_choice, "record_launch") as receipt,
                 patch.object(iterm_tab, "check_codex_daemon") as daemon,
             ):
-                for content in (None, "", "   \n"):
+                rules = iterm_tab.brief_rules_block()
+                middle = len(rules) // 2
+                edited = rules[:middle] + " edited " + rules[middle:]
+                copy = root / "old" / "skills" / "supervisor" / "references" / "brief-rules.md"
+                copy.parent.mkdir(parents=True)
+                copy.write_text(f"<!-- brief-rules:start -->\n{edited}\n<!-- brief-rules:end -->\n")
+                stale = (None, "", "   \n", "Do the task.",
+                         "Rules: https://github.com/o/r/blob/0a1b2c3/skills/supervisor/references/brief-rules.md",
+                         f"Rules: {iterm_tab.BRIEF_RULES_URL}.old", f"Rules: {iterm_tab.BRIEF_RULES_URL}%2Eold",
+                         f"Rules: {iterm_tab.BRIEF_RULES_URL}/other.md", f"Rules: {iterm_tab.BRIEF_RULES}/other.md",
+                         "Rules: skills/supervisor/references/brief-rules.md",
+                         f"Rules: {copy}", f"Rules: {root / 'missing' / copy.relative_to(root / 'old')}",
+                         "Do the task.\n" + edited)
+                for content in stale:
                     if content is not None:
                         brief.write_text(content)
                     with self.subTest(content=content), self.assertRaises((ValueError, OSError)):
@@ -2641,6 +2776,15 @@ class TerminalTests(unittest.TestCase):
                     daemon.assert_not_called()
                     window.async_create_tab.assert_not_awaited()
                     terminal.async_send_text.assert_not_awaited()
+
+    def test_brief_links_or_includes_the_current_rules(self):
+        rules = iterm_tab.brief_rules_block()
+        for brief in (f"Do the task.\nRules for this brief: {iterm_tab.BRIEF_RULES_URL}",
+                      f"Read {iterm_tab.BRIEF_RULES_URL}. Then start.",
+                      f"Do the task. Rules: ({iterm_tab.BRIEF_RULES}#rules-every-brief-carries)",
+                      "Do the task.\n\n" + " ".join(rules.split())):
+            with self.subTest(brief=brief):
+                iterm_tab.validate_brief_rules(brief)
 
     def test_codex_daemon_preflight_checks_selected_home_before_tabs_and_receipts(self):
         # Short disposable paths fit macOS's Unix socket path limit.
@@ -3041,7 +3185,7 @@ class TerminalTests(unittest.TestCase):
             if sent.startswith("\x1b[200~"):
                 sent = sent.removeprefix("\x1b[200~").removesuffix("\x1b[201~")
             launched = subprocess.run(["/bin/sh", "-c", sent], capture_output=True, text=True, check=True)
-            self.assertEqual(launched.stdout.splitlines(), [choice["env"]["CLAUDE_CONFIG_DIR"], "1", "brief"])
+            self.assertEqual(launched.stdout.splitlines(), [choice["env"]["CLAUDE_CONFIG_DIR"], "1", BRIEF])
         window.async_create_tab.assert_awaited_once_with(select=False)
         receipt.assert_called_once_with(choice)
         self.assertEqual(result["account"]["env_keys"], ["CLAUDE_CONFIG_DIR"])

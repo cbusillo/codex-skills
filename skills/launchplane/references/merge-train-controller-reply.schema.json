@@ -1,0 +1,652 @@
+{
+  "$defs": {
+    "MergeTrainControllerBlockResult": {
+      "additionalProperties": false,
+      "properties": {
+        "base_branch": {
+          "title": "Base Branch",
+          "type": "string"
+        },
+        "blocked_label": {
+          "title": "Blocked Label",
+          "type": "string"
+        },
+        "detail": {
+          "title": "Detail",
+          "type": "string"
+        },
+        "pull_request_number": {
+          "title": "Pull Request Number",
+          "type": "integer"
+        },
+        "repository": {
+          "title": "Repository",
+          "type": "string"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        },
+        "train_should_continue": {
+          "title": "Train Should Continue",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "status",
+        "pull_request_number",
+        "train_should_continue"
+      ],
+      "title": "MergeTrainControllerBlockResult",
+      "type": "object"
+    },
+    "MergeTrainControllerBlockingReason": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "title": "MergeTrainControllerBlockingReason",
+      "type": "object"
+    },
+    "MergeTrainControllerConflictProbe": {
+      "additionalProperties": false,
+      "properties": {
+        "held_out": {
+          "items": {
+            "$ref": "#/$defs/MergeTrainControllerHeldOut"
+          },
+          "title": "Held Out",
+          "type": "array"
+        },
+        "pull_request_numbers": {
+          "items": {
+            "type": "integer"
+          },
+          "title": "Pull Request Numbers",
+          "type": "array"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "pull_request_numbers"
+      ],
+      "title": "MergeTrainControllerConflictProbe",
+      "type": "object"
+    },
+    "MergeTrainControllerHeldOut": {
+      "additionalProperties": false,
+      "properties": {
+        "conflicts_with": {
+          "items": {
+            "type": "integer"
+          },
+          "title": "Conflicts With",
+          "type": "array"
+        },
+        "head_sha": {
+          "title": "Head Sha",
+          "type": "string"
+        },
+        "pull_request_number": {
+          "title": "Pull Request Number",
+          "type": "integer"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "pull_request_number",
+        "head_sha",
+        "reason",
+        "conflicts_with"
+      ],
+      "title": "MergeTrainControllerHeldOut",
+      "type": "object"
+    },
+    "MergeTrainControllerLastResult": {
+      "additionalProperties": false,
+      "description": "One pass's bounded evidence. It is never admission or landing authority.",
+      "properties": {
+        "action": {
+          "maxLength": 128,
+          "title": "Action",
+          "type": "string"
+        },
+        "base_branch": {
+          "maxLength": 256,
+          "title": "Base Branch",
+          "type": "string"
+        },
+        "base_checks_status": {
+          "default": "not_observed",
+          "enum": [
+            "not_observed",
+            "unknown",
+            "pending",
+            "pass",
+            "fail"
+          ],
+          "title": "Base Checks Status",
+          "type": "string"
+        },
+        "base_sha": {
+          "default": "",
+          "maxLength": 128,
+          "title": "Base Sha",
+          "type": "string"
+        },
+        "batch_body_retry_of": {
+          "default": "",
+          "maxLength": 256,
+          "title": "Batch Body Retry Of",
+          "type": "string"
+        },
+        "candidate_batch_id": {
+          "default": "",
+          "maxLength": 256,
+          "title": "Candidate Batch Id",
+          "type": "string"
+        },
+        "candidate_checks_status": {
+          "default": "not_observed",
+          "enum": [
+            "not_observed",
+            "unknown",
+            "pending",
+            "pass",
+            "fail"
+          ],
+          "title": "Candidate Checks Status",
+          "type": "string"
+        },
+        "candidate_sha": {
+          "default": "",
+          "maxLength": 128,
+          "title": "Candidate Sha",
+          "type": "string"
+        },
+        "check_retry_of": {
+          "default": "",
+          "maxLength": 256,
+          "title": "Check Retry Of",
+          "type": "string"
+        },
+        "infrastructure_retry_of": {
+          "default": "",
+          "maxLength": 256,
+          "title": "Infrastructure Retry Of",
+          "type": "string"
+        },
+        "next_actor": {
+          "default": "controller",
+          "enum": [
+            "controller",
+            "provider",
+            "repository_agent"
+          ],
+          "title": "Next Actor",
+          "type": "string"
+        },
+        "next_observation": {
+          "maxLength": 256,
+          "title": "Next Observation",
+          "type": "string"
+        },
+        "observed_at": {
+          "maxLength": 64,
+          "title": "Observed At",
+          "type": "string"
+        },
+        "observed_candidate_sha": {
+          "default": "",
+          "maxLength": 128,
+          "title": "Observed Candidate Sha",
+          "type": "string"
+        },
+        "pass_started_at": {
+          "maxLength": 64,
+          "title": "Pass Started At",
+          "type": "string"
+        },
+        "policy_key": {
+          "maxLength": 256,
+          "title": "Policy Key",
+          "type": "string"
+        },
+        "policy_sha256": {
+          "maxLength": 256,
+          "title": "Policy Sha256",
+          "type": "string"
+        },
+        "reason_code": {
+          "maxLength": 128,
+          "title": "Reason Code",
+          "type": "string"
+        },
+        "reconciliation_required": {
+          "default": false,
+          "title": "Reconciliation Required",
+          "type": "boolean"
+        },
+        "record_id": {
+          "default": "",
+          "maxLength": 256,
+          "title": "Record Id",
+          "type": "string"
+        },
+        "recovery_kind": {
+          "default": "",
+          "maxLength": 128,
+          "title": "Recovery Kind",
+          "type": "string"
+        },
+        "repository": {
+          "maxLength": 256,
+          "title": "Repository",
+          "type": "string"
+        },
+        "semantic_progress_at": {
+          "default": "",
+          "maxLength": 64,
+          "title": "Semantic Progress At",
+          "type": "string"
+        },
+        "source_failed_record_id": {
+          "default": "",
+          "maxLength": 256,
+          "title": "Source Failed Record Id",
+          "type": "string"
+        },
+        "trace_id": {
+          "maxLength": 256,
+          "title": "Trace Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository",
+        "base_branch",
+        "policy_key",
+        "policy_sha256",
+        "pass_started_at",
+        "observed_at",
+        "trace_id",
+        "action",
+        "reason_code",
+        "next_observation"
+      ],
+      "title": "MergeTrainControllerLastResult",
+      "type": "object"
+    },
+    "MergeTrainControllerMergeReadiness": {
+      "additionalProperties": false,
+      "properties": {
+        "candidate_state": {
+          "title": "Candidate State",
+          "type": "string"
+        },
+        "engineering_review_state": {
+          "title": "Engineering Review State",
+          "type": "string"
+        },
+        "fence_state": {
+          "title": "Fence State",
+          "type": "string"
+        },
+        "owner_states": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Owner States",
+          "type": "array"
+        },
+        "policy_state": {
+          "title": "Policy State",
+          "type": "string"
+        },
+        "reason_codes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Reason Codes",
+          "type": "array"
+        },
+        "state": {
+          "title": "State",
+          "type": "string"
+        },
+        "technical_checks_state": {
+          "title": "Technical Checks State",
+          "type": "string"
+        }
+      },
+      "required": [
+        "state",
+        "reason_codes",
+        "owner_states",
+        "technical_checks_state",
+        "engineering_review_state",
+        "policy_state",
+        "candidate_state",
+        "fence_state"
+      ],
+      "title": "MergeTrainControllerMergeReadiness",
+      "type": "object"
+    },
+    "MergeTrainControllerReplyRecords": {
+      "additionalProperties": false,
+      "description": "Record ids the pass wrote or settled.",
+      "properties": {
+        "merge_train_batch_candidate_record_id": {
+          "title": "Merge Train Batch Candidate Record Id",
+          "type": "string"
+        },
+        "merge_train_batch_landing_plan_record_id": {
+          "title": "Merge Train Batch Landing Plan Record Id",
+          "type": "string"
+        },
+        "merge_train_stack_collapse_plan_record_id": {
+          "title": "Merge Train Stack Collapse Plan Record Id",
+          "type": "string"
+        },
+        "retired_merge_train_batch_candidate_record_id": {
+          "title": "Retired Merge Train Batch Candidate Record Id",
+          "type": "string"
+        },
+        "superseded_merge_train_batch_candidate_record_id": {
+          "title": "Superseded Merge Train Batch Candidate Record Id",
+          "type": "string"
+        }
+      },
+      "title": "MergeTrainControllerReplyRecords",
+      "type": "object"
+    },
+    "MergeTrainControllerReplyResult": {
+      "additionalProperties": false,
+      "description": "What one controller pass did and what it saw.",
+      "properties": {
+        "active_action": {
+          "title": "Active Action",
+          "type": "string"
+        },
+        "active_phase": {
+          "title": "Active Phase",
+          "type": "string"
+        },
+        "active_record_id": {
+          "title": "Active Record Id",
+          "type": "string"
+        },
+        "base_branch": {
+          "title": "Base Branch",
+          "type": "string"
+        },
+        "block_result": {
+          "$ref": "#/$defs/MergeTrainControllerBlockResult"
+        },
+        "blocking_reason": {
+          "$ref": "#/$defs/MergeTrainControllerBlockingReason"
+        },
+        "branch_update_result": {
+          "additionalProperties": true,
+          "title": "Branch Update Result",
+          "type": "object"
+        },
+        "candidate": {
+          "additionalProperties": true,
+          "title": "Candidate",
+          "type": "object"
+        },
+        "candidate_ref_cleanup_github_status_code": {
+          "title": "Candidate Ref Cleanup Github Status Code",
+          "type": "integer"
+        },
+        "candidate_ref_cleanup_message": {
+          "title": "Candidate Ref Cleanup Message",
+          "type": "string"
+        },
+        "candidate_ref_cleanup_status": {
+          "title": "Candidate Ref Cleanup Status",
+          "type": "string"
+        },
+        "conflict_probe": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MergeTrainControllerConflictProbe"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "controller_action": {
+          "title": "Controller Action",
+          "type": "string"
+        },
+        "controller_reconciliation_status": {
+          "title": "Controller Reconciliation Status",
+          "type": "string"
+        },
+        "details": {
+          "additionalProperties": true,
+          "title": "Details",
+          "type": "object"
+        },
+        "dry_run_result": {
+          "additionalProperties": true,
+          "title": "Dry Run Result",
+          "type": "object"
+        },
+        "error": {
+          "additionalProperties": true,
+          "title": "Error",
+          "type": "object"
+        },
+        "historical_completion_disposition": {
+          "additionalProperties": true,
+          "title": "Historical Completion Disposition",
+          "type": "object"
+        },
+        "historical_completion_preflight": {
+          "additionalProperties": true,
+          "title": "Historical Completion Preflight",
+          "type": "object"
+        },
+        "landing_plan": {
+          "additionalProperties": true,
+          "title": "Landing Plan",
+          "type": "object"
+        },
+        "landing_progress": {
+          "title": "Landing Progress",
+          "type": "string"
+        },
+        "last_controller_result": {
+          "$ref": "#/$defs/MergeTrainControllerLastResult"
+        },
+        "merge_readiness": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MergeTrainControllerMergeReadiness"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "merge_train_batch_candidate_record_id": {
+          "title": "Merge Train Batch Candidate Record Id",
+          "type": "string"
+        },
+        "merge_train_batch_landing_plan_record_id": {
+          "title": "Merge Train Batch Landing Plan Record Id",
+          "type": "string"
+        },
+        "merge_train_stack_collapse_plan_record_id": {
+          "title": "Merge Train Stack Collapse Plan Record Id",
+          "type": "string"
+        },
+        "mode": {
+          "title": "Mode",
+          "type": "string"
+        },
+        "reason_code": {
+          "title": "Reason Code",
+          "type": "string"
+        },
+        "reconciliation_detail": {
+          "title": "Reconciliation Detail",
+          "type": "string"
+        },
+        "repository": {
+          "title": "Repository",
+          "type": "string"
+        },
+        "retired_merge_train_batch_candidate_record_id": {
+          "title": "Retired Merge Train Batch Candidate Record Id",
+          "type": "string"
+        },
+        "stack_collapse_plan": {
+          "additionalProperties": true,
+          "title": "Stack Collapse Plan",
+          "type": "object"
+        },
+        "stack_discovery": {
+          "additionalProperties": true,
+          "title": "Stack Discovery",
+          "type": "object"
+        },
+        "structural_provenance": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MergeTrainControllerStructuralProvenance"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "superseded_merge_train_batch_candidate_record_id": {
+          "title": "Superseded Merge Train Batch Candidate Record Id",
+          "type": "string"
+        }
+      },
+      "title": "MergeTrainControllerReplyResult",
+      "type": "object"
+    },
+    "MergeTrainControllerStructuralProvenance": {
+      "additionalProperties": false,
+      "properties": {
+        "candidate_sha256": {
+          "title": "Candidate Sha256",
+          "type": "string"
+        },
+        "effective_base_sha": {
+          "title": "Effective Base Sha",
+          "type": "string"
+        },
+        "effective_base_tree_sha": {
+          "title": "Effective Base Tree Sha",
+          "type": "string"
+        },
+        "landing_plan_sha256": {
+          "title": "Landing Plan Sha256",
+          "type": "string"
+        },
+        "provenance_sha256": {
+          "title": "Provenance Sha256",
+          "type": "string"
+        },
+        "reason_codes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Reason Codes",
+          "type": "array"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "reason_codes",
+        "effective_base_sha",
+        "effective_base_tree_sha",
+        "candidate_sha256",
+        "landing_plan_sha256",
+        "provenance_sha256"
+      ],
+      "title": "MergeTrainControllerStructuralProvenance",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "The accepted reply of one merge-train controller pass.",
+  "properties": {
+    "original_trace_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Original Trace Id"
+    },
+    "records": {
+      "$ref": "#/$defs/MergeTrainControllerReplyRecords"
+    },
+    "replayed": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Replayed"
+    },
+    "result": {
+      "$ref": "#/$defs/MergeTrainControllerReplyResult"
+    },
+    "status": {
+      "const": "accepted",
+      "title": "Status",
+      "type": "string"
+    },
+    "trace_id": {
+      "title": "Trace Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "status",
+    "trace_id",
+    "records",
+    "result"
+  ],
+  "title": "MergeTrainControllerReply",
+  "type": "object"
+}

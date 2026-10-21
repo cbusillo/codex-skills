@@ -1,0 +1,9 @@
+{
+  "qualityGate": {
+    "inspection": {
+      "ide": "PyCharm",
+      "profile": "Native Odoo Controls",
+      "prepare": {"python": {"version": "3.13", "moduleName": "native-controls"}}
+    }
+  }
+}

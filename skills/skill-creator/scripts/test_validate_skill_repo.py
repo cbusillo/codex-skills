@@ -210,6 +210,48 @@ See [example-only](EXAMPLE.md).
         raise AssertionError(f"fenced/root-relative markdown links should pass: {errors}")
 
 
+def test_markdown_links_skip_regex_frontmatter_but_check_body() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory(dir=module.ROOT) as tmp:
+        root = Path(tmp)
+        module.ROOT = root
+        skill_dir = root / "demo-skill"
+        references_dir = skill_dir / "references"
+        references_dir.mkdir(parents=True)
+        for path in (skill_dir / "SKILL.md", references_dir / "guide.md"):
+            for body in ("# Guide\n", "See [missing](missing.md).\n"):
+                contents = (
+                    "---\nname: demo-skill\ndescription: Demo.\n"
+                    "policy:\n  command_policies:\n    - id: demo\n"
+                    "      match:\n        shell_regex: '[a-z](?:demo)'\n"
+                    "---\n" + body
+                )
+                put_text(path, contents)
+                errors = module.validate_markdown_links(skill_dir)
+                if body.startswith("#"):
+                    assert not errors, errors
+                else:
+                    line_number = len(contents.splitlines())
+                    assert len(errors) == 1, errors
+                    assert f"{path.relative_to(root)}:{line_number}:" in errors[0], errors
+                    assert "missing.md" in errors[0], errors
+                path.unlink()
+
+
+def test_markdown_links_check_body_between_horizontal_rules() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory(dir=module.ROOT) as tmp:
+        root = Path(tmp)
+        module.ROOT = root
+        skill_dir = root / "demo-skill"
+        references_dir = skill_dir / "references"
+        references_dir.mkdir(parents=True)
+        for heading in ("# Guide", "[unfinished", "Key: value\n-----"):
+            put_text(references_dir / "guide.md", f"---\n{heading}\nSee [missing](missing.md).\n---\n")
+            errors = module.validate_markdown_links(skill_dir)
+            assert len(errors) == 1 and "missing.md" in errors[0], errors
+
+
 def write_skill_with_shell_helper(root: Path, example_argv: str) -> Path:
     skill_dir = root / "demo-skill"
     scripts_dir = skill_dir / "scripts"
@@ -639,6 +681,8 @@ def main() -> int:
     test_markdown_links_validate_relative_targets()
     test_markdown_links_reject_missing_relative_targets()
     test_markdown_links_ignore_fenced_examples_and_root_relative_docs()
+    test_markdown_links_skip_regex_frontmatter_but_check_body()
+    test_markdown_links_check_body_between_horizontal_rules()
     test_shell_helper_examples_reject_python_and_uv()
     test_shell_helper_examples_allow_direct_invocation()
     test_pep723_helper_examples_reject_python()

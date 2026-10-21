@@ -25,7 +25,7 @@ entrypoint = "github/scripts/gh-attachment.py"
 intent = "Save a private comment attachment into private task evidence without exposing credentials or content."
 current_transport = "composite"
 selected_transport = "composite"
-endpoint_or_command = "Automation GET repository/comment, Q467 approval and later decision comments; verified personal GET /user and https://github.com/user-attachments/files/{id}/{name}; credential-free HTTPS asset redirects"
+endpoint_or_command = "Automation GET repository/comment, Q467 approval and later decision comments; verified personal GET /user and https://github.com/user-attachments/files/{id}/{name} or https://github.com/user-attachments/assets/{uuid}; credential-free HTTPS asset redirects"
 quota_bucket = "mixed"
 actor_policy = "split_identity_required"
 mutation_class = "read"
@@ -34,7 +34,7 @@ retry_eligibility = "manual"
 reconciliation_strategy = "fresh_read"
 retained_graphql_rationale = "No GraphQL. Metadata uses the shared reader; a bounded non-retrying binary GET transport never forwards personal credentials to asset hosts."
 source_refs = ["github/scripts/gh-attachment.py:main", "github/scripts/gh-attachment.py:download"]
-test_refs = ["github/scripts/test_github_attachment.py:AttachmentTests"]
+test_refs = ["github/scripts/test_github_attachment.py:AttachmentTests", "github/scripts/test_github_attachment.py:EmbeddedImageTests"]
 
 [[operations]]
 id = "github.app.setup"
@@ -56,6 +56,27 @@ reconciliation_strategy = "fail_closed_write"
 retained_graphql_rationale = "No GraphQL. Registration conversion is not retried after an unknown outcome; owner can recover from GitHub settings with the import route. Saved successful registrations resume installation/configuration without recreating the App."
 source_refs = ["github/scripts/github_app_setup.py:register", "github/scripts/github_app_setup.py:configure", "github/scripts/github_app_setup.py:write_configuration", "github/scripts/github_app_setup.py:main", "github/scripts/github_identity.py:github_app_headers", "github/scripts/github_identity.py:github_app_request"]
 test_refs = ["github/scripts/test_github_app_setup.py:test_manifest_callback_and_private_recovery", "github/scripts/test_github_app_setup.py:test_fixture_repository_setup_and_direction_review", "github/scripts/test_github_app_setup.py:test_wrong_installation_and_missing_permissions_preserve_configuration", "github/scripts/test_github_app_setup.py:test_existing_identity_requires_explicit_replacement_and_keeps_backup"]
+
+[[operations]]
+id = "github.app.ownership_inventory"
+request_priority = "essential"
+capabilities = ["metadata_read"]
+permission_mode = "fixed"
+permission_note = "Enumerates only existing configured writer Apps and their verified installation membership through the shared authentication owner. No App registration, configuration, grant or personal identity fallback."
+entrypoint = "github/scripts/github_identity.py automation_repositories"
+intent = "Establish complete canonical repository coverage for session claim closeout without interpreting commands."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "GET /app/installations pages; GET /app/installations/{id}; existing installation token mint/cache; GET /installation/repositories pages"
+quota_bucket = "mixed"
+actor_policy = "automation_required"
+mutation_class = "read"
+idempotency = "read_only"
+retry_eligibility = "manual"
+reconciliation_strategy = "fresh_read"
+retained_graphql_rationale = "No GraphQL. App metadata and installation repository membership are complete paged REST reads; failures remain incomplete until fresh evidence succeeds."
+source_refs = ["github/scripts/github_identity.py:automation_repositories", "github/scripts/github_identity.py:app_installations", "work-closeout/scripts/check_claims.py:check"]
+test_refs = ["github/scripts/test_github_identity.py:test_complete_writer_installation_inventory_and_live_failures", "work-closeout/scripts/test_check_claims.py:ClaimCloseoutTests"]
 
 [[operations]]
 id = "github.api.call"
@@ -610,7 +631,7 @@ id = "github.director_mentions.search"
 request_priority = "bulk"
 capabilities = ["issues_read"]
 permission_mode = "fixed"
-permission_note = "Read-only search under the Director's own active gh login, which can see private repositories the automation App is not installed in. Runs only with the Director's standing approval (Q455 on cbusillo/codex-skills#2073): an unquoted, unqualified first-line answer by the Director or a recorded Director decision, not withdrawn by a later answer; callers verify it under the automation identity and otherwise report a coverage gap. No writes, no App token, no grants."
+permission_note = "Read-only search under the Director's own active gh login, which can see private repositories the automation App is not installed in. Runs only with the Director's standing approval of the matching mention-search question: an unquoted, unqualified first-line answer by the Director or a recorded Director decision, not withdrawn by a later answer; callers verify it under the automation identity and otherwise report a coverage gap. No writes, no App token, no grants."
 entrypoint = "github/scripts/director_mentions.py"
 intent = "Find threads outside a watched scope that mention the Director, for the Supervisor's foreign watch and the external-comment radar."
 current_transport = "gh_cli_wrapper"
@@ -951,7 +972,7 @@ entrypoint = "github/scripts/gh-plan.py claim"
 intent = "Claim an issue or PR-only work record; recheck ownership and agent-family assignment, record explicit Director routing overrides, and read back a claim before creating worktrees; preserve other ownership and dependency gates."
 current_transport = "composite"
 selected_transport = "composite"
-endpoint_or_command = "Paged REST issue/comments/blockers/open PR reads; git worktree/branch/live remote head reads; claude agents --json; bounded existing Codex daemon initialize, thread/loaded/list and thread/read RPCs, exact native transcript and local process reads; shared comment create, owned status PATCH and label edits; final readback; PR-only claims skip unsupported native PR dependencies, recheck PR source artifacts and canonical implementation issue links, and read the latest authorized structured wait record"
+endpoint_or_command = "Paged REST issue/comments/blockers/open PR reads; git worktree/branch/live remote head reads; host-local claim lease reads; shared comment create, owned status PATCH and label edits; final readback; PR-only claims skip unsupported native PR dependencies, recheck PR source artifacts and canonical implementation issue links, and read the latest authorized structured wait record"
 quota_bucket = "rest_core"
 actor_policy = "automation_required_for_writes"
 mutation_class = "mixed"
@@ -959,8 +980,8 @@ idempotency = "conditional"
 retry_eligibility = "manual"
 reconciliation_strategy = "read_after_write"
 retained_graphql_rationale = "No GraphQL transport; stable worker/session/branch records allow partial recovery through the shared REST write helpers."
-source_refs = ["github/scripts/github_plan_sessions.py:observe", "github/scripts/github_plan_claim.py:ended_ownership", "github/scripts/gh-plan.py:cmd_claim", "github/scripts/github_plan_claim.py:discussion_evidence", "github/scripts/github_plan_claim.py:local_inventory", "github/scripts/github_plan_claim.py:artifact_evidence", "github/scripts/github_plan_claim.py:retained_handoff", "github/scripts/gh-plan.py:claim_once"]
-test_refs = ["github/scripts/test_github_plan_sessions.py", "github/scripts/test_gh_plan_claim.py:test_five_launchplane_finished_handoffs_allow_successor_claims", "github/scripts/test_gh_plan_claim.py:test_live_or_unknown_holder_returns_coordination_before_any_write", "github/scripts/test_gh_plan_claim.py:test_oct12_refusals_replay_with_reviewed_absence_and_keep_competing_claims", "github/scripts/test_github_plan_wait.py", "github/scripts/test_gh_plan_claim.py:test_dependabot_pr_can_be_claimed_without_a_tracking_issue", "github/scripts/test_gh_plan_claim.py:test_bare_pr_can_be_claimed_and_keeps_its_description_and_labels", "github/scripts/test_gh_plan_claim.py:test_pr_with_canonical_issue_cannot_bypass_that_issues_claim", "github/scripts/test_gh_plan_claim.py:test_closed_session_release_does_not_account_for_post_closure_notes", "github/scripts/test_gh_plan_claim.py:test_compound_status_identity_is_history_only_after_exact_release", "github/scripts/test_gh_plan_claim.py:test_readback_rechecks_live_released_status_sessions", "github/scripts/test_gh_plan_claim.py:test_retained_pr_history_cannot_hide_live_source_session", "github/scripts/test_gh_plan_claim.py:test_exact_released_source_accounts_for_its_explanatory_note", "github/scripts/test_gh_plan_claim.py:test_released_note_requires_exact_identity_author_and_chronology", "github/scripts/test_gh_plan_claim.py:test_compound_status_preserves_unproved_or_live_holders", "github/scripts/test_gh_plan_claim.py:test_upstream_holder_and_failed_claim_history_do_not_claim_this_issue", "github/scripts/test_github_agent.py", "github/scripts/test_gh_plan_claim.py:test_competing_worktree_refuses", "github/scripts/test_gh_plan_claim.py:test_current_status_owner_refuses_before_writes", "github/scripts/test_gh_plan_claim.py:test_stale_claim_is_not_expired", "github/scripts/test_gh_plan_claim.py:test_write_readback_race_stops_before_status", "github/scripts/test_gh_plan_claim.py:test_retry_same_session_repairs_without_duplicate_comment", "github/scripts/test_gh_plan_claim.py:test_authorized_split_pr_refresh_claim_succeeds_with_release_and_handoff", "github/scripts/test_gh_plan_claim.py:test_refresh_active_ownership_refuses_on_issue_target_or_sibling", "github/scripts/test_gh_plan_claim.py:test_refresh_readback_new_pr_is_competing_evidence", "github/scripts/test_gh_plan_claim.py:test_ordinary_successor_accepts_two_retained_branches_before_pr_refresh", "github/scripts/test_gh_plan_claim.py:test_ordinary_handoff_preserves_issue_and_every_retained_pr_wait", "github/scripts/test_gh_plan_claim.py:test_ordinary_handoff_readbacks_preserve_racing_claims_and_artifacts", "github/scripts/test_gh_plan_claim.py:test_comment_admission_preserves_ownership_and_wait_refusals", "github/scripts/test_gh_plan_claim.py:test_milestone_admission_needs_no_graph_certificate"]
+source_refs = ["github/scripts/github_plan_claim.py:ended_ownership", "github/scripts/github_plan_claim.py:expired_lease_sessions", "github/scripts/github_plan_lease.py:state", "github/scripts/gh-plan.py:cmd_claim", "github/scripts/github_plan_claim.py:discussion_evidence", "github/scripts/github_plan_claim.py:local_inventory", "github/scripts/github_plan_claim.py:artifact_evidence", "github/scripts/github_plan_claim.py:retained_handoff", "github/scripts/gh-plan.py:claim_once", "github/scripts/github_plan_closure.py:admit_sources"]
+test_refs = ["github/scripts/test_github_plan_sessions.py", "github/scripts/test_gh_plan_claim.py:test_malformed_family_history_preserves_current_ownership_and_hold_refusals", "github/scripts/test_gh_plan_claim.py:test_five_launchplane_finished_handoffs_allow_successor_claims", "github/scripts/test_gh_plan_claim.py:test_live_or_unknown_holder_returns_coordination_before_any_write", "github/scripts/test_gh_plan_claim.py:test_oct12_refusals_replay_with_reviewed_absence_and_keep_competing_claims", "github/scripts/test_github_plan_wait.py", "github/scripts/test_gh_plan_claim.py:test_dependabot_pr_can_be_claimed_without_a_tracking_issue", "github/scripts/test_gh_plan_claim.py:test_bare_pr_can_be_claimed_and_keeps_its_description_and_labels", "github/scripts/test_gh_plan_claim.py:test_pr_with_canonical_issue_cannot_bypass_that_issues_claim", "github/scripts/test_gh_plan_claim.py:test_closed_session_release_does_not_account_for_post_closure_notes", "github/scripts/test_gh_plan_claim.py:test_compound_status_identity_is_history_only_after_exact_release", "github/scripts/test_gh_plan_claim.py:test_exact_released_source_accounts_for_its_explanatory_note", "github/scripts/test_gh_plan_claim.py:test_released_note_requires_exact_identity_author_and_chronology", "github/scripts/test_gh_plan_claim.py:test_compound_status_preserves_unproved_holders", "github/scripts/test_gh_plan_claim.py:test_upstream_holder_and_failed_claim_history_do_not_claim_this_issue", "github/scripts/test_github_agent.py", "github/scripts/test_gh_plan_claim.py:test_competing_worktree_refuses", "github/scripts/test_gh_plan_claim.py:test_current_status_owner_refuses_before_writes", "github/scripts/test_gh_plan_claim.py:test_stale_claim_is_not_expired", "github/scripts/test_gh_plan_claim.py:test_write_readback_race_stops_before_status", "github/scripts/test_gh_plan_claim.py:test_retry_same_session_repairs_without_duplicate_comment", "github/scripts/test_gh_plan_claim.py:test_authorized_split_pr_refresh_claim_succeeds_with_release_and_handoff", "github/scripts/test_gh_plan_claim.py:test_refresh_active_ownership_refuses_on_issue_target_or_sibling", "github/scripts/test_gh_plan_claim.py:test_refresh_readback_new_pr_is_competing_evidence", "github/scripts/test_gh_plan_claim.py:test_ordinary_successor_accepts_two_retained_branches_before_pr_refresh", "github/scripts/test_gh_plan_claim.py:test_ordinary_handoff_preserves_issue_and_every_retained_pr_wait", "github/scripts/test_gh_plan_claim.py:test_ordinary_handoff_readbacks_preserve_racing_claims_and_artifacts", "github/scripts/test_gh_plan_claim.py:test_comment_admission_preserves_ownership_and_wait_refusals", "github/scripts/test_gh_plan_claim.py:test_milestone_admission_needs_no_graph_certificate", "github/scripts/test_gh_plan_claim.py:test_exact_release_frees_the_issue_without_a_native_scan", "github/scripts/test_gh_plan_claim.py:test_stale_native_action_records_of_a_released_session_do_not_block_a_successor", "github/scripts/test_gh_plan_claim.py:test_live_lease_refuses_a_successor_before_any_write", "github/scripts/test_gh_plan_claim.py:test_expired_lease_lets_a_successor_take_over_and_records_the_takeover", "github/scripts/test_gh_plan_claim.py:test_unreadable_lease_keeps_the_claim_for_supervisor_release", "github/scripts/test_github_plan_lease.py"]
 
 [[operations]]
 id = "github.plan.wait"
@@ -1001,8 +1022,29 @@ idempotency = "conditional"
 retry_eligibility = "manual"
 reconciliation_strategy = "read_after_write"
 retained_graphql_rationale = "No GraphQL; the existing Issues write grant and safe issue/comment probes cover pending POST and exact confirmation PATCH with no profile expansion or identity change. Readback refusal leaves no release authority; unknown writes retain exact record and reconciliation evidence without replay. Matching confirmed receipts are reused, and unchanged closure evidence cannot revive pending attempts. Other claims, waits and retained artifacts remain independent."
-source_refs = ["github/scripts/gh-plan.py:cmd_release_claim", "github/scripts/github_plan_release.py:prepare_release", "github/scripts/github_plan_release.py:pending_body", "github/scripts/github_plan_release.py:pending_receipt_for", "github/scripts/github_plan_release.py:check_retained_pr", "github/scripts/github_plan_release.py:effective_comments", "github/scripts/github_comment.py:_comment_impl"]
-test_refs = ["github/scripts/test_gh_plan_release.py:test_dependabot_rebase_after_end_does_not_block_release_of_separate_source_branch", "github/scripts/test_gh_plan_release.py:test_pr_release_still_refuses_new_activity_on_claimed_source_branch", "github/scripts/test_gh_plan_release.py:test_pr_claim_release_preserves_separate_repair_pr_linked_by_canonical_pr_url", "github/scripts/test_gh_plan_release.py:test_pr_closed_session_attestation_releases_and_allows_successor", "github/scripts/test_gh_plan_release.py:test_pr_attestation_new_activity_live_peer_or_changed_evidence_refuses", "github/scripts/test_gh_plan_release.py"]
+source_refs = ["github/scripts/gh-plan.py:cmd_release_claim", "github/scripts/github_plan_release.py:parse_release", "github/scripts/github_plan_release.py:validate_source_release", "github/scripts/github_plan_release.py:validate_retained_release", "github/scripts/github_plan_release.py:render_release", "github/scripts/github_plan_release.py:pending_body", "github/scripts/github_plan_release.py:pending_receipt_for", "github/scripts/github_plan_release.py:check_retained_pr", "github/scripts/github_plan_release.py:effective_comments", "github/scripts/github_comment.py:_comment_impl"]
+test_refs = ["github/scripts/test_gh_plan_release.py:test_dependabot_rebase_after_end_does_not_block_release_of_separate_source_branch", "github/scripts/test_gh_plan_release.py:test_pr_release_still_refuses_new_activity_on_claimed_source_branch", "github/scripts/test_gh_plan_release.py:test_pr_claim_release_preserves_separate_repair_pr_linked_by_canonical_pr_url", "github/scripts/test_gh_plan_release.py:test_pr_closed_session_attestation_releases_and_allows_successor", "github/scripts/test_gh_plan_release.py:test_pr_attestation_new_activity_or_changed_evidence_refuses", "github/scripts/test_gh_plan_release.py"]
+
+[[operations]]
+id = "github.plan.release"
+request_priority = "essential"
+capabilities = ["issues_write"]
+permission_mode = "fixed"
+permission_note = "Same configured automation identity as the source claim; existing issue/comment reads and the Issues write grant suffice. Only the claim's own running native session may release it; an ended session's claim uses release-claim."
+entrypoint = "github/scripts/gh-plan.py release"
+intent = "Post a running session's exact Released claim directive with its handoff narrative below it, and read it back as an exact release of that claim."
+current_transport = "composite"
+selected_transport = "composite"
+endpoint_or_command = "Paged issue comments; GET issue; shared deduplicated comment POST; exact-release readback"
+quota_bucket = "rest_core"
+actor_policy = "automation_required_for_writes"
+mutation_class = "mixed"
+idempotency = "conditional"
+retry_eligibility = "manual"
+reconciliation_strategy = "read_after_write"
+retained_graphql_rationale = "No GraphQL; the existing comment transport owns fingerprint dedupe and unknown-write reconciliation. A confirmed exact release is reported without a second write."
+source_refs = ["github/scripts/gh-plan.py:cmd_release", "github/scripts/github_plan_release.py:exact_source_release", "github/scripts/github_plan_claim.py:released_claim_id", "github/scripts/github_comment.py:_comment_impl"]
+test_refs = ["github/scripts/test_gh_plan_release.py:test_release_posts_the_exact_directive_with_handoff_below_it", "github/scripts/test_gh_plan_release.py:test_release_refuses_records_this_session_does_not_own_without_writing", "github/scripts/test_gh_plan_release.py:test_claim_names_the_release_command_for_its_own_comment"]
 
 [[operations]]
 id = "github.plan.update_section"
@@ -1527,7 +1569,7 @@ request_priority = "essential"
 capabilities = []
 permission_mode = "local"
 permission_note = "Local commit identity. With a configured App and a github.com origin, App JWT reads (no installation grant) decide whether the person commits as themselves in another owner's repository; no profile impact."
-entrypoint = "github/scripts/git-commit-as-bot [--git-command COMMAND] <git-args>"
+entrypoint = "github/scripts/git-commit-as-bot --worktree PATH [--git-command COMMAND] <git-args>"
 intent = "Run commit or a supported commit-creating integration command with the configured automation author and committer environment."
 current_transport = "local_git"
 selected_transport = "local_git"
@@ -1539,7 +1581,7 @@ idempotency = "non_idempotent"
 retry_eligibility = "manual"
 reconciliation_strategy = "identity_env"
 retained_graphql_rationale = "No retained GraphQL transport; this is a local git identity wrapper."
-source_refs = ["github/scripts/git-commit-as-bot"]
+source_refs = ["github/scripts/git-commit-as-bot", "github/scripts/github-task-worktree.sh"]
 test_refs = ["github/scripts/validate-gh-issue.sh", "github/scripts/validate-operation-matrix.py:self-test"]
 
 [[operations]]
@@ -1548,7 +1590,7 @@ request_priority = "essential"
 capabilities = ["contents_write", "workflows_write"]
 permission_mode = "input_dependent"
 permission_note = "Own-user publishing additionally requires the active login to match GH_WITH_ENV_TOKEN_OWN_USER_LOGIN; missing or mismatched declarations refuse locally before mutation. Existing GET /user probes suffice, with no new endpoint, grant or profile impact. Ordinary pushes require Contents write; pushes changing workflow files also require Workflows write. Authorization and protected-branch discipline remain independent."
-entrypoint = "github/scripts/git-push-as-bot <git-push-args>"
+entrypoint = "github/scripts/git-push-as-bot --worktree PATH <git-push-args>"
 intent = "Push to a GitHub remote through an HTTPS token flow while restoring the selected remote's stored URL."
 current_transport = "git_remote"
 selected_transport = "git_remote"
@@ -1560,7 +1602,7 @@ idempotency = "conditional"
 retry_eligibility = "conditional"
 reconciliation_strategy = "restore_remote_url"
 retained_graphql_rationale = "No retained GraphQL transport; push uses the git remote protocol with an automation token."
-source_refs = ["github/scripts/git-push-as-bot", "github/scripts/github-own-user.sh:validate_own_user_login"]
+source_refs = ["github/scripts/git-push-as-bot", "github/scripts/github-task-worktree.sh", "github/scripts/github-own-user.sh:validate_own_user_login"]
 test_refs = ["github/scripts/validate-gh-issue.sh", "github/scripts/validate-operation-matrix.py:self-test"]
 
 [[operations]]

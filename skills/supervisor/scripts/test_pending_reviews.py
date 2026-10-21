@@ -79,6 +79,9 @@ class FakeIO:
         self.review_text = "No blocking findings."
         self.extra_pulls = []
 
+    def open_pulls(self, repos):
+        return {repo: self.paged_json(f"/repos/{repo}/pulls", step_prefix="open_prs", params={"state": "open"}) for repo in repos}
+
     def get_json(self, path, **kwargs):
         if "/issues/comments/" in path:
             return copy.deepcopy(self.sources[int(path.rsplit("/", 1)[1])])
@@ -1337,6 +1340,15 @@ class DispatchTests(unittest.TestCase):
         self.io.request["user"]["login"] = "stranger"
         self.assertEqual(self.dispatch()["status"], "no_request")
         self.assertFalse(any(c[0] == "review" for c in self.io.calls))
+
+    def test_batched_discovery_error_does_not_hide_a_healthy_repository(self):
+        entries = [entry(), {**entry(), "repository": "example/another", "session_id": "other"}]
+        self.io.open_pulls = Mock(return_value={REPO: [self.io.pr], "example/another": ValueError("unavailable inventory")})
+        with patch.object(reviews, "dispatch", return_value={"status": "pending"}) as dispatch:
+            reports = reviews.sweep(self.io, entries, {}, TRUSTED, self.evidence)
+        self.assertEqual(dispatch.call_count, 1)
+        self.assertEqual(dispatch.call_args.args[1], REPO)
+        self.assertEqual({r["repository"]: r["status"] for r in reports}, {REPO: "pending", "example/another": "refused"})
 
     def test_all_run_repositories_discovered_one_failure_does_not_hide_others(self):
         entries = [entry(), {**entry(), "repository": "example/another", "session_id": "other"}]

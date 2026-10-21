@@ -4,6 +4,12 @@ description: Use for Launchplane-managed product/runtime state, secrets, config,
 metadata:
   short-description: Operate Launchplane-managed state
 resources:
+  - path: scripts/launchplane-service-logs.py
+    kind: script
+    description: Reads a bounded, redacted window of Launchplane's own retained service logs using an existing SSH identity.
+  - path: references/service-log-reader.md
+    kind: reference
+    description: Private target selection, existing read authority, redaction, bounds and coverage limits for service logs.
   - path: scripts/launchplane-owner-review.py
     kind: script
     description: Reads one scoped saved Client decision with its full prose and GitHub delivery receipt.
@@ -15,16 +21,10 @@ resources:
     description: Perform bounded Launchplane write-action preflight, dry-run, apply, and merge-train controller calls.
   - path: scripts/check-agent-operator-contract.py
     kind: script
-    description: Validate the vendored public agent/admin contract and local consumer bindings offline.
-  - path: scripts/check-agent-operator-contract-freshness.py
-    kind: script
-    description: Compare the vendored contract with the current public upstream artifact and report semantic drift.
-  - path: references/agent-operator-contract.json
-    kind: reference
-    description: Vendored public Launchplane agent/admin contract artifact.
+    description: Validate local HTTP caller bindings and inert-planner constraints offline.
   - path: references/agent-operator-contract.md
     kind: reference
-    description: Contract identity, validation, freshness, and local-extension guidance.
+    description: Producer contract source and local HTTP caller binding guidance.
   - path: references/context-helper-contract.md
     kind: reference
     description: Contract for Launchplane context helper configuration, fallback, output, and redaction behavior.
@@ -53,6 +53,11 @@ resources:
     kind: script
     description: Drives one labeled pull request through the merge train to a landed, failed, needs_owner, or error outcome.
 commands:
+  - name: launchplane-service-logs
+    source: skill
+    resource_path: scripts/launchplane-service-logs.py
+    example_argv: ["uv", "run", "scripts/launchplane-service-logs.py", "--config", "<private-log-target.json>", "--since", "<RFC3339>", "--until", "<RFC3339>"]
+    purpose: Reads Launchplane's own retained API or worker logs without a service mutation, credential input or new grant.
   - name: launchplane-domain-authority-dry-run
     source: skill
     resource_path: scripts/launchplane-write-action.py
@@ -89,13 +94,7 @@ commands:
     resource_path: scripts/check-agent-operator-contract.py
     example_argv:
       ["uv", "run", "scripts/check-agent-operator-contract.py"]
-    purpose: Proves hermetic consistency between the vendored contract and local Launchplane consumers.
-  - name: launchplane-contract-freshness
-    source: skill
-    resource_path: scripts/check-agent-operator-contract-freshness.py
-    example_argv:
-      ["uv", "run", "scripts/check-agent-operator-contract-freshness.py", "compare"]
-    purpose: Emits advisory current, known-stale, or unknown semantic-freshness evidence.
+    purpose: Checks local HTTP caller bindings and inert-planner constraints offline.
   - name: launchplane-merge-train-policy-read
     source: skill
     resource_path: scripts/launchplane-write-action.py
@@ -669,17 +668,17 @@ policy:
       match:
         shell_regex: "(?i)\\b(?:gh|gh-with-env-token)\\b[\\s\\S]*\\b(?:secret|variable)\\s+set\\b[\\s\\S]*\\blaunchplane_authz_[a-z0-9_]+\\b"
       action: reject
-      message: Launchplane authorization desired state must not be created or changed through GitHub secrets or variables. Route the capability gap to the DB-native authorization architecture.
+      message: Launchplane authorization desired state must not be created or changed through GitHub secrets or variables. For refused or unsupported work, follow this skill's Blocked Work Continuation.
     - id: reject-raw-github-actions-secret-writes
       match:
         shell_regex: "(?i)\\b(?:gh|gh-with-env-token)\\b[\\s\\S]*\\bapi\\b[\\s\\S]*(?:(?:--method|-X)\\s*(?:put|patch|post|delete)\\b[\\s\\S]*/(?:actions/(?:secrets|variables)|environments/[^\\s/]+/(?:secrets|variables))\\b|/(?:actions/(?:secrets|variables)|environments/[^\\s/]+/(?:secrets|variables))\\b[\\s\\S]*(?:--method|-X)\\s*(?:put|patch|post|delete)\\b)"
       action: reject
-      message: Raw GitHub Actions secret or variable writes can silently make GitHub an authorization authority. Use the owning product/admin contract; Launchplane auth gaps must escalate to the DB-native authorization architecture.
+      message: Raw GitHub Actions secret or variable writes can silently make GitHub an authorization authority. Use the owning product/admin contract. For refused or unsupported work, follow this skill's Blocked Work Continuation.
     - id: reject-http-github-actions-secret-writes
       match:
         shell_regex: "(?i)\\b(?:curl|wget|http)\\b[\\s\\S]*(?:(?:(?:-X|--request|--method(?:=|\\s+))\\s*(?:put|patch|post|delete)|\\b(?:put|patch|post|delete)\\b)[\\s\\S]*/(?:actions/(?:secrets|variables)|environments/[^\\s/]+/(?:secrets|variables))\\b|/(?:actions/(?:secrets|variables)|environments/[^\\s/]+/(?:secrets|variables))\\b[\\s\\S]*(?:(?:-X|--request|--method(?:=|\\s+))\\s*(?:put|patch|post|delete)|\\b(?:put|patch|post|delete)\\b))"
       action: reject
-      message: Direct HTTP writes to GitHub Actions or environment secrets and variables bypass the authorization-authority guardrail. Launchplane auth gaps must escalate to the DB-native authorization architecture.
+      message: Direct HTTP writes to GitHub Actions or environment secrets and variables bypass the authorization-authority guardrail. For refused or unsupported work, follow this skill's Blocked Work Continuation.
     - id: prefer-launchplane-helpers-over-global-cli
       match:
         argv_prefix: ["launchplane"]
@@ -799,40 +798,8 @@ context to fix deliberately.
 
 ## Agent/Admin Contract
 
-Use `references/agent-operator-contract.json` as the checked-in public contract
-for agent/helper operation routing, protected workflow bindings, and semantic
-invariants. Run `uv run scripts/check-agent-operator-contract.py` after changing
-Launchplane helper routes, workflow guidance, lifecycle guidance, governance
-boundaries, or the vendored artifact.
-
-The conformance gate is offline and non-authoritative. It proves that the local
-artifact, helper bindings, protected workflows, and durable invariants agree;
-it does not contact Launchplane and does not prove that the artifact is current
-upstream. Use `check-agent-operator-contract-freshness.py compare` or the
-scheduled `Launchplane Contract Freshness` workflow for separate advisory
-evidence. Treat matching semantic digests as `current`, a valid mismatch as
-`known-stale`, and unavailable or insufficient evidence as `unknown`. Ignore
-provenance-only source SHA movement when the semantic digest is unchanged.
-
-`unknown` never grants runtime authority and never opens a drift issue. A
-scheduled `known-stale` result opens or updates one maintenance issue through
-the maintained GitHub helpers; repeated mismatches reuse the same open issue.
-Manual dispatch is compare-only unless issue reporting is explicitly selected.
-
-Keep durable fail-closed rules local: Client acceptance is authoritative (see
-the [release rule](../references/role-words.md#release-rule)),
-engineering review is advisory, GitHub projection is routing/status only,
-authorization/admission/landing are independent, protected workflow dispatch
-and watching stay delegated to `github_workflow_babysit.py`, and raw protected
-workflow dispatch is not allowed. Source projected HTTP paths from the vendored
-operation map rather than adding duplicate literals.
-
-Commands listed under `LOCAL_EXTENSION_ROUTES` in
-`scripts/launchplane_contract.py` are explicit bounded local extensions: the
-vendored public operation projection does not contain their routes, so do not
-describe them as contract-backed. If a later artifact adds those routes, migrate
-them deliberately and remove the local-extension entries instead of retaining
-parallel sources of truth.
+Read [the producer contract and caller bindings](references/agent-operator-contract.md)
+before changing helper routes or choosing an operation surface.
 
 ### Agent Policy Proposals
 
@@ -858,7 +825,7 @@ uses private `local_operator` config, independent of terminal-agent credentials.
 ### Contract-Backed Lifecycle And Repair Routing
 
 For lifecycle retirement, managed authorization reconciliation, and stable-lane
-repair, resolve the requested operation from the vendored contract before
+repair, resolve the requested operation from the producer contract before
 choosing a surface. Use the operation's modes, idempotency, reviewed-evidence
 requirements, and supported surfaces as the boundary. When the selected surface
 is `protected_workflow`, resolve exactly one protected-workflow binding whose
@@ -870,8 +837,10 @@ Fail closed when the contract does not contain one unambiguous operation and,
 when required, one unambiguous workflow binding. Report the scenario as an
 unsupported capability gap and track focused follow-up coverage; do not route it
 through a nearby helper, workflow, or endpoint. Plan or dry-run first, and do not
-apply without every contract-required reviewed-evidence field, explicit admin
-approval, and an apply-eligible result. Detached application retirement must
+apply without every contract-required reviewed-evidence field and an
+apply-eligible result. For approval and standing authority, follow
+[task scope](../references/execution-scope.md) and the direction files loaded
+under Rollout Plan Alignment below. Detached application retirement must
 preserve zero authority writes and is complete only when candidate absence is
 proved.
 
@@ -882,9 +851,10 @@ work, do not continue from the latest operational finding alone. Before the next
 slice, state how it fits the active Launchplane plan, issue graph, rollout
 sequence, or product ownership boundary.
 
-Before designing a deploy, testing or promotion workflow in a product
-repository, or proposing a grant, read `cbusillo/launchplane`'s `DIRECTION.md`
-at `origin/main`; only the overall direction file is loaded at session start.
+Before Launchplane operational work, including apply, mutate, repair,
+retirement, policy changes, workflow design or grant proposals, read the
+Director's overall direction and `cbusillo/launchplane`'s `DIRECTION.md` at
+`origin/main`. Do this even when working from a product repository.
 
 If an operational finding changes the plan, update the owning GitHub plan issue
 or PR before treating the new path as canonical. Prefer explicit blocker,
@@ -929,6 +899,14 @@ surface. Repair missing references through the product repository's build/deploy
 workflow and delegate protected workflow dispatch and watching to `github`.
 
 ## Runtime Management (Admin)
+
+When diagnosing a Launchplane operation, first read its service logs with
+`scripts/launchplane-service-logs.py --config <private-log-target.json>
+--since <RFC3339> --until <RFC3339> [--operation-id <id>] [--trace-id <id>]`.
+Read [the service-log reader contract](references/service-log-reader.md) before
+using it. It reuses an existing SSH read path, emits bounded redacted JSON and
+changes no service state. Removed containers and rotated logs remain unknown;
+an empty filtered tail never proves that an operation did not run.
 
 Mutate runtime environments, managed secrets, and product config.
 
@@ -975,29 +953,18 @@ Mutate runtime environments, managed secrets, and product config.
   `launchplane` binary or by poking provider config directly.
 - **Denied Actions**: A local admin token can be present and still lack a
   specific action. Report that as authorization denial, not missing credential.
-  Before choosing a next step, classify the denial. A scope denial means an
-  existing Launchplane capability does not grant this identity the requested
-  scope. A capability gap means no supported Launchplane surface owns the
-  operation. Neither case is solved by selecting another credential or CI job.
-  Block only the affected operation or work item, preserve the trace and source
-  URL, and continue independent safe work when available. Stop the whole
-  session only when no useful unblocked work remains or the failed operation may
-  have produced an uncertain effect.
+  Preserve the trace and source URL, then follow
+  [Blocked Work Continuation](#blocked-work-continuation).
 - **GitHub Is Not Authorization Authority**: A GitHub workflow, Actions secret,
   repository or environment variable, OIDC role, or CI job is never evidence
   that a denied Launchplane action is authorized. Do not author, edit, extend,
   retarget, or dispatch a workflow to carry a call Launchplane denied.
   Repository workflow content is routing metadata, just like
   `.github/github.json`; Launchplane DB/service records remain authority.
-- **Unsupported Helper Coverage**: If the helper lacks a command for the needed
-  runtime record operation, treat that as a capability gap. Stop the affected
-  operation at the supported Launchplane service/UI path and use `github-plan`
-  to open or update the owning authorization-architecture issue, record the
-  denied operation and trace ID, and add a native `blocked-by` edge from the
-  affected work. Re-rank or continue unrelated work instead of turning one gap
-  into a session-wide stop. Do not synthesize record payloads from issue text,
-  checked-in examples, workflow defaults, provider observations, or local
-  files, and do not close the gap with a workflow.
+- **Unsupported Helper Coverage**: Follow
+  [Blocked Work Continuation](#blocked-work-continuation) for a missing helper
+  command. Use the supported service/UI surface; do not synthesize runtime
+  records from issue text, examples, workflow defaults or local files.
 - **Workflow**:
   1. Inspect Context to identify the target and change needed. Before asking
      the Director to approve a dry run, apply, recovery, or onboarding, check
@@ -1019,8 +986,8 @@ product-config-preflight` when agent-side authorization or managed-secret
      private local payload file, never from chat, CLI plaintext secret args, or
      committed examples.
   7. **Dry-run** and inspect redacted results.
-  8. **Apply** with a concrete reason only after the dry-run succeeds and the
-     admin's intent is explicit.
+  8. **Apply** with a concrete reason after the dry-run succeeds, under the
+     authority established by [task scope](../references/execution-scope.md).
   9. Inspect returned `next_actions` and complete required follow-up actions;
      product-config apply can update Launchplane records before the live target
      runtime has been synced.
@@ -1032,19 +999,12 @@ Launchplane by editing provider configuration directly.
 
 ### Blocked Work Continuation
 
-Until Launchplane exports a native deferred-operation lifecycle, represent an
-authorization or capability gap through the owning GitHub plan relationship:
-
-1. preserve the denied operation, bounded reason, trace ID, and source URL;
-2. block only the affected work item on the owning architecture issue;
-3. use `github-plan next` or the existing work source to select independent
-   work;
-4. notify the Director immediately only when every useful item is blocked, an
-   effect is uncertain, or an active environment is unhealthy.
-
-Do not tell the Director to provision a new credential or click through a
-GitHub Actions workaround. A future Launchplane deferred-operation record may
-replace this GitHub-plan handoff after it is present in the public contract.
+Apply the refusal rules in the direction files read under Rollout Plan
+Alignment. Keep the actual refused operation stopped and preserve its trace, source URL and any uncertain-effect
+evidence. Those sources own the distinction between a wrong refusal and one
+that correctly protects a stop boundary, and the required response to each.
+Use `github-plan` to track a required repair and any native dependency on it.
+Reconcile uncertain effects before reexecution.
 
 ### Sanctioned Reconciliation And Break-Glass
 
@@ -1112,10 +1072,12 @@ merge-train-controller-run-once` instead of open-coding the route. Mutating
   required Client acceptance covers the current head. Read the GitHub
   [ready handoff contract](../github/references/cli-reference.md#ready-handoffs)
   for checks and stale-head handling. The assigned Supervisor owns train entry.
-- **Mutation Gate**: Keep scheduled runners in dry-run mode until the Director
-  explicitly selects a mutation pilot. Manual `mutate=true` controller runs are
-  appropriate only after dry-run evidence shows the intended queue, candidate,
-  and next action. Do not leave scheduled mutation enabled as a casual default.
+- **Scheduled controller**: Read the active enrolled-target policy with
+  `merge-train-policy-read`. For scheduler changes, use the producer's
+  [operational policy path](https://github.com/cbusillo/launchplane/blob/main/docs/merge-train-policy.md#policy-changes-and-bindings)
+  with its reviewed baseline and standing lane authority. Approval follows the direction files loaded under
+  Rollout Plan Alignment and
+  [Q297](https://github.com/cbusillo/launchplane/issues/2961#issuecomment-6177897575).
 - **Post-Merge Checkout Handoff**: After the controller confirms a final landing
   commit, delegate post-merge default-branch freshness to `github` with the exact
   final landing SHA from that terminal controller result and an explicit source
@@ -1161,9 +1123,8 @@ verification.
   Dokploy compose target, production backup authority and private health
   endpoint dry-run/apply with read-back, product promotion status and dry-run, and
   merge-train controller calls.
-- `scripts/check-agent-operator-contract.py`: Hermetic schema, digest,
-  public-safety, operation, workflow, invariant, and local-consumer conformance
-  gate. A green result is not upstream freshness evidence.
+- `scripts/check-agent-operator-contract.py`: Offline local caller-binding and
+  inert-planner check; see [the binding guide](references/agent-operator-contract.md).
 - `operator-config-diagnostic`: Redacted source-presence diagnostic for local
   admin URL and token configuration. Global options such as `--url` must come
   before the subcommand.
@@ -1171,12 +1132,12 @@ verification.
   authorization and managed-secret binding evidence; never carries plaintext.
 - `POST /v1/product-config/apply`: Primary product-config admin path for
   signed-in, scoped admins; dry-run before apply.
-- `POST /v1/merge-train/policies/import`: Bounded local-extension path for
+- `POST /v1/merge-train/policies/import`: Bounded helper path for
   private merge-train policy dry-run/apply. Require active-policy digest
   preflight, exact saved dry-run evidence, reviewed acknowledgement,
   idempotency, and post-apply read-back. The helper-side digest check is not
   server-enforced compare-and-swap.
-- `GET /v1/work-graph/merge-train/policy`: Bounded local-extension read
+- `GET /v1/work-graph/merge-train/policy`: Bounded helper read
   (`merge-train-policy-read --repo OWNER/REPO`) of enrollment and enqueue routing
   from the complete active policy. Credential sources and other repositories
   are dropped. A confirmed complete read with no match means not enrolled; any
@@ -1207,9 +1168,15 @@ verification.
   the saved dry-run evidence, `--expected-plan-digest`, reviewed
   acknowledgement and an idempotency key. The record change is intent only: run
   Odoo post-deploy for the lane afterwards.
+- `POST /v1/product-config/odoo-website-settings/apply`: Projected contract
+  path for a product's production website settings, bound to its current testing
+  artifact (`odoo-website-settings-dry-run` / `odoo-website-settings-apply`).
+  Apply has the same evidence gates as addon settings. It records inert intent;
+  the Client-accepted release applies it. A null `website_settings` withdraws
+  the pending intent.
 - `GET /v1/product-config/integration-allowances` and
   `POST /v1/product-config/integration-allowances/apply`: Bounded
-  local-extension paths for a lane's non-production integration allowances
+  helper paths for a lane's non-production integration allowances
   (`integration-allowances-read` / `-dry-run` / `-apply`). The private payload
   carries the lane's whole allowance list, each with `integration`, `kind`
   (`dev_store`, `read_only_source` with grant `evidence`, or `pre_live`) and
@@ -1217,7 +1184,7 @@ verification.
   reviewed acknowledgement and an idempotency key. Use the product's canonical id
   (for example `odoo-tenant-opw`); the service checks that it owns the lane.
 - `GET /v1/product-config/testing-hold` and
-  `POST /v1/product-config/testing-hold/apply`: Bounded local-extension paths
+  `POST /v1/product-config/testing-hold/apply`: Bounded helper paths
   for a testing lane's staff-testing hold (`testing-hold-read` / `-dry-run` /
   `-apply`, with `--hold` or `--lift`, `--reason` and optional
   `--purpose staff_testing|isolation_staging`). Apply requires the same
@@ -1225,26 +1192,26 @@ verification.
   reconciliation; isolation-staging lifts alone do not. Read the
   [testing hold contract](references/write-action-helper-contract.md#testing-hold)
   for legacy evidence and service-derived rehearsal responses.
-- `POST /v1/product-profiles/repository-identity/apply`: Bounded local-extension
+- `POST /v1/product-profiles/repository-identity/apply`: Bounded helper
   path that records a product's repository id from tracked inventory
   (`product-repository-identity-dry-run` / `-apply`, with `--product` and
   `--reason`). Apply requires the same saved-dry-run safeguards.
 - `GET /v1/products/{product}/environments/{environment}` and
-  `GET /v1/products/{product}/activity`: Bounded local-extension reads
+  `GET /v1/products/{product}/activity`: Bounded helper reads
   (`product-environment-read --product --environment` and
   `product-activity-read --product`) for confirming what a lane actually runs:
   the current artifact id, source commit, image digest, expected and observed
   runtime identity with its deployment record id, health status, and recent
   deployment, promotion and backup-gate events with their record ids. Settings,
   secrets, actions, URLs and provider target names are dropped.
-- `GET /v1/artifacts/protected`: Bounded local-extension read
+- `GET /v1/artifacts/protected`: Bounded helper read
   (`protected-artifacts-read --product P [--context C]`) of protected artifacts:
   per-entry reason, context, instance, artifact id, source record type and id,
   and image digest. It returns sanitized warning texts, total entry and warning
   counts, and truncation flags. Image reference lists, URLs and other provider fields are
   dropped. Identifier validation and retention limits follow the
   [helper contract](references/write-action-helper-contract.md#product-environment-activity-and-preview-reads).
-- `GET /v1/product-profiles/{product}`: Bounded local-extension read
+- `GET /v1/product-profiles/{product}`: Bounded helper read
   (`product-profile-read --product`) for who a product's Client is and its
   `production_use` and `release_on_acceptance` metadata. For release authority,
   follow the [release rule](../references/role-words.md#release-rule) and read
@@ -1252,7 +1219,7 @@ verification.
   the display name, driver, repository,
   lifecycle state and lane contexts and instances. Images, URLs, workflows and
   expected configuration are dropped.
-- `GET /v1/products/{product}/path-check`: Bounded local-extension read
+- `GET /v1/products/{product}/path-check`: Bounded helper read
   (`path-check --product P --path testing|promote`). Use it first when asking
   whether this identity can take this product to done. It answers for the
   caller's own identity and requires `product_environment.read` on the
@@ -1261,13 +1228,13 @@ verification.
   (`none` for clear steps), and evidence record ids. Unknown fields and unsafe
   names or values fail closed. The read writes nothing and grants no authority;
   a clear path does not replace approval or the action's own gates.
-- `GET /v1/previews/{preview_id}/history`: Bounded local-extension read
+- `GET /v1/previews/{preview_id}/history`: Bounded helper read
   (`preview-history-read`, by `--preview-id` or by `--context`, `--repository`
   and `--pr`) for confirming what a preview serves: its state, serving
   generation, and each generation's artifact, PR head SHA, image digest and
   failure stage.
 - `GET /v1/product-profiles/{product}/reconcile-requests`: Bounded
-  local-extension read (`reconcile-requests-read --product`) for what the
+  helper read (`reconcile-requests-read --product`) for what the
   event reconciler last decided for each of a product's previews and its
   testing lane: state, attempt, delivery id, last error, and the plan's
   action, reason, commit, digests and ids. When testing keeps an older build,
@@ -1275,7 +1242,7 @@ verification.
   to select a target from the service response before the helper's output bound;
   a truncated unselected read cannot prove that testing is absent. An empty
   selection describes only the returned service list, not records outside it.
-- `GET /v1/products/{product}/secret-bindings`: Bounded local-extension read
+- `GET /v1/products/{product}/secret-bindings`: Bounded helper read
   (`product-secret-bindings-read --product`) of a product's runtime secret
   binding metadata: binding key, name, scope, context, instance, declared
   class, sharing reason and current `version_id`. It never returns a value or
@@ -1286,7 +1253,7 @@ verification.
   collecting the value; see the
   [write-action contract](references/write-action-helper-contract.md#copying-a-managed-runtime-secret).
 - `GET /v1/contexts/{context}/runtime-settings` and `/secrets`, with their
-  `/instances/{instance}/...` variants: names-only local-extension reads
+  `/instances/{instance}/...` variants: names-only helper reads
   (`context-runtime-settings-read`, `instance-runtime-settings-read`,
   `context-secrets-read`, `instance-secrets-read`). Supply `--context` and,
   for instance commands, `--instance`. Settings show `keys` and `withheld_keys`
@@ -1299,9 +1266,9 @@ verification.
   and `POST /v1/drivers/odoo/target-replacement-apply`. The fixed testing-only
   intent, reviewed evidence, audit reason and recovery protocol are in the
   [helper contract](references/write-action-helper-contract.md#product-environment-activity-and-preview-reads).
-  These are bounded local extensions and require deployed native service support.
+  These are bounded helper bindings and require deployed native service support.
 - `GET /v1/drivers/odoo/target-replacement/operations/{operation_id}`: Bounded
-  local-extension read (`target-replacement-operation-read --operation-id`)
+  helper read (`target-replacement-operation-read --operation-id`)
   for why a testing or stable Odoo deploy failed: take the id from
   `reconcile-requests-read` (`queued_operation_id`, `active_operation_id`,
   `deployed_operation_id` or `last_failed_operation_id`). It returns status,
@@ -1317,7 +1284,7 @@ verification.
   [helper contract](references/write-action-helper-contract.md#product-environment-activity-and-preview-reads).
   Omitted nullable agreement fields remain unknown. Journal absence or zero
   journaled effects never proves absent provider effects or safe release.
-- `POST /v1/drivers/odoo/target-replacement-plan`: Bounded local-extension
+- `POST /v1/drivers/odoo/target-replacement-plan`: Bounded helper
   read (`target-replacement-plan-read --product --instance`) for what an Odoo
   target replacement on that lane would do, before any apply. Add
   `--artifact-id` with `--source-git-ref` to plan with a candidate artifact
@@ -1331,7 +1298,7 @@ verification.
   values are dropped and listed by path. The service authorizes it as
   `odoo_target_replacement_plan.read` on the lane.
 - `POST /v1/authz-policies/workflow-rule-retirement-plan`: Bounded
-  local-extension read (`workflow-rule-retirement-inspect` /
+  helper read (`workflow-rule-retirement-inspect` /
   `workflow-rule-retirement-plan --payload-file`) for workflow authz rules you
   may retire. The private file names the active policy record, revision and
   digest and up to 50 rule fingerprints. It returns each rule's scope,
@@ -1339,7 +1306,7 @@ verification.
   digests. Nothing is written and there is no apply mode. Launchplane does not
   know which workflows use a rule; review workflow sources first. Read the
   [helper contract](references/write-action-helper-contract.md#workflow-rule-retirement-inspection).
-- `POST /v1/admin/runtime-settings/removal`: Bounded local-extension path
+- `POST /v1/admin/runtime-settings/removal`: Bounded helper path
   (`runtime-setting-removal-dry-run` / `-readback`, with `--product`,
   `--scope`, `--context`, `--instance`, one `--key` per setting name, and
   `--reason`) for the Director agent to review removing stored plain runtime
@@ -1349,19 +1316,19 @@ verification.
   and digest. There is no apply here. Apply belongs to the signed-in admin,
   and a dry-run digest does not authorize it. Read the
   [helper contract](references/write-action-helper-contract.md#runtime-setting-removal-review).
-- `POST /v1/product-profiles/{product}/owner`: Bounded local-extension path
+- `POST /v1/product-profiles/{product}/owner`: Bounded helper path
   that records or clears a product's Client (`product-owner-dry-run` /
   `-apply`, with `--product`, `--github-login` or `--clear`, and `--reason`).
   Apply checks the Client has not changed since the review, then reads the
   profile back.
 - `POST /v1/product-profiles/{product}/image-repository`: Bounded
-  local-extension path that moves a product's image repository to the GHCR
+  helper path that moves a product's image repository to the GHCR
   package named after its repository (`product-image-repository-dry-run` /
   `-apply`, with `--product`, `--image-repository` and `--reason`). The dry run
   shows the repository before and after and each lane's current artifact.
   Apply sends the reviewed starting repository and stops when the profile has
   moved since the review, then reads the profile back.
-- `POST /v1/dokploy-targets/setup`: Bounded local-extension path that creates a
+- `POST /v1/dokploy-targets/setup`: Bounded helper path that creates a
   lane's Dokploy compose target from a private payload
   (`dokploy-target-create-compose-dry-run` / `-apply`). Provider ids, server
   ids, domains and git URLs never reach the output; apply reads the target back.
@@ -1381,7 +1348,7 @@ verification.
   before any of them.
 - `dokploy-target-repair-domain-authority-dry-run` uses that setup route with
   `operation: repair-domain-authority` and fixed `mode: dry-run`.
-  `ingress-route-dry-run` uses the local-extension
+  `ingress-route-dry-run` uses the helper
   `POST /v1/drivers/ingress/route-apply` with fixed `ingress.mode: dry-run`.
   Read [inert domain and ingress planning](references/write-action-helper-contract.md#inert-domain-and-ingress-planning)
   before either command. They use fresh service records and verify exact live
@@ -1393,12 +1360,12 @@ verification.
   evidence; the separate apply commands require saved matching dry-run evidence,
   a reviewed digest, idempotency and readback. They add no service authority.
 - `GET /v1/production-backup-authority` and
-  `POST /v1/production-backup-authority/apply`: Bounded local-extension paths
+  `POST /v1/production-backup-authority/apply`: Bounded helper paths
   for a production lane's backup policy and targets
   (`production-backup-authority-read` / `-dry-run` / `-apply`). The private
   payload carries the Proxmox coordinates; output shows only record ids,
   revisions, kinds and the `authority_digest` apply is bound to.
-- `POST /v1/product-profiles/health-monitoring/apply`: Bounded local-extension
+- `POST /v1/product-profiles/health-monitoring/apply`: Bounded helper
   path for one exact lane's health check (`health-monitoring-dry-run` / `-apply`).
   Supply `--product`, `--context`, `--instance`, `--check-name`, `--check-kind`
   (`public_http` or `private_http`), `--monitoring-intent` (`public`, `private`,
@@ -1414,7 +1381,7 @@ verification.
   [helper contract](references/write-action-helper-contract.md#health-monitoring)
   before using it.
 - `GET /v1/private-health-endpoints/records` and
-  `POST /v1/private-health-endpoints/apply`: Bounded local-extension paths for
+  `POST /v1/private-health-endpoints/apply`: Bounded helper paths for
   the private health endpoint record a lane's `private_http` health check names
   (`private-health-endpoint-read --product --context [--instance]` /
   `-dry-run` / `-apply`, with `--payload-file` and `--reason`). The private
@@ -1427,12 +1394,18 @@ verification.
   then reads the record back and compares its URL and scoped CA privately.
 - `GET .../environments/prod/promotion-status` and
   `POST .../environments/prod/promotion/dry-run` under `/v1/products/{product}`:
-  Bounded local-extension reads and dry-runs (`product-promotion-status-read`,
+  Bounded helper reads and dry-runs (`product-promotion-status-read`,
   `product-promotion-dry-run`) for whether a testing-to-prod promotion could
   run. The dry-run takes no backup and deploys nothing. No helper command sends
   a live promotion.
 - `POST /v1/work-graph/merge-train/controller/run-once`: Preferred merge-train
   controller path; call repeatedly to advance one safe phase at a time.
+- `POST /v1/product-review/withdrawal`: `product-review-withdrawal-dry-run`,
+  `-apply` and `-readback` withdraw only a pending labeled Client review request
+  on the Director's recorded decision. Refuses after a current-head Client
+  decision, adds no grant and records no acceptance. Read
+  [pending review withdrawal](references/write-action-helper-contract.md#pending-client-review-withdrawal)
+  before use; never hand-remove the label.
 - `POST /v1/previews/pr-feedback/remediation`: Contract-backed bounded preview
   feedback remediation path; dry-run before apply.
 - Launchplane host-only CLI helpers: Use only when you are explicitly on the

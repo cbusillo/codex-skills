@@ -67,7 +67,7 @@ def read_review(args):
     query = {"repository": args.repo, "pull_request": str(args.pr)}
     if args.decision_id:
         query["decision_id"] = args.decision_id
-    # Bounded local extension of the existing private product-review read. The
+    # Bounded helper binding of the existing private product-review read. The
     # public-safe context/write helper intentionally never emits Owner prose.
     payload = request_launchplane_read(
         service_url=settings["service_url"],

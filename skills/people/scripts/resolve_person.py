@@ -22,7 +22,6 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
-DETAIL_PREFIX = "people/"
 SEPARATORS_RE = re.compile(r"[\s._-]+")
 DETAIL_FILE_RE = re.compile(r"people/[a-z0-9][a-z0-9_-]*\.md")
 SOURCE_SCOPE_KEY = "_people_source_scope"

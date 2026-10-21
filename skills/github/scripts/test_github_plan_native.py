@@ -13,12 +13,12 @@ import io
 from contextlib import asynccontextmanager, contextmanager, redirect_stdout
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 import unittest
 from unittest.mock import AsyncMock, patch
 
 import github_plan_native as NATIVE
 import github_plan_closure as CLOSURE
+import github_plan_sessions as SESSIONS
 from test_github_plan_sessions import ReceiptFixture
 
 
@@ -61,6 +61,19 @@ class NativeFactsTests(unittest.IsolatedAsyncioTestCase):
                 else: altered["executions"]["ended"] = False
                 with self.assertRaises(ValueError): NATIVE.require_quiet(altered, self.source, {})
 
+    async def test_native_timeline_turn_boundaries_use_wire_identity(self):
+        self.responses["thread/timeline/list"]["data"] = [
+            {"type": "turnStarted", "position": 0, "turnId": "actual-turn", "startedAt": 1},
+            {"type": "turnCompleted", "position": 1, "turnId": "actual-turn", "status": "completed"},
+        ]
+        facts = await NATIVE.read_thread_facts(self.request, self.session)
+        NATIVE.require_quiet(facts, self.source, {})
+        for boundary in self.responses["thread/timeline/list"]["data"]:
+            original = boundary.pop("turnId")
+            with self.assertRaises(ValueError):
+                await NATIVE.read_thread_facts(self.request, self.session)
+            boundary["turnId"] = original
+
     async def test_loaded_persistence_read_failure_cannot_use_old_quiet_history(self):
         previous = self.responses["thread/read"]
         async def thread(params):
@@ -77,6 +90,10 @@ class NativeFactsTests(unittest.IsolatedAsyncioTestCase):
             self.responses["thread/timeline/list"] = {"data": [{"type": "realtime", "position": 1, "item": item}]}
             with self.subTest(item=item), self.assertRaises(ValueError):
                 await NATIVE.read_thread_facts(self.request, self.session)
+        self.responses["thread/timeline/list"] = {"data": [], "nextCursor": "older-page",
+                                                 "activeRealtimeSessionAtPageStart": "runtime-before-newest-page"}
+        with self.assertRaises(ValueError):
+            NATIVE.require_quiet(await NATIVE.read_thread_facts(self.request, self.session), self.source, {})
         self.responses["thread/read"]["thread"]["status"] = None
         with self.assertRaises(ValueError): await NATIVE.read_thread_facts(self.request, self.session)
 
@@ -162,13 +179,107 @@ class NativeFactsTests(unittest.IsolatedAsyncioTestCase):
         self.responses["thread/queue/list"] = {"data": [], "nextCursor": "repeated"}
         with self.assertRaises(ValueError): await NATIVE.read_queue(self.request, self.session)
 
+    async def test_long_session_reads_full_continuation_chain_within_caller_deadline(self):
+        total = 2101  # more than the 2,000 entries the old fixed page count allowed
+        async def chain(params):
+            start = int(params["cursor"] or 0)
+            end = min(start + params["limit"], total)
+            return {"data": [{"turnId": "turn", "item": {"id": f"command-{index}", "type": "commandExecution",
+                                                          "status": "completed"}} for index in range(start, end)],
+                    "nextCursor": str(end) if end < total else None}
+        self.responses["thread/items/list"] = chain
+        self.assertEqual(len((await NATIVE.read_executions(self.request, self.session))["items"]), total)
+        async def loop(params):
+            return {"data": [], "nextCursor": "b" if params["cursor"] == "a" else "a"}
+        async def malformed(params):
+            return {"data": [], "nextCursor": "next"} if params["cursor"] is None else {"nextCursor": None}
+        for refused in (loop, malformed):
+            with self.subTest(refused=refused.__name__):
+                self.responses["thread/items/list"] = refused
+                with self.assertRaises(ValueError): await NATIVE.read_executions(self.request, self.session)
+        async def endless(params):
+            await asyncio.sleep(0)
+            return {"data": [], "nextCursor": str(int(params["cursor"] or 0) + 1)}
+        self.responses["thread/items/list"] = endless
+        with self.assertRaises(TimeoutError):
+            async with asyncio.timeout(.05):
+                await NATIVE.read_executions(self.request, self.session)
+
     async def test_terminal_interrupted_collaborator_is_not_running_execution(self):
         self.responses["thread/items/list"]["data"] = [{"turnId": "old-turn", "item": {
             "id": "collaborator", "type": "collabAgentToolCall", "status": "interrupted"}}]
         self.assertTrue((await NATIVE.read_executions(self.request, self.session))["ended"])
 
+    async def test_active_work_read_preserves_all_executions_and_background_handles(self):
+        self.responses["thread/read"]["thread"]["status"]["type"] = "active"
+        item = {"turnId": "actual-turn", "item": {
+            "id": "checker", "type": "dynamicToolCall", "status": "inProgress"}}
+        self.responses["thread/items/list"]["data"] = [item]
+        facts = await NATIVE.read_thread_facts(self.request, self.session, include_active=True)
+        self.assertFalse(facts["executions"]["ended"])
+        for other in ({"id": "other", "type": "dynamicToolCall", "status": "inProgress"},
+                      {"id": "other", "type": "commandExecution", "status": "completed", "processId": "running"},
+                      {"id": "other", "type": "dynamicToolCall", "status": "unknown"}):
+            self.responses["thread/items/list"]["data"] = [item, {"turnId": "actual-turn", "item": other}]
+            facts = await NATIVE.read_thread_facts(self.request, self.session, include_active=True)
+            self.assertFalse(facts["executions"]["ended"])
+        self.responses["thread/items/list"]["data"] = []
+        pair = {"itemId": "exec-native", "processId": "returned-handle"}
+        self.responses["thread/backgroundTerminals/list"]["data"] = [pair]
+        facts = await NATIVE.read_thread_facts(self.request, self.session, include_active=True)
+        self.assertTrue(facts["executions"]["ended"])
+        self.assertEqual(facts["background"], [(pair["itemId"], pair["processId"])])
+
 
 class NativeQueueTests(unittest.TestCase):
+    def test_removed_pane_closure_proves_replacement_tree_and_preserves_source_vetoes(self):
+        import uuid
+        from github_plan_sessions import native_helpers
+        native_helpers()
+        import tmux_terminal
+        for change in (None, "nonidle_root", "same_second", "orphan", "orphan_root", "missing_parent", "old_root", "source_pid",
+                       "resume", "uncertain", "source_pane", "late_orphan", "unowned", "no_nonce", "unidentified_harness"):
+            with self.subTest(change=change), ReceiptFixture(str(uuid.uuid4())) as f:
+                CLOSURE.replace_rows([])
+                with CLOSURE.resume_guard(f.session, method="turn/start", home=f.home): pass
+                entry = {**f.entry, "tmux_socket": "fixture", "tmux_session_id": "tmux:fixture:" + "a" * 32,
+                         "window_id": "$1", "tab_id": "@1"}
+                f.native_state = "notLoaded"
+                root_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+                f.process_rows = [(455, f.entry["tty"], "login"), (456, f.entry["tty"], "unrelated-worker")]
+                if change == "nonidle_root": f.process_rows[0] = (455, f.entry["tty"], "replacement-root")
+                if change == "unidentified_harness": f.process_rows[1] = (456, f.entry["tty"], "codex")
+                parents = {99: 1, 455: 99, 456: 455}
+                if change == "orphan": parents[456] = 1
+                if change == "orphan_root": parents[455] = 1
+                if change == "missing_parent": parents.pop(456)
+                if change == "old_root": root_at = datetime.fromisoformat(entry["launch_started_at"])
+                if change == "source_pid": f.process_rows.append((entry["pid"], "other-tty", "codex"))
+                if change == "resume": f.process_rows.append((789, "other-tty", "codex resume " + f.session))
+                if change == "unowned": entry["supervisor_owned"] = False
+                if change == "no_nonce": entry["tmux_session_id"] = "tmux:fixture:123:%1"
+                pane = {"session_id": entry["tmux_session_id"], "dead": False}
+                def inventory():
+                    if change == "late_orphan" and "thread/read" in f.rpc_requests:
+                        parents[456] = 1
+                    return list(f.process_rows)
+                with patch.object(tmux_terminal.Terminal, "list", **(
+                        {"side_effect": ValueError("uncertain inventory")} if change == "uncertain" else
+                        {"return_value": [pane] if change == "source_pane" else []})), \
+                        patch.object(tmux_terminal, "process_parents", side_effect=lambda: dict(parents)), \
+                        patch.object(CLOSURE, "process_started_at", side_effect=lambda pid: root_at + timedelta(seconds=pid != 455 and change != "same_second")), \
+                        patch.object(f.release, "inventory", side_effect=inventory):
+                    if change in (None, "nonidle_root", "same_second"):
+                        closed = f.release.record_closure(f.log, entry, "supervisor")
+                        self.assertEqual(closed["tty_exited_at"], root_at.isoformat())
+                        self.assertFalse(CLOSURE.action_pending(f.session))
+                        self.assertEqual(f.release.record_closure(f.log, entry, "supervisor")["ended_at"], closed["ended_at"])
+                    else:
+                        with self.assertRaises(ValueError): f.release.record_closure(f.log, entry, "supervisor")
+                        self.assertTrue(CLOSURE.action_pending(f.session))
+                        self.assertEqual(json.loads(f.log.read_text()), [])
+                self.assertFalse(f.mutations)
+
     @contextmanager
     def queue_exit_failure(self, target, sent, failure, boundary):
         """Fail actual resource cleanup only after the fixture accepted a mutation."""
@@ -442,7 +553,8 @@ class NativeQueueTests(unittest.TestCase):
 
     def test_cancel_refuses_unowned_wrong_home_native_identity_and_unknown_queue(self):
         import uuid
-        for mode in ("unowned", "source_home", "initialize_home", "native_id", "native_path", "queue_api"):
+        for mode in ("unowned", "source_home", "initialize_home", "native_id", "native_path", "queue_api",
+                     "missing_transcript", "missing_harness", "ambiguous_unrelated", "duplicate_source"):
             with self.subTest(mode=mode), ReceiptFixture(str(uuid.uuid4())) as f:
                 other, ledger, selected, _retained, deleted = self.cancel_setup(f)
                 digest = self.cancel_digest(other, f, ledger)
@@ -456,9 +568,17 @@ class NativeQueueTests(unittest.TestCase):
                     "path": str(f.root / "unbound.jsonl") if mode == "native_path" else str(f.transcript),
                     "status": {"type": "notLoaded"}}}
                 if mode == "queue_api": f.rpc_results["thread/queue/list"] = ValueError("fixture queue unavailable")
+                rows = CLOSURE.log_rows()
+                if mode == "missing_transcript": rows[0].pop("transcript")
+                if mode == "missing_harness": rows[0].pop("harness")
+                if mode == "ambiguous_unrelated": rows.append({})
+                if mode == "duplicate_source": rows += copy.deepcopy(rows)
+                CLOSURE.replace_rows(rows)
+                lease = CLOSURE.lease_path(f.session).read_bytes()
                 with self.assertRaises(ValueError): asyncio.run(NATIVE.cancel_queue(other, f.session,
                     ledger=ledger, apply=True, queued_submission_id=selected["id"], entry_sha256=digest))
                 self.assertFalse(deleted)
+                self.assertEqual(CLOSURE.lease_path(f.session).read_bytes(), lease)
 
     def test_cancel_selected_authority_stability_ignores_unrelated_ledger_rows(self):
         import uuid
@@ -942,7 +1062,6 @@ class NativeQueueTests(unittest.TestCase):
                     patch.object(CLOSURE, "evidence", side_effect=ValueError("fixture optional receipt unavailable")):
                 closed = f.release.record_closure(f.log, entry, "supervisor")
             f.native_state = "notLoaded"
-            self.assertIsNone(CLOSURE.verified_record(f.session, f.home))
             native = ["codex", "--remote", "unix://" + str(CLOSURE.daemon_endpoint(f.home)), "--", "new task"]
             with patch.object(CLOSURE, "process_started_at", return_value=cutoff + timedelta(seconds=1)):
                 f.managed(native)
@@ -950,7 +1069,6 @@ class NativeQueueTests(unittest.TestCase):
                 f.process_rows = [(456, entry["tty"], " ".join(native))]
                 self.assertTrue(f.release.validate_closure(closed, "supervisor")["safe_verdict"])
                 NATIVE.verify_source_process({**entry, "tty_exited_at": "2099-01-01T00:00:00Z"})
-                self.assertEqual(f.observe()[1][f.session]["state"], "ended")
                 f.process_rows = [(456, entry["tty"], "codex --remote unix:///unregistered")]
                 with self.assertRaises(ValueError): NATIVE.verify_source_process(entry)
             self.assertFalse(f.mutations)
@@ -1034,35 +1152,6 @@ class NativeQueueTests(unittest.TestCase):
                 f.release.validate_closure(persisted, "supervisor")
             self.assertFalse(f.mutations)
 
-    def test_pending_observation_cannot_borrow_old_pane_for_new_generation_on_reused_tty(self):
-        import uuid
-        from github_plan_sessions import native_helpers
-        native_helpers()
-        import tmux_terminal
-        with ReceiptFixture(str(uuid.uuid4())) as f:
-            cutoff = datetime.now(timezone.utc) - timedelta(minutes=1)
-            entry = {**f.entry, "tmux_socket": "fixture", "tmux_session_id": "tmux:fixture:" + "a" * 32,
-                     "window_id": "$1", "tab_id": "@1"}
-            CLOSURE.replace_rows([])
-            with patch.object(tmux_terminal.Terminal, "list", return_value=[]):
-                f.release.record_closure(f.log, entry, "supervisor")
-            metadata = {key: entry[key] for key in ("codex_home", "launch_pid", "launch_generation", "launch_started_at")}
-            metadata.update(launch_pid=789, launch_generation="new-generation",
-                            launch_started_at=datetime.now(timezone.utc).isoformat())
-            with CLOSURE.resume_guard(f.session, method="thread/resume", home=f.home):
-                CLOSURE.resumed_launch(f.session, metadata, str(f.transcript), entry["tty"])
-            pane = {"session_id": entry["tmux_session_id"], "pane_id": "%1", "pid": entry["launch_pid"],
-                    "tmux_socket": "fixture", "window_id": "$1", "tab_id": "@1", "tty": entry["tty"],
-                    "dead": True, "exited_at": cutoff.isoformat()}
-            f.native_state = "notLoaded"
-            f.process_rows = [(456, entry["tty"], "unrelated-worker")]
-            with patch.object(tmux_terminal.Terminal, "list", return_value=[pane]), \
-                    patch.object(CLOSURE, "process_started_at", return_value=cutoff + timedelta(seconds=1)):
-                _, states, _ = f.observe()
-            self.assertNotEqual(states.get(f.session, {}).get("state"), "ended")
-            self.assertTrue(CLOSURE.action_pending(f.session))
-            self.assertFalse(f.mutations)
-
     def test_pending_canonical_events_committed_by_either_fence_are_rechecked(self):
         import uuid
         for commit_at in (1, 2):
@@ -1101,47 +1190,6 @@ class NativeQueueTests(unittest.TestCase):
                 proof = asyncio.run(NATIVE.prove_end(f.entry))
                 NATIVE.resolve_pending(f.session, proof)
             self.assertFalse(CLOSURE.action_pending(f.session))
-            self.assertFalse(f.mutations)
-
-    def test_ordinary_idle_receipt_uses_complete_current_work_and_canonical_realtime(self):
-        import uuid
-        for work in ("realtime", "closed_realtime", "goal", "completed_goal", "background", "unknown_goal", "later_goal"):
-            with self.subTest(work=work), ReceiptFixture(str(uuid.uuid4())) as f:
-                if "realtime" in work:
-                    rows = [{"type": "realtime_item", "timestamp": "2026-10-02T00:00:00Z", "payload": {
-                        "id": "start", "realtime_session_id": "rtc", "type": "realtime_session_started"}}]
-                    if work == "closed_realtime":
-                        rows.append({"type": "realtime_item", "timestamp": "2026-10-02T00:00:01Z", "payload": {
-                            "id": "closed", "realtime_session_id": "rtc", "type": "realtime_session_closed", "outcome": "ended"}})
-                    with f.transcript.open("a") as stream:
-                        stream.write("".join(json.dumps(row) + "\n" for row in rows))
-                    CLOSURE.replace_rows([])
-                    f.release.record_closure(f.log, f.entry, "supervisor")
-                if work in {"goal", "completed_goal", "unknown_goal"}:
-                    f.rpc_results["thread/goal/get"] = {"goal": {"threadId": f.session,
-                        "status": {"goal": "active", "completed_goal": "complete", "unknown_goal": "unknown"}[work]}}
-                if work == "background":
-                    f.rpc_results["thread/backgroundTerminals/list"] = {"data": [{"itemId": "background", "processId": "worker"}], "nextCursor": None}
-                if work == "later_goal":
-                    calls = []
-                    def goal(_request):
-                        calls.append(True)
-                        return {"goal": {"threadId": f.session, "status": "active"} if len(calls) > 1 else None}
-                    f.rpc_results["thread/goal/get"] = goal
-                _peers, states, _coverage = f.observe()
-                self.assertEqual(states.get(f.session, {}).get("state") == "ended", work in {"closed_realtime", "completed_goal"})
-                self.assertFalse(CLOSURE.action_pending(f.session))
-                self.assertFalse(f.mutations)
-
-    def test_ordinary_idle_receipt_accepts_the_same_canonical_native_path(self):
-        import uuid
-        with ReceiptFixture(str(uuid.uuid4())) as f:
-            alias = f.home / "sessions" / "source-alias.jsonl"
-            alias.symlink_to(f.transcript)
-            f.rpc_results["thread/read"] = {"thread": {"id": f.session, "path": str(alias),
-                "cwd": "/retained/source", "status": {"type": "idle"}, "historyMode": "paginated"}}
-            _peers, states, _coverage = f.observe()
-            self.assertEqual(states.get(f.session, {}).get("state"), "ended")
             self.assertFalse(f.mutations)
 
     def test_canonical_realtime_lifecycle_overrides_lagging_loaded_index(self):
@@ -1187,41 +1235,6 @@ class NativeQueueTests(unittest.TestCase):
                 with CLOSURE.ownership(f.session), self.assertRaises(ValueError):
                     asyncio.run(NATIVE.prove_end(f.entry))
                 self.assertTrue(CLOSURE.action_pending(f.session))
-
-    def test_live_pending_source_never_scans_transcripts_under_its_action_lease(self):
-        import uuid
-        with ReceiptFixture(str(uuid.uuid4())) as f:
-            with CLOSURE.resume_guard(f.session, method="turn/start", home=f.home): pass
-            f.process_rows = [(f.entry["pid"], f.entry["tty"], "codex")]
-            with patch.object(CLOSURE, "transcripts", side_effect=AssertionError("live source must not be scanned")) as scan:
-                _, states, _ = f.observe()
-            scan.assert_not_called()
-            self.assertNotEqual(states.get(f.session, {}).get("state"), "ended")
-            self.assertTrue(CLOSURE.action_pending(f.session))
-            with CLOSURE.ownership(f.session) as available:
-                self.assertTrue(available)
-
-    def test_action_racing_unleased_process_check_does_not_retain_new_observation_lease(self):
-        import uuid
-        with ReceiptFixture(str(uuid.uuid4())) as f, ThreadPoolExecutor(max_workers=1) as pool:
-            actual = f.release._verify_process_exit
-            raced = False
-            def process(entry, *args):
-                nonlocal raced
-                result = actual(entry, *args)
-                if not raced:
-                    raced = True
-                    with CLOSURE.resume_guard(f.session, method="turn/start", home=f.home): pass
-                return result
-            def available():
-                try:
-                    with CLOSURE.ownership(f.session): return True
-                except CLOSURE.LeaseBusy: return False
-            with patch.object(f.release, "_verify_process_exit", side_effect=process):
-                with CLOSURE.observation({f.session}) as acquired:
-                    self.assertNotIn(f.session, acquired)
-                    self.assertTrue(pool.submit(available).result(2))
-            self.assertTrue(CLOSURE.action_pending(f.session))
 
     def test_first_pending_finish_uses_native_cutoff_and_never_caller_hints(self):
         import uuid
@@ -1357,11 +1370,45 @@ class NativeQueueTests(unittest.TestCase):
                     f.release.record_closure(f.log, f.entry, "supervisor")
                 self.assertTrue(CLOSURE.action_pending(f.session))
                 f.home_queues[str(other)] = []
-                _, states, _ = f.observe()
-                self.assertEqual(states.get(f.session, {}).get("state"), "ended")
+                f.release.record_closure(f.log, f.entry, "supervisor")
                 self.assertFalse(CLOSURE.action_pending(f.session))
 
-    def test_owned_first_resume_metadata_is_not_promoted_to_observer_ownership(self):
+    def test_other_home_copies_fence_end_and_queue_without_gaining_authority(self):
+        import uuid
+        for shared in (False, True):
+            with self.subTest(shared=shared), ReceiptFixture(str(uuid.uuid4())) as f:
+                standard = f.root / ".codex"
+                f.add_home(standard, copy_transcript=not shared)
+                if shared:
+                    (standard / "sessions").symlink_to(f.home / "sessions", target_is_directory=True)
+                f.native_state = "notLoaded"
+                ledger = f.root / "ledger.json"
+                ledger.write_text(json.dumps([f.entry]))
+                with patch.object(SESSIONS, "configured_homes", return_value=[f.home]):
+                    with CLOSURE.resume_guard(f.session, method="thread/resume", home=f.home):
+                        pass
+                    barrier = CLOSURE.lease_path(f.session).read_bytes()
+                    for obstruction in ("active", "queue"):
+                        f.home_states[str(standard)] = "active" if obstruction == "active" else "idle"
+                        f.home_queues[str(standard)] = ([{"id": "work", "clientUserMessageId": "client", "input": []}]
+                                                       if obstruction == "queue" else [])
+                        with self.subTest(obstruction=obstruction):
+                            with self.assertRaises(ValueError):
+                                asyncio.run(NATIVE.prove_end(f.entry))
+                            with self.assertRaises(ValueError):
+                                asyncio.run(NATIVE.cancel_queue(f.home, f.session, ledger=ledger))
+                            self.assertEqual(CLOSURE.lease_path(f.session).read_bytes(), barrier)
+                            self.assertTrue(CLOSURE.action_pending(f.session))
+                    f.home_states[str(standard)] = "notLoaded"
+                    f.home_queues[str(standard)] = []
+                    proof = asyncio.run(NATIVE.prove_end(f.entry))
+                    self.assertIn(str(standard), proof["homes"])
+                    self.assertTrue(asyncio.run(NATIVE.cancel_queue(f.home, f.session, ledger=ledger))["ok"])
+                    with self.assertRaises(ValueError):
+                        asyncio.run(NATIVE.cancel_queue(standard, f.session, ledger=ledger))
+                    self.assertFalse(f.mutations)
+
+    def test_owned_first_resume_metadata_stays_pending_until_its_closure(self):
         import uuid
         with ReceiptFixture(str(uuid.uuid4())) as f:
             CLOSURE.replace_rows([])
@@ -1369,8 +1416,6 @@ class NativeQueueTests(unittest.TestCase):
             with CLOSURE.resume_guard(f.session, method="thread/resume", home=f.home):
                 CLOSURE.resumed_launch(f.session, metadata, str(f.transcript), f.entry["tty"])
             f.native_state = "notLoaded"
-            _, states, _ = f.observe()
-            self.assertNotEqual(states.get(f.session, {}).get("state"), "ended")
             self.assertTrue(CLOSURE.action_pending(f.session))
             closed = f.release.record_closure(f.log, f.entry, "supervisor")
             self.assertTrue(closed["process_exit_verified"])

@@ -49,6 +49,19 @@ def process_started_at(pid):
     return datetime.strptime(value, "%a %b %d %H:%M:%S %Y").replace(tzinfo=timezone.utc)
 
 
+def process_absent(pid):
+    """Only the kernel's missing-PID result establishes current absence."""
+    if sys.platform not in {"darwin", "linux"} or type(pid) is not int or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        pass
+    return False
+
+
 def idle_terminal_command(command):
     try:
         argv = shlex.split(command)
@@ -61,6 +74,12 @@ def idle_terminal_command(command):
         arg in {"-l", "-i", "-il", "-li", "--login", "--interactive"} for arg in argv[1:])
 
 
+def versioned_claude(executable):
+    path = Path(executable)
+    return (path.parent.name == "versions" and path.parent.parent.name == "claude"
+            and re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][\w.-]+)?", path.name) is not None)
+
+
 def harness_family(executable):
     name = Path(executable).name.casefold()
     if name in {"codex-session.py", "codex_session_proxy.py"}:
@@ -71,10 +90,11 @@ def harness_family(executable):
         return None  # Repository utilities are not native harness executables.
     if name.startswith("codex"):
         return "codex"
-    return "claude" if name in {"claude", "claude.js"} else None
+    return "claude" if name in {"claude", "claude.js"} or versioned_claude(executable) else None
 
 
 ARGUMENT_BYTES = 2 * 1024 * 1024
+PROC_ROOT = Path("/proc")
 
 
 def darwin_arguments(data):
@@ -130,16 +150,117 @@ def native_arguments(pid):
     return darwin_arguments(memoryview(data)[:size.value])
 
 
+def native_process_details(pid):
+    """Kernel executable and incarnation, without reading process environments."""
+    if type(pid) is not int or pid <= 0:
+        raise ValueError("native process identity requires a PID")
+    if sys.platform == "linux":
+        root = PROC_ROOT / str(pid)
+        fields = (root / "stat").read_text().rsplit(")", 1)[1].split()
+        if root.stat().st_uid != os.getuid() or fields[0] == "Z":
+            raise ValueError("native process owner or state is unavailable")
+        return {"pid": pid, "ppid": int(fields[1]), "executable": str((root / "exe").resolve(strict=True)),
+                "identity": {"startTicks": int(fields[19])}}
+    if sys.platform != "darwin":
+        raise ValueError("native process incarnation is unavailable on this host")
+    library = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+    library.proc_pidpath.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+    library.proc_pidpath.restype = ctypes.c_int
+    path = ctypes.create_string_buffer(4096)
+    if library.proc_pidpath(pid, path, len(path)) <= 0:
+        raise OSError(ctypes.get_errno(), "native process executable is unavailable")
+    # XNU PROC_PIDUNIQIDENTIFIERINFO identifies this incarnation even when a
+    # PID is reused within the same second. Its native ABI contains no secrets.
+    class UniqueInfo(ctypes.Structure):
+        _fields_ = [("executable_uuid", ctypes.c_ubyte * 16), ("unique_id", ctypes.c_uint64),
+                    ("parent_unique_id", ctypes.c_uint64), ("reserved", ctypes.c_uint64 * 3)]
+    identity = UniqueInfo()
+    library.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
+    library.proc_pidinfo.restype = ctypes.c_int
+    if library.proc_pidinfo(pid, 17, 1, ctypes.byref(identity), ctypes.sizeof(identity)) != ctypes.sizeof(identity):
+        raise OSError(ctypes.get_errno(), "native process incarnation is unavailable")
+    owner, parent = map(int, subprocess.run(["ps", "-p", str(pid), "-o", "uid=,ppid="],
+        check=True, capture_output=True, text=True, timeout=2).stdout.split())
+    if owner != os.getuid():
+        raise ValueError("native process belongs to another user")
+    return {"pid": pid, "ppid": parent, "executable": str(Path(os.fsdecode(path.value)).resolve()),
+            "identity": {"uniqueId": identity.unique_id}}
+
+
+def interpreter_family(executable):
+    name = Path(executable).name
+    if name in {"node", "nodejs", "bun", "deno"}:
+        return "javascript"
+    if name in {"sh", "bash", "zsh"}:
+        return "shell"
+    return "python" if re.fullmatch(r"python(?:3(?:\.\d+)?)?", name) else None
+
+
+def execution_arguments(command):
+    """Find one executable/script prefix; later operands never supply identity."""
+    flat = isinstance(command, str)
+    words = command.split() if flat else list(command)
+    wrappers = {"codex-session.py", "codex_session_proxy.py"}
+
+    def candidate(value):
+        return harness_family(value) is not None or Path(value).name in wrappers
+
+    def path_span(index):
+        value = words[index]
+        end = index + 1
+        # Flat text can lose spaces inside a path. Extend only this anchored
+        # span, never across an option or a separate absolute/relative path.
+        if flat and "/" in value and not (candidate(value) or interpreter_family(value)):
+            while end < len(words) and not words[end].startswith(("-", "/", "./", "../")):
+                value += " " + words[end]
+                end += 1
+                if candidate(value) or interpreter_family(value):
+                    break
+        return value, end
+
+    if not words:
+        return [], [], False
+    executable, index = path_span(0)
+    identity = [executable]
+    interpreter = interpreter_family(executable)
+    uncertain = False
+    if interpreter:
+        while index < len(words) and words[index].startswith("-"):
+            option = words[index]
+            identity.append(option)
+            index += 1
+            uncertain = True
+            if option == "--":
+                break
+            # Node's preload operand precedes the main script. It is not the
+            # script slot and cannot hide a later native CLI entrypoint.
+            if Path(executable).name in {"node", "nodejs"}:
+                preload = option.partition("=")[0] in {"-r", "--require", "--import", "--loader", "--experimental-loader"}
+                if preload and "=" not in option:
+                    if index == len(words):
+                        return [], [], True
+                    identity.append(words[index])
+                    index += 1
+                    continue
+                if preload or option.startswith("-r"):
+                    continue
+            code_mode = (interpreter == "shell" and not option.startswith("--") and "c" in option[1:]
+                         or interpreter == "python" and re.match(r"^-[bBdEhiIOqRsSuvVx]*[cm]", option)
+                         or interpreter == "javascript" and (option.partition("=")[0] in {"--eval", "--print"}
+                                                              or option.startswith(("-e", "-p"))))
+            if code_mode:
+                return [], identity, True
+        if index == len(words):
+            return [], [], uncertain  # Missing script cannot clear an earlier one.
+        script, index = path_span(index)
+        identity.append(script)
+    argv = [identity[-1], *words[index:]] if candidate(identity[-1]) else []
+    return argv, identity, uncertain
+
+
 def harness_arguments(command):
     """Keep full argv; identity parsing and guarded prefix binding are separate."""
-    words = command.split() if isinstance(command, str) else list(command)
-    positions = words[:1]
-    if words and (Path(words[0]).name in {"node", "nodejs", "bun", "deno", "sh", "bash", "zsh"}
-                  or re.fullmatch(r"python(?:3(?:\.\d+)?)?", Path(words[0]).name)):
-        positions = words[:2]
-    index = next((i for i, arg in enumerate(positions)
-                  if harness_family(arg) is not None or Path(arg).name in {"codex-session.py", "codex_session_proxy.py"}), None)
-    return [] if index is None else words[index:]
+    return execution_arguments(command)[0]
 
 
 def process_arguments(pid, command):
@@ -148,9 +269,25 @@ def process_arguments(pid, command):
     if not fallback:
         return [], False
     try:
-        argv = harness_arguments(native_arguments(pid))
-        if argv:
-            return argv, True
+        native = native_arguments(pid)
+        argv, identity, uncertain = execution_arguments(native)
+        parts = Path(native[0]).parts if native else ()
+        framework_helper = any(part.endswith(".framework") and "Helpers" in parts[index + 1:]
+                               for index, part in enumerate(parts))
+        helper_role = (len(native) > 1 and native[1] in {
+            "--type=gpu-process", "--type=utility", "--type=renderer"}
+            and sum(arg.startswith("--type") for arg in native[1:]) == 1)
+        if not argv or framework_helper and helper_role:
+            # Never clear an earlier candidate using a replacement process.
+            # ps rewrites prompt control characters; compare only the complete
+            # executable/script prefix and retain all PID/launch/daemon checks.
+            prefix = " ".join(identity)
+            if isinstance(command, str):
+                consistent = bool(identity) and (command == prefix or command.startswith(prefix + " "))
+            else:
+                consistent = bool(identity) and identity == list(command)[:len(identity)]
+            return ([], True) if consistent else (fallback, False)
+        return argv, not uncertain
     except (OSError, ValueError, UnicodeError):
         pass
     return fallback, False
@@ -245,7 +382,7 @@ def uncertain_invocation(argv):
 
 def invocation(argv, *, bounded=True):
     """Return source candidates, command kind, and an exact native resume operand."""
-    if not bounded:
+    if not bounded or argv and versioned_claude(argv[0]):
         return uncertain_invocation(argv)
     if not argv:
         return [], None, None
@@ -396,4 +533,41 @@ def native_exit_cutoff(entry):
     except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError):
         # A cutoff only permits verified replacement work on a reused TTY.
         # Its absence retains the stricter PID/TTY path; it is not exit proof.
+        return None
+
+
+def replacement_tty_owner(entry, rows, *, started_at):
+    """Prove one newer process tree after the exact source pane disappeared."""
+    socket = entry.get("tmux_socket", "supervisor")
+    identity = entry.get("tmux_session_id")
+    tty = entry.get("tty")
+    if (entry.get("supervisor_owned") is not True or entry.get("_inventory") or entry.get("_backfill")
+            or not isinstance(socket, str) or not isinstance(identity, str)
+            or not re.fullmatch(r"tmux:" + re.escape(socket) + r":[0-9a-f]{32}", identity)
+            or not isinstance(tty, str) or not tty or not entry.get("launch_started_at")):
+        return None
+    rows = rows() if callable(rows) else rows
+    occupants = {pid for pid, process_tty, _command in rows if process_tty == tty.removeprefix("/dev/")}
+    if not occupants:
+        return None
+    from tmux_terminal import Terminal, process_parents, belongs_to
+    try:
+        if any(pane["session_id"] == identity for pane in Terminal(socket).list()):
+            return None
+        parents = process_parents()
+        if not occupants <= parents.keys():
+            return None
+        roots = [pid for pid in occupants if parents[pid] not in occupants]
+        if len(roots) != 1 or not all(belongs_to(pid, roots[0], parents) for pid in occupants):
+            return None
+        # A sole surviving source child can also look like a new root after
+        # reparenting to init/launchd. It does not prove a replacement terminal.
+        if parents[roots[0]] <= 1 or parents[roots[0]] not in parents:
+            return None
+        born = started_at(roots[0])
+        launched = datetime.fromisoformat(entry["launch_started_at"])
+        if launched.tzinfo is None or not launched < born <= datetime.now(timezone.utc):
+            return None
+        return roots[0], born, occupants
+    except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError):
         return None

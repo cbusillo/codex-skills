@@ -42,6 +42,19 @@ class InstalledContractTests(unittest.TestCase):
 from importlib.resources import files
 from github_plan_status import DEFAULT_STATUS_LABELS, derive, label_changes, waits
 from github_plan_status.body import wrap_contributor_plan
+from github_plan_status.workflow_runs import current_workflow_runs, workflow_execution_identity
+from github_plan_status.client_test_notes import ENGINEERING_RELEASE_TESTS, body_client_test_notes, client_test_notes
+assert current_workflow_runs([], 'head')['current'] == []
+assert workflow_execution_identity({}) is None
+notes = ENGINEERING_RELEASE_TESTS + '\\nCheck the imported parts at release.'
+assert not client_test_notes(notes).review_required
+assert client_test_notes(notes, review_override=True).review_required
+assert client_test_notes('Approve the screen before merge.').review_required
+body = '## Client test notes\\n' + notes + '\\n## Owner test notes\\nApprove the wording before merge.'
+assert body_client_test_notes(body).review_required
+body = '## Client test notes\\nNothing for the Client to test: tooling.\\n## Owner test notes\\nApprove wording.'
+assert body_client_test_notes(body).review_required
+assert not body_client_test_notes('## Client test notes\\n' + notes).review_required
 held = waits.reviewed(evidence='Client requested acceptance',
                       waiting_for='Client acceptance', ends_when='Client accepts')
 issue = {'state': 'open', 'user': {'id': 71, 'login': 'owner'},

@@ -6,6 +6,7 @@
 """Disposable transcripts and GitHub adapters exercise session claim release."""
 
 import json
+import os
 import contextlib
 import io
 import itertools
@@ -15,8 +16,6 @@ from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import tempfile
-import subprocess
-import sys
 import unittest
 from unittest.mock import Mock, patch
 
@@ -48,10 +47,11 @@ class ReleaseTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
+        self.enterContext(patch.dict(os.environ, {"HOME": str(self.root), "CODEX_HOME": str(self.root / "account")}))
         remote = patch.object(helper.claim, "run_read", side_effect=lambda _args, *, cwd: f"https://github.com/test/{cwd.name}.git")
         remote.start()
         self.addCleanup(remote.stop)
-        local = patch.object(helper.claim, "local_inventory", return_value={"sessions": [], "worktrees": [], "session_coverage": {}})
+        local = patch.object(helper.claim, "local_inventory", return_value={"worktrees": []})
         local.start()
         self.addCleanup(local.stop)
         self.transcript = self.root / "source-session.jsonl"
@@ -104,7 +104,7 @@ class ReleaseTests(unittest.TestCase):
         for apply in (False, True):
             argv = ["helper", "backfill", "--closed-log", str(log), "--supervisor-session", "supervisor",
                 "--owner", "test", "--checkout-root", str(self.root), "--confirm-session-ended",
-                "--verified-handoff", "--transcript-root", str(self.root)] + (["--apply"] if apply else [])
+                "--transcript-root", str(self.root)] + (["--apply"] if apply else [])
             output = io.StringIO()
             with patch.object(helper.sys, "argv", argv), \
                     patch.object(helper.github_identity, "automation_login", return_value=ACTOR), \
@@ -170,6 +170,70 @@ class ReleaseTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "resumed harness"):
                 helper.validate_closure(entries[0], "supervisor")
 
+    def test_loaded_inventory_preserves_explicit_handoff_and_every_named_retained_pr(self):
+        handoff_url = self.entry["handoff_url"]
+        rows = [self.inventory_row(handoff_url=handoff_url),
+                self.inventory_row(handoff_url=handoff_url, retained_pr_url="https://github.com/test/a/pull/13")]
+        entries, errors = helper.backfill_inventory.load(rows, {"codex": [str(self.root)]})
+        self.assertFalse(errors)
+        self.assertEqual(len(entries[0]["_inventory_claims"]), 2)
+        source = {**self.source, "issue_url": "https://api.github.com/repos/test/a/issues/1"}
+        public = {**comment(99, "Session: source-session\nRetained PRs: https://github.com/test/a/pull/12 https://github.com/test/a/pull/14"),
+                  "issue_url": "https://api.github.com/repos/test/a/issues/1"}
+        named = {n: self.pull(n, f"repair-{n}") for n in (12, 13, 14)}
+        def read(path, **_kwargs):
+            if "/pulls/" in path:
+                return named[int(path.rsplit("/", 1)[1])]
+            if "/commits/" in path:
+                return self.head_commit()
+            if path.endswith("/issues/comments/99"):
+                return public
+            if path.endswith("/issues/comments/1"):
+                return source
+            return {"number": 1, "body": ""}
+        self.reader.get_json.side_effect = read
+        self.reader.paged_json.side_effect = lambda path, **_kw: [] if path.endswith("/pulls") else [source]
+        with patch.object(helper, "comment") as write, patch.object(helper, "run_release") as command:
+            report = helper.release_session(self.reader, {**entries[0], "_backfill": True}, ACTOR,
+                "supervisor", [("test/a", 1)], self.root, False)
+        self.assertEqual(report["handoff_url"], handoff_url)
+        self.assertEqual(set(report["claims"][0]["retained_prs"]), {pull["html_url"] for pull in named.values()})
+        self.assertFalse(report["issue_refusals"])
+        write.assert_not_called()
+        command.assert_not_called()
+        # The same loaded path must not accept a changed or foreign handoff.
+        original_public = dict(public)
+        for changed in ({**original_public, "updated_at": "2026-01-01T00:03:00Z"},
+                        {**original_public, "user": {"login": "foreign[bot]"}},
+                        {**original_public, "issue_url": "https://api.github.com/repos/test/a/issues/2"}):
+            with self.subTest(changed=changed), self.assertRaises(ValueError):
+                public = changed
+                helper.release_session(self.reader, {**entries[0], "_backfill": True}, ACTOR,
+                    "supervisor", [("test/a", 1)], self.root, False)
+
+    def test_inventory_conflicting_handoffs_preserve_the_whole_session_for_reconciliation(self):
+        rows = [self.inventory_row(handoff_url=self.entry["handoff_url"]),
+                self.inventory_row(issue=2, claim_comment_id=2,
+                    handoff_url="https://github.com/test/a/issues/2#issuecomment-98")]
+        original = json.loads(json.dumps(rows))
+        entries, reports = helper.backfill_inventory.load(rows, {"codex": [str(self.root)]})
+        self.assertFalse(entries)
+        self.assertTrue(reports)
+        self.assertEqual(rows, original)
+
+    def test_loaded_inventory_noncanonical_handoff_refuses_instead_of_using_source_context(self):
+        entries, reports = helper.backfill_inventory.load(
+            [self.inventory_row(handoff_url="https://example.com/not-a-handoff")], {"codex": [str(self.root)]})
+        if reports:
+            self.assertFalse(entries)
+            return
+        self.source["issue_url"] = "https://api.github.com/repos/test/a/issues/1"
+        self.reader.get_json.return_value = self.source
+        self.reader.paged_json.side_effect = lambda path, **_kw: [] if path.endswith("/pulls") else [self.source]
+        with self.assertRaises(ValueError):
+            helper.release_session(self.reader, {**entries[0], "_backfill": True}, ACTOR,
+                "supervisor", [("test/a", 1)], self.root, False)
+
     def test_bad_inventory_row_preserves_all_claims_of_that_session(self):
         for row in (self.inventory_row(still_running=True), self.inventory_row(safe_exit_yes=False),
                     self.inventory_row(ended_at="2026-01-01T00:04:00Z")):
@@ -184,7 +248,7 @@ class ReleaseTests(unittest.TestCase):
         argv = ["helper", "finish", "--ledger", str(ledger), "--closed-log", str(log),
                 "--session-id", SOURCE["session"], "--supervisor-session", "supervisor",
                 "--owner", "test", "--checkout-root", str(self.root), "--confirm-session-ended",
-                "--verified-handoff", "--transcript-root", str(self.root)]
+                "--transcript-root", str(self.root)]
         with patch.object(helper.sys, "argv", argv), \
                 patch.object(helper.github_identity, "automation_login", return_value=ACTOR), \
                 patch.object(helper, "comment") as write, contextlib.redirect_stdout(io.StringIO()):
@@ -205,8 +269,8 @@ class ReleaseTests(unittest.TestCase):
         self.reader.get_json.side_effect = lambda path, **_kw: evidence if evidence and path.endswith("/issues/comments/99") else {"body": body, "number": 1}
         argv = ["helper", "finish", "--ledger", str(ledger), "--closed-log", str(log),
                 "--session-id", SOURCE["session"], "--supervisor-session", "supervisor",
-                "--owner", "test", "--checkout-root", str(self.root), "--confirm-session-ended",
-                "--verified-handoff", "--handoff-thread", "test/a#2", "--transcript-root", str(self.root)]
+                "--owner", "test", "--confirm-session-ended",
+                "--transcript-root", str(self.root)]
         if apply:
             argv.append("--apply")
         if scoped:
@@ -226,6 +290,17 @@ class ReleaseTests(unittest.TestCase):
     def own_release(self, **changes):
         return {**comment(2, "Released claim 1\n\nEngineering handed to Supervisor."),
                 "created_at": "2026-01-01T00:01:00Z", "updated_at": "2026-01-01T00:01:00Z", **changes}
+
+    def test_backfill_missing_checkout_refuses_before_any_apply_mutation(self):
+        log = self.root / "new-log.json"
+        argv = ["helper", "backfill", "--closed-log", str(log), "--supervisor-session", "supervisor",
+                "--owner", "test", "--confirm-session-ended", "--apply"]
+        with patch.object(helper.sys, "argv", argv), patch.object(helper, "GitHubReader") as reader, \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(helper.main(), 1)
+        self.assertFalse(log.exists())
+        self.assertFalse(Path(str(log) + ".release.lock").exists())
+        reader.assert_not_called()
 
     def test_finish_recognizes_self_released_claim_from_its_original_comment(self):
         result, report = self.finish_thread([self.source, self.own_release()], body=self.source["body"])
@@ -263,6 +338,26 @@ class ReleaseTests(unittest.TestCase):
                         self.assertEqual(result, expected, report)
                         saved = json.loads((self.root / "closed.json").read_text())[0]
                         self.assertEqual(saved["ended_at"], self.entry["ended_at"])
+
+    def test_guarded_tty_reuse_requires_a_unique_saved_source(self):
+        ended = helper.release.stamp(self.entry["ended_at"])
+        shared = self.root / "shared.json"
+        other = {**self.entry, "pid": 999, "tty": "other-tty"}
+        for rows in ([self.entry], [self.entry, other], [other, self.entry]):
+            with self.subTest(rows=rows):
+                shared.write_text(json.dumps(rows))
+                shared.chmod(0o600)
+                before = shared.read_bytes()
+                with patch.object(helper.closure, "closed_log", return_value=shared), \
+                        patch.object(helper, "inventory", return_value=[(456, self.entry["tty"], "codex --remote unix:///new-client")]), \
+                        patch.object(helper.closure, "process_started_at", return_value=ended + timedelta(seconds=22)), \
+                        patch.object(helper.closure, "guarded_launch_endpoint", return_value="/new-client"):
+                    if len(rows) == 1:
+                        helper.verify_process_exit(self.entry, ended_at=ended)
+                    else:
+                        with self.assertRaises(ValueError):
+                            helper.verify_process_exit(self.entry, ended_at=ended)
+                self.assertEqual(shared.read_bytes(), before)
 
     def test_finish_retry_never_excuses_recorded_pids_or_native_resume(self):
         self.entry["launch_pid"] = 124
@@ -396,6 +491,162 @@ class ReleaseTests(unittest.TestCase):
             closed = helper.record_closure(self.root / "private-closure.json", self.entry, "supervisor")
             self.assertTrue(helper.validate_closure(closed, "supervisor")["safe_verdict"])
 
+    def private_tty_main(self, *, mode="finish", apply=False, prior=True, shared_kind="different", mutation=None, boundary="discovery"):
+        import github_plan_native as native
+        import tmux_terminal
+        import socket
+        case = type(self)()
+        case.setUp()
+        try:
+            ended = helper.release.stamp(case.entry["ended_at"])
+            entry = {**case.entry, "handoff_url": None if mode == "finish" else case.entry["handoff_url"]}
+            if not prior:
+                entry.update(tmux_socket="fixture", tmux_session_id="tmux:fixture:" + "a" * 32,
+                             window_id="$1", tab_id="@1")
+            pane = {"session_id": entry.get("tmux_session_id"), "pane_id": "%1", "pid": 789,
+                    "tmux_socket": "fixture", "window_id": "$1", "tab_id": "@1", "tty": entry["tty"],
+                    "dead": True, "exited_at": ended.isoformat()}
+            ledger, private, shared = (case.root / name for name in ("ledger.json", "private.json", "shared.json"))
+            ledger.write_text(json.dumps([entry]))
+            if prior:
+                private.write_text(json.dumps([entry]))
+                private.chmod(0o600)
+            shared_row = dict(entry)
+            if shared_kind == "different":
+                shared_row.update(pid=999, tty="other-tty")
+            endpoint = case.root / "proxy.sock"
+            guard_socket = socket.socket(socket.AF_UNIX)
+            case.addCleanup(guard_socket.close)
+            guard_socket.bind(str(endpoint))
+            endpoint.chmod(0o600)
+            native_argv = ["codex", "--remote", "unix://" + str(endpoint)]
+            born = ended + timedelta(seconds=22)
+            proxy = {"record_kind": "managed_proxy", "launch_pid": 456,
+                     "launch_started_at": born.isoformat(), "codex_home": str(case.root / "home"),
+                     "endpoint": str(endpoint), "argv_digest": helper.closure.argv_signature(native_argv)}
+            shared.write_text("{" if shared_kind == "malformed" else json.dumps([shared_row, proxy]))
+            shared.chmod(0o600)
+            shared_before = shared.read_bytes()
+            private_before = private.read_bytes() if private.exists() else None
+            state = {"changed": False, "discovered": False}
+            captured = {}
+            real_record, real_process = helper.record_closure, native.recheck_source_process
+            def record(*args, **kwargs):
+                closed = real_record(*args, **kwargs)
+                captured.setdefault("closed", closed)
+                captured.setdefault("ended_at", closed["ended_at"])
+                captured.setdefault("verdict_at", closed.get("verdict_at"))
+                return closed
+            def change():
+                if state["changed"]:
+                    return
+                if mutation == "transcript":
+                    with case.transcript.open("a") as stream:
+                        stream.write(json.dumps({"timestamp": datetime.now(timezone.utc).isoformat(),
+                            "payload": {"type": "agent_message", "message": "Continuing work."}}) + "\n")
+                    state["changed"] = True
+                    return
+                with helper.closure.store_lock(private, create=True):
+                    if mutation == "remove":
+                        private.unlink()
+                    else:
+                        rows = json.loads(private.read_text()) if private.exists() else []
+                        selected = next((row for row in rows if row.get("session_id") == entry["session_id"]), None)
+                        if selected is None:
+                            selected = {key: value for key, value in captured["closed"].items() if not key.startswith("_")}
+                            rows.append(selected)
+                        selected["resumed_at"] = datetime.now(timezone.utc).isoformat()
+                        private.write_text(json.dumps(rows))
+                state["changed"] = True
+            def discover(*_args, **_kwargs):
+                state["discovered"] = True
+                if mutation and boundary == "discovery":
+                    change()
+                return [("test/a", 1)], ["test/a"]
+            def process(*args, **kwargs):
+                result = real_process(*args, **kwargs)
+                if mutation and boundary == "process" and state["discovered"]:
+                    change()
+                return result
+            def history(*_args, **_kwargs):
+                if mutation and boundary == "history":
+                    change()
+                return [case.source, case.own_release()]
+            handoff = case.reader.get_json.return_value
+            case.reader.get_json.side_effect = lambda path, **_kw: handoff if "/issues/comments/" in path else {"body": "", "number": 1}
+            case.reader.paged_json.side_effect = history
+            argv = ["helper", mode, "--closed-log", str(private), "--session-id", entry["session_id"],
+                    "--supervisor-session", "supervisor", "--owner", "test", "--confirm-session-ended",
+                    "--transcript-root", str(case.root)]
+            argv += ["--ledger", str(ledger)] if mode == "finish" else ["--checkout-root", str(case.root)]
+            if apply:
+                argv.append("--apply")
+            output = io.StringIO()
+            with patch.object(helper.sys, "argv", argv), \
+                    patch.object(helper.closure, "closed_log", return_value=shared), \
+                    patch.object(helper, "inventory", return_value=[(456, entry["tty"], " ".join(native_argv))]), \
+                    patch.object(helper.closure, "process_started_at", return_value=ended + timedelta(seconds=22)), \
+                    patch.object(tmux_terminal.Terminal, "list", return_value=[pane]), \
+                    patch.object(helper, "record_closure", side_effect=record), \
+                    patch.object(native, "recheck_source_process", side_effect=process), \
+                    patch.object(helper.github_identity, "automation_login", return_value=ACTOR), \
+                    patch.object(helper, "GitHubReader", return_value=case.reader), \
+                    patch.object(helper, "discover", side_effect=discover), \
+                    patch.object(helper, "comment") as write, patch.object(helper, "run_release") as run, \
+                    contextlib.redirect_stdout(output):
+                code = helper.main()
+            report = json.loads(output.getvalue())
+            write.assert_not_called()
+            run.assert_not_called()
+            self.assertEqual(shared.read_bytes(), shared_before)
+            self.assertEqual(state["changed"], mutation is not None)
+            if mutation or shared_kind == "malformed":
+                self.assertEqual(code, 1, report)
+                self.assertFalse(report["ok"])
+            else:
+                self.assertEqual(code, 0, report)
+                self.assertTrue(report["ok"])
+                if mode == "finish":
+                    self.assertEqual(report["reports"][0]["ended_at"], captured["ended_at"])
+                    if private.exists():
+                        saved = json.loads(private.read_text())[0]
+                        self.assertEqual(saved["ended_at"], captured["ended_at"])
+                        if "verdict_at" in saved:
+                            self.assertEqual(saved["verdict_at"], captured["verdict_at"])
+                if not apply or mode == "backfill":
+                    self.assertEqual(private.read_bytes() if private.exists() else None, private_before)
+        finally:
+            case.doCleanups()
+
+    def test_private_finish_preserves_its_source_through_guarded_tty_boundaries(self):
+        for apply, prior, shared in itertools.product((False, True), (False, True), ("matching", "different")):
+            with self.subTest(apply=apply, prior=prior, shared=shared):
+                self.private_tty_main(apply=apply, prior=prior, shared_kind=shared)
+        for apply, prior, boundary in itertools.product((False, True), (False, True), ("discovery", "history", "process")):
+            with self.subTest(apply=apply, prior=prior, boundary=boundary):
+                self.private_tty_main(apply=apply, prior=prior, mutation="change", boundary=boundary)
+        for apply, boundary in itertools.product((False, True), ("discovery", "history")):
+            with self.subTest(apply=apply, boundary=boundary, mutation="remove"):
+                self.private_tty_main(apply=apply, mutation="remove", boundary=boundary)
+        self.private_tty_main(apply=True, prior=False, mutation="remove", boundary="history")
+        for apply, boundary in itertools.product((False, True), ("discovery", "process")):
+            with self.subTest(apply=apply, boundary=boundary, mutation="transcript"):
+                self.private_tty_main(apply=apply, mutation="transcript", boundary=boundary)
+
+        self.private_tty_main(shared_kind="malformed")
+
+    def test_private_backfill_uses_the_actual_closed_row_for_guarded_tty_checks(self):
+        for apply, shared in itertools.product((False, True), ("matching", "different")):
+            with self.subTest(apply=apply, shared=shared):
+                self.private_tty_main(mode="backfill", apply=apply, shared_kind=shared)
+        for apply, boundary in itertools.product((False, True), ("discovery", "process")):
+            with self.subTest(apply=apply, boundary=boundary):
+                self.private_tty_main(mode="backfill", apply=apply, mutation="change", boundary=boundary)
+        for apply in (False, True):
+            with self.subTest(apply=apply, mutation="transcript"):
+                self.private_tty_main(mode="backfill", apply=apply, mutation="transcript", boundary="process")
+        self.private_tty_main(mode="backfill", shared_kind="malformed")
+
     def test_scheduled_jobs_do_not_change_post_exit_finish_policy(self):
         entry = {**self.entry, "harness": "claude"}
         records = [
@@ -415,6 +666,23 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertEqual([r["claim_comment"] for r in report["reports"][0]["released_claims"]], [self.source["id"]])
         self.assertFalse(report["needs_reconciliation"])
+
+    def test_finish_consumes_exact_authored_followup_releases_and_preserves_unresolved_ids(self):
+        followup = comment(3, "Claimed by trial\nSession: source-session")
+        authored = self.own_release(id=4, body="Released claim 3")
+        result, report = self.finish_thread([self.source, followup, self.own_release(), authored])
+        self.assertEqual(result, 0)
+        self.assertEqual({r["claim_comment"] for r in report["reports"][0]["released_claims"]}, {1, 3})
+        for replacement in (None, {**authored, "user": {"login": "foreign[bot]"}},
+                            {**authored, "body": "Released claim 3\nSession: other-session"},
+                            {**authored, "updated_at": "2026-01-01T00:03:00Z"}):
+            with self.subTest(replacement=replacement):
+                comments = [self.source, followup, self.own_release()]
+                if replacement is not None:
+                    comments.append(replacement)
+                result, report = self.finish_thread(comments)
+                self.assertEqual(result, 1)
+                self.assertIn(3, [r.get("claim_comment") for r in report["reports"][0]["issue_refusals"]])
 
     def test_finish_scoped_no_claims_qualifies_its_completion(self):
         result, unscoped = self.finish_thread([])
@@ -444,33 +712,121 @@ class ReleaseTests(unittest.TestCase):
                 self.assertEqual(result, 1)
                 self.assertTrue(report["needs_reconciliation"])
 
-    def test_finish_supervisor_receipt_is_not_a_session_authored_handoff(self):
+    def test_finish_consumes_validated_supervisor_release_after_source_end(self):
         evidence = {**comment(99, "Closed session source-session\nEnded at: 2026-01-01T00:02:00Z\nSafe to exit: yes"),
+                    "issue_url": "https://api.github.com/repos/test/control/issues/9",
                     "created_at": "2026-01-01T00:04:00Z", "updated_at": "2026-01-01T00:04:00Z"}
-        body = helper.release.prepare_release(self.source, evidence, [self.source], {"sessions": [], "worktrees": []},
-            actor=ACTOR, role="supervisor", releaser_session="supervisor", evidence_url=self.entry["handoff_url"], retained_prs=[], related=[])
+        body = helper.release.prepare_release(self.source, evidence, [self.source], {"worktrees": []},
+            actor=ACTOR, role="supervisor", releaser_session="supervisor",
+            evidence_url="https://github.com/test/control/issues/9#issuecomment-99", retained_prs=[], related=[])
         receipt = self.own_release(body=body, created_at="2026-01-01T00:05:00Z", updated_at="2026-01-01T00:05:00Z")
-        self.entry["ended_at"] = "2026-01-01T00:06:00Z"
         result, report = self.finish_thread([self.source, receipt], evidence=evidence)
-        self.assertEqual(result, 1)
-        self.assertTrue(report["needs_reconciliation"])
+        self.assertEqual(result, 0)
+        self.assertFalse(report["needs_reconciliation"])
+        self.assertEqual(report["reports"][0]["released_claims"][0]["claim_comment"], self.source["id"])
 
-    def test_finish_history_failure_preserves_per_issue_release_and_refusal(self):
-        handoff = dict(self.reader.get_json.return_value)
+    def test_finish_consumes_supervisor_release_attesting_an_end_after_recorded_closure(self):
+        # CS2319-C1: the attestation's Ended at follows the recorded closure by seconds.
+        evidence = {**comment(99, "Closed session source-session\nEnded at: 2026-01-01T00:02:05Z\nSafe to exit: yes"),
+                    "issue_url": "https://api.github.com/repos/test/control/issues/9",
+                    "created_at": "2026-01-01T00:04:00Z", "updated_at": "2026-01-01T00:04:00Z"}
+        body = helper.release.prepare_release(self.source, evidence, [self.source], {"worktrees": []},
+            actor=ACTOR, role="supervisor", releaser_session="supervisor",
+            evidence_url="https://github.com/test/control/issues/9#issuecomment-99", retained_prs=[], related=[])
+        receipt = self.own_release(body=body, created_at="2026-01-01T00:05:00Z", updated_at="2026-01-01T00:05:00Z")
+        result, report = self.finish_thread([self.source, receipt], evidence=evidence)
+        self.assertEqual(result, 0, report)
+        self.assertEqual(report["reports"][0]["released_claims"][0]["claim_comment"], self.source["id"])
+        # A naked release posted after the end is still not the worker's own.
+        late = self.own_release(created_at="2026-01-01T00:05:00Z", updated_at="2026-01-01T00:05:00Z")
+        result, report = self.finish_thread([self.source, late], evidence=evidence)
+        self.assertEqual(result, 1)
+
+    def test_finish_invalid_supervisor_proofs_preserve_the_exact_source_without_writes(self):
+        evidence = {**comment(99, "Closed session source-session\nEnded at: 2026-01-01T00:02:00Z\nSafe to exit: yes"),
+                    "issue_url": "https://api.github.com/repos/test/control/issues/9",
+                    "created_at": "2026-01-01T00:04:00Z", "updated_at": "2026-01-01T00:04:00Z"}
+        body = helper.release.prepare_release(self.source, evidence, [self.source], {"worktrees": []},
+            actor=ACTOR, role="supervisor", releaser_session="supervisor",
+            evidence_url="https://github.com/test/control/issues/9#issuecomment-99", retained_prs=[], related=[])
+        receipt = self.own_release(body=body, created_at="2026-01-01T00:05:00Z", updated_at="2026-01-01T00:05:00Z")
+        cases = [
+            (receipt, {**evidence, "updated_at": "2026-01-01T00:06:00Z"}),
+            (receipt, {**evidence, "issue_url": "https://api.github.com/repos/test/control/issues/8"}),
+            (receipt, {**evidence, "id": 98}),
+            (receipt, {**evidence, "user": {"login": "foreign[bot]"}}),
+            (receipt, {**evidence, "body": evidence["body"].replace("source-session", "other-session")}),
+            ({**receipt, "body": helper.release.pending_body(body)}, evidence),
+            ({**receipt, "user": {"login": "foreign[bot]"}}, evidence),
+        ]
+        for candidate, canonical in cases:
+            with self.subTest(candidate=candidate, canonical=canonical):
+                result, report = self.finish_thread([self.source, candidate], evidence=canonical)
+                self.assertEqual(result, 1)
+                self.assertFalse(report["reports"][0]["released_claims"])
+                self.assertIn(self.source["id"], [r.get("claim_comment") for r in report["reports"][0]["issue_refusals"]])
+
+    def test_finish_malformed_or_failed_canonical_history_never_becomes_empty(self):
+        entry = {**self.entry, "_finish": True, "_finish_scope": "explicit scope"}
+        failures = (["malformed comment"], ValueError("invalid canonical shape"),
+                    helper.GitHubReadError("unavailable", result=SimpleNamespace(status=503), diagnostics={}))
+        self.reader.get_json.return_value = {"body": ""}
+        for failure in failures:
+            with self.subTest(failure=failure), patch.object(helper, "comment") as write, patch.object(helper, "run_release") as run:
+                self.reader.paged_json.side_effect = failure if isinstance(failure, Exception) else None
+                self.reader.paged_json.return_value = failure
+                report = helper.release_session(self.reader, entry, ACTOR, "supervisor", [("test/a", 1)], self.root, True)
+                self.assertTrue(report["issue_refusals"])
+                self.assertFalse(report["claims"])
+                self.assertFalse(report["released_claims"])
+                write.assert_not_called()
+                run.assert_not_called()
+
+    def test_finish_history_failure_reports_per_issue_release_and_refusal_without_writes(self):
         def read(path, **_kw):
             if path.endswith("/issues/2"):
                 raise helper.GitHubReadError("temporarily unavailable", result=SimpleNamespace(status=503), diagnostics={})
-            return handoff
+            return {"body": ""}
         self.reader.get_json.side_effect = read
-        self.reader.paged_json.side_effect = lambda path, **_kw: [] if path.endswith("/pulls") else [self.source]
+        self.reader.paged_json.return_value = [self.source, self.own_release()]
         entry = {**self.entry, "_finish": True, "_finish_scope": "explicit scope"}
         with patch.object(helper, "preview_guards", return_value={"status": "passed_read_only"}), \
                 patch.object(helper, "comment") as write, patch.object(helper, "run_release") as run:
             report = helper.release_session(self.reader, entry, ACTOR, "supervisor", [("test/a", 2), ("test/a", 1)], self.root, False)
         self.assertEqual([r["issue"] for r in report["issue_refusals"]], [2])
-        self.assertEqual([r["claim_comment"] for r in report["claims"]], [self.source["id"]])
+        self.assertFalse(report["claims"])
+        self.assertEqual([r["claim_comment"] for r in report["released_claims"]], [self.source["id"]])
         write.assert_not_called()
         run.assert_not_called()
+
+    def test_finish_held_source_reports_exact_id_without_planning_a_release(self):
+        self.reader.get_json.return_value = {"body": ""}
+        self.reader.paged_json.return_value = [self.source]
+        entry = {**self.entry, "_finish": True, "_finish_scope": "explicit scope"}
+        with patch.object(helper, "comment") as write, patch.object(helper, "run_release") as run:
+            report = helper.release_session(self.reader, entry, ACTOR, "supervisor", [("test/a", 1)], self.root, False)
+        self.assertFalse(report["claims"])
+        self.assertEqual(report["issue_refusals"][0]["claim_comment"], self.source["id"])
+        write.assert_not_called()
+        run.assert_not_called()
+
+    def test_finish_preserves_unbound_alias_when_other_ownership_diagnostic_is_deferred(self):
+        diagnostics = [comment(7, "Claimed by orphan-worker\nSession: source-session"),
+                       comment(7, helper.claim.marker({**SOURCE, "worker": "foreign-worker"}), author="foreign[bot]")]
+        for field in ("", "Session ID: source-session", "Native session ID: source-session", "| Session | source-session |"):
+            alias = comment(9, "Claimed by trial\n" + field)
+            baseline, baseline_report = self.finish_thread([self.source, alias])
+            self.assertEqual(baseline, 1)
+            self.assertEqual({r["claim_comment"] for r in baseline_report["reports"][0]["issue_refusals"]}, {1, 9})
+            for diagnostic in diagnostics:
+                for first in (False, True):
+                    with self.subTest(field=field, diagnostic=diagnostic, first=first):
+                        comments = [diagnostic, self.source, alias] if first else [self.source, alias, diagnostic]
+                        result, report = self.finish_thread(comments)
+                        self.assertEqual(result, 1)
+                        refused = report["reports"][0]["issue_refusals"]
+                        self.assertEqual({r["claim_comment"] for r in refused}, {1, 7, 9})
+                        self.assertEqual(len(refused), 3)
 
     def test_finish_status_only_ownership_is_not_a_read_only_session(self):
         result, report = self.finish_thread([], body="Claimed by trial\nSession: source-session")
@@ -488,259 +844,6 @@ class ReleaseTests(unittest.TestCase):
                     result, report = self.finish_thread(comments, verdict=verdict)
                     self.assertEqual(result, 1)
                     self.assertFalse(report["ok"])
-
-    def test_handoff_discovery_uses_native_comment_write_not_shared_bot_read(self):
-        receipt = json.dumps({"comment_action": "created", "comment": {"url": self.entry["handoff_url"]}})
-        records = helper.session_record.read_jsonl(self.transcript)
-        records.insert(1, {"timestamp": "2026-01-01T00:00:20Z", "payload": {"type": "function_call", "call_id": "write", "arguments": json.dumps({"cmd": "gh-comment issue 1 --body-file handoff.md"})}})
-        records.insert(2, {"timestamp": "2026-01-01T00:00:30Z", "payload": {"type": "function_call_output", "call_id": "write", "output": receipt}})
-        records.insert(2, {"timestamp": "2026-01-01T00:00:40Z", "payload": {"type": "function_call_output", "output": "Read https://github.com/test/a/issues/1#issuecomment-123"}})
-        self.transcript.write_text("\n".join(json.dumps(r) for r in records))
-        entry, _ = helper.discover_handoff(self.reader, {**self.entry, "handoff_url": None}, ACTOR)
-        self.assertEqual(entry["handoff_url"], self.entry["handoff_url"])
-        self.assertEqual(self.reader.get_json.call_count, 1)
-
-    def test_legacy_shell_array_preserves_bound_write_receipt(self):
-        records = helper.session_record.read_jsonl(self.transcript)
-        records.insert(1, {"payload": {"type": "function_call", "call_id": "write",
-            "arguments": json.dumps({"command": ["bash", "-lc", "gh-comment issue 1 --body-file handoff.md"]})}})
-        records.insert(2, {"payload": {"type": "function_call_output", "call_id": "write",
-            "output": json.dumps({"comment_action": "created", "comment": {"url": self.entry["handoff_url"]}})}})
-        self.transcript.write_text("\n".join(json.dumps(r) for r in records))
-        found, _ = helper.discover_handoff(self.reader, {**self.entry, "handoff_url": None}, ACTOR)
-        self.assertEqual(found["handoff_url"], self.entry["handoff_url"])
-
-    def test_progress_note_does_not_become_exact_session_closeout(self):
-        for text in ("source-session: tests completed", "Other session handed off; source-session still running",
-                     "Engineering handoff\nSession: another-session\nAlso source-session"):
-            self.reader.paged_json.return_value = [comment(10, text)]
-            with self.assertRaisesRegex(ValueError, "no authored handoff"):
-                helper.discover_handoff(self.reader, {**self.entry, "handoff_url": None,
-                    "_handoff_thread": ("test/a", 1)}, ACTOR)
-
-    def test_legacy_abbreviated_write_receipt_and_unbound_final_link(self):
-        records = helper.session_record.read_jsonl(self.transcript)
-        records.insert(1, {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "body", "input": {"file_path": "handoff.md", "content": "Handoff"}}]}})
-        records.insert(2, {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "write", "input": {"command": "gh-comment -R test/a --body-file handoff.md issue 1 | rg url"}}]}})
-        records.insert(3, {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "write", "content": f'"url":"{self.entry["handoff_url"]}"\n0', "is_error": False}]}})
-        # This models receipt shapes only; harness identity and safe exit remain Codex.
-        self.transcript.write_text("\n".join(json.dumps(r) for r in records))
-        found, _ = helper.discover_handoff(self.reader, {**self.entry, "handoff_url": None}, ACTOR)
-        self.assertEqual(found["handoff_url"], self.entry["handoff_url"])
-        records = helper.session_record.read_jsonl(self.transcript)
-        records[3]["message"]["content"][0]["tool_use_id"] = "unrelated-read"
-        records[-2]["payload"]["message"] = f"See {self.entry['handoff_url']}\nSafe to exit: yes"
-        self.transcript.write_text("\n".join(json.dumps(r) for r in records))
-        self.reader.paged_json.return_value = []
-        with self.assertRaisesRegex(ValueError, "no authored handoff"):
-            helper.discover_handoff(self.reader, {**self.entry, "handoff_url": None}, ACTOR)
-
-    def summarized_write(self, command, output, started="2025-12-31T23:59:59.400Z", finished="2026-01-01T00:00:01.200Z",
-                         body="Handoff: the lane's passwords moved.\nNext: land it.", posted=None):
-        # Each call starts from the base transcript, so subtests stay independent.
-        self.__dict__.setdefault("base_transcript", self.transcript.read_text())
-        self.transcript.write_text(self.base_transcript)
-        records = helper.session_record.read_jsonl(self.transcript)
-        records[1:1] = [
-            # The session writes the comment body itself before posting it.
-            {"type": "assistant", "timestamp": started, "message": {"content": [
-                {"type": "tool_use", "id": "body", "input": {"file_path": "c.md", "content": body}}]}},
-            {"type": "assistant", "timestamp": started, "message": {"content": [
-                {"type": "tool_use", "id": "write", "input": {"command": command}}]}},
-            # Claude Code repeats tool blocks in untimestamped records.
-            {"type": "api-request-blob", "message": {"content": [
-                {"type": "tool_use", "id": "write", "input": {"command": command}}]}},
-            {"type": "user", "timestamp": finished, "message": {"content": [
-                {"type": "tool_result", "tool_use_id": "write", "content": output, "is_error": False}]}},
-        ]
-        self.transcript.write_text("\n".join(json.dumps(r) for r in records))
-        self.reader.paged_json.return_value = []
-        # The comment helper appends its operation marker to the posted body.
-        self.reader.get_json.return_value = {**self.reader.get_json.return_value,
-                                             "body": f"{posted or body}\n\n<!-- github-skill-operation:0123abcd -->"}
-        return {**self.entry, "handoff_url": None}
-
-    def test_summarized_write_created_during_the_call_is_bound(self):
-        other = "https://github.com/test/a/issues/1#issuecomment-98"
-        summary = "python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get(\"url\"))'"
-        shapes = {
-            # LP3912-D2: heredoc body with an apostrophe, then two writes in one call.
-            "two writes after a heredoc": (
-                f"cat > c.md <<'EOF'\nHandoff: the lane's passwords moved.\nNext: land it.\nEOF\ngh-comment -R test/a --body-file c.md issue 2 | {summary}; "
-                f"gh-comment -R test/a --body-file c.md issue 1 | {summary}",
-                f"confirmed {other}\nconfirmed {self.entry['handoff_url']}"),
-            # CS2069-C1: the write chained with a read whose summary prints a dict.
-            "write chained with a read": (
-                f"gh-comment issue 1 -R test/a --body-file c.md | {summary}; gh-pr.py --repo test/a checks 2 | {summary}",
-                f"True None {self.entry['handoff_url']}\n{{'summary': {{'pendingCount': 3}}}}"),
-            "body on stdin": (
-                f"gh-comment issue 1 --body-file - <<'EOF' | {summary}\nHandoff: the lane's passwords moved.\nNext: land it.\nEOF",
-                f"True None {self.entry['handoff_url']}"),
-            "documented gh-pr.py argument order": (
-                f"gh-pr.py --repo test/a comment 1 --body-file c.md | {summary}",
-                f"True None {self.entry['handoff_url']}"),
-        }
-        for name, (command, output) in shapes.items():
-            with self.subTest(name):
-                found, _ = helper.discover_handoff(self.reader, self.summarized_write(command, output), ACTOR)
-                self.assertEqual(found["handoff_url"], self.entry["handoff_url"])
-
-    def test_another_sessions_comment_created_during_the_call_is_not_bound(self):
-        # Session B posts with the same bot while session A's write is chained with a read.
-        command = "gh-comment issue 1 --body-file c.md >/dev/null; gh api repos/test/a/issues/1/comments"
-        outputs = {"bare URL": self.entry["handoff_url"], "read JSON": json.dumps([{"html_url": self.entry["handoff_url"]}])}
-        bodies = {"names its own session": "B's handoff\nSession: session-B", "names no session": "B's handoff"}
-        for (shape, output), (name, other_body) in itertools.product(outputs.items(), bodies.items()):
-            with self.subTest(shape=shape, body=name):
-                entry = self.summarized_write(command, output)
-                self.reader.get_json.return_value = {**self.reader.get_json.return_value, "body": other_body}
-                with self.assertRaisesRegex(ValueError, "no authored handoff"):
-                    helper.discover_handoff(self.reader, entry, ACTOR)
-
-    def test_text_the_session_typed_but_did_not_post_does_not_bind(self):
-        # Another session's comment, printed by a chained read, matches text this session only searched for or typed.
-        shapes = {
-            "search argument": ("rg -F 'Engineering handoff: ready to merge' notes.md; ", "Engineering handoff: ready to merge"),
-            "loop terminator": ("for f in a b; do echo $f; done; ", "done"),
-        }
-        for name, (prefix, other_body) in shapes.items():
-            with self.subTest(name):
-                entry = self.summarized_write(
-                    f"{prefix}gh-comment issue 1 --body-file c.md >/dev/null; gh api repos/test/a/issues/comments/99 --jq .html_url",
-                    self.entry["handoff_url"], posted=other_body)
-                with self.assertRaisesRegex(ValueError, "no authored handoff"):
-                    helper.discover_handoff(self.reader, entry, ACTOR)
-
-    def test_body_file_edited_after_writing_binds_its_final_text(self):
-        entry = self.summarized_write("gh-comment issue 1 --body-file /repo/c.md | jq -r .url", self.entry["handoff_url"],
-                                      body="Draft handoff", posted="Final handoff")
-        records = helper.session_record.read_jsonl(self.transcript)
-        records.insert(2, {"type": "assistant", "timestamp": "2025-12-31T23:59:59.400Z", "message": {"content": [
-            {"type": "tool_use", "id": "edit", "input": {"file_path": "c.md", "old_string": "Draft", "new_string": "Final"}}]}})
-        self.transcript.write_text("\n".join(json.dumps(r) for r in records))
-        found, _ = helper.discover_handoff(self.reader, entry, ACTOR)
-        self.assertEqual(found["handoff_url"], self.entry["handoff_url"])
-
-    def test_unrelated_command_heredoc_does_not_bind_a_read_comment(self):
-        commands = (
-            "rg -F -f - notes.md <<'EOF'\nOther handoff\nEOF\n"
-            "gh-comment issue 1 --body-file c.md >/dev/null; gh api repos/test/a/issues/1/comments",
-            "gh-comment issue 1 3<<'EOF' >/dev/null\nOther handoff\nEOF\n"
-            "gh api repos/test/a/issues/1/comments",
-        )
-        for command in commands:
-            with self.subTest(command=command):
-                entry = self.summarized_write(command, self.entry["handoff_url"], posted="Other handoff")
-                with self.assertRaisesRegex(ValueError, "no authored handoff"):
-                    helper.discover_handoff(self.reader, entry, ACTOR)
-
-    def test_different_absolute_body_paths_do_not_bind_by_basename(self):
-        entry = self.summarized_write(
-            "gh-comment issue 1 --body-file /tmp/c.md >/dev/null; gh api repos/test/a/issues/1/comments",
-            self.entry["handoff_url"], posted="Other handoff")
-        records = helper.session_record.read_jsonl(self.transcript)
-        records[1]["message"]["content"][0]["input"].update(file_path="/repo/notes/c.md", content="Other handoff")
-        self.transcript.write_text("\n".join(json.dumps(r) for r in records))
-        with self.assertRaisesRegex(ValueError, "no authored handoff"):
-            helper.discover_handoff(self.reader, entry, ACTOR)
-
-    def test_literal_shell_variable_body_path_binds(self):
-        entry = self.summarized_write(
-            'body=/tmp/c.md; gh-comment issue 1 --body-file "$body" | jq -r .comment.url',
-            self.entry["handoff_url"])
-        records = helper.session_record.read_jsonl(self.transcript)
-        records[1]["message"]["content"][0]["input"]["file_path"] = "/tmp/c.md"
-        self.transcript.write_text("\n".join(json.dumps(r) for r in records))
-        found, _ = helper.discover_handoff(self.reader, entry, ACTOR)
-        self.assertEqual(found["handoff_url"], self.entry["handoff_url"])
-
-    def test_recorded_workdir_resolves_relative_body_paths(self):
-        for orchestrated, cwd in itertools.product((False, True), ("/repo/notes", "/tmp")):
-            with self.subTest(orchestrated=orchestrated, cwd=cwd):
-                entry = self.summarized_write("gh-comment issue 1 --body-file c.md", self.entry["handoff_url"])
-                records = helper.session_record.read_jsonl(self.transcript)
-                records[1]["message"]["content"][0]["input"]["file_path"] = "/repo/notes/c.md"
-                args = {"cmd": "gh-comment issue 1 --body-file c.md", "workdir": cwd}
-                # Replace both copies of the native call, retaining its result.
-                records[2] = {"timestamp": records[2]["timestamp"], "payload": {
-                    "type": "custom_tool_call" if orchestrated else "function_call", "call_id": "write",
-                    "input" if orchestrated else "arguments": (
-                        f'await tools.exec_command({{cmd: {json.dumps(args["cmd"])}, workdir: {json.dumps(cwd)}}})'
-                        if orchestrated else json.dumps(args))}}
-                records[3] = {"payload": {"type": "function_call_output", "call_id": "write", "output": self.entry["handoff_url"]}}
-                del records[4]
-                self.transcript.write_text("\n".join(json.dumps(r) for r in records))
-                if cwd == "/repo/notes":
-                    found, _ = helper.discover_handoff(self.reader, entry, ACTOR)
-                    self.assertEqual(found["handoff_url"], self.entry["handoff_url"])
-                else:
-                    with self.assertRaisesRegex(ValueError, "no authored handoff"):
-                        helper.discover_handoff(self.reader, entry, ACTOR)
-
-    def test_relative_body_path_without_recorded_cwd_is_ambiguous(self):
-        entry = self.summarized_write("gh-comment issue 1 --body-file c.md", self.entry["handoff_url"])
-        records = helper.session_record.read_jsonl(self.transcript)
-        del records[0]["payload"]["cwd"]
-        self.transcript.write_text("\n".join(json.dumps(r) for r in records))
-        with self.assertRaisesRegex(ValueError, "no authored handoff"):
-            helper.discover_handoff(self.reader, entry, ACTOR)
-
-    def test_body_path_variable_must_be_known_and_expandable(self):
-        for path in ("'$body'", '"$unknown"'):
-            with self.subTest(path=path):
-                entry = self.summarized_write(
-                    f"body=/repo/c.md; gh-comment issue 1 --body-file {path}", self.entry["handoff_url"])
-                with self.assertRaisesRegex(ValueError, "no authored handoff"):
-                    helper.discover_handoff(self.reader, entry, ACTOR)
-
-    def test_untracked_redirect_contents_do_not_preserve_an_old_file_body(self):
-        for command in ("printf changed > c.md", "cat other.md > c.md <<'EOF'\nOther handoff\nEOF"):
-            with self.subTest(command=command):
-                entry = self.summarized_write(
-                    f"{command}\ngh-comment issue 1 --body-file c.md >/dev/null; gh api repos/test/a/issues/1/comments",
-                    self.entry["handoff_url"])
-                with self.assertRaisesRegex(ValueError, "no authored handoff"):
-                    helper.discover_handoff(self.reader, entry, ACTOR)
-
-    def test_codex_orchestrated_heredoc_body_is_bound(self):
-        # Codex functions.exec records the shell command as an escaped JavaScript string literal.
-        command = "cat > c.md <<'EOF'\nEngineering handoff\nReady for merge\nEOF\ngh-comment issue 1 --body-file c.md | jq -r .comment.url"
-        records = helper.session_record.read_jsonl(self.transcript)
-        records[1:1] = [
-            {"timestamp": "2025-12-31T23:59:59.400Z", "payload": {"type": "custom_tool_call", "call_id": "write",
-                "input": f"await tools.exec_command({{cmd: {json.dumps(command)}}})"}},
-            {"timestamp": "2026-01-01T00:00:01.200Z", "payload": {"type": "custom_tool_call_output", "call_id": "write",
-                "output": f"{self.entry['handoff_url']}\n{{}}"}},
-        ]
-        self.transcript.write_text("\n".join(json.dumps(r) for r in records))
-        self.reader.paged_json.return_value = []
-        self.reader.get_json.return_value = {**self.reader.get_json.return_value, "body": "Engineering handoff\nReady for merge"}
-        found, _ = helper.discover_handoff(self.reader, {**self.entry, "handoff_url": None}, ACTOR)
-        self.assertEqual(found["handoff_url"], self.entry["handoff_url"])
-
-    def test_a_written_comment_that_names_another_session_is_not_its_handoff(self):
-        # For example, a Supervisor attestation about the session it closed.
-        entry = self.summarized_write("gh-comment issue 1 --body-file c.md", self.entry["handoff_url"],
-                                      body="Closed session\nSession: session-B\nSafe to exit: yes")
-        with self.assertRaisesRegex(ValueError, "no authored handoff"):
-            helper.discover_handoff(self.reader, entry, ACTOR)
-
-    def test_a_read_before_the_write_in_one_call_does_not_hide_the_write(self):
-        summary = "python3 -c 'import json,sys; print(json.load(sys.stdin)[\"comment\"][\"url\"])'"
-        entry = self.summarized_write(f"gh-pr.py --repo test/a checks 2; gh-comment issue 1 --body-file c.md | {summary}",
-                                      f"{{'summary': {{'pendingCount': 3}}}}\n{self.entry['handoff_url']}")
-        found, _ = helper.discover_handoff(self.reader, entry, ACTOR)
-        self.assertEqual(found["handoff_url"], self.entry["handoff_url"])
-
-    def test_url_printed_by_a_write_but_created_outside_the_call_is_not_bound(self):
-        # A read chained into the write may print an older shared-bot comment, bare or in JSON.
-        for output in (self.entry["handoff_url"], f"{self.entry['handoff_url']}\n{{}}"):
-            with self.subTest(output=output):
-                entry = self.summarized_write(
-                    "gh-comment issue 1 --body-file c.md >/dev/null; gh api repos/test/a/issues/comments/99 --jq .html_url",
-                    output, started="2026-01-01T00:00:30Z", finished="2026-01-01T00:00:35Z")
-                with self.assertRaisesRegex(ValueError, "no authored handoff"):
-                    helper.discover_handoff(self.reader, entry, ACTOR)
 
     def test_unplanned_active_inventory_followup_is_not_an_all_clear(self):
         entry = {**self.entry, "_inventory": True, "safe_exit_yes": True, "still_running": False,
@@ -761,68 +864,48 @@ class ReleaseTests(unittest.TestCase):
             self.assertFalse(report["claims"])
             self.assertTrue(report["issue_refusals"])
 
-    def test_read_description_does_not_make_an_old_receipt_a_write(self):
-        records = helper.session_record.read_jsonl(self.transcript)
-        records.insert(1, {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "read", "input": {
-            "command": "gh api repos/test/a/issues/comments/99 --jq .html_url", "description": "Verify gh-comment issue 1 posted"}}]}})
-        records.insert(2, {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "read", "content": self.entry["handoff_url"]}]}})
-        self.transcript.write_text("\n".join(json.dumps(r) for r in records))
-        self.reader.paged_json.return_value = []
-        with self.assertRaisesRegex(ValueError, "no authored handoff"):
-            helper.discover_handoff(self.reader, {**self.entry, "handoff_url": None}, ACTOR)
-
-    def test_malformed_historic_command_and_saved_receipt_are_not_writes(self):
-        records = helper.session_record.read_jsonl(self.transcript)
-        records.insert(1, {"payload": {"type": "custom_tool_call", "call_id": "read",
-            "input": 'await tools.exec_command({cmd: "bad\ncommand"})'}})
-        records.insert(2, {"payload": {"type": "function_call", "call_id": "read",
-            "arguments": json.dumps({"cmd": "cat gh-comment issue 1"})}})
-        records.insert(3, {"payload": {"type": "function_call_output", "call_id": "read",
-            "output": json.dumps({"comment_action": "created", "comment": {"url": self.entry["handoff_url"]}})}})
-        self.transcript.write_text("\n".join(json.dumps(r) for r in records))
-        self.reader.paged_json.return_value = []
-        with self.assertRaisesRegex(ValueError, "no authored handoff"):
-            helper.discover_handoff(self.reader, {**self.entry, "handoff_url": None}, ACTOR)
-
-    def test_truncated_orchestration_with_many_quotes_does_not_hang(self):
-        records = helper.session_record.read_jsonl(self.transcript)
-        records.insert(1, {"payload": {"type": "custom_tool_call", "call_id": "truncated",
-            "input": 'await tools.exec_command({cmd: ' + '""' * 80}})
-        self.transcript.write_text("\n".join(json.dumps(r) for r in records))
-        # Keep a regressed parser from hanging the test runner indefinitely.
-        script = """
-import json, sys
-from unittest.mock import Mock
-import release_session_claims as helper
-try:
-    helper.discover_handoff(Mock(), json.loads(sys.argv[1]), sys.argv[2])
-except ValueError as error:
-    assert 'no authored handoff' in str(error), error
-else:
-    raise AssertionError('truncated command cannot establish authorship')
-"""
-        result = subprocess.run([sys.executable, "-c", script,
-                                 json.dumps({**self.entry, "handoff_url": None}), ACTOR],
-                                cwd=Path(helper.__file__).parent, capture_output=True, text=True, timeout=10)
-        self.assertEqual(result.returncode, 0, result.stderr)
-
     def test_interrupted_handoff_uses_exact_inventory_ownership_context(self):
-        entry = {**self.entry, "handoff_url": None, "_inventory_claims": [self.inventory_row()]}
+        entry = {**self.entry, "handoff_url": None, "_backfill": True, "_inventory": True,
+                 "_inventory_claims": [self.inventory_row()]}
+        self.source["issue_url"] = "https://api.github.com/repos/test/a/issues/1"
         self.reader.paged_json.return_value = [self.source]
-        self.reader.get_json.return_value = {**self.source, "issue_url": "https://api.github.com/repos/test/a/issues/1"}
-        found, _ = helper.discover_handoff(self.reader, entry, ACTOR)
+        self.reader.get_json.return_value = dict(self.source)
+        found, _ = helper.inventory_source_context(self.reader, entry, ACTOR)
         self.assertEqual(found["handoff_url"], "https://github.com/test/a/issues/1#issuecomment-1")
         self.assertIn("ownership record", found["_handoff_provenance"])
         self.source["user"]["login"] = "other-identity"
-        with self.assertRaisesRegex(ValueError, "no authored handoff"):
-            helper.discover_handoff(self.reader, entry, ACTOR)
+        with self.assertRaises(ValueError):
+            helper.inventory_source_context(self.reader, entry, ACTOR)
+
+    def test_inventory_source_context_requires_exact_backfill_source_and_unchanged_readback(self):
+        source = {**self.source, "issue_url": "https://api.github.com/repos/test/a/issues/1"}
+        entry = {**self.entry, "handoff_url": None, "_backfill": True, "_inventory": True,
+                 "_inventory_claims": [self.inventory_row()]}
+        self.reader.paged_json.return_value = [source]
+        self.reader.get_json.return_value = source
+        for field in ("_backfill", "_inventory"):
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                helper.inventory_source_context(self.reader, {**entry, field: False}, ACTOR)
+        cases = [[], [{**source, "id": 2}], [{**source, "user": {"login": "foreign[bot]"}}],
+                 [{**source, "body": source["body"].replace("source-session", "other-session")}],
+                 [{**source, "updated_at": "2026-01-01T00:03:00Z"}]]
+        for comments in cases:
+            with self.subTest(comments=comments), self.assertRaises(ValueError):
+                self.reader.paged_json.return_value = comments
+                helper.inventory_source_context(self.reader, entry, ACTOR)
+        self.reader.paged_json.return_value = [source]
+        for observed in ({**source, "issue_url": "https://api.github.com/repos/test/a/issues/2"},
+                         {**source, "body": source["body"] + " changed"}):
+            with self.subTest(observed=observed), self.assertRaises(ValueError):
+                self.reader.get_json.return_value = observed
+                helper.inventory_source_context(self.reader, entry, ACTOR)
 
     def test_inventory_repo_scope_preserves_excluded_rows(self):
         log = self.root / "inventory.json"
         log.write_text(json.dumps([self.inventory_row(), self.inventory_row(repo="test/b", claim_comment_id=2)]))
         argv = ["helper", "backfill", "--closed-log", str(log), "--supervisor-session", "supervisor",
                 "--owner", "test", "--repo", "test/a", "--checkout-root", str(self.root),
-                "--confirm-session-ended", "--verified-handoff", "--transcript-root", str(self.root)]
+                "--confirm-session-ended", "--transcript-root", str(self.root)]
         output = io.StringIO()
         with patch.object(helper.sys, "argv", argv), \
                 patch.object(helper.github_identity, "automation_login", return_value=ACTOR), \
@@ -845,18 +928,6 @@ else:
         self.assertEqual(report["claims"][0]["release_preflight"]["status"], "refused")
         self.assertTrue(report["issue_refusals"])
 
-    def test_shared_bot_summary_needs_exact_native_id_and_original_timestamp(self):
-        bound = {**comment(10, "Engineering handoff\nSession: source-session"),
-                 "html_url": "https://github.com/test/a/issues/1#issuecomment-10",
-                 "issue_url": "https://api.github.com/repos/test/a/issues/1"}
-        self.reader.paged_json.return_value = [bound, comment(11, "Same shared bot; another session")]
-        self.reader.get_json.return_value = bound
-        row = {**self.entry, "handoff_url": None, "_inventory_claims": [self.inventory_row()]}
-        found, _ = helper.discover_handoff(self.reader, row, ACTOR)
-        self.assertEqual(found["handoff_url"], bound["html_url"])
-        bound["updated_at"] = "2026-01-01T00:03:00Z"
-        with self.assertRaisesRegex(ValueError, "no authored handoff"):
-            helper.discover_handoff(self.reader, row, ACTOR)
 
     def test_inventory_names_retained_pr_in_dry_run_and_new_head_refuses(self):
         entry = {**self.entry, "_inventory": True, "safe_exit_yes": True, "still_running": False,
@@ -921,6 +992,26 @@ else:
         with self.assertRaisesRegex(ValueError, "identity changed"):
             helper.record_closure(log, {**self.entry, "pid": 789}, "supervisor")
 
+    def test_closure_selects_its_source_and_preserves_unrelated_rows(self):
+        log = self.root / "selected-close.json"
+        unrelated = {"session_id": "unrelated-session", "harness": "invalid"}
+        for previous in ([], [self.entry]):
+            with self.subTest(existing=bool(previous)):
+                log.write_text(json.dumps([*previous, unrelated]))
+                closed = helper.record_closure(log, self.entry, "supervisor")
+                self.assertEqual([row for row in json.loads(log.read_text())
+                                  if row.get("session_id") != self.entry["session_id"]], [unrelated])
+                self.assertEqual(helper.record_closure(log, self.entry, "supervisor")["ended_at"], closed["ended_at"])
+        for rows in ({}, [None], [{}], [{"session_id": ""}],
+                     [self.entry, self.entry], [{**self.entry, "harness": "invalid"}],
+                     [{k: v for k, v in self.entry.items() if k != "transcript"}]):
+            with self.subTest(invalid=rows):
+                log.write_text(json.dumps(rows))
+                before = log.read_bytes()
+                with self.assertRaises((ValueError, TypeError)):
+                    helper.record_closure(log, self.entry, "supervisor")
+                self.assertEqual(log.read_bytes(), before)
+
     def test_optional_admission_proof_failure_does_not_stop_verified_closure(self):
         log = self.root / "closed.json"
         entry = {**self.entry, "codex_home": str(self.root)}
@@ -945,15 +1036,12 @@ else:
         with self.transcript.open("a") as stream:
             for payload in ({"type": "agent_message", "message": "Safe to exit: yes"}, {"type": "task_complete"}):
                 stream.write(json.dumps({"timestamp": datetime.now(timezone.utc).isoformat(), "payload": payload}) + "\n")
-        # This test isolates generation matching after independent native
-        # recovery. Full pending resolution is exercised with a real daemon fixture.
         with helper.closure.ownership(SOURCE["session"]):
             helper.closure.set_action_pending(SOURCE["session"], False)
         with self.assertRaises(ValueError):
             helper.record_closure(log, self.entry, "supervisor")
         replacement = {**self.entry, **metadata, "pid": metadata["launch_pid"]}
         closed = helper.record_closure(log, replacement, "supervisor")
-        self.assertTrue(helper.closure.idle_eligible(closed))
         self.assertEqual(closed["launch_generation"], metadata["launch_generation"])
 
     def test_finish_uses_shared_default_and_preview_creates_nothing(self):
@@ -962,7 +1050,7 @@ else:
         for apply in (False, True):
             argv = ["helper", "finish", "--ledger", str(ledger), "--session-id", SOURCE["session"],
                     "--supervisor-session", "supervisor", "--owner", "test", "--checkout-root", str(self.root),
-                    "--confirm-session-ended", "--verified-handoff", "--transcript-root", str(self.root)]
+                    "--confirm-session-ended", "--transcript-root", str(self.root)]
             if apply:
                 argv.append("--apply")
             with patch.object(helper.sys, "argv", argv), \
@@ -986,63 +1074,12 @@ else:
         self.transcript.rename(sessions / self.transcript.name)
         self.transcript = sessions / self.transcript.name
         self.entry.update(transcript=str(self.transcript), codex_home=str(self.root))
-        self.enterContext(patch.object(github_plan_sessions, "codex_homes", return_value=[self.root.resolve()]))
+        self.enterContext(patch.object(github_plan_sessions, "configured_homes", return_value=[self.root.resolve()]))
         self.enterContext(patch.object(helper.closure, "host_identity", return_value={"host": "fixture", "boot": "boot-a", "uid": 1}))
         log = self.root / "closed.json"
         self.enterContext(patch.object(helper.closure, "closed_log", return_value=log))
         helper.record_closure(log, self.entry, "supervisor")
         return log
-
-    def test_shared_receipt_is_fresh_read_only_evidence(self):
-        log = self.shared_closure()
-        before = log.read_bytes(), log.stat().st_mtime_ns
-        result = helper.closure.verified_record(SOURCE["session"], self.root)
-        self.assertEqual(result["session_id"], SOURCE["session"])
-        self.assertEqual((log.read_bytes(), log.stat().st_mtime_ns), before)
-        with patch.object(helper, "inventory", return_value=[(123, "another-tty", "unrelated-process")]):
-            self.assertIsNone(helper.closure.verified_record(SOURCE["session"], self.root))
-        with patch.object(helper, "inventory", return_value=[(456, "other-tty", "codex --remote unix:///other")]):
-            self.assertIsNotNone(helper.closure.verified_record(SOURCE["session"], self.root))
-
-    def test_shared_receipt_refuses_resumed_and_rewritten_transcripts(self):
-        self.shared_closure()
-        original = self.transcript.read_text()
-        self.transcript.write_text(original + json.dumps({"timestamp": "2026-01-01T00:01:30Z",
-            "payload": {"type": "user_message", "message": "resume"}}) + "\n")
-        self.assertIsNone(helper.closure.verified_record(SOURCE["session"], self.root))
-        self.transcript.write_text(original)
-        # Even a rewrite restoring the old final verdict invalidates the receipt.
-        self.assertIsNone(helper.closure.verified_record(SOURCE["session"], self.root))
-
-    def test_new_transcript_copy_invalidates_shared_receipt(self):
-        import github_plan_sessions
-        self.shared_closure()
-        other = self.root / "other-account"
-        archived = other / "archived_sessions"
-        archived.mkdir(parents=True)
-        (archived / self.transcript.name).write_bytes(self.transcript.read_bytes())
-        with patch.object(github_plan_sessions, "codex_homes", return_value=[self.root.resolve(), other.resolve()]):
-            self.assertIsNone(helper.closure.verified_record(SOURCE["session"], self.root))
-
-    def test_shared_receipt_refuses_home_boot_malformed_and_missing_evidence(self):
-        log = self.shared_closure()
-        original = log.read_text()
-        self.assertIsNone(helper.closure.verified_record(SOURCE["session"], self.root / "another-home"))
-        with patch.object(helper.closure, "host_identity", return_value={"host": "fixture", "boot": "boot-b", "uid": 1}):
-            self.assertIsNone(helper.closure.verified_record(SOURCE["session"], self.root))
-        saved = json.loads(original)[0]
-        malformed = [json.dumps([{**saved, "closure_evidence": value}]) for value in (None, "invalid", [])]
-        malformed.append(json.dumps([{**saved, "pid": None, "_inventory": True,
-                                      "safe_exit_yes": True, "still_running": False}]))
-        for value in ("{", "{}", "[null]", "[]", json.dumps([saved, saved]), *malformed):
-            log.write_text(value)
-            self.assertIsNone(helper.closure.verified_record(SOURCE["session"], self.root))
-        log.write_text(original)
-        log.chmod(0o644)
-        self.assertIsNone(helper.closure.verified_record(SOURCE["session"], self.root))
-        log.unlink()
-        self.assertIsNone(helper.closure.verified_record(SOURCE["session"], self.root))
-        self.assertFalse(log.exists())
 
     def test_cross_repository_discovery_includes_closed_issue_comments(self):
         def paged(path, **kwargs):
@@ -1096,10 +1133,9 @@ else:
         (self.root / "closed.json").write_text(json.dumps(entries))
         argv = ["helper", "backfill", "--closed-log", str(self.root / "closed.json"),
                 "--owner", "test", "--checkout-root", str(self.root), "--supervisor-session", "supervisor",
-                "--confirm-session-ended", "--verified-handoff", "--transcript-root", str(self.root)]
+                "--confirm-session-ended", "--transcript-root", str(self.root)]
         output = io.StringIO()
         with patch.object(helper.sys, "argv", argv), patch.object(helper.github_identity, "automation_login", return_value=ACTOR), \
-                patch.object(helper.session_record, "load_ledger", return_value=entries), \
                 patch.object(helper, "discover", return_value=([], ["test/a"])), \
                 patch.object(helper, "release_session", return_value={"session_id": "source-session", "claims": []}) as run, \
                 contextlib.redirect_stdout(output):
@@ -1138,12 +1174,54 @@ else:
         found = helper.active_claims(self.reader, "test/a", 1, SOURCE["session"], ACTOR)
         self.assertEqual(found[0][1], [2])
 
-    def test_related_alias_without_exact_session_or_before_source_is_not_released(self):
+    def test_related_alias_without_exact_session_is_not_released(self):
         for body in ("Claimed by trial", "Claimed by trial\nSession: another-session"):
             self.reader.paged_json.return_value = [self.source, comment(2, body)]
             self.assertEqual(helper.active_claims(self.reader, "test/a", 1, SOURCE["session"], ACTOR)[0][1], [])
-        self.reader.paged_json.return_value = [comment(2, "Claimed by trial\nSession: source-session"), self.source]
-        self.assertEqual(helper.active_claims(self.reader, "test/a", 1, SOURCE["session"], ACTOR)[0][1], [])
+
+    def test_earlier_exact_native_hand_claim_uses_issue_and_pr_backfill_release_gate(self):
+        source = {**self.source, "created_at": "2026-01-01T00:00:20Z", "updated_at": "2026-01-01T00:00:20Z"}
+        hand = {**comment(3, "Claimed by trial\nSession: source-session"),
+                "created_at": "2026-01-01T00:00:10Z", "updated_at": "2026-01-01T00:00:10Z"}
+        comments = [hand, source]
+        self.reader.paged_json.side_effect = lambda path, **_kw: [] if path.endswith("/pulls") else comments
+        found = helper.active_claims(self.reader, "test/a", 1, SOURCE["session"], ACTOR)
+        self.assertEqual([(c["id"], related, unresolved) for c, related, unresolved in found], [(1, [3], [])])
+        rows = [self.inventory_row(handoff_url=self.entry["handoff_url"]),
+                self.inventory_row(claim_comment_id=3, handoff_url=self.entry["handoff_url"])]
+        entries, errors = helper.backfill_inventory.load(rows, {"codex": [str(self.root)]})
+        self.assertFalse(errors)
+        handoff = dict(self.reader.get_json.return_value)
+        for pr in (False, True):
+            with self.subTest(pr=pr):
+                issue = {"number": 1, "body": "", **({"pull_request": {}} if pr else {})}
+                self.reader.get_json.side_effect = lambda path, **_kw: handoff if "/issues/comments/" in path else issue
+                with patch.object(helper, "comment") as write, patch.object(helper, "run_release") as command:
+                    report = helper.release_session(self.reader, {**entries[0], "_backfill": True}, ACTOR,
+                        "supervisor", [("test/a", 1)], self.root, False)
+                self.assertFalse(report["issue_refusals"])
+                if pr:
+                    argv = report["pr_claim_handoffs"][0]["release_argv"]
+                    at = argv.index("--related-claim-comment")
+                    self.assertEqual(argv[at + 1], str(hand["id"]))
+                else:
+                    self.assertEqual(report["claims"][0]["related_claim_comments"], [hand["id"]])
+                write.assert_not_called()
+                command.assert_not_called()
+
+    def test_earlier_hand_claim_grouping_keeps_author_worker_native_and_unstructured_checks(self):
+        cases = [comment(3, "Claimed by trial"), comment(3, "Claimed by trial\nSession: other-session"),
+                 comment(3, "Claimed by other-worker\nSession: source-session"),
+                 comment(3, "Claimed by trial\nSession: source-session", author="foreign[bot]"),
+                 comment(3, helper.claim.marker(SOURCE))]
+        for hand in cases:
+            with self.subTest(hand=hand):
+                self.reader.paged_json.return_value = [hand, self.source]
+                try:
+                    found = helper.active_claims(self.reader, "test/a", 1, SOURCE["session"], ACTOR)
+                except ValueError:
+                    continue
+                self.assertNotIn(hand["id"], [identifier for _source, related, _unresolved in found for identifier in related])
 
     def test_unavailable_or_foreign_handoff_is_not_accepted(self):
         self.reader.get_json.return_value["user"]["login"] = "human"
@@ -1223,7 +1301,7 @@ else:
     def test_deleted_attestation_restores_claim_and_does_not_poison_other_session(self):
         evidence = {**comment(99, "Closed session source-session\nEnded at: 2026-01-01T00:02:00Z\nSafe to exit: yes"),
                     "created_at": "2026-01-01T00:04:00Z", "updated_at": "2026-01-01T00:04:00Z"}
-        body = helper.release.prepare_release(self.source, evidence, [self.source], {"sessions": [], "worktrees": []},
+        body = helper.release.prepare_release(self.source, evidence, [self.source], {"worktrees": []},
              actor=ACTOR, role="supervisor", releaser_session="supervisor", evidence_url=self.entry["handoff_url"], retained_prs=[], related=[])
         self.reader.paged_json.return_value = [self.source, comment(2, body)]
         self.reader.get_json.side_effect = helper.GitHubReadError("deleted", result=SimpleNamespace(status=404), diagnostics={})
@@ -1247,7 +1325,7 @@ else:
         ledger.write_text(json.dumps([self.entry]))
         argv = ["helper", "finish", "--ledger", str(ledger), "--closed-log", str(log), "--session-id", "source-session",
                 "--owner", "test", "--checkout-root", str(self.root), "--supervisor-session", "supervisor",
-                "--confirm-session-ended", "--verified-handoff", "--transcript-root", str(self.root), "--apply"]
+                "--confirm-session-ended", "--transcript-root", str(self.root), "--apply"]
         with patch.object(helper.sys, "argv", argv), patch.object(helper.github_identity, "automation_login", return_value=ACTOR), \
                 patch.object(helper, "discover", return_value=([], ["test/a"])), \
                 patch.object(helper, "release_session", return_value={"session_id": "source-session", "claims": []}) as run, \

@@ -6,18 +6,8 @@ optional and soft-failing, explicit write actions fail closed, and bounded
 admin reads also fail closed when required configuration or authorization is
 missing. Command examples run from the `launchplane` skill directory.
 
-Projected operation paths are resolved from the vendored
-`agent-operator-contract.json` through `launchplane_contract.py`. Run
-`check-agent-operator-contract.py` to verify schema, semantic digest,
-public-safety, operation semantics, protected workflows, invariant coverage, and
-helper bindings without network access. This is local consistency evidence, not
-proof of upstream freshness.
-
-Commands listed under `LOCAL_EXTENSION_ROUTES` in
-`scripts/launchplane_contract.py` are bounded local extensions because their
-routes are not in the current vendored projection. The conformance gate fails
-if those routes later appear upstream so migration cannot leave duplicate route
-authorities behind.
+For operation authority and local HTTP bindings, read
+[the producer contract and caller bindings](agent-operator-contract.md).
 
 The helper lives at `scripts/launchplane-write-action.py`.
 
@@ -31,14 +21,12 @@ including an external link to another external file, is accepted.
 ## Application testing private ingress
 
 `testing-private-ingress-dry-run`, `testing-private-ingress-apply` and
-`testing-private-ingress-readback` call the vendored
+`testing-private-ingress-readback` call the producer's
 `prepare_testing_private_ingress` service API. The producer advertises a
 `service_api` surface, and this installed caller retains that surface and its
 existing Director-agent identity dependency. It adds no permission or provider
 fallback. Source contract agreement does not prove deployed compatibility;
 confirm normal service delivery before operational use.
-`SERVICE_API_HELPER_COMMANDS` validates these explicit bindings against that
-producer surface and its modes without rewriting the vendored advertisement.
 
 Each command requires `--payload-file /absolute/private/request.json`. Its
 exact fields are `product`, `context`, `instance` (only `testing`),
@@ -95,16 +83,14 @@ source and caller delivery.
 ## Disposable lane observations
 
 `disposable-lane-inspect`, `disposable-lane-collect` and
-`disposable-lane-record` call the vendored `record_disposable_lane_safety`
+`disposable-lane-record` call the producer's `record_disposable_lane_safety`
 service API with the existing Director-agent identity. They add no permission
-or provider fallback. The `prepare-rebuild` mode is not wrapped. An observation
+or provider fallback. An observation
 is short-lived safety evidence for one lane. It is never an access grant.
 
-Clearing an observation is not offered. The service's clear mode checks
-neither a current observation binding nor lane ownership, so a local check of
-saved inspect output cannot stop it from deleting a protective observation.
-The helper adds clear only after Launchplane enforces both before it clears
-([launchplane#4111](https://github.com/cbusillo/launchplane/issues/4111)).
+Clear and prepare-rebuild have no installed catalog command. For the producer's
+supported modes and requirements, read
+[the producer contract and caller bindings](agent-operator-contract.md).
 
 Each command requires `--payload-file /absolute/private/request.json` outside
 the repository. Its fields are `product`, `context`, `instance` and an optional
@@ -193,7 +179,7 @@ nonzero exit.
 ## Dokploy inventory read
 
 `dokploy-inventory-read --limit 25` reads `GET /v1/dokploy/inventory`
-using existing private admin configuration. This bounded local extension requires
+using existing private admin configuration. This bounded helper binding requires
 the service's existing global `dokploy_target.inspect` read boundary; it creates
 no grant. It includes empty/untracked projects, environments and targets, without
 depending on product records. All provider operations behind the service are GETs.
@@ -225,7 +211,7 @@ uv run scripts/launchplane-write-action.py context-secrets-read --context exampl
 uv run scripts/launchplane-write-action.py instance-secrets-read --context example-site --instance testing
 ```
 
-These four local extensions use the existing authenticated GET routes under
+These four helper bindings use the existing authenticated GET routes under
 `/v1/contexts/{context}` and `/v1/contexts/{context}/instances/{instance}`.
 They add no permission, workflow fallback or direct storage access. A denial
 retains its error code and trace, with no second request.
@@ -261,7 +247,7 @@ policy changes here.
 and the service's standing `merge_train.policy_targets` permission. Omitting
 `--repo` resolves the origin remote in `--repo-root` (default current directory).
 No grant, credential resolution, policy mutation or train entry occurs.
-The endpoint is a bounded local extension, absent from the vendored projection.
+The endpoint has a bounded local helper binding.
 
 On success, `status=available` and `result` contains `source=launchplane`,
 `status=enrolled|not_enrolled`, boolean `enabled`, per-branch `targets`
@@ -284,7 +270,7 @@ A read grants no merge authority.
 `odoo-addon-settings-dry-run` and `odoo-addon-settings-apply` call
 `POST /v1/product-config/odoo-addon-settings/apply` to set an Odoo lane's
 Shopify addon settings on its instance-override record. The Launchplane
-operation is `apply_odoo_addon_settings`, projected by the vendored contract.
+operation is `apply_odoo_addon_settings`, defined by the producer contract.
 
 - The private payload file, outside the repository, holds `schema_version`,
   `product`, `context`, `instance`, `reason`, and a `shopify` block with
@@ -304,13 +290,34 @@ operation is `apply_odoo_addon_settings`, projected by the vendored contract.
 - Apply changes the record, not the database. Check `read_back_matches`, then
   run Odoo post-deploy for the lane and verify the settings there.
 
+## Odoo website settings
+
+`odoo-website-settings-dry-run` and `odoo-website-settings-apply` call
+`POST /v1/product-config/odoo-website-settings/apply` to prepare a product's
+production website settings. The Launchplane operation is
+`apply_odoo_website_settings`, defined by the producer contract.
+
+- The private payload file holds `product`, `context`, `reason`, optional
+  `instance` (only `prod`), and `website_settings`: `artifact_id` naming the
+  product's current testing artifact plus `settings` with `website_id`,
+  `public_origin` (HTTPS), `public_indexing_enabled`, `google_analytics_key`,
+  `cookies_bar` and `block_third_party_domains`. Unknown fields, a non-HTTPS
+  origin and collection-only rollback are refused locally. Launchplane checks
+  the origin, artifact and analytics consent rules.
+- `website_settings: null` withdraws the pending intent.
+- Apply uses the same gates as addon settings: `--reviewed-dry-run`,
+  `--expected-plan-digest`, `--dry-run-evidence-file` for the same product and
+  context, and `--idempotency-key`.
+- Preparation writes inert intent and changes no Odoo database. The
+  Client-accepted release applies it.
+
 ## Integration allowances
 
 `integration-allowances-read`, `integration-allowances-dry-run` and
 `integration-allowances-apply` call `GET /v1/product-config/integration-allowances`
 and `POST /v1/product-config/integration-allowances/apply`. A non-production lane
 may hold an integration's settings only when an allowance recorded here says why.
-These routes are local extensions until the vendored artifact is refreshed.
+These routes have installed local helper bindings.
 
 - `integration-allowances-read --product --context --instance` returns the lane's
   allowances. Use the product's canonical id; the service refuses a lane the
@@ -382,8 +389,7 @@ authorize live apply or grant the service's plan/apply permissions.
 `testing-hold-read`, `testing-hold-dry-run` and `testing-hold-apply` call
 `GET /v1/product-config/testing-hold` and
 `POST /v1/product-config/testing-hold/apply`. While site staff test a product's
-testing lane, the hold keeps event-driven deploys off it. These routes are local
-extensions until the vendored artifact is refreshed.
+testing lane, the hold keeps event-driven deploys off it. These routes have installed local helper bindings.
 
 - `testing-hold-read --product --context --instance` returns the lane's hold or
   `null`.
@@ -417,7 +423,7 @@ extensions until the vendored artifact is refreshed.
 `GET /v1/products/{product}/environments/{environment}` and
 `GET /v1/products/{product}/activity`; `preview-history-read` is below. They let an agent confirm what a
 merge-triggered deploy shipped without an admin signing in. These routes are
-local extensions until the vendored artifact is refreshed.
+installed local helper bindings.
 
 - `product-environment-read --product --environment` returns the lane's
   identity, `target.artifact` (artifact id, source commit, image repository and
@@ -465,7 +471,7 @@ local extensions until the vendored artifact is refreshed.
   An omitted field reads as `held`; any other value or type fails the whole
   read with `invalid_response`. A malformed or secret-looking value fails the
   whole read.
-- The shared ready-handoff acceptance reader uses the bounded local-extension
+- The shared ready-handoff acceptance reader uses the bounded helper
   `repo-product-mapping-read` route internally to resolve a repository's product
   before `product-profile-read`. The dedicated mapping read is GET-only; it is
   not an exposed write-action CLI command. An absent or ambiguous mapping,
@@ -643,8 +649,7 @@ local extensions until the vendored artifact is refreshed.
 call `POST /v1/product-profiles/repository-identity/apply`. The service copies
 `repository_id` and `repository_owner_id` into the product profile from the
 current tracked repository inventory record; the caller never supplies ids, and a
-recorded identity is never overwritten. This route is a local extension until the
-vendored artifact is refreshed.
+recorded identity is never overwritten. This route has a local helper binding.
 
 - Both commands take `--product` and `--reason`; there is no payload file.
 - Save the dry-run output. Apply requires `--reviewed-dry-run`,
@@ -657,8 +662,7 @@ vendored artifact is refreshed.
 
 These commands record what a product needs before Launchplane can promote it
 from a testing lane: its Client, the lane's provider target and lane record, and
-the production backup policy. Their routes are local extensions until the
-vendored artifact is refreshed. Every apply follows the same safeguards:
+the production backup policy. Their routes have local helper bindings. Every apply follows the same safeguards:
 
 - Save the dry-run output. Apply requires `--reviewed-dry-run`,
   `--expected-plan-digest`, `--dry-run-evidence-file` and `--idempotency-key`.
@@ -847,8 +851,7 @@ never-deployed target Launchplane created empty, named exactly in
 
 ### Inert domain and ingress planning
 
-These commands are bounded local extensions, not projected operations in the
-vendored public artifact. Neither accepts an apply mode, confirmation, credential
+These commands have bounded local helper bindings. Neither accepts an apply mode, confirmation, credential
 argument, provider URL or alternate identity. They use the existing configured
 local-admin transport. A plan is review evidence for the separate repair commands
 below; it grants no service permission or live-repair authorization. Do not run
@@ -918,7 +921,7 @@ plan evidence returns an invalid response with its validated trace.
 
 ### Reviewed route-authority record repairs
 
-These are bounded local extensions using the same configured identity and
+These are bounded helper bindings using the same configured identity and
 existing service APIs. Source delivery grants no execution authority. A service
 denial stops the operation; preserve its action, requested scope and trace on
 the source and owning authorization issues. Never substitute a workflow,
@@ -1275,8 +1278,8 @@ with `status: "incomplete"` may still have a local token source; read the
 
 - `0`: Launchplane accepted the request and the helper emitted a redacted
   summary. `status: "accepted_unverified"` exits 0 for the Odoo addon-settings,
-  integration-allowances, testing-hold, product-repository-identity,
-  generic-web deploy-recovery, repository-inventory,
+  Odoo website-settings, integration-allowances, testing-hold,
+  product-repository-identity, generic-web deploy-recovery, repository-inventory,
   product expected-config, and merge-train policy import applies; product-config
   apply does not emit it. It exits 1 for the reviewed lane-setup
   applies (product Client, product image repository, Dokploy target, production
@@ -1439,14 +1442,8 @@ repository bindings, branch bindings, tenant/domain lists, lanes, provider targe
 ids, authz grants, or admin identities into product-config requests unless
 they came from Launchplane records or explicit scoped admin input.
 
-If a denied or unsupported operation concerns authz grants, private health
-endpoint records, provider targets, route records, or admin/workflow grants,
-do not widen the local helper and do not substitute GitHub CI authority. An
-already-sanctioned, Launchplane-owned reconciliation entrypoint may be run
-unmodified when an admin initiates it for that record. Otherwise this is a
-capability gap: block and escalate the affected work to the owning
-authorization-architecture issue with the denied operation, record type, and
-trace ID, then continue independent work when possible.
+For refused or unsupported operations, follow
+[Blocked Work Continuation](../SKILL.md#blocked-work-continuation).
 
 ## Merge-Train Policy Import
 
@@ -1550,9 +1547,8 @@ receives HTTP success but the response cannot be safely projected, the helper
 reports `accepted_unverified`; read back the current record and do not retry
 until the outcome is known.
 
-An `authorization_denied` response is an authority or capability gap. Preserve
-the trace and route the blocked work to the owning authorization redesign; do
-not add a grant, borrow workflow identity, or use a raw API fallback.
+For an `authorization_denied` response, follow
+[Blocked Work Continuation](../SKILL.md#blocked-work-continuation).
 
 ## Generic-Web Deploy Recovery
 
@@ -1723,7 +1719,7 @@ Use `path-check --product P --path testing|promote` first to ask whether the
 caller's own identity can take a product along that path. It makes one GET to
 `/v1/products/{product}/path-check` with the `path` query parameter, requiring
 `product_environment.read` on the product's lane contexts. This is a bounded
-local extension; it writes nothing and grants no authority.
+helper binding; it writes nothing and grants no authority.
 
 For Odoo operation prerequisites, select `--path testing --intent
 provision|generation|testing-replacement`. Optional `--source-mode ssh|container-export`,
@@ -1847,13 +1843,40 @@ operations, drop or list unknown fields instead. A Launchplane PR that adds a
 field to a strictly projected response lands the matching helper allowlist
 change first and says so in its PR body.
 
+For bounded GET reads, the top-level allowlists live in
+`BOUNDED_READ_RESPONSE_FIELDS` in `scripts/launchplane_contract.py`. A field
+Launchplane declares there but the read does not project, such as the
+environment read's `host_network_capacity_available` and
+`host_network_capacity`, is accepted and dropped; any other field still fails
+closed. `references/launchplane-read-response-fields.json` pins the top-level
+fields Launchplane's published OpenAPI declares for each of those routes, and
+the tests require every pinned field to be in its read's allowlist. Refresh the
+pin with `uv run scripts/sync-read-response-fields.py sync` from this skill
+directory, then add each new field to its read's allowlist, projecting it only
+when the read should emit it, and name the Launchplane commit in the commit
+message. The `Launchplane Read Response Fields` workflow fails on pull
+requests, on `main` and daily when the pin differs from Launchplane's `main`.
+
+The merge-train controller reply has no helper allowlist. Launchplane publishes
+its contract as `contracts/merge-train-controller-reply.schema.json` and tests
+every reply against it; this skill pins a byte-for-byte copy at
+`references/merge-train-controller-reply.schema.json`. The helper enforces the
+pin's types, required fields and bounds. A field the pin does not declare is
+newer than the pin: it is left out of the result, named in
+`summary.unrecognized_fields` (plain identifiers only, at most ten) with a
+`controller_reply_newer_than_pinned_schema` warning, and does not fail the
+read. A field name that is not a plain public-safe identifier, or any unsafe
+value, still fails closed. Refresh the pin with
+`uv run scripts/sync-merge-train-reply-schema.py sync` from this skill
+directory, naming the Launchplane commit in the commit message; the
+`Merge-Train Reply Schema` workflow fails on pull requests, on `main` and daily
+when the pin differs from Launchplane's `main`.
+
 Unexpected successful provider shapes fail closed as `invalid_response` rather
 than being recursively sanitized. For an accepted controller reply that cannot
 be projected, `summary.projection_error_code` and the warning code retain the
 local `LaunchplaneSafetyError` code (such as `unsafe_response_shape` or
-`invalid_response`). `summary.unrecognized_key` names the first unknown result
-or record key only when it is a public-safe plain identifier of at most 80
-characters. No rejected value is emitted. Independently validated service error
+`invalid_response`). No rejected value is emitted. Independently validated service error
 codes and trace IDs remain available; read the PR and controller state before
 retrying a mutating pass, which may already have completed.
 Summary fields, including `trace_id`, must be
@@ -1906,7 +1929,7 @@ where supported.
 ## Managed runtime sync
 
 `live-target-runtime-sync-dry-run` and `live-target-runtime-sync-apply` use the
-existing `POST /v1/live-target-runtime/apply` local extension. Pass `--product`,
+existing `POST /v1/live-target-runtime/apply` helper binding. Pass `--product`,
 `--context`, and `--instance`; values come from Launchplane's managed records,
 never CLI input. The service checks `live_target_runtime.plan` for dry runs and
 `.apply` for writes on product/context. The helper's apply command requires both
@@ -2001,7 +2024,7 @@ needs service-wide policy read authority to show full scopes.
 ## Runtime-setting removal review
 
 `runtime-setting-removal-dry-run` and `runtime-setting-removal-readback` are
-bounded local extensions of `POST /v1/admin/runtime-settings/removal`. They
+bounded helper bindings of `POST /v1/admin/runtime-settings/removal`. They
 let the Director agent review removing stored plain runtime settings and read
 back the result. There is no apply command. Apply belongs to the signed-in
 admin in Launchplane, and a dry-run digest does not authorize it.
@@ -2111,3 +2134,73 @@ requesting approval. Approved or executing plans need observation, not another
 approval. Inspect terminal outcomes before an intentional replacement; an expired, cancelled or revoked proposal needs a fresh
 source event for a replacement. The signed-in Director reviews
 and approves pending plans in the UI; no helper approval or apply path is added.
+
+## Pending Client review withdrawal
+
+`product-review-withdrawal-dry-run`, `product-review-withdrawal-apply` and
+`product-review-withdrawal-readback` use `POST /v1/product-review/withdrawal`.
+They require `--product`, `--repo OWNER/REPO`, `--pr`, `--head` (the exact current
+commit), `--reason` and `--director-decision` (the recorded decision's GitHub
+comment URL). The Director's authenticated agent or admin attests that this
+citation records the Director's decision; it supplies no Client acceptance.
+No new grant or credential is installed.
+
+Save the dry-run JSON output outside the checkout. Apply requires
+`--reviewed-dry-run --dry-run-evidence-file /private/dry.json`,
+`--expected-plan-digest` from that output and `--idempotency-key`. Saved evidence
+binds the exact scope, head, reason and decision citation; receipts omit the
+reason and citation. Readback requires that same scope, reason, citation,
+expected digest and original key. Apply always follows with readback, and only
+matching applied readback returns success. Drift, malformed responses and
+transport loss exit nonzero; an uncertain apply reports `outcome_unknown`, and
+an applied response without verified readback reports `accepted_unverified`.
+
+The service refuses after a Client has accepted or rejected this product's
+current head. It removes only the configured review label and records the
+withdrawal in the PR's history and its durable operation. It never edits Client
+decisions, PR test notes, or release acceptance. Truthful engineering notes are
+a separate PR edit; real notes or a later review label request review normally.
+
+Keep the original request, reviewed digest and key after an interrupted call.
+Read back before resubmitting the exact apply. Recovery can finish a missing
+history entry when the label is absent, and never deletes a label again after
+an uncertain dispatch. A pre-dispatch failure can resume the original operation.
+If a request is present after dispatch, or its head/review authority changed,
+recovery instead settles the original intent with `applied=false` and
+`replan_required=true`, without claiming absence of earlier effects. The helper
+reports `replan_required` and exits nonzero. Review a fresh dry run and use a new
+key to withdraw that request. `product_review_withdrawal_unsettled` is an
+`outcome_unknown`, distinct from a definite refusal.
+A completed-key replay returns the original receipt, preserving later review
+requests. Do not remove a label by hand or use another identity after a denial.
+
+The helper classifies the whole exchange, keeping status, retained receipt and
+recovery instructions together. Attempted-apply transport loss or any HTTP 5xx
+is `outcome_unknown`. A known applied receipt without matching readback is
+`accepted_unverified`, and that receipt stays in the output. An unfinished
+original readback is `outcome_unknown` (or `in_progress` while running).
+`target_busy` means another operation owns the PR and this call dispatched
+nothing: only that operation's original caller/key can recover it. A key conflict
+is `conflict`; a definite eligibility refusal is `refused`. Neither is reported
+as an unknown effect. Terminal `replan_required` results preserve the boolean
+`prior_effects_unknown`; when true, a label removal may have happened without a
+PR history entry. Inspect the retained operation and history before a fresh plan.
+
+Recovery can observe a closed PR. It adopts an authentic existing history
+receipt or settles an unreceipted closed request without another DELETE.
+A new withdrawal still requires an open PR; readback never removes a label.
+
+Recovery output echoes the non-secret `idempotency_key` in its summary. Choose a
+public-safe opaque key, and save the exact private request with the dry-run
+evidence. Provider evidence failures are unavailable, not Client eligibility
+refusals. Dry-run and fresh apply check history before removing a label. Bounded
+or ambiguous authenticated history blocks dispatch with `history_unverifiable`;
+resolve history verification before retrying, because changing keys cannot fix
+it. Recovery of an uncertain operation can settle with that same status while
+retaining `prior_effects_unknown`. That key is terminal: after resolving history
+verification, review a fresh dry-run and use a new key. Completed readback preserves its applied
+receipt and reports a mismatch when permanent history limits prevent verification.
+`not_started` means this caller/key has no saved operation: resubmit the exact
+original apply with that same key. `invalid_request` requires correcting the
+request; `stale_plan` requires refreshing and reviewing the exact dry-run. The full caller identity remains in the durable
+operation; public PR history contains the head, reason and Director citation.

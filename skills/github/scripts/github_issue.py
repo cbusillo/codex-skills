@@ -20,6 +20,7 @@ import urllib.parse
 from typing import Any, Callable, Optional
 
 import github_api as github_api_core
+import github_close_attention
 import github_comment
 import github_agent
 import github_identity
@@ -383,15 +384,6 @@ def _format_timestamp(value: dt.datetime) -> str:
     return value.astimezone(dt.timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _parse_timestamp(value: Any) -> Optional[dt.datetime]:
-    if not isinstance(value, str) or not value:
-        return None
-    try:
-        return dt.datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(dt.timezone.utc)
-    except ValueError:
-        return None
-
-
 def _create_reconciliation(
     repo: str,
     creator: Optional[str],
@@ -431,7 +423,7 @@ def _matching_created_issues(
     retry_context: Optional[github_api_core.ReconciliationContext] = None,
     retry_summaries: Optional[list[github_api_core.RetrySummary]] = None,
 ) -> list[dict[str, Any]]:
-    threshold = _parse_timestamp(started_at)
+    threshold = github_comment.parse_timestamp(started_at)
     if threshold is None:
         raise _local_error(
             "Issue create reconciliation timestamp is invalid",
@@ -480,7 +472,7 @@ def _matching_created_issues(
         for item in result.body:
             if not isinstance(item, dict) or "pull_request" in item:
                 continue
-            created_at = _parse_timestamp(item.get("created_at"))
+            created_at = github_comment.parse_timestamp(item.get("created_at"))
             if created_at is None:
                 continue
             if created_at < threshold:
@@ -1507,6 +1499,8 @@ def build_parser() -> argparse.ArgumentParser:
     close_mode = close.add_mutually_exclusive_group()
     close_mode.add_argument("-r", "--reason", default="completed")
     close_mode.add_argument("--duplicate-of")
+    close.add_argument("--unanswered-decision", metavar="COMMENT_URL",
+                       help="The Director's comment on this issue, or a Director decision record they approved, to close over unanswered outside comments")
 
     reopen = sub.add_parser("reopen")
     reopen.add_argument("number")
@@ -1603,6 +1597,22 @@ def _close_reason(value: str) -> str:
     if normalized not in mapping:
         raise ValueError("Close reason must be completed, not planned, or duplicate")
     return mapping[normalized]
+
+
+def _close_attention(
+    repo: str, number: int, decision_url: Optional[str], *, expected_actor: Optional[str],
+) -> dict[str, Any]:
+    try:
+        return github_close_attention.check(repo, number, decision_url=decision_url, gh_cmd=DEFAULT_GH)
+    except github_close_attention.CloseAttentionError as exc:
+        raise _local_error(
+            str(exc),
+            operation="github.issue.close",
+            cause=exc.cause,
+            expected_actor=expected_actor,
+            failed_step="close_attention_preflight",
+            payload={"close_attention": exc.payload},
+        ) from exc
 
 
 def _resolve_cli_target(value: str, repo: Optional[str], *, operation: str) -> tuple[str, int]:
@@ -1739,6 +1749,8 @@ def main() -> int:
             target_repo, target_number = _resolve_cli_target(args.number, args.repo, operation=operation)
             comment_body = _state_comment(args)
             reason = _close_reason("duplicate" if args.duplicate_of else args.reason)
+            close_attention = _close_attention(target_repo, target_number, args.unanswered_decision,
+                                               expected_actor=expected_actor)
             payload = set_issue_state(
                 target_number,
                 state="closed",
@@ -1749,6 +1761,7 @@ def main() -> int:
                 expected_actor=expected_actor,
                 operation=operation,
             )
+            payload["close_attention"] = close_attention
             payload["projection"] = refresh_after_close(target_repo, target_number, payload, operation=operation)
             close_projection_diagnostics(payload)
             if not payload["projection"]["ok"]:

@@ -30,6 +30,9 @@ import gui_launch
 import iterm_tab
 import tmux_terminal
 
+# Launch fixtures carry the rules link every Supervisor brief needs.
+RULES = "\nRules for this brief: " + iterm_tab.BRIEF_RULES_URL
+
 
 class GuiLaunchTests(unittest.TestCase):
     def setUp(self):
@@ -68,7 +71,7 @@ class GuiLaunchTests(unittest.TestCase):
         self.command = self.root / "command"
         self.command.write_text("exec codex -C " + shlex.quote(str(self.repo)))
         self.brief = self.root / "brief"
-        self.brief.write_text("GUI task: com.example.Task\nInspect the named app.")
+        self.brief.write_text("GUI task: com.example.Task\nInspect the named app." + RULES)
         self.args = argparse.Namespace(command_file=[self.command], brief_file=[self.brief],
                                        account_provider="openai", account_config=None, account=None)
         patch.object(account_choice, "select", return_value=self.choice).start()
@@ -133,7 +136,7 @@ class GuiLaunchTests(unittest.TestCase):
         fake.write_text(f"#!{sys.executable}\nimport json, os, sys\n"
                         "print(json.dumps([sys.argv[1:], os.getenv('CODEX_HOME')]))\n")
         fake.chmod(0o755)
-        self.brief.write_text("Implement source changes only.")
+        self.brief.write_text("Implement source changes only." + RULES)
         for opt_in in (False, True):
             with self.subTest(chrome_opt_in=opt_in):
                 if opt_in:
@@ -154,7 +157,7 @@ class GuiLaunchTests(unittest.TestCase):
                 self.unlocked.assert_not_called()
 
     def test_foreign_remote_refuses_before_daemon_receipt_or_terminal(self):
-        self.brief.write_text("Implement source changes only.")
+        self.brief.write_text("Implement source changes only." + RULES)
         self.command.write_text("codex --remote unix:///foreign/daemon.sock -C " + shlex.quote(str(self.repo)))
         with patch.object(account_choice, "prepare_launch") as receipt:
             with self.assertRaises(ValueError):
@@ -163,7 +166,7 @@ class GuiLaunchTests(unittest.TestCase):
         receipt.assert_not_called()
 
     def test_selected_remote_through_home_symlink_is_normalized_before_launch(self):
-        self.brief.write_text("Implement source changes only.")
+        self.brief.write_text("Implement source changes only." + RULES)
         alias = self.root / "account-alias"
         alias.symlink_to(self.account, target_is_directory=True)
         self.choice["env"]["CODEX_HOME"] = str(alias)
@@ -175,7 +178,7 @@ class GuiLaunchTests(unittest.TestCase):
         self.assertEqual(native[native.index("--remote") + 1], "unix://" + str(iterm_tab.codex_daemon_endpoint(self.account)))
 
     def test_nongui_launch_does_not_probe_or_create_gui_paths(self):
-        self.brief.write_text("Implement source changes only.")
+        self.brief.write_text("Implement source changes only." + RULES)
         with patch.object(gui_launch, "marketplace") as marketplace:
             commands, choices = iterm_tab.prepare_launches(self.args)
         marketplace.assert_not_called()
@@ -188,7 +191,7 @@ class GuiLaunchTests(unittest.TestCase):
         self.assertNotIn("gui", json.loads(account_choice.record_launch(self.choice).read_text()))
 
     def test_source_brief_quoting_gui_header_does_not_opt_in(self):
-        self.brief.write_text("Implement launcher behavior for this example:\nGUI task: com.example.Task")
+        self.brief.write_text("Implement launcher behavior for this example:\nGUI task: com.example.Task" + RULES)
         _, choices = iterm_tab.prepare_launches(self.args)
         self.assertNotIn("gui", choices[0])
         self.unlocked.assert_not_called()
@@ -259,7 +262,7 @@ class GuiLaunchTests(unittest.TestCase):
         self.assertIn(json.loads(self.state.read_text())["token"], str(raised.exception))
 
     def test_apostrophe_heavy_brief_is_staged_outside_tmux_message(self):
-        self.brief.write_text("GUI task: com.example.Task\n" + "Chris's app: don't change other windows.\n" * 200)
+        self.brief.write_text("GUI task: com.example.Task\n" + "Chris's app: don't change other windows.\n" * 200 + RULES)
         self.args.command, self.args.window_id, self.args.tmux_socket = "new", "fixture", "fixture"
         terminal = Mock()
         terminal.run.return_value.stdout = "@1\t%1"
@@ -354,10 +357,10 @@ class GuiLaunchTests(unittest.TestCase):
         for brief in ("GUI task: Terminal", "GUI task: com.apple.Terminal",
                       "GUI task: com.example.One\nGUI task: com.example.Two"):
             with self.subTest(brief=brief):
-                self.brief.write_text(brief)
+                self.brief.write_text(brief + RULES)
                 with self.assertRaises(ValueError):
                     iterm_tab.prepare_launches(self.args)
-        self.brief.write_text("GUI task: com.example.Task")
+        self.brief.write_text("GUI task: com.example.Task" + RULES)
         self.args.command_file *= 2
         self.args.brief_file *= 2
         with self.assertRaises(ValueError):

@@ -1,12 +1,8 @@
 # Local Qodana backend
 
-Read before diagnosing a Qodana result or changing the runner. `agent-inspect`
-selects this backend by default for a selection of only Python files when the
-pinned image is local and `qualityGate.inspection.prepare.python` is declared,
-outside Odoo repositories and PyCharm-only lanes
-([#2155](https://github.com/cbusillo/codex-skills/issues/2155)); other
-selections keep the API. The envelope's `backend_selection` names the reason.
-`--backend api|qodana` or `JB_INSPECT_DEFAULT_BACKEND=api|qodana` overrides it.
+Read before diagnosing a Qodana result or changing the runner.
+[SKILL.md](../SKILL.md) owns selection across native PyCharm, Qodana and the API;
+`backend_selection` names the chosen route and native ineligibility, if any.
 
 ```sh
 uv run <skill-dir>/scripts/jb-inspect.py agent-inspect \
@@ -69,7 +65,8 @@ IDE profile on October 18, 2026 ([activation decision](https://github.com/cbusil
 Use that profile in place only through its qualified native runner, with exclusive
 use and isolated system/cache/log paths. Do not copy its config, activation,
 account store or credentials into another profile or a container. Native-runner
-integration and qualification live in [#1833](https://github.com/cbusillo/codex-skills/issues/1833);
+integration and qualification live in [#2401](https://github.com/cbusillo/codex-skills/issues/2401)
+and the [native runner reference](native-backend.md);
 this Qodana backend does not implement that native route or import its activation.
 If no independently activated, qualified profile is available, stop the licensed
 run with an `Owner question:` asking the Director to activate an independent
@@ -194,10 +191,9 @@ every canary proved execution, every selected file is Python, and every enabled
 profile inspection is in the effective profile. Inspections for other file
 types do not apply to a Python-only selection. `DuplicatedCode` and
 `HttpUrlsUsage`, which the Community image does not run, are listed in
-`uncovered_inspections`. When the profile enables them, they block GREEN
-until the Director accepts a GREEN without them
-([Q481](https://github.com/cbusillo/codex-skills/issues/1833)); a yes moves
-them into `PYTHON_ACCEPTED_UNCOVERED`. RED still works. Any other missing
+`uncovered_inspections`. When the profile enables them, they block GREEN.
+[Q481 was retired without accepting a gap](https://github.com/cbusillo/codex-skills/issues/1833#issuecomment-6254396907);
+use the independently activated native route to run them. RED still works. Any other missing
 enabled inspection, such as a renamed ID, keeps the result UNKNOWN. JVM and other
 languages report UNKNOWN on zero findings. Unsupported filters,
 unavailable/malformed SARIF, changed inputs and cleanup failures remain

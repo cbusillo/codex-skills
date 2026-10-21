@@ -474,6 +474,57 @@ class ReadyTests(unittest.TestCase):
         self.reader.pr["body"] = "## Client test notes\nNothing for the Client to test: automated tooling."
         self.post()
 
+    def test_release_testing_engineering_notes_allow_checked_ready(self):
+        self.reader.pr["body"] = (
+            "## Client test notes\n"
+            f"{ready_handoff.ENGINEERING_RELEASE_TESTS}\n\n"
+            "After the real-data import, check the imported parts and supplier costs."
+        )
+        self.client_release.return_value = True
+        self.reader.checks.append({"id": 2, "name": "launchplane/owner-review", "status": "completed", "conclusion": "neutral"})
+        _, comment = self.post()
+        self.assertTrue(latest_ready(self.reader.pr, [comment], {"engineer"}))
+        self.assertFalse(ready_handoff.requires_client_acceptance(self.reader.pr, self.reader.checks, repository=REPO))
+        self.standing.assert_not_called()
+
+    def test_engineering_marker_preserves_explicit_client_review_and_other_sections(self):
+        engineering = (
+            f"{ready_handoff.ENGINEERING_RELEASE_TESTS}\n"
+            "Check the imported parts at release."
+        )
+        for body, labels, checks in (
+            (f"## Client test notes\n{engineering}", [{"name": "owner-review"}], []),
+            (f"## Client test notes\n{engineering}", [], [{"id": 2, "name": "launchplane/owner-review", "status": "in_progress"}]),
+            (f"## Client test notes\n{engineering}", [], [{"id": 2, "name": "launchplane/owner-review", "status": "completed", "conclusion": "failure"}]),
+            (f"## Client test notes\n{engineering}\n## Owner test notes\nApprove the wording before merge.", [], []),
+            (f"## Client test notes\n### #10\n{engineering}\n### #11\nApprove the screen before merge.", [], []),
+        ):
+            with self.subTest(body=body, labels=labels, checks=checks):
+                self.reader.pr.update(body=body, labels=labels)
+                self.reader.checks = [dict(OWNER_REVIEW_ACCEPTED)] if labels else []
+                self.reader.checks = [{"id": 1, "name": "unit", "status": "completed", "conclusion": "success"}] + checks + self.reader.checks
+                if labels:
+                    self.assertTrue(ready_handoff.requires_client_acceptance(self.reader.pr, self.reader.checks, repository=REPO))
+                    self.post()
+                    self.writer.reset_mock()
+                    self.reader.checks.pop()
+                self.refuse()
+
+    def test_engineering_marker_needs_plain_first_line_and_release_steps(self):
+        marker = ready_handoff.ENGINEERING_RELEASE_TESTS
+        for notes in (marker, marker + "\nTODO", marker + "\n<!-- add steps -->", "- " + marker + "\nCheck parts.", "```\n" + marker + "\n```\nCheck parts.", "Check parts.\n" + marker):
+            with self.subTest(notes=notes):
+                self.reader.pr["body"] = f"## Client test notes\n{notes}"
+                self.refuse()
+
+    def test_all_engineering_batch_members_allow_ready(self):
+        self.reader.pr["body"] = (
+            "## Client test notes\n### #10\n"
+            f"{ready_handoff.ENGINEERING_RELEASE_TESTS}\nCheck the imported parts.\n"
+            "### #11\nNothing for the Client to test: internal tooling."
+        )
+        self.post()
+
     def test_completed_neutral_advisory_allows_docs_handoff(self):
         self.reader.pr["body"] = "## Client test notes\nNothing for the Client to test: documentation only."
         self.reader.checks.append({"id": 2, "name": "launchplane/owner-review", "status": "completed", "conclusion": "neutral"})
@@ -550,10 +601,26 @@ class ReadyTests(unittest.TestCase):
             "Nothing for the Client to tests: extra s.",
             "Nothing for the Client to test in this source-only repair; duplicate tools removed.",
             "nothing for the client to test: wrong case.",
+            # Naming the Client instead of the role read as real steps (odoo-tenant-cm#214).
+            "Nothing for Justin to test. No screen, menu or data changes.",
+            "Nothing for Justin to test: no screen changes.",
+            "Nothing to test: documentation only.",
+            "Nothing new to test: documentation only.",
+            "- Nothing else for Justin to test.",
         ):
             with self.subTest(invalid=invalid):
                 self.reader.pr["body"] = f"## Client test notes\n{invalid}"
                 self.assertIn(ready_handoff.NOTHING_TO_TEST, self.refuse())
+
+    def test_steps_that_start_with_nothing_still_need_the_client(self):
+        for steps in (
+            "Nothing changed in checkout; open the cart to test the new button.",
+            "Nothing happens when you try to test checkout. Verify that Pay now opens the form.",
+        ):
+            with self.subTest(steps=steps):
+                intent = ready_handoff.client_test_notes(steps)
+                self.assertTrue(intent.review_required)
+                self.assertFalse(intent.error)
 
     def test_legacy_nothing_to_test_marker(self):
         for separator in (":", "."):

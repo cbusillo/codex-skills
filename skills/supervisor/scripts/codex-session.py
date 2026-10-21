@@ -46,8 +46,9 @@ def run(args) -> int:
             native = native[1:]
         native = managed_argv(home, native)
         return asyncio.run(run_client(home, native))
-    if str(uuid.UUID(args.session_id)) != args.session_id:
-        raise ValueError("use the canonical native thread UUID")
+    canonical = str(uuid.UUID(args.session_id))
+    if canonical != args.session_id:
+        raise ValueError(f"use the canonical native thread UUID {canonical}")
     if args.command == "status":
         rows = [r for r in closure.log_rows() if r.get("session_id") == args.session_id]
         if len(rows) != 1:

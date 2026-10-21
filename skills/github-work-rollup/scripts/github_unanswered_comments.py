@@ -16,8 +16,12 @@ import os
 import re
 import subprocess
 import sys
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
+from collections.abc import Iterator
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from contextvars import ContextVar, copy_context
 from dataclasses import dataclass, replace
+from functools import partial
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -58,11 +62,18 @@ DEFAULT_CONFIG = ROOT / ".local/github-work-rollup.yaml"
 DEFAULT_WINDOW = "30d"
 DEFAULT_BOT_LOGINS = ()
 MAX_WORKERS = 8
+# Each gh call is bounded, and every thread and reaction read shares one deadline.
+GH_CALL_TIMEOUT_SECONDS = 60
+DISCUSSION_READ_DEADLINE_SECONDS = 600
+# Set while thread and reaction reads run and copied into their workers, so no
+# gh call outlives the deadline, even in a worker the report stopped waiting for.
+read_deadline: ContextVar[float | None] = ContextVar("read_deadline", default=None)
 EXIT_CLEAR = 0
 EXIT_ATTENTION = 2
 EXIT_DEGRADED = 3
 OPENING_POST = "issue_body"
 WAITING_LABEL = "plan:waiting"
+PLAN_RECORD_MARKER = "<!-- github-plan:"
 DIRECTOR_ROLE_WORDS = ("Director",)
 POSSIBLE_AUTOMATION_LOGIN = re.compile(r"(?:^|[-_])(?:bot|automation)$", re.IGNORECASE)
 REACTIONS_QUERY = """
@@ -137,6 +148,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--outbound", action="store_true", help="Find replies after your last activity in repositories you do not own.")
     parser.add_argument("--self-login", action="append", default=[], help="Human owner login whose reactions and replies count.")
     parser.add_argument(
+        "--director-login",
+        help="The Director's login. Configured, authenticated and repository-owner logins are then not "
+        "treated as the Director, so another account's own comments on its threads count as outside comments.",
+    )
+    parser.add_argument(
         "--mention-approval",
         help="Link to the Director's standing approval for --outbound mention searches under their own login.",
     )
@@ -151,6 +167,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--until", help="UTC ISO timestamp for the scan end.")
     parser.add_argument("--limit-repos", type=int, default=1000)
     parser.add_argument("--format", choices=("json", "markdown"), default="markdown")
+    parser.add_argument(
+        "--include-handled",
+        action="store_true",
+        help="Also list handled comments in the JSON report, for callers that apply their own rule.",
+    )
+    parser.add_argument(
+        "--no-cutoff",
+        action="store_true",
+        help="Classify --thread comments, edits and reactions fetched after the scan end, for a check of the thread as it is now.",
+    )
     parser.add_argument("--output", type=Path, help="Write the report to this path.")
     args = parser.parse_args()
     if args.limit_repos < 1:
@@ -169,10 +195,12 @@ def resolve_settings(
     explicit_scope = bool(args.repo or args.repo_owner or threads or outbound)
     repositories = rollup.unique(args.repo if explicit_scope else rollup.as_str_list(config.get("repositories")))
     repo_owners = rollup.unique(args.repo_owner if explicit_scope else rollup.as_str_list(config.get("repo_owners")))
+    director_login = getattr(args, "director_login", None)
     configured_self = rollup.as_str_list(config.get("comment_self_logins"))
     if not configured_self:
         configured_self = rollup.as_str_list(config.get("subjects"))
-    self_logins = rollup.unique([*configured_self, *args.self_login])
+    # A named Director replaces every inferred or configured identity.
+    self_logins = rollup.unique([*([] if director_login else configured_self), *args.self_login])
     outbound_self_logins = list(self_logins)
     configured_login = github_identity.automation_login()
     bot_logins = rollup.unique(
@@ -184,7 +212,8 @@ def resolve_settings(
             *args.bot_login,
         ]
     )
-    inferred_self = [*repo_owners, *(repo.split("/", 1)[0] for repo in repositories if "/" in repo)]
+    inferred_self = ([director_login] if director_login
+                     else [*repo_owners, *(repo.split("/", 1)[0] for repo in repositories if "/" in repo)])
     self_logins = rollup.unique([*self_logins, *inferred_self])
 
     until = rollup.parse_timestamp(args.until) or now or datetime.now(timezone.utc)
@@ -194,6 +223,9 @@ def resolve_settings(
         since = until - timedelta(hours=rollup.parse_duration_hours(window_label))
     if since >= until:
         raise SystemExit("error: --since must be before --until")
+    no_cutoff = bool(getattr(args, "no_cutoff", False))
+    if no_cutoff and args.until:
+        raise SystemExit("error: --no-cutoff cannot be combined with --until")
 
     return {
         "config_path": str(args.config),
@@ -206,18 +238,44 @@ def resolve_settings(
         "mention_approval": getattr(args, "mention_approval", None) or config.get("mention_approval"),
         "explicit_scope": explicit_scope,
         "self_logins": self_logins,
+        "director_login": director_login,
         "bot_logins": bot_logins,
         "since": since.astimezone(timezone.utc),
         "until": until.astimezone(timezone.utc),
         "window_label": window_label,
         "limit_repos": args.limit_repos,
         "include_archived": bool(getattr(args, "include_archived", False)),
+        "include_handled": bool(getattr(args, "include_handled", False)),
+        "no_cutoff": no_cutoff,
         "people_index": args.people_index or (Path(str(config["people_index"])) if config.get("people_index") else None),
     }
 
 
 def run(command: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, capture_output=True, text=True, check=False)
+    timeout = GH_CALL_TIMEOUT_SECONDS
+    deadline = read_deadline.get()
+    if deadline is not None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise rollup.RollupError(deadline_error())
+        timeout = min(timeout, remaining)
+    try:
+        return subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        reason = deadline_error() if timeout < GH_CALL_TIMEOUT_SECONDS else f"Timed out after {GH_CALL_TIMEOUT_SECONDS}s."
+        raise rollup.RollupError(f"GitHub command failed: {' '.join(command)}\n{reason}") from exc
+
+
+def completed_before(futures: dict[Future[Any], Any], deadline: float) -> Iterator[Future[Any]]:
+    """Yield futures as they finish, stopping at the deadline."""
+    try:
+        yield from as_completed(futures, timeout=max(0.0, deadline - time.monotonic()))
+    except TimeoutError:
+        return
+
+
+def deadline_error() -> str:
+    return f"Discussion read deadline of {DISCUSSION_READ_DEADLINE_SECONDS}s passed before this read finished."
 
 
 def run_json(command: list[str]) -> Any:
@@ -710,6 +768,7 @@ def collect_comment_reactions(comment: Comment) -> tuple[list[Reaction], Edit | 
 
 def collect_candidate_reactions(
     comments: list[Comment],
+    deadline: float,
 ) -> tuple[
     dict[tuple[str, int, str, int], list[Reaction]],
     dict[tuple[str, int, str, int], Edit],
@@ -722,27 +781,34 @@ def collect_candidate_reactions(
     if not unique_comments:
         return reactions, last_edits, errors
     worker_count = min(MAX_WORKERS, max(1, len(unique_comments)))
-    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+    executor = ThreadPoolExecutor(max_workers=worker_count)
+    try:
         futures = {
-            executor.submit(collect_comment_reactions, comment): comment
+            executor.submit(copy_context().run, partial(collect_comment_reactions, comment)): comment
             for comment in unique_comments.values()
         }
-        for future in as_completed(futures):
-            comment = futures[future]
+        unread = dict(futures)
+        for future in completed_before(futures, deadline):
+            comment = unread.pop(future)
             try:
                 comment_reactions, last_edit = future.result()
                 reactions[comment.global_key] = comment_reactions
                 if last_edit:
                     last_edits[comment.global_key] = last_edit
             except rollup.RollupError as exc:
-                errors.append(
-                    {
-                        "repo": comment.repo,
-                        "lane": f"reactions/{comment.kind}/{comment.comment_id}",
-                        "error": rollup.trim(str(exc)),
-                    }
-                )
+                errors.append(reaction_error(comment, str(exc)))
+        errors.extend(reaction_error(comment, deadline_error()) for comment in unread.values())
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
     return reactions, last_edits, errors
+
+
+def reaction_error(comment: Comment, error: str) -> dict[str, str]:
+    return {
+        "repo": comment.repo,
+        "lane": f"reactions/{comment.kind}/{comment.comment_id}",
+        "error": rollup.trim(error),
+    }
 
 
 def event_sort_key(comment: Comment) -> tuple[str, int]:
@@ -763,8 +829,13 @@ def response_is_after(response: Comment, external: Comment, until: datetime) -> 
     return (
         comment_timestamp(response.updated_at) == comment_timestamp(response.created_at)
         and comment_timestamp(external.updated_at) == comment_timestamp(external.created_at)
-        and response.comment_id > external.comment_id
+        and posted_later_in_same_second(response, external)
     )
+
+
+def posted_later_in_same_second(response: Comment, external: Comment) -> bool:
+    # Each comment kind has its own ID sequence, so only same-kind IDs order a tie.
+    return response.kind == external.kind and response.comment_id > external.comment_id
 
 
 def reaction_is_after(reaction: Reaction, external: Comment, until: datetime) -> bool:
@@ -837,6 +908,11 @@ def is_director_record(comment: Comment) -> bool:
     return comment.kind == "issue_comment" and comment.body.strip().lstrip("*").startswith(prefixes)
 
 
+def is_bookkeeping(comment: Comment) -> bool:
+    """Director questions, decisions and planning records are awareness or state, not replies."""
+    return is_director_record(comment) or PLAN_RECORD_MARKER in comment.body
+
+
 def targeted_response_for(
     external: Comment,
     comments: list[Comment],
@@ -848,8 +924,8 @@ def targeted_response_for(
 ) -> Comment | None:
     responses = sorted(comments, key=lambda comment: (comment_activity_through(comment, until), comment.comment_id))
     for response in responses:
-        if is_director_record(response):
-            continue  # A question or recorded decision is awareness, not an answer to the commenter.
+        if is_bookkeeping(response):
+            continue
         if normalize_login(response.author) not in actor_logins or not response.body.strip():
             continue
         if not response_is_after(response, external, until):
@@ -861,6 +937,36 @@ def targeted_response_for(
             until,
             allow_unambiguous_mention=allow_unambiguous_mention,
         ):
+            return response
+    return None
+
+
+def later_reply_for(
+    external: Comment,
+    comments: list[Comment],
+    actor_logins: set[str],
+    until: datetime,
+) -> Comment | None:
+    """First owner or automation reply posted after the comment's latest version, targeted or not.
+
+    An edit is never a reply: an older comment edited later, even one that links or
+    mentions the comment, does not answer it. Planning records and Director questions
+    or decisions are bookkeeping, not replies. The latest version is the newest one
+    fetched, even when its edit falls after ``until``.
+    """
+    version = comment_activity_time(external)
+    unedited = comment_timestamp(external.updated_at) == comment_timestamp(external.created_at)
+    responses = sorted(comments, key=lambda comment: (comment_timestamp(comment.created_at), comment.comment_id))
+    for response in responses:
+        if (
+            is_bookkeeping(response)
+            or normalize_login(response.author) not in actor_logins
+            or not response.body.strip()
+        ):
+            continue
+        posted = comment_timestamp(response.created_at)
+        if posted <= until and (posted > version or (
+                posted == version and unedited and posted_later_in_same_second(response, external))):
             return response
     return None
 
@@ -963,6 +1069,7 @@ def comment_states_for_thread(
             effective_until,
         )
         awareness = director_awareness_for(comment, comments, owner_logins | bot_logins, effective_until)
+        later_reply = later_reply_for(comment, comments, owner_logins | bot_logins, effective_until)
         if owner_response is not None:
             owner_seen: bool | None = True
             owner_seen_evidence = {
@@ -1036,6 +1143,7 @@ def comment_states_for_thread(
                 "publicly_addressed": publicly_addressed,
                 "public_response_actor": public_response_actor,
                 "public_response_url": public_response.url if public_response is not None else None,
+                "later_reply_url": later_reply.url if later_reply is not None else None,
                 "attention_state": attention_state,
                 "handled_reason": "closed_after_comment" if handled_closed and closed_after else "closed_with_response" if handled_closed else None,
             }
@@ -1380,12 +1488,13 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
     if normalized_auth:
         if normalized_auth in bot_logins or is_github_bot(auth_login, ""):
             bot_logins.add(normalized_auth)
-        else:
+        elif not settings.get("director_login"):
             self_logins.add(normalized_auth)
             outbound_self.add(normalized_auth)
 
     repositories = resolve_repositories(settings)
-    self_logins.update(normalize_login(repo.split("/", 1)[0]) for repo in repositories if "/" in repo)
+    if not settings.get("director_login"):
+        self_logins.update(normalize_login(repo.split("/", 1)[0]) for repo in repositories if "/" in repo)
     candidate_ids: dict[tuple[str, int], set[tuple[str, int]]] = {}
     coverage_errors: list[dict[str, str]] = []
     people = people_identities(self_logins - bot_logins, settings.get("people_index"))
@@ -1457,13 +1566,19 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
     reaction_candidates: list[Comment] = []
     scanned_threads = 0
     thread_worker_count = min(MAX_WORKERS, max(1, len(candidate_ids)))
-    with ThreadPoolExecutor(max_workers=thread_worker_count) as executor:
+    # With --no-cutoff every fetched comment, edit and reaction is classified.
+    classification_until = datetime.max.replace(tzinfo=timezone.utc) if settings.get("no_cutoff") else settings["until"]
+    deadline = time.monotonic() + DISCUSSION_READ_DEADLINE_SECONDS
+    deadline_token = read_deadline.set(deadline)
+    executor = ThreadPoolExecutor(max_workers=thread_worker_count)
+    try:
         futures = {
-            executor.submit(collect_thread, repo, number): (repo, number, ids)
+            executor.submit(copy_context().run, partial(collect_thread, repo, number)): (repo, number, ids)
             for (repo, number), ids in candidate_ids.items()
         }
-        for future in as_completed(futures):
-            repo, number, ids = futures[future]
+        unread = dict(futures)
+        for future in completed_before(futures, deadline):
+            repo, number, ids = unread.pop(future)
             thread, comments, thread_errors = future.result()
             coverage_errors.extend(thread_errors)
             if thread is None or thread_errors:
@@ -1472,7 +1587,7 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
             comments_through_until = [
                 comment
                 for comment in comments
-                if comment_timestamp(comment.created_at) <= settings["until"]
+                if comment_timestamp(comment.created_at) <= classification_until
             ]
             effective_ids = ids
             if (repo, number) in full_history_threads:
@@ -1494,10 +1609,16 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
                     and is_external_comment(comment, self_logins, bot_logins)
                 )
             )
-
-    reactions_by_global_key, last_edits_by_global_key, reaction_errors = collect_candidate_reactions(
-        reaction_candidates
-    )
+        coverage_errors.extend(
+            {"repo": repo, "lane": "thread", "error": f"{repo}#{number}: {deadline_error()}"}
+            for repo, number, _ in unread.values()
+        )
+        reactions_by_global_key, last_edits_by_global_key, reaction_errors = collect_candidate_reactions(
+            reaction_candidates, deadline
+        )
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+        read_deadline.reset(deadline_token)
     coverage_errors.extend(reaction_errors)
     comment_states: list[dict[str, Any]] = []
     # Full-history threads and outbound threads the Director took part in are
@@ -1531,7 +1652,7 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
                 self_logins,
                 bot_logins,
                 reactions_by_comment,
-                settings["until"],
+                classification_until,
                 people["automation"],
             )
         )
@@ -1596,6 +1717,8 @@ def collect_payload(settings: dict[str, Any]) -> dict[str, Any]:
             },
         },
         "attention": attention,
+        **({"handled": [item for item in comment_states if item["attention_state"] == "handled"]}
+           if settings.get("include_handled") else {}),
         "unasked_director_waits": unasked_waits,
         "director_mentions": mention_rows,
         "people_index": {

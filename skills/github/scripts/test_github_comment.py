@@ -1079,7 +1079,7 @@ def test_recent_reconciliation_includes_clock_skew_boundary_and_paginates() -> N
             posted = body["body"]
             return failure(503, "Unicorn!", is_write=True)
         query = urllib.parse.parse_qs(urllib.parse.urlsplit(path).query)
-        since = github_comment._parse_timestamp(query["since"][0])
+        since = github_comment.parse_timestamp(query["since"][0])
         # GitHub's updated-since comparison is exclusive. The created_at
         # boundary remains inclusive in the reconciliation contract.
         assert since < boundary, query

@@ -116,6 +116,7 @@ def candidate_response(
         request={"repository": REPO},
         provider_payload={
             "status": "accepted",
+            "trace_id": "launchplane_req_candidate",
             "records": records
             if records is not None
             else {"merge_train_batch_candidate_record_id": "active"},
@@ -132,12 +133,19 @@ class Fake:
         self.review_gaps = {}
         self.active = False
         self.calls = 0
+        self.discovered = []
         self.before = lambda _self: None
         self.targets = [copy.deepcopy(TARGET)]
         self.after_label_action = "idle"
         self.ineligible = {}
         self.scheduler_owns_batch = False
         self.candidate_status = "ready_for_checks"
+
+    def discover(self, repos):
+        self.discovered = repos
+
+    def open_pulls(self, _repo):
+        return copy.deepcopy(list(self.pulls.values()))
 
     def policies(self, _owner):
         return copy.deepcopy(self.targets)
@@ -181,6 +189,8 @@ class Fake:
         return [self.get(path) for path in paths]
 
     def pages(self, path, **_params):
+        if path.endswith('/comments'):
+            return [comment()]
         if path.endswith("/labels"):
             return self.pulls[int(path.split("/")[-2])]["labels"]
         if path.endswith("/files"):
@@ -249,6 +259,136 @@ class EnqueueTests(unittest.TestCase):
 
         fake.train = train
         return fake
+
+    def test_ready_handoffs_are_named_when_no_enqueue_is_possible(self):
+        for condition in ('held', 'busy', 'ineligible', 'batch_limit', 'dry_run'):
+            with self.subTest(condition=condition):
+                self.events = []
+                self.holds['paused_repositories'] = [REPO] if condition == 'held' else []
+                self.save()
+                self.args.apply = condition != 'dry_run'
+                fake = Fake()
+                if condition == 'busy':
+                    fake.train = lambda _: {
+                        'status': 'accepted', 'result': {
+                            'mode': 'dry-run', 'controller_action': 'resume_reconciliation',
+                            'dry_run_result': {'queue': [], 'queue_order': []},
+                        },
+                    }
+                if condition == 'ineligible':
+                    fake.ineligible = {n: ['current-head required checks are fail']
+                                       for n in fake.pulls}
+                self.run_pass(fake)
+                named = {payload['pr'] for event, payload in self.events
+                         if event in {'skipped', 'enqueued'}}
+                self.assertEqual(named, set(fake.pulls))
+                skipped = [p for event, p in self.events if event == 'skipped']
+                self.assertTrue(all(p.get('reason') for p in skipped))
+                if condition == 'ineligible':
+                    self.assertTrue(all(p.get('ineligible_reasons') == fake.ineligible[p['pr']]
+                                        for p in skipped))
+                if condition in {'held', 'busy', 'ineligible', 'dry_run'}:
+                    self.assertEqual(fake.writes, [])
+
+    def test_skip_inventory_respects_current_trusted_handoffs(self):
+        fake = Fake(count=3)
+        self.holds['paused_repositories'] = [REPO]
+        self.save()
+        pages = fake.pages
+        def comments(path, **params):
+            if path.endswith('/comments'):
+                number = int(path.split('/')[-2])
+                if number == 1:
+                    return [comment(login='untrusted')]
+                if number == 2:
+                    return [comment(), comment(body=WAITING, number=2)]
+                return [comment(body=f"{READY}\n\nHead: {'b' * 40}.")]
+            return pages(path, **params)
+        fake.pages = comments
+        self.run_pass(fake)
+        self.assertFalse(any(event == 'skipped' for event, _ in self.events))
+        self.assertEqual(fake.writes, [])
+
+    def test_unavailable_skip_inventory_does_not_hold_lock_or_stop_other_trains(self):
+        fake = Fake(count=1)
+        fake.targets.append({**TARGET, 'repo': 'example/other'})
+        self.holds['paused_repositories'] = [REPO]
+        self.save()
+        pages = fake.pages
+        acquired = []
+        def read(path, **params):
+            if path.startswith(f'/repos/{REPO}/'):
+                with watch.hold_lock(self.path):
+                    acquired.append(True)
+                raise github_read.GitHubReadShapeError('invalid observation')
+            return pages(path, **params)
+        fake.pages = read
+        self.run_pass(fake)
+        self.assertTrue(acquired)
+        self.assertEqual(fake.writes, [1])
+        self.assertTrue(any(event == 'skip_inventory_unavailable' for event, _ in self.events))
+
+    def test_skip_inventory_classifies_queue_members_for_every_outer_reason(self):
+        for reason in ('repository_held', 'controller_busy', 'queue_read_unavailable',
+                       'existing_queue', 'controller_ineligible'):
+            with self.subTest(reason=reason):
+                fake = Fake(count=4)
+                fake.pulls[4]['labels'] = [{'name': TARGET['label']}]
+                queue = fake.train(TARGET)['result']['dry_run_result']['queue'][:2]
+                queue[0]['ineligible_reasons'] = []
+                queue[1]['ineligible_reasons'] = [watch.DEPENDENCY_REVIEW]
+                self.events = []
+                self.args.handoff_login = ['engineer']
+                watch.report_ready_skips(
+                    fake, TARGET, self.args,
+                    lambda event, payload: self.events.append((event, payload)),
+                    reason, pulls=list(fake.pulls.values()), queue=queue,
+                )
+                named = {p['pr']: p for event, p in self.events if event == 'skipped'}
+                self.assertEqual(set(named), {3})
+                self.assertEqual(named[3]['controller_admission'], 'unknown')
+
+    def test_deferred_inventory_never_delays_or_replaces_a_stop(self):
+        for error in (watch.WatchError('enqueue write uncertain'), PermissionError(),
+                      TimeoutError(), KeyboardInterrupt()):
+            with self.subTest(error=type(error).__name__):
+                with patch.object(watch, 'report_ready_skips') as report:
+                    with self.assertRaises(type(error)) as raised:
+                        with watch.deferred_skip_reports(Fake(), TARGET, self.args, Mock()) as schedule:
+                            schedule('controller_busy')
+                            raise error
+                    self.assertIs(raised.exception, error)
+                    report.assert_not_called()
+
+    def test_bad_pr_inventory_does_not_hide_later_ready_handoffs(self):
+        fake = Fake(count=2)
+        pages = fake.pages
+        def read(path, **params):
+            if path.endswith('/1/comments'):
+                raise github_read.GitHubReadShapeError('unavailable')
+            return pages(path, **params)
+        fake.pages = read
+        watch.report_ready_skips(
+            fake, TARGET, self.args,
+            lambda event, payload: self.events.append((event, payload)), 'controller_busy',
+        )
+        self.assertEqual([p['pr'] for event, p in self.events if event == 'skipped'], [2])
+        self.assertTrue(any(event == 'skip_inventory_unavailable' for event, _ in self.events))
+
+    def test_inventory_stops_after_a_repository_identity_failure(self):
+        fake = Fake(count=2)
+        pages = fake.pages
+        reads = []
+        def read(path, **params):
+            if path.endswith('/comments'):
+                reads.append(path)
+                raise github_read.GitHubReadError(
+                    'identity mismatch', result=Mock(failure=Mock(retryable=False)), diagnostics={},
+                )
+            return pages(path, **params)
+        fake.pages = read
+        watch.report_ready_skips(fake, TARGET, self.args, Mock(), 'controller_busy')
+        self.assertEqual(len(reads), 1)
 
     def test_staging_qualifies_next_batch_without_changing_published_candidate(self):
         fake = self.staging_fake()
@@ -1146,12 +1286,67 @@ class EnqueueTests(unittest.TestCase):
             any(event == "skipped" and data["pr"] == 1 for event, data in self.events)
         )
 
+    def test_unavailable_inventory_skips_only_its_repository(self):
+        fake = Fake(count=1)
+        healthy = {**TARGET, "repo": "example/healthy"}
+        fake.targets = [TARGET, healthy]
+        def inventory(repo):
+            if repo == REPO:
+                raise watch.GitHubReadShapeError("inventory changed")
+            return [pr()]
+        fake.open_pulls = inventory
+        self.run_pass(fake)
+        self.assertEqual(fake.discovered, [REPO, healthy["repo"]])
+        self.assertEqual(fake.writes, [1])
+        self.assertTrue(any(event == "skip_inventory_unavailable" and data["repository"] == REPO for event, data in self.events))
+        self.assertTrue(all(data["repository"] == healthy["repo"] for event, data in self.events if event == "enqueued"))
+        self.args.repo = [healthy["repo"]]
+        self.run_pass(fake)
+        self.assertEqual(fake.discovered, [healthy["repo"]])
+
+    def test_another_pr_labeled_after_discovery_blocks_the_first_write(self):
+        fake = Fake(count=2)
+        original = fake.pages
+        def label_another(path, **params):
+            if path.endswith("/1/files"):
+                fake.pulls[2]["labels"] = [{"name": TARGET["label"]}]
+            return original(path, **params)
+        fake.pages = label_another
+        self.run_pass(fake)
+        self.assertEqual(fake.writes, [])
+        self.assertTrue(any(event == "batch_stopped" for event, _ in self.events))
+
+    def test_live_discovery_adapts_standalone_reader_errors(self):
+        live = object.__new__(watch.Live)
+        live.reader = Mock()
+        pulls = [pr()]
+        with patch.object(watch.github_open_prs, "scan", return_value={REPO: pulls}):
+            live.discover([REPO])
+        self.assertEqual(live.open_pulls(REPO), pulls)
+        error = watch.github_open_prs.GitHubReadError("unavailable",
+            result=watch.github_api.ApiResult(ok=False, status=503, body=None), diagnostics={})
+        with patch.object(watch.github_open_prs, "scan", return_value={REPO: error}) as scan:
+            live.discover([REPO])
+        scan.assert_called_once_with(live.reader, [REPO])
+        with self.assertRaises(watch.GitHubReadError) as caught:
+            live.open_pulls(REPO)
+        self.assertEqual(caught.exception.result.status, 503)
+        error.result.status = 403
+        error.result.failure = watch.github_api.FailureDetail(cause="permission_denied", message="Forbidden",
+            retryable=False, fallback_eligible=False, disposition="stop")
+        fake = Fake()
+        fake.open_pulls = live.open_pulls
+        with self.assertRaises(watch.GitHubReadError):
+            self.run_pass(fake)
+        self.assertEqual(fake.writes, [])
+
     def test_repository_filter_cannot_create_enrollment(self):
         fake = Fake()
         self.args.repo = ["example/not-enrolled"]
         self.run_pass(fake)
         self.assertEqual(fake.writes, [])
         self.assertEqual(fake.calls, 0)
+        self.assertEqual(fake.discovered, [])
 
     def test_lock_refuses_second_watcher_and_pause_updates_use_same_inode(self):
         with watch.hold_lock(self.path):
@@ -1314,9 +1509,8 @@ class EnqueueTests(unittest.TestCase):
         self.assertEqual(fake.writes, [])
         self.assertTrue(any(event == "busy" for event, _ in self.events))
 
-    def test_label_added_after_controller_read_preserves_batch(self):
+    def test_label_added_after_discovery_is_rechecked_before_any_write(self):
         fake = Fake()
-        self.args.apply = False
         original_pages = fake.pages
 
         def label_during_read(path, **params):
@@ -1326,8 +1520,7 @@ class EnqueueTests(unittest.TestCase):
         fake.pages = label_during_read
         self.run_pass(fake)
         self.assertEqual(fake.writes, [])
-        self.assertTrue(any(event == "busy" for event, _ in self.events))
-        self.assertFalse(any(event == "batch" for event, _ in self.events))
+        self.assertTrue(any(event == "batch_stopped" for event, _ in self.events))
 
     def test_unknown_label_author_preserves_batch(self):
         fake = Fake()
@@ -1674,6 +1867,20 @@ class QualificationTests(unittest.TestCase):
             self.assertFalse(self.qualified())
         self.io.acceptance = lambda *_args: True
         self.assertTrue(self.qualified())
+
+    def test_engineering_release_notes_enqueue_without_claiming_client_acceptance(self):
+        self.pull["body"] = (
+            "## Client test notes\n"
+            f"{ready_handoff.ENGINEERING_RELEASE_TESTS}\n"
+            "Check the imported parts at release."
+        )
+        self.io.acceptance = lambda *_args: False
+        self.assertTrue(self.qualified())
+        self.pull["labels"] = [{"name": "owner-review"}]
+        self.assertFalse(self.qualified())
+        self.pull["labels"] = []
+        self.pull["body"] += "\n## Owner test notes\nApprove the wording before merge."
+        self.assertFalse(self.qualified())
 
     def test_latest_current_head_changes_requested_refuses(self):
         self.reviews = [

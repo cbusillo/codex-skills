@@ -238,6 +238,10 @@ def report(
         })
     consumers = [dict(zip(("helper", "operation", "repository", "host", "actor", "bucket"), key), **tally)
                  for key, tally in tallies.items()]
+    hours = (timestamp - since) / 3600
+    for consumer in consumers:
+        consumer["http_requests_per_hour"] = consumer["http_requests"] / hours if hours > 0 else None
+        consumer["primary_requests_per_hour"] = consumer["primary_requests"] / hours if hours > 0 and not consumer["unknown_cost"] else None
     consumers.sort(key=lambda item: (-item["primary_requests"], -item["http_requests"], item["helper"]))
     return {"since": since, "until": timestamp, "actor": actor,
             "coverage": "instrumented HTTP attempts only; lower bound",

@@ -89,104 +89,24 @@ def assert_rejects_url(value: str, code: str) -> None:
         raise AssertionError(f"expected {value!r} to be rejected")
 
 
-def contract_artifact() -> dict[str, Any]:
-    return json.loads(contract.DEFAULT_CONTRACT_PATH.read_text(encoding="utf-8"))
-
-
-def assert_contract_error(artifact: dict[str, Any], code: str) -> None:
-    try:
-        contract.validate_contract(artifact)
-    except contract.ContractError as exc:
-        assert exc.code == code, exc.code
-    else:
-        raise AssertionError(f"expected contract error {code}")
-
-
-def test_agent_operator_contract_identity_and_provenance_semantics() -> None:
-    artifact = contract_artifact()
-    summary = contract.validate_contract(artifact)
-    assert summary["hermetic_only"] is True
-    assert summary["upstream_freshness_proven"] is False
-
-    provenance_only = copy.deepcopy(artifact)
-    provenance_only["provenance"]["source_commit_sha"] = "f" * 40
-    assert contract.semantic_digest(provenance_only) == contract.semantic_digest(
-        artifact
-    )
-    contract.validate_contract(provenance_only)
-
-
-def test_agent_operator_contract_rejects_drift_and_unsafe_content() -> None:
-    artifact = contract_artifact()
-
-    unsupported = copy.deepcopy(artifact)
-    unsupported["normalization_version"] = 2
-    assert_contract_error(unsupported, "unsupported_normalization_version")
-
-    unsupported_schema = copy.deepcopy(artifact)
-    unsupported_schema["schema_version"] = 2
-    assert_contract_error(unsupported_schema, "unsupported_schema_version")
-
-    digest_drift = copy.deepcopy(artifact)
-    digest_drift["contract"]["invariants"]["governance"][
-        "owner_acceptance_authoritative"
-    ] = False
-    assert_contract_error(digest_drift, "invariant_contract_mismatch")
-
-    unsafe = copy.deepcopy(artifact)
-    unsafe["contract"]["operations"][0]["purpose"] = (
-        "Contact https://private.example.invalid for details."
-    )
-    unsafe["semantic_digest_sha256"] = contract.semantic_digest(unsafe)
-    assert_contract_error(unsafe, "unsafe_public_value")
-
-    malformed = copy.deepcopy(artifact)
-    malformed["contract"]["operations"][0]["unexpected"] = True
-    assert_contract_error(malformed, "invalid_operation_keys")
-
-    digest_mismatch = copy.deepcopy(artifact)
-    digest_mismatch["contract"]["operations"][0][
-        "schema_fingerprint_sha256"
-    ] = "f" * 64
-    assert_contract_error(digest_mismatch, "semantic_digest_mismatch")
-
-    projected_extension = copy.deepcopy(artifact)
-    for operation in projected_extension["contract"]["operations"]:
-        if operation["operation_id"] == "evaluate_agent_write_intent":
-            operation["path"] = contract.LOCAL_EXTENSION_ROUTES[
-                "generic-web-deploy-recovery-dry-run"
-            ]["path"]
-            break
-    assert_contract_error(projected_extension, "local_extension_now_projected")
-
-
 def test_agent_operator_contract_routes_every_local_consumer() -> None:
-    artifact = contract_artifact()
-    operation_paths = {
-        operation["operation_id"]: operation["path"]
-        for operation in artifact["contract"]["operations"]
-    }
-    for command, (operation_id, modes) in {
-        **contract.PROJECTED_HELPER_COMMANDS, **contract.SERVICE_API_HELPER_COMMANDS,
-    }.items():
-        assert contract.helper_command_path(command) == operation_paths[operation_id]
-        assert modes
-    for command, extension in contract.LOCAL_EXTENSION_ROUTES.items():
-        assert contract.helper_command_path(command) == extension["path"]
-        assert extension["path"] not in operation_paths.values()
-    assert contract.internal_helper_path("merge-train-policy-targets-read") == (
-        "/v1/work-graph/merge-train/policy-targets"
-    )
-    assert "authz-activation-preflight-read" not in contract.PROJECTED_HELPER_COMMANDS
-    assert not hasattr(write_action, "execute_authz_activation_preflight_read")
+    for lookup, key in ((contract.operation_path, "unknown_operation"),
+                        (contract.helper_command_path, "unknown_command"),
+                        (contract.internal_helper_path, "unknown_route")):
+        try:
+            lookup(key)
+        except contract.ContractError:
+            pass
+        else:
+            raise AssertionError("unknown bindings must fail closed")
     context_args = argparse.Namespace(
         repo="example/repo", branch=None, issue=None, pr=None
     )
     assert context_helper.build_context_url(
         "https://launchplane.example.invalid", context_args
     ) == (
-        "https://launchplane.example.invalid/v1/agent/context"
-        "?repository=example%2Frepo"
+        "https://launchplane.example.invalid"
+        f"{contract.operation_path('read_agent_context')}?repository=example%2Frepo"
     )
 
 
@@ -1337,7 +1257,11 @@ def test_controller_block_and_reconciliation_preserve_durable_diagnostics() -> N
     result = {
         "controller_action": "block", "mode": "blocked",
         "blocking_reason": {"code": "merge_readiness_not_ready", "message": "Required checks failed."},
-        "merge_readiness": {"state": "blocked_checks", "reason_codes": ["checks_failed"]},
+        "merge_readiness": {
+            "state": "blocked_checks", "reason_codes": ["checks_failed"], "owner_states": ["ready"],
+            "technical_checks_state": "failed", "engineering_review_state": "ready",
+            "policy_state": "ready", "candidate_state": "ready", "fence_state": "ready",
+        },
         "merge_train_batch_landing_plan_record_id": "landing-plan-example",
         "landing_plan": {"record_id": "landing-plan-example"},
     }
@@ -1390,7 +1314,6 @@ def test_controller_block_projection_rejects_unsafe_or_invalid_fields() -> None:
     for block in (
         {"status": "blocked", "pull_request_number": 42, "train_should_continue": "true"},
         {"status": "blocked", "pull_request_number": True, "train_should_continue": True},
-        {"status": "blocked", "pull_request_number": 42, "train_should_continue": True, "extra": "x"},
     ):
         response = _queue_refusal_response()
         response["result"]["block_result"] = block
@@ -1471,14 +1394,14 @@ def test_controller_land_batch_reports_landing_progress() -> None:
 
 def test_controller_unreadable_reply_says_whether_launchplane_accepted_it() -> None:
     body = _candidate_failure_isolated_response()
-    body["result"]["later_unknown_field"] = "private-fixture-value"
+    body["result"]["block_result"]["train_should_continue"] = "private-fixture-value"
     for http_status, service_status, accepted in (
         (202, "accepted", True), (200, "accepted", True), (202, "pending", False), (None, "accepted", False),
     ):
         response = write_action._ServiceResponse({**body, "status": service_status}, http_status)
         status, payload = _run_controller_response(response, mutate=True)
         assert status == 1 and payload["status"] == "invalid"
-        assert payload["summary"]["unrecognized_key"] == "later_unknown_field"
+        assert payload["summary"]["projection_error_code"] == "invalid_response"
         assert (payload["summary"].get("launchplane_status") == "accepted") is accepted
         assert "private-fixture-value" not in json.dumps(payload)
 
@@ -1555,7 +1478,7 @@ def test_controller_conflict_probe_rejects_malformed_and_unsafe_evidence() -> No
         "pull_request_number": 43, "head_sha": "b" * 40,
         "reason": "entry_conflict", "conflicts_with": [42],
     }]}
-    invalid = [False, [], "ran", {}, {**probe, "extra": "private-probe-value"}]
+    invalid = [False, [], "ran", {}]
     for key, value in (
         ("status", []), ("status", "Bearer private-probe-value"),
         ("pull_request_numbers", {}), ("pull_request_numbers", [True]),
@@ -1567,8 +1490,7 @@ def test_controller_conflict_probe_rejects_malformed_and_unsafe_evidence() -> No
         ("head_sha", None), ("head_sha", "ghp_privateprobevalue"),
         ("reason", []), ("reason", "Bearer private-probe-value"),
         ("conflicts_with", "42"), ("conflicts_with", [False]),
-        ("conflicts_with", [0]), ("extra", "private-probe-value"),
-        ("token", "private-probe-value"),
+        ("conflicts_with", [0]), ("token", "private-probe-value"),
     ):
         invalid.append({**probe, "held_out": [{**probe["held_out"][0], key: value}]})
     for malformed in invalid:
@@ -1577,38 +1499,42 @@ def test_controller_conflict_probe_rejects_malformed_and_unsafe_evidence() -> No
         assert payload["status"] == "invalid"
         assert payload["result"] == {}
         assert "private-probe-value" not in json.dumps(payload)
-    response = _conflict_probe_response(probe)
-    response["result"]["unexpected"] = "private-probe-value"
-    assert _run_controller_response(response)[0] == 1
 
 
-@pytest.mark.parametrize("section", ["result", "records"])
-def test_controller_rejected_response_names_unknown_key(section: str) -> None:
-    response: dict[str, Any] = {
-        "status": "accepted", "trace_id": "launchplane_req_diagnostic", "records": {},
-        "result": {"controller_action": "land_batch"},
-    }
-    response[section]["historical_stack_child_label_status"] = "private-fixture-value"
-    response[section]["later_unknown_field"] = "another-private-value"
+def test_controller_reply_fields_newer_than_the_pin_are_dropped_and_named() -> None:
+    response = _candidate_failure_isolated_response()
+    response["result"]["later_result_field"] = "private-fixture-value"
+    # Fields an older helper projected but the contract does not declare are dropped too.
+    response["result"]["workflow_run_url"] = "https://private.example/path"
+    response["result"]["candidate_sha"] = "d" * 40
+    response["records"]["later_record_id"] = "private-record-value"
+    response["result"]["block_result"]["later_block_field"] = "private-block-value"
     status, payload = _run_controller_response(response, mutate=True)
-    assert status == 1 and payload["status"] == "invalid"
-    assert payload["result"] == {} and payload["records"] == {}
-    assert payload["warnings"][0]["code"] == "unsafe_response_shape"
-    assert payload["summary"]["projection_error_code"] == "unsafe_response_shape"
-    assert payload["summary"]["unrecognized_key"] == "historical_stack_child_label_status"
-    assert payload["summary"]["trace_id"] == response["trace_id"]
-    assert payload["summary"]["recommendation"]
-    assert "private-fixture-value" not in json.dumps(payload)
-    assert "another-private-value" not in json.dumps(payload)
+    assert status == 0 and payload["status"] == "accepted"
+    assert payload["result"]["block_result"]["pull_request_number"] == 42
+    assert payload["summary"]["controller_action"] == "block"
+    assert payload["summary"]["unrecognized_fields"].split(",") == [
+        "records.later_record_id", "result.block_result.later_block_field", "result.candidate_sha",
+        "result.later_result_field", "result.workflow_run_url",
+    ]
+    assert "candidate_sha" not in payload["result"] and "private.example" not in json.dumps(payload)
+    assert payload["warnings"][0]["code"] == "controller_reply_newer_than_pinned_schema"
+    for value in ("private-fixture-value", "private-record-value", "private-block-value"):
+        assert value not in json.dumps(payload)
+    response["records"]["later_record_id"] = "Bearer private-record-value"
+    status, payload = _run_controller_response(response, mutate=True)
+    assert status == 1 and payload["summary"]["projection_error_code"] == "unsafe_response_shape"
+    assert "private-record-value" not in json.dumps(payload)
 
 
 @pytest.mark.parametrize("key", ["https://private.example/path", "Bearer private-fixture-value", "ghp_privatefixture", "client_secret", "x" * 81])
 def test_controller_rejected_response_omits_unsafe_unknown_key(key: str) -> None:
-    response = {"status": "accepted", "records": {}, "result": {key: "private-fixture-value"}}
+    response = {"status": "accepted", "trace_id": "launchplane_req_diagnostic", "records": {},
+                "result": {key: "private-fixture-value"}}
     status, payload = _run_controller_response(response, mutate=True)
     assert status == 1 and payload["status"] == "invalid"
     assert payload["summary"]["projection_error_code"] == "unsafe_response_shape"
-    assert "unrecognized_key" not in payload["summary"]
+    assert "unrecognized_fields" not in payload["summary"]
     assert key not in json.dumps(payload)
 
 
@@ -1618,7 +1544,7 @@ def test_controller_rejected_response_names_bad_value() -> None:
     assert status == 1 and payload["status"] == "invalid"
     assert payload["summary"]["projection_error_code"] == "invalid_response"
     assert payload["warnings"][0]["code"] == "invalid_response"
-    assert "unrecognized_key" not in payload["summary"]
+    assert "unrecognized_fields" not in payload["summary"]
     assert payload["summary"]["recommendation"]
 
 
@@ -1934,57 +1860,6 @@ def test_current_launchplane_service_response_shapes() -> None:
     assert early_refusal["summary"]["trace_id"] == "launchplane_req_lineage_changed"
     assert early_refusal["result"]["blocking_reason"]["code"] == "landing_lineage_changed"
     assert early_refusal["result"]["structural_provenance"] is None
-
-    for field, value in (
-        (
-            "blocking_reason",
-            {
-                "code": "merge_readiness_not_ready",
-                "message": "Merge readiness is not ready.",
-                "detail": "unexpected",
-            },
-        ),
-        (
-            "merge_readiness",
-            {
-                "state": "blocked_engineering_review",
-                "reason_codes": ["engineering_review_pending"],
-                "owner_states": ["ready"],
-                "unexpected": "value",
-            },
-        ),
-        ("structural_provenance", {"status": "unknown", "unexpected": "value"}),
-    ):
-        result = {
-            "repository": "example/repo",
-            "base_branch": "main",
-            "controller_action": "block",
-            "blocking_reason": {
-                "code": "merge_readiness_not_ready",
-                "message": "Merge readiness is not ready.",
-            },
-            "merge_readiness": None,
-            field: value,
-        }
-        try:
-            write_action.summarize_success(
-                operation="merge-train-controller-run-once",
-                request={
-                    "repository": "example/repo",
-                    "base_branch": "main",
-                    "mutate": True,
-                },
-                provider_payload={
-                    "status": "accepted",
-                    "trace_id": "launchplane_req_blocked_merge",
-                    "records": {},
-                    "result": result,
-                },
-            )
-        except safety.LaunchplaneSafetyError as exc:
-            assert exc.code == "unsafe_response_shape"
-        else:
-            raise AssertionError(f"expected unexpected {field} field to fail closed")
 
     for field, value in (
         ("state", {}),
@@ -3705,6 +3580,34 @@ def test_product_environment_read_refuses_invalid_monitoring_evidence(field: str
     )
     assert status != 0 and not payload["result"]
     assert "private.example.invalid" not in json.dumps(payload)
+
+
+@pytest.mark.parametrize(
+    "capacity",
+    [
+        {"host_network_capacity_available": False, "host_network_capacity": None},
+        {
+            "host_network_capacity_available": True,
+            "host_network_capacity": {
+                "server_id": "server-example",
+                "observed_at": "2026-10-21T13:00:00Z",
+                "status": "short",
+                "capacity": {"total_slots": 31, "free_slots": 1},
+                "required_networks": 2,
+                "safety_margin": 1,
+                "reason": "",
+            },
+        },
+    ],
+)
+def test_product_environment_read_accepts_and_drops_host_network_capacity(capacity: dict[str, Any]) -> None:
+    # Launchplane's ProductEnvironmentResponse always carries the availability flag.
+    argv = ["product-environment-read", "--product", "example-product", "--environment", "testing"]
+    _status, baseline, _calls = _run_product_read(argv, _product_environment_response())
+    status, payload, _calls = _run_product_read(argv, {**_product_environment_response(), **capacity})
+    assert status == 0
+    assert (payload["result"], payload["summary"]) == (baseline["result"], baseline["summary"])
+    assert "network_capacity" not in json.dumps(payload)
 
 
 def test_product_environment_read_uses_path_route_and_projects_deploy_identity() -> None:
@@ -5828,9 +5731,9 @@ def test_context_projection_contract_and_secret_shape() -> None:
         {"result": {"context": raw_context}}, request=provider_context["request"]
     )
     assert payload["status"] == "available"
-    assert payload["generated_at"] == "2026-01-02T03:04:05Z"
-    assert payload["summary"]["state"] == "waiting"
-    assert payload["sections"]["work_graph"]["items"][0]["safe_to_start"] is False
+    assert payload["generated_at"] == provider_context["generated_at"]
+    assert payload["summary"] == provider_context["summary"]
+    assert payload["sections"]["work_graph"] == provider_context["sections"]["work_graph"]
     provider_payload = {"result": {"context": {"work_graph": {"status": "available", "items": [{"source_of_truth_url": "https://github.com/example/repo/issues/1", "state": "waiting", "safe_to_start": False, "next_action": "Wait for checks.", "api_key": "secret-value"}]}}}}
     try:
         context_helper.normalize_launchplane_payload(provider_payload, request={"repository": "example/repo"})
@@ -9317,6 +9220,229 @@ def test_odoo_addon_settings_cli_dispatches_projected_route() -> None:
     assert "secret-shopify-api-token-binding" not in json.dumps(calls[1]["request"])
 
 
+def _odoo_website_settings_intent() -> dict[str, object]:
+    return {
+        "artifact_id": "artifact-example-odoo-1",
+        "settings": {
+            "operation": "apply",
+            "website_id": 1,
+            "public_origin": "https://www.example.com",
+            "public_indexing_enabled": True,
+            "google_analytics_key": "G-EXAMPLE123",
+            "cookies_bar": True,
+            "block_third_party_domains": True,
+        },
+    }
+
+
+def _odoo_website_settings_payload(**overrides: object) -> dict[str, object]:
+    return {
+        "product": "example-odoo",
+        "context": "example",
+        "reason": "Open the public site to search engines and analytics.",
+        "website_settings": _odoo_website_settings_intent(),
+        **overrides,
+    }
+
+
+def _odoo_website_settings_result(**overrides: object) -> dict[str, object]:
+    return {
+        "product": "example-odoo",
+        "context": "example",
+        "instance": "prod",
+        "record_sha256_before": "b" * 64,
+        "mode": "dry-run",
+        "plan_sha256": "a" * 64,
+        "before": None,
+        "after": _odoo_website_settings_intent(),
+        "changed": True,
+        "applied": False,
+        "read_back_matches": False,
+        "activation": "Client acceptance of the exact release applies these settings; "
+        "preparation changes no Odoo database.",
+        **overrides,
+    }
+
+
+def _odoo_website_settings_evidence(**result_overrides: object) -> dict[str, Any]:
+    projected: dict[str, Any] = write_action.summarize_success(
+        operation="odoo-website-settings-dry-run",
+        request={"mode": "dry-run", "payload_source": "private_file"},
+        provider_payload={
+            "status": "accepted",
+            "trace_id": "launchplane_req_website_settings",
+            "records": {"product_profile": "example-odoo", "context": "example", "instance": "prod"},
+            "result": _odoo_website_settings_result(**result_overrides),
+        },
+    )
+    return projected
+
+
+def test_odoo_website_settings_projection_fails_closed_on_unknown_fields() -> None:
+    projected = _odoo_website_settings_evidence()
+    assert projected["summary"]["plan_sha256"] == "a" * 64
+    assert projected["result"]["after"] == _odoo_website_settings_intent()
+    assert projected["result"]["before"] is None
+
+    withdrawn = _odoo_website_settings_evidence(
+        before=_odoo_website_settings_intent(), after=None
+    )
+    assert withdrawn["result"]["after"] is None
+    assert withdrawn["result"]["before"]["settings"]["website_id"] == 1
+
+    unknown_setting = _odoo_website_settings_intent()
+    cast(dict[str, object], unknown_setting["settings"])["admin_password"] = "PRIVATE_SENTINEL"
+    for result in (
+        _odoo_website_settings_result(unexpected="PRIVATE_SENTINEL"),
+        _odoo_website_settings_result(after=unknown_setting),
+    ):
+        with pytest.raises(write_action.LaunchplaneSafetyError):
+            write_action.summarize_success(
+                operation="odoo-website-settings-dry-run",
+                request={},
+                provider_payload={"status": "accepted", "records": {}, "result": result},
+            )
+
+
+def test_odoo_website_settings_body_validates_payload_and_binds_digest() -> None:
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        payload_path = Path(directory) / "website-settings.json"
+        evidence_path = Path(directory) / "website-settings-dry-run.json"
+        payload_path.write_text(json.dumps(_odoo_website_settings_payload()), encoding="utf-8")
+        evidence_path.write_text(json.dumps(_odoo_website_settings_evidence()), encoding="utf-8")
+
+        dry_run_body = write_action.odoo_website_settings_body(
+            argparse.Namespace(payload_file=str(payload_path), idempotency_key=""),
+            mode="dry-run",
+        )
+        assert dry_run_body["instance"] == "prod"
+        assert dry_run_body["mode"] == "dry-run"
+        assert "reviewed_plan_sha256" not in dry_run_body
+
+        apply_args = argparse.Namespace(
+            payload_file=str(payload_path),
+            idempotency_key="example-prod-website-1",
+            reviewed_dry_run=True,
+            expected_plan_digest="a" * 64,
+            dry_run_evidence_file=str(evidence_path),
+        )
+        apply_body = write_action.odoo_website_settings_body(apply_args, mode="apply")
+        assert apply_body["reviewed_plan_sha256"] == "a" * 64
+
+        for overrides, code in (
+            ({"reviewed_dry_run": False}, "reviewed_dry_run_required"),
+            ({"expected_plan_digest": "b" * 64}, "reviewed_dry_run_not_apply_eligible"),
+            ({"expected_plan_digest": "short"}, "invalid_expected_plan_digest"),
+            ({"idempotency_key": ""}, "idempotency_key_required"),
+        ):
+            args = argparse.Namespace(**{**vars(apply_args), **overrides})
+            with pytest.raises(ValueError, match=f"^{code}$"):
+                write_action.odoo_website_settings_body(args, mode="apply")
+
+        other_context = Path(directory) / "other-context-dry-run.json"
+        other_context.write_text(
+            json.dumps(_odoo_website_settings_evidence(context="other")), encoding="utf-8"
+        )
+        args = argparse.Namespace(**{**vars(apply_args), "dry_run_evidence_file": str(other_context)})
+        with pytest.raises(ValueError, match="^reviewed_dry_run_not_apply_eligible$"):
+            write_action.odoo_website_settings_body(args, mode="apply")
+
+        def settings_with(**changes: object) -> dict[str, object]:
+            intent = _odoo_website_settings_intent()
+            return {**intent, "settings": {**cast(dict[str, object], intent["settings"]), **changes}}
+
+        for payload, code in (
+            (_odoo_website_settings_payload(instance="testing"), "unsupported_instance"),
+            (_odoo_website_settings_payload(schema_version=1), "unsupported_payload_field"),
+            (
+                _odoo_website_settings_payload(
+                    website_settings=settings_with(public_origin="http://www.example.com")
+                ),
+                "https_public_origin_required",
+            ),
+            (
+                _odoo_website_settings_payload(website_settings=settings_with(ga_secret="x")),
+                "unsupported_website_settings_field",
+            ),
+            (
+                _odoo_website_settings_payload(
+                    website_settings=settings_with(operation="disable_collection")
+                ),
+                "unsupported_website_settings_operation",
+            ),
+            (
+                _odoo_website_settings_payload(website_settings=settings_with(website_id=True)),
+                "website_id_required",
+            ),
+        ):
+            payload_path.write_text(json.dumps(payload), encoding="utf-8")
+            with pytest.raises(ValueError, match=f"^{code}$"):
+                write_action.odoo_website_settings_body(
+                    argparse.Namespace(payload_file=str(payload_path), idempotency_key=""),
+                    mode="dry-run",
+                )
+
+        missing = _odoo_website_settings_payload()
+        del missing["website_settings"]
+        payload_path.write_text(json.dumps(missing), encoding="utf-8")
+        with pytest.raises(ValueError, match="^website_settings_required$"):
+            write_action.odoo_website_settings_body(
+                argparse.Namespace(payload_file=str(payload_path), idempotency_key=""),
+                mode="dry-run",
+            )
+
+
+def test_odoo_website_settings_cli_withdraws_pending_intent_with_null() -> None:
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        payload_path = Path(directory) / "website-settings.json"
+        evidence_path = Path(directory) / "website-settings-dry-run.json"
+        payload_path.write_text(
+            json.dumps(_odoo_website_settings_payload(website_settings=None)), encoding="utf-8"
+        )
+        evidence_path.write_text(
+            json.dumps(
+                _odoo_website_settings_evidence(before=_odoo_website_settings_intent(), after=None)
+            ),
+            encoding="utf-8",
+        )
+        calls: list[dict[str, Any]] = []
+
+        def fake_execute_post(**kwargs: Any) -> int:
+            calls.append(kwargs)
+            return 0
+
+        with temporary_attribute(write_action, "execute_post", fake_execute_post):
+            assert (
+                write_action.main(
+                    ["odoo-website-settings-dry-run", "--payload-file", str(payload_path)]
+                )
+                == 0
+            )
+            assert (
+                write_action.main(
+                    [
+                        "odoo-website-settings-apply",
+                        "--payload-file",
+                        str(payload_path),
+                        "--idempotency-key",
+                        "example-prod-website-1",
+                        "--reviewed-dry-run",
+                        "--expected-plan-digest",
+                        "a" * 64,
+                        "--dry-run-evidence-file",
+                        str(evidence_path),
+                    ]
+                )
+                == 0
+            )
+    expected_path = contract.operation_path("apply_odoo_website_settings")
+    assert [call["path"] for call in calls] == [expected_path, expected_path]
+    assert [call["body"]["mode"] for call in calls] == ["dry-run", "apply"]
+    assert all(call["body"]["website_settings"] is None for call in calls)
+    assert all(call["request"]["withdraw"] is True for call in calls)
+    assert "Open the public site" not in json.dumps(calls[1]["request"])
+
+
 def test_client_named_fields_read_like_their_legacy_owner_names() -> None:
     argv = ["product-profile-read", "--product", "example-product"]
     _status, legacy, _calls = _run_product_read(argv, _product_profile_response())
@@ -10941,7 +11067,8 @@ def test_runtime_sync_failure_diagnostics_follow_the_current_exchange(phase, fai
 
 
 @pytest.mark.parametrize("operation", [
-    "odoo-addon-settings-apply", "integration-allowances-apply", "testing-hold-apply",
+    "odoo-addon-settings-apply", "odoo-website-settings-apply",
+    "integration-allowances-apply", "testing-hold-apply",
     "product-repository-identity-apply", "generic-web-deploy-recovery-apply",
     "repository-inventory-apply", "product-expected-config-apply",
 ])

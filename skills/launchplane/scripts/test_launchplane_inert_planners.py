@@ -215,7 +215,7 @@ def test_conformance_refuses_mutating_planner_binding():
     routes = copy.deepcopy(contract.LOCAL_EXTENSION_ROUTES)
     routes[INGRESS_COMMAND]["mode"] = "apply"
     with patch.object(contract, "LOCAL_EXTENSION_ROUTES", routes), pytest.raises(contract.ContractError):
-        contract.validate_contract(contract.load_contract())
+        contract.validate_local_bindings()
 
 
 @pytest.mark.parametrize("change", ["apply", "target", "provider", "domains", "unknown"])

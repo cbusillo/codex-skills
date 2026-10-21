@@ -21,18 +21,33 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 from datetime import datetime
 from typing import Any, Callable
 from urllib.parse import urlencode
 
-APPROVAL_QUESTION = "Q455"
-APPROVAL_ISSUE = "https://github.com/cbusillo/codex-skills/issues/2073"
-# An answer is the comment's first line, unquoted: "Q455 yes" from the Director,
-# or "Director decision: Q455 yes" recorded by trusted automation. Any other
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from skills.direction.scripts import question_id
+
+
+QUESTION_ID = re.compile(r"Q\d+\b", re.IGNORECASE)
+# An answer is the comment's first line, unquoted: "Q<number> yes" from the Director,
+# or "Director decision: Q<number> yes" recorded by trusted automation. Any other
 # answer to the question, or a hedged one, withholds approval.
 DECISION_PREFIX = re.compile(r"Director decision\s*:\s*", re.IGNORECASE)
 AFFIRMATIVE = {"yes", "approved", "approve"}
 HEDGE = re.compile(r"\b(?:not|no|don't|do not|but|unless|declin\w*|reject\w*|revok\w*|withdraw\w*)\b", re.IGNORECASE)
+UNQUALIFIED_TAIL = re.compile(r"[\s*_`.,!]*(?:(?:go ahead|again|mention searches)[\s*_`.,!]*)?", re.IGNORECASE)
+# A direct permission clause, not a bag of search-related words. Unsupported
+# phrasing reports a coverage gap; it cannot silently become standing permission.
+PERMISSION_SUBJECT = r"(?:(?:(?:the|my|your|our)\s+)?(?:(?:supervisor['’]s|comment|mention|GitHub)\s+)?(?:supervisor|watcher|watch|radar|agents?|tools?)|I|we)"
+MENTION_PERMISSION = re.compile(
+    rf"^(?:may|can|should|could|will)\s+{PERMISSION_SUBJECT}(?:\s+and\s+{PERMISSION_SUBJECT})*\s+"
+    r"(?:search(?:\s+GitHub)?\s+(?:for\s+)?mentions?|"
+    r"run\s+(?:(?:unattended|read-only|GitHub)\s+)*mention\s+searches)"
+    r"(?:\s+of\s+you)?\s+(?:under|using|with|as)\s+"
+    r"(?:your|my|the\s+Director['’]s)\s+(?:own\s+)?(?:gh\s+|GitHub\s+)?login"
+    r"(?:[,;]?\s+(?:unattended|read-only|on\s+(?:every|each)\s+(?:pass|run)))*\s*[?.!]?", re.IGNORECASE)
 COMMENT_URL = re.compile(
     r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/(?:issues|pull)/\d+#issuecomment-(\d+)"
 )
@@ -83,11 +98,11 @@ def thread_comments_path(issue_api_url: str) -> str:
 
 
 def answer(comment: Any, director_login: str, recorders: set[str], *,
-           question: str = APPROVAL_QUESTION, recorded_affirmative: str | None = None) -> bool | None:
+           question: str, recorded_affirmative: str | None = None, unquestioned: bool = False) -> bool | None:
     """True or False for a Director answer, else None.
 
     Other narrow readers may name their own question and the exact affirmative
-    first line of an existing trusted recorded decision. Q455 defaults stay unchanged.
+    first line of an existing trusted recorded decision.
     """
     if not isinstance(comment, dict) or not isinstance(comment.get("body"), str):
         return None
@@ -106,39 +121,89 @@ def answer(comment: Any, director_login: str, recorders: set[str], *,
     match = re.match(rf"{re.escape(question)}\b\W*(\w+)(.*)", text, re.IGNORECASE)
     if not match:
         return None
-    return match.group(1).casefold() in AFFIRMATIVE and not HEDGE.search(match.group(2))
+    return (match.group(1).casefold() in AFFIRMATIVE and not HEDGE.search(match.group(2))
+            and (not unquestioned or UNQUALIFIED_TAIL.fullmatch(match.group(2)) is not None))
 
 
 def approval_gap(
     approval_url: str | None, director_login: str, recorders: set[str],
     read_comment: Callable[[str, int], Any], read_later: Callable[[str, str], list[Any]],
-    *, question: str = APPROVAL_QUESTION, recorded_affirmative: str | None = None,
+    *, question: str | None = None, recorded_affirmative: str | None = None,
 ) -> str | None:
     """Why unattended Director-login searches are not approved, or None.
 
     `read_later(issue_api_url, since)` lists that thread's comments updated
-    since the approval, so a later answer from the Director withdraws it.
+    since a timestamp. Mention permission needs the whole thread to bind the
+    question; explicit-question readers retain their existing narrower read.
     """
     if not approval_url:
-        return f"no standing approval recorded ({APPROVAL_QUESTION} on {APPROVAL_ISSUE})"
+        return "no standing approval recorded for mention searches"
     match = COMMENT_URL.fullmatch(approval_url.strip())
     if not match:
         return "the standing approval must be a GitHub issue comment link"
     try:
         comment = read_comment(match.group(1), int(match.group(2)))
-        if answer(comment, director_login, recorders, question=question,
-                  recorded_affirmative=recorded_affirmative) is not True:
+        mention_permission = question is None
+        if question is None:
+            # Read the whole thread, including the question before the approval.
+            # Explicit-question consumers (such as attachments) keep their own gate.
+            thread = read_later(comment["issue_url"], "1970-01-01T00:00:00Z")
+            question = mention_question(comment, thread, approval_url.strip(), director_login, recorders)
+            if question is None:
+                return "the linked approval has no matching mention-search permission question"
+        else:
+            thread = read_later(comment["issue_url"], comment["created_at"])
+        if not answer(comment, director_login, recorders, question=question,
+                      recorded_affirmative=recorded_affirmative, unquestioned=mention_permission):
             return f"the linked comment is not an unqualified {question} approval from the Director"
-        later = read_later(comment["issue_url"], comment["created_at"])
     except Exception as error:  # Any read failure leaves approval unverified.
         return f"the standing approval could not be verified: {error}"
     answers = [answer(item, director_login, recorders, question=question,
-                      recorded_affirmative=recorded_affirmative) for item in sorted(
-        (item for item in later if isinstance(item, dict) and item.get("id") != comment.get("id")),
+                      recorded_affirmative=recorded_affirmative, unquestioned=mention_permission) for item in sorted(
+        (item for item in thread if isinstance(item, dict) and item.get("id") != comment.get("id")
+         and str(item.get("updated_at") or item.get("created_at") or "") >= comment["created_at"]),
         key=lambda item: str(item.get("created_at") or ""))]
     if [value for value in answers if value is not None][-1:] == [False]:
         return f"a later answer withdrew the {question} approval"
     return None
+
+
+def mention_question(comment: Any, thread: list[Any], approval_url: str,
+                     director_login: str, recorders: set[str]) -> str | None:
+    """Bind an approval to its trusted, preceding permission heading in this thread."""
+    linked = COMMENT_URL.fullmatch(approval_url)
+    if not isinstance(comment, dict) or not linked:
+        return None
+    expected_thread = approval_url.split("#", 1)[0].replace("https://github.com/", "https://api.github.com/repos/")
+    expected_thread = expected_thread.replace("/pull/", "/issues/")
+    if comment.get("id") != int(linked.group(2)) or str(comment.get("issue_url") or "").casefold() != expected_thread.casefold():
+        return None
+    first_line = next((line.strip() for line in str(comment.get("body") or "").splitlines() if line.strip()), "")
+    text = DECISION_PREFIX.sub("", first_line.strip("*_` "), count=1).strip("*_` ")
+    approved_id = QUESTION_ID.match(text)
+    if not approved_id:
+        return None
+    question = approved_id.group().upper()
+    trusted = {login.casefold() for login in {*recorders, director_login}}
+    candidates = []
+    for item in thread:
+        if not isinstance(item, dict) or not isinstance(item.get("body"), str):
+            continue
+        if ((item.get("user") or {}).get("login") or "").casefold() not in trusted:
+            continue
+        if str(item.get("issue_url", expected_thread)).casefold() != expected_thread.casefold() or not (
+                str(item.get("created_at") or "") < comment["created_at"]):
+            continue
+        # The posting flow's heading is the first physical line, never body prose.
+        heading = next((line.strip() for line in item["body"].splitlines() if line.strip()), "")
+        heading = re.sub(r"^#{1,6}\s+", "", heading).replace("*", "").replace("`", "")
+        if question_id.heading_id(heading) == question:
+            scope = heading.split(question, 1)[1].lstrip(" .:;—–-")
+            unchanged = str(item.get("updated_at") or item.get("created_at") or "") <= comment["created_at"]
+            candidates.append(bool(unchanged and MENTION_PERMISSION.fullmatch(scope)))
+    if not candidates or not all(candidates):
+        return None
+    return question
 
 
 def timestamp(value: str) -> datetime:

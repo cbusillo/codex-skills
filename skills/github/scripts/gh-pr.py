@@ -213,7 +213,7 @@ def main() -> int:
     )
 
 
-def parse_args() -> argparse.Namespace:
+def build_parser() -> argparse.ArgumentParser:
     parser = github_api_core.TerminalArgumentParser(
         description="Handle GitHub PR reads, writes, checks, merge, and rate limits with transport-aware defaults.",
     )
@@ -319,7 +319,11 @@ def parse_args() -> argparse.Namespace:
     p = sub.add_parser("rate-limit", help="Show REST and GraphQL rate-limit buckets.")
     p.set_defaults(func=cmd_rate_limit)
 
-    return parser.parse_args()
+    return parser
+
+
+def parse_args() -> argparse.Namespace:
+    return build_parser().parse_args()
 
 
 def read_operation() -> str:
@@ -781,7 +785,7 @@ def update_branch_refusal(
     if mergeable_state == "dirty":
         cause, message = "refresh_conflicting_branch", (
             "The PR conflicts with its base, which update-branch cannot resolve; merge the base locally "
-            "with git-commit-as-bot --git-command merge, resolve, --continue and push "
+            "with git-commit-as-bot --worktree /absolute/task/path --git-command merge, resolve, --continue and push "
             "(repo-workflow.md Merge Readiness)")
     elif mergeable_state == "behind" or required_by:
         return None
@@ -1539,10 +1543,6 @@ def rest_result(
     return result
 
 
-def paged_rest_json(method: str, path: str) -> list[dict[str, Any]]:
-    return collect_paged_rest_json(method, path, limit=None, per_page=100)
-
-
 def limited_paged_rest_json(method: str, path: str, limit: int) -> list[dict[str, Any]]:
     if limit <= 0:
         return []
@@ -1570,18 +1570,6 @@ def path_with_query(path: str, params: dict[str, Any]) -> str:
     return f"{path}{separator}{urllib.parse.urlencode(params)}"
 
 
-def collect_paged_rest_json(method: str, path: str, *, limit: Optional[int], per_page: int) -> list[dict[str, Any]]:
-    items: list[dict[str, Any]] = []
-    next_path: Optional[str] = path_with_query(path, {"per_page": per_page})
-    while next_path:
-        result = rest_result(method, next_path)
-        items.extend(rest_page_items(result.body))
-        if limit is not None and len(items) >= limit:
-            return items[:limit]
-        next_path = next_link(result.headers.get("link"))
-    return items if limit is None else items[:limit]
-
-
 def rest_page_items(data: Any) -> list[dict[str, Any]]:
     if isinstance(data, list):
         return [item for item in data if isinstance(item, dict)]
@@ -1591,18 +1579,6 @@ def rest_page_items(data: Any) -> list[dict[str, Any]]:
             if isinstance(value, list):
                 return [item for item in value if isinstance(item, dict)]
     return []
-
-
-def next_link(link_header: Optional[str]) -> Optional[str]:
-    if not link_header:
-        return None
-    for item in link_header.split(","):
-        if 'rel="next"' not in item:
-            continue
-        match = re.search(r"<([^>]+)>", item)
-        if match:
-            return match.group(1)
-    return None
 
 
 def delete_ref(repo: str, ref: str) -> dict[str, Any]:

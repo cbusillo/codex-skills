@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import time
 import uuid
 from typing import NamedTuple
 from datetime import datetime
@@ -22,7 +23,7 @@ import github_plan_closure as closure
 
 
 @asynccontextmanager
-async def connection(home: Path, *, max_msg_size: int = 64 * 1024 * 1024):
+async def connection(home: Path, *, max_msg_size: int = 64 * 1024 * 1024, deadline_at=None):
     import aiohttp
     endpoint = closure.daemon_endpoint(home).resolve(strict=True)
     info = endpoint.stat()
@@ -30,7 +31,7 @@ async def connection(home: Path, *, max_msg_size: int = 64 * 1024 * 1024):
         raise ValueError("native socket ownership is unavailable")
     sequence = 0
     try:
-        async with asyncio.timeout(5):
+        async with asyncio.timeout(read_timeout(deadline_at)):
             async with aiohttp.ClientSession(connector=aiohttp.UnixConnector(path=str(endpoint))) as client:
                 async with client.ws_connect("http://localhost/", max_msg_size=max_msg_size) as ws:
                     async def request(method, params):
@@ -62,9 +63,15 @@ async def connection(home: Path, *, max_msg_size: int = 64 * 1024 * 1024):
         raise ValueError("native transport failed; preserve the uncertain operation and do not replay") from error
 
 
+def read_timeout(deadline_at=None):
+    return 5 if deadline_at is None else max(0, deadline_at - time.time())
+
+
 async def pages(request, method, session, **params):
+    # A valid continuation chain is read in full. The caller's deadline (the
+    # connection's own timeout) bounds it, not a page count a long session outgrows.
     cursor, seen = None, set()
-    for _ in range(100):
+    while True:
         page = await request(method, {"threadId": session, "limit": 20, "cursor": cursor, **params})
         if not isinstance(page, dict) or not isinstance(page.get("data"), list):
             raise ValueError("native read coverage is unavailable")
@@ -75,7 +82,6 @@ async def pages(request, method, session, **params):
         if not isinstance(cursor, str) or not cursor or cursor in seen:
             raise ValueError("native continuation is unavailable")
         seen.add(cursor)
-    raise ValueError("native read coverage is truncated")
 
 
 async def read_queue(request, session):
@@ -173,13 +179,13 @@ async def read_thread(request, session, *, include_turns=False):
             "history_mode": thread.get("historyMode", "legacy")}
 
 
-async def read_thread_facts(request, session):
+async def read_thread_facts(request, session, *, include_active=False):
     # This serialized read fences the exact proven synchronous native routes.
     # It is not a fence for arbitrary asynchronous Core operations.
     thread = await read_thread(request, session)
     facts = {**thread, "queue": await read_queue(request, session), "turns": [],
              "executions": {"ended": True, "items": []}, "background": [], "realtime": [], "goal": None}
-    if thread["state"] in {"active", "systemError"}:
+    if thread["state"] == "systemError" or thread["state"] == "active" and not include_active:
         return facts
     if thread["state"] == "notLoaded":
         # Persisted unfinished commands/realtime may survive a crash. Current
@@ -228,7 +234,7 @@ async def read_thread_facts(request, session):
                     or not isinstance(entry.get("turnId"), str) or not entry["turnId"]):
                 raise ValueError("native timeline item identity is unavailable")
         elif entry["type"] in {"turnStarted", "turnCompleted"}:
-            if (not isinstance(entry.get("turn_id"), str) or not entry["turn_id"] or entry["type"] == "turnCompleted"
+            if (not isinstance(entry.get("turnId"), str) or not entry["turnId"] or entry["type"] == "turnCompleted"
                     and entry.get("status") not in {"completed", "interrupted", "failed", "inProgress"}):
                 raise ValueError("native timeline turn identity is unavailable")
         if entry["type"] != "realtime":
@@ -293,18 +299,39 @@ class _SourceProcess(NamedTuple):
     saved: dict | None
     effective: dict
     cutoff: datetime | None
+    context: object = None
 
 
-def _source_process(entry, saved):
-    """Select one trusted generation/cutoff; the owning route supplies its saved row."""
+class _SourceEndMismatch(ValueError):
+    """This verified End cannot cover the selected generation's actual facts."""
+
+
+def _source_process(entry, saved, context=None, *, recorded=None):
+    """Select actual source identity and its recorder-owned exit boundary."""
     from github_plan_sessions import process_liveness
     from github_plan_release import stamp
     source = {**entry, **(saved or {})}
     generation = source.get("resumed_generation")
     if generation is not None and (not isinstance(generation, dict) or not generation):
         raise ValueError("native resumed generation is unavailable")
+    if context is not None:
+        if (saved is None or source.get("session_id") != context.session or source.get("harness") != "codex"
+                or not isinstance(generation, dict)
+                or any(not generation.get(key) for key in (
+                    "launch_pid", "launch_generation", "launch_started_at", "pid", "tty", "codex_home", "transcript"))
+                or any(not isinstance(generation.get(key), str) or not generation[key].strip() for key in (
+                    "launch_generation", "launch_started_at", "tty", "codex_home", "transcript"))
+                or any(type(generation.get(key)) is not int or generation[key] <= 0 for key in ("pid", "launch_pid"))
+                or generation["pid"] != generation["launch_pid"]
+                or not source.get("resumed_at")
+                or stamp(generation["launch_started_at"]) > stamp(source["resumed_at"])):
+            raise ValueError("canonical release does not cover the retained native generation")
+        if (stamp(generation["launch_started_at"]) > context.ended_at
+                or stamp(source["resumed_at"]) > context.ended_at):
+            raise _SourceEndMismatch("canonical release predates the retained native generation")
     effective = {**source, **(generation or {})}
     effective.pop("tty_exited_at", None)
+    effective.pop("_tty_owner", None)
     if generation:
         launch_keys = ("launch_pid", "launch_generation", "launch_started_at", "pid", "tty", "codex_home")
         terminal_keys = ("tmux_session_id", "tmux_socket", "window_id", "tab_id", "iterm_session_id")
@@ -316,20 +343,42 @@ def _source_process(entry, saved):
             for key in terminal_keys:
                 if key in entry:
                     effective[key] = entry[key]
-    if not generation and saved and saved.get("process_exit_verified") is True and saved.get("ended_at"):
-        ended = stamp(saved["ended_at"])
-        cutoff = stamp(saved["tty_exited_at"]) if saved.get("tty_exited_at") else ended
+    # Later finish boundaries use this invocation's recorder output, including
+    # when the actual saved source is an open resumed generation or absent.
+    # Initial selection never accepts a caller's cutoff as recorded evidence.
+    closed = recorded if recorded is not None else (saved if not generation else None)
+    if recorded is not None and (recorded.get("process_exit_verified") is not True or not recorded.get("ended_at")):
+        raise ValueError("recorded closure lacks a verified process exit boundary")
+    if closed and closed.get("process_exit_verified") is True and closed.get("ended_at"):
+        ended = stamp(closed["ended_at"])
+        cutoff = stamp(closed["tty_exited_at"]) if closed.get("tty_exited_at") else ended
         if cutoff > ended:
             raise ValueError("native TTY exit cutoff is newer than closure")
-        if "tty_exited_at" in saved:
-            # The full saved-row identity check must see the exact trusted
-            # representation, not a caller hint or a normalized replacement.
-            effective["tty_exited_at"] = saved["tty_exited_at"]
+        if "tty_exited_at" in closed:
+            # Preserve the recorder's representation for the independent
+            # saved-row identity comparison, rather than a caller hint.
+            effective["tty_exited_at"] = closed["tty_exited_at"]
     else:
         cutoff = process_liveness().native_exit_cutoff(effective)
+        if cutoff is None:
+            from github_plan_sessions import native_helpers
+            native_helpers()
+            import release_session_claims
+            owner = process_liveness().replacement_tty_owner(effective, release_session_claims.inventory,
+                                                           started_at=closure.process_started_at)
+            if owner is not None:
+                effective["_tty_owner"] = owner[:2]
+                cutoff = owner[1]
         if cutoff is not None:
             effective["tty_exited_at"] = cutoff.isoformat()
-    return _SourceProcess(source, saved, effective, cutoff)
+    # A canonical closed-session receipt bounds this exact saved generation.
+    # Keep it separate from caller hints and from persisted terminal metadata.
+    if context is not None:
+        if cutoff is not None and cutoff > context.ended_at:
+            raise _SourceEndMismatch("known source exit is newer than the canonical closed-session evidence")
+        if cutoff is None:
+            cutoff = context.ended_at
+    return _SourceProcess(source, saved, effective, cutoff, context)
 
 
 def recheck_source_process(process):
@@ -340,9 +389,10 @@ def recheck_source_process(process):
     release_session_claims._verify_process_exit(process.effective, process.cutoff, lambda: process.saved)
 
 
-def verify_source_process(entry):
+def verify_source_process(entry, *, _context=None):
     """Cheap shared process proof; caller timestamps never supply an exit cutoff."""
-    process = _source_process(entry, closure.source_records({entry["session_id"]}).get(entry["session_id"]))
+    saved = closure.source_records({entry["session_id"]}).get(entry["session_id"])
+    process = _source_process(entry, saved, _context)
     recheck_source_process(process)
     return process
 
@@ -356,32 +406,41 @@ def _authenticated_paths(snapshots, homes):
 
 def source_snapshot(entry, process=None):
     """Only file/process reads; safe to await in a cancellable worker thread."""
-    from github_plan_sessions import codex_homes
+    from github_plan_sessions import configured_homes, observation_homes
     if process is None:
         process = verify_source_process(entry)
     else:
         if closure.source_records({entry["session_id"]}).get(entry["session_id"]) != process.saved:
             raise ValueError("source generation changed during native proof")
         recheck_source_process(process)
-    source, saved, effective, _cutoff = process
+    source, saved, effective, _cutoff, context = process
     session = entry["session_id"]
-    # A minimal resume row is identity metadata, not ownership. An explicitly
-    # owned caller may supply its original launch provenance; observation cannot.
-    if source.get("harness") != "codex" or source.get("supervisor_owned") is not True:
+    # Minimal resume metadata needs canonical closed-source authority; it never
+    # acquires original launch ownership fields from the observer.
+    if source.get("harness") != "codex" or (source.get("supervisor_owned") is not True and context is None):
         raise ValueError("native end proof requires the original owned source identity")
     generation = source.get("resumed_generation")
     home = Path(effective["codex_home"]).expanduser().resolve(strict=True)
-    original_home = Path(source["codex_home"]).expanduser().resolve(strict=True)
     primary = Path(effective["transcript"]).resolve(strict=True)
     if generation is None and not any(primary.is_relative_to((home / root).resolve()) for root in ("sessions", "archived_sessions")):
         raise ValueError("native source home and transcript disagree")
-    configured = set(codex_homes(strict=True, configured_only=True))
+    configured = set(configured_homes(strict=True))
     if home not in configured and saved is None:
         raise ValueError("unconfigured native source lacks retained launch identity")
     scope = closure.action_homes(closure.lease_state(session))
-    homes = {home, original_home, *(Path(value) for value in scope["known"])}
+    homes = {home, *(Path(value) for value in scope["known"])}
+    if source.get("codex_home") is not None:
+        homes.add(Path(source["codex_home"]).expanduser().resolve(strict=True))
     snapshots = closure.transcripts(session, str(primary), include_status=True, additional_homes=homes)
-    paths = _authenticated_paths(snapshots, homes | configured)
+    if context is not None:
+        from github_plan_release import stamp
+        for snapshot in snapshots.values():
+            status = snapshot["status"]
+            # Delivery timestamps are not actual source activity (#2325).
+            if any(status.get(key) and stamp(status[key]) > context.ended_at
+                   for key in ("turn_started_at", "turn_completed_at", "message_at")):
+                raise _SourceEndMismatch("source actual turn is newer than the canonical closed-session evidence")
+    paths = _authenticated_paths(snapshots, observation_homes(strict=True, additional_homes=homes))
     # Relevant authenticated copies remain current-work coverage even if an old
     # buggy finish already cleared the marker that originally touched that home.
     homes.update(Path(value) for value in paths)
@@ -478,7 +537,12 @@ async def prove_end(entry, request=None, *, process=None):
             final[home] = facts
         # The last native persistence read can commit buffered events. Read the
         # canonical source after that fence, never accept an earlier snapshot.
-        after = await asyncio.to_thread(source_snapshot, entry, before["process"])
+        try:
+            after = await asyncio.to_thread(source_snapshot, entry, before["process"])
+        except _SourceEndMismatch as error:
+            # Qualification was already complete before the RPC sandwich.
+            # New activity during it is a changed source, not another candidate.
+            raise ValueError("native source changed during end proof") from error
         for home, facts in final.items():
             require_quiet(facts, local_snapshot(after, facts, home), home_action(action, home))
         if before != after:
@@ -486,12 +550,17 @@ async def prove_end(entry, request=None, *, process=None):
     return {"snapshot": after, "facts": final[after["home"]], "homes": final, "action": action}
 
 
-def resolve_pending(session, proof):
-    """Only the actual lease-owning caller writes, never an off-loop reader."""
+def _require_current_proof(session, proof):
+    """Require the held lease and the source/action identity behind this proof."""
     if session not in (closure._LEASES.get() or set()):
         raise ValueError("native resolution has no ownership lease")
     if closure.lease_state(session) != proof["action"] or closure.source_records({session}).get(session) != proof["snapshot"]["source"]:
         raise ValueError("native action or source identity changed before resolution")
+
+
+def resolve_pending(session, proof):
+    """Only the actual lease-owning caller writes, never an off-loop reader."""
+    _require_current_proof(session, proof)
     require_proof_quiet(proof)
     closure.set_action_pending(session, False)
 
@@ -534,15 +603,7 @@ def _cancel_selected(path, session, *, ledger=False):
 
 
 def _cancel_saved(session):
-    if not closure.closed_log().exists():
-        return None
-    matches = [row for row in closure.log_rows() if row.get("session_id") == session]
-    if len(matches) > 1:
-        raise ValueError("source generation is not unique")
-    if not matches:
-        return None
-    from github_plan_sessions import native_helpers
-    return native_helpers()[1].normalize_ledger_entry(closure.closed_log(), matches[0])
+    return closure.source_records({session}).get(session)
 
 
 def _cancel_generation(entry, saved):
@@ -567,9 +628,9 @@ def _cancel_generation(entry, saved):
 
 
 def _cancel_origin(entry, action):
-    from github_plan_sessions import codex_homes
+    from github_plan_sessions import configured_homes
     primary = Path(entry["transcript"]).resolve(strict=True)
-    configured = set(codex_homes(strict=True, configured_only=True))
+    configured = set(configured_homes(strict=True))
     known = {Path(value).resolve(strict=True) for value in closure.action_homes(action)["known"]}
     if entry.get("codex_home"):
         if not isinstance(entry["codex_home"], str) or not Path(entry["codex_home"]).expanduser().is_absolute():
@@ -587,11 +648,12 @@ def _cancel_origin(entry, action):
 
 
 def _cancel_files(entry, action, reader=None, retained_homes=(), transcript_roots=None):
-    primary, home, configured, known = _cancel_origin(entry, action)
+    from github_plan_sessions import observation_homes
+    primary, home, _configured, known = _cancel_origin(entry, action)
     homes = {home, *known, *retained_homes}
     snapshots = closure.transcript_facts(entry["session_id"], str(primary), include_status=True,
                                          additional_homes=homes, additional_roots=transcript_roots, reader=reader)
-    paths = _authenticated_paths(snapshots, configured | homes)
+    paths = _authenticated_paths(snapshots, observation_homes(strict=True, additional_homes=homes))
     homes.update(Path(value) for value in paths)
     return {"home": str(home), "path": str(primary), "homes": sorted(str(value) for value in homes),
             "home_paths": paths, "transcripts": snapshots}
