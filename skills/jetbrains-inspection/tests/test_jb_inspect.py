@@ -6734,10 +6734,10 @@ class LifecycleTest(unittest.TestCase):
         with patch.object(jb_inspect.sys, "platform", "darwin"), patch.object(jb_inspect, "ide_launcher_pids", return_value=[]), \
                 patch.object(jb_inspect.subprocess, "run", return_value=completed):
             with self.assertRaises(jb_inspect.InspectError) as raised:
-                jb_inspect.bootstrap_ide_app({"ide": "Missing IDE", "worktree_root": "/tmp/worktree"}, background=True)
+                jb_inspect.bootstrap_ide_app({"ide": "PyCharm", "ide_app": "Missing PyCharm", "worktree_root": "/tmp/worktree"}, background=True)
 
         self.assertIn("Failed to launch", str(raised.exception))
-        self.assertEqual(raised.exception.payload["command"], ["open", "-g", "-j", "-a", "Missing IDE"])
+        self.assertEqual(raised.exception.payload["command"], ["open", "-g", "-j", "-a", "Missing PyCharm"])
         self.assertIn("Unable to find application", raised.exception.payload["stderr"])
 
     def test_bootstrap_never_launches_or_activates_a_running_app(self):
@@ -6776,12 +6776,14 @@ class LifecycleTest(unittest.TestCase):
         with patch.object(jb_inspect.subprocess, "check_output", return_value=census):
             jb_inspect.refuse_launch_while_app_runs({"ide": "PyCharm"})
 
-    def test_launch_guard_refuses_unknown_product_while_any_jetbrains_ide_runs(self):
-        census = "  819 /Applications/WebStorm.app/Contents/MacOS/webstorm"
-        with patch.object(jb_inspect.subprocess, "check_output", return_value=census):
+    def test_launch_guard_refuses_a_product_whose_launcher_it_cannot_identify(self):
+        with patch.object(jb_inspect.subprocess, "check_output", return_value="") as census, \
+                patch.object(jb_inspect.subprocess, "run") as run:
             with self.assertRaises(jb_inspect.InspectError) as raised:
-                jb_inspect.refuse_launch_while_app_runs({"ide_app": "./Linked.app"})
-        self.assertEqual(raised.exception.payload["running_app_pids"], [819])
+                jb_inspect.refuse_launch_while_app_runs({"ide": "GoLand", "ide_app": "/Applications/GoLand.app"})
+        census.assert_not_called()
+        run.assert_not_called()
+        self.assertEqual(raised.exception.payload["error_reason"], "ide_launch_refused")
 
     def test_unprovable_process_census_refuses_launch(self):
         with patch.object(jb_inspect.subprocess, "check_output", side_effect=OSError("ps unavailable")), \

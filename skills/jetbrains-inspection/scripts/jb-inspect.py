@@ -12606,8 +12606,15 @@ def bootstrap_ide_app(context: dict[str, Any], background: bool = True) -> dict[
 
 
 def refuse_launch_while_app_runs(context: dict[str, Any]) -> None:
+    product = launch_guard_product(context)
+    if product is None:
+        raise InspectError(
+            "Cannot identify the selected JetBrains product's launcher; refusing to launch it.",
+            3,
+            {"error_reason": "ide_launch_refused", "ide": context.get("ide"), "ide_app": resolved_ide_app_name(context)},
+        )
     try:
-        pids = ide_launcher_pids(launch_guard_launcher_names(context))
+        pids = ide_launcher_pids(product.launcher_names)
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         raise InspectError(
             "Cannot prove the selected JetBrains app is not running; refusing to launch it.",
@@ -12622,14 +12629,13 @@ def refuse_launch_while_app_runs(context: dict[str, Any]) -> None:
         )
 
 
-def launch_guard_launcher_names(context: dict[str, Any]) -> tuple[str, ...]:
+def launch_guard_product(context: dict[str, Any]) -> IdeProduct | None:
     selection = dict_field(context, "ide_selection")
-    product = (
+    return (
         IDE_PRODUCTS.get(str(selection.get("product_key")))
         or product_for_selector(resolved_ide_app_name(context))
         or product_for_selector(clean_optional(context.get("ide")))
     )
-    return product.launcher_names if product else ALL_IDE_LAUNCHER_NAMES
 
 
 def resolved_ide_app_name(context: dict[str, Any]) -> str | None:

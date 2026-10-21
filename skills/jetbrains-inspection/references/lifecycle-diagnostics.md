@@ -53,8 +53,9 @@ already open before inspection must remain open. Lifecycle opens ask a running
 IDE's plugin to open the exact worktree. When none accepts, the helper stops
 with `ide_launch_disabled` and its open attempts; it launches no application.
 With `--ide-launch`, and only when no `*.app/Contents/MacOS/` launcher of the
-selected product is running (of any JetBrains IDE when the product is unknown),
-it launches the app hidden first and then asks the plugin to open the worktree.
+selected product is running, it launches the app hidden first and then asks the
+plugin to open the worktree. A product the helper does not catalogue is never
+launched.
 The census matches launcher names, so renamed, linked or relative app selectors
 cannot hide a running IDE. That IDE is not journaled or closed by the helper; it stays as the
 caller's own desktop IDE. A matching IDE that is running without a usable
