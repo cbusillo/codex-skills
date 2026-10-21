@@ -613,9 +613,14 @@ class ReadyTests(unittest.TestCase):
                 self.assertIn(ready_handoff.NOTHING_TO_TEST, self.refuse())
 
     def test_steps_that_start_with_nothing_still_need_the_client(self):
-        intent = ready_handoff.client_test_notes("Nothing changed in checkout; open the cart to test the new button.")
-        self.assertTrue(intent.review_required)
-        self.assertFalse(intent.error)
+        for steps in (
+            "Nothing changed in checkout; open the cart to test the new button.",
+            "Nothing happens when you try to test checkout. Verify that Pay now opens the form.",
+        ):
+            with self.subTest(steps=steps):
+                intent = ready_handoff.client_test_notes(steps)
+                self.assertTrue(intent.review_required)
+                self.assertFalse(intent.error)
 
     def test_legacy_nothing_to_test_marker(self):
         for separator in (":", "."):
