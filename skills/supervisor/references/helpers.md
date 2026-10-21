@@ -124,53 +124,38 @@ it with a pane number or a title. A mixed ledger may hold both backends; use
 the matching backend when reading or closing each terminal.
 
 Status and candidates expose `verdict_recognition`: `recognized` for an accepted
-completed unqualified verdict, `claim_disposition_refused` when the declaration
-qualifies but claim/child coverage does not, `unrecognized` when verdict wording
-is present but does not qualify, and `absent` when it is missing. The refused
-case retains `declared_safe_verdict: true` and the actionable
-`claim_disposition.reason`; it is not a wording failure. A final verdict may share
+completed unqualified verdict, `unrecognized` when verdict wording is present
+but does not qualify, and `absent` when it is missing. A final verdict may share
 its line with `No Director action needed.` or `No Director decision needed.`;
 other accompanying prose stays unrecognized. For an ambiguous response, read
 the full transcript and handoff and ask the worker for a fresh standalone
-unqualified verdict if appropriate. Manual review does not override a refused
-parser result or any shutdown verification.
+unqualified verdict if appropriate. Manual review does not override the parser
+result or any shutdown verification.
 
-### Claim-gated verdicts
+### Claim checks at close-out
 
-Read the refusal's `claim_disposition` and the owning issue before acting. Nudge
-that exact worker once to complete work-closeout's claim disposition for its
-native session and children: release its own claims or verify retained-PR
-handoffs, run the maintained check, and give a fresh standalone verdict. Missing
-repository context can be inventoried with additive `--repository`. Follow the
-[claim disposition contract](../../work-closeout/SKILL.md#claim-disposition)
-for complete inventory and live pending checks. Do not drop a child. The source worker coordinates any
-child-owned release through that child; the parent does not impersonate it.
+The verdict reader does not read claims. Closing a session needs its posted
+releases and a verified process exit. Before sending `/exit` or `/quit`, run the
+GitHub-only check for that session:
 
-For no-GitHub exploration, local readable child histories with no ownership
-or shell activity satisfy the N/A path. The reader uses Claude's native child files and
-Codex's native parent/child index and rollouts. Missing, active or changed child
-history refuses acceptance; fix the identified local evidence before asking
-for another verdict. There is no GitHub read merely because delegation occurred.
+```bash
+uv run skills/work-closeout/scripts/check_claims.py --owner OWNER \
+  --session NATIVE_ID --transcript /absolute/native-transcript.jsonl
+```
 
-If an interrupted child has no native turn end, use the harness's built-in
-resume for that exact child when available. Have it reconcile its ownership
-and finish a quiet native turn, then rerun the parent's check. Do not delete
-history, synthesize completion events, or treat a closed edge alone as proof
-that background work ended. Codex's native `turn_aborted` already marks a turn
-end for child activity; it does not authorize the parent's safe verdict.
-Claude interrupted/resumed or legacy sidechain histories remain unqualified;
-when native resume cannot repair missing evidence, keep conditional/no with
-the blocker and next actor. A child's partial trailing record is read strictly
-by the Supervisor: the running check may inspect a complete prefix, but that
-prefix alone cannot authorize acceptance. Wait for a complete, quiet history.
+Exit 0 with `claims_clear: true` and complete coverage lets close-out continue.
+Otherwise nudge that exact worker once to release its own claims through the
+[claim disposition contract](../../work-closeout/SKILL.md#claim-disposition),
+naming its retained PRs, then check again. If it cannot, have it record
+conditional/no, the blocker, next actor and retained artifacts on the item, and
+keep its process and terminal open while you continue other work. A pending
+review remains open under its brief.
 
-If the check cannot clear, have the worker record conditional/no, the exact
-blocker, next actor and retained artifacts on the item. Preserve its process and
-terminal, stop repeating the nudge, and continue independent work or other
-sessions while the missing evidence/read is repaired. This is the brief's
-refusal path, not an instruction to manufacture a passing verdict. Do not send
-`/exit` or `/quit` from a refused verdict or reinterpret its declaration as an
-all-clear. A pending review remains open under its brief.
+A session that crashed or ended without releasing frees its claims when its
+host-local lease expires, 30 minutes after its last hook activity. Use
+`gh-plan.py release-claim` only where the lease cannot be read, such as a claim
+made on another host. Count takeovers by searching claim comments for
+`Lease takeover:`; shorten the lease only if those delays bite.
 
 `release_session_claims finish` is available only **after actual verified process
 exit**. It repairs sessions that already ended; it is not an active-session

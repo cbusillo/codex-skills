@@ -6,24 +6,12 @@
 from __future__ import annotations
 
 from contextlib import ExitStack, contextmanager
-import hashlib
 import json
-import os
 from pathlib import Path
 import re
 import sqlite3
 import sys
 
-import claim_receipts
-
-
-def delegated(records, harness):
-    return any(name in {"Agent", "Task", "spawn_agent", "collaboration.spawn_agent"}
-               for record in records for _, name, _ in claim_receipts.calls_and_results(record, harness)[0])
-
-
-def fingerprint(records):
-    return hashlib.sha256(json.dumps(records, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 def source_parent(source):
@@ -171,79 +159,3 @@ def root_records(path, harness, session, records):
     return child_records(records, harness, session)
 
 
-def collect(path, harness, session, records, read, *, homes=None):
-    """Return root and quiet child snapshots; missing child evidence refuses.
-
-    Codex's native edge index includes every status and points to each rollout.
-    Claude's session-local subagent files retain the inherited session identity.
-    The callback owns native identity and stable/complete-record validation.
-    """
-    path = Path(path).expanduser().resolve()
-    nodes = [{"session_id": session, "harness": harness, "transcript": str(path), "records": records}]
-    paths = []
-    if harness == "claude":
-        children = sorted((path.parent / session / "subagents").glob("agent-*.jsonl"))
-        if not children and delegated(records, harness):
-            raise ValueError("native delegated histories are unavailable")
-        paths = [(session, child.resolve(), None) for child in children]
-    else:
-        with native_databases(path, homes) as databases:
-            pending, visited, seen_paths = [session], set(), set()
-            ancestors = root_context(path, session)["ancestors"] if inline_history(records) else ()
-            ancestry = {session: ancestors}
-            while pending:
-                parent = pending.pop()
-                if parent in visited:
-                    continue
-                if len(visited) >= 128:
-                    raise ValueError("native child graph exceeds coverage bound")
-                visited.add(parent)
-                found_parent = False
-                for database in databases:
-                    try:
-                        present = database.execute("SELECT 1 FROM threads WHERE id=?", (parent,)).fetchone()
-                        if not present:
-                            continue
-                        found_parent = True
-                        rows = database.execute(
-                            "SELECT e.child_thread_id,t.rollout_path,t.source FROM thread_spawn_edges e "
-                            "LEFT JOIN threads t ON t.id=e.child_thread_id WHERE e.parent_thread_id=?", (parent,)).fetchall()
-                    except sqlite3.Error as error:
-                        raise ValueError("native child index schema/read is unavailable") from error
-                    for child_id, rollout, source in rows:
-                        if not child_id or not rollout or not source:
-                            raise ValueError("native child index lacks its rollout")
-                        native_source = json.loads(source)
-                        if source_parent(native_source) != parent:
-                            raise ValueError("native child index parent differs")
-                        ancestors = (*ancestry[parent], parent)
-                        if child_id in ancestors or (child_id in ancestry and ancestry[child_id] != ancestors):
-                            raise ValueError("native child index ancestry differs")
-                        ancestry[child_id] = ancestors
-                        child = Path(rollout).expanduser().resolve()
-                        if (child_id, child) not in seen_paths:
-                            paths.append((child_id, child, {"parent": parent, "ancestors": ancestors}))
-                            seen_paths.add((child_id, child))
-                        pending.append(child_id)
-                if not found_parent and (parent != session or delegated(records, harness)):
-                    raise ValueError("native parent is absent from configured child indexes")
-    for child_id, child, context in paths:
-        raw_records = read(child, harness, child_id, context)
-        logical_records = child_records(raw_records, harness, child_id, context)
-        parent = context["parent"] if context is not None else None
-        if parent is not None:
-            metadata = [r["payload"] for r in logical_records if r.get("type") == "session_meta"]
-            if not metadata:
-                raise ValueError("child rollout lacks native metadata")
-            for meta in metadata:
-                parents = [value for value in (meta.get("parent_thread_id"),
-                           source_parent(meta.get("source", {}))) if value]
-                if not parents or any(value != parent for value in parents):
-                    raise ValueError("child rollout parent differs from its native edge")
-        import session_record
-        activity = session_record.summarize(logical_records, harness, inspect_claims=False)
-        if not activity["at_turn_end"] or activity["background_tasks"]:
-            raise ValueError(f"native child {child_id} ({child}) still has unfinished work")
-        nodes.append({"session_id": child_id, "harness": harness, "transcript": str(child),
-                      "records": logical_records, "digest": fingerprint(raw_records)})
-    return nodes

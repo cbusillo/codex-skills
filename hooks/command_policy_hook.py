@@ -56,6 +56,7 @@ from urllib.parse import parse_qs, urlsplit
 ROOT = Path(__file__).resolve().parents[1]
 CATALOG = ROOT / "skills"
 SIMULATOR = CATALOG / "skill-creator" / "scripts" / "validate-command-policy-simulator.py"
+CLAIM_LEASE = CATALOG / "github" / "scripts" / "github_plan_lease.py"
 CODE_HOME_SKILLS = "$CODE_HOME/skills/"
 OPERATORS = re.compile(r"^[;&|()\n]+$")
 REPOSITORY_SLUG = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9_.-]*/launchplane")
@@ -632,9 +633,21 @@ def blocking_policy(shell: str, cwd: Path | None = None) -> tuple[dict[str, Any]
     return None
 
 
+def renew_claim_lease(event: object) -> None:
+    try:
+        spec = importlib.util.spec_from_file_location("github_plan_lease", CLAIM_LEASE)
+        assert spec and spec.loader
+        lease = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(lease)
+        lease.renew_from_hook(event)
+    except (OSError, ValueError, ImportError, AssertionError) as error:
+        print(f"claim lease renewal skipped: {error!r}", file=sys.stderr)
+
+
 def main() -> int:
     try:
         event = json.load(sys.stdin)
+        renew_claim_lease(event)
         if event.get("tool_name") != "Bash":
             return 0
         shell = event["tool_input"]["command"]

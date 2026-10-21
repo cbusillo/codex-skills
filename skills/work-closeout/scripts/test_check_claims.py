@@ -7,7 +7,6 @@
 import contextlib
 import io
 import json
-import sqlite3
 from pathlib import Path
 import tempfile
 import unittest
@@ -15,8 +14,6 @@ from unittest.mock import Mock, patch
 from types import SimpleNamespace
 
 import check_claims as helper
-
-CURRENT_NATIVE_PENDING = helper.native_ownership.pending_ownership
 
 ACTOR = "fixture[bot]"
 SESSION = "native-session"
@@ -37,409 +34,8 @@ def pull(number=2, branch=SOURCE["branch"], **changes):
 
 class ClaimCloseoutTests(unittest.TestCase):
 
-    def test_finished_claude_family_can_check_itself_after_reading_codex_output(self):
-        from test_claim_history import records
-        from test_claim_receipts import history, SESSION as native_session
-        for children in (False, True):
-            for printed in ({}, {"session_id": 123, "output": "still running"},
-                            "Process running with session ID 123", "Script running with cell ID reader"):
-                with self.subTest(children=children, printed=printed), tempfile.TemporaryDirectory() as tmp:
-                    root = Path(tmp).resolve() / (native_session + ".jsonl")
-                    rows = history("claude", {})[:-1]
-                    rows[2]["message"]["content"][0]["content"] = json.dumps(printed)
-                    rows.append({"type": "assistant", "sessionId": native_session, "message": {"content": [
-                        {"type": "tool_use", "name": "Bash", "id": "own-check", "input": {"command":
-                            f"uv run check_claims.py --harness claude --session {native_session} --transcript {root}"}}]}})
-                    if children:
-                        child = root.parent / native_session / "subagents/agent-reader.jsonl"
-                        child.parent.mkdir(parents=True)
-                        child_rows = records("claude", native_session, {})
-                        child_rows[2]["message"]["content"][0]["content"] = json.dumps(printed)
-                        child.write_text("".join(json.dumps(r) + "\n" for r in child_rows))
-                    for row in rows:
-                        row["timestamp"] = SOURCE["claimed_at"]
-                    root.write_text("".join(json.dumps(r) + "\n" for r in rows))
-                    nodes = helper.claim_history.collect(root, "claude", native_session, rows, helper.transcript_snapshot)
-                    entry = {"session_id": native_session, "harness": "claude", "_claim_histories": nodes}
-                    with patch.object(helper.native_ownership, "pending_ownership", wraps=CURRENT_NATIVE_PENDING), \
-                            patch.object(helper.native_ownership, "observe", return_value=([], {}, {})), \
-                            patch.object(helper.sessions, "discover", return_value=([], [REPO])):
-                        report = helper.check(self.reader, [], entry, ACTOR)
-                    self.assertTrue(report["claims_clear"], report)
-                    self.assertTrue(report["coverage"]["complete"])
-                    self.assertEqual({n["transcript"] for n in nodes[1:]},
-                                     {str(child)} if children else set())
-
-    def test_claude_check_preserves_real_running_and_unknown_work(self):
-        from test_claim_receipts import history, SESSION as native_session
-        for work in ("background", "detached", "missing-result"):
-            with self.subTest(work=work):
-                rows = history("claude", {})[:-1]
-                tool = rows[1]["message"]["content"][0]
-                tool["input"] = {"command": "uv run worker.py" + (" &" if work == "detached" else "")}
-                if work == "background":
-                    tool["input"]["run_in_background"] = True
-                    rows[2]["toolUseResult"] = {"backgroundTaskId": "real-work"}
-                elif work == "missing-result":
-                    rows.pop()
-                rows.append({"type": "assistant", "sessionId": native_session, "message": {"content": [
-                    {"type": "tool_use", "name": "Bash", "id": "own-check", "input": {"command": "uv run check_claims.py"}}]}})
-                for row in rows:
-                    row["timestamp"] = SOURCE["claimed_at"]
-                node = {"session_id": native_session, "harness": "claude", "records": rows,
-                        "transcript": "/fixture/claude-root.jsonl"}
-                with patch.object(helper.native_ownership, "pending_ownership", wraps=CURRENT_NATIVE_PENDING), \
-                        patch.object(helper.native_ownership, "observe", return_value=([], {}, {})), \
-                        patch.object(helper.sessions, "discover", return_value=([], [REPO])):
-                    report = helper.check(self.reader, [], {**node, "_claim_histories": [node]}, ACTOR)
-                self.assertFalse(report["claims_clear"], report)
-                self.assertEqual(report["pending"][0]["transcript"], node["transcript"])
-                self.assertEqual(report["pending"][0]["pending_invocations"], [tool["id"]])
-
-    def test_claude_pending_child_is_identified_by_transcript_despite_shared_session_id(self):
-        from test_claim_history import records
-        from test_claim_receipts import SESSION as native_session
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp).resolve() / (native_session + ".jsonl")
-            child = root.parent / native_session / "subagents/agent-worker.jsonl"
-            child.parent.mkdir(parents=True)
-            rows = records("claude", native_session, {})
-            tool = rows[1]["message"]["content"][0]
-            tool["input"] = {"command": "uv run worker.py &"}
-            child.write_text("".join(json.dumps(r) + "\n" for r in rows))
-            root_rows = records("claude", native_session)
-            root.write_text("".join(json.dumps(r) + "\n" for r in root_rows))
-            nodes = helper.claim_history.collect(root, "claude", native_session, root_rows, helper.transcript_snapshot)
-            with patch.object(helper.native_ownership, "pending_ownership", wraps=CURRENT_NATIVE_PENDING), \
-                    patch.object(helper.native_ownership, "observe", return_value=([], {}, {})), \
-                    patch.object(helper.sessions, "discover", return_value=([], [REPO])):
-                report = helper.check(self.reader, [], {"session_id": native_session, "harness": "claude",
-                                                       "_claim_histories": nodes}, ACTOR)
-            self.assertFalse(report["claims_clear"], report)
-            self.assertEqual([p["transcript"] for p in report["pending"]], [str(child)])
-            self.assertEqual(report["pending"][0]["pending_invocations"], [tool["id"]])
-            self.assertTrue(any(str(child) in reason for reason in report["blocked"]))
-            rows.pop()  # An unfinished native child must refuse during collection too.
-            child.write_text("".join(json.dumps(r) + "\n" for r in rows))
-            with self.assertRaises(ValueError) as error:
-                helper.claim_history.collect(root, "claude", native_session, root_rows, helper.transcript_snapshot)
-            self.assertIn(str(child), str(error.exception))
-
-    def test_partial_installation_coverage_is_pending_and_rechecked_with_all_native_history(self):
-        from test_claim_receipts import history, claim as native_claim, SESSION as native_session
-        root, child = history("codex"), history("codex")
-        for row in root:
-            row["timestamp"] = "2026-02-01T00:00:00Z"
-        for row in child:
-            row["timestamp"] = "2026-01-01T00:00:00Z"
-        nodes = [{"session_id": identity, "harness": "codex", "records": rows,
-                  "transcript": f"/fixture/{identity}.jsonl", "digest": helper.claim_history.fingerprint(rows)}
-                 for identity, rows in ((native_session, root), ("child", child))]
-        entry = {"session_id": native_session, "harness": "codex", "_claim_histories": nodes,
-                 "_extra_repositories": ["explicit/site"]}
-        installation = {"installation_id": 101, "account": {"login": "suspended-owner"},
-                        "reason": "suspended installation may contain native source claims"}
-        self.inventory.return_value = {"repositories": {REPO: [ACTOR]}, "installations": [installation],
-                                       "pending_installations": [installation]}
-        with patch.object(helper.sessions, "discover", return_value=([], [REPO])):
-            pending = helper.check(self.reader, [], entry, ACTOR)
-            self.assertFalse(pending["claims_clear"], pending)
-            self.assertFalse(pending["coverage"]["complete"])
-            self.assertTrue(any("101" in reason for reason in pending["blocked"]))
-            query = self.inventory.call_args.kwargs
-            self.assertEqual(query["since"], helper.release.stamp("2025-12-31T23:59:59Z"))
-            self.assertEqual(query["required_repositories"], {"explicit/site"})
-            self.inventory.return_value = {"repositories": {REPO: [ACTOR]}, "installations": [installation],
-                "excluded_installations": [installation]}
-            clear = helper.check(self.reader, [], entry, ACTOR)
-            self.assertTrue(clear["claims_clear"], clear)
-            self.assertTrue(clear["coverage"]["complete"])
-            self.assertEqual(clear["coverage"]["excluded_installations"], [installation])
-            for row in child:
-                row.pop("timestamp")
-            helper.check(self.reader, [], entry, ACTOR)
-            self.assertIsNone(self.inventory.call_args.kwargs["since"])
-            root[:] = history("codex", native_claim(REPO))
-            for row in root:
-                row["timestamp"] = "2026-02-01T00:00:00Z"
-            helper.check(self.reader, [], entry, ACTOR)
-            self.assertEqual(self.inventory.call_args.kwargs["required_repositories"], {REPO, "explicit/site"})
-
-    def test_unrelated_helper_issue_number_is_not_a_claim_receipt(self):
-        from test_claim_receipts import history, SESSION as native_session
-        for harness in ("codex", "claude"):
-            rows = history(harness, {"operation": "github.plan.update_section", "issue": 2214, "ok": True})
-            for row in rows:
-                row["timestamp"] = SOURCE["claimed_at"]
-            entry = {"session_id": native_session, "harness": harness, "_transcript_records": rows}
-            self.comments = [comment(10, helper.claim.marker({**SOURCE, "session": native_session}))]
-            with patch.object(helper.sessions, "discover", return_value=({(REPO, 1)}, [REPO])):
-                self.assertFalse(helper.check(self.reader, [], entry, ACTOR)["claims_clear"])
-                self.comments.append(comment(11, "Released claim 10\nSession: " + native_session,
-                                             at="2026-01-01T00:02:00Z"))
-                self.assertTrue(helper.check(self.reader, [], entry, ACTOR)["claims_clear"])
-
-    def test_native_family_reuses_receipt_parsing_without_reusing_a_later_snapshot(self):
-        from test_claim_receipts import history, claim as native_claim, SESSION as native_session
-        from test_claim_history import records
-        for harness in ("codex", "claude"):
-            with self.subTest(harness=harness):
-                rows = history(harness, native_claim(REPO))
-                nodes = [{"session_id": native_session, "harness": harness, "records": rows}]
-                nodes.extend({"session_id": f"child-{i}", "harness": harness,
-                              "records": records(harness, f"child-{i}")}
-                             for i in range(4))
-                for node in nodes:
-                    node["transcript"] = f"/fixture/{node['session_id']}.jsonl"
-                    node["digest"] = helper.claim_history.fingerprint(node["records"])
-                entry = {"session_id": native_session, "harness": harness, "_claim_histories": nodes}
-                self.comments = [comment(10, helper.claim.marker({**SOURCE, "session": native_session}))]
-                original = helper.claim_receipts.outputs
-                with patch.object(helper.sessions, "discover", return_value=({(REPO, 1)}, [REPO])):
-                    with patch.object(helper.claim_receipts, "outputs", wraps=original) as single_parse:
-                        helper.check(self.reader, [], {**entry, "_claim_histories": nodes[:1]}, ACTOR)
-                    single_check_count = sum(call.args[0] is rows for call in single_parse.call_args_list)
-                    with patch.object(helper.claim_receipts, "outputs", wraps=original) as single_parse:
-                        helper.claim_receipts.acceptance(rows, harness, native_session, histories=nodes[:1])
-                    single_acceptance_count = sum(call.args[0] is rows for call in single_parse.call_args_list)
-                    with patch.object(helper.claim_receipts, "outputs", wraps=original) as parse:
-                        held = helper.check(self.reader, [], entry, ACTOR)
-                    self.assertFalse(held["claims_clear"], held)
-                    # Parsing work scales with histories, not histories times identities.
-                    check_parse_count = sum(call.args[0] is rows for call in parse.call_args_list)
-                    self.comments.append(comment(11, "Released claim 10", at="2026-01-01T00:02:00Z"))
-                    released = helper.check(self.reader, [], entry, ACTOR)
-                    self.assertTrue(released["claims_clear"], released)
-                    with patch.object(helper.claim_receipts, "outputs", wraps=original) as parse:
-                        verdict = helper.claim_receipts.acceptance(rows, harness, native_session, histories=nodes)
-                    self.assertFalse(verdict["clear"], verdict)
-                    self.assertEqual(check_parse_count, single_check_count)
-                    self.assertEqual(sum(call.args[0] is rows for call in parse.call_args_list), single_acceptance_count)
-                shared_counts = []
-                self.comments = [comment(10, helper.claim.marker({**SOURCE, "session": native_session})),
-                                 comment(11, "Released claim 10", at="2026-01-01T00:02:00Z")]
-                parent = history(harness, native_claim(REPO))
-                signature = tuple(map(id, parent))
-                for count in (1, 2):
-                    child = history(harness, *[{} for _ in range(count)])
-                    child_session = "child" if harness == "codex" else native_session
-                    if harness == "codex":
-                        child[0]["payload"]["id"] = child_session
-                    for index in range(1, 2 * count, 2):
-                        command = "gh pr create --repo test/a --head earlier-worker"
-                        if harness == "codex":
-                            child[index]["payload"]["arguments"] = json.dumps({"cmd": command})
-                        else:
-                            child[index]["message"]["content"][0]["input"] = {"command": command}
-                    family = [
-                        {"session_id": native_session, "harness": harness, "records": parent},
-                        {"session_id": child_session, "harness": harness, "records": child,
-                         "transcript": "/fixture/child.jsonl", "digest": helper.claim_history.fingerprint(child)}]
-                    parsed_shared = []
-                    def parsing(records, family_harness, **kwargs):
-                        if tuple(map(id, records)) == signature:
-                            parsed_shared.append(records)
-                        return original(records, family_harness, **kwargs)
-                    with patch.object(helper.sessions, "discover", return_value=({(REPO, 1)}, [REPO])), \
-                            patch.object(helper.claim_receipts, "outputs", side_effect=parsing):
-                        report = helper.check(self.reader, [], {**entry, "_claim_histories": family}, ACTOR)
-                    self.assertTrue(report["claims_clear"], report)
-                    shared_counts.append(len(parsed_shared))
-                self.assertEqual(*shared_counts)
-
-    def creation_history(self, harness, command, *, claim_first=True, timestamp="2026-01-01T02:00:00Z"):
-        from test_claim_receipts import history, claim as native_claim, output, SESSION as native_session
-        rows = history(harness, native_claim(REPO), {})
-        if harness == "codex":
-            rows[3]["payload"]["arguments"] = json.dumps({"cmd": command})
-        else:
-            rows[3]["message"]["content"][0]["input"] = {"command": command}
-        rows[4] = output({"exit_code": 0, "output": ""}, harness, "tool-1")
-        if not claim_first:
-            rows[1:5] = [*rows[3:5], *rows[1:3]]
-        for row in rows:
-            row["timestamp"] = timestamp
-        self.comments = [comment(10, helper.claim.marker({**SOURCE, "session": native_session})),
-                         comment(11, "Released claim 10\nSession: " + native_session, at="2026-01-01T00:02:00Z")]
-        return {"session_id": native_session, "harness": harness, "_transcript_records": rows}
-
-    def test_compound_pr_creation_requires_split_branch_handoff(self):
-        from test_claim_receipts import history, claim as native_claim, output, SESSION as native_session
-        for harness in ("codex", "claude"):
-            for creation in ("git push origin feat && gh pr create --repo test/a --head feat",
-                             "gh pr create --repo=test/a -H feat | cat",
-                             "git push origin feat && gh pr create --repo test/a"):
-                with self.subTest(harness=harness, creation=creation):
-                    self.comments = [comment(10, helper.claim.marker({**SOURCE, "session": native_session})),
-                                     comment(11, "Released claim 10\nSession: " + native_session,
-                                             at="2026-01-01T00:02:00Z")]
-                    self.pulls = [pull(3, branch="feat")]
-                    rows = history(harness, native_claim(REPO), {})
-                    if harness == "codex":
-                        rows[3]["payload"]["arguments"] = json.dumps({"cmd": creation})
-                    else:
-                        rows[3]["message"]["content"][0]["input"] = {"command": creation}
-                    rows[4] = output({"exit_code": 0, "output": self.pulls[0]["html_url"]}, harness, "tool-1")
-                    for row in rows:
-                        row["timestamp"] = SOURCE["claimed_at"]
-                    entry = {"session_id": native_session, "harness": harness, "_transcript_records": rows}
-                    with patch.object(helper.sessions, "discover", return_value=({(REPO, 1)}, [REPO])):
-                        report = helper.check(self.reader, [], entry, ACTOR)
-                    self.assertFalse(report["claims_clear"], report)
-                    self.comments[-1]["body"] += "\n" + self.pulls[0]["html_url"]
-                    with patch.object(helper.sessions, "discover", return_value=({(REPO, 1)}, [REPO])):
-                        self.assertTrue(helper.check(self.reader, [], entry, ACTOR)["claims_clear"])
-                        self.pulls = []
-                        self.comments[-1]["body"] = "Released claim 10\nSession: " + native_session
-                        self.assertTrue(helper.check(self.reader, [], entry, ACTOR)["claims_clear"])
-
-    def test_completed_wrapped_claim_reaches_inventory_and_still_requires_exact_release(self):
-        from test_claim_receipts import history, output, SESSION as native_session
-        source = comment(10, helper.claim.marker({**SOURCE, "session": native_session}))
-        release = comment(11, "Released claim 10\n\nSession: " + native_session, at="2026-01-01T00:02:00Z")
-        for harness in ("codex", "claude"):
-            for launcher in ("timeout 300 uv run", "uv run --directory /repo"):
-                with self.subTest(harness=harness, launcher=launcher):
-                    self.comments = [source]
-                    rows = history(harness, {})
-                    command = launcher + " /catalog/gh-plan.py --repo test/a claim 1 > claim.json"
-                    if harness == "codex":
-                        rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
-                    else:
-                        rows[1]["message"]["content"][0]["input"] = {"command": command}
-                    rows[2] = output({"exit_code": 0, "output": ""}, harness, "tool-0")
-                    for row in rows:
-                        row["timestamp"] = SOURCE["claimed_at"]
-                    entry = {"session_id": native_session, "harness": harness, "_transcript_records": rows}
-                    with patch.object(helper.sessions, "discover", return_value=({(REPO, 1)}, [REPO])):
-                        held = helper.check(self.reader, [], entry, ACTOR)
-                        self.assertFalse(held["claims_clear"], held)
-                        self.assertTrue(held["coverage"]["complete"], held)
-                        self.comments.append(release)
-                        released = helper.check(self.reader, [], entry, ACTOR)
-                    self.assertTrue(released["claims_clear"], released)
-                    self.assertEqual({r["claim_comment"] for r in released["released_claims"]}, {10})
-
-    def test_finished_claim_with_ordinary_tests_and_reads_reaches_terminal_inventory(self):
-        from test_claim_receipts import ordinary_read_history, history, output, claim as native_claim, SESSION as native_session
-        self.comments = [comment(10, helper.claim.marker({**SOURCE, "session": native_session})),
-                         comment(11, "Released claim 10\n\nSession: " + native_session, at="2026-01-01T00:02:00Z")]
-        for harness in ("codex", "claude"):
-            with self.subTest(harness=harness):
-                rows = history(harness, native_claim(REPO))
-                reads = ordinary_read_history(harness)
-                end = 2 if harness == "codex" else 1
-                rows[-end:-end] = reads[1:-end]
-                for row in rows:
-                    row["timestamp"] = SOURCE["claimed_at"]
-                entry = {"session_id": native_session, "harness": harness, "_transcript_records": rows}
-                with patch.object(helper.sessions, "discover", return_value=({(REPO, 1)}, [REPO])):
-                    # The reviewed head raised "ownership command has no terminal
-                    # native result" before it could even read the exact release.
-                    report = helper.check(self.reader, [], entry, ACTOR)
-                self.assertTrue(report["claims_clear"], report)
-                self.assertTrue(report["coverage"]["complete"], report)
-                self.assertEqual({r["claim_comment"] for r in report["released_claims"]}, {10})
-                if harness == "claude":
-                    continue  # Claude completion is exercised through its real task tracker below.
-                # A historical running record is rechecked, never a permanent
-                # refusal before the live GitHub inventory.
-                pending = history(harness, {})[1:3]
-                command = "uv run scripts/gh-plan.py --repo test/a claim 1 > claim.json"
-                if harness == "codex":
-                    pending[0]["payload"].update(call_id="pending", arguments=json.dumps({"cmd": command}))
-                else:
-                    pending[0]["message"]["content"][0].update(id="pending", input={"command": command})
-                pending[1] = output("Process running with session ID 123", harness, "pending")
-                rows[-end:-end] = pending
-                self.reader.reset_mock()
-                native = helper.native_ownership
-                with patch.object(native, "pending_ownership", wraps=CURRENT_NATIVE_PENDING), \
-                        patch.object(native, "observe", side_effect=[
-                            ([], {native_session: {"state": "live"}}, {}),
-                            ([], {native_session: {"state": "ended"}}, {}),
-                            ([], {native_session: {"state": "ended"}}, {})]) as observed, \
-                        patch.object(helper.sessions, "discover", return_value=({(REPO, 1)}, [REPO])):
-                    waiting = helper.check(self.reader, [], entry, ACTOR)
-                    self.assertFalse(waiting["claims_clear"], waiting)
-                    self.assertTrue(waiting["pending"], waiting)
-                    finished = helper.check(self.reader, [], entry, ACTOR)
-                    self.assertTrue(finished["claims_clear"], finished)
-                    self.assertFalse(finished["pending"], finished)
-                    self.comments.pop()  # Gone does not release a real claim.
-                    held = helper.check(self.reader, [], entry, ACTOR)
-                    self.assertFalse(held["claims_clear"], held)
-                    self.assertFalse(held["pending"], held)
-                    self.assertEqual(observed.call_count, 3)
-                self.reader.paged_json.assert_called()
-                self.comments.append(comment(11, "Released claim 10\n\nSession: " + native_session,
-                                             at="2026-01-01T00:02:00Z"))
-
-    def test_claude_completed_background_task_reaches_live_complete_inventory(self):
-        from test_claim_receipts import history, output, SESSION as native_session
-        rows = history("claude", {})
-        rows[1]["message"]["content"][0]["input"] = {"command": "uv run test_sample.py", "run_in_background": True}
-        rows[2] = output({}, "claude", "tool-0")
-        rows[2]["toolUseResult"] = {"backgroundTaskId": "watcher"}
-        for row in rows:
-            row["timestamp"] = SOURCE["claimed_at"]
-        self.comments = [comment(10, helper.claim.marker({**SOURCE, "session": native_session})),
-                         comment(11, "Released claim 10\nSession: " + native_session, at="2026-01-01T00:02:00Z")]
-        entry = {"session_id": native_session, "harness": "claude", "_transcript_records": rows}
-        with patch.object(helper.native_ownership, "pending_ownership", wraps=CURRENT_NATIVE_PENDING), \
-                patch.object(helper.native_ownership, "observe", return_value=([], {}, {})), \
-                patch.object(helper.sessions, "discover", return_value=({(REPO, 1)}, [REPO])):
-            self.assertTrue(helper.check(self.reader, [], entry, ACTOR)["pending"])
-            rows[-1:-1] = [{"type": "user", "timestamp": SOURCE["claimed_at"],
-                "origin": {"kind": "task-notification", "producer": "session-task"}, "message": {"content":
-                "<task-notification><task-id>watcher</task-id><status>completed</status></task-notification>"}}]
-            finished = helper.check(self.reader, [], entry, ACTOR)
-            self.assertTrue(finished["claims_clear"], finished)
-            self.assertTrue(finished["coverage"]["complete"], finished)
-            self.comments.pop()
-            self.assertFalse(helper.check(self.reader, [], entry, ACTOR)["claims_clear"])
-
-    def test_shorthand_redirected_client_claim_is_inventoried_with_its_own_actor(self):
-        from test_claim_receipts import history, claim as native_claim, output, SESSION as native_session
-        foreign, number, client_actor = "client/repo", 7, "client-fixture[bot]"
-        self.inventory.return_value["repositories"][foreign] = [client_actor]
-        local = [comment(10, helper.claim.marker({**SOURCE, "session": native_session})),
-                 comment(11, "Released claim 10", at="2026-01-01T00:02:00Z")]
-        held = comment(20, helper.claim.marker({**SOURCE, "session": native_session}), client_actor)
-        client_comments = [held]
-        client = Mock(expected_actor=client_actor)
-        client.get_json.return_value = {"body": "", "number": number}
-        client.paged_json.side_effect = lambda path, **kw: [] if path.endswith("/pulls") else client_comments
-        self.reader.paged_json.side_effect = lambda path, **kw: [{"full_name": REPO}] if path == "/installation/repositories" else [] if path.endswith("/pulls") else local
-        for harness, suffix in ((h, s) for h in ("codex", "claude") for s in ("", " && python3 - <<'PY'\nprint('ok')\nPY")):
-            rows = history(harness, native_claim(REPO), native_claim(foreign, number, 20))
-            command = f'uv run /catalog/gh-plan.py claim {foreign}#{number} > claim.json' + suffix
-            if harness == "codex":
-                rows[3]["payload"]["arguments"] = json.dumps({"cmd": command})
-            else:
-                rows[3]["message"]["content"][0]["input"] = {"command": command}
-            rows[4] = output({}, harness, "tool-1")
-            for row in rows: row["timestamp"] = SOURCE["claimed_at"]
-            entry = {"session_id": native_session, "harness": harness, "_transcript_records": rows}
-            with patch.object(helper.sessions, "discover", side_effect=lambda reader, owner, entries, repos: ({(REPO, 1)} if repos == [REPO] else {(foreign, 7)}, repos)):
-                report = helper.check(self.reader, [], entry, ACTOR, reader_for_repo=lambda repo, _: client if repo == foreign else self.reader)
-                self.assertFalse(report["claims_clear"], report)
-                self.assertIn(foreign, report["coverage"]["repositories"])
-                client_comments.append(comment(21, "Released claim 20", client_actor, at="2026-01-01T00:02:00Z"))
-                released = helper.check(self.reader, [], entry, ACTOR, reader_for_repo=lambda repo, _: client if repo == foreign else self.reader)
-                self.assertTrue(released["claims_clear"], released)
-                self.assertTrue(released["coverage"]["complete"])
-                self.assertEqual({r["repository"] for r in released["released_claims"]}, {REPO, foreign})
-                client_comments.pop()
-
     def setUp(self):
-        from test_claim_receipts import UV_RUN_HELP
-        helper.claim_receipts.uv_run_options.cache_clear()
-        uv_help = patch.object(helper.claim_receipts, "runtime_uv_help", return_value=UV_RUN_HELP)
-        uv_help.start()
-        self.addCleanup(uv_help.stop)
-        self.addCleanup(helper.claim_receipts.uv_run_options.cache_clear)
-        self.native_pending = self.enterContext(patch.object(helper.native_ownership, "pending_ownership", return_value=[]))
+        self.folder = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.source = comment(10, "Claimed by worker\n\n" + helper.claim.marker(SOURCE))
         self.release = comment(11, "Released claim 10\n\nSession: " + SESSION, at="2026-01-01T00:02:00Z")
         self.comments = [self.source]
@@ -467,70 +63,26 @@ class ClaimCloseoutTests(unittest.TestCase):
     def check(self):
         return helper.check_record(self.reader, REPO, 1, SESSION, ACTOR)
 
-    def test_a_confirmed_no_write_refusal_does_not_make_inventory_incomplete(self):
-        from test_claim_receipts import history, SESSION as native_session
-        for harness in ("codex", "claude"):
-            refused = {"operation": helper.claim_receipts.CLAIM_OPERATION, "ok": False,
-                       "write_outcome": "not_started", "completed_steps": []}
-            rows = history(harness, refused)
-            command = "cd /repo && uv run scripts/gh-plan.py claim 1 2>&1"
-            if harness == "codex": rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
-            else: rows[1]["message"]["content"][0]["input"] = {"command": command}
-            for row in rows: row["timestamp"] = SOURCE["claimed_at"]
-            entry = {"session_id": native_session, "harness": harness, "_transcript_records": rows}
-            with patch.object(helper.sessions, "discover", return_value=([], [REPO])):
-                report = helper.check(self.reader, [], entry, ACTOR)
-            self.assertTrue(report["claims_clear"], report)
-            self.assertTrue(report["coverage"]["complete"])
+    def entry(self, session=SESSION, timestamp=SOURCE["claimed_at"]):
+        path = self.folder / (session + ".jsonl")
+        row = {"type": "session_meta", "payload": {"id": session}}
+        if timestamp is not None:
+            row["timestamp"] = timestamp
+        path.write_text(json.dumps(row) + "\n")
+        return {"session_id": session, "transcript": str(path)}
 
-    def test_pending_ownership_is_rechecked_after_remote_inventory(self):
-        from test_claim_receipts import history, SESSION as native_session
-        for harness in ("codex", "claude"):
-            for command in ("uv run scripts/gh-plan.py --repo test/a claim 1 > claim.json",
-                            "uv run scripts/gh-plan.py --repo test/a claim 1 &",
-                            "uv run scripts/gh-plan.py claim test/a#1 > claim.json 2>&1 &",
-                            "nohup gh pr create --title x &"):
-                redirected_claude = harness == "claude" and command.endswith("json")
-                rows = history(harness, {"operation": helper.claim_receipts.CLAIM_OPERATION})
-                if harness == "codex":
-                    rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
-                    rows[2]["payload"]["output"] = "Process running with session ID 123" if command.endswith("json") else ""
-                else:
-                    rows[1]["message"]["content"][0]["input"] = {"command": command}
-                    rows[2]["message"]["content"][0]["content"] = "Process running with session ID 123" if command.endswith("json") else ""
-                for row in rows:
-                    row["timestamp"] = SOURCE["claimed_at"]
-                entry = {"session_id": native_session, "harness": harness, "_transcript_records": rows}
-                if redirected_claude:
-                    self.comments = [comment(10, helper.claim.marker({**SOURCE, "session": native_session}))]
-                with patch.object(helper.native_ownership, "pending_ownership", wraps=CURRENT_NATIVE_PENDING), \
-                        patch.object(helper.native_ownership, "observe", return_value=([], {}, {})) as observed, \
-                        patch.object(helper.sessions, "discover", return_value=({(REPO, 1)} if redirected_claude else [], [REPO])):
-                    report = helper.check(self.reader, [], entry, ACTOR)
-                    self.assertFalse(report["claims_clear"], report)
-                    if redirected_claude:
-                        self.assertFalse(report["pending"], report)
-                        observed.assert_not_called()
-                        self.comments.append(comment(11, "Released claim 10\nSession: " + native_session,
-                                                     at="2026-01-01T00:02:00Z"))
-                        released = helper.check(self.reader, [], entry, ACTOR)
-                        self.assertTrue(released["claims_clear"], released)
-                        self.assertEqual([r["claim_comment"] for r in released["released_claims"]], [10])
-                    else:
-                        self.assertTrue(report["pending"], report)
-                        observed.assert_called_once()
-        self.inventory.assert_called()
+    def canonical_pages(self, path, **kw):
+        if path == "/installation/repositories":
+            return [{"full_name": REPO}]
+        if path.endswith("/issues/comments"):
+            return [{**c, "issue_url": f"https://api.github.com/repos/{REPO}/issues/1"} for c in self.comments]
+        if path.endswith("/issues") or path.endswith("/pulls"):
+            return []
+        return self.comments
 
-    def test_held_claim_blocks_even_when_hygiene_and_transcript_say_safe(self):
-        for harness in ("claude", "codex"):
-            with self.subTest(harness=harness):
-                records = ([{"type": "assistant", "sessionId": SESSION, "message": {"stop_reason": "end_turn",
-                            "content": [{"type": "text", "text": "Finished.\nSafe to exit: yes"}]}}] if harness == "claude" else [
-                            {"type": "event_msg", "payload": {"type": "agent_message", "message": "Finished.\nSafe to exit: yes"}},
-                            {"type": "event_msg", "payload": {"type": "task_complete"}}])
-                self.assertTrue(helper.session_record.summarize(records, harness)["safe_verdict"])
-                with self.assertRaises(ValueError):
-                    self.check()
+    def test_held_claim_blocks_without_an_exact_release(self):
+        with self.assertRaises(ValueError):
+            self.check()
 
     def test_exact_authored_release_is_read_back(self):
         self.comments.append(self.release)
@@ -546,7 +98,7 @@ class ClaimCloseoutTests(unittest.TestCase):
         evidence = comment(88, f"Closed session {SESSION}\nEnded at: 2026-01-01T00:02:00Z\nSafe to exit: yes", at="2026-01-01T00:03:00Z")
         evidence["issue_url"] = f"https://api.github.com/repos/{REPO}/issues/1"
         body = helper.release.prepare_release(self.source, evidence, self.comments,
-            {"sessions": [], "worktrees": []}, actor=ACTOR, role="supervisor", releaser_session="supervisor-fixture",
+            {"worktrees": []}, actor=ACTOR, role="supervisor", releaser_session="supervisor-fixture",
             evidence_url=f"https://github.com/{REPO}/issues/1#issuecomment-88", retained_prs=[p["html_url"] for p in self.pulls],
             checked_prs=[p["html_url"] for p in self.pulls], related=[])
         self.comments.append(comment(89, body, at="2026-01-01T00:04:00Z"))
@@ -715,38 +267,58 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.assertEqual(self.check(), [])
         self.reader.post_json.assert_not_called()
 
+    def test_partial_installation_coverage_is_pending_until_rechecked(self):
+        entries = [self.entry(SESSION, "2026-02-01T00:00:00Z"), self.entry("child", "2026-01-01T00:00:00Z")]
+        installation = {"installation_id": 101, "account": {"login": "suspended-owner"},
+                        "reason": "suspended installation may contain native source claims"}
+        self.inventory.return_value = {"repositories": {REPO: [ACTOR]}, "installations": [installation],
+                                       "pending_installations": [installation]}
+        with patch.object(helper.sessions, "discover", return_value=([], [REPO])):
+            pending = helper.check(self.reader, [], entries, ACTOR, repositories=["explicit/site"])
+            self.assertFalse(pending["claims_clear"], pending)
+            self.assertFalse(pending["coverage"]["complete"])
+            self.assertTrue(any("101" in reason for reason in pending["blocked"]))
+            query = self.inventory.call_args.kwargs
+            self.assertEqual(query["since"], helper.release.stamp("2025-12-31T23:59:59Z"))
+            self.assertEqual(query["required_repositories"], {"explicit/site"})
+            self.inventory.return_value = {"repositories": {REPO: [ACTOR]}, "installations": [installation],
+                                           "excluded_installations": [installation]}
+            clear = helper.check(self.reader, [], entries, ACTOR, repositories=["explicit/site"])
+            self.assertTrue(clear["claims_clear"], clear)
+            self.assertTrue(clear["coverage"]["complete"])
+            self.assertEqual(clear["coverage"]["excluded_installations"], [installation])
+            helper.check(self.reader, [], [self.entry("untimed", None), self.entry(SESSION, "2026-02-01T00:00:00Z")], ACTOR)
+            self.assertIsNone(self.inventory.call_args.kwargs["since"])
+
     def test_global_inventory_accounts_for_cross_repo_closed_issues_and_prs(self):
-        entries = [("test/a", 1), ("test/b", 5), ("test/b", 6)]
+        records = [("test/a", 1), ("test/b", 5), ("test/b", 6)]
         self.inventory.return_value["repositories"]["test/b"] = [ACTOR]
         self.reader.paged_json.side_effect = lambda *_a, **_k: [{"full_name": "test/a"}, {"full_name": "test/b"}]
-        with patch.object(helper.sessions, "discover", return_value=(entries, ["test/a", "test/b"])), \
+        with patch.object(helper.sessions, "discover", return_value=(records, ["test/a", "test/b"])), \
                 patch.object(helper, "check_record", side_effect=[[], ValueError("held"), []]) as check:
-            result = helper.check(self.reader, "test", {"session_id": SESSION, "harness": "codex"}, ACTOR)
+            result = helper.check(self.reader, "test", [self.entry()], ACTOR)
         self.assertFalse(result["claims_clear"])
-        self.assertEqual(check.call_count, len(entries))
+        self.assertEqual(check.call_count, len(records))
         self.assertTrue(any("held" in reason for reason in result["blocked"]), result)
 
     def test_complete_discovery_reads_all_owner_repositories_and_closed_records(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            transcript = Path(tmp) / "native.jsonl"
-            transcript.write_text(json.dumps({"type": "session_meta", "timestamp": SOURCE["claimed_at"], "payload": {"id": SESSION}}) + "\n")
-            def paged(path, **kwargs):
-                if path == "/installation/repositories":
-                    return [{"full_name": "test/a"}, {"full_name": "test/b"}]
-                if path.endswith("/issues"):
-                    return [{"number": 1, "state": "closed", "body": helper.claim.marker(SOURCE)}] if kwargs["params"].get("state") == "all" else []
-                if path.endswith("/issues/comments"):
-                    return []  # Closed status discovery is the only route.
-                return self.comments
-            self.reader.paged_json.side_effect = paged
-            result = helper.check(self.reader, "test", {"session_id": SESSION, "harness": "codex", "transcript": str(transcript)}, ACTOR)
+        def paged(path, **kwargs):
+            if path == "/installation/repositories":
+                return [{"full_name": "test/a"}, {"full_name": "test/b"}]
+            if path.endswith("/issues"):
+                return [{"number": 1, "state": "closed", "body": helper.claim.marker(SOURCE)}] if kwargs["params"].get("state") == "all" else []
+            if path.endswith("/issues/comments"):
+                return []
+            return self.comments
+        self.reader.paged_json.side_effect = paged
+        result = helper.check(self.reader, "test", [self.entry()], ACTOR, repositories=["test/b"])
         self.assertFalse(result["claims_clear"])
         self.assertEqual(len(result["blocked"]), len(result["coverage"]["repositories"]))
 
-    def test_incomplete_app_inventory_prevents_vacuous_no_receipt_all_clear(self):
+    def test_incomplete_app_inventory_refuses(self):
         self.inventory.side_effect = helper.github_identity.GitHubAppError("inventory incomplete")
         with self.assertRaises(helper.github_identity.GitHubAppError):
-            helper.check(self.reader, [], {"session_id": SESSION, "harness": "codex"}, ACTOR)
+            helper.check(self.reader, [], [self.entry()], ACTOR)
 
     def test_default_inventory_uses_its_resolved_client_actor(self):
         client_actor = "client-fixture[bot]"
@@ -754,58 +326,25 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.reader.expected_actor = client_actor
         self.source["user"]["login"] = client_actor
         self.comments.append({**self.release, "user": {"login": client_actor}})
-        def pages(path, **kw):
-            if path == "/installation/repositories": return [{"full_name": REPO}]
-            if path.endswith("/issues/comments"):
-                return [{**c, "issue_url": f"https://api.github.com/repos/{REPO}/issues/1"} for c in self.comments]
-            if path.endswith("/issues") or path.endswith("/pulls"): return []
-            return self.comments
-        self.reader.paged_json.side_effect = pages
-        entry = {"harness": "codex", "session_id": SESSION, "_transcript_records": [
-            {"type": "session_meta", "timestamp": SOURCE["claimed_at"], "payload": {"id": SESSION}}]}
-        report = helper.check(self.reader, "test", entry, ACTOR)
+        self.reader.paged_json.side_effect = self.canonical_pages
+        report = helper.check(self.reader, "test", [self.entry()], ACTOR)
         self.assertTrue(report["claims_clear"])
         self.assertEqual([r["claim_comment"] for r in report["released_claims"]], [self.source["id"]])
 
-    def test_missing_receipts_still_discover_a_held_default_installation_claim(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "native.jsonl"
-            path.write_text(json.dumps({"type": "session_meta", "timestamp": SOURCE["claimed_at"], "payload": {"id": SESSION}}) + "\n")
-            def pages(endpoint, **kw):
-                if endpoint == "/installation/repositories": return [{"full_name": REPO}]
-                if endpoint.endswith("/issues/comments"):
-                    return [{**self.source, "issue_url": f"https://api.github.com/repos/{REPO}/issues/1"}]
-                return [] if endpoint.endswith("/issues") else self.comments
-            self.reader.paged_json.side_effect = pages
-            report = helper.check(self.reader, [], {"harness": "codex", "session_id": SESSION, "transcript": str(path)}, ACTOR)
-            self.assertFalse(report["claims_clear"])
-
-    def test_uncertain_renewal_reads_its_original_record_outside_the_time_window(self):
-        from test_claim_receipts import history
-        value = {"operation": helper.claim_receipts.CLAIM_OPERATION, "ok": False, "write_outcome": "unknown",
-                 "claim": {"session": SESSION}, "issue": {"repo": REPO, "number": 1}}
-        records = history("codex", value)
-        for record in records: record["timestamp"] = "2026-01-02T00:00:00Z"
+    def test_discovery_finds_a_held_default_installation_claim(self):
+        self.reader.paged_json.side_effect = self.canonical_pages
+        report = helper.check(self.reader, [], [self.entry()], ACTOR)
+        self.assertFalse(report["claims_clear"])
         self.comments.append(self.release)
-        entry = {"session_id": SESSION, "harness": "codex", "_transcript_records": records}
-        original_pages = self.paged
-        self.reader.paged_json.side_effect = lambda path, **kw: [] if path.endswith("/issues/comments") or path.endswith("/issues") else original_pages(path, **kw)
-        report = helper.check(self.reader, [], entry, ACTOR)
-        self.assertTrue(report["claims_clear"], report)
-        self.assertTrue(report["receipt_reconciliation"])
-        self.assertEqual([r["claim_comment"] for r in report["released_claims"]], [self.source["id"]])
+        self.assertTrue(helper.check(self.reader, [], [self.entry()], ACTOR)["claims_clear"])
 
     def test_a_second_installation_and_its_client_actor_are_checked(self):
-        from test_claim_receipts import claim as native_claim, history, SESSION as native_session
         foreign, client_actor = "second/b", "client-fixture[bot]"
         self.inventory.return_value = {"repositories": {REPO: [ACTOR], foreign: [client_actor]}, "installations": []}
-        native = [native_claim(REPO), native_claim(foreign, 2, 20)]
-        entry = {"harness": "codex", "session_id": native_session, "_transcript_records": history("codex", *native)}
-        for record in entry["_transcript_records"]: record["timestamp"] = SOURCE["claimed_at"]
-        def rows(repo, identifier, actor):
-            source = comment(identifier, helper.claim.marker({**SOURCE, "session": native_session}), actor)
+        def rows(identifier, actor):
+            source = comment(identifier, helper.claim.marker(SOURCE), actor)
             return [source, comment(identifier + 1, f"Released claim {identifier}", actor, at="2026-01-01T00:02:00Z")]
-        local_comments, client_comments = rows(REPO, 10, ACTOR), rows(foreign, 20, client_actor)
+        local_comments, client_comments = rows(10, ACTOR), rows(20, client_actor)
         client = Mock(expected_actor=client_actor)
         def missing():
             return helper.GitHubReadError("fixture record unavailable", result=SimpleNamespace(status=404), diagnostics={})
@@ -827,518 +366,93 @@ class ClaimCloseoutTests(unittest.TestCase):
             return comments
         self.reader.paged_json.side_effect = lambda path, **kw: pages(REPO, local_comments, path, **kw)
         client.paged_json.side_effect = lambda path, **kw: pages(foreign, client_comments, path, **kw)
-        report = helper.check(self.reader, [], entry, ACTOR, reader_for_repo=lambda repo, _: client if repo == foreign else self.reader)
-        self.assertTrue(report["claims_clear"], report)
-        self.assertEqual({r["repository"] for r in report["released_claims"]}, {REPO, foreign})
-        # Current native completion cannot hide a held claim in a second App
-        # installation merely because its source was computed.
-        opaque_records = json.loads(json.dumps(entry["_transcript_records"]))
-        opaque_records[3]["payload"].update(name="functions.exec", arguments=None,
-            input='const command="uv run /catalog/gh-plan.py --repo second/b claim 2";text(await tools.exec_command({cmd:command}));')
-        client_comments.pop()
-        computed = helper.check(self.reader, [], {**entry, "_transcript_records": opaque_records}, ACTOR,
-                                reader_for_repo=lambda repo, _: client if repo == foreign else self.reader)
-        self.assertFalse(computed["claims_clear"], computed)
-        client_comments.append(comment(21, "Released claim 20", client_actor, at="2026-01-01T00:02:00Z"))
-        records = history("claude", native[0])
-        records[-1:-1] = [
-            {"type": "assistant", "sessionId": native_session, "message": {"content": [{"type": "tool_use", "name": "Bash", "id": "redirected-child", "input": {"command": "cd /foreign-repo && uv run /catalog/gh-plan.py claim 2 > claim.json"}}]}},
-            {"type": "user", "sessionId": native_session, "message": {"content": [{"type": "tool_result", "tool_use_id": "redirected-child", "content": ""}]}},
-        ]
-        for record in records: record["timestamp"] = SOURCE["claimed_at"]
-        entry = {"harness": "claude", "session_id": native_session, "_transcript_records": records}
+        entries = [self.entry()]
         select = lambda repo, _: client if repo == foreign else self.reader
-        report = helper.check(self.reader, [], entry, ACTOR, reader_for_repo=select)
+        report = helper.check(self.reader, [], entries, ACTOR, reader_for_repo=select)
         self.assertTrue(report["claims_clear"], report)
         self.assertTrue(report["coverage"]["complete"], report)
+        self.assertEqual({r["repository"] for r in report["released_claims"]}, {REPO, foreign})
         client_comments.pop()
-        held = helper.check(self.reader, [], entry, ACTOR, reader_for_repo=select)
+        held = helper.check(self.reader, [], entries, ACTOR, reader_for_repo=select)
         self.assertFalse(held["claims_clear"], held)
         client_comments.append(comment(21, "Released claim 20", ACTOR, at="2026-01-01T00:02:00Z"))
-        wrong_release = helper.check(self.reader, [], entry, ACTOR, reader_for_repo=select)
+        wrong_release = helper.check(self.reader, [], entries, ACTOR, reader_for_repo=select)
         self.assertFalse(wrong_release["claims_clear"], wrong_release)
         client_comments[-1]["user"]["login"] = client_actor
-        self.assertTrue(helper.check(self.reader, [], entry, ACTOR, reader_for_repo=select)["claims_clear"])
+        self.assertTrue(helper.check(self.reader, [], entries, ACTOR, reader_for_repo=select)["claims_clear"])
         client.paged_json.side_effect = missing()
-        incomplete = helper.check(self.reader, [], entry, ACTOR, reader_for_repo=select)
+        incomplete = helper.check(self.reader, [], entries, ACTOR, reader_for_repo=select)
         self.assertFalse(incomplete["claims_clear"], incomplete)
         self.assertFalse(incomplete["coverage"]["complete"], incomplete)
         self.assertTrue(any(foreign in reason for reason in incomplete["blocked"]))
         client.paged_json.side_effect = lambda path, **kw: pages(foreign, client_comments, path, **kw)
-        self.assertTrue(helper.check(self.reader, [], entry, ACTOR, reader_for_repo=select)["claims_clear"])
+        self.assertTrue(helper.check(self.reader, [], entries, ACTOR, reader_for_repo=select)["claims_clear"])
 
-    def test_complete_canonical_inventory_resolves_opaque_scope_without_borrowing_a_release(self):
-        from test_claim_receipts import claim as native_claim, history, SESSION as native_session
-        self.source["body"] = helper.claim.marker({**SOURCE, "session": native_session})
-        self.comments.append(self.release)
-        self.release["body"] = "Released claim 10\n\nSession: " + native_session
-        def pages(path, **kw):
-            if path == "/installation/repositories": return [{"full_name": REPO}]
-            if path.endswith("/issues/comments"):
-                return [{**c, "issue_url": f"https://api.github.com/repos/{REPO}/issues/1"} for c in self.comments]
-            if path.endswith("/issues") or path.endswith("/pulls"): return []
-            return self.comments
-        self.reader.paged_json.side_effect = pages
-        for harness in ("codex", "claude"):
-            rows = history(harness, native_claim(REPO), native_claim(REPO))
-            command = "cd /foreign && uv run /catalog/gh-plan.py claim 1 --worker worker --branch work/task > claim.json"
-            if harness == "codex":
-                rows[3]["payload"]["arguments"] = json.dumps({"cmd": command})
-                rows[4]["payload"]["output"] = ""
-            else:
-                rows[3]["message"]["content"][0]["input"] = {"command": command}
-                rows[4]["message"]["content"][0]["content"] = ""
-            for row in rows: row["timestamp"] = SOURCE["claimed_at"]
-            entry = {"harness": harness, "session_id": native_session, "_transcript_records": rows,
-                     "_extra_repositories": [REPO]}
-            report = helper.check(self.reader, [], entry, ACTOR)
-            self.assertTrue(report["claims_clear"], report)
-            self.assertTrue(report["coverage"]["complete"])
-            # Batched spelling cannot change canonical ownership.
-            batched = f"uv run /catalog/gh-plan.py claim 1; {command}"
-            if harness == "codex": rows[1]["payload"]["arguments"] = json.dumps({"cmd": batched})
-            else: rows[1]["message"]["content"][0]["input"] = {"command": batched}
-            entry["_transcript_records"] = rows[:3] + rows[5:]
-            self.assertTrue(helper.check(self.reader, [], entry, ACTOR)["claims_clear"])
-            self.comments.pop()
-            self.assertFalse(helper.check(self.reader, [], entry, ACTOR)["claims_clear"])
-            self.comments.append(self.release)
-
-    def test_options_first_claim_scope_cannot_be_filled_by_an_older_released_claim(self):
-        from test_claim_receipts import history, claim as native_claim, output, SESSION as native_session
-        foreign = "client/repo"
-        local_comments = [comment(10, helper.claim.marker({**SOURCE, "session": native_session})),
-                          comment(11, "Released claim 10\nSession: " + native_session, at="2026-01-01T00:02:00Z")]
-        client_actor = "client-fixture[bot]"
-        self.inventory.return_value["repositories"][foreign] = [client_actor]
-        client_comments = [comment(20, helper.claim.marker({**SOURCE, "session": native_session}), client_actor)]
-        client = Mock(expected_actor=client_actor)
-        client.get_json.return_value = {"body": "", "number": 7}
-        client.paged_json.side_effect = lambda path, **kw: [] if path.endswith("/pulls") else client_comments
-        self.reader.paged_json.side_effect = lambda path, **kw: ([{"full_name": REPO}] if path == "/installation/repositories"
-            else [] if path.endswith("/pulls") else local_comments)
-        options = "--worker w --session " + native_session + " --branch b --next-action n "
-        for harness in ("codex", "claude"):
-            for operand in (foreign + "#7", "$ISSUE", "7"):
-                with self.subTest(harness=harness, operand=operand):
-                    rows = history(harness, native_claim(REPO), {})
-                    command = "uv run /catalog/gh-plan.py claim " + options + operand + " > claim.json"
-                    if harness == "codex":
-                        rows[3]["payload"]["arguments"] = json.dumps({"cmd": command})
-                    else:
-                        rows[3]["message"]["content"][0]["input"] = {"command": command}
-                    rows[4] = output({"exit_code": 0, "output": ""}, harness, "tool-1")
-                    for row in rows:
-                        row["timestamp"] = SOURCE["claimed_at"]
-                    entry = {"harness": harness, "session_id": native_session, "_transcript_records": rows,
-                             "_extra_repositories": [REPO]}
-                    with patch.object(helper.sessions, "discover", side_effect=lambda reader, owner, entries, repos: ({(REPO, 1)} if repos == [REPO] else {(foreign, 7)}, repos)):
-                        report = helper.check(self.reader, [], entry, ACTOR,
-                                              reader_for_repo=lambda repo, _: client if repo == foreign else self.reader)
-                    self.assertFalse(report["claims_clear"], report)
-                    self.assertTrue(report["coverage"]["complete"], report)
-                    if operand == foreign + "#7":
-                        self.assertIn(foreign, report["coverage"]["repositories"])
-                        client_comments.append(comment(21, "Released claim 20\nSession: " + native_session,
-                                                       client_actor, at="2026-01-01T00:02:00Z"))
-                        with patch.object(helper.sessions, "discover", side_effect=lambda reader, owner, entries, repos: ({(REPO, 1)} if repos == [REPO] else {(foreign, 7)}, repos)):
-                            released = helper.check(self.reader, [], entry, ACTOR,
-                                                    reader_for_repo=lambda repo, _: client if repo == foreign else self.reader)
-                        self.assertTrue(released["claims_clear"], released)
-                        self.assertEqual({r["repository"] for r in released["released_claims"]}, {REPO, foreign})
-                        client_comments.pop()
-                    self.assertFalse(any("/None" in str(call) for call in self.reader.get_json.call_args_list))
-
-    def test_dynamic_claim_with_its_own_canonical_receipt_still_requires_release(self):
-        from test_claim_receipts import history, claim as native_claim, SESSION as native_session
-        source = comment(10, helper.claim.marker({**SOURCE, "session": native_session}))
-        release = comment(11, "Released claim 10\nSession: " + native_session, at="2026-01-01T00:02:00Z")
-        for harness in ("codex", "claude"):
-            with self.subTest(harness=harness):
-                self.comments = [source]
-                rows = history(harness, native_claim(REPO))
-                command = "uv run /catalog/gh-plan.py claim --worker w $ISSUE --session " + native_session
-                if harness == "codex":
-                    rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
-                else:
-                    rows[1]["message"]["content"][0]["input"] = {"command": command}
-                for row in rows:
-                    row["timestamp"] = SOURCE["claimed_at"]
-                entry = {"harness": harness, "session_id": native_session, "_transcript_records": rows}
-                with patch.object(helper.sessions, "discover", return_value=({(REPO, 1)}, [REPO])):
-                    held = helper.check(self.reader, [], entry, ACTOR)
-                    self.assertFalse(held["claims_clear"], held)
-                    self.assertTrue(held["coverage"]["complete"], held)
-                    self.comments.append(release)
-                    released = helper.check(self.reader, [], entry, ACTOR)
-                self.assertTrue(released["claims_clear"], released)
-                self.assertTrue(released["coverage"]["complete"], released)
-                self.assertEqual({r["claim_comment"] for r in released["released_claims"]}, {10})
-
-    def test_codex_child_thread_ownership_is_included_in_the_parent_readback(self):
-        from test_claim_history import records, claim_history
-        from test_claim_receipts import claim as native_claim
+    def test_child_session_claims_are_read_back_with_the_parent(self):
         child = "native-child"
-        value = native_claim(REPO)
-        value["claim"]["session"] = child
-        root_records = records("codex", SESSION, delegate=True)
-        child_records = records("codex", child, value, parent=SESSION)
         self.source["body"] = helper.claim.marker({**SOURCE, "session": child})
-        def pages(path, **kw):
-            if path == "/installation/repositories": return [{"full_name": REPO}]
-            if path.endswith("/issues/comments"):
-                return [{**c, "issue_url": f"https://api.github.com/repos/{REPO}/issues/1"} for c in self.comments]
-            if path.endswith("/issues") or path.endswith("/pulls"): return []
-            return self.comments
-        self.reader.paged_json.side_effect = pages
-        nodes = [{"session_id": SESSION, "harness": "codex", "records": root_records},
-                 {"session_id": child, "harness": "codex", "records": child_records,
-                  "transcript": "/fixture/child.jsonl", "digest": claim_history.fingerprint(child_records)}]
-        entry = {"session_id": SESSION, "harness": "codex", "_claim_histories": nodes,
-                 "_transcript_records": root_records + child_records, "_extra_repositories": [REPO]}
-        self.assertFalse(helper.check(self.reader, [], entry, ACTOR)["claims_clear"])
+        self.reader.paged_json.side_effect = self.canonical_pages
+        entries = [self.entry(), self.entry(child)]
+        self.assertFalse(helper.check(self.reader, [], entries, ACTOR)["claims_clear"])
         self.comments.append({**self.release, "body": "Released claim 10\nSession: " + child})
-        report = helper.check(self.reader, [], entry, ACTOR)
+        report = helper.check(self.reader, [], entries, ACTOR)
         self.assertTrue(report["claims_clear"], report)
-        self.assertEqual(set(report["coverage"]["session_ids"]), {SESSION, child})
+        self.assertEqual(report["session_ids"], sorted([SESSION, child]))
         self.assertEqual([r["source_session"] for r in report["released_claims"]], [child])
 
-    def test_claude_sidechain_claims_are_included_in_the_native_inventory(self):
-        from test_claim_receipts import history, claim as native_claim
-        with tempfile.TemporaryDirectory() as tmp:
-            parent = Path(tmp) / (SESSION + ".jsonl")
-            parent.write_text(json.dumps({"type": "user", "sessionId": SESSION}) + "\n")
-            child = Path(tmp) / SESSION / "subagents" / "agent-fixture.jsonl"
-            child.parent.mkdir(parents=True)
-            value = native_claim(REPO)
-            value["claim"]["session"] = SESSION
-            records = history("claude", value)
-            # Native delegated records carry the parent's inherited identity.
-            for record in records: record["sessionId"] = SESSION
-            child.write_text("".join(json.dumps(r) + "\n" for r in records))
-            sources, errors = helper.claim_receipts.sources(helper.receipt_history(parent, "claude", SESSION), "claude", SESSION)
-            self.assertFalse(errors)
-            self.assertEqual([(r["repository"], r["claim_comment"]) for r in sources], [(REPO, 10)])
+    def test_explicit_repository_adds_an_account_missing_from_the_arguments(self):
+        with patch.object(helper.sessions, "discover", return_value=([], ["second/b"])) as discover:
+            result = helper.check(self.reader, "test", [self.entry()], ACTOR, repositories=["second/b"],
+                                  reader_for_repo=lambda *_: self.reader)
+        self.assertEqual({call.args[1] for call in discover.call_args_list}, {"test", "second"})
+        self.assertIn("second/b", result["coverage"]["repositories"])
+        self.assertIn("second", result["coverage"]["owners"])
 
-    def test_cli_can_finish_on_both_native_transcript_formats(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            for harness in ("codex", "claude"):
-                now = [1000.0]
-                original_snapshot = helper.transcript_snapshot
-                def slow_snapshot(*args, **kwargs):
-                    now[0] += 3600
-                    return original_snapshot(*args, **kwargs)
-                def first_read(path, **kwargs):
-                    self.assertGreater(self.reader.deadline_at, now[0])
-                    return self.paged(path, **kwargs)
-                self.reader.paged_json.side_effect = first_read
-                transcript = Path(tmp) / "native.jsonl"
-                identity = {"type": "session_meta", "payload": {"id": SESSION}} if harness == "codex" else {"type": "user", "sessionId": SESSION}
-                transcript.write_text(json.dumps({**identity, "timestamp": SOURCE["claimed_at"]}) + "\n")
-                output = io.StringIO()
-                with patch.object(helper.github_agent, "running_agent", return_value=harness), \
-                        patch.object(helper.github_agent, "native_sessions", return_value={"native": SESSION}), \
-                        patch.object(helper.github_identity, "automation_login", return_value=ACTOR), \
-                        patch.object(helper, "GitHubReader", autospec=True, return_value=self.reader), \
-                        patch.object(helper.time, "time", side_effect=lambda: now[0]), \
-                        patch.object(helper, "transcript_snapshot", side_effect=slow_snapshot), \
-                        patch.object(helper.sessions, "discover", return_value=([], [REPO])), contextlib.redirect_stdout(output):
-                    self.reader.deadline_at = now[0] + 1
-                    code = helper.main(["--owner", "test", "--harness", harness, "--session", SESSION, "--transcript", str(transcript)])
-                self.assertEqual(code, 0, output.getvalue())
-                self.assertTrue(json.loads(output.getvalue())["claims_clear"])
-
-    def test_claude_symlink_snapshot_proof_matches_the_canonical_ledger(self):
-        from test_claim_history import records
-        from test_claim_receipts import claim as native_claim
-        with tempfile.TemporaryDirectory() as tmp:
-            canonical = Path(tmp) / "canonical"
-            canonical.mkdir()
-            alias = Path(tmp) / "alias"
-            alias.symlink_to(canonical, target_is_directory=True)
-            root = canonical / (SESSION + ".jsonl")
-            child = canonical / SESSION / "subagents" / "agent-fixture.jsonl"
-            child.parent.mkdir(parents=True)
-            value = native_claim(REPO)
-            value["claim"]["session"] = SESSION
-            child.write_text("".join(json.dumps(r) + "\n" for r in records("claude", SESSION, value)))
-            self.comments.append(self.release)
-            for checker_path, ledger_path in ((alias / root.name, root), (root, alias / root.name)):
-                with self.subTest(checker_path=checker_path):
-                    root_rows = records("claude", SESSION, delegate=True)
-                    root.write_text("".join(json.dumps(r) + "\n" for r in root_rows))
-                    output = io.StringIO()
-                    with patch.object(helper.github_agent, "running_agent", return_value="claude"), \
-                            patch.object(helper.github_agent, "native_sessions", return_value={"native": SESSION}), \
-                            patch.object(helper.github_identity, "automation_login", return_value=ACTOR), \
-                            patch.object(helper, "GitHubReader", return_value=self.reader), \
-                            patch.object(helper.sessions, "discover", return_value=({(REPO, 1)}, [REPO])), \
-                            contextlib.redirect_stdout(output):
-                        code = helper.main(["--harness", "claude", "--session", SESSION,
-                                            "--transcript", str(checker_path)])
-                    report = json.loads(output.getvalue())
-                    self.assertEqual(code, 0, report)
-                    self.assertTrue(report["claims_clear"], report)
-                    root.write_text("".join(json.dumps(r) + "\n" for r in records("claude", SESSION, report, delegate=True)))
-                    status = helper.session_record.session_status({"harness": "claude", "session_id": SESSION,
-                                                                  "transcript": str(ledger_path)})
-                    self.assertTrue(status["safe_verdict"], status)
-
-    def test_cli_malformed_codex_child_metadata_is_a_structured_refusal(self):
-        from test_claim_history import records
-        with tempfile.TemporaryDirectory() as tmp:
-            home = Path(tmp)
-            root, child = home / "root.jsonl", home / "child.jsonl"
-            root.write_text("".join(json.dumps(r) + "\n" for r in records("codex", SESSION, delegate=True)))
-            with sqlite3.connect(home / "state_5.sqlite") as db:
-                db.executescript("CREATE TABLE threads(id TEXT PRIMARY KEY, rollout_path TEXT, source TEXT); "
-                                 "CREATE TABLE thread_spawn_edges(parent_thread_id TEXT, child_thread_id TEXT PRIMARY KEY);")
-                db.execute("INSERT INTO threads VALUES(?,?,?)", (SESSION, str(root), json.dumps("cli")))
-                db.execute("INSERT INTO threads VALUES(?,?,?)", ("child", str(child), json.dumps(
-                    {"subagent": {"thread_spawn": {"parent_thread_id": SESSION}}})))
-                db.execute("INSERT INTO thread_spawn_edges VALUES(?,?)", (SESSION, "child"))
-            for source in ("cli", {"subagent": "worker"}, {"subagent": {"thread_spawn": "worker"}}):
-                with self.subTest(source=source):
-                    rows = records("codex", "child", parent=SESSION)
-                    rows[0]["payload"]["source"] = source
-                    child.write_text("".join(json.dumps(r) + "\n" for r in rows))
-                    output = io.StringIO()
-                    with patch.object(helper.github_agent, "running_agent", return_value="codex"), \
-                            patch.object(helper.github_agent, "native_sessions", return_value={"native": SESSION}), \
-                            patch.object(helper.claim_history, "codex_homes", return_value=[home]), \
-                            patch.object(helper, "GitHubReader") as reader, contextlib.redirect_stdout(output):
-                        code = helper.main(["--harness", "codex", "--session", SESSION,
-                                            "--transcript", str(root)])
-                    report = json.loads(output.getvalue())
-                    self.assertNotEqual(code, 0)
-                    self.assertFalse(report["claims_clear"], report)
-                    self.assertFalse(report["coverage"]["complete"], report)
-                    reader.assert_not_called()
+    def test_cli_applies_its_read_deadline_before_reading_github(self):
+        entry = self.entry()
+        def first_read(path, **kwargs):
+            self.assertIsNotNone(self.reader.deadline_at)
+            return self.paged(path, **kwargs)
+        self.reader.paged_json.side_effect = first_read
+        output = io.StringIO()
+        with patch.object(helper.github_identity, "automation_login", return_value=ACTOR), \
+                patch.object(helper, "GitHubReader", autospec=True, return_value=self.reader), \
+                patch.object(helper.sessions, "discover", return_value=([], [REPO])), contextlib.redirect_stdout(output):
+            code = helper.main(["--owner", "test", "--session", SESSION, "--transcript", entry["transcript"]])
+        self.assertEqual(code, 0, output.getvalue())
+        report = json.loads(output.getvalue())
+        self.assertTrue(report["claims_clear"])
+        self.assertEqual(report["session_ids"], [SESSION])
 
     def test_cli_has_no_all_clear_on_partial_inventory_or_auth_failure(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            transcript = Path(tmp) / "native.jsonl"
-            transcript.write_text(json.dumps({"type": "session_meta", "timestamp": "2026-01-01T00:00:00Z", "payload": {"id": SESSION}}) + "\n")
-            for error in (ValueError("partial inventory"), OSError("permission denied")):
-                output = io.StringIO()
-                with patch.object(helper.github_agent, "native_sessions", return_value={"CODEX_THREAD_ID": SESSION}), \
-                        patch.object(helper.github_identity, "automation_login", return_value=ACTOR), \
-                        patch.object(helper, "GitHubReader", return_value=self.reader), \
-                        patch.object(helper.sessions, "discover", side_effect=error), contextlib.redirect_stdout(output):
-                    code = helper.main(["--owner", "test", "--harness", "codex", "--session", SESSION, "--transcript", str(transcript)])
-                result = json.loads(output.getvalue())
-                self.assertNotEqual(code, 0)
-                self.assertFalse(result["claims_clear"])
-                self.assertFalse(result["coverage"]["complete"])
+        entry = self.entry()
+        for error in (ValueError("partial inventory"), OSError("permission denied")):
+            output = io.StringIO()
+            with patch.object(helper.github_identity, "automation_login", return_value=ACTOR), \
+                    patch.object(helper, "GitHubReader", return_value=self.reader), \
+                    patch.object(helper.sessions, "discover", side_effect=error), contextlib.redirect_stdout(output):
+                code = helper.main(["--owner", "test", "--session", SESSION, "--transcript", entry["transcript"]])
+            result = json.loads(output.getvalue())
+            self.assertNotEqual(code, 0)
+            self.assertFalse(result["claims_clear"])
+            self.assertFalse(result["coverage"]["complete"])
 
-    def test_cli_rejects_a_different_native_session_before_reading_github(self):
-        with patch.object(helper.github_agent, "native_sessions", return_value={"CODEX_THREAD_ID": "other"}), \
-                patch.object(helper, "GitHubReader") as reader, contextlib.redirect_stdout(io.StringIO()):
-            code = helper.main(["--owner", "test", "--harness", "codex", "--session", SESSION, "--transcript", "/unused"])
+    def test_cli_refuses_a_transcript_of_another_session_before_reading_github(self):
+        other = self.entry("newer-session", "2026-03-01T00:00:00Z")
+        for transcript in (other["transcript"], str(self.folder / "missing.jsonl")):
+            with self.subTest(transcript=transcript), patch.object(helper, "GitHubReader") as reader, \
+                    contextlib.redirect_stdout(io.StringIO()) as output:
+                code = helper.main(["--session", SESSION, "--transcript", transcript])
+            self.assertNotEqual(code, 0)
+            self.assertFalse(json.loads(output.getvalue())["claims_clear"])
+            reader.assert_not_called()
+
+    def test_cli_refuses_an_unpaired_transcript_before_reading_github(self):
+        entry = self.entry()
+        with patch.object(helper, "GitHubReader") as reader, contextlib.redirect_stdout(io.StringIO()):
+            code = helper.main(["--session", SESSION, "--session", "child", "--transcript", entry["transcript"]])
         self.assertNotEqual(code, 0)
         reader.assert_not_called()
-
-    def test_cli_refuses_missing_identity_and_wrong_harness_without_github(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            transcript = Path(tmp) / "old-native.jsonl"
-            transcript.write_text(json.dumps({"type": "session_meta", "timestamp": SOURCE["claimed_at"], "payload": {"id": SESSION}}) + "\n")
-            for family, native in (("codex", {}), ("claude", {"native": SESSION})):
-                with patch.object(helper.github_agent, "running_agent", return_value=family), \
-                        patch.object(helper.github_agent, "native_sessions", return_value=native), \
-                        patch.object(helper, "GitHubReader", return_value=self.reader) as reader, \
-                        patch.object(helper.sessions, "discover", return_value=([], [REPO])), contextlib.redirect_stdout(io.StringIO()):
-                    code = helper.main(["--owner", "test", "--harness", "codex", "--session", SESSION, "--transcript", str(transcript)])
-                self.assertNotEqual(code, 0)
-                reader.assert_not_called()
-
-    def test_live_fork_snapshot_keeps_raw_coverage_but_requires_native_ancestry_context(self):
-        from test_claim_history import records
-        from test_claim_receipts import claim
-        parent, child = 'parent-session', 'child-session'
-        source = claim()
-        source['claim']['session'] = child
-        inherited = records('codex', parent)
-        inherited[0]['payload']['source'] = 'vscode'
-        local = records('codex', child, source, parent=parent)
-        boundary = len(inherited) + 1
-        local[0]['payload'].update(forked_from_id=parent, subagent_history_start_ordinal=boundary)
-        marker = {'type': 'event_msg', 'payload': {'type': 'thread_settings_applied', 'thread_id': child}}
-        raw = [local[0], *inherited, marker, *local[1:]]
-        for index, row in enumerate(raw):
-            row['ordinal'] = index
-        context = {'parent': parent, 'ancestors': (parent,)}
-        with tempfile.TemporaryDirectory() as tmp:
-            transcript = Path(tmp) / 'fork.jsonl'
-            transcript.write_text(''.join(json.dumps(row) + '\n' for row in raw))
-            for wrong_session in (parent, child, 'unrelated-session'):
-                with self.subTest(root_identity=wrong_session), self.assertRaises(ValueError):
-                    helper.transcript_snapshot(transcript, 'codex', wrong_session)
-            snapshot = helper.transcript_snapshot(transcript, 'codex', child, context)
-            self.assertEqual(snapshot, raw)
-            owned = helper.claim_history.child_records(snapshot, 'codex', child, context)
-            self.assertFalse(helper.claim_receipts.sources(owned, 'codex', parent)[0])
-            self.assertEqual(len(helper.claim_receipts.sources(owned, 'codex', child)[0]), 1)
-            for invalid in ({'parent': 'unrelated-session', 'ancestors': (parent,)},
-                            {'parent': parent, 'ancestors': ()}):
-                with self.subTest(context=invalid), self.assertRaises(ValueError):
-                    helper.transcript_snapshot(transcript, 'codex', child, invalid)
-
-    def test_live_fork_snapshot_as_own_root_uses_indexed_identity_and_local_claims(self):
-        from test_claim_history import NativeHistoryTests, records
-        from test_claim_receipts import claim
-        fixture = NativeHistoryTests()
-        fixture.setUp()
-        self.addCleanup(fixture.doCleanups)
-        parent_claim, child_claim = claim(), claim('example/b', 2, 20)
-        parent_claim['claim']['session'] = 'root'
-        child_claim['claim']['session'] = 'child'
-        parent = records('codex', 'root', parent_claim)
-        raw = fixture.fork_rows(parent, child_claim)
-        fixture.write(fixture.root, parent)
-        fixture.write(fixture.child, raw)
-        snapshot = helper.transcript_snapshot(fixture.child, 'codex', 'child')
-        self.assertEqual({row['payload']['id'] for row in snapshot if row.get('type') == 'session_meta'}, {'child'})
-        self.assertFalse(helper.claim_receipts.sources(snapshot, 'codex', 'root')[0])
-        self.assertEqual(len(helper.claim_receipts.sources(snapshot, 'codex', 'child')[0]), 1)
-        with self.assertRaises(ValueError):
-            helper.transcript_snapshot(fixture.child, 'codex', 'root')
-        with sqlite3.connect(fixture.database) as database:
-            database.execute("DELETE FROM thread_spawn_edges WHERE child_thread_id='child'")
-        with self.assertRaises(ValueError):
-            helper.transcript_snapshot(fixture.child, 'codex', 'child')
-
-    def test_live_transcript_snapshot_ignores_only_an_unfinished_tail(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            transcript = Path(tmp) / "native.jsonl"
-            identity = {"type": "session_meta", "payload": {"id": SESSION}}
-            transcript.write_text(json.dumps(identity) + '\n{"type":')
-            self.assertEqual(helper.transcript_snapshot(transcript, "codex", SESSION), [identity])
-            transcript.write_text(json.dumps(identity) + '\n{"type":\n')
-            with self.assertRaises(ValueError):
-                helper.transcript_snapshot(transcript, "codex", SESSION)
-
-    def test_native_receipts_add_an_account_missing_from_the_arguments(self):
-        from pathlib import Path
-        import sys
-        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "supervisor/scripts"))
-        from test_claim_receipts import claim as native_claim, history, SESSION as native_session
-        entry = {"harness": "codex", "session_id": native_session,
-                 "_transcript_records": history("codex", native_claim("test/a"), native_claim("second/b", 2, 20))}
-        with patch.object(helper.sessions, "discover", side_effect=[([], ["second/b"]), ([], ["test/a"])]) as discover:
-            result = helper.check(self.reader, "test", entry, ACTOR, reader_for_repo=lambda *_: self.reader)
-        self.assertEqual({call.args[1] for call in discover.call_args_list}, {"test", "second"})
-        self.assertFalse(result["claims_clear"])  # Missing source readback cannot be an empty all-clear.
-
-    def test_foreign_reads_pr_creation_and_admission_links_do_not_expand_claim_inventory(self):
-        from test_claim_receipts import history, claim as native_claim, output, SESSION as native_session
-        self.comments = [comment(10, helper.claim.marker({**SOURCE, "session": native_session})),
-                         comment(11, "Released claim 10\nSession: " + native_session, at="2026-01-01T00:02:00Z")]
-        for harness in ("codex", "claude"):
-            cases = [(command, "") for command in (
-                "gh issue view -R upstream/x 5",
-                "gh pr view https://github.com/upstream/x/pull/9",
-                "uv run gh-plan.py --repo upstream/x show 1",
-                "gh pr create --repo upstream/x",
-                "uv run gh-pr.py --repo upstream/x create",
-                "uv run gh-plan.py --repo test/a claim 1 --admission-link https://github.com/upstream/x/issues/9",
-            )]
-            for receipt_session in (native_session, "another-native-session"):
-                saved = native_claim("upstream/x", 9)
-                saved["claim"]["session"] = receipt_session
-                saved["issue"] = {"repo": "upstream/x", "number": 9}
-                cases.append(("uv run gh-plan.py --repo test/a claim 1; cat old-claim.json",
-                              json.dumps([native_claim(REPO), saved])))
-            for command, stdout in cases:
-                with self.subTest(harness=harness, command=command):
-                    rows = history(harness, native_claim(REPO), {})
-                    if harness == "codex":
-                        rows[3]["payload"]["arguments"] = json.dumps({"cmd": command})
-                    else:
-                        rows[3]["message"]["content"][0]["input"] = {"command": command}
-                    rows[4] = output({"exit_code": 0, "output": stdout}, harness, "tool-1")
-                    for row in rows:
-                        row["timestamp"] = SOURCE["claimed_at"]
-                    entry = {"session_id": native_session, "harness": harness, "_transcript_records": rows}
-                    foreign_reader = Mock(side_effect=lambda repo, _: self.reader if repo == REPO else (_ for _ in ()).throw(AssertionError("unrelated repository must not be read")))
-                    with patch.object(helper.sessions, "discover", return_value=({(REPO, 1)}, [REPO])):
-                        report = helper.check(self.reader, [], entry, ACTOR, reader_for_repo=foreign_reader)
-                    self.assertTrue(report["claims_clear"], report)
-                    self.assertEqual(report["coverage"]["repositories"], [REPO])
-                    self.assertEqual({call.args[0] for call in foreign_reader.call_args_list}, {REPO})
-
-    def test_child_process_handle_cannot_borrow_a_parent_claim_invocation(self):
-        from test_claim_receipts import history, claim as native_claim, output, SESSION as native_session
-        root = history("codex", {})
-        root[1]["payload"]["arguments"] = json.dumps({"cmd": "uv run gh-plan.py --repo test/a claim 1"})
-        root[2] = output({"session_id": 123}, "codex", "tool-0")
-        root[-2:-2] = [
-            {"payload": {"type": "function_call", "name": "write_stdin", "call_id": "root-poll", "arguments": '{"session_id":123}'}},
-            output({"exit_code": 0, "output": ""}, "codex", "root-poll"),
-        ]
-        child = history("codex")
-        child[0]["payload"]["id"] = "child-native-session"
-        saved = {**native_claim("upstream/x", 7), "issue": {"repo": "upstream/x", "number": 7}}
-        child[-2:-2] = [
-            {"payload": {"type": "function_call", "name": "write_stdin", "call_id": "child-poll", "arguments": '{"session_id":123}'}},
-            output(saved, "codex", "child-poll"),
-        ]
-        for row in root + child:
-            row["timestamp"] = SOURCE["claimed_at"]
-        nodes = [{"session_id": native_session, "harness": "codex", "records": root},
-                 {"session_id": "child-native-session", "harness": "codex", "records": child,
-                  "transcript": "/fixture/child.jsonl", "digest": helper.claim_history.fingerprint(child)}]
-        entry = {"session_id": native_session, "harness": "codex", "_claim_histories": nodes,
-                 "_transcript_records": root + child}
-        self.comments = [comment(10, helper.claim.marker({**SOURCE, "session": native_session})),
-                         comment(11, "Released claim 10\nSession: " + native_session, at="2026-01-01T00:02:00Z")]
-        foreign_reader = Mock(side_effect=lambda repo, _: self.reader if repo == REPO else (_ for _ in ()).throw(AssertionError("a different node's process cannot supply a receipt")))
-        with patch.object(helper.sessions, "discover", return_value=({(REPO, 1)}, [REPO])):
-            report = helper.check(self.reader, [], entry, ACTOR, reader_for_repo=foreign_reader)
-        self.assertTrue(report["claims_clear"], report)
-        self.assertEqual(report["coverage"]["repositories"], [REPO])
-        self.assertEqual({call.args[0] for call in foreign_reader.call_args_list}, {REPO})
-
-    def test_child_canonical_receipt_may_use_the_inherited_parent_session(self):
-        from test_claim_receipts import history, claim as native_claim, SESSION as native_session
-        root = history("codex")
-        child = history("codex", native_claim(REPO))
-        child[0]["payload"]["id"] = "child-native-session"
-        for row in root + child:
-            row["timestamp"] = SOURCE["claimed_at"]
-        nodes = [{"session_id": native_session, "harness": "codex", "records": root},
-                 {"session_id": "child-native-session", "harness": "codex", "records": child,
-                  "transcript": "/fixture/child.jsonl", "digest": helper.claim_history.fingerprint(child)}]
-        entry = {"session_id": native_session, "harness": "codex", "_claim_histories": nodes,
-                 "_transcript_records": root + child}
-        self.comments = [comment(10, helper.claim.marker({**SOURCE, "session": native_session}))]
-        with patch.object(helper.sessions, "discover", return_value=({(REPO, 1)}, [REPO])):
-            self.assertFalse(helper.check(self.reader, [], entry, ACTOR)["claims_clear"])
-            self.comments.append(comment(11, "Released claim 10\nSession: " + native_session, at="2026-01-01T00:02:00Z"))
-            report = helper.check(self.reader, [], entry, ACTOR)
-        self.assertTrue(report["claims_clear"], report)
-        self.assertTrue(report["coverage"]["complete"], report)
-
-    def test_dynamic_issue_scope_uses_complete_canonical_inventory(self):
-        from test_claim_receipts import history, output, SESSION as native_session
-        for harness in ("codex", "claude"):
-            with self.subTest(harness=harness):
-                rows = history(harness, {})
-                command = "uv run gh-plan.py --repo test/a claim \"$ISSUE\" > claim.json"
-                if harness == "codex":
-                    rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
-                else:
-                    rows[1]["message"]["content"][0]["input"] = {"command": command}
-                rows[2] = output({"exit_code": 0, "output": ""}, harness, "tool-0")
-                for row in rows:
-                    row["timestamp"] = SOURCE["claimed_at"]
-                entry = {"session_id": native_session, "harness": harness, "_transcript_records": rows,
-                         "_extra_repositories": [REPO]}
-                self.comments = [comment(10, helper.claim.marker({**SOURCE, "session": native_session})),
-                                 comment(11, "Released claim 10\nSession: " + native_session, at="2026-01-01T00:02:00Z")]
-                with patch.object(helper.sessions, "discover", return_value=({(REPO, 1)}, [REPO])):
-                    report = helper.check(self.reader, [], entry, ACTOR)
-                self.assertTrue(report["claims_clear"], report)
-                self.assertTrue(report["coverage"]["complete"], report)
 
 
 if __name__ == "__main__":

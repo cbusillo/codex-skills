@@ -11,6 +11,17 @@
         ]
       }
     ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --quiet --no-python-downloads \"${CLAUDE_PLUGIN_ROOT}/hooks/session_alert_hook.py\" || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "matcher": "startup|resume|clear",

@@ -10,7 +10,6 @@ from datetime import datetime
 import json
 import pathlib
 import re
-import shutil
 import subprocess
 import time
 from typing import Any, Callable
@@ -489,7 +488,6 @@ def discussion_evidence(
     status: str, comments: list[dict[str, Any]], claim: dict[str, str], *, resume_from: int | None = None,
     ended_claims: set[int] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
-    """Old claims remain ambiguous until explicitly released; age is never a lease."""
     from github_plan_release import effective_comments
     comments = effective_comments(comments)
     conflicts: list[dict[str, Any]] = []
@@ -586,44 +584,15 @@ def discussion_evidence(
     return conflicts, owned
 
 
-def observation_inputs(comments: list[dict[str, Any]]) -> tuple[set[str], set[str]]:
-    """Derive native obligations within one canonical discussion."""
-    ids = {r["session"] for c in comments for r in records(c.get("body") or "")}
+def expired_lease_sessions(comments: list[dict[str, Any]]) -> set[str]:
+    import github_plan_lease
     released = {comments[i]["id"] for i, _, _ in exact_released_sources(comments)}
-    proof_ids = {r["session"] for c in comments if c.get("id") not in released for r in records(c.get("body") or "")}
-    return ids, proof_ids
+    sessions = {r["session"] for c in comments if c.get("id") not in released for r in records(c.get("body") or "")}
+    return {session for session in sessions if github_plan_lease.state(session) == github_plan_lease.EXPIRED}
 
 
-def observed_inventory(inventory: dict[str, Any], observation) -> dict[str, Any]:
-    """Attach shared physical facts without replacing this checkout's registry."""
-    peers, states, coverage = observation
-    return {**inventory, "sessions": [*inventory["sessions"], *peers], "session_states": states,
-            "session_coverage": {**inventory.get("session_coverage", {}), "codex_claims": {
-                **coverage,
-                "scope": "exact claimed sessions and observed active daemon threads; partial global coverage"}}}
-
-
-def observe_sessions(inventory: dict[str, Any], comments: list[dict[str, Any]]) -> dict[str, Any]:
-    return observe_discussions(inventory, [comments])
-
-
-def observe_discussions(inventory: dict[str, Any], discussions: list[list[dict[str, Any]]]) -> dict[str, Any]:
-    """Batch native reads without borrowing releases across canonical records."""
-    from github_plan_sessions import observe
-    from github_plan_release import _released_source_contexts
-    ids, proof_ids, contexts = set(), set(), []
-    for comments in discussions:
-        requested, required = observation_inputs(comments)
-        ids.update(requested)
-        proof_ids.update(required)
-        contexts.extend(_released_source_contexts(comments))
-    # Ordinary unloaded end proofs exclude released claims. Their exact release
-    # is instead a prerequisite for the observer's leased idle-closure proof.
-    return observed_inventory(inventory, observe(ids, proof_ids, _source_contexts=contexts))
-
-
-def ended_ownership(comments: list[dict[str, Any]], inventory: dict[str, Any]) -> list[dict[str, Any]]:
-    """Ended ownership is evidence about an exact claim, never artifact disposal."""
+def ended_ownership(comments: list[dict[str, Any]], inventory: dict[str, Any],
+                    expired_sessions: set[str] | frozenset[str] = frozenset()) -> list[dict[str, Any]]:
     from github_plan_release import effective_comments
     comments = effective_comments(comments)
     released = {comments[i]["id"]: comments[j]["id"] for i, _, j in exact_released_sources(comments)}
@@ -633,26 +602,37 @@ def ended_ownership(comments: list[dict[str, Any]], inventory: dict[str, Any]) -
         if len(parsed) != 1 or not isinstance(source.get("id"), int):
             continue
         record = parsed[0]
-        native = inventory.get("session_states", {}).get(record["session"], {})
-        paths = [pathlib.Path(t["path"]).resolve() for t in inventory["worktrees"] if t["branch"] == record["branch"]]
-        if native.get("state") == "live" or any(
-            peer.get("sessionId") == record["session"]
-            or any(pathlib.Path(peer.get("cwd") or "/").resolve().is_relative_to(path) for path in paths)
-            for peer in inventory["sessions"]
-        ):
+        if source["id"] in released:
+            evidence = {"evidence": "authored_release", "release_id": released[source["id"]]}
+        elif record["session"] in expired_sessions:
+            evidence = {"evidence": "lease_expired"}
+        else:
             continue
-        proof = "authored_release" if source["id"] in released else None
-        if proof:
-            ended.append({"claim_id": source["id"], **record, "evidence": proof,
-                          **({"release_id": released[source["id"]]} if source["id"] in released else {}),
-                          "worktrees": [str(path) for path in paths]})
+        paths = [pathlib.Path(t["path"]).resolve() for t in inventory["worktrees"] if t["branch"] == record["branch"]]
+        ended.append({"claim_id": source["id"], **record, **evidence, "worktrees": [str(path) for path in paths]})
     return ended
 
 
+def lease_takeovers(ended: list[dict[str, Any]]) -> str:
+    return "".join(f"Lease takeover: claim {entry['claim_id']} (session {entry['session']}) had no recorded activity "
+                   f"for {recorded_lease_minutes(entry['session']):g} minutes.\n\n"
+                   for entry in ended if entry["evidence"] == "lease_expired")
+
+
+def recorded_lease_minutes(session: str) -> float:
+    import github_plan_lease
+    lease = github_plan_lease.read(session)
+    return github_plan_lease.DEFAULT_LEASE_MINUTES if lease is None else lease.minutes
+
+
 def coordination(conflicts: list[dict[str, Any]], comments: list[dict[str, Any]], repo: str, number: int) -> list[dict[str, Any]]:
-    def diagnostics(matching):
-        errors = list(dict.fromkeys(str(c["error"]) for c in matching if c.get("error")))
-        return {"error": "\n".join(errors)} if errors else {}
+    def next_action(record):
+        import github_plan_lease
+        if github_plan_lease.state(record["session"]) == github_plan_lease.UNKNOWN:
+            return ("This host has no lease for that session. Coordinate with it; if it has ended, a Supervisor or "
+                    "direction session releases it with gh-plan.py release-claim. Preserve its artifacts")
+        return ("Coordinate with this session or wait for its exact release; an unreleased claim frees itself "
+                f"{recorded_lease_minutes(record['session']):g} minutes after the session's last activity. Preserve its artifacts")
 
     holders = []
     released_ids = {comments[i]["id"] for i, _, _ in exact_released_sources(comments)}
@@ -662,29 +642,12 @@ def coordination(conflicts: list[dict[str, Any]], comments: list[dict[str, Any]]
                         or c.get("session") == record["session"] or (
                             c.get("branch") == record["branch"] and source.get("id") not in released_ids)]
             if matching:
-                action = "Contact this native session or coordinate an exact authored handoff on the work record; preserve its artifacts"
-                native = [c for c in matching if c.get("session") == record["session"]]
-                if source.get("id") in released_ids and any(
-                    c.get("source") == "native_recovery" for c in native
-                ) and not any(c.get("error") for c in matching) and all(
-                    c.get("source") in {"native_recovery", "native_action"} for c in native
-                ):
-                    action = (
-                        "For this exact-released source, if the Supervisor verifies it is still ended now, follow "
-                        "skills/supervisor/references/helpers.md#release-a-verified-finished-session: "
-                        "skills/supervisor/scripts/release_session_claims.py finish --confirm-session-ended. "
-                        "Use ledger metadata for the current launch generation; preview before applying. Preserve its artifacts."
-                    )
-                    if any(c.get("source") == "native_action" for c in native):
-                        action = "First check for a live native action or lease owner and coordinate with it. " + action
                 holders.append({**record, "claim_url": handoff_url(repo, number, source.get("id")),
-                                "next_action": action,
-                                **diagnostics(matching)})
+                                "next_action": next_action(record)})
     if not holders:
         holders = [{"worker": "unknown", "session": c.get("session", "unknown"),
                     "branch": c.get("branch", "unknown"), "work_record": f"https://github.com/{repo}/issues/{number}",
-                    "next_action": "Identify the artifact's owning native session on the work record and coordinate a handoff; preserve it",
-                    **diagnostics([c])}
+                    "next_action": "Identify the artifact's owning session on the work record and coordinate a handoff; preserve it"}
                    for c in conflicts]
     return holders
 
@@ -715,16 +678,6 @@ def run_read(argv: list[str], *, cwd: pathlib.Path | None = None, deadline_at: f
     return result.stdout
 
 
-def active_claude_sessions(**deadline_options) -> list[dict[str, Any]]:
-    sessions = json.loads(run_read(["claude", "agents", "--json"], cwd=pathlib.Path.home(), **deadline_options))
-    if not isinstance(sessions, list) or any(
-        not isinstance(s, dict) or not isinstance(s.get("sessionId"), str)
-        or not isinstance(s.get("cwd"), str) for s in sessions
-    ):
-        raise ValueError("Invalid Claude session inventory")
-    return sessions
-
-
 def local_inventory(repo: str, number: int, *, cwd: pathlib.Path | None = None,
                     deadline_at: float | None = None) -> dict[str, Any]:
     deadline_options = {"deadline_at": deadline_at} if deadline_at is not None else {}
@@ -742,20 +695,7 @@ def local_inventory(repo: str, number: int, *, cwd: pathlib.Path | None = None,
         line.split("\t", 1)[1].removeprefix("refs/heads/")
         for line in run_read(["git", "ls-remote", "--heads", "origin"], cwd=cwd, **deadline_options).splitlines()
     ]
-    sessions: list[dict[str, Any]] = []
-    coverage: dict[str, Any] = {"codex": {"status": "unavailable", "reason": "no CLI peer inventory"}}
-    if shutil.which("claude"):
-        try:
-            sessions = active_claude_sessions(**deadline_options)
-            coverage["claude"] = {"status": "available", "source": "claude agents --json",
-                                  "scope": "native local active-session registry"}
-        except (ValueError, OSError, subprocess.SubprocessError) as exc:
-            coverage["claude"] = {"status": "unavailable", "reason": str(exc)}
-            sessions = []
-    else:
-        coverage["claude"] = {"status": "unavailable", "reason": "Claude CLI not installed"}
-    return {"worktrees": worktrees, "local_branches": local, "remote_branches": remote_branches,
-            "sessions": sessions, "session_coverage": coverage, "issue": number}
+    return {"worktrees": worktrees, "local_branches": local, "remote_branches": remote_branches, "issue": number}
 
 
 def released_source(comments: list[dict[str, Any]], comment_id: int) -> dict[str, Any]:
@@ -919,7 +859,6 @@ def artifact_evidence(
     retained_branches: set[str] | None = None, retained_repo: str | None = None,
     inventory_repo: str | None = None,
     recorded_branches: set[str] | None = None,
-    status_sessions: set[str] | None = None,
     subject_pr: int | None = None,
     ended_branches: set[str] | None = None,
 ) -> list[dict[str, Any]]:
@@ -958,25 +897,6 @@ def artifact_evidence(
                                 or subject_pr is not None and tree["branch"] in (recorded_branches or set())):
             if not permitted(tree["branch"]) and tree["branch"] not in (ended_branches or set()):
                 conflicts.append({"source": "worktree", **tree, "certainty": "current_or_stale"})
-    paths = {str(pathlib.Path(t["path"]).resolve()) for t in inventory["worktrees"]}
-    retained_paths = {str(pathlib.Path(t["path"]).resolve()) for t in inventory["worktrees"]
-                      if t["branch"] == retained or t["branch"] in (retained_branches or set())
-                      or t["branch"] in (ended_branches or set())
-                      or local_references and (t["branch"] in (recorded_branches or set())
-                          or references_issue(t["branch"] + "/" + pathlib.Path(t["path"]).name, number))
-                      or subject_pr is not None and t["branch"] == subject_branch}
-    for session in inventory["sessions"]:
-        if session.get("sessionId") == claim["session"]:
-            continue
-        cwd = str(pathlib.Path(session.get("cwd") or "/").resolve())
-        if (session.get("sessionId") in (status_sessions or set())
-                or any(cwd == path or pathlib.Path(cwd).is_relative_to(path) for path in retained_paths)
-                or (local_references and cwd in paths and references_issue((session.get("name") or "") + "/" + pathlib.Path(cwd).name, number))):
-            conflicts.append({"source": session.get("source", "claude_session"), "session": session.get("sessionId"),
-                              "branch": next((t["branch"] for t in inventory["worktrees"]
-                                              if pathlib.Path(cwd).is_relative_to(pathlib.Path(t["path"]).resolve())), None),
-                              "state": session.get("state") or session.get("status"),
-                              **({"error": session["error"]} if "error" in session else {})})
     for pull in pulls:
         if pull["number"] == subject_pr:
             continue

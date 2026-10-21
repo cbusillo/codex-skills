@@ -284,13 +284,13 @@ active issue labels and continuing background jobs do not lift a hold.
    preserve all unresolved entries when replacing the whole record. Read
    [Planning: Claim](../github/references/cli-reference.md#planning-claim)
    for the format, authorship and existing-resolution contract.
-   Claims automatically account for exact authored releases and native verified
-   ended ownership, reporting preserved leftovers in `retained_artifacts`.
-   Positive live activity still refuses; unknown state is not proof of closure.
-   For an abandoned automation claim without that proof, a direction or
+   Claims automatically account for exact authored releases and expired
+   claim leases, reporting preserved leftovers in `retained_artifacts`. An
+   unreleased claim whose host-local lease is live or unknown still refuses.
+   For an abandoned automation claim with no lease on this host, a direction or
    Supervisor session uses `release-claim`, with a closed-session attestation
-   and fresh activity checks. Read Planning: Claim first; age, a merged PR or
-   partial peer coverage never proves closure. This releases ownership only;
+   and fresh activity checks. Read Planning: Claim first; a merged PR never
+   proves closure. This releases ownership only;
    recorded waits, native blockers and retained-artifact gates still apply.
    A session killed without closeout uses the linked Supervisor crash-recovery
    route with `--termination-record`, fresh source-host checks and preserved

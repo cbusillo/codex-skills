@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 HOOK = Path(__file__).with_name("session_alert_hook.py")
@@ -21,6 +22,8 @@ spec = importlib.util.spec_from_file_location("sync", ROOT / "scripts" / "sync-g
 assert spec and spec.loader
 sync = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(sync)
+sys.path.insert(0, str(ROOT / "skills/github/scripts"))
+import github_plan_lease  # noqa: E402
 
 
 class SessionAlertTests(unittest.TestCase):
@@ -38,6 +41,14 @@ class SessionAlertTests(unittest.TestCase):
 
     def records(self):
         return [json.loads(line) for line in self.events.read_text().splitlines()]
+
+    def test_claude_lifecycle_events_renew_the_parent_sessions_claim_lease(self):
+        env = {**self.env, "CODEX_SKILLS_HARNESS": "claude"}
+        for event in ("PostToolUse", "UserPromptSubmit", "SubagentStop", "Stop"):
+            session = f"claude-{event}"
+            self.run_hook({"hook_event_name": event, "session_id": session, "agent_id": "child"}, env=env)
+            with unittest.mock.patch.dict(os.environ, {"HOME": str(self.home)}):
+                self.assertEqual(github_plan_lease.state(session), github_plan_lease.LIVE)
 
     def test_stop_and_interrupt_are_advisory_and_discard_content(self):
         for event in ("Stop", "Interrupt"):

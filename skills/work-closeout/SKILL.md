@@ -6,7 +6,7 @@ metadata:
 resources:
   - path: scripts/check_claims.py
     kind: script
-    description: Reads native-session claim releases and retained PR handoffs before a safe-exit verdict.
+    description: Reads a session's claim releases and retained PR handoffs on GitHub before a safe-exit verdict.
   - path: scripts/repo_cleanup.py
     kind: script
     description: Read-only cleanup inventory, fork dispositions, private snapshot revalidation, and post-action verification.
@@ -29,7 +29,7 @@ commands:
   - name: closeout-check-claims
     source: skill
     resource_path: scripts/check_claims.py
-    example_argv: ["uv", "run", "scripts/check_claims.py", "--owner", "OWNER", "--harness", "codex", "--session", "<native-id>", "--transcript", "/absolute/native-transcript.jsonl"]
+    example_argv: ["uv", "run", "scripts/check_claims.py", "--owner", "OWNER", "--session", "<native-id>", "--transcript", "/absolute/native-transcript.jsonl"]
     purpose: Inventories all configured writer App installations and refuses an all-clear until exact releases and retained PR handoffs are verified; never writes.
   - name: session-reminder-link
     source: skill
@@ -272,7 +272,7 @@ preserved, or intentionally left in place.
    For other resources, use [infra-ops](../infra-ops/SKILL.md#workflow) for
    documented provider lifecycle operations under existing task authority.
 8. Before a safe-exit all-clear, complete [claim disposition](#claim-disposition)
-   for this native session on either harness. Updating status or preserving a
+   for this session on either harness. Updating status or preserving a
    PR does not release ownership. Keep the claim while a required review is
    pending and this session is expected to resume; end that turn without a
    safe-exit all-clear.
@@ -281,152 +281,59 @@ preserved, or intentionally left in place.
 ## Claim Disposition
 
 Before reporting `Safe to exit: yes`, account for every claim this session took,
-including earlier turns, other repositories and PR-only work. Run:
+including earlier turns, other repositories and PR-only work. Ownership lives
+on GitHub: the claim comment, and its exact release.
+
+For a held claim, first finish or durably hand off its work and update Current
+Status with the next actor, action and retained artifacts. Then release it with
+the `release_command` the claim printed (`gh-plan.py release`), naming every
+retained PR's full URL in the handoff. An exact release frees the work for a
+successor at once. It releases ownership only. Never release another session's
+claim. Read the [claim contract](../github/references/cli-reference.md#planning-claim)
+before releasing or repairing a retained-PR handoff.
+
+Then read the record back:
 
 ```bash
-uv run <skill-dir>/scripts/check_claims.py --harness codex \
+uv run <skill-dir>/scripts/check_claims.py \
   --session NATIVE_ID --transcript /absolute/native-transcript.jsonl
 ```
 
-Use `--harness claude` on Claude Code. Both use the same procedure. The native
-transcript must belong to that exact session and retain its timestamped history.
-The check inventories every installation of the existing configured automation
-writer Apps, including closed issues and PR-only claims. The read-only App does
-not define source ownership. Each repository uses its existing configured writer
-route; no credentials, grants or identities are changed. Incomplete installation,
-repository or discussion reads keep coverage incomplete and are rechecked live.
-Native receipts cross-check exact older sources; repeated `--repository OWNER/REPO`
-adds known context, and `--owner OWNER` asserts account coverage. Neither option
-narrows the complete installation inventory. No refused request is retried with
-another identity.
-Claude's native session subagent directory is included because its delegated
-tools may inherit the parent's session ID. Codex's native read-only parent/child
-index supplies child thread IDs and rollouts, including descendants and closed
-edges. Child-owned claims and claims using the inherited root session ID are
-both included. Missing native graph/schema/rollout evidence refuses coverage.
-Full-history forks use their native child boundary after ancestry validation;
-copied parent activity is evaluated in its parent, and coverage binds the raw
-child artifact. A user-started fork with only its own native identity follows
-the ordinary identity check; it does not need a spawned-child edge.
-Missing native identity or a different running harness refuses an all-clear.
-Preserve its coverage
-and released-claim links as closeout evidence; it proves claim disposition only,
-not readiness or permission to discard artifacts.
+The check reads GitHub only. It inventories every installation of the
+configured automation writer Apps since the transcript's first timestamp,
+including closed issues and PR-only claims, and verifies that every claim
+naming the session has its exact authored release, or a validated Supervisor
+release, and that each retained PR has its handoff. Codex child threads and
+Claude subagents claim under the root session ID, so the root's check covers
+them; repeat `--session` and `--transcript` for any other session to include.
+A transcript that does not belong to its session refuses.
+`--repository OWNER/REPO` adds known context, and `--owner OWNER` asserts
+account coverage; neither narrows the installation inventory. Only exit 0 with
+`claims_clear: true` and complete coverage permits an all-clear. An unreleased
+claim, unverified retained PR or incomplete read keeps the verdict
+conditional/no: record the reason and continue independent work. Do not turn a
+failed read into no claims. The Supervisor runs the same check for any session.
 
-For a held own claim, first finish or durably hand off its work and update Current
-Status with the next actor, action and retained artifacts. Use GitHub's maintained
-comment helper to post `Released claim ID` as the first line, with the exact
-native session ID, handoff evidence and every retained PR's full URL in the body.
-This is the existing source-authored release, not `release-claim`'s Supervisor
-attestation of an ended session. It releases this ownership only. Read the
-[claim contract](../github/references/cli-reference.md#planning-claim) before
-releasing or repairing a retained-PR handoff. Never release another session's
-claim. Run the check after the write; only exit 0 with `claims_clear: true`
-and complete coverage permits an all-clear. Leave its JSON visible in the native
-tool output; use `tee` if a saved copy is needed. The Supervisor's safe-verdict
-reader requires that fresh invocation result to cover every native source claim.
-Missing or redirected claim output does not exempt ownership. Canonical session
-inventory finds claims independently of command spelling or generated source.
-Never repeat a write to manufacture evidence for an earlier invocation.
-Histories with no shell execution or ownership activity keep the N/A path
-without GitHub access. Any shell execution requires this check, including
-ordinary reads. Claimed children require all native IDs in the
-parent's check; later child activity requires a fresh check.
+An open PR need not merge before a session exits. Its exact release names the
+retained PR, and the check verifies the same repository, source identity and
+independent issue link under the successor's handoff contract. A PR-only claim
+uses the PR itself as its work record. Preserve the branch, worktree and the
+next actor's custody.
 
-The checker does not interpret generated programs or prove covered writes.
-Uncertain native activity is pending, rechecked against current native execution,
-queue and process evidence on every closeout, claim and next invocation. It
-clears when the native session is verifiably gone; absence from a registry alone is not
-proof. This clears uncertainty only. Every actual claim still requires its exact
-release or verified recovery release. Historical pending output is never a
-permanent refusal before live readback. An active check may exclude only its
-own exactly identified native execution; other running work keeps it pending.
-Pending entries name the transcript and unresolved tool-use IDs; Claude children
-can share the root session ID, so use the transcript to locate the actual source.
-Shared history roots do not select a native home: the active check reads every
-matching authenticated home, requires one active home with its bound execution and
-stable quiet copies elsewhere. Unavailable or conflicting facts stay pending.
+The check does not inspect processes. Stop or hand off any background work you
+started before the verdict; leaving it running is a closeout problem, not
+something the check proves.
 
-Run the checker as its own native shell invocation, optionally piped to `tee`,
-with one checker envelope visible. A saved report, final prose or an earlier
-check before later native activity cannot attest current disposition. In Codex
-use one literal `text(await tools.exec_command({cmd: "CHECK COMMAND"}));`
-cell. Poll with one literal `text(await tools.write_stdin({session_id: PROCESS_ID}));`
-cell using its returned handle. Keep saved output and other polls separate.
-The poll's own yield supplies the wait. If a native `clock.sleep` is used between
-polls, binding waits for that exact call's native result and completion event;
-it never treats a pending timer, shell sleep or unknown tool as ended.
-For long checks allow at least 600 seconds on Claude Bash, or collect Codex's
-foreground process handle with its isolated polls. Do not background the check.
-Claude's records sharing one API message ID have one launch boundary: finish
-ownership before launching a separate check. Check one at a time.
-
-Make this the last tool operation before the verdict. Finish releases, Current
-Status updates, cleanup and reporting writes first. The source session leaves
-its complete checker result and verdict in its native response; a Supervisor
-can record that result on GitHub afterward. A source-side reporting command
-after the check makes its earlier claim disposition stale.
-
-A slow startup can snapshot after the checker's own first poll; the proof still
-binds its original isolated launch and every empty poll of that same handle.
-Native coverage reads standard, account and retained source homes through one
-observation scope. Required copies must answer; a stopped socket is not an exit.
-Process coverage requires native PID, executable and incarnation evidence.
-Kernel-confirmed PID absence also requires a subsequent native queue and runtime
-fence before it can support completion. A live, reused or unreadable PID stays
-unknown. Reported `native_coverage` describes the inventory observation; it does
-not attest that the later physical proof passed. `deadline_expired` reports
-the budget at refusal time, without claiming why the proof failed. A final
-process scan grants no new absence waiver after the native fence.
-Physical completion shares the global process observations and home connections
-across the uncertain family. Every child still supplies its own paired native
-facts and stable source, lease and home/path identity. A child-specific refusal
-leaves that child pending; unknown host process coverage refuses the whole set.
-Status-only reads authenticate their own
-history without reconstructing descendant claim history; the claim checker
-still verifies every native child, raw digest and exact claim disposition.
-For an unavailable home, the [managed launcher's diagnostic](../supervisor/scripts/codex_session_proxy.py)
-keeps the source account and names its existing stopped-daemon remedy.
-Unbound clients keep the refusal; use the maintained managed launcher for new
-work. The checker never restarts daemons or terminates processes.
-
-Native receipts use literal, command-bound outputs; arbitrary stdout and nested
-saved JSON cannot supply execution completion or a fresh checker result.
-Computed or detached code is not reconstructed. Current native evidence decides
-whether its uncertainty remains pending. If that evidence is unavailable, record
-the exact blocker and keep conditional/no while continuing independent work.
-
-An open PR need not merge before a session exits. Its exact authored release
-must name the retained PR, and the check verifies the same repository, source
-identity and independent issue link under the successor's existing handoff
-contract. A PR-only claim uses the PR itself as its work record. Preserve the
-branch/worktree and the next actor's custody. A merely prose handoff, an
-unreleased claim, missing transcript, inaccessible repository, incomplete
-inventory or unverified retained PR keeps the verdict conditional/no. Record the
-reason and continue independent work; do not turn a failed read into no claims.
-If scope outside the reported installation coverage remains uncertain, do not
-claim a complete inventory. The Supervisor's post-process release is recovery,
-not a substitute for this executing-session check. Recovery after verified process
-exit still reads the original unqualified declaration and checks live activity,
-so historical ended sessions without a pre-exit receipt can release through the
-existing Supervisor attestation route.
-Physical native observation uses independently verified inactivity without
-requiring claim disposition. A live Claude task clears through its bound terminal notice or
-successful task stop. Recovery release still
-requires the original declaration and its existing attestation contract. Normal Supervisor
-close-out candidates and guarded terminal cleanup consume the accepted verdict.
-After recovery, resume the source session and run this check: it accepts validated
-Supervisor/Direction releases as well as exact source-authored releases, rereading
-their closure evidence and retained PR state. A bare exact release supplied by
-the claim helper remains valid; an explicit conflicting session field refuses.
-For missing native identity, ambiguous resume/fork histories or inaccessible
-scope, preserve the active process and terminal, record conditional/no and the
-blocker on the item, and continue independent work. Post-process recovery applies
-only to a session that already exited; it is not a way to force an unaccepted
-session to exit. Follow the Supervisor's
-[claim-gated verdict procedure](../supervisor/references/helpers.md#claim-gated-verdicts)
-when it is overseeing the worker. Do not edit native transcripts or substitute
-another session ID.
+A session that crashes cannot release. Its claim frees itself when its lease
+expires: the catalog's hooks renew a host-local lease on the session's activity
+(see [Planning: Claim](../github/references/cli-reference.md#planning-claim)),
+and after 30 minutes without activity a successor on the same host may take
+over, recording a `Lease takeover:` line in its claim. Set
+`GH_PLAN_CLAIM_LEASE_MINUTES` when claiming to change the period the claim
+records. A host with no lease for
+the session keeps the claim; a Supervisor or direction session releases an
+ended session's claim there with `gh-plan.py release-claim`. The lease is crash
+recovery, not a substitute for releasing.
 
 ## Consuming Readiness Evidence
 
@@ -517,7 +424,7 @@ Safe to exit: yes
   post-turn trigger may still occur and the answer says so explicitly. Activity
   in detached `auto-review-<hex>` worktrees for older targets is not a gate.
 - PR, issue, and GitHub plan state is current.
-- This native session's claims are released, with complete readback evidence
+- This session's claims are released, with complete readback evidence
   under Claim Disposition and verified retained-PR handoffs where needed, or
   GitHub claim disposition is explicitly not applicable. Held or unread claims
   prevent an all-clear even when every readiness and artifact check passes.
