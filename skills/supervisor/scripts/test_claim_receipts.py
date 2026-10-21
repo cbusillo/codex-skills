@@ -334,6 +334,9 @@ class ReceiptTests(unittest.TestCase):
             "find . | xargs --eof sh -c 'worker &'",
             "find . | xargs --max-lines sh -c 'worker &'",
             "cat >run.sh <<'EOF'\nworker &\nEOF\nls run.sh | xargs bash --",
+            "find . | xargs -I{} gtimeout 60 sh -c '{}'",
+            "printf '%s\\0' 'worker &' | xargs -0 gtimeout 60 sh -c",
+            "find . | xargs -I{} setsid sh -c '{}'",
         ]
         for flags in ('-e', '-euo pipefail', '-o errexit', '-O extglob', '-s -- args'):
             commands += [f"bash {flags} <<'EOF'\nworker &\nEOF", f"bash {flags} <<< 'worker &'"]

@@ -793,6 +793,8 @@ class CommandPolicyHookTests(unittest.TestCase):
             ("gh pr merge 17\ncat <<EOF\nnotes", "gh pr merge 17"),
             ("cat >run.sh <<'EOF'\ngh pr merge 17\nEOF\nbash run.sh", "gh pr merge 17"),
             ("xargs --replace sh -c 'gh api repos/o/r/pulls'", "gh api repos/o/r/pulls"),
+            ("docker compose exec -T web bash -c 'gh api repos/o/r/pulls'", "gh api repos/o/r/pulls"),
+            ("kubectl exec pod -- sh -c 'gh pr merge 17'", "gh pr merge 17"),
             ("printf data | xargs sh -c; gh pr merge 17", "gh pr merge 17"),
             ("{ bash; } <<'EOF'\ngh pr merge 17\nEOF", "gh pr merge 17"),
             ("( bash ) <<'EOF'\ngh pr merge 17\nEOF", "gh pr merge 17"),
