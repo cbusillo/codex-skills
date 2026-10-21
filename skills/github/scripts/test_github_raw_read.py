@@ -54,7 +54,7 @@ class RawReadTests(unittest.TestCase):
                     + ("sys.stderr.write('gh: Resource not accessible by integration (HTTP 403)\\n')\n" if status == 403
                        else "sys.stderr.write('a successful warning\\n')\n")
                     + f"sys.exit({int(status >= 400)})\n")
-                output = binary_wrapper(env_file, Path(github_api.__file__), identity, backend, "api", "/repos/example/app")
+                output = binary_wrapper(env_file, Path(__file__).with_name("github_api.py"), identity, backend, "api", "/repos/example/app")
                 self.assertEqual(output.returncode, int(status >= 400), output.stderr)
                 self.assertEqual(output.stdout, b"{}")
                 if status == 200:
@@ -118,7 +118,7 @@ class RawReadTests(unittest.TestCase):
                     + ("sys.stderr.write('gh: Not Found (HTTP 404)\\n')\n" if status == 404 else "")
                     + f"sys.exit({int(status >= 400)})\n")
                 for _ in range(2):
-                    output = binary_wrapper(env_file, Path(github_api.__file__), identity, backend,
+                    output = binary_wrapper(env_file, Path(__file__).with_name("github_api.py"), identity, backend,
                                             "api", "/repos/example/app/contents/DIRECTION.md")
                     self.assertEqual(output.returncode, int(status >= 400), output.stderr)
                     self.assertEqual(output.stdout, payload)
