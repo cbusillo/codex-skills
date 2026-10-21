@@ -822,9 +822,9 @@ print('Done.')
         waited = self.mark_admission_waits()
         original = self.script.read_text()
         self.script.write_text(original.replace("import pathlib,sys,json\n", "import pathlib,sys,json,time\n"
-            f"log=open({str(log)!r},'a');log.write(f'start {{time.time()}}\\n');log.flush()\n"
+            f"log=open({str(log)!r},'a');log.write(f'start {{time.monotonic()}}\\n');log.flush()\n"
             f"for _ in range(500):\n if pathlib.Path({str(waited)!r}).exists(): break\n time.sleep(0.02)\n")
-            .replace("print('Done.')", "log.write(f'end {time.time()}\\n');log.close()\nprint('Done.')"))
+            .replace("print('Done.')", "log.write(f'end {time.monotonic()}\\n');log.close()\nprint('Done.')"))
         def helper(output):
             output.write_text(json.dumps(native.run(self.args, host)))
             os._exit(0)
@@ -835,6 +835,8 @@ print('Done.')
             callers = [multiprocessing.get_context("fork").Process(target=helper, args=(output,)) for output in outputs]
             for caller in callers:
                 caller.start()
+                self.addCleanup(caller.join, 5)
+                self.addCleanup(caller.kill)
             for caller in callers:
                 caller.join(60)
         results = [json.loads(output.read_text()) for output in outputs]
