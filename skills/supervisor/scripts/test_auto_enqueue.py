@@ -1304,9 +1304,25 @@ class EnqueueTests(unittest.TestCase):
         self.run_pass(fake)
         self.assertEqual(fake.discovered, [healthy["repo"]])
 
+    def test_another_pr_labeled_after_discovery_blocks_the_first_write(self):
+        fake = Fake(count=2)
+        original = fake.pages
+        def label_another(path, **params):
+            if path.endswith("/1/files"):
+                fake.pulls[2]["labels"] = [{"name": TARGET["label"]}]
+            return original(path, **params)
+        fake.pages = label_another
+        self.run_pass(fake)
+        self.assertEqual(fake.writes, [])
+        self.assertTrue(any(event == "batch_stopped" for event, _ in self.events))
+
     def test_live_discovery_adapts_standalone_reader_errors(self):
         live = object.__new__(watch.Live)
         live.reader = Mock()
+        pulls = [pr()]
+        with patch.object(watch.github_open_prs, "scan", return_value={REPO: pulls}):
+            live.discover([REPO])
+        self.assertEqual(live.open_pulls(REPO), pulls)
         error = watch.github_open_prs.GitHubReadError("unavailable",
             result=watch.github_api.ApiResult(ok=False, status=503, body=None), diagnostics={})
         with patch.object(watch.github_open_prs, "scan", return_value={REPO: error}) as scan:
@@ -1315,6 +1331,14 @@ class EnqueueTests(unittest.TestCase):
         with self.assertRaises(watch.GitHubReadError) as caught:
             live.open_pulls(REPO)
         self.assertEqual(caught.exception.result.status, 503)
+        error.result.status = 403
+        error.result.failure = watch.github_api.FailureDetail(cause="permission_denied", message="Forbidden",
+            retryable=False, fallback_eligible=False, disposition="stop")
+        fake = Fake()
+        fake.open_pulls = live.open_pulls
+        with self.assertRaises(watch.GitHubReadError):
+            self.run_pass(fake)
+        self.assertEqual(fake.writes, [])
 
     def test_repository_filter_cannot_create_enrollment(self):
         fake = Fake()

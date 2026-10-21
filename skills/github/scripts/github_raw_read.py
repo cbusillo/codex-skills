@@ -7,13 +7,21 @@
 from __future__ import annotations
 
 import json
+import signal
 import subprocess
 import sys
 import urllib.parse
 from typing import Callable
 
-import github_api
-import github_http_cache
+try:
+    import github_api
+    import github_http_cache
+except (ImportError, SyntaxError):
+    if __name__ == "__main__":
+        raise SystemExit(125)  # Optional adapter unavailable before any request.
+    raise
+
+DECLINED = 125
 
 
 def endpoint(args: list[str]) -> str | None:
@@ -78,9 +86,18 @@ def read(args: list[str], *, gh_cmd: str, actor: str, host: str,
 def main() -> int:
     gh_cmd, actor, host, *args = sys.argv[1:]
     replies = []
-    result = read(args, gh_cmd=gh_cmd, actor=actor, host=host, observer=replies.append)
+    try:
+        result = read(args, gh_cmd=gh_cmd, actor=actor, host=host, observer=replies.append)
+    except PermissionError:
+        print("error: raw GitHub adapter access denied", file=sys.stderr)
+        return 1
+    except Exception:
+        if not replies:
+            return DECLINED
+        print("error: raw GitHub response processing failed; request was not repeated", file=sys.stderr)
+        return 1
     if result is None:
-        return 125  # Unsupported; the shell wrapper runs its original command.
+        return DECLINED  # Unsupported; the shell wrapper runs its original command.
     if replies:
         reply = replies[-1]
         if result.status != 304:
@@ -89,7 +106,7 @@ def main() -> int:
             sys.stderr.buffer.write(reply.stderr)
             if not result.ok and not reply.stderr and result.failure:
                 print(f"gh: {result.failure.message} (HTTP {result.status})", file=sys.stderr)
-            return reply.returncode if reply.returncode else int(not result.ok)
+            return 1 if reply.returncode == DECLINED else (reply.returncode or int(not result.ok))
     if not result.ok:
         message = result.failure.message if result.failure else "GitHub read failed"
         print(f"gh: {message} (HTTP {result.status})", file=sys.stderr)
@@ -100,4 +117,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    if hasattr(signal, "SIGPIPE"):
+        signal.signal(signal.SIGPIPE, signal.SIG_DFL)
     raise SystemExit(main())

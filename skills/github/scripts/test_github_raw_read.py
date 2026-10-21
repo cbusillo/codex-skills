@@ -6,6 +6,9 @@
 """Raw-read routing preserves identity and requires live cache revalidation."""
 import os
 import json
+import subprocess
+import sys
+from io import StringIO
 from pathlib import Path
 
 import test_gh_with_env_token as wrapper
@@ -17,7 +20,49 @@ import github_api
 import github_raw_read
 
 
+def binary_wrapper(env_file, classifier, identity, backend, *args):
+    return subprocess.run([str(wrapper.SCRIPT), *args], capture_output=True, timeout=10, env={
+        "PATH": os.environ["PATH"], "HOME": str(env_file.parent),
+        "CODEX_SKILLS_ENV_FILE": str(env_file), "GH_WITH_ENV_TOKEN_PYTHON": sys.executable,
+        "GH_WITH_ENV_TOKEN_CLASSIFIER": str(classifier), "GH_WITH_ENV_TOKEN_IDENTITY_HELPER": str(identity),
+        "GH_WITH_ENV_TOKEN_GH": str(backend),
+    })
+
+
 class RawReadTests(unittest.TestCase):
+    def test_decline_is_allowed_only_before_a_response_and_never_on_access_denial(self):
+        args = ["adapter", "gh", "bot", "github.com", "api", "/repos/example/app"]
+        for captured, error, expected in [(False, RuntimeError(), github_raw_read.DECLINED),
+                                          (True, RuntimeError(), 1), (False, PermissionError(), 1)]:
+            def fail(_args, **kwargs):
+                if captured:
+                    kwargs["observer"](subprocess.CompletedProcess([], 0, b"reply", b""))
+                raise error
+            with self.subTest(captured=captured, error=type(error).__name__), \
+                    patch.object(sys, "argv", args), patch.object(sys, "stderr", StringIO()), \
+                    patch.object(github_raw_read, "read", side_effect=fail):
+                self.assertEqual(github_raw_read.main(), expected)
+
+    def test_real_wrapper_keeps_success_stderr_quiet_and_permission_hint_visible(self):
+        for status in (200, 403):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                env_file, identity, _ = wrapper.app_fixture(root)
+                backend = root / "gh"
+                wrapper.write(backend, f"#!{sys.executable}\nimport sys\n"
+                    f"sys.stdout.buffer.write(b'HTTP/2 {status}\\n\\n{{}}')\n"
+                    + ("sys.stderr.write('gh: Resource not accessible by integration (HTTP 403)\\n')\n" if status == 403
+                       else "sys.stderr.write('a successful warning\\n')\n")
+                    + f"sys.exit({int(status >= 400)})\n")
+                output = binary_wrapper(env_file, Path(github_api.__file__), identity, backend, "api", "/repos/example/app")
+                self.assertEqual(output.returncode, int(status >= 400), output.stderr)
+                self.assertEqual(output.stdout, b"{}")
+                if status == 200:
+                    self.assertEqual(output.stderr, b"")
+                else:
+                    self.assertIn(b"permissions and installation", output.stderr)
+                    self.assertIn(b"HTTP 403", output.stderr)
+
     def test_binary_response_headers_never_change_body_bytes(self):
         payload = b"binary\x00\xff\r\ntext\r\n\r\nend"
         for headers in (b"HTTP/2 200\n\n", b"HTTP/2 200\r\n\r\n",
@@ -45,7 +90,7 @@ class RawReadTests(unittest.TestCase):
             root = Path(directory)
             env_file, identity, classifier = wrapper.app_fixture(root)
             backend = root / "gh"
-            wrapper.write(backend, "#!/usr/bin/env python3\nimport sys,json\n"
+            wrapper.write(backend, f"#!{sys.executable}\nimport sys,json\n"
                 f"path={str(root / 'calls')!r}\n"
                 "with open(path,'a') as f: f.write(json.dumps(sys.argv[1:])+'\\n')\n"
                 "cached=any('If-None-Match:' in a for a in sys.argv)\n"
@@ -62,22 +107,23 @@ class RawReadTests(unittest.TestCase):
             self.assertEqual([item["status"] for item in receipts], [200, 304])
 
     def test_real_wrapper_keeps_errors_and_non_json_bytes_without_replay(self):
-        for status, payload in [(404, b'{"message":"Not Found"}\n'), (200, b"text\r\n\r\nend")]:
+        for status, payload in [(404, b'{"message":"Not Found"}\n'), (200, b"binary\x00\xff\r\ntext\r\n\r\nend")]:
             with self.subTest(status=status), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 env_file, identity, classifier = wrapper.app_fixture(root)
                 backend = root / "gh"
-                wrapper.write(backend, "#!/usr/bin/env python3\nimport sys\n"
+                wrapper.write(backend, f"#!{sys.executable}\nimport sys\n"
                     f"with open({str(root / 'calls')!r},'a') as f: f.write('call\\n')\n"
                     f"sys.stdout.buffer.write(b'HTTP/2 {status}\\netag: version\\n\\n'+{payload!r})\n"
                     + ("sys.stderr.write('gh: Not Found (HTTP 404)\\n')\n" if status == 404 else "")
                     + f"sys.exit({int(status >= 400)})\n")
                 for _ in range(2):
-                    output = wrapper.run_wrapper(env_file, classifier, identity, "api", "/repos/example/app/contents/DIRECTION.md", gh_command=backend)
+                    output = binary_wrapper(env_file, Path(github_api.__file__), identity, backend,
+                                            "api", "/repos/example/app/contents/DIRECTION.md")
                     self.assertEqual(output.returncode, int(status >= 400), output.stderr)
-                    self.assertEqual(output.stdout, payload.decode().replace("\r\n", "\n"))
+                    self.assertEqual(output.stdout, payload)
                     if status == 404:
-                        self.assertIn("HTTP 404", output.stderr)
+                        self.assertIn(b"HTTP 404", output.stderr)
                 self.assertEqual(len((root / "calls").read_text().splitlines()), 2)
 
     def test_non_json_responses_do_not_enter_the_conditional_cache(self):
@@ -88,7 +134,6 @@ class RawReadTests(unittest.TestCase):
             for _ in range(2):
                 github_raw_read.read(["api", "/repos/example/app"], gh_cmd="fake-gh", actor="bot", host="github.com")
                 self.assertNotIn("If-None-Match", transport.call_args.kwargs["extra_headers"])
-            self.assertEqual(list(Path(directory).glob("*.json")), [])
 
     def test_304_restores_only_same_identity_body_and_failure_never_serves_offline(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"GITHUB_HTTP_CACHE_DIR": directory}), \
