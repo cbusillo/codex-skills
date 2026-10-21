@@ -423,7 +423,7 @@ def _matching_created_issues(
     retry_context: Optional[github_api_core.ReconciliationContext] = None,
     retry_summaries: Optional[list[github_api_core.RetrySummary]] = None,
 ) -> list[dict[str, Any]]:
-    threshold = github_comment._parse_timestamp(started_at)
+    threshold = github_comment.parse_timestamp(started_at)
     if threshold is None:
         raise _local_error(
             "Issue create reconciliation timestamp is invalid",
@@ -472,7 +472,7 @@ def _matching_created_issues(
         for item in result.body:
             if not isinstance(item, dict) or "pull_request" in item:
                 continue
-            created_at = github_comment._parse_timestamp(item.get("created_at"))
+            created_at = github_comment.parse_timestamp(item.get("created_at"))
             if created_at is None:
                 continue
             if created_at < threshold:
