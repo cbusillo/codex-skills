@@ -74,6 +74,7 @@ class ReceiptFixture:
         SESSIONS.native_helpers()
         self.stack.enter_context(patch.object(SESSIONS.process_liveness(), "process_arguments",
             side_effect=lambda _pid, command: (SESSIONS.process_liveness().harness_arguments(command), True)))
+        self.stack.enter_context(patch.object(SESSIONS.process_liveness(), "process_absent", return_value=False))
         import release_session_claims
         self.release = release_session_claims
         self.stack.enter_context(patch.object(self.release, "inventory", side_effect=lambda: list(self.process_rows)))
@@ -1734,6 +1735,77 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ObservationMergeTests(unittest.TestCase):
+
+    def test_ended_process_needs_a_native_fence_before_clearing_child_uncertainty(self):
+        for queued in (False, True):
+            with self.subTest(queued_after_first_read=queued), ReceiptFixture() as f:
+                CLOSURE.replace_rows([])
+                CLOSURE.lease_path(f.session).unlink()
+                complete = f.observe(proof_sessions={f.session})[2]
+                node = {"session_id": f.session, "harness": "codex", "transcript": str(f.transcript), "records": []}
+                root = {"session_id": "root", "harness": "codex", "records": []}
+                f.commands = "456 codex-code-mode-host"
+                probes = []
+                def ended(_pid):
+                    probes.append(_pid)
+                    if queued and len(probes) == 2:
+                        f.queue_items = [{"id": "new-work", "clientUserMessageId": "next", "input": []}]
+                    return True
+                with patch.object(SESSIONS, "observe", return_value=([], {}, complete)), \
+                        patch.object(CLOSURE, "managed_launch", return_value=False), \
+                        patch.object(SESSIONS, "native_daemon_process", return_value=False), \
+                        patch.object(SESSIONS.process_liveness(), "process_absent", side_effect=ended):
+                    pending = SESSIONS.pending_ownership([root, node], [{"pending": False}, {"pending": True}])
+                self.assertEqual(bool(pending), queued, pending)
+
+    def test_aggregate_process_absence_is_followed_by_native_queue_evidence(self):
+        for queued in (False, True):
+            with self.subTest(queued_after_process_end=queued), ReceiptFixture() as f:
+                CLOSURE.replace_rows([])
+                CLOSURE.lease_path(f.session).unlink()
+                f.native_state = "notLoaded"
+                f.commands = "456 codex-code-mode-host"
+                def ended(_pid):
+                    if queued:
+                        f.queue_items = [{"id": "new-work", "clientUserMessageId": "next", "input": []}]
+                    return True
+                with patch.object(CLOSURE, "managed_launch", return_value=False), \
+                        patch.object(SESSIONS, "native_daemon_process", return_value=False), \
+                        patch.object(SESSIONS.process_liveness(), "process_absent", side_effect=ended):
+                    peers, states, coverage = f.observe(proof_sessions={f.session})
+                self.assertEqual(coverage["process_coverage"], "complete", coverage)
+                self.assertEqual(states.get(f.session, {}).get("state") == "ended", not queued, states)
+                if queued:
+                    self.assertTrue(any(p.get("source") == "native_queue" for p in peers), peers)
+
+    def test_optional_claim_history_cannot_spend_the_native_completion_deadline(self):
+        with ReceiptFixture() as f:
+            CLOSURE.replace_rows([])
+            CLOSURE.lease_path(f.session).unlink()
+            f.native_state = "notLoaded"
+            rows = SESSIONS.native_helpers()[1].read_jsonl(f.transcript)
+            rows[-2]["payload"]["message"] = "Finished the native turn."
+            f.transcript.write_text("".join(json.dumps(row) + "\n" for row in rows))
+            import claim_history
+            import session_record
+            clock, budget = [SESSIONS.time.time()], 1
+            original_status, original_collect = session_record.session_status, claim_history.collect
+            requested = threading.local()
+            def status(*args, inspect_claims=True, **kwargs):
+                requested.claims = inspect_claims
+                return original_status(*args, inspect_claims=inspect_claims, **kwargs)
+            def slow_optional_history(*args, **kwargs):
+                if getattr(requested, "claims", True) is False:
+                    clock[0] += budget * 2
+                return original_collect(*args, **kwargs)
+            node = {"session_id": f.session, "harness": "codex", "transcript": str(f.transcript), "records": rows}
+            root = {"session_id": "root", "harness": "codex", "records": []}
+            with patch.object(session_record, "session_status", side_effect=status), \
+                    patch.object(claim_history, "collect", side_effect=slow_optional_history), \
+                    patch.object(SESSIONS.time, "time", side_effect=lambda: clock[0]):
+                pending = SESSIONS.pending_ownership([root, node], [{"pending": False}, {"pending": True}],
+                                                    deadline_at=clock[0] + budget)
+            self.assertFalse(pending, pending)
 
     def test_pending_without_a_closeout_record_is_rechecked_from_live_native_evidence(self):
         with ReceiptFixture() as f:
