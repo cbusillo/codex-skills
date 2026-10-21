@@ -16,8 +16,10 @@ import re
 import shlex
 import shutil
 import subprocess
+from collections.abc import Iterator
 from functools import lru_cache
 from pathlib import Path
+from types import ModuleType
 
 CHECK_OPERATION = "work-closeout.claims"
 CLAIM_OPERATION = "github.plan.claim"
@@ -69,8 +71,7 @@ def shell_texts(name, value):
 
 
 @lru_cache(maxsize=1)
-def shell_policy():
-    # One catalog parser owns heredoc data and command-substitution boundaries.
+def shell_policy() -> ModuleType:
     path = Path(__file__).resolve().parents[3] / 'hooks/command_policy_hook.py'
     spec = importlib.util.spec_from_file_location('claim_shell_policy', path)
     module = importlib.util.module_from_spec(spec)
@@ -78,7 +79,7 @@ def shell_policy():
     return module
 
 
-def shell_sources(text, *, completion=True):
+def shell_sources(text: str, *, completion: bool = True) -> Iterator[tuple[str, bool]]:
     for parsed, _readers in shell_policy().execution_sources(text, completion=completion):
         if isinstance(parsed, ValueError):
             if completion:
@@ -108,7 +109,7 @@ def shell_commands(name, value, *, depth=0):
             try:
                 yield from literal_shell_commands(source)
             except ValueError:
-                continue  # Discovery is a hint, never execution-end proof.
+                continue
 
 
 def literal_shell_commands(text):

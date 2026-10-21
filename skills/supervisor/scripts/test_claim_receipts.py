@@ -209,7 +209,6 @@ class ReceiptTests(unittest.TestCase):
         rows[-1:-1] = snapshots
         self.assertTrue(session_record.summarize(rows, 'claude')['safe_verdict'])
         self.assertFalse(receipts.ownership_state(rows, 'claude')['pending'])
-        # A replayed result cannot complete the real call whose result is missing.
         missing = history('claude', {})[:-1]
         missing[-1]['type'] = 'api-request-blob'
         self.assertTrue(receipts.ownership_state(missing, 'claude')['pending'])
