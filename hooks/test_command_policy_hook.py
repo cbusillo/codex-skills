@@ -776,6 +776,8 @@ class CommandPolicyHookTests(unittest.TestCase):
             "printf '%s\\n' 'gh api repos/o/r/pulls' | grep bash",
             "grep bash <<< 'gh api repos/o/r/pulls'",
             "grep bash <(printf '%s\\n' 'gh api repos/o/r/pulls')",
+            "source \"$VIRTUAL_ENV/bin/activate\" && cat >notes.md <<'EOF'\ngh pr merge 17\nEOF",
+            "ssh host 'cat > /opt/notes.md' <<'EOF'\ngh pr merge 17\nEOF",
             "python3 - <<-'EOF'\n\tlaunchplane merge-train run-once\n\tEOF",
             "printf '%s\\n' \"$((1 << 2))\" 'gh pr merge 17'",
         ):

@@ -239,6 +239,11 @@ class ReceiptTests(unittest.TestCase):
                     "cat >data.json <<'EOF'\nQ&A, don't\nEOF\n\"$PY\" -m tool data.json",
                     "cat >notes.md <<'EOF'\nQ&A, don't\nEOF\nrg -n bash \"$f\"",
                     "gtimeout 60 bash scripts/check.sh <<'EOF'\nQ&A, don't\nEOF",
+                    ". \"$HOME/.cargo/env\" && cat >notes.md <<'EOF'\nit's prose\nEOF",
+                    "source \"$VIRTUAL_ENV/bin/activate\" && cat >notes.md <<'EOF'\nit's prose\nEOF",
+                    "cat >body.md <<'EOF'\nQ&A, don't\nEOF\nbash \"$REPO/scripts/post.sh\" body.md",
+                    "ssh host 'cat > /opt/notes.md' <<'EOF'\nQ&A, don't\nEOF",
+                    "ssh -i /tmp/f-key host 'sudo tee /etc/app.conf' <<'EOF'\nQ&A, don't\nEOF",
                     "bash -n x.sh; cat <(printf 'a & b')",
                     'echo "$f: $(sed -n "$((l+1))p" $p | xargs)"',
                     "sed -n '1p' data | xargs -n1", "sed -n '1p' data | xargs -0",
@@ -354,6 +359,9 @@ class ReceiptTests(unittest.TestCase):
             "gtimeout 60 bash <(echo 'worker &')",
             "gtimeout 60 bash <(cat unknown.sh)",
             "gtimeout 60 bash <<< '$x'",
+            "sudo -b bash -c 'worker'", "sudo --background bash -c 'worker'",
+            "ssh -f host 'worker'", "ssh -nf host 'worker'",
+            "cat >run.sh <<'EOF'\nworker &\nEOF\nfind . -name run.sh -exec sh {} \\;",
         ]
         for flags in ('-e', '-euo pipefail', '-o errexit', '-O extglob', '-s -- args'):
             commands += [f"bash {flags} <<'EOF'\nworker &\nEOF", f"bash {flags} <<< 'worker &'"]
