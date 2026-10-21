@@ -4,8 +4,10 @@
 # ///
 from __future__ import annotations
 
+import ast
 import json
 import re
+import shlex
 import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
@@ -153,27 +155,53 @@ def claude_children(records: list[dict]) -> set[str]:
     }
 
 
-def persisted_output(records: list[dict], directory: Path) -> list[dict]:
-    paths = set()
-    for row in records:
-        result = row.get("toolUseResult")
-        if isinstance(result, dict) and isinstance(result.get("persistedOutputPath"), str):
-            paths.add(Path(result["persistedOutputPath"]).expanduser().resolve())
-        content = (row.get("message") or {}).get("content", [])
-        if isinstance(content, list):
-            for block in content:
-                if not isinstance(block, dict) or block.get("type") != "tool_result":
-                    continue
-                text = block.get("content")
-                if isinstance(text, str) and text.startswith("<persisted-output>\n"):
-                    match = re.search(r"(?m)^Output too large.*\nFull output saved to: ([^\n]+)$", text)
-                    if match:
-                        paths.add(Path(match[1]).expanduser().resolve())
+def native_output(path: Path, directory: Path, session: str, identifier: str) -> dict:
+    if path.parent.name != directory.name:
+        raise ValueError("native tool output has an invalid artifact directory")
+    if path.parent.parent.name not in {session, directory.parent.name}:
+        return {"foreign_native_output": identifier}
+    candidate = directory / path.name if directory.name == "tool-results" else path
+    candidate = candidate.resolve()
+    if candidate.parent != (directory if directory.name == "tool-results" else path.parent).resolve():
+        raise ValueError("native tool output escapes its session artifact directory")
+    return {"native_tool_output": candidate.read_text(encoding="utf-8"), "tool_use_id": identifier}
+
+
+def persisted_output(records: list[dict], directory: Path, session: str) -> list[dict]:
     output = []
-    for path in sorted(paths):
-        if not path.is_relative_to(directory.resolve()):
-            raise ValueError("persisted tool output is outside this session's native tool-results directory")
-        output.append({"native_tool_output": path.read_text(encoding="utf-8")})
+    background = {}
+    for row in records:
+        result = row.get("toolUseResult") or {}
+        content = (row.get("message") or {}).get("content", [])
+        blocks = (
+            [block for block in content if isinstance(block, dict) and block.get("type") == "tool_result"]
+            if isinstance(content, list)
+            else []
+        )
+        paths = set()
+        for block in blocks:
+            identifier = str(block.get("tool_use_id", ""))
+            if isinstance(result, dict) and isinstance(result.get("backgroundTaskId"), str):
+                background[result["backgroundTaskId"]] = identifier
+            if isinstance(result, dict) and isinstance(result.get("persistedOutputPath"), str):
+                paths.add((result["persistedOutputPath"], identifier))
+            text = block.get("content")
+            if isinstance(text, str) and text.startswith("<persisted-output>\n"):
+                match = re.search(r"(?m)^Output too large[^\n]*\n(?:Full output saved to: )?([^\n]+)$", text)
+                if not match:
+                    match = re.search(r"(?m)^Output too large[^\n]*Full output saved to: ([^\n]+)$", text)
+                if match:
+                    paths.add((match[1], identifier))
+        for path, identifier in sorted(paths):
+            output.append(native_output(Path(path).expanduser(), directory, session, identifier))
+        origin = row.get("origin") or {}
+        if origin.get("kind") != "task-notification" or origin.get("producer") != "session-task" or not isinstance(content, str):
+            continue
+        fields = dict(re.findall(r"<(task-id|tool-use-id|output-file)>([^<]+)</\1>", content))
+        identifier = fields.get("tool-use-id")
+        if identifier and background.get(fields.get("task-id")) == identifier and fields.get("output-file"):
+            path = Path(fields["output-file"]).expanduser()
+            output.append(native_output(path, directory.with_name("tasks"), session, identifier))
     return output
 
 
@@ -199,7 +227,7 @@ def claude_entries(root: dict, supplied: dict[str, set[Path]]) -> list[dict]:
             raise ValueError(f"native transcript does not belong to {native}")
         if agent is not None and claude_agent(own) != agent:
             raise ValueError(f"native subagent identity differs for {agent}")
-        outputs = persisted_output(own, root_path.with_suffix("") / "tool-results")
+        outputs = persisted_output(own, root_path.with_suffix("") / "tool-results", native)
         expanded.append(entry(native, path, [*own, *outputs], native))
         for child in claude_children(own):
             paths = supplied.get(child) or {directory / f"agent-{child}.jsonl"}
@@ -214,18 +242,43 @@ def claude_entries(root: dict, supplied: dict[str, set[Path]]) -> list[dict]:
 
 def expand(entries: list[dict]) -> list[dict]:
     supplied: dict[str, set[Path]] = {}
+    parents = {}
+    agents = {}
     for item in entries:
         path = Path(item["transcript"]).resolve()
         records = read_records(path)
-        native = metadata(records).get("id") or claude_agent(records) or item["session_id"]
+        meta = metadata(records)
+        agent = claude_agent(records)
+        native = meta.get("id") or agent or item["session_id"]
         supplied.setdefault(native, set()).add(path)
+        source = meta.get("source", {})
+        parents[path] = claim_history.source_parent(source) if isinstance(source, dict) else None
+        agents[path] = agent
     expanded = []
-    for item in entries:
+    remaining = list(entries)
+    while remaining:
+        roots = [
+            item
+            for item in remaining
+            if not (
+                parents[Path(item["transcript"]).resolve()] in supplied
+                or (
+                    agents[Path(item["transcript"]).resolve()]
+                    and any(
+                        other["session_id"] == item["session_id"] and not agents[Path(other["transcript"]).resolve()]
+                        for other in remaining
+                    )
+                )
+            )
+        ]
+        if not roots:
+            raise ValueError("supplied native transcript lineage has no root")
+        item = roots[0]
         records = read_records(Path(item["transcript"]))
-        if metadata(records):
-            expanded.extend(codex_entries(item, supplied))
-        else:
-            expanded.extend(claude_entries(item, supplied))
+        children = codex_entries(item, supplied) if metadata(records) else claude_entries(item, supplied)
+        expanded.extend(children)
+        covered = {child["transcript"] for child in children}
+        remaining = [candidate for candidate in remaining if str(Path(candidate["transcript"]).resolve()) not in covered]
     return expanded
 
 
@@ -264,6 +317,10 @@ def tool_inputs(records: list[dict]) -> Iterator[tuple[str, str]]:
 def tool_outputs(records: list[dict]) -> dict[str, list[object]]:
     outputs: dict[str, list[object]] = {}
     for row in records:
+        if "native_tool_output" in row:
+            outputs.setdefault(str(row.get("tool_use_id", "")), []).append(row["native_tool_output"])
+        if "foreign_native_output" in row:
+            outputs.setdefault(str(row["foreign_native_output"]), []).append({"foreign_native_output": True})
         payload = row.get("payload")
         if isinstance(payload, dict) and payload.get("type") in {"function_call_output", "custom_tool_call_output"}:
             outputs.setdefault(str(payload.get("call_id", "")), []).append(payload.get("output"))
@@ -281,44 +338,146 @@ def tool_outputs(records: list[dict]) -> dict[str, list[object]]:
     return outputs
 
 
-def literal_targets(records: list[dict], session: str, receipts: set[tuple[str, int]]) -> set[tuple[str, int]]:
+def shell_texts(text: str) -> Iterator[str]:
+    try:
+        decoded = json.loads(text)
+    except ValueError:
+        decoded = None
+    if isinstance(decoded, dict):
+        if isinstance(decoded.get("cmd"), str):
+            yield decoded["cmd"]
+        return
+    literal = r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|`(?:\\.|[^`\\])*`'
+    pattern = re.compile(r'(?:(?:\bcmd|"cmd"|\'cmd\')\s*:\s*(?P<command>' + literal + r"))|(?:" + literal + r")", re.DOTALL)
+    commands = [match["command"] for match in pattern.finditer(text) if match["command"] is not None]
+    if not commands:
+        if "exec_command(" in text and "gh-plan.py" in text and "claim" in text:
+            raise ValueError("native claim command is computed; restore its complete native output")
+        yield text
+    for command in commands:
+        try:
+            yield ast.literal_eval(command) if command[0] != "`" else command[1:-1]
+        except (ValueError, SyntaxError) as error:
+            raise ValueError("native command literal cannot be decoded") from error
+
+
+def shell_groups(text: str) -> Iterator[list[str]]:
+    pending = []
+    lines = []
+    for line in text.replace("\\\n", "").splitlines():
+        if pending:
+            if line.lstrip("\t") == pending[0]:
+                pending.pop(0)
+            continue
+        pending.extend(match[1] for match in re.finditer(r"<<-?\s*['\"]?([A-Za-z_][A-Za-z0-9_]*)['\"]?", line))
+        lines.append(line)
+    lexer = shlex.shlex("\n".join(lines), posix=False, punctuation_chars=";&|()<>\n")
+    lexer.whitespace = " \t\r"
+    lexer.whitespace_split = True
+    group = []
+    try:
+        for token in lexer:
+            if token and all(character in ";&|()<>\n" for character in token):
+                if group:
+                    yield shlex.split(" ".join(group))
+                    group = []
+            else:
+                group.append(token)
+        if group:
+            yield shlex.split(" ".join(group))
+    except ValueError as error:
+        if "gh-plan.py" in text and "claim" in text:
+            raise ValueError("native claim shell syntax cannot be decoded") from error
+
+
+def shell_argv(text: str) -> Iterator[list[str]]:
+    for argv in shell_groups(text):
+        if argv and Path(argv[0]).name in {"bash", "sh", "zsh"} and "-c" in argv:
+            index = argv.index("-c") + 1
+            if index < len(argv):
+                yield from shell_argv(argv[index])
+        else:
+            yield argv
+
+
+def claim_arguments(argv: list[str]) -> list[str] | None:
+    while argv and (
+        argv[0] in {"env", "command", "exec", "if", "then", "do"} or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", argv[0])
+    ):
+        argv = argv[1:]
+    if not argv:
+        return None
+    executable = Path(argv[0]).name
+    if executable == "uv" and "run" in argv:
+        argv = argv[argv.index("run") + 1 :]
+    elif executable.startswith("python"):
+        argv = argv[1:]
+    while argv and argv[0].startswith("-"):
+        argv = argv[1:]
+    if not argv or Path(argv[0]).name != "gh-plan.py":
+        return None
+    return argv[1:]
+
+
+def literal_targets(records: list[dict], session: str) -> set[tuple[str, int]]:
     targets = set()
     outputs = tool_outputs(records)
-    invocation = re.compile(
-        r"gh-plan\.py[\"']?\s+(?:(?:--repo|-R)\s+[\"']?([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)[\"']?\s+)?claim\s+[\"']?([^\s\"';,)]+)"
-    )
     reference = re.compile(r"(?:https://github\.com/)?([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(?:#|/(?:issues|pull)/)([1-9]\d*)\Z")
     for identifier, text in tool_inputs(records):
-        for match in invocation.finditer(text):
-            tail = text[match.end() :]
-            declared = re.search(r"--session\s+[\"']?([^\s\"';,)]+)", tail)
-            if declared and not declared[1].startswith("$") and declared[1] != session:
-                continue
-            repo, target = match.groups()
-            if target.startswith("-"):
-                continue
-            qualified = reference.fullmatch(target)
-            if qualified:
-                targets.add((qualified[1], int(qualified[2])))
-                continue
-            if repo and target.isdecimal() and int(target) > 0:
-                targets.add((repo, int(target)))
-                continue
-            results = [item for block in outputs.get(identifier, []) for item in values(block)]
-            matching = [target for item in results if (target := claim_target(item, session)) in receipts]
-            if matching:
-                continue
-            rejected = any(
-                item.get("operation") == "github.plan.claim"
-                and item.get("ok") is False
-                and not item.get("claim_comment")
-                and "post_claim" not in item.get("completed_steps", [])
-                and item.get("outcome_certainty") != "unknown"
-                for item in results
-            )
-            if rejected:
-                continue
-            raise ValueError(
-                f"claim invocation {identifier} lacks a complete result or literal repository target; restore its native output"
-            )
+        for shell in shell_texts(text):
+            for argv in shell_argv(shell):
+                arguments = claim_arguments(argv)
+                if arguments is None or "claim" not in arguments or "--help" in arguments or "-h" in arguments:
+                    continue
+                options = {}
+                positionals = []
+                index = 0
+                while index < len(arguments):
+                    argument = arguments[index]
+                    if argument.startswith("-"):
+                        key, equal, value = argument.partition("=")
+                        if not equal:
+                            index += 1
+                            value = arguments[index] if index < len(arguments) else ""
+                        options[key] = value
+                    else:
+                        positionals.append(argument)
+                    index += 1
+                if not positionals or positionals[0] != "claim":
+                    continue
+                results = [item for block in outputs.get(identifier, []) for item in values(block)]
+                completed = [
+                    item
+                    for item in results
+                    if isinstance(item.get("claim"), dict)
+                    and isinstance(item["claim"].get("session"), str)
+                    and claim_target(item, item["claim"]["session"]) is not None
+                ]
+                foreign = any(item.get("foreign_native_output") for item in results)
+                declared = options.get("--session", "")
+                if declared and not any(character in declared for character in "$`\\") and declared != session:
+                    continue
+                if completed or foreign:
+                    continue
+                repo = options.get("--repo", options.get("-R", ""))
+                target = positionals[1] if len(positionals) > 1 else ""
+                qualified = reference.fullmatch(target)
+                if qualified:
+                    targets.add((qualified[1], int(qualified[2])))
+                    continue
+                if claim_log.REPOSITORY_PATTERN.fullmatch(repo) and target.isdecimal() and int(target) > 0:
+                    targets.add((repo, int(target)))
+                    continue
+                rejected = any(
+                    item.get("operation") == "github.plan.claim"
+                    and item.get("ok") is False
+                    and not item.get("claim_comment")
+                    and "post_claim" not in item.get("completed_steps", [])
+                    and item.get("outcome_certainty") != "unknown"
+                    for item in results
+                )
+                if not rejected:
+                    raise ValueError(
+                        f"claim invocation {identifier} lacks a complete result or literal repository target; restore its native output"
+                    )
     return targets

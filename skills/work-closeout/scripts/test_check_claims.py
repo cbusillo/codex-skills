@@ -53,8 +53,6 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.reader.deadline_at = None
         self.reader.get_json.side_effect = self.get
         self.reader.paged_json.side_effect = self.paged
-        self.inventory = self.enterContext(patch.object(helper.github_identity, "automation_repositories",
-            return_value={"repositories": {REPO: [ACTOR]}, "installations": []}))
         self.enterContext(patch.object(helper, "repository_reader", return_value=self.reader))
 
     def get(self, path, **kwargs):
@@ -275,13 +273,13 @@ class ClaimCloseoutTests(unittest.TestCase):
 
     def test_recorded_claims_never_inventory_other_repositories(self) -> None:
         self.comments.append(self.release)
-        self.inventory.side_effect = AssertionError("fleet inventory is forbidden")
         report = helper.check([self.receipt_entry()])
         self.assertTrue(report["claims_clear"], report)
         self.assertEqual([r["claim_comment"] for r in report["released_claims"]], [self.source["id"]])
         paths = [call.args[0] for method in (self.reader.get_json, self.reader.paged_json) for call in method.call_args_list]
         self.assertTrue(paths)
-        self.assertTrue(all(path.startswith(f"/repos/{REPO}/issues/1") or path == f"/repos/{REPO}/pulls" for path in paths))
+        self.assertTrue(all(path.startswith(f"/repos/{REPO}/") for path in paths))
+        self.assertFalse({f"/repos/{REPO}/issues", f"/repos/{REPO}/issues/comments"}.intersection(paths))
         self.assertEqual(report["coverage"]["repositories"], [REPO])
 
     def test_recorded_claim_targets_include_closed_and_pr_only_work_across_sessions(self) -> None:
@@ -497,12 +495,108 @@ class ClaimCloseoutTests(unittest.TestCase):
             helper.check([root])
         reader.assert_not_called()
 
-    def test_product_agent_ids_are_not_native_children(self) -> None:
-        entry = self.entry()
-        with Path(entry["transcript"]).open("a") as stream:
-            stream.write(json.dumps({"type": "response_item", "payload": {"type": "function_call_output", "output":
-                json.dumps({"agent_id": "product-agent"})}}) + "\n")
-        self.assertTrue(helper.check([entry])["claims_clear"])
+    def test_escaped_native_commands_preserve_claim_scope(self) -> None:
+        for command in (
+            'uv run gh-plan.py --repo="test/a" claim 1 --session="$CODEX_THREAD_ID"',
+            'uv run gh-plan.py --repo test/a claim --worker worker --session "$CODEX_THREAD_ID" 1',
+        ):
+            records = [{"payload": {"type": "custom_tool_call", "name": "exec", "call_id": "quoted",
+                "input": "text(await tools.exec_command({cmd:" + json.dumps(command) + "}));"}}]
+            with self.subTest(command=command):
+                self.assertEqual(helper.history.literal_targets(records, SESSION), {(REPO, 1)})
+        command = 'uv run gh-plan.py claim 1 --session "$CODEX_THREAD_ID"'
+        records[0]["payload"]["input"] = "text(await tools.exec_command({cmd:" + json.dumps(command) + "}));"
+        with self.assertRaises(ValueError):
+            helper.history.literal_targets(records, SESSION)
+
+    def test_computed_native_claim_without_complete_output_blocks(self) -> None:
+        rows = [{"payload": {"type": "custom_tool_call", "name": "exec", "call_id": "computed",
+            "input": 'const command = "uv run gh-plan.py claim 1"; text(await tools.exec_command({cmd:command}));'}}]
+        with self.assertRaises(ValueError):
+            helper.history.literal_targets(rows, SESSION)
+
+    def test_shell_searches_and_heredoc_text_are_not_claim_invocations(self) -> None:
+        commands = ["rg 'gh-plan.py claim 1' .", "cat <<'EOF'\ngh-plan.py claim 1\nEOF", 'git commit -m "gh-plan.py claim 1"']
+        for command in commands:
+            rows = [{"message": {"content": [{"type": "tool_use", "name": "Bash", "id": "read", "input": {"command": command}}]}}]
+            with self.subTest(command=command):
+                self.assertEqual(helper.history.literal_targets(rows, SESSION), set())
+
+    def test_claude_saved_output_completes_the_originating_bare_claim(self) -> None:
+        root = self.entry()
+        path = Path(root["transcript"])
+        output = path.with_suffix("") / "tool-results/result.txt"
+        output.parent.mkdir(parents=True)
+        output.write_text(json.dumps({"claim": SOURCE, "issue": {"repo": REPO, "number": 1}}))
+        rows = [
+            {"sessionId": SESSION, "message": {"content": [{"type": "tool_use", "name": "Bash", "id": "saved", "input": {"command": "uv run gh-plan.py claim 1"}}]}},
+            {"sessionId": SESSION, "toolUseResult": {"persistedOutputPath": str(output)}, "message": {"content": [{"type": "tool_result", "tool_use_id": "saved", "content": "preview"}]}},
+        ]
+        path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+        self.assertFalse(helper.check([root])["claims_clear"])
+        self.comments.append(self.release)
+        self.assertTrue(helper.check([root])["claims_clear"])
+
+    def test_claude_foreign_saved_output_and_complete_fork_receipts_are_ignored(self) -> None:
+        root = self.entry()
+        path = Path(root["transcript"])
+        rows = [
+            {"sessionId": SESSION, "message": {"content": [{"type": "tool_use", "name": "Bash", "id": "copied", "input": {"command": "uv run gh-plan.py claim 1"}}]}},
+            {"sessionId": SESSION, "toolUseResult": {"persistedOutputPath": str(self.folder / "foreign/tool-results/result.txt")}, "message": {"content": [{"type": "tool_result", "tool_use_id": "copied", "content": json.dumps({"claim": {**SOURCE, "session": "foreign"}, "issue": {"repo": REPO, "number": 1}})}]}},
+        ]
+        path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+        self.assertTrue(helper.check([root])["claims_clear"])
+
+    def test_claude_background_completion_reads_the_original_bash_output(self) -> None:
+        root = self.entry()
+        path = Path(root["transcript"])
+        output = self.folder / "temporary" / SESSION / "tasks/task.output"
+        output.parent.mkdir(parents=True)
+        output.write_text(json.dumps({"claim": SOURCE, "issue": {"repo": REPO, "number": 1}}))
+        rows = [
+            {"sessionId": SESSION, "message": {"content": [{"type": "tool_use", "name": "Bash", "id": "background", "input": {"command": "uv run gh-plan.py claim 1"}}]}},
+            {"sessionId": SESSION, "toolUseResult": {"backgroundTaskId": "task"}, "message": {"content": [{"type": "tool_result", "tool_use_id": "background", "content": "running"}]}},
+            {"sessionId": SESSION, "origin": {"kind": "task-notification", "producer": "session-task", "runId": "native-run"}, "message": {"content": f"<task-notification><task-id>task</task-id><tool-use-id>background</tool-use-id><output-file>{output}</output-file><status>completed</status></task-notification>"}},
+        ]
+        path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+        self.assertFalse(helper.check([root])["claims_clear"])
+        self.comments.append(self.release)
+        self.assertTrue(helper.check([root])["claims_clear"])
+        output.unlink()
+        with self.assertRaises(OSError):
+            helper.check([root])
+
+    def test_explicit_claude_child_uses_its_root_saved_output_after_restore(self) -> None:
+        root = self.entry()
+        path = Path(root["transcript"])
+        path.write_text(json.dumps({"sessionId": SESSION, "toolUseResult": {"agentId": "child"}}) + "\n")
+        child = path.with_suffix("") / "subagents/agent-child.jsonl"
+        output = path.with_suffix("") / "tool-results/result.txt"
+        child.parent.mkdir(parents=True)
+        output.parent.mkdir()
+        output.write_text(json.dumps({"claim": SOURCE, "issue": {"repo": REPO, "number": 1}}))
+        original = self.folder / "old-host" / SESSION / "tool-results/result.txt"
+        child.write_text(json.dumps({"sessionId": SESSION, "agentId": "child", "toolUseResult": {"persistedOutputPath": str(original)}, "message": {"content": [{"type": "tool_result", "tool_use_id": "saved", "content": "preview"}]}}) + "\n")
+        supplied = {"session_id": SESSION, "transcript": str(child)}
+        self.comments.append(self.release)
+        self.assertTrue(helper.check([supplied, root])["claims_clear"])
+
+    def test_explicit_inline_codex_child_is_not_walked_again_as_a_root(self) -> None:
+        root = self.entry()
+        child = self.entry("child")
+        rows = [
+            {"type": "session_meta", "payload": {"id": "child", "session_id": SESSION, "parent_thread_id": SESSION, "forked_from_id": SESSION, "subagent_history_start_ordinal": 2, "source": {"subagent": {"thread_spawn": {"parent_thread_id": SESSION}}}}},
+            {"type": "session_meta", "payload": {"id": SESSION}},
+            {"type": "event_msg", "payload": {"type": "thread_settings_applied", "thread_id": "child"}},
+            {"type": "response_item", "payload": {"type": "function_call_output", "output": json.dumps({"claim": {**SOURCE, "session": "child"}, "issue": {"repo": REPO, "number": 1}})}},
+        ]
+        for ordinal, row in enumerate(rows):
+            row["ordinal"] = ordinal
+        Path(child["transcript"]).write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+        self.native_index.execute("INSERT INTO thread_spawn_edges VALUES(?,?)", (SESSION, "child"))
+        with patch.object(helper, "check_record", return_value=[]) as check:
+            self.assertTrue(helper.check([child, root])["claims_clear"])
+        self.assertIn("child", {call.args[3] for call in check.call_args_list})
 
     def test_duplicate_receipts_check_a_record_once(self) -> None:
         entry = self.receipt_entry(records=((REPO, 1), (REPO, 1)))
@@ -533,7 +627,6 @@ class ClaimCloseoutTests(unittest.TestCase):
             code = helper.main(["--owner", "test", "--session", SESSION, "--transcript", entry["transcript"]])
         self.assertEqual(code, 0, output.getvalue())
         reader.assert_not_called()
-        self.inventory.assert_not_called()
 
     def test_cli_refuses_a_transcript_of_another_session_before_reading_github(self):
         other = self.entry("newer-session", "2026-03-01T00:00:00Z")

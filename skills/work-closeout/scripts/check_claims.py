@@ -157,7 +157,7 @@ def recorded_targets(entry: dict) -> set[tuple[str, int]]:
             target = history.claim_target(value, native)
             if target is not None:
                 targets.add(target)
-    targets.update(history.literal_targets(rows, native, targets))
+    targets.update(history.literal_targets(rows, native))
     return targets
 
 
