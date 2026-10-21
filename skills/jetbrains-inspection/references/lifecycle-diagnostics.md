@@ -41,6 +41,8 @@ by age or PID. The original lock also excludes older installed callers that do
 not register tickets. Only waiting for such a caller after reaching the queue's
 head can still report `UNKNOWN/lifecycle_lock_busy`; wait for that operation or
 increase its acquisition budget. No lock is cleared or bypassed.
+The native backend reuses this queue in its own directory for isolated-worker
+admission; see [native-backend.md](native-backend.md).
 
 `open-worktree`, `agent-inspect`, `inspect`, and `inspect-closeout` create a
 local lease, serialize helper-owned IDE

@@ -8818,7 +8818,7 @@ class LifecycleTest(unittest.TestCase):
 class AgentInspectContractTest(unittest.TestCase):
     def test_lifecycle_lock_timeout_reports_contention_without_native_inspection(self):
         output = io.StringIO()
-        try_lock = jb_inspect.lifecycle_lock._try_lock
+        try_lock = jb_inspect.lifecycle_lock.try_lock
 
         def locked_operation(_args, _context):
             with jb_inspect.lifecycle_lock(0):
