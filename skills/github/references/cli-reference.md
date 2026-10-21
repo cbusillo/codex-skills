@@ -895,7 +895,20 @@ base; forks use a canonical planning issue. The PR's remote source head is its
 work record; local source branches/worktrees and live peers remain competing
 evidence unless owned or covered by an exact authored release. `--resume-from`
 works for released PR claims without inferring a retained-issue handoff from
-the subject PR itself. `release-claim` accepts the same PR references and attestation URLs on either
+the subject PR itself. For a PR retained by a released source issue, pass the
+source claim's exact URL to `--resume-from`, for example
+`--resume-from https://github.com/OWNER/REPO/issues/123#issuecomment-456`.
+The source must be an issue in the PR's repository with an exact authored,
+timestamp-proved release and a qualified handoff naming this PR. The helper
+reuses retained-handoff provenance, checks claims on the source family and
+retained PRs on both readbacks, and preserves every artifact and product hold.
+This route permits a PR-only claim when that released source is also its
+canonical implementation issue; other canonical issues still require their
+own claim. Use a new task branch separate from every retained source branch.
+The source-family checks cover every qualified retained sibling, so process
+these PR-only claims sequentially. Release preserves that inherited custody;
+it does not claim that this session changed every sibling PR.
+`release-claim` accepts the same PR references and attestation URLs on either
 issue or PR timeline comments. It checks the claimed source branch against the closed-session attestation. A
 later update to a separate Dependabot work-record branch does not count as
 source-session activity; source-branch activity, ownership and peer checks
@@ -1071,6 +1084,43 @@ Current Status, write the handoff to a file and release with the
 It posts the exact directive with the handoff below it through the same bot
 identity and reads it back; do not hand-write the release comment.
 Release affects that exact comment, not another worker's record.
+Before posting, `release` carries forward the claim's verified inherited
+retained handoff and inventories open PRs on its source branch. It also finds
+source-linked PRs opened since the claim comment's server timestamp, including
+other branches and repositories in the source record's reference timeline.
+Shared bot authorship and handoff prose do not identify a session: each
+other-branch candidate needs an explicit `--retained-pr URL`. Use
+`--exclude-pr URL` for another session's work; exclusions never become retained
+handoff links. Remove references to excluded PRs from the handoff file too;
+`release_excluded_pr_mentioned` identifies any remaining reference. The helper
+uses the successor's parser to check narrative references, including older
+source-linked PRs, before posting. An unclassified candidate stops and lists
+the exact URLs to account for. Declared PRs must qualify in the current
+inventory or verified inherited custody. A mentioned merged PR receives the
+same checks because the successor can retain its branch and worktree too.
+The source branch, subject PR, and inherited work
+cannot be excluded. These declarations affect only the source author's own
+release and add no ownership store or successor authority.
+Keep the source work-record link in every PR opened under a claim; unlinked
+work cannot be attributed to the session. Discovery skips known closed or
+preclaim timeline entries unless the narrative mentions them; incomplete
+entries are fetched and checked. It skips a missing PR (404), and other read
+failures stop release before posting. Cross-repository retained
+links remain available to the existing issue-resume path; a PR-only source
+claim URL still requires a source in that PR's repository. The abandoned
+`release-claim` route keeps its existing explicit, attested `--retained-pr`
+contract.
+
+`release_inherited_handoff_changed` names the recorded handoff URL, original
+source claim, and current claim when inheritance cannot be revalidated.
+The source author restores edited proof before retrying. Deleted proof needs
+the Supervisor to reconstruct the complete custody from native session and
+GitHub evidence, preserving every artifact; `--retained-pr` cannot replace a
+missing inherited set. Use the existing abandoned-claim recovery only after
+that session ends and its canonical-record and retained-PR checks pass.
+That route does not promise to recover cross-scope siblings; unresolved
+provenance stays with the Supervisor for explicit recovery, without an exit
+all-clear or an artifact deletion to get past the guard.
 Retained artifacts stay preserved and reported; positive live activity and an
 open PR's handoff/waits remain independent checks.
 The release directive is an unquoted, unindented line exactly

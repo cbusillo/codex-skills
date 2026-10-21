@@ -359,6 +359,107 @@ class ClaimTests(unittest.TestCase):
         self.inventory["remote_branches"] = list(self.inventory["local_branches"])
         self.inventory["worktrees"] = [{"path": "/retained/" + p["head"]["ref"].split("/")[-1], "branch": p["head"]["ref"]} for p in self.pulls]
 
+    def released_issue_pr_fixture(self) -> None:
+        self.refresh_fixture()
+        self.comments[0]["created_at"] = OTHER["claimed_at"]
+        self.comments[-1]["created_at"] = "2026-10-02T00:00:00Z"
+        self.targets["42"] = copy.deepcopy(self.issue)
+        self.target_comments["/repos/owner/repo/issues/42/comments"] = self.comments
+        self.issue = self.targets.pop("99")
+        self.comments = []
+        self.target_comments.pop("/repos/owner/repo/issues/99/comments")
+        self.args.issue = "99"
+        self.comment_id_offset = 1000
+        self.args.resume_from = "https://github.com/owner/repo/issues/42#issuecomment-1"
+
+    def test_pr_only_resumes_exact_source_issue_release_without_retiring_artifacts(self) -> None:
+        for variant in ("plain", "legacy first", "case-varied link", "later handoff"):
+            with self.subTest(variant=variant):
+                self.setUp()
+                self.released_issue_pr_fixture()
+                source_comments = self.target_comments["/repos/owner/repo/issues/42/comments"]
+                if variant == "legacy first":
+                    source_comments.insert(2, {"id": 20, "body": "Released by trial-b", "user": {"login": TEST_BOT},
+                                               "created_at": "2026-10-01T01:00:00Z"})
+                elif variant == "case-varied link":
+                    self.pulls[0]["body"] = "Refs OWNER/REPO#42"
+                elif variant == "later handoff":
+                    source_comments[-1]["body"] = "Released claim 1\n\nRetained PR #100."
+                    source_comments.append({"id": 4, "user": {"login": TEST_BOT},
+                        "body": "Handoff from trial-b\nclaim 1; session session-b\nRetained PR #99 and #100."})
+                    self.handoff_id = 4
+                before = copy.deepcopy((self.inventory, self.pulls))
+                self.run_claim()
+                result = self.emitted.call_args.args[0]
+                self.assertTrue(result["ok"])
+                self.assertEqual(result["record_kind"], "pr")
+                self.assertEqual(result["claim"]["resume_from"], "1")
+                self.assertEqual(result["claim"]["retained_handoff"], CLAIM.handoff_url("owner/repo", 42, self.handoff_id))
+                self.assertEqual((self.inventory, self.pulls), before)
+
+    def test_pr_only_source_release_keeps_live_and_unknown_owners(self) -> None:
+        for owner in ("live source", "unreleased source", "unknown artifacts", "foreign release", "unnamed PR", "old release"):
+            with self.subTest(owner=owner):
+                self.setUp()
+                self.released_issue_pr_fixture()
+                source_comments = self.target_comments["/repos/owner/repo/issues/42/comments"]
+                if owner == "live source":
+                    source_comments.append({"id": 4, "body": CLAIM.marker({**OTHER, "session": "live-owner"}),
+                                            "user": {"login": TEST_BOT}})
+                elif owner == "unreleased source":
+                    source_comments.pop()
+                elif owner == "unknown artifacts":
+                    self.args.resume_from = None
+                    self.pulls[0]["body"] = "Repair"
+                elif owner == "foreign release":
+                    source_comments[-1]["user"] = {"login": "someone-else"}
+                elif owner == "old release":
+                    source_comments[-1]["created_at"] = "2026-09-01T00:00:00Z"
+                else:
+                    source_comments[-1]["body"] = "Released claim 1\n\nRetained PR #100."
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.run_claim()
+                expected = ("claim_conflict" if owner in {"live source", "unknown artifacts"} else
+                            "claim_handoff_pr_required" if owner == "unnamed PR" else "claim_resume_source_unreleased")
+                self.assertEqual(caught.exception.code, expected)
+                self.assert_no_writes()
+
+    def test_pr_only_rechecks_source_release_after_claim_publication(self) -> None:
+        self.released_issue_pr_fixture()
+        self.after_post = lambda: self.target_comments["/repos/owner/repo/issues/42/comments"].pop()
+        with self.assertRaises(PLAN.PlanError) as caught:
+            self.run_claim()
+        self.assertIn("release_own_claim", caught.exception.payload["claim_recovery"])
+
+    def test_later_pr_claim_preserves_released_issue_lineage(self) -> None:
+        self.released_issue_pr_fixture()
+        previous = {**OTHER, "branch": "work/previous-landing", "resume_from": "1",
+                    "retained_handoff": CLAIM.handoff_url("owner/repo", 42, self.handoff_id)}
+        self.comments = [
+            {"id": 21, "body": CLAIM.marker(previous), "user": {"login": TEST_BOT}, "created_at": OTHER["claimed_at"]},
+            {"id": 22, "body": "Released claim 21", "user": {"login": TEST_BOT}, "created_at": "2026-10-02T00:00:00Z"},
+        ]
+        self.args.resume_from = None
+        self.target_comments["/repos/owner/repo/issues/42/comments"].append(
+            {"id": 4, "body": CLAIM.marker({**OTHER, "session": "new-source-owner"}), "user": {"login": TEST_BOT}})
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_claim()
+        self.assertEqual(caught.exception.code, "claim_conflict")
+        self.assertTrue(any(entry.get("record", {}).get("session") == "new-source-owner"
+                            for entry in caught.exception.payload["competing_evidence"]))
+        self.assert_no_writes()
+
+    def test_pr_only_source_release_cannot_hide_another_canonical_issue(self) -> None:
+        self.released_issue_pr_fixture()
+        self.pulls[0]["body"] = "Refs #42\nCloses #43"
+        self.targets["43"] = {**copy.deepcopy(self.targets["42"]), "number": 43}
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_claim()
+        self.assertEqual(caught.exception.code, "claim_issue_record_required")
+        self.assertEqual(set(caught.exception.payload["canonical_issues"]),
+                         {"https://github.com/owner/repo/issues/42", "https://github.com/owner/repo/issues/43"})
+        self.assert_no_writes()
+
     def test_authorized_split_pr_refresh_claim_succeeds_with_release_and_handoff(self):
         self.refresh_fixture()
         self.run_claim()
