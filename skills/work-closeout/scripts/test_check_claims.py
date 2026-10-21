@@ -514,6 +514,8 @@ class ClaimCloseoutTests(unittest.TestCase):
             "input": 'const command = "uv run gh-plan.py claim 1"; text(await tools.exec_command({cmd:command}));'}}]
         with self.assertRaises(ValueError):
             helper.history.literal_targets(rows, SESSION)
+        rows.append({"payload": {"type": "custom_tool_call_output", "call_id": "computed", "output": json.dumps({"claim": SOURCE, "issue": {"repo": REPO, "number": 1}})}})
+        self.assertEqual(helper.history.literal_targets(rows, SESSION), set())
 
     def test_shell_searches_and_heredoc_text_are_not_claim_invocations(self) -> None:
         commands = ["rg 'gh-plan.py claim 1' .", "cat <<'EOF'\ngh-plan.py claim 1\nEOF", 'git commit -m "gh-plan.py claim 1"']

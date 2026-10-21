@@ -424,7 +424,22 @@ def literal_targets(records: list[dict], session: str) -> set[tuple[str, int]]:
     outputs = tool_outputs(records)
     reference = re.compile(r"(?:https://github\.com/)?([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(?:#|/(?:issues|pull)/)([1-9]\d*)\Z")
     for identifier, text in tool_inputs(records):
-        for shell in shell_texts(text):
+        results = [item for block in outputs.get(identifier, []) for item in values(block)]
+        completed = [
+            item
+            for item in results
+            if isinstance(item.get("claim"), dict)
+            and isinstance(item["claim"].get("session"), str)
+            and claim_target(item, item["claim"]["session"]) is not None
+        ]
+        foreign = any(item.get("foreign_native_output") for item in results)
+        try:
+            shells = list(shell_texts(text))
+        except ValueError:
+            if completed or foreign:
+                continue
+            raise
+        for shell in shells:
             for argv in shell_argv(shell):
                 arguments = claim_arguments(argv)
                 if arguments is None or "claim" not in arguments or "--help" in arguments or "-h" in arguments:
@@ -445,15 +460,6 @@ def literal_targets(records: list[dict], session: str) -> set[tuple[str, int]]:
                     index += 1
                 if not positionals or positionals[0] != "claim":
                     continue
-                results = [item for block in outputs.get(identifier, []) for item in values(block)]
-                completed = [
-                    item
-                    for item in results
-                    if isinstance(item.get("claim"), dict)
-                    and isinstance(item["claim"].get("session"), str)
-                    and claim_target(item, item["claim"]["session"]) is not None
-                ]
-                foreign = any(item.get("foreign_native_output") for item in results)
                 declared = options.get("--session", "")
                 if declared and not any(character in declared for character in "$`\\") and declared != session:
                     continue
