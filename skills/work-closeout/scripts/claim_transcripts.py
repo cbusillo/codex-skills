@@ -314,26 +314,30 @@ def execution_item(row: dict) -> dict:
     return item if isinstance(item, dict) and item.get("type") == "CommandExecution" else {}
 
 
-def tool_inputs(records: list[dict]) -> Iterator[tuple[str, str]]:
+def tool_inputs(records: list[dict]) -> Iterator[tuple[str, str, bool]]:
     for row in records:
         item = execution_item(row)
         if item and "command" in item:
-            yield "command:" + str(item.get("id", "")), command_text(item["command"])
+            yield "command:" + str(item.get("id", "")), json.dumps({"command": item["command"]}), False
         payload = row.get("payload")
         if isinstance(payload, dict) and payload.get("type") == "local_shell_call":
-            yield str(payload.get("call_id", "")), json.dumps(payload.get("action") or {})
+            yield str(payload.get("call_id", "")), json.dumps(payload.get("action") or {}), False
         if isinstance(payload, dict) and payload.get("type") in {"function_call", "custom_tool_call"}:
             name = str(payload.get("name", "")).split(".")[-1].casefold()
             if name in {"exec", "exec_command", "bash", "write_stdin", "shell_command", "shell"}:
                 raw = payload.get("arguments", payload.get("input", ""))
-                yield str(payload.get("call_id", "")), raw if isinstance(raw, str) else json.dumps(raw)
+                yield (
+                    str(payload.get("call_id", "")),
+                    raw if isinstance(raw, str) else json.dumps(raw),
+                    name == "exec" and payload["type"] == "custom_tool_call",
+                )
         content = (row.get("message") or {}).get("content", [])
         if isinstance(content, list):
             for block in content:
                 if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") == "Bash":
                     command = (block.get("input") or {}).get("command")
                     if isinstance(command, str):
-                        yield str(block.get("id", "")), command
+                        yield str(block.get("id", "")), command, False
 
 
 def denied_invocations(records: list[dict]) -> set[str]:
@@ -374,7 +378,7 @@ def tool_outputs(records: list[dict]) -> dict[str, list[object]]:
             for block in content:
                 if isinstance(block, dict) and block.get("type") == "tool_result":
                     outputs.setdefault(str(block.get("tool_use_id", "")), []).append(block.get("content"))
-    inputs = dict(tool_inputs(records))
+    inputs = {identifier: text for identifier, text, _ in tool_inputs(records)}
     for blocks in list(outputs.values()):
         yielded = {item["session_id"] for block in blocks for item in values(block) if type(item.get("session_id")) is int}
         for followup, text in inputs.items():
@@ -410,28 +414,38 @@ def command_literal(text: str, start: int, literal: str) -> str | None:
     return None
 
 
-def shell_texts(text: str) -> tuple[list[str], bool]:
-    try:
-        decoded = json.loads(text)
-    except ValueError:
-        decoded = None
-    if isinstance(decoded, dict):
-        command = decoded.get("cmd", decoded.get("command"))
-        return ([command_text(command)], False) if command is not None else ([], False)
-    literal = r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|`(?:\\.|[^`\\])*`'
-    site = re.compile(r"(?P<call>\btools\.(?:exec_command|shell_command|shell)\s*\()|(?:" + literal + r")", re.DOTALL)
-    calls = [match for match in site.finditer(text) if match["call"] is not None]
-    if not calls:
+def shell_texts(text: str, javascript: bool) -> tuple[list[str], bool]:
+    if not javascript:
+        try:
+            decoded = json.loads(text)
+        except ValueError:
+            decoded = None
+        if isinstance(decoded, dict):
+            command = decoded.get("cmd", decoded.get("command"))
+            return ([command_text(command)], False) if command is not None else ([], False)
         return [text], False
+    literal = r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|`(?:\\.|[^`\\])*`'
+    reference = r"\btools\[\s*['\"](?:exec_command|shell_command|shell)['\"]\s*\]|\b(?:exec_command|shell_command)\b|\btools\.shell\b|\bshell\s*\("
+    site = re.compile(
+        r"(?P<call>\btools\.(?:exec_command|shell_command|shell)\s*\()|(?P<reference>"
+        + reference
+        + r")|(?:"
+        + literal
+        + r")|(?://[^\n]*|/\*.*?\*/)",
+        re.DOTALL,
+    )
     commands = []
     opaque = False
-    for call in calls:
-        command = command_literal(text, call.end(), literal)
-        if command is None:
+    for match in site.finditer(text):
+        if match["reference"] is not None:
             opaque = True
-        else:
-            commands.append(command)
-    return commands, opaque and "gh-plan" in text and "claim" in text
+        elif match["call"] is not None:
+            command = command_literal(text, match.end(), literal)
+            if command is None:
+                opaque = True
+            else:
+                commands.append(command)
+    return commands, opaque
 
 
 def shell_groups(text: str) -> Iterator[list[str]]:
@@ -497,8 +511,45 @@ def claim_arguments(argv: list[str]) -> list[str] | None:
     return argv[1:]
 
 
+def invocation_target(arguments: list[str], session: str) -> dict | None:
+    options = {}
+    positionals = []
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument.startswith("-"):
+            key, equal, value = argument.partition("=")
+            if not equal:
+                index += 1
+                value = arguments[index] if index < len(arguments) else ""
+            options[key] = value
+        else:
+            positionals.append(argument)
+        index += 1
+    if not positionals or positionals[0] != "claim":
+        return None
+    declared = options.get("--session", "")
+    native = declared if declared and not any(character in declared for character in "$`\\") else None
+    repo = options.get("--repo", options.get("-R", ""))
+    target = positionals[1] if len(positionals) > 1 else ""
+    qualified = re.fullmatch(r"(?:https://github\.com/)?([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(?:#|/(?:issues|pull)/)([1-9]\d*)", target)
+    known = (
+        (qualified[1], int(qualified[2]))
+        if qualified
+        else (
+            (repo, int(target)) if claim_log.REPOSITORY_PATTERN.fullmatch(repo) and target.isdecimal() and int(target) > 0 else None
+        )
+    )
+    return {
+        "known": known,
+        "number": int(target) if target.isdecimal() else None,
+        "session": native,
+        "foreign": native is not None and native != session,
+    }
+
+
 def resolve_invocations(arguments_list: list[list[str]], blocks: list[object], session: str) -> tuple[set[tuple[str, int]], bool]:
-    results = [item for block in blocks for item in values(block)]
+    results = list({json.dumps(item, sort_keys=True): item for block in blocks for item in values(block)}.values())
     completed = [
         (item["claim"]["session"], target)
         for item in results
@@ -507,7 +558,8 @@ def resolve_invocations(arguments_list: list[list[str]], blocks: list[object], s
         and (target := claim_target(item, item["claim"]["session"])) is not None
     ]
     targets = {target for native, target in completed if native == session}
-    foreign = any(item.get("foreign_native_output") for item in results)
+    if any(item.get("foreign_native_output") for item in results):
+        return targets, False
     rejected = [
         item
         for item in results
@@ -517,59 +569,29 @@ def resolve_invocations(arguments_list: list[list[str]], blocks: list[object], s
         and not item.get("claim_comment")
         and "post_claim" not in item.get("completed_steps", [])
     ]
-    unresolved = False
-    reference = re.compile(r"(?:https://github\.com/)?([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(?:#|/(?:issues|pull)/)([1-9]\d*)\Z")
-    for arguments in arguments_list:
-        options = {}
-        positionals = []
-        index = 0
-        while index < len(arguments):
-            argument = arguments[index]
-            if argument.startswith("-"):
-                key, equal, value = argument.partition("=")
-                if not equal:
-                    index += 1
-                    value = arguments[index] if index < len(arguments) else ""
-                options[key] = value
-            else:
-                positionals.append(argument)
-            index += 1
-        if not positionals or positionals[0] != "claim":
-            continue
-        declared = options.get("--session", "")
-        if declared and not any(character in declared for character in "$`\\") and declared != session:
-            continue
-        if foreign:
-            continue
-        repo = options.get("--repo", options.get("-R", ""))
-        target = positionals[1] if len(positionals) > 1 else ""
-        qualified = reference.fullmatch(target)
-        known = (
-            (qualified[1], int(qualified[2]))
-            if qualified
-            else (
-                (repo, int(target))
-                if claim_log.REPOSITORY_PATTERN.fullmatch(repo) and target.isdecimal() and int(target) > 0
-                else None
-            )
-        )
+    invocations = [item for arguments in arguments_list if (item := invocation_target(arguments, session)) is not None]
+    invocations.sort(key=lambda item: not (item["known"] or item["foreign"]))
+    missing = 0
+    for item in invocations:
         match = next(
             (
                 index
-                for index, (_, receipt) in enumerate(completed)
-                if receipt == known or (known is None and target.isdecimal() and receipt[1] == int(target))
+                for index, (native, receipt) in enumerate(completed)
+                if (item["session"] is None or native == item["session"])
+                and (receipt == item["known"] or (item["known"] is None and receipt[1] == item["number"]))
             ),
             None,
         )
         if match is not None:
             completed.pop(match)
-        elif known is not None:
-            targets.add(known)
-        elif rejected:
-            rejected.pop()
+        elif item["known"] or item["foreign"]:
+            if rejected:
+                rejected.pop()
+            if item["known"] and not item["foreign"]:
+                targets.add(item["known"])
         else:
-            unresolved = True
-    return targets, unresolved
+            missing += 1
+    return targets, missing > len(rejected)
 
 
 def orphan_artifacts(records: list[dict], session: str, directory: Path) -> list[str]:
@@ -607,9 +629,7 @@ def orphan_artifacts(records: list[dict], session: str, directory: Path) -> list
     return sorted(missing)
 
 
-def literal_targets(
-    records: list[dict], session: str, *, unresolved: list[dict] | None = None, directory: Path | None = None
-) -> set[tuple[str, int]]:
+def literal_targets(records: list[dict], session: str, *, directory: Path | None = None) -> dict:
     targets = set()
     errors = []
     outputs = tool_outputs(records)
@@ -623,23 +643,32 @@ def literal_targets(
             }
             for identifier in orphan_artifacts(records, session, directory)
         )
-    for identifier, text in tool_inputs(records):
+    seen_claim_source = False
+    for identifier, text, javascript in tool_inputs(records):
         if identifier in denied:
             continue
-        shells, opaque = shell_texts(text)
-        invocations = [
-            arguments
-            for shell in shells
-            for argv in shell_argv(shell)
-            if (arguments := claim_arguments(argv)) is not None
-            and "claim" in arguments
-            and "--help" not in arguments
-            and "-h" not in arguments
-        ]
+        if javascript:
+            seen_claim_source = seen_claim_source or "gh-plan" in text or re.search(r"\bclaim\b", text) is not None
+        invocations = []
+        opaque = False
+        reason = "missing_output"
+        decode_failed = False
+        try:
+            shells, opaque = shell_texts(text, javascript)
+            opaque = opaque and seen_claim_source
+            for shell in shells:
+                for argv in shell_argv(shell):
+                    arguments = claim_arguments(argv)
+                    if arguments is not None and "claim" in arguments and "--help" not in arguments and "-h" not in arguments:
+                        invocations.append(arguments)
+        except ValueError as error:
+            decode_failed = True
+            reason = "decode_failure: " + str(error)
         blocks = outputs.get(identifier, [])
         found, unknown = resolve_invocations(invocations, blocks, session)
         targets.update(found)
-        reason = "computed" if opaque else "missing_output"
+        if opaque:
+            reason = "computed"
         if unknown and directory is not None:
             try:
                 saved = persisted_output(records, directory, session, identifier)
@@ -648,7 +677,7 @@ def literal_targets(
                 targets.update(found)
             except (OSError, ValueError) as error:
                 reason = "missing_output: " + str(error)
-        if unknown or opaque:
+        if unknown or opaque or decode_failed:
             errors.append(
                 {
                     "call_id": identifier,
@@ -656,8 +685,4 @@ def literal_targets(
                     "recovery": "Restore this invocation's complete native command and output on the claiming host; keep unknown writes conditional. If evidence is irrecoverable, record the Director's decision on the owning issue.",
                 }
             )
-    if errors and unresolved is None:
-        raise ValueError(str(errors))
-    if unresolved is not None:
-        unresolved.extend(errors)
-    return targets
+    return {"targets": targets, "unresolved_invocations": errors}

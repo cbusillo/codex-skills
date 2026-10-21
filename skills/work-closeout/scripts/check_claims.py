@@ -147,7 +147,7 @@ def check_record(reader, repo, number, session, actor, *, pulls_cache=None, data
 transcript_values = history.values
 
 
-def recorded_targets(entry: dict, unresolved: list[dict] | None = None) -> set[tuple[str, int]]:
+def recorded_targets(entry: dict) -> dict:
     require_own_transcript(entry)
     native = entry["session_id"]
     targets = claim_log.read(native)
@@ -157,8 +157,11 @@ def recorded_targets(entry: dict, unresolved: list[dict] | None = None) -> set[t
             target = history.claim_target(value, native)
             if target is not None:
                 targets.add(target)
-    targets.update(history.literal_targets(rows, native, unresolved=unresolved, directory=Path(entry["native_output_directory"]) if entry.get("native_output_directory") else None))
-    return targets
+    discovery = history.literal_targets(
+        rows, native, directory=Path(entry["native_output_directory"]) if entry.get("native_output_directory") else None
+    )
+    discovery["targets"].update(targets)
+    return discovery
 
 
 def check(
@@ -173,9 +176,12 @@ def check(
     targets: dict[str, set[tuple[str, int]]] = {}
     unresolved = []
     for entry in history.expand(entries):
-        pending = []
-        targets.setdefault(entry["session_id"], set()).update(recorded_targets(entry, pending))
-        unresolved.extend({**item, "session": entry["session_id"], "transcript": entry["transcript"]} for item in pending)
+        discovery = recorded_targets(entry)
+        targets.setdefault(entry["session_id"], set()).update(discovery["targets"])
+        unresolved.extend(
+            {**item, "session": entry["session_id"], "transcript": entry["transcript"]}
+            for item in discovery["unresolved_invocations"]
+        )
     repos = {repo for records in targets.values() for repo, _ in records}
     accounts = set(owners) | {repo.split("/")[0] for repo in repos}
     released, blocked, readers, pulls_cache, data_cache = [], [], {}, {}, {}
@@ -246,10 +252,13 @@ def repository_reader(repo: str, deadline: float) -> GitHubReader:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Read back every claim of the named sessions on GitHub.")
     parser.add_argument("--owner", action="append", default=[], help="Account context; never narrows the session claim targets")
-    parser.add_argument("--repository", action="append", default=[], help="Repository context; never narrows the session claim targets")
+    parser.add_argument(
+        "--repository", action="append", default=[], help="Repository context; never narrows the session claim targets"
+    )
     parser.add_argument("--session", action="append", required=True, help="Native session ID; repeat for child sessions with their own IDs")
-    parser.add_argument("--transcript", action="append", required=True, type=Path,
-                        help="Native transcript for each --session, in the same order")
+    parser.add_argument(
+        "--transcript", action="append", required=True, type=Path, help="Native transcript for each --session, in the same order"
+    )
     args = parser.parse_args(argv)
     try:
         if any(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}", owner) for owner in args.owner):
@@ -258,8 +267,10 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("repository must use ACCOUNT/REPOSITORY form")
         if len(args.session) != len(args.transcript):
             raise ValueError("pass one --transcript for each --session")
-        entries = [{"session_id": session, "transcript": str(transcript.expanduser().resolve())}
-                   for session, transcript in zip(args.session, args.transcript, strict=True)]
+        entries = [
+            {"session_id": session, "transcript": str(transcript.expanduser().resolve())}
+            for session, transcript in zip(args.session, args.transcript, strict=True)
+        ]
         for entry in entries:
             require_own_transcript(entry)
         report = check(entries, owners=args.owner)

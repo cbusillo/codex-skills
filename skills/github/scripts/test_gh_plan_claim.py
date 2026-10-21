@@ -213,15 +213,29 @@ class ClaimTests(unittest.TestCase):
 
     def test_journal_failure_refuses_before_any_claim_write(self) -> None:
         with patch.object(PLAN.github_plan_claim_log, "record", side_effect=OSError("journal unavailable")):
-            with self.assertRaises((OSError, PLAN.PlanError)):
+            with self.assertRaises(PLAN.PlanError) as failure:
                 self.run_claim()
         self.assert_no_writes()
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "work-closeout/scripts"))
+        import check_claims as closeout
+
+        with (
+            patch.multiple(PLAN, CURRENT_IS_WRITE=True, CURRENT_OPERATION="github.plan.claim"),
+            patch.object(PLAN.github_api_core, "emit_terminal") as emit,
+        ):
+            with self.assertRaises(SystemExit):
+                PLAN.die(str(failure.exception), failure=failure.exception.failure, extra_payload=failure.exception.payload)
+        envelope = emit.call_args.args[0]
+        _, unresolved = closeout.history.resolve_invocations([["claim", "42"]], [envelope], OWNER["session"])
+        self.assertFalse(unresolved)
 
     def test_claim_target_is_journaled_before_the_post_even_when_readback_fails(self) -> None:
         def post_then_interrupt() -> None:
             import github_plan_claim_log
+
             self.assertIn(("owner/repo", 42), github_plan_claim_log.read(OWNER["session"]))
             raise OSError("connection lost after posting")
+
         self.after_post = post_then_interrupt
         with self.assertRaises((OSError, PLAN.PlanError)):
             self.run_claim()
