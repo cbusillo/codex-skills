@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from launchplane_contract import BOUNDED_READ_RESPONSE_FIELDS
 from launchplane_safety import (
     CREDENTIAL_ASSIGNMENT_HEAD_RE,
     TOKEN_PATTERNS,
@@ -66,7 +67,10 @@ def _list(value: object, maximum: int) -> list[Any]:
 
 
 def project_inventory(payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
-    _object(payload, {"status", "trace_id", "inventory"})
+    if not isinstance(payload, dict) or not (
+        {"status", "trace_id", "inventory"} <= payload.keys() <= BOUNDED_READ_RESPONSE_FIELDS["dokploy-inventory-read"]
+    ):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
     if payload["status"] != "ok":
         raise LaunchplaneSafetyError("invalid_response")
     source = _object(
