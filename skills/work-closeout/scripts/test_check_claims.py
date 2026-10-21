@@ -600,6 +600,22 @@ class ClaimCloseoutTests(unittest.TestCase):
             self.assertTrue(helper.check([child, root])["claims_clear"])
         self.assertIn("child", {call.args[3] for call in check.call_args_list})
 
+    def test_one_batch_receipt_cannot_hide_a_second_claim_target(self) -> None:
+        for qualified in (True, False):
+            repository = f"--repo {REPO} " if qualified else ""
+            commands = [f"uv run gh-plan.py {repository}claim {number} --session {SESSION}" for number in (1, 2)]
+            code = " ".join("text(await tools.exec_command({cmd:" + json.dumps(command) + "}));" for command in commands)
+            rows = [
+                {"payload": {"type": "custom_tool_call", "name": "exec", "call_id": "batch", "input": code}},
+                {"payload": {"type": "custom_tool_call_output", "call_id": "batch", "output": json.dumps({"claim": SOURCE, "issue": {"repo": REPO, "number": 1}})}},
+            ]
+            with self.subTest(qualified=qualified):
+                if qualified:
+                    self.assertIn((REPO, 2), helper.history.literal_targets(rows, SESSION))
+                else:
+                    with self.assertRaises(ValueError):
+                        helper.history.literal_targets(rows, SESSION)
+
     def test_duplicate_receipts_check_a_record_once(self) -> None:
         entry = self.receipt_entry(records=((REPO, 1), (REPO, 1)))
         with patch.object(helper, "check_record", return_value=[]) as check:

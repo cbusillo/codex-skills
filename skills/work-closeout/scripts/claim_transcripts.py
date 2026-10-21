@@ -439,51 +439,65 @@ def literal_targets(records: list[dict], session: str) -> set[tuple[str, int]]:
             if completed or foreign:
                 continue
             raise
-        for shell in shells:
-            for argv in shell_argv(shell):
-                arguments = claim_arguments(argv)
-                if arguments is None or "claim" not in arguments or "--help" in arguments or "-h" in arguments:
-                    continue
-                options = {}
-                positionals = []
-                index = 0
-                while index < len(arguments):
-                    argument = arguments[index]
-                    if argument.startswith("-"):
-                        key, equal, value = argument.partition("=")
-                        if not equal:
-                            index += 1
-                            value = arguments[index] if index < len(arguments) else ""
-                        options[key] = value
-                    else:
-                        positionals.append(argument)
-                    index += 1
-                if not positionals or positionals[0] != "claim":
-                    continue
-                declared = options.get("--session", "")
-                if declared and not any(character in declared for character in "$`\\") and declared != session:
-                    continue
-                if completed or foreign:
-                    continue
-                repo = options.get("--repo", options.get("-R", ""))
-                target = positionals[1] if len(positionals) > 1 else ""
-                qualified = reference.fullmatch(target)
-                if qualified:
-                    targets.add((qualified[1], int(qualified[2])))
-                    continue
-                if claim_log.REPOSITORY_PATTERN.fullmatch(repo) and target.isdecimal() and int(target) > 0:
+        invocations = [
+            arguments
+            for shell in shells
+            for argv in shell_argv(shell)
+            if (arguments := claim_arguments(argv)) is not None
+            and "claim" in arguments
+            and "--help" not in arguments
+            and "-h" not in arguments
+        ]
+        for arguments in invocations:
+            options = {}
+            positionals = []
+            index = 0
+            while index < len(arguments):
+                argument = arguments[index]
+                if argument.startswith("-"):
+                    key, equal, value = argument.partition("=")
+                    if not equal:
+                        index += 1
+                        value = arguments[index] if index < len(arguments) else ""
+                    options[key] = value
+                else:
+                    positionals.append(argument)
+                index += 1
+            if not positionals or positionals[0] != "claim":
+                continue
+            declared = options.get("--session", "")
+            if declared and not any(character in declared for character in "$`\\") and declared != session:
+                continue
+            if foreign:
+                continue
+            completed_targets = {claim_target(item, item["claim"]["session"]) for item in completed}
+            repo = options.get("--repo", options.get("-R", ""))
+            target = positionals[1] if len(positionals) > 1 else ""
+            qualified = reference.fullmatch(target)
+            if qualified:
+                target_record = (qualified[1], int(qualified[2]))
+                if target_record not in completed_targets:
+                    targets.add(target_record)
+                continue
+            if claim_log.REPOSITORY_PATTERN.fullmatch(repo) and target.isdecimal() and int(target) > 0:
+                if (repo, int(target)) not in completed_targets:
                     targets.add((repo, int(target)))
-                    continue
-                rejected = any(
-                    item.get("operation") == "github.plan.claim"
-                    and item.get("ok") is False
-                    and not item.get("claim_comment")
-                    and "post_claim" not in item.get("completed_steps", [])
-                    and item.get("outcome_certainty") != "unknown"
-                    for item in results
+                continue
+            if target.isdecimal() and any(number == int(target) for _, number in completed_targets):
+                continue
+            if not target.isdecimal() and completed and len(invocations) == 1:
+                continue
+            rejected = any(
+                item.get("operation") == "github.plan.claim"
+                and item.get("ok") is False
+                and not item.get("claim_comment")
+                and "post_claim" not in item.get("completed_steps", [])
+                and item.get("outcome_certainty") != "unknown"
+                for item in results
+            )
+            if not rejected or len(invocations) > 1:
+                raise ValueError(
+                    f"claim invocation {identifier} lacks a complete result or literal repository target; restore its native output"
                 )
-                if not rejected:
-                    raise ValueError(
-                        f"claim invocation {identifier} lacks a complete result or literal repository target; restore its native output"
-                    )
+
     return targets
