@@ -75,7 +75,7 @@ class ResumeTests(unittest.TestCase):
         endpoint.chmod(0o600)
         self.log = self.root / "shared/closed.json"
         self.enterContext(patch.object(SESSION.closure, "closed_log", return_value=self.log))
-        self.homes = self.enterContext(patch.object(github_plan_sessions, "codex_homes", return_value=[self.home]))
+        self.homes = self.enterContext(patch.object(github_plan_sessions, "configured_homes", return_value=[self.home]))
         self.args = SimpleNamespace(command="resume", session_id=self.native, codex_home=self.home,
                                     message=None, message_file=None)
         self.child = MagicMock(pid=456)

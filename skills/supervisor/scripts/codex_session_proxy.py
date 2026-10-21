@@ -46,10 +46,10 @@ def stopped_daemon_remedy(home):
 
 def source_endpoint(session, home, *, transcript=None):
     """Validate native recovery identity without taking a lease or changing state."""
-    from github_plan_sessions import codex_homes
+    from github_plan_sessions import configured_homes
     import session_record
     require_native_identity(session)
-    if home not in codex_homes(strict=True, configured_only=True):
+    if home not in configured_homes(strict=True):
         raise ValueError("resume requires the source's configured account home")
     paths = [p for root in ("sessions", "archived_sessions") for p in (home / root).rglob(f"*{session}*.jsonl")]
     if transcript is not None:

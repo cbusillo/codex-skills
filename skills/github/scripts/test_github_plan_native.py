@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, patch
 
 import github_plan_native as NATIVE
 import github_plan_closure as CLOSURE
+import github_plan_sessions as SESSIONS
 from test_github_plan_sessions import ReceiptFixture
 
 
@@ -1487,6 +1488,57 @@ class NativeQueueTests(unittest.TestCase):
                 _, states, _ = f.observe()
                 self.assertEqual(states.get(f.session, {}).get("state"), "ended")
                 self.assertFalse(CLOSURE.action_pending(f.session))
+
+    def test_observation_only_copies_fence_end_and_queue_without_gaining_authority(self):
+        import uuid
+        for shared in (False, True):
+            with self.subTest(shared=shared), ReceiptFixture(str(uuid.uuid4())) as f:
+                standard = f.root / ".codex"
+                f.add_home(standard, copy_transcript=not shared)
+                if shared:
+                    (standard / "sessions").symlink_to(f.home / "sessions", target_is_directory=True)
+                f.native_state = "notLoaded"
+                ledger = f.root / "ledger.json"
+                ledger.write_text(json.dumps([f.entry]))
+                with patch.object(SESSIONS, "configured_homes", return_value=[f.home]):
+                    with CLOSURE.resume_guard(f.session, method="thread/resume", home=f.home):
+                        pass
+                    barrier = CLOSURE.lease_path(f.session).read_bytes()
+                    for obstruction in ("active", "queue"):
+                        f.home_states[str(standard)] = "active" if obstruction == "active" else "idle"
+                        f.home_queues[str(standard)] = ([{"id": "work", "clientUserMessageId": "client", "input": []}]
+                                                       if obstruction == "queue" else [])
+                        with self.subTest(obstruction=obstruction):
+                            with self.assertRaises(ValueError):
+                                asyncio.run(NATIVE.prove_end(f.entry))
+                            with self.assertRaises(ValueError):
+                                asyncio.run(NATIVE.cancel_queue(f.home, f.session, ledger=ledger))
+                            f.observe()
+                            self.assertEqual(CLOSURE.lease_path(f.session).read_bytes(), barrier)
+                            self.assertTrue(CLOSURE.action_pending(f.session))
+                    f.home_states[str(standard)] = "notLoaded"
+                    f.home_queues[str(standard)] = []
+                    proof = asyncio.run(NATIVE.prove_end(f.entry))
+                    self.assertIn(str(standard), proof["homes"])
+                    self.assertTrue(asyncio.run(NATIVE.cancel_queue(f.home, f.session, ledger=ledger))["ok"])
+                    with self.assertRaises(ValueError):
+                        asyncio.run(NATIVE.cancel_queue(standard, f.session, ledger=ledger))
+                    self.assertFalse(f.mutations)
+
+    def test_pending_barrier_survives_a_matching_in_process_client(self):
+        import uuid
+        with ReceiptFixture(str(uuid.uuid4())) as f:
+            f.native_state = "notLoaded"
+            with CLOSURE.resume_guard(f.session, method="thread/resume", home=f.home):
+                pass
+            barrier = CLOSURE.lease_path(f.session).read_bytes()
+            f.commands = "456 codex resume " + f.session
+            f.observe()
+            self.assertEqual(CLOSURE.lease_path(f.session).read_bytes(), barrier)
+            self.assertTrue(CLOSURE.action_pending(f.session))
+            f.commands = ""
+            f.observe()
+            self.assertFalse(CLOSURE.action_pending(f.session))
 
     def test_owned_first_resume_metadata_is_not_promoted_to_observer_ownership(self):
         import uuid

@@ -358,8 +358,9 @@ ownership before launching a separate check. Check one at a time.
 
 A slow startup can snapshot after the checker's own first poll; the proof still
 binds its original isolated launch and every empty poll of that same handle.
-Native coverage reads the standard Codex home alongside account homes and
-requires positive process identity, rather than helper names or listener text.
+Native coverage reads standard, account and retained source homes through one
+observation scope. Required copies must answer; a stopped socket is not an exit.
+Process coverage requires native PID, executable and incarnation evidence.
 Unbound clients keep the refusal; use the maintained managed launcher for new
 work. The checker never restarts daemons or terminates processes.
 

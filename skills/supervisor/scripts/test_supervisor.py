@@ -1439,25 +1439,30 @@ class ProcessArgumentsTests(unittest.TestCase):
             process.mkdir(parents=True)
             (process / "exe").symlink_to(executable)
             (process / "stat").write_text("123 (native process) S 42 " + "0 " * 17 + "789")
-            real_path = Path
+            class FixturePath(type(Path())):
+                def __init__(self, *parts):
+                    value = Path(*parts)
+                    if value.is_relative_to("/proc"):
+                        value = root / value.relative_to("/")
+                    super().__init__(value)
             with patch.object(session_liveness.sys, "platform", "linux"), \
-                    patch.object(session_liveness, "Path", side_effect=lambda value: process if value == "/proc/123" else real_path(value)):
+                    patch.object(session_liveness, "Path", FixturePath):
                 observed = session_liveness.native_process_details(123)
                 self.assertEqual(observed["executable"], str(executable))
                 self.assertEqual(observed["ppid"], 42)
-                self.assertEqual(observed["identity"], {"startTicks": 789})
+                self.assertEqual(observed["identity"]["startTicks"], int((process / "stat").read_text().split()[-1]))
                 (process / "stat").write_text("123 (native process) Z 42 " + "0 " * 17 + "789")
                 with self.assertRaises(ValueError):
                     session_liveness.native_process_details(123)
             library = Mock()
             path_bytes = os.fsencode(executable) + b"\0"
+            kernel_identity = struct.pack("=16sQQQQQ", b"", 789, 42, 0, 0, 0)
             def path(_pid, output, _size):
                 ctypes.memmove(output, path_bytes, len(path_bytes))
                 return len(path_bytes)
             def info(_pid, _flavor, _arg, output, size):
-                data = struct.pack("=16sQQQQQ", b"", 789, 42, 0, 0, 0)
-                ctypes.memmove(output, data, len(data))
-                return len(data) if size == len(data) else 0
+                ctypes.memmove(output, kernel_identity, len(kernel_identity))
+                return len(kernel_identity) if size == len(kernel_identity) else 0
             library.proc_pidpath.side_effect = path
             library.proc_pidinfo.side_effect = info
             with patch.object(session_liveness.sys, "platform", "darwin"), \
@@ -1465,7 +1470,7 @@ class ProcessArgumentsTests(unittest.TestCase):
                     patch.object(session_liveness.subprocess, "run", return_value=SimpleNamespace(stdout=f"{os.getuid()} 42")) as process_read:
                 observed = session_liveness.native_process_details(123)
                 self.assertEqual(observed["executable"], str(executable))
-                self.assertEqual(observed["identity"], {"uniqueId": 789})
+                self.assertEqual(observed["identity"]["uniqueId"], struct.unpack("=16sQQQQQ", kernel_identity)[1])
                 self.assertEqual(observed["ppid"], 42)
                 process_read.return_value.stdout = f"{os.getuid() + 1} 42"
                 with self.assertRaises(ValueError):
@@ -1532,7 +1537,7 @@ class ProcessArgumentsTests(unittest.TestCase):
                         "status": "available" if native_complete else "incomplete",
                         "peer_complete": native_complete, "socket": "/fixture/socket"}
                 with self.subTest(command=command, native_complete=native_complete), \
-                        patch.object(sessions, "codex_homes", return_value=[Path("/fixture")]), \
+                        patch.object(sessions, "observation_homes", return_value=[Path("/fixture")]), \
                         patch.object(sessions, "observe_home", side_effect=read), \
                         patch.object(sessions.github_plan_closure, "inherit_observed_leases"), \
                         patch.object(sessions.subprocess, "run", side_effect=[

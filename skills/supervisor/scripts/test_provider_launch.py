@@ -65,7 +65,7 @@ class ResumeLaunchTests(unittest.TestCase):
         self.inspect = self.enterContext(patch.object(iterm_tab, "inspect_codex_daemon"))
         self.start = self.enterContext(patch.object(iterm_tab, "check_codex_daemon"))
         import github_plan_sessions
-        self.enterContext(patch.object(github_plan_sessions, "codex_homes", return_value=[self.home]))
+        self.enterContext(patch.object(github_plan_sessions, "configured_homes", return_value=[self.home]))
         import github_plan_closure
         self.log = self.root / "closed.json"
         self.enterContext(patch.object(github_plan_closure, "closed_log", return_value=self.log))

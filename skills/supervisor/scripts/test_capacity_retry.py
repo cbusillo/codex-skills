@@ -79,7 +79,7 @@ class CapacityTests(unittest.TestCase):
         self.socket.bind(str(endpoint))
         self.socket.listen(128)
         self.addCleanup(self.socket.close)
-        self.enterContext(patch.object(github_plan_sessions, "codex_homes", return_value=[self.home]))
+        self.enterContext(patch.object(github_plan_sessions, "configured_homes", return_value=[self.home]))
         self.queue_requests = []
         self.queue_hook = lambda: None
         @asynccontextmanager
