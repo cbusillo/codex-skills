@@ -9220,6 +9220,229 @@ def test_odoo_addon_settings_cli_dispatches_projected_route() -> None:
     assert "secret-shopify-api-token-binding" not in json.dumps(calls[1]["request"])
 
 
+def _odoo_website_settings_intent() -> dict[str, object]:
+    return {
+        "artifact_id": "artifact-example-odoo-1",
+        "settings": {
+            "operation": "apply",
+            "website_id": 1,
+            "public_origin": "https://www.example.com",
+            "public_indexing_enabled": True,
+            "google_analytics_key": "G-EXAMPLE123",
+            "cookies_bar": True,
+            "block_third_party_domains": True,
+        },
+    }
+
+
+def _odoo_website_settings_payload(**overrides: object) -> dict[str, object]:
+    return {
+        "product": "example-odoo",
+        "context": "example",
+        "reason": "Open the public site to search engines and analytics.",
+        "website_settings": _odoo_website_settings_intent(),
+        **overrides,
+    }
+
+
+def _odoo_website_settings_result(**overrides: object) -> dict[str, object]:
+    return {
+        "product": "example-odoo",
+        "context": "example",
+        "instance": "prod",
+        "record_sha256_before": "b" * 64,
+        "mode": "dry-run",
+        "plan_sha256": "a" * 64,
+        "before": None,
+        "after": _odoo_website_settings_intent(),
+        "changed": True,
+        "applied": False,
+        "read_back_matches": False,
+        "activation": "Client acceptance of the exact release applies these settings; "
+        "preparation changes no Odoo database.",
+        **overrides,
+    }
+
+
+def _odoo_website_settings_evidence(**result_overrides: object) -> dict[str, Any]:
+    projected: dict[str, Any] = write_action.summarize_success(
+        operation="odoo-website-settings-dry-run",
+        request={"mode": "dry-run", "payload_source": "private_file"},
+        provider_payload={
+            "status": "accepted",
+            "trace_id": "launchplane_req_website_settings",
+            "records": {"product_profile": "example-odoo", "context": "example", "instance": "prod"},
+            "result": _odoo_website_settings_result(**result_overrides),
+        },
+    )
+    return projected
+
+
+def test_odoo_website_settings_projection_fails_closed_on_unknown_fields() -> None:
+    projected = _odoo_website_settings_evidence()
+    assert projected["summary"]["plan_sha256"] == "a" * 64
+    assert projected["result"]["after"] == _odoo_website_settings_intent()
+    assert projected["result"]["before"] is None
+
+    withdrawn = _odoo_website_settings_evidence(
+        before=_odoo_website_settings_intent(), after=None
+    )
+    assert withdrawn["result"]["after"] is None
+    assert withdrawn["result"]["before"]["settings"]["website_id"] == 1
+
+    unknown_setting = _odoo_website_settings_intent()
+    cast(dict[str, object], unknown_setting["settings"])["admin_password"] = "PRIVATE_SENTINEL"
+    for result in (
+        _odoo_website_settings_result(unexpected="PRIVATE_SENTINEL"),
+        _odoo_website_settings_result(after=unknown_setting),
+    ):
+        with pytest.raises(write_action.LaunchplaneSafetyError):
+            write_action.summarize_success(
+                operation="odoo-website-settings-dry-run",
+                request={},
+                provider_payload={"status": "accepted", "records": {}, "result": result},
+            )
+
+
+def test_odoo_website_settings_body_validates_payload_and_binds_digest() -> None:
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        payload_path = Path(directory) / "website-settings.json"
+        evidence_path = Path(directory) / "website-settings-dry-run.json"
+        payload_path.write_text(json.dumps(_odoo_website_settings_payload()), encoding="utf-8")
+        evidence_path.write_text(json.dumps(_odoo_website_settings_evidence()), encoding="utf-8")
+
+        dry_run_body = write_action.odoo_website_settings_body(
+            argparse.Namespace(payload_file=str(payload_path), idempotency_key=""),
+            mode="dry-run",
+        )
+        assert dry_run_body["instance"] == "prod"
+        assert dry_run_body["mode"] == "dry-run"
+        assert "reviewed_plan_sha256" not in dry_run_body
+
+        apply_args = argparse.Namespace(
+            payload_file=str(payload_path),
+            idempotency_key="example-prod-website-1",
+            reviewed_dry_run=True,
+            expected_plan_digest="a" * 64,
+            dry_run_evidence_file=str(evidence_path),
+        )
+        apply_body = write_action.odoo_website_settings_body(apply_args, mode="apply")
+        assert apply_body["reviewed_plan_sha256"] == "a" * 64
+
+        for overrides, code in (
+            ({"reviewed_dry_run": False}, "reviewed_dry_run_required"),
+            ({"expected_plan_digest": "b" * 64}, "reviewed_dry_run_not_apply_eligible"),
+            ({"expected_plan_digest": "short"}, "invalid_expected_plan_digest"),
+            ({"idempotency_key": ""}, "idempotency_key_required"),
+        ):
+            args = argparse.Namespace(**{**vars(apply_args), **overrides})
+            with pytest.raises(ValueError, match=f"^{code}$"):
+                write_action.odoo_website_settings_body(args, mode="apply")
+
+        other_context = Path(directory) / "other-context-dry-run.json"
+        other_context.write_text(
+            json.dumps(_odoo_website_settings_evidence(context="other")), encoding="utf-8"
+        )
+        args = argparse.Namespace(**{**vars(apply_args), "dry_run_evidence_file": str(other_context)})
+        with pytest.raises(ValueError, match="^reviewed_dry_run_not_apply_eligible$"):
+            write_action.odoo_website_settings_body(args, mode="apply")
+
+        def settings_with(**changes: object) -> dict[str, object]:
+            intent = _odoo_website_settings_intent()
+            return {**intent, "settings": {**cast(dict[str, object], intent["settings"]), **changes}}
+
+        for payload, code in (
+            (_odoo_website_settings_payload(instance="testing"), "unsupported_instance"),
+            (_odoo_website_settings_payload(schema_version=1), "unsupported_payload_field"),
+            (
+                _odoo_website_settings_payload(
+                    website_settings=settings_with(public_origin="http://www.example.com")
+                ),
+                "https_public_origin_required",
+            ),
+            (
+                _odoo_website_settings_payload(website_settings=settings_with(ga_secret="x")),
+                "unsupported_website_settings_field",
+            ),
+            (
+                _odoo_website_settings_payload(
+                    website_settings=settings_with(operation="disable_collection")
+                ),
+                "unsupported_website_settings_operation",
+            ),
+            (
+                _odoo_website_settings_payload(website_settings=settings_with(website_id=True)),
+                "website_id_required",
+            ),
+        ):
+            payload_path.write_text(json.dumps(payload), encoding="utf-8")
+            with pytest.raises(ValueError, match=f"^{code}$"):
+                write_action.odoo_website_settings_body(
+                    argparse.Namespace(payload_file=str(payload_path), idempotency_key=""),
+                    mode="dry-run",
+                )
+
+        missing = _odoo_website_settings_payload()
+        del missing["website_settings"]
+        payload_path.write_text(json.dumps(missing), encoding="utf-8")
+        with pytest.raises(ValueError, match="^website_settings_required$"):
+            write_action.odoo_website_settings_body(
+                argparse.Namespace(payload_file=str(payload_path), idempotency_key=""),
+                mode="dry-run",
+            )
+
+
+def test_odoo_website_settings_cli_withdraws_pending_intent_with_null() -> None:
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        payload_path = Path(directory) / "website-settings.json"
+        evidence_path = Path(directory) / "website-settings-dry-run.json"
+        payload_path.write_text(
+            json.dumps(_odoo_website_settings_payload(website_settings=None)), encoding="utf-8"
+        )
+        evidence_path.write_text(
+            json.dumps(
+                _odoo_website_settings_evidence(before=_odoo_website_settings_intent(), after=None)
+            ),
+            encoding="utf-8",
+        )
+        calls: list[dict[str, Any]] = []
+
+        def fake_execute_post(**kwargs: Any) -> int:
+            calls.append(kwargs)
+            return 0
+
+        with temporary_attribute(write_action, "execute_post", fake_execute_post):
+            assert (
+                write_action.main(
+                    ["odoo-website-settings-dry-run", "--payload-file", str(payload_path)]
+                )
+                == 0
+            )
+            assert (
+                write_action.main(
+                    [
+                        "odoo-website-settings-apply",
+                        "--payload-file",
+                        str(payload_path),
+                        "--idempotency-key",
+                        "example-prod-website-1",
+                        "--reviewed-dry-run",
+                        "--expected-plan-digest",
+                        "a" * 64,
+                        "--dry-run-evidence-file",
+                        str(evidence_path),
+                    ]
+                )
+                == 0
+            )
+    expected_path = contract.operation_path("apply_odoo_website_settings")
+    assert [call["path"] for call in calls] == [expected_path, expected_path]
+    assert [call["body"]["mode"] for call in calls] == ["dry-run", "apply"]
+    assert all(call["body"]["website_settings"] is None for call in calls)
+    assert all(call["request"]["withdraw"] is True for call in calls)
+    assert "Open the public site" not in json.dumps(calls[1]["request"])
+
+
 def test_client_named_fields_read_like_their_legacy_owner_names() -> None:
     argv = ["product-profile-read", "--product", "example-product"]
     _status, legacy, _calls = _run_product_read(argv, _product_profile_response())
@@ -10844,7 +11067,8 @@ def test_runtime_sync_failure_diagnostics_follow_the_current_exchange(phase, fai
 
 
 @pytest.mark.parametrize("operation", [
-    "odoo-addon-settings-apply", "integration-allowances-apply", "testing-hold-apply",
+    "odoo-addon-settings-apply", "odoo-website-settings-apply",
+    "integration-allowances-apply", "testing-hold-apply",
     "product-repository-identity-apply", "generic-web-deploy-recovery-apply",
     "repository-inventory-apply", "product-expected-config-apply",
 ])

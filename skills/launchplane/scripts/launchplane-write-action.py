@@ -1999,6 +1999,37 @@ ODOO_ADDON_SETTINGS_SHOPIFY_FIELDS = {
     "webhook_key_secret_binding_id",
     "test_store",
 }
+ODOO_WEBSITE_SETTINGS_RESULT_FIELDS = {
+    "product",
+    "context",
+    "instance",
+    "record_sha256_before",
+    "mode",
+    "plan_sha256",
+    "before",
+    "after",
+    "changed",
+    "applied",
+    "read_back_matches",
+    "activation",
+}
+ODOO_WEBSITE_SETTINGS_PAYLOAD_FIELDS = {
+    "product",
+    "context",
+    "instance",
+    "reason",
+    "website_settings",
+}
+ODOO_WEBSITE_SETTINGS_INTENT_FIELDS = {"artifact_id", "settings"}
+ODOO_WEBSITE_SETTINGS_FIELDS = {
+    "operation",
+    "website_id",
+    "public_origin",
+    "public_indexing_enabled",
+    "google_analytics_key",
+    "cookies_bar",
+    "block_third_party_domains",
+}
 
 
 INTEGRATION_ALLOWANCE_FIELDS = {
@@ -3898,6 +3929,57 @@ def _project_odoo_addon_settings_result(result: object) -> dict[str, object]:
     return projected
 
 
+def _project_odoo_website_settings_intent(value: object) -> dict[str, object] | None:
+    if value is None:
+        return None
+    intent = _require_dict(value)
+    settings = _require_dict(intent.get("settings"))
+    if any(str(key) not in ODOO_WEBSITE_SETTINGS_INTENT_FIELDS for key in intent) or any(
+        str(key) not in ODOO_WEBSITE_SETTINGS_FIELDS for key in settings
+    ):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    website_id = settings.get("website_id")
+    if isinstance(website_id, bool) or not isinstance(website_id, int) or website_id < 1:
+        raise LaunchplaneSafetyError("invalid_response")
+    analytics_key = settings.get("google_analytics_key", "")
+    projected_settings: dict[str, object] = {
+        "operation": public_code(settings.get("operation"), default="apply"),
+        "website_id": website_id,
+        "public_origin": _public_origin_url(settings.get("public_origin")),
+        "public_indexing_enabled": bool(_optional_bool(settings.get("public_indexing_enabled"))),
+        # A GA4 Measurement ID is published in every page; it is not a secret.
+        "google_analytics_key": public_identifier(analytics_key) if analytics_key else "",
+    }
+    # Collection-only rollback stores null consent controls; keep null distinct from false.
+    for key in ("cookies_bar", "block_third_party_domains"):
+        projected_settings[key] = _optional_bool(settings.get(key))
+    return {
+        "artifact_id": public_identifier(intent.get("artifact_id")),
+        "settings": projected_settings,
+    }
+
+
+def _project_odoo_website_settings_result(result: object) -> dict[str, object]:
+    source = _require_dict(result)
+    if any(str(key) not in ODOO_WEBSITE_SETTINGS_RESULT_FIELDS for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    projected: dict[str, object] = {
+        "mode": public_code(source.get("mode")),
+        "product": public_identifier(source.get("product")),
+        "context": public_identifier(source.get("context")),
+        "instance": public_identifier(source.get("instance")),
+        "record_sha256_before": _optional_sha256(source.get("record_sha256_before")),
+        "plan_sha256": _optional_sha256(source.get("plan_sha256")),
+        "before": _project_odoo_website_settings_intent(source.get("before")),
+        "after": _project_odoo_website_settings_intent(source.get("after")),
+        "activation": public_summary_string(source.get("activation")),
+    }
+    for key in ("changed", "applied", "read_back_matches"):
+        projected[key] = bool(_optional_bool(source.get(key)))
+    assert_public_safe_shape(projected)
+    return projected
+
+
 def _project_success_output(
     operation: str, provider_payload: dict[str, Any], *, request: dict[str, object] | None = None
 ) -> tuple[dict[str, object], dict[str, object]]:
@@ -4031,6 +4113,11 @@ def _project_success_output(
             provider_payload.get("records"), {"product_profile", "context", "instance"}
         )
         return records, _project_odoo_addon_settings_result(provider_payload.get("result"))
+    if operation in {"odoo-website-settings-dry-run", "odoo-website-settings-apply"}:
+        records = _project_records(
+            provider_payload.get("records"), {"product_profile", "context", "instance"}
+        )
+        return records, _project_odoo_website_settings_result(provider_payload.get("result"))
     if operation in {"integration-allowances-dry-run", "integration-allowances-apply"}:
         records = _project_records(
             provider_payload.get("records"), {"product_profile", "context", "instance"}
@@ -4380,6 +4467,15 @@ def summarize_success(
                 if operation == "odoo-addon-settings-dry-run"
                 else "Check read_back_matches, then run Odoo post-deploy for the lane and verify "
                 "the settings in its database."
+            )
+        elif operation in {"odoo-website-settings-dry-run", "odoo-website-settings-apply"}:
+            summary["plan_sha256"] = result.get("plan_sha256")
+            summary["recommendation"] = (
+                "Save this redacted dry-run output, review before and after, then apply the exact "
+                "same private payload with --expected-plan-digest."
+                if operation == "odoo-website-settings-dry-run"
+                else "Check read_back_matches. The intent is inert until the Client accepts the "
+                "release; that acceptance applies it to the Odoo database."
             )
         elif operation in {
             "generic-web-deploy-recovery-dry-run",
@@ -4799,6 +4895,36 @@ def _require_apply_eligible_odoo_addon_settings_dry_run(
         or result.get("product") != expected_product
         or result.get("context") != expected_context
         or result.get("instance") != expected_instance
+    ):
+        raise ValueError("reviewed_dry_run_not_apply_eligible")
+
+
+def _require_apply_eligible_odoo_website_settings_dry_run(
+    args: argparse.Namespace,
+    *,
+    expected_plan_digest: str,
+    expected_product: str,
+    expected_context: str,
+) -> None:
+    evidence_path = str(getattr(args, "dry_run_evidence_file", "") or "").strip()
+    if not evidence_path:
+        raise ValueError("reviewed_dry_run_not_apply_eligible")
+    try:
+        evidence = read_payload_file(evidence_path)
+    except ValueError:
+        raise ValueError("reviewed_dry_run_not_apply_eligible") from None
+    result = evidence.get("result")
+    if not isinstance(result, dict):
+        raise ValueError("reviewed_dry_run_not_apply_eligible")
+    # The website result has no status field; the accepted envelope is the success signal.
+    if (
+        evidence.get("operation") != "odoo-website-settings-dry-run"
+        or evidence.get("status") != "accepted"
+        or result.get("mode") != "dry-run"
+        or result.get("plan_sha256") != expected_plan_digest
+        or result.get("product") != expected_product
+        or result.get("context") != expected_context
+        or result.get("instance") != "prod"
     ):
         raise ValueError("reviewed_dry_run_not_apply_eligible")
 
@@ -6035,6 +6161,76 @@ def odoo_addon_settings_body(args: argparse.Namespace, *, mode: str) -> dict[str
     return body
 
 
+def _odoo_website_settings_intent(value: object) -> dict[str, object] | None:
+    # Null withdraws the pending intent. The service owns GA4 and consent rules.
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("website_settings_required")
+    if any(str(key) not in ODOO_WEBSITE_SETTINGS_INTENT_FIELDS for key in value):
+        raise ValueError("unsupported_website_settings_field")
+    artifact_id = value.get("artifact_id")
+    if not isinstance(artifact_id, str) or not artifact_id.strip():
+        raise ValueError("artifact_id_required")
+    settings = value.get("settings")
+    if not isinstance(settings, dict):
+        raise ValueError("website_settings_required")
+    if any(str(key) not in ODOO_WEBSITE_SETTINGS_FIELDS for key in settings):
+        raise ValueError("unsupported_website_settings_field")
+    if settings.get("operation", "apply") != "apply":
+        raise ValueError("unsupported_website_settings_operation")
+    website_id = settings.get("website_id")
+    if isinstance(website_id, bool) or not isinstance(website_id, int) or website_id < 1:
+        raise ValueError("website_id_required")
+    origin = settings.get("public_origin")
+    try:
+        parts = urllib.parse.urlsplit(origin) if isinstance(origin, str) else None
+    except ValueError:
+        parts = None
+    if parts is None or parts.scheme != "https" or not parts.hostname:
+        raise ValueError("https_public_origin_required")
+    for key in ("public_indexing_enabled", "cookies_bar", "block_third_party_domains"):
+        if key in settings and not isinstance(settings[key], bool):
+            raise ValueError(f"{key}_boolean_required")
+    if not isinstance(settings.get("google_analytics_key", ""), str):
+        raise ValueError("google_analytics_key_string_required")
+    return {"artifact_id": artifact_id.strip(), "settings": settings}
+
+
+def odoo_website_settings_body(args: argparse.Namespace, *, mode: str) -> dict[str, object]:
+    payload = read_payload_file(args.payload_file)
+    if any(str(key) not in ODOO_WEBSITE_SETTINGS_PAYLOAD_FIELDS for key in payload):
+        raise ValueError("unsupported_payload_field")
+    body: dict[str, object] = {}
+    for field in ("product", "context", "reason"):
+        value = payload.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{field}_required")
+        body[field] = value.strip()
+    if payload.get("instance", "prod") != "prod":
+        raise ValueError("unsupported_instance")
+    body["instance"] = "prod"
+    if "website_settings" not in payload:
+        raise ValueError("website_settings_required")
+    body["website_settings"] = _odoo_website_settings_intent(payload["website_settings"])
+    body["mode"] = mode
+    if mode == "apply":
+        _require_idempotency(args)
+        if not args.reviewed_dry_run:
+            raise ValueError("reviewed_dry_run_required")
+        expected_plan_digest = args.expected_plan_digest.strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_plan_digest):
+            raise ValueError("invalid_expected_plan_digest")
+        _require_apply_eligible_odoo_website_settings_dry_run(
+            args,
+            expected_plan_digest=expected_plan_digest,
+            expected_product=cast(str, body["product"]),
+            expected_context=cast(str, body["context"]),
+        )
+        body["reviewed_plan_sha256"] = expected_plan_digest
+    return body
+
+
 def _recovery_request_sha256(body: dict[str, object]) -> str:
     reviewed = {key: value for key, value in body.items() if key != "expected_recovery_digest"}
     return hashlib.sha256(json.dumps(reviewed, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
@@ -6902,7 +7098,8 @@ def _preview_feedback_response_unverified(
 
 
 SIMPLE_APPLY_OPERATIONS = frozenset({
-    "odoo-addon-settings-apply", "integration-allowances-apply", "testing-hold-apply",
+    "odoo-addon-settings-apply", "odoo-website-settings-apply",
+    "integration-allowances-apply", "testing-hold-apply",
     "product-repository-identity-apply", "generic-web-deploy-recovery-apply",
     "repository-inventory-apply", "product-expected-config-apply",
 })
@@ -10654,6 +10851,31 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Private saved JSON output from the reviewed addon-settings dry-run.",
     )
 
+    odoo_website_settings_dry_run = subparsers.add_parser(
+        "odoo-website-settings-dry-run",
+        help="Dry-run a product's pending production website settings intent from a private payload.",
+    )
+    odoo_website_settings_dry_run.add_argument(
+        "--payload-file", required=True, help="Private local JSON payload file."
+    )
+    odoo_website_settings_dry_run.set_defaults(idempotency_key="")
+
+    odoo_website_settings_apply = subparsers.add_parser(
+        "odoo-website-settings-apply",
+        help="Record reviewed website settings intent bound to the saved dry-run digest.",
+    )
+    odoo_website_settings_apply.add_argument(
+        "--payload-file", required=True, help="Private local JSON payload file."
+    )
+    odoo_website_settings_apply.add_argument("--idempotency-key", required=True)
+    odoo_website_settings_apply.add_argument("--reviewed-dry-run", action="store_true")
+    odoo_website_settings_apply.add_argument("--expected-plan-digest", required=True)
+    odoo_website_settings_apply.add_argument(
+        "--dry-run-evidence-file",
+        required=True,
+        help="Private saved JSON output from the reviewed website-settings dry-run.",
+    )
+
     for command in ("live-target-runtime-sync-dry-run", "live-target-runtime-sync-apply"):
         sync = subparsers.add_parser(command, help="Sync managed runtime values without deployment; key names only.")
         for name in ("product", "context", "instance"):
@@ -11559,6 +11781,24 @@ def main(argv: list[str]) -> int:
                 "context": public_identifier(body["context"]),
                 "instance": public_identifier(body["instance"]),
                 "addon": "shopify",
+                "payload_source": "private_file",
+            }
+            return execute_post(
+                args=args,
+                operation=args.command,
+                path=helper_command_path(args.command),
+                request=request,
+                body=body,
+            )
+        if args.command in {"odoo-website-settings-dry-run", "odoo-website-settings-apply"}:
+            mode = "apply" if args.command == "odoo-website-settings-apply" else "dry-run"
+            body = odoo_website_settings_body(args, mode=mode)
+            request = {
+                "mode": mode,
+                "product": public_identifier(body["product"]),
+                "context": public_identifier(body["context"]),
+                "instance": "prod",
+                "withdraw": body["website_settings"] is None,
                 "payload_source": "private_file",
             }
             return execute_post(
