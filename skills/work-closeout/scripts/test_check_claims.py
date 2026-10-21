@@ -37,6 +37,94 @@ def pull(number=2, branch=SOURCE["branch"], **changes):
 
 class ClaimCloseoutTests(unittest.TestCase):
 
+    def test_finished_claude_family_can_check_itself_after_reading_codex_output(self):
+        from test_claim_history import records
+        from test_claim_receipts import history, SESSION as native_session
+        for children in (False, True):
+            for printed in ({}, {"session_id": 123, "output": "still running"},
+                            "Process running with session ID 123", "Script running with cell ID reader"):
+                with self.subTest(children=children, printed=printed), tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp).resolve() / (native_session + ".jsonl")
+                    rows = history("claude", {})[:-1]
+                    rows[2]["message"]["content"][0]["content"] = json.dumps(printed)
+                    rows.append({"type": "assistant", "sessionId": native_session, "message": {"content": [
+                        {"type": "tool_use", "name": "Bash", "id": "own-check", "input": {"command":
+                            f"uv run check_claims.py --harness claude --session {native_session} --transcript {root}"}}]}})
+                    if children:
+                        child = root.parent / native_session / "subagents/agent-reader.jsonl"
+                        child.parent.mkdir(parents=True)
+                        child_rows = records("claude", native_session, {})
+                        child_rows[2]["message"]["content"][0]["content"] = json.dumps(printed)
+                        child.write_text("".join(json.dumps(r) + "\n" for r in child_rows))
+                    for row in rows:
+                        row["timestamp"] = SOURCE["claimed_at"]
+                    root.write_text("".join(json.dumps(r) + "\n" for r in rows))
+                    nodes = helper.claim_history.collect(root, "claude", native_session, rows, helper.transcript_snapshot)
+                    entry = {"session_id": native_session, "harness": "claude", "_claim_histories": nodes}
+                    with patch.object(helper.native_ownership, "pending_ownership", wraps=CURRENT_NATIVE_PENDING), \
+                            patch.object(helper.native_ownership, "observe", return_value=([], {}, {})), \
+                            patch.object(helper.sessions, "discover", return_value=([], [REPO])):
+                        report = helper.check(self.reader, [], entry, ACTOR)
+                    self.assertTrue(report["claims_clear"], report)
+                    self.assertTrue(report["coverage"]["complete"])
+                    self.assertEqual({n["transcript"] for n in nodes[1:]},
+                                     {str(child)} if children else set())
+
+    def test_claude_check_preserves_real_running_and_unknown_work(self):
+        from test_claim_receipts import history, SESSION as native_session
+        for work in ("background", "detached", "missing-result"):
+            with self.subTest(work=work):
+                rows = history("claude", {})[:-1]
+                tool = rows[1]["message"]["content"][0]
+                tool["input"] = {"command": "uv run worker.py" + (" &" if work == "detached" else "")}
+                if work == "background":
+                    tool["input"]["run_in_background"] = True
+                    rows[2]["toolUseResult"] = {"backgroundTaskId": "real-work"}
+                elif work == "missing-result":
+                    rows.pop()
+                rows.append({"type": "assistant", "sessionId": native_session, "message": {"content": [
+                    {"type": "tool_use", "name": "Bash", "id": "own-check", "input": {"command": "uv run check_claims.py"}}]}})
+                for row in rows:
+                    row["timestamp"] = SOURCE["claimed_at"]
+                node = {"session_id": native_session, "harness": "claude", "records": rows,
+                        "transcript": "/fixture/claude-root.jsonl"}
+                with patch.object(helper.native_ownership, "pending_ownership", wraps=CURRENT_NATIVE_PENDING), \
+                        patch.object(helper.native_ownership, "observe", return_value=([], {}, {})), \
+                        patch.object(helper.sessions, "discover", return_value=([], [REPO])):
+                    report = helper.check(self.reader, [], {**node, "_claim_histories": [node]}, ACTOR)
+                self.assertFalse(report["claims_clear"], report)
+                self.assertEqual(report["pending"][0]["transcript"], node["transcript"])
+                self.assertEqual(report["pending"][0]["pending_invocations"], [tool["id"]])
+
+    def test_claude_pending_child_is_identified_by_transcript_despite_shared_session_id(self):
+        from test_claim_history import records
+        from test_claim_receipts import SESSION as native_session
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve() / (native_session + ".jsonl")
+            child = root.parent / native_session / "subagents/agent-worker.jsonl"
+            child.parent.mkdir(parents=True)
+            rows = records("claude", native_session, {})
+            tool = rows[1]["message"]["content"][0]
+            tool["input"] = {"command": "uv run worker.py &"}
+            child.write_text("".join(json.dumps(r) + "\n" for r in rows))
+            root_rows = records("claude", native_session)
+            root.write_text("".join(json.dumps(r) + "\n" for r in root_rows))
+            nodes = helper.claim_history.collect(root, "claude", native_session, root_rows, helper.transcript_snapshot)
+            with patch.object(helper.native_ownership, "pending_ownership", wraps=CURRENT_NATIVE_PENDING), \
+                    patch.object(helper.native_ownership, "observe", return_value=([], {}, {})), \
+                    patch.object(helper.sessions, "discover", return_value=([], [REPO])):
+                report = helper.check(self.reader, [], {"session_id": native_session, "harness": "claude",
+                                                       "_claim_histories": nodes}, ACTOR)
+            self.assertFalse(report["claims_clear"], report)
+            self.assertEqual([p["transcript"] for p in report["pending"]], [str(child)])
+            self.assertEqual(report["pending"][0]["pending_invocations"], [tool["id"]])
+            self.assertTrue(any(str(child) in reason for reason in report["blocked"]))
+            rows.pop()  # An unfinished native child must refuse during collection too.
+            child.write_text("".join(json.dumps(r) + "\n" for r in rows))
+            with self.assertRaises(ValueError) as error:
+                helper.claim_history.collect(root, "claude", native_session, root_rows, helper.transcript_snapshot)
+            self.assertIn(str(child), str(error.exception))
+
     def test_partial_installation_coverage_is_pending_and_rechecked_with_all_native_history(self):
         from test_claim_receipts import history, claim as native_claim, SESSION as native_session
         root, child = history("codex"), history("codex")
@@ -402,6 +490,7 @@ class ClaimCloseoutTests(unittest.TestCase):
                             "uv run scripts/gh-plan.py --repo test/a claim 1 &",
                             "uv run scripts/gh-plan.py claim test/a#1 > claim.json 2>&1 &",
                             "nohup gh pr create --title x &"):
+                redirected_claude = harness == "claude" and command.endswith("json")
                 rows = history(harness, {"operation": helper.claim_receipts.CLAIM_OPERATION})
                 if harness == "codex":
                     rows[1]["payload"]["arguments"] = json.dumps({"cmd": command})
@@ -412,13 +501,24 @@ class ClaimCloseoutTests(unittest.TestCase):
                 for row in rows:
                     row["timestamp"] = SOURCE["claimed_at"]
                 entry = {"session_id": native_session, "harness": harness, "_transcript_records": rows}
+                if redirected_claude:
+                    self.comments = [comment(10, helper.claim.marker({**SOURCE, "session": native_session}))]
                 with patch.object(helper.native_ownership, "pending_ownership", wraps=CURRENT_NATIVE_PENDING), \
                         patch.object(helper.native_ownership, "observe", return_value=([], {}, {})) as observed, \
-                        patch.object(helper.sessions, "discover", return_value=([], [REPO])):
+                        patch.object(helper.sessions, "discover", return_value=({(REPO, 1)} if redirected_claude else [], [REPO])):
                     report = helper.check(self.reader, [], entry, ACTOR)
                     self.assertFalse(report["claims_clear"], report)
-                    self.assertTrue(report["pending"], report)
-                    observed.assert_called_once()
+                    if redirected_claude:
+                        self.assertFalse(report["pending"], report)
+                        observed.assert_not_called()
+                        self.comments.append(comment(11, "Released claim 10\nSession: " + native_session,
+                                                     at="2026-01-01T00:02:00Z"))
+                        released = helper.check(self.reader, [], entry, ACTOR)
+                        self.assertTrue(released["claims_clear"], released)
+                        self.assertEqual([r["claim_comment"] for r in released["released_claims"]], [10])
+                    else:
+                        self.assertTrue(report["pending"], report)
+                        observed.assert_called_once()
         self.inventory.assert_called()
 
     def test_held_claim_blocks_even_when_hygiene_and_transcript_say_safe(self):

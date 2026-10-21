@@ -247,7 +247,7 @@ def check(reader, owner, entry, actor, *, reader_for_repo=None, read_timeout=Non
     if any((r["repository"], r["record"], r["claim_comment"]) not in observed for r in expected) and not blocked:
         blocked.append("native source claims were not verified in the installed repository scope")
     pending = native_ownership.pending_ownership(histories, states, deadline_at=reader.deadline_at)
-    blocked.extend(f"{item['session_id']}: {item['reason']}" for item in pending)
+    blocked.extend(f"{item['session_id']} ({item['transcript']}): {item['reason']}" for item in pending)
     return {"operation": claim_receipts.CHECK_OPERATION, "ok": not blocked, "claims_clear": not blocked,
             "session_id": entry["session_id"], "harness": entry["harness"],
             "coverage": {"owners": sorted(owners), "repositories": sorted(repos), "complete": complete,

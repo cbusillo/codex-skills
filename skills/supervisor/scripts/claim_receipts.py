@@ -781,9 +781,13 @@ def bound_outputs(records, harness, predicate, *, receipts=None, isolated_polls=
                 raw = ""
                 if wrappers is None:
                     opaque.add(source)
-            handles = {str(v["session_id"]) for v in values if isinstance(v.get("session_id"), int)}
-            outer = set(re.findall(r"Script running with cell ID ([\w-]+)", raw))
-            handles.update(re.findall(r"(?:Process running with session ID|Script running with cell ID) ([\w-]+)", raw))
+            # Claude's Bash stdout is data, even when it prints a Codex result.
+            # Its native task IDs are bound independently below.
+            handles, outer = set(), set()
+            if harness == "codex":
+                handles = {str(v["session_id"]) for v in values if isinstance(v.get("session_id"), int)}
+                outer = set(re.findall(r"Script running with cell ID ([\w-]+)", raw))
+                handles.update(re.findall(r"(?:Process running with session ID|Script running with cell ID) ([\w-]+)", raw))
             if source in required and (result == source or polled.get(result, set()) & deferred.get(source, set())):
                 visible[source] = visible.get(source, 0) + sum(
                     not v.get("operation") and (isinstance(v.get("session_id"), int) or isinstance(v.get("exit_code"), int))

@@ -341,6 +341,8 @@ proof. This clears uncertainty only. Every actual claim still requires its exact
 release or verified recovery release. Historical pending output is never a
 permanent refusal before live readback. An active check may exclude only its
 own exactly identified native execution; other running work keeps it pending.
+Pending entries name the transcript and unresolved tool-use IDs; Claude children
+can share the root session ID, so use the transcript to locate the actual source.
 Shared history roots do not select a native home: the active check reads every
 matching authenticated home, requires one active home with its bound execution and
 stable quiet copies elsewhere. Unavailable or conflicting facts stay pending.
