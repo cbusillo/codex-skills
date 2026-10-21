@@ -142,7 +142,7 @@ above by link or inclusion. A lead ends its own run with the safe-exit line
 from step 7, not after each item.
 
 ```text
-Brief from the Supervisor (codex-skills#1043), __DATE__. Trial token: __TOKEN__. Milestone lead brief (Milestone lead trial, https://github.com/cbusillo/codex-skills/issues/2277; Director decision Q515).
+Brief from the Supervisor (__HANDOFF_RECORD__), __DATE__. Trial token: __TOKEN__. Milestone lead brief (Milestone lead trial, https://github.com/cbusillo/codex-skills/issues/2277; Director decision Q515).
 
 You are the long-running lead for: __TRACK__. Admission for every item you take: milestone (__MILESTONE__), linked into that Track's graph.
 

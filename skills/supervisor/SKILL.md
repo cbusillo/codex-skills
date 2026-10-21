@@ -55,6 +55,12 @@ resources:
   - path: scripts/codex_session_proxy.py
     kind: script
     description: Private per-client native RPC ingress that holds source ownership for attachments and actions; imported by codex-session.py.
+  - path: scripts/handoff_record.py
+    kind: script
+    description: Print this Director's own handoff record from private config, defaulting to OWNER/direction.
+  - path: references/field-reports.md
+    kind: reference
+    description: Where every Director's Supervisor sends field reports about shared skills.
   - path: references/helpers.md
     kind: reference
     description: Local state, session registry schema, goal board, helper usage and shutdown stages.
@@ -277,7 +283,7 @@ comments and status, `github` for merges, `launchplane` for the merge train,
 close out.
 
 The Director starts it on Claude Code with `/shared:supervisor` and one line
-naming the pilot issue. The Supervisor is a direction session in the
+naming the run. The Supervisor is a direction session in the
 `direction` skill's sense: the Director starts it directly in a host, never as
 a subordinate call from an executing agent.
 
@@ -296,10 +302,11 @@ each step it blocks. Never change the Director's settings yourself.
 
 ## Pilot Status
 
-This skill is a pilot. The record is
-[codex-skills#1043](https://github.com/cbusillo/codex-skills/issues/1043)
-Supervisor pilot, week 2, and the skill stays a pilot until its three exit
-criteria hold:
+This skill is a pilot. Each Director's pilot record is that Director's own
+[handoff record](references/helpers.md#handoff-record), never an issue in
+another person's repository. Lessons about shared skills that other Directors
+would hit too go to the [field reports](references/field-reports.md) issue.
+The skill stays a pilot until its three exit criteria hold:
 
 1. Two consecutive Supervisor handoffs with no new lesson and no brief widened
    after launch.
@@ -308,7 +315,7 @@ criteria hold:
    digest.
 3. The Director's open questions reach the Director in one place under the
    [question queue rules](../references/talking-with-the-director.md#decisions-holds-and-work-state),
-   and the pilot issue holds handoffs and lessons only.
+   and the handoff record holds handoffs and lessons only.
 
 Post each handoff as the [Handoff Shape](#handoff-shape) says, and say in it
 whether any lesson was new.
@@ -323,7 +330,7 @@ terminal tabs with `skills/supervisor/scripts/iterm_tab.py`, using an exact
 `--session-id` from its `list` output. Launch Codex sessions with "keep working
 through compaction" and Keep instructions naming the brief, issue and current
 step; do not hand them off at a context percentage. Codex as
-the Supervisor is expected to work; claim it only after a run has verified it and the pilot issue
+the Supervisor is expected to work; claim it only after a run has verified it and the handoff record
 records that run.
 
 For stale queued input on a stopped source, read the [recovery procedure](references/helpers.md#release-a-verified-finished-session)
@@ -641,7 +648,8 @@ for recovery or repeat them as fact.
 2. Load `direction` and take the daily turn, which covers the Director's whole
    account whatever folder this session opened in and clears the turn
    reminder, before launching or taking over any session.
-3. Read the latest handoff on the pilot issue, then every comment after it.
+3. Find the Director's [handoff record](references/helpers.md#handoff-record)
+   with `handoff_record.py`. Read its latest handoff, then every comment after it.
    Before you repeat what the Director said, read the exact words where the
    Director said them, not a summary. Allocate new question IDs through the
    [shared question counter rules](../references/talking-with-the-director.md#decisions-holds-and-work-state);
@@ -696,7 +704,7 @@ for recovery or repeat them as fact.
    against the full issue and current evidence before correcting its status;
    this report-only mode leaves weekly audit markers untouched and grants no
    release of a real hold.
-7. Post a takeover comment on the pilot issue: what you found, what you
+7. Post a takeover comment on the handoff record: what you found, what you
    corrected, and the "needs the Director" list.
 8. When a finding would retire, stop, or redirect work, load `direction`
    again and open an issue labeled `direction` under its escalation
@@ -845,9 +853,12 @@ others. A missed target remains visible in the next check and handoff.
 
 ## Handoff Shape
 
-Post the full handoff as one comment in the Director's private record on
-OWNER/direction, and a pointer with public-safe lessons on the pilot issue
-([Q403](https://github.com/cbusillo/codex-skills/issues/1043#issuecomment-6220453592)).
+Post the full handoff as one comment on the Director's own
+[handoff record](references/helpers.md#handoff-record)
+([Q403](https://github.com/cbusillo/codex-skills/issues/1043#issuecomment-6220453592),
+[#2462](https://github.com/cbusillo/codex-skills/issues/2462)). Send each new
+lesson about a shared skill, public-safe, to the
+[field reports](references/field-reports.md) issue as well.
 Follow [Agent Comments](../references/talking-with-the-director.md#agent-comments).
 Link item records and earlier decisions for facts already recorded; write out
 only new recovery information needed for takeover:

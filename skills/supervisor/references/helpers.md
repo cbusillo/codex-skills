@@ -46,6 +46,32 @@ After verified non-submission, `clear --verified-target` sends Ctrl-U; read
 back empty input before another send. An unknown submission needs readback,
 not a retry.
 
+## Handoff record
+
+Each Director's handoffs, takeover comments and pilot lessons go to that
+Director's own record, never to an issue in another person's repository.
+Read it at takeover:
+
+```bash
+uv run skills/supervisor/scripts/handoff_record.py --owner OWNER
+```
+
+It reads `[handoff]` from the first private `skill-data/supervisor.toml` that
+has one, in the same order as [accounts](#choosing-the-account), or from
+`--config`:
+
+```toml
+[handoff]
+issue = "OWNER/direction#123"
+```
+
+With no `[handoff]`, it prints `{"repository": "OWNER/direction", "source": "default"}`:
+use the open issue titled `Supervisor handoffs` there, and open it under
+`github-plan` if none exists. The helper refuses an issue outside the Director's own
+account and a malformed value; fix the private config, or remove `[handoff]`
+to use the default. Lessons about shared skills that other Directors would
+also hit go to the [field reports](field-reports.md) issue.
+
 ## Local state and the session registry
 
 The skill's [Local State](../SKILL.md#local-state) lists what stays local.
