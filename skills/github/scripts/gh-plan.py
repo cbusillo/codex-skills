@@ -2367,7 +2367,7 @@ def release_inherited_prs(record: dict[str, str], current_claim: int) -> set[str
     try:
         return read_release_inherited_prs(record)
     except (ValueError, PlanError) as error:
-        if isinstance(error, PlanError) and error.api_result and plan_error_status(error) != 404:
+        if isinstance(error, PlanError) and plan_error_status(error) != 404:
             raise
         raise ClassifiedPlanError("release_inherited_handoff_changed",
             "Inherited handoff cannot be verified. Preserve every artifact. The source author restores edited proof; "
@@ -2382,16 +2382,18 @@ def read_release_inherited_prs(record: dict[str, str]) -> set[str]:
         return set()
     match = re.fullmatch(r"https://github\.com/([\w.-]+/[\w.-]+)/issues/([1-9]\d*)#issuecomment-([1-9]\d*)", handoff_url)
     if not match or not record.get("resume_from", "").isdecimal():
-        raise PlanError("Retained source lineage is malformed; preserve its ownership evidence")
+        raise github_plan_claim.ClaimProofError("release_inherited_handoff_changed", "Retained source lineage is malformed; preserve its ownership evidence")
     repo, number, handoff_id = match[1], int(match[2]), int(match[3])
     _, _, comments, _ = claim_snapshot(str(number), repo, allow_closed=True)
     source = github_plan_claim.released_source(comments, int(record["resume_from"]))
     candidates = [comment for comment in github_plan_claim.handoff_candidates(comments, source) if comment["id"] == handoff_id]
     if len(candidates) != 1:
-        raise PlanError("Inherited retained handoff changed; preserve its source")
+        raise github_plan_claim.ClaimProofError("release_inherited_handoff_changed", "Inherited retained handoff changed; preserve its source")
     text = candidates[0].get("body") or ""
     repos = {repo, *re.findall(r"https://github\.com/([\w.-]+/[\w.-]+)/pull/[1-9]\d*", text),
              *re.findall(r"(?<![\w/])([\w.-]+/[\w.-]+)#[1-9]\d*", text)}
+    if not any(github_plan_claim.handoff_pr_numbers(text, issue_repo=repo, target_repo=target_repo) for target_repo in repos):
+        raise github_plan_claim.ClaimProofError("release_inherited_handoff_changed", "Inherited handoff no longer names retained PRs")
     retained = set()
     for target_repo in sorted(repos):
         pulls = []
@@ -2430,10 +2432,13 @@ def release_retained_prs(issue: dict[str, Any], source: dict[str, Any], actor: s
         linked = (event.get("source") or {}).get("issue") or {}
         url = (linked.get("pull_request") or {}).get("url", "")
         match = re.fullmatch(r"https://api\.github\.com/repos/([\w.-]+/[\w.-]+)/pulls/([1-9]\d*)", url)
-        if not match or linked.get("state") == "closed":
+        if not match:
             continue
         mentioned = int(match[2]) in github_plan_claim.handoff_pr_numbers(handoff, issue_repo=repo, target_repo=match[1])
-        if linked.get("created_at") and not mentioned and github_plan_release.stamp(linked["created_at"]) < started:
+        declared_link = f"https://github.com/{match[1]}/pull/{match[2]}".casefold() in declared
+        if linked.get("state") == "closed" and not mentioned and not declared_link:
+            continue
+        if linked.get("created_at") and not mentioned and not declared_link and github_plan_release.stamp(linked["created_at"]) < started:
             continue
         url = url.casefold()
         if url not in by_url and (linked.get("user") or {}).get("login") == actor:
@@ -2448,7 +2453,8 @@ def release_retained_prs(issue: dict[str, Any], source: dict[str, Any], actor: s
     accounted = set(inherited)
     ambiguous = []
     for pull in by_url.values():
-        if pull.get("state") != "open" or (pull.get("user") or {}).get("login") != actor:
+        if (pull.get("state") != "open" and not (pull.get("state") == "closed" and pull.get("merged_at"))
+                or (pull.get("user") or {}).get("login") != actor):
             continue
         head_repo = ((pull.get("head") or {}).get("repo") or {}).get("full_name", "")
         base_repo = ((pull.get("base") or {}).get("repo") or {}).get("full_name", "")
@@ -2469,7 +2475,8 @@ def release_retained_prs(issue: dict[str, Any], source: dict[str, Any], actor: s
         accounted.add(url)
         if url in excluded:
             if source_branch or subject or url in inherited:
-                raise PlanError("Cannot exclude a source branch, subject PR, or inherited retained handoff")
+                raise ClassifiedPlanError("release_owned_pr_not_excludable",
+                    "Cannot exclude a source branch, subject PR, or inherited retained handoff", payload={"pull_request": url})
             if named:
                 raise ClassifiedPlanError("release_excluded_pr_mentioned",
                     "Handoff narrative still names an excluded PR. Remove that PR reference before release; the successor parser treats it as retained.",
@@ -2485,7 +2492,7 @@ def release_retained_prs(issue: dict[str, Any], source: dict[str, Any], actor: s
             "use --exclude-pr URL for another session's work and remove its references from the handoff. Preserve all artifacts.",
             payload={"unclassified_prs": sorted(ambiguous)})
     if declared - accounted:
-        raise ClassifiedPlanError("release_declared_pr_unverified", "Declared PR is not verified open source-linked work or inherited custody",
+        raise ClassifiedPlanError("release_declared_pr_unverified", "Declared PR is not verified source-linked work or inherited custody",
                                   payload={"unverified_prs": sorted(declared - accounted)})
     return sorted(retained)
 

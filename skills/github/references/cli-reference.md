@@ -905,6 +905,9 @@ owners on both readbacks, and preserves every artifact and product hold.
 This route permits a PR-only claim when that released source is also its
 canonical implementation issue; other canonical issues still require their
 own claim. Use a new task branch separate from every retained source branch.
+The source-family checks cover every qualified retained sibling, so process
+these PR-only claims sequentially. Release preserves that inherited custody;
+it does not claim that this session changed every sibling PR.
 `release-claim` accepts the same PR references and attestation URLs on either
 issue or PR timeline comments. It checks the claimed source branch against the closed-session attestation. A
 later update to a separate Dependabot work-record branch does not count as
@@ -1093,7 +1096,9 @@ handoff links. Remove references to excluded PRs from the handoff file too;
 uses the successor's parser to check narrative references, including older
 source-linked PRs, before posting. An unclassified candidate stops and lists
 the exact URLs to account for. Declared PRs must qualify in the current
-inventory or verified inherited custody. The source branch, subject PR, and inherited work
+inventory or verified inherited custody. A mentioned merged PR receives the
+same checks because the successor can retain its branch and worktree too.
+The source branch, subject PR, and inherited work
 cannot be excluded. These declarations affect only the source author's own
 release and add no ownership store or successor authority.
 Keep the source work-record link in every PR opened under a claim; unlinked
