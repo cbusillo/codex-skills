@@ -42,6 +42,8 @@ LOAD_LIMIT = common.LOAD_LIMIT
 HEAP_LIMIT_MIB = 1536
 ACTIVE_PROCESSORS = 2
 NICE = 10
+DRAIN_SECONDS = 2
+DRAIN_BYTES = 4 * 1024 * 1024
 NATIVE_SUFFIXES = frozenset({".py", ".xml"})
 
 
@@ -532,10 +534,19 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
         if partial:
             observer.observe(partial, partial=True)
 
-    def read_logs(final=False):
+    def ordinary_read_size(budget, requested):
+        if budget is None:
+            return requested
+        if budget["remaining"] <= 0 or time.monotonic() >= budget["deadline"]:
+            receipt["ordinary_drain_bound"] = True
+            raise Blocked("native_final_drain_limit")
+        return min(requested, budget["remaining"])
+
+    def read_logs(final=False, budget=None):
         if not require_completion:
             return
         for path in (private / "logs").glob("*.log"):
+            ordinary_read_size(budget, 1)
             if path.is_symlink():
                 raise Blocked("native_log_path_unsafe")
             try:
@@ -557,10 +568,13 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
                 stream.seek(offset)
                 while True:
                     check_lifetime(parent_fd, deadline)
-                    data = stream.read(1024 * 1024)
+                    size = ordinary_read_size(budget, 1024 * 1024)
+                    data = stream.read(size)
+                    if budget is not None:
+                        budget["remaining"] -= len(data)
                     log_offsets[identity] = stream.tell()
                     consume(framer, scanner, data)
-                    if not final or len(data) < 1024 * 1024:
+                    if not final or len(data) < size:
                         break
                 log_offsets[identity] = stream.tell()
             if final:
@@ -572,8 +586,8 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
         No ordinary observer runs here. Any unreadable, truncated or oversized
         source leaves the terminal outcome unproved as non-licensing.
         """
-        limit = time.monotonic() + 2
-        remaining = 4 * 1024 * 1024
+        limit = time.monotonic() + DRAIN_SECONDS
+        remaining = DRAIN_BYTES
         complete = not observation_failures
         failures = set(observation_failures)
 
@@ -699,17 +713,20 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
                     selector.unregister(stdout)
             read_logs()
             if leader_exited():
+                budget = {"deadline": time.monotonic() + DRAIN_SECONDS, "remaining": DRAIN_BYTES}
                 while True:
                     check_lifetime(parent_fd, deadline)
+                    size = ordinary_read_size(budget, 65536)
                     try:
-                        chunk = os.read(stdout.fileno(), 65536)
+                        chunk = os.read(stdout.fileno(), size)
                     except BlockingIOError:
                         break
                     if not chunk:
                         break
+                    budget["remaining"] -= len(chunk)
                     consume(output_framer, output_license_scanner, chunk)
                 consume(output_framer, output_license_scanner, b"", final=True)
-                read_logs(final=True)
+                read_logs(final=True, budget=budget)
                 break
             load = os.getloadavg()[0]
             if load > LOAD_LIMIT and not paused:
@@ -971,6 +988,8 @@ def envelope(host: Any, receipt: dict[str, Any], findings: list[dict[str, Any]],
         action = "Preserve the SDK, private directory and journal until the process group is proved gone. Use --backend native --native-recover-only with the same independent worker; resource recovery does not clear an unknown licensed outcome."
     elif reason == "native_process_signal_failed":
         action = "The load-control signal failed while its leader was still live. Bounded finalization attempted termination, reaping, group proof and licence drain. Check process_signals in the receipt before a fresh assessment; retained custody requires --native-recover-only first."
+    elif reason == "native_final_drain_limit":
+        action = "Final stdout and logs exceeded their shared read bound. Narrow the inspection scope or diagnose the noisy helper or log writer before a fresh assessment. Finalization still stops the owned group and independently scans for licensing events; preserve any resulting hold and use --native-recover-only for retained custody."
     elif reason in {"native_exit_observer_unavailable", "native_exit_observation_unproven"}:
         action = "Restore non-reaping child-exit observation in the documented native Python setup (waitid/WNOWAIT or kqueue/NOTE_EXIT). Registration is required before the launch gate opens. Preserve any held custody and use --native-recover-only first; never substitute a reaping poll before stopping the owned group."
     report = f"{verdict}: native PyCharm; {reason}; {len(findings)} findings; {len(gaps)} proof gaps; {len(receipt.get('coverage', {}).get('unproven', []))} inspections unproven."

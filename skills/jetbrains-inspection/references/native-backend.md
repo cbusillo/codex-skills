@@ -228,6 +228,10 @@ abort that launch. Its exit state stays latched across load-control checks.
 The guardian resets its own SIGCHLD disposition without changing the caller's.
 Only the post-group drain finalizes licence lines, including output inherited
 by descendants.
+After leader exit, ordinary stdout and log reads share a two-second, 4 MiB
+budget. Exhaustion reports `native_final_drain_limit` as UNKNOWN and proceeds
+to group cleanup. The post-group licence scan has its own fresh budget, so a
+noisy helper cannot consume the time or bytes reserved for licensing events.
 
 The observer uses [waitid with WNOWAIT](https://docs.python.org/3.13/library/os.html#os.waitid)
 when available. Python 3.12 on macOS uses

@@ -125,6 +125,108 @@ class ProcessDrainTests(unittest.TestCase):
         process.wait.side_effect = reap
         return process
 
+    def simulated_spawn(self, process):
+        def spawn(*_args, **kwargs):
+            for descriptor in kwargs.get("pass_fds", ()):
+                self.addCleanup(os.close, os.dup(descriptor))
+            return process
+        return spawn
+
+    def final_drain_case(self, source, *, combined=False):
+        process = self.simulated_process()
+        reaped, clock = False, 0
+        stream = bytearray(b"Done.\n" + b"info\n" * 6 + b"end\n") if combined else bytearray()
+        log = self.private / "logs/idea.log"
+        original_open = Path.open
+
+        def tick():
+            nonlocal clock
+            if not reaped:
+                clock += 1
+            return clock
+
+        def observe():
+            if combined:
+                log.write_bytes(b"info\n" * 8)
+            return True
+
+        def reap(*_args, **_kwargs):
+            nonlocal reaped
+            reaped = True
+            process.returncode = 0
+            if source == "logs":
+                with original_open(log, "ab") as output:
+                    output.write(b"\nNo valid license found\n")
+            else:
+                stream.extend(b"\nNo valid license found\n")
+            return 0
+
+        def read_stdout(_fd, size):
+            if not reaped and not combined and source == "stdout":
+                return b"info\n"
+            data = bytes(stream[:size])
+            del stream[:size]
+            return data
+
+        class GrowingLog:
+            def __init__(self, file):
+                self.file = file
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                self.file.close()
+
+            def __getattr__(self, name):
+                return getattr(self.file, name)
+
+            def read(self, size):
+                if not reaped:
+                    with original_open(log, "ab") as output:
+                        output.write((b"info\n" * (size // 5 + 1))[:size])
+                return self.file.read(size)
+
+        def open_log(path, *args, **kwargs):
+            file = original_open(path, *args, **kwargs)
+            return GrowingLog(file) if path == log and args == ("rb",) and not combined else file
+
+        if source == "logs" and not combined:
+            log.touch()
+        process.wait.side_effect = reap
+        watch = Mock(kind="fixture")
+        watch.exited.side_effect = observe
+        selector = Mock()
+        selector.select.return_value = []
+        receipt = {"load_pause_count": 0}
+        with patch.object(self.backend.subprocess, "Popen", side_effect=self.simulated_spawn(process)), \
+                patch.object(self.backend, "ChildExitObserver", return_value=watch), \
+                patch.object(self.backend.selectors, "DefaultSelector", return_value=selector), \
+                patch.object(self.backend.os, "killpg"), patch.object(self.backend, "group_gone", return_value=True), \
+                patch.object(self.backend.os, "read", side_effect=read_stdout), \
+                patch.object(self.backend.time, "monotonic", side_effect=(time.monotonic if combined else tick)), \
+                patch.object(Path, "open", open_log), (self.private / "worker.lock").open("w") as lock:
+            with self.assertRaises(self.backend.Blocked) as outcome:
+                self.backend.execute(["fixture"], {}, self.private, time.monotonic() + 3 if combined else 12,
+                                     None, receipt, lock_fd=lock.fileno())
+        return receipt, str(outcome.exception)
+
+    def test_continuous_final_stdout_and_logs_stop_before_the_overall_timeout(self):
+        for source in ("stdout", "logs"):
+            with self.subTest(source=source):
+                receipt, reason = self.final_drain_case(source)
+                self.assertEqual(reason, "native_final_drain_limit")
+                self.assertTrue(receipt["process_custody_closed"])
+                self.assertTrue(receipt["license_boundary_observed"])
+                self.assertTrue(receipt["license_observation_complete"])
+
+    def test_stdout_and_logs_share_one_ordinary_budget_but_licence_drain_is_fresh(self):
+        with patch.object(self.backend, "DRAIN_BYTES", 64):
+            receipt, reason = self.final_drain_case("logs", combined=True)
+        self.assertEqual(reason, "native_final_drain_limit")
+        self.assertTrue(receipt["license_boundary_observed"])
+        self.assertTrue(receipt["license_observation_complete"])
+
     @staticmethod
     def kqueue_api():
         queue = Mock()
@@ -319,18 +421,12 @@ os._exit(0)
             if operation == failed_signal:
                 raise PermissionError(errno.EPERM, "signal unavailable")
 
-        def spawn(*_args, **kwargs):
-            # Model inherited descriptors so the guardian's gate has a reader.
-            for descriptor in kwargs.get("pass_fds", ()):
-                self.addCleanup(os.close, os.dup(descriptor))
-            return process
-
         high, low = self.backend.LOAD_LIMIT + 1, self.backend.LOAD_LIMIT
         loads = iter((high, low)) if failed_signal == signal.SIGCONT else iter((high,))
         watch = Mock(kind="fixture")
         watch.exited.side_effect = observe
         outcome = None
-        with patch.object(self.backend.subprocess, "Popen", side_effect=spawn), \
+        with patch.object(self.backend.subprocess, "Popen", side_effect=self.simulated_spawn(process)), \
                 patch.object(self.backend, "ChildExitObserver", return_value=watch), \
                 patch.object(self.backend.os, "killpg", side_effect=send), \
                 patch.object(self.backend.os, "getloadavg", side_effect=lambda: (next(loads, low), low, low)), \
