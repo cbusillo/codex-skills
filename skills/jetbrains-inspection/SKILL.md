@@ -262,8 +262,9 @@ Command model:
 - Lifecycle opening uses a running IDE and never launches an app by default:
   when no running IDE accepts the open, the result is `ide_launch_disabled`
   without application launch. `--ide-launch` allows a hidden launch only when
-  no process of the selected app is running. A running app without a usable
-  plugin identity, or a process census that cannot prove absence, returns
+  no launcher of the selected product is running (any JetBrains IDE when the
+  product is unknown). A running IDE without a usable plugin identity, or a
+  process census that cannot prove absence, returns
   `ide_launch_refused`; the helper never launches a second instance or
   activates the running one. Enable the plugin in that IDE yourself, or use
   `--backend native`. Actual lifecycle rejections and ambiguous requests retain

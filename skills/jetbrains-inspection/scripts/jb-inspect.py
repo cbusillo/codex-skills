@@ -375,6 +375,7 @@ class IdeProduct:
     product_codes: tuple[str, ...]
     app_names: tuple[str, ...]
     aliases: tuple[str, ...]
+    launcher_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -449,6 +450,7 @@ IDE_PRODUCTS = {
         product_codes=("IU", "IC"),
         app_names=("IntelliJ IDEA",),
         aliases=("intellijidea", "intellij", "idea", "iu", "ic"),
+        launcher_names=("idea",),
     ),
     "pycharm": IdeProduct(
         key="pycharm",
@@ -457,6 +459,7 @@ IDE_PRODUCTS = {
         product_codes=("PY", "PC"),
         app_names=("PyCharm", "PyCharm CE"),
         aliases=("pycharm", "pycharmce", "py", "pc"),
+        launcher_names=("pycharm",),
     ),
     "webstorm": IdeProduct(
         key="webstorm",
@@ -465,8 +468,10 @@ IDE_PRODUCTS = {
         product_codes=("WS",),
         app_names=("WebStorm",),
         aliases=("webstorm", "ws"),
+        launcher_names=("webstorm",),
     ),
 }
+ALL_IDE_LAUNCHER_NAMES = tuple(name for product in IDE_PRODUCTS.values() for name in product.launcher_names)
 IDE_PRODUCT_BY_ALIAS = {
     alias: product
     for product in IDE_PRODUCTS.values()
@@ -11689,15 +11694,20 @@ HELPER_FINALIZING_CACHE_PREFIX = ".inspection-finalizing-"
 def offline_ide_processes() -> list[int]:
     """A missing plugin identity does not prove the IDE process has exited."""
     try:
-        output = subprocess.check_output(["ps", "-axo", "pid=,comm="], text=True, timeout=5)
-        pids = []
-        for line in output.splitlines():
-            parts = line.strip().split(maxsplit=1)
-            if len(parts) == 2 and re.search(r"\.app/Contents/MacOS/(?:pycharm|idea|webstorm)$", parts[1], re.IGNORECASE):
-                pids.append(int(parts[0]))
-        return pids
+        return ide_launcher_pids(ALL_IDE_LAUNCHER_NAMES)
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         raise InspectError("Cannot prove IDE processes have exited; restore process discovery or use live IDE cleanup.", 3) from error
+
+
+def ide_launcher_pids(launcher_names: tuple[str, ...]) -> list[int]:
+    launcher = re.compile(rf"\.app/Contents/MacOS/(?:{'|'.join(map(re.escape, launcher_names))})$", re.IGNORECASE)
+    output = subprocess.check_output(["ps", "-axo", "pid=,comm="], text=True, timeout=5)
+    pids = []
+    for line in output.splitlines():
+        parts = line.strip().split(maxsplit=1)
+        if len(parts) == 2 and launcher.search(parts[1]):
+            pids.append(int(parts[0]))
+    return pids
 
 
 def offline_retirement_records(root: Path) -> list[str]:
@@ -12558,7 +12568,7 @@ def bootstrap_ide_app(context: dict[str, Any], background: bool = True) -> dict[
     ide_app_path = resolved_ide_app_path(context)
     if not (ide_app or ide_app_path) or sys.platform != "darwin":
         raise InspectError("Cannot auto-open IDE without a configured macOS IDE name.", 3)
-    refuse_launch_while_app_runs(ide_app, ide_app_path)
+    refuse_launch_while_app_runs(context)
     command = ["open"]
     if background:
         command.extend(["-g", "-j"])
@@ -12595,38 +12605,31 @@ def bootstrap_ide_app(context: dict[str, Any], background: bool = True) -> dict[
     }
 
 
-def refuse_launch_while_app_runs(ide_app: str | None, ide_app_path: Path | None) -> None:
-    if pids := running_app_pids(ide_app, ide_app_path):
-        raise InspectError(
-            "The selected JetBrains app is already running without a usable Inspection API identity; refusing to launch or activate it.",
-            3,
-            {"error_reason": "ide_launch_refused", "running_app_pids": pids, "ide_app": ide_app, "ide_app_path": str(ide_app_path) if ide_app_path else None},
-        )
-
-
-def running_app_pids(ide_app: str | None, ide_app_path: Path | None) -> list[int]:
-    executable_marker = app_executable_marker(ide_app, ide_app_path)
+def refuse_launch_while_app_runs(context: dict[str, Any]) -> None:
     try:
-        output = subprocess.check_output(["ps", "-axo", "pid=,comm="], text=True, timeout=5)
-    except (OSError, subprocess.SubprocessError) as error:
+        pids = ide_launcher_pids(launch_guard_launcher_names(context))
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
         raise InspectError(
             "Cannot prove the selected JetBrains app is not running; refusing to launch it.",
             3,
             {"error_reason": "ide_launch_refused", "process_census_error": str(error)},
         ) from error
-    pids = []
-    for line in output.splitlines():
-        pid, _, command = line.strip().partition(" ")
-        if pid.isdigit() and executable_marker in command.strip().lower():
-            pids.append(int(pid))
-    return pids
+    if pids:
+        raise InspectError(
+            "The selected JetBrains app is already running without a usable Inspection API identity; refusing to launch or activate it.",
+            3,
+            {"error_reason": "ide_launch_refused", "running_app_pids": pids},
+        )
 
 
-def app_executable_marker(ide_app: str | None, ide_app_path: Path | None) -> str:
-    if ide_app_path and ide_app_path.is_absolute():
-        return f"{ide_app_path.resolve()}/Contents/MacOS/".lower()
-    bundle_name = (ide_app_path.name if ide_app_path else str(ide_app)).removesuffix(".app")
-    return f"/{bundle_name}.app/Contents/MacOS/".lower()
+def launch_guard_launcher_names(context: dict[str, Any]) -> tuple[str, ...]:
+    selection = dict_field(context, "ide_selection")
+    product = (
+        IDE_PRODUCTS.get(str(selection.get("product_key")))
+        or product_for_selector(resolved_ide_app_name(context))
+        or product_for_selector(clean_optional(context.get("ide")))
+    )
+    return product.launcher_names if product else ALL_IDE_LAUNCHER_NAMES
 
 
 def resolved_ide_app_name(context: dict[str, Any]) -> str | None:

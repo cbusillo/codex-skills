@@ -52,10 +52,12 @@ lifecycle close endpoint only for projects the helper opened. Projects that were
 already open before inspection must remain open. Lifecycle opens ask a running
 IDE's plugin to open the exact worktree. When none accepts, the helper stops
 with `ide_launch_disabled` and its open attempts; it launches no application.
-With `--ide-launch`, and only when no process from the selected app bundle is
-running, it launches the app hidden first and then asks the plugin to open the
-worktree. That IDE is not journaled or closed by the helper; it stays as the
-caller's own desktop IDE. A selected app that is running without a usable
+With `--ide-launch`, and only when no `*.app/Contents/MacOS/` launcher of the
+selected product is running (of any JetBrains IDE when the product is unknown),
+it launches the app hidden first and then asks the plugin to open the worktree.
+The census matches launcher names, so renamed, linked or relative app selectors
+cannot hide a running IDE. That IDE is not journaled or closed by the helper; it stays as the
+caller's own desktop IDE. A matching IDE that is running without a usable
 plugin identity, or a `ps` census that cannot prove absence, stops with
 `ide_launch_refused` and sends no `open`: `open -n` would start a second
 launcher that hands its empty command line to the running IDE and then stays
