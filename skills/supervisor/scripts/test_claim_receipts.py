@@ -227,6 +227,10 @@ class ReceiptTests(unittest.TestCase):
                     "cat >body.md <<'EOF'\nQ&A, don't change this\nEOF\ngh pr create --body-file body.md",
                     'HELPER=/catalog/helper.py; uv run "$HELPER" status',
                     "sed -e 's/a/b/' >body.md <<'EOF'\nQ&A, don't change this\nEOF",
+                    "uv run /retired/task/gh-plan.py update-section 1 Notes --body-file - <<'EOF'\nQ&A (see #12), don't\nEOF",
+                    "tee notes.md <<'EOF'\nQ&A, don't\nEOF",
+                    "source .venv/bin/activate && cat >notes.md <<'EOF'\nit's prose\nEOF",
+                    'rg -n eval "isn\'t"',
                     'case a in a) printf x ;& b) printf y ;; esac']
         for command in commands:
             with self.subTest(command=command):
@@ -256,6 +260,16 @@ class ReceiptTests(unittest.TestCase):
             "\"$SHELL\" <<'EOF'\nworker &\nEOF", "let x=1<<2\nworker &",
             "bash -ce 'worker &'", "tmux new-session -d worker", "setsid -f worker",
             "sudo -u svc setsid -fw worker", "cat <<EOF\n$(worker\nEOF",
+            "bash -c -- 'worker &'", "bash -c -e 'worker &'", "bash -ceo pipefail 'worker &'",
+            'bash -c "cd /repo && $cmd"', 'eval "$@"', 'eval "$x" "$y"',
+            'eval "$(cat run.sh)"', '\"$SHELL\" -c \'worker &\'',
+            "cat >| run.sh <<'EOF'\nworker &\nEOF\ntimeout 60 ./run.sh",
+            "cat >run.sh <<'EOF'\nworker &\nEOF\nsudo ./run.sh",
+            "cat >run.sh <<'EOF'\nworker &\nEOF\nout=\"$(./run.sh)\"",
+            "source <(cat <<'EOF'\nworker &\nEOF\n)",
+            "(setsid -f worker)", "nice -n 10 setsid -f worker",
+            "ssh -fN host", "docker run -d image", "tmux new-window -d worker",
+            "launchctl kickstart gui/501/job", "open -a Example",
         ]
         for flags in ('-e', '-euo pipefail', '-o errexit', '-O extglob', '-s -- args'):
             commands += [f"bash {flags} <<'EOF'\nworker &\nEOF", f"bash {flags} <<< 'worker &'"]
