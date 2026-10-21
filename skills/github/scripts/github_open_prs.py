@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+from typing import Any
 
 import github_api
 import github_pr_batch as batch
@@ -27,8 +28,11 @@ def scan(reader, repositories):
     if any(not isinstance(repo, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo) for repo in repos):
         raise ValueError("open-PR scan requires OWNER/REPO names")
     if len(repos) > 100:
-        raise ValueError("open-PR scan supports at most 100 repositories")
-    result = {repo: [] for repo in repos}
+        grouped = {}
+        for offset in range(0, len(repos), 100):
+            grouped.update(scan(reader, repos[offset:offset + 100]))
+        return grouped
+    result: dict[str, list[dict[str, Any]] | Exception] = {repo: [] for repo in repos}
     cursors = {repo: None for repo in repos}
     totals, seen = {}, {repo: set() for repo in repos}
     for _ in range(100):
@@ -55,7 +59,8 @@ def scan(reader, repositories):
             result.update(dict.fromkeys(cursors, error))
             return result
         body = response.body if isinstance(response.body, dict) else {}
-        data = body.get("data") if isinstance(body.get("data"), dict) else {}
+        payload = body.get("data")
+        data: dict[str, Any] = payload if isinstance(payload, dict) else {}
         errors = body.get("errors") or []
         invalid = set()
         for error in errors:
@@ -64,11 +69,15 @@ def scan(reader, repositories):
                 invalid.update(aliases)
             else:
                 invalid.add(path[0])
-        cost = (data.get("rateLimit") or {}).get("cost")
+        rate = data.get("rateLimit")
+        cost = rate.get("cost") if isinstance(rate, dict) else None
         previous = reader.batch_diagnostic.get("cost", 0)
         reader.batch_diagnostic["cost"] = previous + cost if type(previous) is int and type(cost) is int else None
         pending = {}
         for alias, repo in aliases.items():
+            pulls = result[repo]
+            if isinstance(pulls, Exception):
+                continue
             try:
                 repository = data.get(alias)
                 if alias in invalid or not isinstance(repository, dict) or str(repository.get("nameWithOwner", "")).casefold() != repo.casefold():
@@ -78,10 +87,10 @@ def scan(reader, repositories):
                     raise InventoryUnavailable("open-PR inventory changed during pagination")
                 for node in nodes:
                     number = node.get("number")
-                    if type(number) is not int or number <= 0 or any(pr["number"] == number for pr in result[repo]) or node.get("state") != "OPEN":
+                    if type(number) is not int or number <= 0 or any(pr["number"] == number for pr in pulls) or node.get("state") != "OPEN":
                         raise InventoryUnavailable("invalid or duplicate open PR")
                     labels = batch.complete(reader, repo, node, "labels")
-                    result[repo].append({
+                    pulls.append({
                         "number": number, "title": node["title"], "body": node["body"],
                         "state": "open", "draft": node["isDraft"], "created_at": node["createdAt"],
                         "user": batch.rest_author(node["author"]), "labels": labels,
@@ -94,7 +103,7 @@ def scan(reader, repositories):
                         raise InventoryUnavailable("open-PR cursor repeated")
                     seen[repo].add(cursor)
                     pending[repo] = cursor
-                elif len(result[repo]) != total:
+                elif len(pulls) != total:
                     raise InventoryUnavailable("incomplete open-PR inventory")
             except GitHubReadError as error:
                 result[repo] = error

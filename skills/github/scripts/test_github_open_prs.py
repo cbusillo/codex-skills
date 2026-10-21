@@ -52,6 +52,13 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual((pr["user"]["login"], pr["head"]["repo"]["full_name"], pr["labels"], pr["state"]),
                          ("author", "example/fork", [{"name": "hold"}], "open"))
 
+    def test_large_repository_sets_have_a_supported_bounded_query_path(self):
+        repos = [f"example/app{i}" for i in range(101)]
+        value = reader({f"r{i}": repository(repo, []) for i, repo in enumerate(repos[:100])},
+                       {"r0": repository(repos[-1], [])})
+        self.assertEqual(set(github_open_prs.scan(value, repos)), set(repos))
+        self.assertEqual(value.graphql_json.call_count, 2)
+
     def test_only_overflowing_repository_is_queried_again(self):
         value = reader({"r0": repository("example/app", [node()], total=2, cursor="next"),
                         "r1": repository("example/empty", [])},

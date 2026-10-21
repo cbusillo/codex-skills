@@ -99,7 +99,9 @@ class RawReadTests(unittest.TestCase):
                     failure=None if status == 200 else github_api.FailureDetail(cause="http_error", message="failed", retryable=False, fallback_eligible=False, disposition="stop"))
             transport.side_effect = [response(200), response(304), response(200, "other"), response(503)]
             def read(actor="bot"):
-                return github_raw_read.read(["api", "/repos/example/app/pulls/7"], gh_cmd="fake-gh", actor=actor, host="github.com")
+                result = github_raw_read.read(["api", "/repos/example/app/pulls/7"], gh_cmd="fake-gh", actor=actor, host="github.com")
+                assert result is not None
+                return result
             self.assertEqual(read().body, {"number": 7})
             cached = read()
             self.assertTrue(cached.ok)

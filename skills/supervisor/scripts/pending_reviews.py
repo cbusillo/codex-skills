@@ -23,8 +23,10 @@ from collections import Counter
 from contextlib import contextmanager
 
 ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "skills/github/scripts"))
 sys.path.insert(0, str(ROOT / "skills/model-review/scripts"))
+from skills.github.scripts import github_open_prs
 from github_api import redact_string
 from github_direction_next import issue_references
 from github_identity import OWN_USER_OPT_IN, automation_login, configured_bot_logins
@@ -621,7 +623,6 @@ class IO:
         self.claims = {}
 
     def open_pulls(self, repos):
-        import github_open_prs
         return github_open_prs.scan(self.reader, repos)
 
     def get_json(self, path, **kwargs):
