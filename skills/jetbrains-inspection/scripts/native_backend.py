@@ -215,7 +215,8 @@ def runtime_storage(host, worker):
 
 
 @contextlib.contextmanager
-def profile_lock(worker, name="worker.lock"):
+def profile_lock(worker, name="worker.lock", wait_until=None, on_wait=None):
+    """Exclusive kernel lock; an admitted request waits until `wait_until` for its owner to release it."""
     import fcntl
     path = worker / name
     if not worker.is_dir() or worker.is_symlink():
@@ -225,10 +226,16 @@ def profile_lock(worker, name="worker.lock"):
     except OSError:
         raise Blocked("native_worker_lock_unsafe") from None
     with os.fdopen(fd, "a") as lock:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise Blocked("native_worker_busy") from None
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if wait_until is None or time.monotonic() >= wait_until:
+                    raise Blocked("native_worker_busy") from None
+            if on_wait is not None:
+                on_wait()
+            time.sleep(max(0.0, min(0.25, wait_until - time.monotonic())))
         yield lock
 
 
@@ -983,7 +990,7 @@ def envelope(host: Any, receipt: dict[str, Any], findings: list[dict[str, Any]],
     elif reason.startswith("native_cache_"):
         action = "Restore the configured existing host cache directory and recorded storage identity, or configure its supported replacement outside the activated worker. Never create a replacement mount directory."
     elif reason == "native_worker_busy":
-        action = "Let a live isolated worker's owner finish. If its guardian died, use --backend native --native-recover-only with the same independent worker to reconcile the journaled process; never kill another session's worker."
+        action = "Another owner held the isolated worker past --lifecycle-lock-timeout-ms; no engine launched. Let the live holder or independent GUI finish, then request one fresh assessment. If its guardian died, use --backend native --native-recover-only with the same independent worker to reconcile the journaled process; never kill another session's worker."
     elif reason == "native_process_group_unproven":
         action = "Preserve the SDK, private directory and journal until the process group is proved gone. Use --backend native --native-recover-only with the same independent worker; resource recovery does not clear an unknown licensed outcome."
     elif reason == "native_process_signal_failed":
@@ -1045,10 +1052,21 @@ def _run(args: Any, host: Any, parent_fd: int | None, context=None) -> dict[str,
             product = json.loads((app / "Contents/Resources/product-info.json").read_text())
             receipt.update(ide_version=product.get("version"), ide_build=product.get("buildNumber"))
         state_dir().mkdir(parents=True, exist_ok=True, mode=0o700)
-        held_lock.enter_context(profile_lock(worker, "native-control.lock"))
+        def on_wait():
+            check_lifetime(parent_fd, float("inf"))
+
+        admission_started, wait_until = time.monotonic(), None
+        if not args.native_recover_only:
+            # Ordinary requests queue for the same locks; recovery never waits.
+            held_lock.enter_context(host.fifo_turn(state_dir() / "native-queue", "Native inspection", on_wait))
+            wait_until = time.monotonic() + max(0, getattr(args, "lifecycle_lock_timeout_ms", host.DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS)) / 1000
+        held_lock.enter_context(profile_lock(worker, "native-control.lock", wait_until, on_wait))
         process_proof = stop_orphan(worker, receipt)
-        global_lock = held_lock.enter_context(profile_lock(state_dir()))
-        lock = held_lock.enter_context(profile_lock(worker))
+        global_lock = held_lock.enter_context(profile_lock(state_dir(), wait_until=wait_until, on_wait=on_wait))
+        lock = held_lock.enter_context(profile_lock(worker, wait_until=wait_until, on_wait=on_wait))
+        receipt["admission_wait_ms"] = round((time.monotonic() - admission_started) * 1000)
+        # Waiting for admission does not consume the inspection deadline.
+        deadline = time.monotonic() + max(1, args.timeout_ms / 1000)
         recover_run(worker, receipt, getattr(args, "native_reconcile_result", None), release_run, process_proof)
         if (worker / "native-activation-stop.json").exists():
             raise Blocked("native_activation_stop_recorded")

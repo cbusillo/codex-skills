@@ -11285,17 +11285,20 @@ LIFECYCLE_QUEUE_DIRNAME = "lifecycle-queue"
 LIFECYCLE_TICKET_GLOB = "*.ticket"
 
 
-class lifecycle_lock:
-    def __init__(self, timeout_ms: int = DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS):
-        self.timeout_ms = max(0, int(timeout_ms))
-        self.handle = None
+class fifo_turn:
+    """Hold one kernel-locked FIFO ticket in `directory` until exit."""
+
+    def __init__(self, directory: Path, label: str = "Inspection lifecycle", on_wait=None):
+        self.directory = directory
+        self.label = label
+        self.on_wait = on_wait
         self.ticket = None
         self.ticket_path = None
         self.queued_at = None
         self.waited_ms = 0
 
     @staticmethod
-    def _try_lock(handle):
+    def try_lock(handle):
         try:
             if fcntl is not None:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -11317,7 +11320,7 @@ class lifecycle_lock:
         return True
 
     @staticmethod
-    def _unlock(handle):
+    def unlock(handle):
         if fcntl is not None:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         elif msvcrt is not None:
@@ -11325,11 +11328,22 @@ class lifecycle_lock:
             msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
 
     def _register_lock(self, gate):
-        while not self._try_lock(gate):
+        while not self.try_lock(gate):
             time.sleep(0.05)
 
+    def __enter__(self):
+        try:
+            self._queue_turn()
+        except BaseException:
+            self._release_ticket()
+            raise
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self._release_ticket()
+
     def _queue_turn(self):
-        directory = lifecycle_lock_path().with_name(LIFECYCLE_QUEUE_DIRNAME)
+        directory = self.directory
         directory.mkdir(parents=True, exist_ok=True)
         registration = directory / "registration.lock"
         self.queued_at = time.monotonic()
@@ -11340,12 +11354,12 @@ class lifecycle_lock:
                 sequence = max((int(path.stem) for path in tickets), default=0) + 1
                 self.ticket_path = directory / f"{sequence:020d}.ticket"
                 self.ticket = self.ticket_path.open("x+", encoding="utf-8")
-                if not self._try_lock(self.ticket):
+                if not self.try_lock(self.ticket):
                     raise OSError("New lifecycle ticket is already locked")
                 if tickets:
-                    print(f"Inspection lifecycle queued behind {len(tickets)} caller(s).", file=sys.stderr, flush=True)
+                    print(f"{self.label} queued behind {len(tickets)} caller(s).", file=sys.stderr, flush=True)
             finally:
-                self._unlock(gate)
+                self.unlock(gate)
         while True:
             with registration.open("a+", encoding="utf-8") as gate:
                 self._register_lock(gate)
@@ -11356,12 +11370,14 @@ class lifecycle_lock:
                         self.waited_ms = round((time.monotonic() - self.queued_at) * 1000)
                         return
                     with predecessor.open("r+", encoding="utf-8") as holder:
-                        abandoned = self._try_lock(holder)
+                        abandoned = self.try_lock(holder)
                     if abandoned:
                         # Kernel ownership, rather than a PID or age, proves an abandoned ticket.
                         predecessor.unlink()
                 finally:
-                    self._unlock(gate)
+                    self.unlock(gate)
+            if self.on_wait is not None:
+                self.on_wait()
             time.sleep(0.05)
 
     def _release_ticket(self):
@@ -11374,18 +11390,31 @@ class lifecycle_lock:
                     self.ticket = None
                     ticket_path.unlink(missing_ok=True)
                 finally:
-                    self._unlock(gate)
+                    self.unlock(gate)
+
+
+class lifecycle_lock:
+    try_lock = staticmethod(fifo_turn.try_lock)
+    unlock = staticmethod(fifo_turn.unlock)
+
+    def __init__(self, timeout_ms: int = DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS):
+        self.timeout_ms = max(0, int(timeout_ms))
+        self.handle = None
+        self.turn = None
+        self.waited_ms = 0
 
     def __enter__(self):
         path = lifecycle_lock_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         self.handle = path.open("a+", encoding="utf-8")
         if fcntl is not None or msvcrt is not None:
+            self.turn = fifo_turn(path.with_name(LIFECYCLE_QUEUE_DIRNAME))
             try:
-                self._queue_turn()
+                self.turn.__enter__()
+                self.waited_ms = self.turn.waited_ms
                 deadline = time.monotonic() + (self.timeout_ms / 1000.0)
                 while True:
-                    if self._try_lock(self.handle):
+                    if self.try_lock(self.handle):
                         break
                     if self.timeout_ms == 0 or time.monotonic() >= deadline:
                         raise InspectError(
@@ -11401,7 +11430,7 @@ class lifecycle_lock:
                     time.sleep(min(0.25, max(0.0, deadline - time.monotonic())))
             except BaseException:
                 self.handle.close()
-                self._release_ticket()
+                self.turn.__exit__(None, None, None)
                 raise
         else:
             self.handle.close()
@@ -11410,10 +11439,11 @@ class lifecycle_lock:
 
     def __exit__(self, exc_type, exc, tb):
         if self.handle is not None:
-            self._unlock(self.handle)
+            self.unlock(self.handle)
         if self.handle is not None:
             self.handle.close()
-        self._release_ticket()
+        if self.turn is not None:
+            self.turn.__exit__(exc_type, exc, tb)
 
 
 def now_ms() -> int:

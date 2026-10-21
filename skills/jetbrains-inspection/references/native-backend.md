@@ -114,6 +114,18 @@ model when uv workspace discovery would otherwise replace module roots and
 break exact named scopes. No source project metadata is changed.
 
 A per-user lock shared with Qodana and the independent profile's lock allow one worker.
+An ordinary request takes a ticket in its own queue under the per-user state
+directory, using the kernel-locked FIFO mechanism of lifecycle callers, then
+waits for the control, per-user and profile locks without taking them from a
+live holder.
+Queue time is unbounded but interruptible: parent exit or cancellation stops a
+queued request before launch. Waiting for the locks themselves, which covers
+Qodana, an independent GUI and older callers that take no ticket, is bounded by
+`--lifecycle-lock-timeout-ms`. Admission time is recorded as
+`admission_wait_ms` and does not consume `--timeout-ms`. The request then runs
+its one inspection; activation stops and journal holds still refuse it. An
+expired wait is `UNKNOWN/native_worker_busy` with no engine launch and the
+original no-retry policy. `--native-recover-only` never waits.
 The child has its own process group, nice 10, a 1,536 MiB JVM heap and two active
 processors. The latter is a JVM concurrency cap, not an OS CPU quota. System,
 cache, logs, temporary files and inspection results live in fresh private paths

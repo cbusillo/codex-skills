@@ -9,18 +9,20 @@ import ast
 import errno
 import io
 import json
+import multiprocessing
 import os
 import shutil
 import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
-from contextlib import redirect_stdout
+from contextlib import contextmanager, redirect_stdout
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 
@@ -50,6 +52,14 @@ def copy_tracked_fixture(fixture, destination):
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(subprocess.check_output(["git", "-C", str(repository), "show", revision + ":" + path]))
     return revision
+
+
+def hold_lock(path, seconds, held):
+    import fcntl
+    with path.open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        held.set()
+        time.sleep(seconds)
 
 
 class NativeTests(unittest.TestCase):
@@ -316,12 +326,17 @@ print('Done.')
         self.args = host.build_parser().parse_args(["agent-inspect", "--backend", "native", "--repo", str(self.repo),
                     "--scope", "files", "--file", "source.py", "--profile", "Test", "--native-worker", str(self.worker), "--ide-app", str(self.app)])
 
-    def assess(self, loads=None, *, direct=False):
+    @contextmanager
+    def native_host(self, loads=None):
         with patch.object(sys, "platform", "darwin"), \
                 patch.object(host, "cache_dir", return_value=self.root / "cache"), \
                 patch.object(host, "read_global_config", return_value={}), \
                 patch.object(host, "trusted_auto_open_roots", return_value=[str(self.repo)]), \
                 patch.object(os, "getloadavg", side_effect=loads or (lambda: (1, 1, 1))):
+            yield
+
+    def assess(self, loads=None, *, direct=False):
+        with self.native_host(loads):
             return native._run(self.args, host, None) if direct else native.run(self.args, host)
 
     def test_findings_require_current_reports_and_cleanup_sdk_in_place(self):
@@ -758,9 +773,96 @@ print('Done.')
         with patch.object(native.common, "state_dir", return_value=state):
             with native.common.worker_lock_path().open("a") as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self.args.lifecycle_lock_timeout_ms = 0
                 result = self.assess()
         self.assertEqual(result["inspection_outcome"]["reason"], "native_worker_busy")
         self.assertNotIn("worker_pid", result["diagnostic"]["native"])
+
+    def hold(self, path, seconds=60.0):
+        """Another process holds the lock until it exits, like a live run."""
+        context = multiprocessing.get_context("fork")
+        held = context.Event()
+        holder = context.Process(target=hold_lock, args=(path, seconds, held))
+        holder.start()
+        self.addCleanup(holder.join)
+        self.addCleanup(holder.kill)
+        self.assertTrue(held.wait(10))
+        return holder
+
+    def queue_tickets(self):
+        return list((self.root / "state/native-queue").glob("*.ticket"))
+
+    def test_concurrent_requests_take_the_worker_in_turn_and_each_run_once(self):
+        log = self.root / "engine.log"
+        original = self.script.read_text()
+        self.script.write_text(original.replace("import pathlib,sys,json\n", "import pathlib,sys,json,time\n"
+            f"log=open({str(log)!r},'a');log.write(f'start {{time.time()}}\\n');log.flush();time.sleep(0.6)\n")
+            .replace("print('Done.')", "log.write(f'end {time.time()}\\n');log.close()\nprint('Done.')"))
+        def helper(output):
+            output.write_text(json.dumps(native.run(self.args, host)))
+            os._exit(0)
+
+        outputs = [self.root / f"result-{index}.json" for index in range(2)]
+        with self.native_host():
+            # Two independent helper processes contend for the same worker.
+            callers = [multiprocessing.get_context("fork").Process(target=helper, args=(output,)) for output in outputs]
+            for caller in callers:
+                caller.start()
+            for caller in callers:
+                caller.join(60)
+        results = [json.loads(output.read_text()) for output in outputs]
+        self.assertEqual([result["agent_result"]["verdict"] for result in results], ["RED", "RED"])
+        self.assertEqual([result["cleanup"]["status"] for result in results], ["closed", "closed"])
+        events = [line.split() for line in log.read_text().splitlines()]
+        self.assertEqual([kind for kind, _ in events], ["start", "end", "start", "end"])
+        self.assertLessEqual(float(events[1][1]), float(events[2][1]))
+        self.assertGreater(max(result["diagnostic"]["native"]["admission_wait_ms"] for result in results), 300)
+        self.assertFalse(self.queue_tickets())
+
+    def test_admission_waits_for_a_natural_release_then_inspects_once(self):
+        self.hold(self.worker / "worker.lock", 0.4)
+        result = self.assess()
+        self.assertEqual(result["agent_result"]["verdict"], "RED")
+        self.assertEqual(result["cleanup"]["status"], "closed")
+        self.assertGreaterEqual(result["diagnostic"]["native"]["admission_wait_ms"], 300)
+        self.assertEqual(result["agent_result"]["retry_policy"], {"retry": False, "max_attempts": 0, "wait_ms": 0})
+
+    def test_admission_timeout_leaves_the_owner_untouched_and_launches_nothing(self):
+        for name in ("native-control.lock", "worker.lock"):
+            with self.subTest(lock=name):
+                holder = self.hold(self.worker / name)
+                self.args.lifecycle_lock_timeout_ms = 200
+                result = self.assess()
+                self.assertEqual(result["inspection_outcome"]["reason"], "native_worker_busy")
+                self.assertEqual(result["agent_result"]["retry_policy"], {"retry": False, "max_attempts": 0, "wait_ms": 0})
+                self.assertIn("no engine launched", result["agent_result"]["next_action"])
+                self.assertNotIn("worker_pid", result["diagnostic"]["native"])
+                self.assertFalse((self.worker / "native-run.json").exists())
+                self.assertFalse(self.queue_tickets())
+                self.assertTrue(holder.is_alive())
+                holder.kill()
+                holder.join()
+
+    def test_interrupted_queued_request_leaves_its_predecessor_and_cleans_up(self):
+        read_end, write_end = os.pipe()
+        self.addCleanup(os.close, read_end)
+        with self.native_host():
+            with host.fifo_turn(self.root / "state/native-queue") as predecessor:
+                threading.Timer(0.3, os.close, (write_end,)).start()
+                result = native._run(self.args, host, read_end)
+                self.assertTrue(predecessor.ticket_path.exists())
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_parent_exited")
+        self.assertEqual(result["cleanup"]["status"], "closed")
+        self.assertNotIn("worker_pid", result["diagnostic"]["native"])
+        self.assertFalse(self.queue_tickets())
+
+    def test_admission_after_waiting_still_honours_a_recorded_activation_stop(self):
+        (self.worker / "native-activation-stop.json").write_text("{}")
+        self.hold(self.worker / "native-control.lock", 0.2)
+        result = self.assess()
+        self.assertEqual(result["inspection_outcome"]["reason"], "native_activation_stop_recorded")
+        self.assertNotIn("worker_pid", result["diagnostic"]["native"])
+        self.assertTrue((self.worker / "native-activation-stop.json").exists())
 
     def test_structured_preparation_reuses_public_host_caches_across_runs(self):
         shared = self.root / "shared-caches"
