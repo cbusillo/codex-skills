@@ -151,14 +151,14 @@ class ShellScript:
     full shell parser.
     """
 
-    def __init__(self, shell: str, expanding: bool = False) -> None:
+    def __init__(self, shell: str, expanding: bool = False, *, exact: bool = False) -> None:
         self.shell = shell
+        self.exact = exact
         self.text_parts: list[str] = []
         self.bodies: list[tuple[str, bool, str, str, int]] = []
         self.substitutions: list[str] = []
-        self.process_substitutions: dict[int, str] = {}
-        self.process_starts: dict[int, str] = {}
-        self.command_starts = [0]
+        self.process_substitutions: set[int] = set()
+        self.process_starts: set[int] = set()
         self.substitution_offsets: dict[int, int] = {}
         self.substitution_spans: list[tuple[int, int]] = []
         self.pending: list[tuple[str, bool, bool, int | None]] = []
@@ -181,14 +181,13 @@ class ShellScript:
     @property
     def command_text(self) -> str:
         text, cursor, parts = self.text, 0, []
-        for start, end in self.substitution_spans:
-            parts.extend((text[cursor:start], "${_native_substitution}"))
+        for index, (start, end) in enumerate(self.substitution_spans):
+            parts.extend((text[cursor:start], substitution_marker(index)))
             cursor = end
         return "".join([*parts, text[cursor:]])
 
     def open_scope(self, kind: str, start: int | None, end: int) -> None:
         self.stack.append((kind, start))
-        self.command_starts.append(end)
         if start is not None:
             self.substitution_offsets[start] = len(self.text)
         self.emit(end)
@@ -213,7 +212,7 @@ class ShellScript:
             elif shell.startswith("$(", self.index):
                 self.open_scope("(", self.index + 2, self.index + 2)
             elif context not in {'"', 'body'} and shell.startswith(("<(", ">("), self.index):
-                self.process_starts[self.index + 2] = shell[self.command_starts[-1]:self.index]
+                self.process_starts.add(self.index + 2)
                 self.open_scope("(", self.index + 2, self.index + 2)
             elif character == "`":
                 self.backtick()
@@ -232,14 +231,10 @@ class ShellScript:
                 self.emit(len(shell) if closing < 0 else closing)
             elif character == '&' and context != '((':
                 if shell.startswith(('&&', '&>'), self.index):
-                    separator = shell.startswith('&&', self.index)
                     self.emit(self.index + 2)
-                    if separator:
-                        self.command_starts[-1] = self.index
                 else:
                     self.background |= self.index == 0 or shell[self.index - 1] not in '><|;'
                     self.emit(self.index + 1)
-                    self.command_starts[-1] = self.index
             elif shell.startswith("((", self.index) and (self.index == 0 or shell[self.index - 1] in " \t\r\n;&|"):
                 self.stack.append(("((", None))  # An arithmetic command, as in `$((`.
                 self.emit(self.index + 2)
@@ -254,21 +249,18 @@ class ShellScript:
             elif character == "\n" and self.pending:
                 self.emit(self.index + 1)
                 self.read_bodies()
-                self.command_starts[-1] = self.index
             elif context != "((" and character in ";|\n":
                 length = 2 if shell.startswith(("||", "|&"), self.index) else 1
                 self.emit(self.index + length)
-                self.command_starts[-1] = self.index
             else:
                 self.emit(self.index + 1)
 
     def close(self) -> None:
         _, start = self.stack.pop()
-        self.command_starts.pop()
         # Record only outermost substitutions; parsing one finds those inside it.
         if start is not None and all(enclosing is None for _, enclosing in self.stack):
             if start in self.process_starts:
-                self.process_substitutions[len(self.substitutions)] = self.process_starts[start]
+                self.process_substitutions.add(len(self.substitutions))
             self.substitutions.append(self.shell[start:self.index])
             self.substitution_spans.append((self.substitution_offsets[start], len(self.text) + 1))
             self.closed_substitutions.add(start)
@@ -364,12 +356,32 @@ class XargsInput(NamedTuple):
     unknown: bool
     template: tuple[str, ...]
     composed: bool = False
+    stdin_inherited: bool = False
 
 
 class Command(NamedTuple):
     argv: list[str]
     roles: set[str]
     xargs: tuple[XargsInput, ...]
+
+
+class SshInvocation(NamedTuple):
+    remote: list[str]
+    background: bool
+    stdin: bool
+
+
+class ExecutionSource(NamedTuple):
+    text: str
+    inline: bool = False
+    input_kind: str = "data"
+    exact: bool = False
+    mapping: tuple[XargsInput, ...] = ()
+
+
+class BoundInput(NamedTuple):
+    commands: list[list[str]]
+    active: bool
 
 
 def shell_invocation(argv: list[str]) -> ShellInvocation:
@@ -551,19 +563,21 @@ def normalize_command(argv: list[str]) -> Command:
     raise ValueError("foreground wrapper nesting exceeds coverage")
 
 
-def shell_candidates(argv: list[str], *, include_nonliteral: bool = False) -> list[list[str]]:
+def shell_candidates(argv: list[str], *, include_nonliteral: bool = False, hints: bool = True) -> list[list[str]]:
     if not argv:
         return []
     if argv[0] in SHELLS:
         return [argv]
     if include_nonliteral and any(char in argv[0] for char in "$`"):
         return [["sh", *argv[1:]]]
+    if not hints or argv[0] == "find":
+        return []
     return [argv[index:] for index, word in enumerate(argv[1:], 1) if Path(word).name in SHELLS]
 
 
-def ssh_command(argv: list[str]) -> tuple[list[str], bool]:
+def ssh_command(argv: list[str]) -> SshInvocation:
     argv = without_redirections(argv)
-    cursor, background = 1, False
+    cursor, background, stdin = 1, False, True
     value_flags = set("BbcDEeFIiJLlmOoPpQRSWw")
     while cursor < len(argv) and argv[cursor].startswith("-"):
         option = argv[cursor]
@@ -575,14 +589,18 @@ def ssh_command(argv: list[str]) -> tuple[list[str], bool]:
                 cursor += position == len(option) - 1
                 break
             background |= flag == "f"
-    return argv[cursor + 1:], background
+            stdin &= flag not in "nf"
+    return SshInvocation(argv[cursor + 1:], background, stdin)
 
 
-def command_input(argv: list[str], *, completion: bool = False, depth: int = 0) -> tuple[list[str], str]:
+def command_input(argv: list[str], *, completion: bool = False, depth: int = 0,
+                  executed_files: set[str] | None = None, hints: bool = True,
+                  mapping: tuple[XargsInput, ...] = ()) -> tuple[list[str], str]:
     if depth >= 16:
         raise ValueError("shell nesting exceeds coverage")
     normalized = normalize_command(argv)
-    argv, frames = normalized.argv, normalized.xargs
+    argv, frames = normalized.argv, (*mapping, *normalized.xargs)
+    executed_files = executed_files or set()
     if not argv:
         return [], "opaque" if completion and frames else "unknown"
     name, tail = argv[0], argv[1:]
@@ -595,11 +613,9 @@ def command_input(argv: list[str], *, completion: bool = False, depth: int = 0) 
             kind = "shell"
     elif name in {"eval", "ssh"}:
         if name == "ssh":
-            tail, _ = ssh_command(argv)
-            try:
-                kind = stdin_kind(shell_commands(" ".join(tail)), set(), completion=completion, depth=depth + 1) if tail else "shell"
-            except ValueError:
-                kind = "unknown"
+            invocation = ssh_command(argv)
+            tail = invocation.remote
+            kind = "shell" if not tail and invocation.stdin else "data"
         redirection = next((index for index, word in enumerate(tail) if word.startswith(("<", ">"))), len(tail))
         if tail[:redirection]:
             programs.append(" ".join(tail[:redirection]))
@@ -614,26 +630,36 @@ def command_input(argv: list[str], *, completion: bool = False, depth: int = 0) 
                 break
         if name in {"su", "runuser"} and not programs:
             kind = "shell"
+    elif name == "find":
+        kinds = [command_input(child, completion=completion, depth=depth + 1,
+                              executed_files=executed_files, hints=False, mapping=find_mapping(child))[1]
+                 for child in find_commands(argv)]
+        kind = combine_input_kinds(kinds)
+    if programs and name in SHELLS | {"eval", "ssh", "su", "runuser", "script", "flock"}:
+        if name != "ssh" or ssh_command(argv).stdin:
+            kind = combine_input_kinds([inherited_input(source, executed_files, completion=completion, depth=depth + 1)
+                                        for source in programs])
     if completion and ("$" in name or "`" in name):
         invocation = shell_invocation(shell_candidates(argv, include_nonliteral=True)[0])
         if invocation.body is not None:
             programs.append(invocation.body)
         if invocation.stdin:
             kind = "unknown"
-    elif name not in SHELLS and kind == "data":
+    elif name not in SHELLS | {"ssh"} and kind == "data":
         for candidate in shell_candidates(argv, include_nonliteral=completion):
             invocation = shell_invocation(candidate)
             if invocation.body is not None:
                 programs.append(invocation.body)
             if invocation.stdin:
-                kind = "possible"
+                kind = "possible" if hints else kind
             if completion and any(Path(word).name == "xargs" for word in argv[:len(argv) - len(candidate)]):
                 kind = "opaque"
     if frames:
         unproved = len(frames) != 1 or any(frame.unknown for frame in frames)
-        unproved |= name not in SHELLS and bool(shell_candidates(argv, include_nonliteral=True))
+        unproved |= name not in SHELLS and bool(shell_candidates(argv, include_nonliteral=True, hints=hints))
         unproved |= any(char in name for char in "$`")
         unproved |= any(frame.replacement and frame.replacement in name for frame in frames)
+        unproved |= any(frame.replacement and frame.replacement in source for frame in frames for source in programs)
         if name in SHELLS:
             invocation = shell_invocation(argv)
             words = without_redirections(argv)
@@ -646,8 +672,8 @@ def command_input(argv: list[str], *, completion: bool = False, depth: int = 0) 
                     unproved |= invocation.body is not None and frame.replacement in invocation.body
                     unproved |= (invocation.script is not None and invocation.script.startswith(frame.replacement)
                                  and not invocation.options_closed)
-                unproved |= invocation.mode == "stdin" or frame.stdin_uncertain and invocation.mode == "implicit"
-            kind = "opaque" if completion and unproved else "data"
+                unproved |= invocation.mode == "stdin" and not frame.stdin_inherited or frame.stdin_uncertain and invocation.mode == "implicit"
+            kind = "opaque" if completion and unproved else kind if all(frame.stdin_inherited for frame in frames) else "data"
         elif unproved or name in {"eval", "ssh", "source", ".", "su", "runuser", "script", "flock"} or kind != "data":
             kind = "opaque" if completion else "data"
     if input_is_source(kind, completion=completion) and "<<<" in argv[:-1]:
@@ -695,7 +721,7 @@ def reads_program_from_stdin(argv: list[str]) -> bool:
     return True
 
 
-def heredoc_commands(header: str, delimiter: str, occurrence: int) -> list[list[str]]:
+def heredoc_commands(header: str, delimiter: str, occurrence: int) -> BoundInput:
     tokens = shell_tokens(header)
     tokens = [token.rstrip("\n") if token.rstrip("\n") in {"|", "|&"} else token for token in tokens]
     tokens = [token for index, token in enumerate(tokens)
@@ -706,11 +732,11 @@ def heredoc_commands(header: str, delimiter: str, occurrence: int) -> list[list[
              or tokens[index + 1:index + 3] == ["-", delimiter])
     ]
     if len(markers) < -occurrence:
-        return []
+        return BoundInput([], False)
     marker = markers[occurrence]
     start = max((index + 1 for index in range(marker) if OPERATORS.match(tokens[index])), default=0)
     if marker and tokens[marker - 1] == ")":
-        return [[")"]]
+        return BoundInput([[")"]], True)
     end = next((index for index in range(marker + 1, len(tokens))
                 if OPERATORS.match(tokens[index]) and tokens[index] not in {"|", "|&"}), len(tokens))
     commands: list[list[str]] = [[]]
@@ -719,13 +745,15 @@ def heredoc_commands(header: str, delimiter: str, occurrence: int) -> list[list[
             commands.append([])
         else:
             commands[-1].append(token)
-    return commands
+    return BoundInput(commands, input_redirection(commands[0]) == marker - start)
 
 
 def script_readers(commands: list[list[str]]) -> list[list[str]]:
     """Normalize known interpreter wrappers and check which command consumes a stdin program."""
     readers: list[list[str]] = []
-    for command in commands:
+    for position, command in enumerate(commands):
+        if position and (input_redirection(command) is not None or fd0_role(commands[position - 1]) == "blocks"):
+            break
         for argv in unwrap(command, expand=False):
             for index, token in enumerate(argv):
                 if (index != 0 and argv[0] not in SCRIPT_WRAPPERS) or not SCRIPT_INTERPRETERS.fullmatch(Path(token).name):
@@ -750,7 +778,7 @@ def pipelines(shell: str) -> list[list[list[str]]]:
 
 
 def literal_payload(command: list[str]) -> str | None:
-    argv = normalize_command(command).argv
+    argv = without_redirections(normalize_command(command).argv)
     if not argv or any("$" in word or "`" in word for word in argv):
         return None
     if argv[0] == "echo":
@@ -782,7 +810,7 @@ def pipeline_payload(stages: list[list[str]]) -> str | None:
 def literal_pipeline_programs(shell: str) -> list[list[str]]:
     programs = []
     for stages in pipelines(shell):
-        if len(stages) > 1 and (payload := pipeline_payload(stages[:-1])) is not None:
+        if len(stages) > 1 and input_redirection(stages[-1]) is None and (payload := pipeline_payload(stages[:-1])) is not None:
             programs.extend([*reader, payload] for reader in script_readers(stages[-1:]))
     return programs
 
@@ -802,19 +830,40 @@ def written_files(command: list[str]) -> set[str]:
     return paths
 
 
-def program_references(command: list[str], written: set[str]) -> set[str]:
+def find_commands(argv: list[str]) -> list[list[str]]:
+    if argv[:1] != ["find"]:
+        return []
+    children, cursor = [], 1
+    while cursor < len(argv):
+        if argv[cursor] not in {"-exec", "-execdir"}:
+            cursor += 1
+            continue
+        start = cursor + 1
+        end = next((index for index in range(start, len(argv))
+                    if argv[index] == ";" or argv[index] == "+" and argv[index - 1] == "{}"), len(argv))
+        if start < end:
+            children.append(argv[start:end])
+        cursor = end + 1
+    return children
+
+
+def find_mapping(argv: list[str]) -> tuple[XargsInput, ...]:
+    return (XargsInput("{}", False, False, tuple(argv), stdin_inherited=True),) if any("{}" in word for word in argv) else ()
+
+
+def program_references(command: list[str], written: set[str], *, hints: bool = True, depth: int = 0) -> set[str]:
     normalized = normalize_command(command)
     argv = normalized.argv
     if not argv:
         return set()
     references = {argv[0]}
-    for candidate in shell_candidates(argv, include_nonliteral=True):
+    for child in find_commands(argv):
+        references.update(program_references(child, written, hints=False, depth=depth + 1))
+    for candidate in shell_candidates(argv, include_nonliteral=True, hints=hints):
         invocation = shell_invocation(candidate)
         if invocation.script is not None:
             references.add(invocation.script)
-            prefix = argv[:len(argv) - len(candidate)]
-            proven_slot = argv[0] in SHELLS or argv[0] == "find" and bool({"-exec", "-execdir"} & set(prefix))
-            if proven_slot and any(char in Path(invocation.script).name for char in "$`*?[{"):
+            if argv[0] in SHELLS and any(char in Path(invocation.script).name for char in "$`*?[{"):
                 references.update(written)
         if normalized.xargs and (invocation.mode == "implicit" or invocation.script is not None
                 and any(frame.replacement and frame.replacement in invocation.script for frame in normalized.xargs)):
@@ -825,44 +874,138 @@ def program_references(command: list[str], written: set[str]) -> set[str]:
         references.update(sources)
         if any(char in Path(source).name for source in sources for char in "$`*?[{"):
             references.update(written)
-    if command_input(command, completion=True)[1] in {"shell", "possible", "unknown"}:
+    if command_input(command, completion=True, depth=depth, hints=hints)[1] in {"shell", "possible", "unknown"}:
         references.update(argv[index + 1] for index, word in enumerate(argv[:-1]) if word == "<")
     return {Path(path).name for path in references}
 
 
-def stdin_kind(commands: list[list[str]], executed_files: set[str], *, completion: bool = False, depth: int = 0) -> str:
+def input_redirection(argv: list[str]) -> int | None:
+    binding, cursor = None, 0
+    while cursor < len(argv):
+        token = argv[cursor]
+        if not re.fullmatch(r"[<>][<>&|]*|&>>?", token):
+            cursor += 1
+            continue
+        descriptor = int(argv[cursor - 1]) if cursor and argv[cursor - 1].isdecimal() else (0 if token.startswith("<") else 1)
+        if descriptor == 0 and not (token in {"<&", ">&"} and argv[cursor + 1:cursor + 2] == ["0"]):
+            binding = cursor
+        cursor += 3 if token == "<<" and argv[cursor + 1:cursor + 2] == ["-"] else 2
+    return binding
+
+
+def fd0_role(command: list[str]) -> str:
+    argv = without_redirections(normalize_command(command).argv)
+    if not argv:
+        return "unknown"
+    if argv[0] in {"echo", "printf"}:
+        return "blocks"
+    if argv[0] == "cat":
+        operands = drop_flags(argv[1:])
+        if not operands or all(word in STDIN_PROGRAM_PATHS for word in operands):
+            return "forwards"
+        return "unknown" if any(word in STDIN_PROGRAM_PATHS for word in operands) else "blocks"
+    if argv[0] == "tee" and not {"--help", "--version"} & set(argv):
+        return "forwards"
+    return "unknown"
+
+
+def combine_input_kinds(kinds: list[str]) -> str:
+    return next((kind for kind in ("opaque", "shell", "unknown", "possible") if kind in kinds), "data")
+
+
+def inherited_input(source: str, executed_files: set[str], *, completion: bool, depth: int) -> str:
+    if depth >= 16:
+        return "unknown"
+    try:
+        script = ShellScript(source)
+        chains = pipelines(script.command_text)
+        commands = [command for chain in chains for command in chain]
+        written = set().union(*(written_files(command) for command in commands))
+        referenced = set().union(*(program_references(command, written, depth=depth) for command in commands))
+        executed = executed_files | ({Path(path).name for path in written} & referenced)
+        return combine_input_kinds([stdin_kind(chain, executed, completion=completion, depth=depth, inherited=True)
+                                    for chain in chains if chain and input_redirection(chain[0]) is None])
+    except ValueError:
+        return "unknown"
+
+
+def stdin_kind(commands: list[list[str]], executed_files: set[str], *, completion: bool = False,
+               depth: int = 0, inherited: bool = False, destination_kind: str = "data") -> str:
     if not commands or any(not argv for argv in commands):
         return "unknown"
-    result = "data"
-    for command in commands:
+    transformed = False
+    for index, command in enumerate(commands):
+        if index and input_redirection(command) is not None:
+            return "data"
         argv = normalize_command(command).argv
-        _, kind = command_input(command, completion=completion, depth=depth)
+        _, kind = command_input(command, completion=completion, depth=depth, executed_files=executed_files)
         if not argv:
             return "unknown"
-        if argv[0] in {"done", "fi", "esac", "}", ")"} or kind == "shell":
+        if not inherited and argv[0] in {"done", "fi", "esac", "}", ")"}:
             return "shell"
-        if kind in {"possible", "unknown"}:
-            result = "unknown"
+        if kind != "data":
+            if transformed and kind in {"shell", "unknown", "opaque"}:
+                return "opaque" if completion else "shell"
+            return kind
+        role = fd0_role(command)
         if {Path(path).name for path in written_files(command)} & executed_files:
-            return "shell"
-    return result
+            if role != "blocks":
+                return "shell" if role == "forwards" or not completion else "opaque"
+        if role == "blocks":
+            return "data"
+        transformed |= role == "unknown"
+    if transformed and destination_kind in {"shell", "unknown"}:
+        return "opaque" if completion else "shell"
+    return destination_kind
+
+
+def substitution_marker(index: int) -> str:
+    return f"${{_native_substitution_{index}}}"
+
+
+def process_input(script: ShellScript, index: int, commands: list[list[str]], executed_files: set[str], *, completion: bool) -> str:
+    start, _ = script.substitution_spans[index]
+    if script.text[start:start + 1] != "<":
+        return "data"
+    marker = substitution_marker(index)
+    command = next((command for command in commands if any(marker in word for word in command)), [])
+    argv = normalize_command(command).argv
+    if not argv:
+        return "unknown"
+    binding = input_redirection(command)
+    if binding is not None and command[binding + 1:binding + 2] == [marker]:
+        return command_input(command, completion=completion, executed_files=executed_files)[1]
+    for candidate in shell_candidates(argv, include_nonliteral=completion, hints=not script.exact):
+        if shell_invocation(candidate).script == marker:
+            return "shell" if argv[0] in SHELLS else "possible"
+    if argv[0] in {"source", "."} and without_redirections(argv)[1:2] == [marker]:
+        return "shell"
+    if marker in without_redirections(argv):
+        sources, _ = command_input(command, executed_files=executed_files)
+        for source in sources:
+            for child in shell_commands(ShellScript(source).command_text):
+                if any(re.search(r"\$(?:[0-9@*]|\{[0-9@*]\})", slot)
+                       for slot in program_references(child, set(), hints=False)):
+                    return "unknown" if completion else "shell"
+    return "data"
 
 
 def execution_sources(shell: str, *, completion: bool = False, depth: int = 0,
                       executed_files: set[str] | None = None, inline: bool = False,
-                      force_input: str = "data") -> Iterator[tuple[ShellScript | ValueError, list[list[str]]]]:
+                      force_input: str = "data", exact: bool = False,
+                      mapping: tuple[XargsInput, ...] = ()) -> Iterator[tuple[ShellScript | ValueError, list[list[str]]]]:
     if depth >= 16:
         yield ValueError("shell nesting exceeds coverage"), []
         return
     if executed_files is None:
         executed_files = set()
-    if depth == 0 and "<<" in shell:
+    if depth == 0:
         nodes = list(execution_sources(shell, completion=True, depth=depth + 1, executed_files=set()))
-        commands = [argv for node, _ in nodes if isinstance(node, ShellScript) for argv in shell_commands(node.command_text)]
-        written = set().union(*(written_files(argv) for argv in commands))
-        executed = set().union(*(program_references(command, written) for command in commands))
+        discovered = [(argv, node.exact) for node, _ in nodes if isinstance(node, ShellScript) for argv in shell_commands(node.command_text)]
+        written = set().union(*(written_files(argv) for argv, _ in discovered))
+        executed = set().union(*(program_references(command, written, hints=not precise) for command, precise in discovered))
         executed_files = {Path(path).name for path in written} & executed
-    script = ShellScript(shell)
+    script = ShellScript(shell, exact=exact)
     opaque = ["unfinished shell syntax"] if script.stack or script.pending or script.incomplete else []
     try:
         commands = shell_commands(script.command_text)
@@ -870,43 +1013,46 @@ def execution_sources(shell: str, *, completion: bool = False, depth: int = 0,
         yield error, []
         return
     inputs = [normalize_command(argv).argv for argv in commands]
-    nested = []
+    nested: list[ExecutionSource] = []
     for index, source in enumerate(script.substitutions):
         force = "data"
         if index in script.process_substitutions:
             try:
-                owner_commands = shell_commands(script.process_substitutions[index])
-                if owner_commands:
-                    owner_kind = command_input(owner_commands[0], completion=completion)[1]
-                    if input_is_source(owner_kind, completion=completion):
-                        force = owner_kind
+                force = process_input(script, index, commands, executed_files, completion=completion)
             except ValueError:
                 opaque.append("unreadable process-substitution reader")
-        nested.append((source, False, force))
+        nested.append(ExecutionSource(source, input_kind=force))
     for raw, argv in zip(commands, inputs):
         if not argv:
             continue
         if completion and inline and ("$" in argv[0] or "`" in argv[0]):
             opaque.append("nonliteral inline shell program")
-        sources, kind = command_input(raw, completion=completion)
+        sources, kind = command_input(raw, completion=completion, executed_files=executed_files, hints=not exact, mapping=mapping)
         if completion and kind == "opaque":
-            opaque.append("unproved xargs program mapping")
-        nested.extend((source, True, "data") for source in sources)
+            opaque.append("unproved shell input or argument mapping")
+        nested.extend(ExecutionSource(source, inline=True) for source in sources)
+        nested.extend(ExecutionSource(shlex.join(child), inline=True, exact=True, mapping=find_mapping(child))
+                      for child in find_commands(argv))
+    if completion and any(argv[:1] == ["find"] and {"-exec", "-execdir"} & set(argv) for argv in inputs):
+        if any(argv and argv[0] in {"-exec", "-execdir", "-ok", "-okdir", "-o", "-a", "!", "\\("} for argv in inputs):
+            opaque.append("split find expression")
     for stages in pipelines(script.command_text):
         if len(stages) < 2:
             continue
-        kind = command_input(stages[-1], completion=completion)[1]
+        if input_redirection(stages[-1]) is not None:
+            continue
+        kind = command_input(stages[-1], completion=completion, executed_files=executed_files)[1]
         if not input_is_source(kind, completion=completion):
             continue
         payload = pipeline_payload(stages[:-1])
         if payload is not None:
-            nested.append((payload, True, "data"))
+            nested.append(ExecutionSource(payload, inline=True))
         elif completion and kind in {"shell", "unknown"}:
             opaque.append("unresolved shell pipeline input")
     if input_is_source(force_input, completion=completion):
         payload = pipeline_payload(commands)
         if payload is not None:
-            nested.append((payload, True, "data"))
+            nested.append(ExecutionSource(payload, inline=True))
         elif completion and force_input in {"shell", "unknown"} and not script.bodies:
             opaque.append("unresolved shell process-substitution input")
     readers = []
@@ -919,30 +1065,35 @@ def execution_sources(shell: str, *, completion: bool = False, depth: int = 0,
         try:
             if header.rstrip().endswith(("|", "|&")):
                 header += script.text[len(header):]
-            consumers = heredoc_commands(header, delimiter, occurrence)
-            readers.extend([*argv, body] for argv in script_readers(consumers))
-            kind = force_input if input_is_source(force_input, completion=completion) else stdin_kind(consumers, executed_files, completion=completion)
+            bound = heredoc_commands(header, delimiter, occurrence)
+            if bound.active:
+                readers.extend([*argv, body] for argv in script_readers(bound.commands))
+            kind = stdin_kind(bound.commands, executed_files, completion=completion, destination_kind=force_input) if bound.active else "data"
+            if completion and kind == "opaque":
+                opaque.append("unresolved heredoc transformation")
             if input_is_source(kind, completion=completion):
-                nested.append((body, False, "data"))
+                nested.append(ExecutionSource(body))
             elif expands:
                 expanded = ShellScript(body, expanding=True)
                 if expanded.stack != [("body", None)] or expanded.pending or expanded.incomplete:
                     opaque.append("unfinished heredoc expansion")
-                nested.extend((source, False, "data") for source in expanded.substitutions)
+                nested.extend(ExecutionSource(source) for source in expanded.substitutions)
         except ValueError as error:
             opaque.append(str(error))
     yield script, readers
     if opaque:
         yield ValueError("; ".join(opaque)), []
-    for source, nested_inline, nested_input in nested:
-        yield from execution_sources(source, completion=completion, depth=depth + 1,
-                                     executed_files=executed_files, inline=nested_inline, force_input=nested_input)
+    for source in nested:
+        yield from execution_sources(source.text, completion=completion, depth=depth + 1,
+                                     executed_files=executed_files, inline=source.inline, force_input=source.input_kind,
+                                     exact=source.exact, mapping=source.mapping)
 
 
 def detached_command(argv: list[str]) -> bool:
     command = normalize_command(argv)
     return (command.argv[:1] == ["coproc"] or "detached" in command.roles
-            or command.argv[:1] == ["ssh"] and ssh_command(command.argv)[1])
+            or command.argv[:1] == ["ssh"] and ssh_command(command.argv).background
+            or any(detached_command(child) for child in find_commands(command.argv)))
 
 
 def simple_commands(shell: str) -> list[list[str]]:
