@@ -156,6 +156,8 @@ class ShellScript:
         self.text_parts: list[str] = []
         self.bodies: list[tuple[str, bool, str, str, int]] = []
         self.substitutions: list[str] = []
+        self.process_substitutions: set[str] = set()
+        self.process_starts: set[int] = set()
         self.pending: list[tuple[str, bool, bool, int | None]] = []
         self.body_owners: dict[int, int] = {}
         self.closed_substitutions: set[int] = set()
@@ -191,6 +193,10 @@ class ShellScript:
                 self.stack.pop()
                 self.emit(self.index + 2)
             elif shell.startswith("$(", self.index):
+                self.stack.append(("(", self.index + 2))
+                self.emit(self.index + 2)
+            elif context not in {'"', 'body'} and shell.startswith(("<(", ">("), self.index):
+                self.process_starts.add(self.index + 2)
                 self.stack.append(("(", self.index + 2))
                 self.emit(self.index + 2)
             elif character == "`":
@@ -238,6 +244,8 @@ class ShellScript:
         if start is not None and all(enclosing is None for _, enclosing in self.stack):
             self.substitutions.append(self.shell[start:self.index])
             self.closed_substitutions.add(start)
+            if start in self.process_starts:
+                self.process_substitutions.add(self.shell[start:self.index])
         self.emit(self.index + 1)
 
     def backtick(self) -> None:
@@ -303,42 +311,79 @@ def shell_c_body(argv: list[str]) -> str | None:
     """One shell option parser, separate from Python/Node's stdin options."""
     if not argv or Path(argv[0]).name not in SHELLS:
         return None
-    cursor = 1
+    cursor, command = 1, False
     while cursor < len(argv):
         option = argv[cursor]
-        if option == "--" or not option.startswith(("-", "+")):
-            return None
-        if not option.startswith("--") and "c" in option[1:]:
-            return argv[cursor + 1] if cursor + 1 < len(argv) else None
+        if option == "--":
+            cursor += 1
+            break
+        if not option.startswith(("-", "+")):
+            break
+        command |= not option.startswith("--") and "c" in option[1:]
         cursor += 1
         if option in {"--rcfile", "--init-file"} or not option.startswith("--") and option.endswith(("o", "O")):
             cursor += 1
-    return None
+    return argv[cursor] if command and cursor < len(argv) else None
+
+
+def execution_argv(argv: list[str]) -> list[str]:
+    """The actual command position after supported foreground launch wrappers."""
+    normalized = unwrap(argv, expand=False)
+    argv = normalized[0] if len(normalized) == 1 else []
+    for _ in range(16):
+        if not argv:
+            return []
+        head = argv[0] if argv[0] == "." else Path(argv[0]).name
+        tail = argv[1:]
+        if head == "sudo":
+            if any(flag in {"-s", "-i", "--shell", "--login"} for flag in tail):
+                return ["sh", *tail]
+            argv = drop_flags(tail, {"-u", "-g", "-h", "-p", "-C", "-T", "--user", "--group"})
+        elif head == "timeout":
+            tail = drop_flags(tail, {"-k", "--kill-after", "-s", "--signal"})
+            argv = tail[1:]
+        elif head in {"nice", "ionice", "stdbuf", "caffeinate"}:
+            argv = drop_flags(tail, {"-n", "--adjustment", "-c", "-p", "-i", "-o", "-e", "-t", "-w"})
+        elif head == "chrt":
+            argv = drop_flags(tail)[1:]
+        elif head == "xargs":
+            argv = drop_flags(tail, {"-I", "-n", "-P", "-L", "-s", "-E", "--replace", "--max-args"})
+        elif head == "docker" and tail[:1] == ["exec"]:
+            tail = drop_flags(tail[1:], {"-u", "--user", "-w", "--workdir", "-e", "--env"})
+            argv = tail[1:]
+        else:
+            return [head, *tail]
+    return argv
 
 
 def shell_inputs(argv: list[str]) -> tuple[list[str], bool]:
     """Literal nested shell programs and whether stdin may supply shell source."""
+    argv = execution_argv(argv)
+    if not argv:
+        return [], False
+    name, tail = argv[0], argv[1:]
     programs, stdin = [], False
-    for index, token in enumerate(argv):
-        name, tail = Path(token).name, argv[index + 1:]
-        if name in SHELLS:
-            body = shell_c_body(argv[index:])
-            if body is not None:
-                programs.append(body)
-            else:
-                stdin = True
-        elif name in {"eval", "ssh"}:
-            redirection = next((position for position, word in enumerate(tail)
-                                if word.startswith(("<", ">"))), len(tail))
-            tail = tail[:redirection]
-            if tail:
-                programs.append(" ".join(tail))
-            stdin |= name == "ssh"
-        elif name in {"su", "runuser", "script", "flock"}:
-            for position, flag in enumerate(tail[:-1]):
-                if flag == "--command" or flag.startswith("-") and "c" in flag[1:]:
-                    programs.append(tail[position + 1])
-                    break
+    if name in SHELLS:
+        body = shell_c_body(argv)
+        if body is not None:
+            programs.append(body)
+        else:
+            stdin = True
+    elif name in {"eval", "ssh"}:
+        if name == "ssh":
+            tail = drop_flags(tail, {"-p", "-i", "-l", "-o", "-F", "-J", "-L", "-R", "-D", "-S", "-W", "-b", "-c", "-m"})[1:]
+        redirection = next((position for position, word in enumerate(tail)
+                            if word.startswith(("<", ">"))), len(tail))
+        if tail[:redirection]:
+            programs.append(" ".join(tail[:redirection]))
+        stdin = name == "ssh"
+    elif name in {"source", ".", "su", "runuser"}:
+        stdin = True
+    if name in {"su", "runuser", "script", "flock"}:
+        for position, flag in enumerate(tail[:-1]):
+            if flag == "--command" or flag.startswith("-") and "c" in flag[1:]:
+                programs.append(tail[position + 1])
+                break
     if stdin and "<<<" in argv[:-1]:
         programs.append(argv[argv.index("<<<") + 1])
     return programs, stdin
@@ -396,6 +441,9 @@ def reads_program_from_stdin(argv: list[str]) -> bool:
 def heredoc_commands(header: str, delimiter: str, occurrence: int) -> list[list[str]]:
     """Bind raw pipeline commands; completion callers keep parse failures opaque."""
     tokens = shell_tokens(header)
+    tokens = [token.rstrip("\n") if token.rstrip("\n") in {"|", "|&"} else token for token in tokens]
+    tokens = [token for index, token in enumerate(tokens)
+              if token != "\n" or index == 0 or tokens[index - 1] not in {"|", "|&"}]
     markers = [
         index for index, token in enumerate(tokens[:-1]) if token == "<<"
         and (tokens[index + 1] in {delimiter, "-" + delimiter}
@@ -405,6 +453,8 @@ def heredoc_commands(header: str, delimiter: str, occurrence: int) -> list[list[
         return []
     marker = markers[occurrence]
     start = max((index + 1 for index in range(marker) if OPERATORS.match(tokens[index])), default=0)
+    if marker and tokens[marker - 1] == ")":
+        start = max((index + 1 for index in range(marker - 1) if tokens[index] == "("), default=start)
     end = next((index for index in range(marker + 1, len(tokens))
                 if OPERATORS.match(tokens[index]) and tokens[index] not in {"|", "|&"}), len(tokens))
     commands: list[list[str]] = [[]]
@@ -466,104 +516,110 @@ def literal_pipeline_programs(shell: str) -> list[list[str]]:
     return programs
 
 
-def stdin_kind(commands: list[list[str]], *, file_may_run: bool = False) -> str:
-    """Positive data consumers; unfamiliar or file-producing consumers stay unknown."""
-    if any(reads_script_from_input(argv) for argv in commands):
-        return "shell"
-    for command in commands:
-        normalized = unwrap(command, expand=False)
-        if len(normalized) != 1:
-            return "unknown"
-        argv = normalized[0]
-        name = Path(argv[0]).name
-        if SCRIPT_INTERPRETERS.fullmatch(name) or script_readers([command]):
-            continue
-        # These known readers consume text/JSON, never shell source from stdin.
-        if name in {"gh", "jq", "sed"} or name == "git" and "commit" in argv:
-            continue
-        if name in {"gh-issue", "gh-comment"} and any(
-                Path(token).name == name and Path(runnable(token, "github")).is_file() for token in command):
-            continue
-        if name == "cat" and (not file_may_run or not any(">" in token for token in argv)):
-            continue
+def stdin_kind(commands: list[list[str]], executed_files: set[str]) -> str:
+    """Shell/compound input executes; other literal programs receive data."""
+    if not commands or any(not argv for argv in commands):
         return "unknown"
-    return "data" if commands else "unknown"
+    for command in commands:
+        argv = execution_argv(command)
+        if not argv or "$" in argv[0] or "`" in argv[0]:
+            return "unknown"
+        if argv[0] in {"done", "fi", "esac", "}", ")"} or reads_script_from_input(command):
+            return "shell"
+        if command and Path(command[0]).name == "xargs" and argv[0] in SHELLS:
+            return "shell"
+        if any(token in {">", ">>", ">|", "&>"} and command[index + 1] in executed_files
+               for index, token in enumerate(command[:-1])):
+            return "shell"
+    return "data"
 
 
-def execution_sources(shell: str, *, completion: bool = False, depth: int = 0):
-    """One bounded source walk; callers choose how unknown input is treated.
+def execution_sources(shell: str, *, completion: bool = False, depth: int = 0,
+                      executed_files: set[str] | None = None, inline: bool = False,
+                      force_input: bool = False):
+    """Bounded source walk. ValueError marks opaque work, local to that source.
 
-    Errors propagate. The policy adapter is fail-open; completion is fail-closed.
-    Original scanner facts travel with each source, never reparsed stripped text.
+    Both adapters retain readable siblings. Policy skips opaque sources;
+    completion refuses them. Original scanner facts travel with each source.
     """
     if depth >= 16:
-        raise ValueError("shell nesting exceeds coverage")
+        yield ValueError("shell nesting exceeds coverage"), []
+        return
+    if executed_files is None:
+        executed_files = set()
+    if depth == 0 and "<<" in shell and ">" in shell:
+        # Same-call syntax only. No generated program is reconstructed and no
+        # filesystem or cross-call state contributes completion authority.
+        nodes = list(execution_sources(shell, depth=depth + 1, executed_files=set()))
+        commands = [argv for node, _ in nodes if isinstance(node, ShellScript) for argv in shell_commands(node.text)]
+        written = {argv[index + 1] for argv in commands for index, token in enumerate(argv[:-1])
+                   if token in {">", ">>", ">|", "&>"}}
+        executed = set()
+        for command in commands:
+            argv = execution_argv(command)
+            if argv:
+                executed.add(str(Path(argv[0])))
+                if argv[0] in SHELLS | {"source", "."}:
+                    executed.update(str(Path(word)) for word in argv[1:] if not word.startswith("-"))
+        executed_files = {path for path in written if str(Path(path)) in executed}
     script = ShellScript(shell)
-    if script.stack or script.pending or script.incomplete:
-        raise ValueError("unfinished shell syntax")
-    commands = shell_commands(script.text)
-    nested = list(script.substitutions)
-    normalized_commands = [command for argv in commands for command in unwrap(argv, expand=False)]
-    # Keep same-call generated shell input conservative without interpreting it
-    # or carrying a file/variable ledger across native calls.
-    written = {argv[index + 1] for argv in commands for index, token in enumerate(argv[:-1])
-               if token in {">", ">>", "&>"}}
-    file_may_run = any(
-        any(Path(word).name in SHELLS | {"eval", "source", ".", "ssh"} for word in argv)
-        or any(Path(argv[0]) == Path(path) for path in written)
-        for argv in normalized_commands)
-    for argv in commands:
-        normalized = unwrap(argv, expand=False)
-        for command in normalized:
-            programs = shell_inputs(command)[0]
-            if completion and any(re.fullmatch(r'\$\w+|\$\{[^}]+\}', program.strip()) for program in programs):
-                raise ValueError("nonliteral inline shell program")
-            nested.extend(programs)
+    opaque = ["unfinished shell syntax"] if script.stack or script.pending or script.incomplete else []
+    try:
+        commands = shell_commands(script.text)
+    except ValueError as error:
+        yield error, []
+        return
+    inputs = [execution_argv(argv) for argv in commands]
+    process_input = any(argv and argv[0] in SHELLS | {"source", "."} for argv in inputs)
+    nested = [(source, False, source in script.process_substitutions and process_input)
+              for source in script.substitutions]
+    for argv in inputs:
+        if not argv:
+            continue
+        if completion and (inline and ("$" in argv[0] or "`" in argv[0])
+                           or ("$" in argv[0] or "`" in argv[0]) and any(re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", flag) for flag in argv[1:])):
+            opaque.append("nonliteral inline shell program")
+        nested.extend((source, True, False) for source in shell_inputs(argv)[0])
     readers = []
     for index, (body, expands, header, delimiter, occurrence) in enumerate(script.bodies):
         owner = script.body_owners.get(index)
         if owner is not None:
             if owner not in script.closed_substitutions:
-                raise ValueError("unclosed heredoc substitution")
-            continue  # Its recorded substitution is independently walked below.
-        consumers = heredoc_commands(header, delimiter, occurrence)
-        readers.extend([*argv, body] for argv in script_readers(consumers))
-        kind = stdin_kind(consumers, file_may_run=file_may_run)
-        if kind == "shell" or completion and kind == "unknown":
-            nested.append(body)
-        elif expands:
-            expanded = ShellScript(body, expanding=True)
-            if expanded.stack != [("body", None)] or expanded.pending or expanded.incomplete:
-                raise ValueError("unfinished heredoc expansion")
-            nested.extend(expanded.substitutions)
+                opaque.append("unclosed heredoc substitution")
+            continue
+        try:
+            if header.rstrip().endswith(("|", "|&")):
+                header += script.text[len(header):]
+            consumers = heredoc_commands(header, delimiter, occurrence)
+            readers.extend([*argv, body] for argv in script_readers(consumers))
+            kind = "shell" if force_input else stdin_kind(consumers, executed_files)
+            if kind == "shell" or completion and kind == "unknown":
+                nested.append((body, False, False))
+            elif expands:
+                expanded = ShellScript(body, expanding=True)
+                if expanded.stack != [("body", None)] or expanded.pending or expanded.incomplete:
+                    opaque.append("unfinished heredoc expansion")
+                nested.extend((source, False, False) for source in expanded.substitutions)
+        except ValueError as error:
+            opaque.append(str(error))
     yield script, readers
-    for source in nested:
-        yield from execution_sources(source, completion=completion, depth=depth + 1)
+    if opaque:
+        yield ValueError("; ".join(opaque)), []
+    for source, nested_inline, nested_input in nested:
+        yield from execution_sources(source, completion=completion, depth=depth + 1,
+                                     executed_files=executed_files, inline=nested_inline, force_input=nested_input)
 
 
 def detached_command(argv: list[str]) -> bool:
-    for command in unwrap(argv, expand=False):
-        for index, token in enumerate(command):
-            if index and command[0] not in SCRIPT_WRAPPERS | {"docker"}:
-                break
-            name, args = Path(token).name, command[index + 1:]
-            if name in {"coproc", "daemonize", "systemd-run", "at", "batch"}:
-                return True
-            if name == "setsid" and any(flag == "--fork" or flag.startswith("-")
-                                       and not flag.startswith("--") and "f" in flag[1:] for flag in args):
-                return True
-            if name == "tmux" and any(flag in {"new", "new-session"} for flag in args) and any(
-                    flag.startswith("-") and "d" in flag[1:] for flag in args):
-                return True
-            if name == "screen" and any(flag.startswith("-") and "d" in flag[1:] for flag in args):
-                return True
-    return False
+    return execution_argv(argv)[:1] == ["coproc"]
 
 
 def simple_commands(shell: str) -> list[list[str]]:
-    """Policy adapter for the shared source walk; unknown heredocs remain data."""
+    """Policy adapter: unreadable sources never discard readable siblings."""
     unwrapped = []
     for script, readers in execution_sources(shell):
+        if isinstance(script, ValueError):
+            continue
         for argv in shell_commands(script.text):
             unwrapped.extend(unwrap(argv, expand=False))
         unwrapped.extend(readers)
@@ -615,7 +671,7 @@ def unwrap(argv: list[str], *, expand: bool = True) -> list[list[str]]:
             break
     if not argv:
         return []
-    argv = [Path(argv[0]).name, *argv[1:]]
+    argv = [argv[0] if argv[0] == "." else Path(argv[0]).name, *argv[1:]]
     commands = [argv]
     if expand:
         commands += nested_commands(shell_inputs(argv)[0])

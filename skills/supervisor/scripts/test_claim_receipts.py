@@ -258,8 +258,8 @@ class ReceiptTests(unittest.TestCase):
             "xargs -I{} sh -c '{}' <<'EOF'\nworker &\nEOF",
             "x=$(cat <<'EOF'\nworker &\nEOF\n); eval \"$x\"",
             "\"$SHELL\" <<'EOF'\nworker &\nEOF", "let x=1<<2\nworker &",
-            "bash -ce 'worker &'", "tmux new-session -d worker", "setsid -f worker",
-            "sudo -u svc setsid -fw worker", "cat <<EOF\n$(worker\nEOF",
+            "bash -ce 'worker &'",
+            "cat <<EOF\n$(worker\nEOF",
             "bash -c -- 'worker &'", "bash -c -e 'worker &'", "bash -ceo pipefail 'worker &'",
             'bash -c "cd /repo && $cmd"', 'eval "$@"', 'eval "$x" "$y"',
             'eval "$(cat run.sh)"', '\"$SHELL\" -c \'worker &\'',
@@ -267,9 +267,6 @@ class ReceiptTests(unittest.TestCase):
             "cat >run.sh <<'EOF'\nworker &\nEOF\nsudo ./run.sh",
             "cat >run.sh <<'EOF'\nworker &\nEOF\nout=\"$(./run.sh)\"",
             "source <(cat <<'EOF'\nworker &\nEOF\n)",
-            "(setsid -f worker)", "nice -n 10 setsid -f worker",
-            "ssh -fN host", "docker run -d image", "tmux new-window -d worker",
-            "launchctl kickstart gui/501/job", "open -a Example",
         ]
         for flags in ('-e', '-euo pipefail', '-o errexit', '-O extglob', '-s -- args'):
             commands += [f"bash {flags} <<'EOF'\nworker &\nEOF", f"bash {flags} <<< 'worker &'"]

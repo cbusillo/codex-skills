@@ -80,8 +80,12 @@ def shell_policy():
     return module
 
 
-def shell_sources(text):
-    for parsed, _readers in shell_policy().execution_sources(text, completion=True):
+def shell_sources(text, *, completion=True):
+    for parsed, _readers in shell_policy().execution_sources(text, completion=completion):
+        if isinstance(parsed, ValueError):
+            if completion:
+                raise parsed
+            continue
         yield parsed.text, parsed.background
 
 
@@ -90,7 +94,7 @@ def detached_shell(text):
     for source, background in shell_sources(text):
         if background:
             return True
-        if any(policy.detached_command(argv) for argv in literal_shell_commands(source)):
+        if any(policy.detached_command(argv) for argv in policy.shell_commands(source)):
             return True
     return False
 
@@ -99,7 +103,7 @@ def shell_commands(name, value, *, depth=0):
     """Literal command scope is a hint for inventory, never write coverage."""
     for text in shell_texts(name, value):
         try:
-            sources = list(shell_sources(text))
+            sources = list(shell_sources(text, completion=False))
         except (OSError, ValueError, RecursionError):
             continue
         for source, _background in sources:

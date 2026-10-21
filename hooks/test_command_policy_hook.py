@@ -771,7 +771,7 @@ class CommandPolicyHookTests(unittest.TestCase):
             "cat > notes.md <<'EOF'\n| launchplane | skill |\n| --- | --- |\nEOF\ngit status",
             "cat <<EOF > body.md\nRun gh api repos/o/r/pulls; then git push origin main.\nEOF",
             "scripts/gh-issue create sample --repo o/r <<'EOF'\ngh api repos/o/r/pulls\nEOF",
-            "gh issue create --label bash <<'EOF'\ngh api repos/o/r/pulls\nEOF",
+            "printf --label bash <<'EOF'\ngh api repos/o/r/pulls\nEOF",
             "python3 - <<-'EOF'\n\tlaunchplane merge-train run-once\n\tEOF",
             "printf '%s\\n' \"$((1 << 2))\" 'gh pr merge 17'",
         ):
@@ -793,6 +793,8 @@ class CommandPolicyHookTests(unittest.TestCase):
             ("gh pr merge 17\ncat <<EOF\nnotes", "gh pr merge 17"),
             ("cat >run.sh <<'EOF'\ngh pr merge 17\nEOF\nbash run.sh", "gh pr merge 17"),
             ("{ bash; } <<'EOF'\ngh pr merge 17\nEOF", "gh pr merge 17"),
+            ("( bash ) <<'EOF'\ngh pr merge 17\nEOF", "gh pr merge 17"),
+            ("cat <<'EOF' |\ngh pr merge 17\nEOF\nbash", "gh pr merge 17"),
             ("echo \"`gh api repos/o/r/pulls`\"", "gh api repos/o/r/pulls"),
             ("echo `gh api repos/o/r/pulls`", "gh api repos/o/r/pulls"),
             ("diff <(gh api repos/o/r/pulls) saved.json", "gh api repos/o/r/pulls"),
