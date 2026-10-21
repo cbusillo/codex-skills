@@ -146,8 +146,7 @@ class ClaimCloseoutTests(unittest.TestCase):
                     family = [
                         {"session_id": native_session, "harness": harness, "records": parent},
                         {"session_id": child_session, "harness": harness, "records": child,
-                         "transcript": "/fixture/child.jsonl", "digest": helper.claim_history.fingerprint(child),
-                         "preceding_histories": [{"harness": harness, "records": parent}]}]
+                         "transcript": "/fixture/child.jsonl", "digest": helper.claim_history.fingerprint(child)}]
                     parsed_shared = []
                     def parsing(records, family_harness, **kwargs):
                         if tuple(map(id, records)) == signature:

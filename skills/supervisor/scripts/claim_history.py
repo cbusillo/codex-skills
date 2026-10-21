@@ -171,125 +171,6 @@ def root_records(path, harness, session, records):
     return child_records(records, harness, session)
 
 
-def spawn_prefix(records, harness, child, *, agent_path=None):
-    """Prove parent order at a child launch, never from wall-clock stamps."""
-    calls, matches = {}, []
-    names = {"Agent", "Task"} if harness == "claude" else {"spawn_agent", "collaboration.spawn_agent"}
-    for index, record in enumerate(records):
-        invocations, results = claim_receipts.calls_and_results(record, harness)
-        for identifier, name, value in invocations:
-            arguments = claim_receipts.arguments(value)
-            resuming = harness == "claude" and isinstance(arguments, dict) and arguments.get("resume") is not None
-            if name in names and not resuming:
-                calls[identifier] = index
-        if harness == "claude":
-            started = record.get("toolUseResult")
-            blocks = (record.get("message") or {}).get("content") or []
-            if (isinstance(started, dict) and started.get("agentId") == child and len(results) == 1
-                    and results[0] in calls
-                    and not any(block.get("is_error") for block in blocks if isinstance(block, dict)
-                                and block.get("type") == "tool_result")):
-                matches.append(calls[results[0]])
-            continue
-        payload = record.get("payload") or {}
-        if len(results) != 1 or results[0] not in calls:
-            continue
-        value = payload.get("output")
-        try:
-            value = json.loads(value) if isinstance(value, str) else value
-        except ValueError:
-            continue
-        if (isinstance(value, dict) and not value.get("error")
-                and (value.get("agent_id") == child or agent_path and value.get("task_name") == agent_path)
-                and ("agent_id" not in value or value["agent_id"] == child)
-                and (not agent_path or "task_name" not in value or value["task_name"] == agent_path)):
-            matches.append(calls[results[0]])
-    return records[:min(matches)] if matches else []
-
-
-def unique_prefixes(prefixes):
-    """Keep each immutable native segment once across converging histories."""
-    seen, result = set(), []
-    for prefix in prefixes:
-        key = prefix["harness"], tuple(map(id, prefix["records"]))
-        if key not in seen:
-            seen.add(key)
-            result.append(prefix)
-    return result
-
-
-def completed_prefixes(parent, records, nodes):
-    """Return child prefixes linked to an observed native completion boundary.
-
-    A quiet child can have resumed after an earlier completion. Match the
-    completed turn or returned handback, never the child's current full file.
-    """
-    prefixes = []
-    for child in nodes:
-        if not child.get("parent_transcript") or child["parent_transcript"] != parent.get("transcript"):
-            continue
-        rows, harness = child["records"], child["harness"]
-        ends = []
-        if harness == "codex":
-            for record in records:
-                payload = record.get("payload") or {}
-                item = payload.get("item") or {}
-                if (record.get("type") != "event_msg" or payload.get("type") != "item_completed"
-                        or payload.get("thread_id") != parent["session_id"]
-                        or item.get("type") != "SubAgentActivity" or item.get("kind") != "completed"
-                        or item.get("agent_thread_id") != child["session_id"]):
-                    continue
-                identifier = item.get("id", "")
-                if not isinstance(identifier, str) or not identifier.startswith("subagent-completed-"):
-                    continue
-                turn = identifier.removeprefix("subagent-completed-")
-                matches = [index + 1 for index, row in enumerate(rows)
-                           if row.get("type") == "event_msg" and (row.get("payload") or {}).get("type") == "task_complete"
-                           and (row.get("payload") or {}).get("turn_id") == turn]
-                if len(matches) == 1:
-                    ends.extend(matches)
-        else:
-            calls = {}
-            key = Path(child["transcript"]).stem.removeprefix("agent-")
-            for record in records:
-                invocations, results = claim_receipts.calls_and_results(record, harness)
-                for identifier, name, value in invocations:
-                    args = claim_receipts.arguments(value)
-                    if name in {"Agent", "Task"} and isinstance(args, dict) and not args.get("run_in_background"):
-                        calls[identifier] = args
-                report = record.get("toolUseResult")
-                blocks = (record.get("message") or {}).get("content") or []
-                if (not isinstance(report, dict) or report.get("agentId") != key
-                        or report.get("status") != "completed" or report.get("isAsync")
-                        or len(results) != 1 or results[0] not in calls
-                        or any(b.get("is_error") for b in blocks if isinstance(b, dict))):
-                    continue
-                handback = (report.get("handbackReport") or {}).get("text")
-                answer = report.get("content")
-                matches, handbacks = [], {}
-                for index, row in enumerate(rows):
-                    uses, returned = claim_receipts.calls_and_results(row, harness)
-                    for identifier, name, value in uses:
-                        args = claim_receipts.arguments(value)
-                        if name == "SubagentHandback" and isinstance(args, dict) and handback and args.get("message") == handback:
-                            handbacks[identifier] = index
-                    if (handback and row.get("toolEndsTurn") is True and len(returned) == 1 and returned[0] in handbacks
-                            and not any(b.get("is_error") for b in (row.get("message") or {}).get("content", []) if isinstance(b, dict))):
-                        matches.append(index + 1)
-                    message = row.get("message") or {}
-                    if (answer and row.get("type") == "assistant" and message.get("stop_reason") == "end_turn"
-                            and message.get("content") == answer):
-                        matches.append(index + 1)
-                if len(set(matches)) == 1:
-                    ends.extend(matches)
-        if ends:
-            end = max(ends)
-            prefixes.extend(child.get("preceding_histories", []))
-            prefixes.append({"harness": harness, "records": rows[:end]})
-            prefixes.extend(completed_prefixes(child, rows[:end], nodes))
-    return unique_prefixes(prefixes)
-
-
 def collect(path, harness, session, records, read, *, homes=None):
     """Return root and quiet child snapshots; missing child evidence refuses.
 
@@ -341,8 +222,7 @@ def collect(path, harness, session, records, read, *, homes=None):
                         ancestry[child_id] = ancestors
                         child = Path(rollout).expanduser().resolve()
                         if (child_id, child) not in seen_paths:
-                            paths.append((child_id, child, {"parent": parent, "ancestors": ancestors,
-                                "agent_path": native_source.get("subagent", {}).get("thread_spawn", {}).get("agent_path")}))
+                            paths.append((child_id, child, {"parent": parent, "ancestors": ancestors}))
                             seen_paths.add((child_id, child))
                         pending.append(child_id)
                 if not found_parent and (parent != session or delegated(records, harness)):
@@ -364,33 +244,6 @@ def collect(path, harness, session, records, read, *, homes=None):
         activity = session_record.summarize(logical_records, harness, inspect_claims=False)
         if not activity["at_turn_end"] or activity["background_tasks"]:
             raise ValueError(f"native child {child_id} still has unfinished work")
-        parent_node = (next(node for node in nodes if node["session_id"] == parent) if parent is not None else nodes[0])
-        preceding = []
-        if harness == "codex" and inline_history(raw_records):
-            boundary = raw_records[0]["payload"]["subagent_history_start_ordinal"]
-            inherited = raw_records[1:boundary]
-            # A copied fork-of-fork can combine native process/call IDs from
-            # multiple histories. Keep its independently proven ancestor and
-            # launch segments, rather than infer order from that mixed copy.
-            if len({r["payload"]["id"] for r in inherited if r.get("type") == "session_meta"}) == 1:
-                preceding.append({"harness": harness, "records": inherited})
-        agent_path = context.get("agent_path") if context is not None else None
-        if agent_path:
-            meta = raw_records[0]["payload"]
-            native_path = meta.get("source", {}).get("subagent", {}).get("thread_spawn", {}).get("agent_path")
-            if meta.get("agent_path") != agent_path or native_path != agent_path:
-                agent_path = None  # No task-name binding from an unverified child path.
-        child_key = child.stem.removeprefix("agent-") if harness == "claude" else child_id
-        prefix = spawn_prefix(parent_node["records"], harness, child_key, agent_path=agent_path)
-        if prefix:
-            preceding.append({"harness": harness, "records": prefix})
         nodes.append({"session_id": child_id, "harness": harness, "transcript": str(child),
-                      "records": logical_records, "digest": fingerprint(raw_records), "preceding_histories": preceding,
-                      "parent_transcript": parent_node["transcript"], "launch_prefix": prefix})
-    # All sibling snapshots must be available before binding a later child's
-    # launch prefix to a previously completed child's exact returned turn.
-    for node in nodes[1:]:
-        parent = next(n for n in nodes if n["transcript"] == node["parent_transcript"])
-        node["preceding_histories"] = unique_prefixes([*parent.get("preceding_histories", []),
-            *node["preceding_histories"], *completed_prefixes(parent, node.pop("launch_prefix"), nodes)])
+                      "records": logical_records, "digest": fingerprint(raw_records)})
     return nodes

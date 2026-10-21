@@ -586,7 +586,6 @@ def transcript_facts(session: str, primary: str, *, include_status: bool = False
         identities = {r.get("payload", {}).get("id") for r in records if r.get("type") == "session_meta"}
         if identities != {session}:
             raise ValueError("native transcript identity mismatch")
-        status = native_helpers()[1].summarize(records, "codex", inspect_claims=False)
         after = path.stat()
         if transcript_identity(before) != transcript_identity(after):
             raise TranscriptChanging("native transcript is changing")
@@ -603,6 +602,7 @@ def transcript_facts(session: str, primary: str, *, include_status: bool = False
         if reader is not None:
             snapshots[str(path)]["truncated"] = truncated
         if include_status:
+            status = native_helpers()[1].summarize(records, "codex", inspect_claims=False)
             snapshots[str(path)]["status"] = {key: status[key] for key in (
                 "safe_verdict", "timestamp", "turn_id", "turn_started_at", "turn_completed_at", "message_at", "actual_turn_ids", "background_tasks",
                 "active_realtime_sessions", "realtime_coverage")}

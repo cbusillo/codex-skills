@@ -1200,6 +1200,7 @@ class IdleReceiptIntegrationTests(unittest.TestCase):
 
     def test_registration_prunes_only_confirmed_dead_runtime_rows(self):
         shared = SESSIONS.process_liveness()
+        native_absent = shared.process_absent
         for kind in ("managed_launch", "managed_proxy"):
             for pid in (None, 0, -1, True, "456", 456):
                 row = {"record_kind": kind, "launch_pid": pid}
@@ -1220,7 +1221,8 @@ class IdleReceiptIntegrationTests(unittest.TestCase):
             dead = {"record_kind": "managed_launch", "launch_pid": child.pid}
             with CLOSURE.store_lock(f.log):
                 CLOSURE.replace_rows([*CLOSURE.log_rows(), dead])
-            CLOSURE.register_launch(["codex", "--", "task"], str(f.home))
+            with patch.object(shared, "process_absent", side_effect=native_absent):
+                CLOSURE.register_launch(["codex", "--", "task"], str(f.home))
             rows = CLOSURE.log_rows()
             self.assertNotIn(dead, rows)
             self.assertTrue(any(r.get("session_id") == f.session for r in rows))
@@ -1521,6 +1523,7 @@ class IdleReceiptIntegrationTests(unittest.TestCase):
 class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         shared = SESSIONS.process_liveness()
+        self.enterContext(patch.object(shared, "process_absent", return_value=False))
         self.enterContext(patch.object(shared, "process_arguments",
             side_effect=lambda _pid, command: (shared.harness_arguments(command), True)))
 
@@ -1807,6 +1810,46 @@ class ObservationMergeTests(unittest.TestCase):
                                                     deadline_at=clock[0] + budget)
             self.assertFalse(pending, pending)
 
+    def test_observed_named_client_end_needs_current_native_completion(self):
+        with ReceiptFixture() as f:
+            CLOSURE.replace_rows([])
+            CLOSURE.lease_path(f.session).unlink()
+            f.native_state = "notLoaded"
+            f.commands = "456 codex resume " + f.session
+            with patch.object(CLOSURE, "managed_launch", return_value=False), \
+                    patch.object(SESSIONS, "native_daemon_process", return_value=False), \
+                    patch.object(SESSIONS.process_liveness(), "process_absent", return_value=True):
+                peers, states, coverage = f.observe(proof_sessions={f.session})
+            self.assertTrue(coverage["peer_complete"], coverage)
+            self.assertEqual(states.get(f.session, {}).get("state"), "ended", (peers, states))
+
+    def test_executing_check_fences_work_left_by_an_ended_process(self):
+        from test_claim_receipts import cell_header, composed_result
+        with ReceiptFixture() as f:
+            f.native_state = "active"
+            original = SESSIONS.native_helpers()[1].read_jsonl(f.transcript)[:2]
+            original.append({"type": "response_item", "payload": {"type": "custom_tool_call", "call_id": "call-check",
+                "name": "exec", "input": 'text(await tools.exec_command({cmd:"uv run check_claims.py"}));'}})
+            started = composed_result({"session_id": 123, "output": ""}, "call-check")
+            started["payload"]["output"].insert(0, cell_header())
+            f.transcript.write_text("".join(json.dumps(row) + "\n" for row in [*original, started]))
+            node = {"session_id": f.session, "harness": "codex", "transcript": str(f.transcript), "records": original}
+            f.rpc_results["thread/backgroundTerminals/list"] = {"data": [{"itemId": "exec-check", "processId": "123"}], "nextCursor": None}
+            peers, _, complete = f.observe()
+            f.commands = "456 codex-code-mode-host"
+            for queued in (False, True):
+                probes = []
+                def ended(pid):
+                    probes.append(pid)
+                    if queued and len(probes) == 2:
+                        f.queue_items = [{"id": "new-work", "clientUserMessageId": "next", "input": []}]
+                    return True
+                with self.subTest(queued_after_first_read=queued), \
+                        patch.object(CLOSURE, "managed_launch", return_value=False), \
+                        patch.object(SESSIONS, "native_daemon_process", return_value=False), \
+                        patch.object(SESSIONS.process_liveness(), "process_absent", side_effect=ended):
+                    self.assertEqual(SESSIONS._current_check_quiet(node, peers=peers, coverage=complete), not queued)
+
     def test_pending_without_a_closeout_record_is_rechecked_from_live_native_evidence(self):
         with ReceiptFixture() as f:
             with CLOSURE.resume_guard(f.session, method="turn/start", home=f.home):
@@ -1851,6 +1894,11 @@ class ObservationMergeTests(unittest.TestCase):
             f.execution_items = [{"id": "working", "type": "commandExecution", "status": "inProgress"}]
             self.assertFalse(SESSIONS._physical_quiescent(node, [], complete))
             f.execution_items = []
+            turns = iter(("completed", "inProgress"))
+            f.rpc_results["thread/turns/list"] = lambda _request: {
+                "data": [{"id": "source-turn", "status": next(turns)}], "nextCursor": None}
+            self.assertFalse(SESSIONS._physical_quiescent(node, [], complete))
+            del f.rpc_results["thread/turns/list"]
             other = f.root / "unavailable-retained-home"
             other.mkdir()
             with CLOSURE.resume_guard(f.session, method="turn/start", home=other):
