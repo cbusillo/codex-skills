@@ -329,7 +329,8 @@ expires: the catalog's hooks renew a host-local lease on the session's activity
 (see [Planning: Claim](../github/references/cli-reference.md#planning-claim)),
 and after 30 minutes without activity a successor on the same host may take
 over, recording a `Lease takeover:` line in its claim. Set
-`GH_PLAN_CLAIM_LEASE_MINUTES` to change the period. A host with no lease for
+`GH_PLAN_CLAIM_LEASE_MINUTES` when claiming to change the period the claim
+records. A host with no lease for
 the session keeps the claim; a Supervisor or direction session releases an
 ended session's claim there with `gh-plan.py release-claim`. The lease is crash
 recovery, not a substitute for releasing.

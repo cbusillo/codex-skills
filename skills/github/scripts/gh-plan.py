@@ -2474,7 +2474,6 @@ def claim_once(args: argparse.Namespace) -> None:
     retained_mode = False
     selection = None
     claim["claimed_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
-    github_plan_lease.renew(claim["session"])
     completed: list[str] = []
     claim_comment: dict[str, Any] = {}
     inventory: dict[str, Any] = {}
@@ -3068,6 +3067,7 @@ def claim_once(args: argparse.Namespace) -> None:
             f"--session {claim['session']} is a Codex child thread. Claim under its root session {root_session} "
             "(CODEX_SESSION_ID): child hooks renew the root's lease, and the root's closeout check covers its claims.",
             payload={"native_sessions": native, "running_agent": agent})
+    github_plan_lease.renew(claim["session"], minutes=github_plan_lease.lease_minutes())
 
     def check_agent(assigned_issue: dict[str, Any]) -> None:
         mismatch = github_agent.exclusion(assigned_issue, agent)

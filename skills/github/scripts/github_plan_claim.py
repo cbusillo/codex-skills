@@ -616,8 +616,13 @@ def ended_ownership(comments: list[dict[str, Any]], inventory: dict[str, Any],
 
 def lease_takeovers(ended: list[dict[str, Any]]) -> str:
     return "".join(f"Lease takeover: claim {entry['claim_id']} (session {entry['session']}) had no recorded activity "
-                   f"for {github_plan_lease.lease_minutes():g} minutes.\n\n"
+                   f"for {recorded_lease_minutes(entry['session']):g} minutes.\n\n"
                    for entry in ended if entry["evidence"] == "lease_expired")
+
+
+def recorded_lease_minutes(session: str) -> float:
+    lease = github_plan_lease.read(session)
+    return github_plan_lease.DEFAULT_LEASE_MINUTES if lease is None else lease.minutes
 
 
 def coordination(conflicts: list[dict[str, Any]], comments: list[dict[str, Any]], repo: str, number: int) -> list[dict[str, Any]]:
@@ -626,7 +631,7 @@ def coordination(conflicts: list[dict[str, Any]], comments: list[dict[str, Any]]
             return ("This host has no lease for that session. Coordinate with it; if it has ended, a Supervisor or "
                     "direction session releases it with gh-plan.py release-claim. Preserve its artifacts")
         return ("Coordinate with this session or wait for its exact release; an unreleased claim frees itself "
-                f"{github_plan_lease.lease_minutes():g} minutes after the session's last activity. Preserve its artifacts")
+                f"{recorded_lease_minutes(record['session']):g} minutes after the session's last activity. Preserve its artifacts")
 
     holders = []
     released_ids = {comments[i]["id"] for i, _, _ in exact_released_sources(comments)}

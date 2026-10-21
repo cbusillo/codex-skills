@@ -1008,11 +1008,12 @@ also after every tool call and on prompts, stops and subagent events, and by
 `claim` for the claimant. Subagent hooks report their parent's session ID, so
 delegated work renews the parent's lease. One quiet stretch longer than the
 lease, such as a single tool call or a wait with no other activity, or on Codex
-a long run of non-shell tools, lets a successor take over a live session; raise
-`GH_PLAN_CLAIM_LEASE_MINUTES` for such work. An unreleased claim of
+a long run of non-shell tools, lets a successor take over a live session; set a
+longer `GH_PLAN_CLAIM_LEASE_MINUTES` when claiming such work. The claim records
+its period in the lease, so every reader applies the claimant's period. An unreleased claim of
 another session refuses while its lease is live, or unknown because this host
-holds no lease for it, such as a claim made on another host. After 30 minutes
-without activity (`GH_PLAN_CLAIM_LEASE_MINUTES`) the lease expires and a
+holds no lease for it, such as a claim made on another host. After its recorded
+period without activity, 30 minutes by default, the lease expires and a
 successor takes over: the claim posts a `Lease takeover: claim <id>` line,
 reports the old claim's branches and worktrees in `retained_artifacts`, and
 freezes that session against a later Codex resume, as for a released source.

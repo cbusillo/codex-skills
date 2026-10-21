@@ -80,6 +80,7 @@ class ClaimTests(unittest.TestCase):
         # Fixture sessions are labels; the harness running the tests supplies its own native IDs.
         self.enterContext(patch.dict(os.environ))
         os.environ["HOME"] = self.enterContext(tempfile.TemporaryDirectory())
+        self.enterContext(patch.object(Path, "home", return_value=Path(os.environ["HOME"])))
         for name in (n for names in github_agent.NATIVE_SESSION_VARS.values() for n in names):
             os.environ.pop(name, None)
         self.args =Namespace(repo="owner/repo", issue="42", worker=OWNER["worker"], session=OWNER["session"],
@@ -3168,6 +3169,7 @@ class ClaimTests(unittest.TestCase):
                     self.run_claim()
                 self.assertEqual(caught.exception.code, "session_not_native")
                 self.assertIn(named, str(caught.exception))
+                self.assertEqual(LEASE.state(session), LEASE.UNKNOWN)
             self.assert_no_writes()
 
     def test_codex_child_thread_claims_under_its_root_session_so_its_lease_and_closeout_cover_it(self):

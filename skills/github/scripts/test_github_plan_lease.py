@@ -27,14 +27,19 @@ class LeaseTests(unittest.TestCase):
         stale = time.time() - minutes * 60
         os.utime(LEASE.lease_path(session), (stale, stale))
 
-    def test_lease_expires_only_after_its_configured_quiet_period(self):
+    def test_lease_expires_after_the_period_its_claimant_recorded_whatever_the_reader_sets(self):
+        os.environ[LEASE.LEASE_MINUTES_VARIABLE] = "120"
+        LEASE.renew("session", minutes=LEASE.lease_minutes())
         LEASE.renew("session")
-        self.age("session", LEASE.DEFAULT_LEASE_MINUTES - 1)
+        os.environ.pop(LEASE.LEASE_MINUTES_VARIABLE)
+        self.age("session", 45)
         self.assertEqual(LEASE.state("session"), LEASE.LIVE)
-        self.age("session", LEASE.DEFAULT_LEASE_MINUTES + 1)
+        self.age("session", 121)
         self.assertEqual(LEASE.state("session"), LEASE.EXPIRED)
-        os.environ[LEASE.LEASE_MINUTES_VARIABLE] = str(LEASE.DEFAULT_LEASE_MINUTES * 2)
-        self.assertEqual(LEASE.state("session"), LEASE.LIVE)
+        LEASE.renew("other")
+        os.environ[LEASE.LEASE_MINUTES_VARIABLE] = "1"
+        self.age("other", LEASE.DEFAULT_LEASE_MINUTES - 1)
+        self.assertEqual(LEASE.state("other"), LEASE.LIVE)
 
     def test_renewal_revives_an_expired_lease_and_unseen_sessions_stay_unknown(self):
         LEASE.renew("session")
@@ -43,13 +48,12 @@ class LeaseTests(unittest.TestCase):
         self.assertEqual(LEASE.state("session"), LEASE.LIVE)
         self.assertEqual(LEASE.state("never-seen"), LEASE.UNKNOWN)
 
-    def test_invalid_period_refuses_instead_of_expiring_live_claims(self):
-        LEASE.renew("session")
+    def test_invalid_period_refuses_before_recording_a_lease(self):
         for value in ("0", "-5", "soon", "inf"):
             with self.subTest(value=value):
                 os.environ[LEASE.LEASE_MINUTES_VARIABLE] = value
                 with self.assertRaises(ValueError):
-                    LEASE.state("session")
+                    LEASE.lease_minutes()
 
     def test_a_redirected_lease_file_is_refused(self):
         LEASE.lease_directory().mkdir(parents=True)
