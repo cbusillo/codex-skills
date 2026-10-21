@@ -11,6 +11,7 @@ by callers rather than inferred from an immutable execution history.
 from __future__ import annotations
 
 import copy
+import importlib.util
 import json
 import re
 import shlex
@@ -69,40 +70,77 @@ def shell_texts(name, value):
             yield text
 
 
+@lru_cache(maxsize=1)
+def shell_policy():
+    # One catalog parser owns heredoc data and command-substitution boundaries.
+    path = Path(__file__).resolve().parents[3] / 'hooks/command_policy_hook.py'
+    spec = importlib.util.spec_from_file_location('claim_shell_policy', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def shell_sources(text, *, depth=0):
+    if depth >= 16:
+        raise ValueError('shell nesting exceeds coverage')
+    policy = shell_policy()
+    parsed = policy.ShellScript(text)
+    yield parsed.text
+    nested = list(parsed.substitutions)
+    for body, expands, header, delimiter, occurrence in parsed.bodies:
+        readers = policy.heredoc_script_readers(header, delimiter, occurrence)
+        if (any(policy.reads_script_from_input(argv) for argv in readers)
+                or any(policy.reads_script_from_input(argv) for argv in policy.shell_commands(header))):
+            nested.append(body)
+        elif expands:
+            nested.extend(policy.ShellScript(body, expanding=True).substitutions)
+    for source in nested:
+        yield from shell_sources(source, depth=depth + 1)
+
+
+def detached_shell(text):
+    for source in shell_sources(text):
+        lexer = shell_lexer(source)
+        lexer.whitespace_split = True
+        for token in lexer:
+            if re.fullmatch(r'[;&|<>()\n]+', token) and '&' in re.sub(r'&&|&>>?|[<>]&|\|&', '', token):
+                return True
+        if any((unwrapped_command(argv, stop_at={'coproc'}) or [])[:1] == ['coproc']
+               for argv in shell_commands('exec_command', {'cmd': source})):
+            return True
+    return False
+
+
 def shell_commands(name, value, *, depth=0):
     """Literal command scope is a hint for inventory, never write coverage."""
     for text in shell_texts(name, value):
-        lexer = shell_lexer(text)
-        lexer.whitespace = " \t\r"
-        lexer.whitespace_split = True
-        command = []
         try:
-            for word in lexer:
-                if word in {"<<", "<<-"}:
-                    if command:
-                        body = shell_c_body(unwrapped_command(command))
-                        if body is not None and depth < 16:
-                            yield from shell_commands("exec_command", {"cmd": body}, depth=depth + 1)
-                        else:
+            sources = list(shell_sources(text))
+        except (OSError, ValueError, RecursionError):
+            continue
+        for source in sources:
+            lexer = shell_lexer(source)
+            lexer.whitespace = " \t\r"
+            lexer.whitespace_split = True
+            command = []
+            try:
+                for word in lexer:
+                    if word and all(c in ";&|\n" for c in word):
+                        if command:
                             yield command
-                    break  # Program input is not a second shell command.
-                if word and all(c in ";&|\n" for c in word):
-                    if command:
-                        yield command
-                    command = []
-                elif word and all(c in "<>" for c in word):
-                    next(lexer, None)  # Redirection destination, not argv.
-                else:
-                    command.append(word)
-            else:
+                        command = []
+                    elif word and all(c in "<>" for c in word):
+                        next(lexer, None)
+                    else:
+                        command.append(word)
                 if command:
                     body = shell_c_body(unwrapped_command(command))
                     if body is not None and depth < 16:
                         yield from shell_commands("exec_command", {"cmd": body}, depth=depth + 1)
                     else:
                         yield command
-        except ValueError:
-            continue  # Unparsed execution remains native uncertainty.
+            except ValueError:
+                continue  # Discovery is a hint, never execution-end proof.
 
 
 def execution_call(name):
@@ -234,7 +272,7 @@ def raw_outputs(records, harness, *, call_id=None):
                     and (call_id is None or payload.get("call_id") == call_id)):
                 for value in envelopes(payload.get("output")):
                     yield index, {**value, "_tool_call_id": payload.get("call_id")}
-        else:
+        elif record.get('type') == 'user':
             message = record.get("message")
             for block in (message.get("content") or []) if isinstance(message, dict) else []:
                 if (isinstance(block, dict) and block.get("type") == "tool_result"
@@ -279,8 +317,8 @@ def calls_and_results(record, harness):
     else:
         message = record.get("message")
         blocks = (message.get("content") or []) if isinstance(message, dict) else []
-        calls = [(b.get("id"), b.get("name"), b.get("input")) for b in blocks if isinstance(b, dict) and b.get("type") == "tool_use"]
-        results = [b.get("tool_use_id") for b in blocks if isinstance(b, dict) and b.get("type") == "tool_result"]
+        calls = [(b.get("id"), b.get("name"), b.get("input")) for b in blocks if record.get('type') == 'assistant' and isinstance(b, dict) and b.get("type") == "tool_use"]
+        results = [b.get("tool_use_id") for b in blocks if record.get('type') == 'user' and isinstance(b, dict) and b.get("type") == "tool_result"]
     return calls, results
 
 
@@ -744,12 +782,9 @@ def bound_outputs(records, harness, predicate, *, receipts=None, isolated_polls=
                 # A shell's result cannot attest completion of detached writers.
                 for command in shell_texts(name, value):
                     try:
-                        lexer = shell_lexer(command, posix=False)
-                        lexer.whitespace_split = True
-                        if ("&" in list(lexer) or any((unwrapped_command(argv, stop_at={"coproc"}) or [])[:1] == ["coproc"]
-                                for argv in shell_commands("exec_command", {"cmd": command}))):
+                        if detached_shell(command):
                             opaque.add(source)
-                    except ValueError:
+                    except (ValueError, OSError, RecursionError):
                         opaque.add(source)
                 if name in {"exec", "functions.exec"}:
                     serial = composed_calls(value)

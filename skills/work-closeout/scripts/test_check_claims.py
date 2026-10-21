@@ -5,6 +5,7 @@
 # ///
 """Exercise native-session closeout against disposable GitHub and transcript records."""
 import contextlib
+import copy
 import io
 import json
 import sqlite3
@@ -40,21 +41,26 @@ class ClaimCloseoutTests(unittest.TestCase):
     def test_finished_claude_family_can_check_itself_after_reading_codex_output(self):
         from test_claim_history import records
         from test_claim_receipts import history, SESSION as native_session
-        for children in (False, True):
+        for children in (False, True, 'handback'):
             for printed in ({}, {"session_id": 123, "output": "still running"},
                             "Process running with session ID 123", "Script running with cell ID reader"):
                 with self.subTest(children=children, printed=printed), tempfile.TemporaryDirectory() as tmp:
                     root = Path(tmp).resolve() / (native_session + ".jsonl")
                     rows = history("claude", {})[:-1]
                     rows[2]["message"]["content"][0]["content"] = json.dumps(printed)
+                    rows[1]['message']['content'][0]['input']['command'] = 'printf "%s" "x\\\""'
+                    rows.append({**copy.deepcopy(rows[1]), 'type': 'api-request-blob'})
                     rows.append({"type": "assistant", "sessionId": native_session, "message": {"content": [
                         {"type": "tool_use", "name": "Bash", "id": "own-check", "input": {"command":
                             f"uv run check_claims.py --harness claude --session {native_session} --transcript {root}"}}]}})
                     if children:
                         child = root.parent / native_session / "subagents/agent-reader.jsonl"
                         child.parent.mkdir(parents=True)
-                        child_rows = records("claude", native_session, {})
-                        child_rows[2]["message"]["content"][0]["content"] = json.dumps(printed)
+                        if children == 'handback':
+                            child_rows = helper.session_record.read_jsonl(Path(helper.session_record.__file__).with_name('fixtures') / 'claude-handback-ended.jsonl')
+                        else:
+                            child_rows = records("claude", native_session, {})
+                            child_rows[2]["message"]["content"][0]["content"] = json.dumps(printed)
                         child.write_text("".join(json.dumps(r) + "\n" for r in child_rows))
                     for row in rows:
                         row["timestamp"] = SOURCE["claimed_at"]
@@ -72,7 +78,7 @@ class ClaimCloseoutTests(unittest.TestCase):
 
     def test_claude_check_preserves_real_running_and_unknown_work(self):
         from test_claim_receipts import history, SESSION as native_session
-        for work in ("background", "detached", "missing-result"):
+        for work in ("background", "detached", "missing-result", "native-running-fixture"):
             with self.subTest(work=work):
                 rows = history("claude", {})[:-1]
                 tool = rows[1]["message"]["content"][0]
@@ -82,6 +88,9 @@ class ClaimCloseoutTests(unittest.TestCase):
                     rows[2]["toolUseResult"] = {"backgroundTaskId": "real-work"}
                 elif work == "missing-result":
                     rows.pop()
+                elif work == 'native-running-fixture':
+                    rows = helper.session_record.read_jsonl(Path(helper.session_record.__file__).with_name('fixtures') / 'claude-running-bash.jsonl')
+                    tool = rows[0]['message']['content'][0]
                 rows.append({"type": "assistant", "sessionId": native_session, "message": {"content": [
                     {"type": "tool_use", "name": "Bash", "id": "own-check", "input": {"command": "uv run check_claims.py"}}]}})
                 for row in rows:

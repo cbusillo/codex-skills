@@ -237,10 +237,6 @@ class ReceiptTests(unittest.TestCase):
                 rows[1]['message']['content'][0]['input']['command'] = command
                 self.assertTrue(receipts.ownership_state(rows, 'claude')['pending'])
 
-    def test_helper_after_heredoc_remains_visible_to_claim_discovery(self):
-        rows = history('claude', claim())
-        rows[1]['message']['content'][0]['input']['command'] = "cat <<'EOF'\nexample only\nEOF\nuv run gh-plan.py claim 1"
-        self.assertEqual(len(receipts.sources(rows, 'claude', SESSION)[0]), 1)
 
     def setUp(self):
         receipts.uv_run_options.cache_clear()

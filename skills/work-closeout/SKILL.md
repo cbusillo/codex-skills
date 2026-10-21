@@ -304,6 +304,11 @@ tools may inherit the parent's session ID. Codex's native read-only parent/child
 index supplies child thread IDs and rollouts, including descendants and closed
 edges. Child-owned claims and claims using the inherited root session ID are
 both included. Missing native graph/schema/rollout evidence refuses coverage.
+Claude children may finish through a successful native turn-ending tool result.
+That result must match its actual call, with no unfinished parallel tools or
+later queued/resumed work. Replayed API request data is not another execution.
+Background tasks still need their provenance-bound native terminal notice;
+an idle session or a missing task is not completion evidence.
 Full-history forks use their native child boundary after ancestry validation;
 copied parent activity is evaluated in its parent, and coverage binds the raw
 child artifact. A user-started fork with only its own native identity follows
