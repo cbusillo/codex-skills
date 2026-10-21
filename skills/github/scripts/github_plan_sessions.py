@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import contextmanager
+from contextlib import AsyncExitStack, contextmanager
 from contextvars import ContextVar
 import os
 from pathlib import Path
@@ -409,19 +409,35 @@ def _current_check_quiet(node, *, deadline_at=None):
                 await asyncio.sleep(0.05)
         homes = [home for home in codex_homes(strict=True, configured_only=True)
                  if any(primary.is_relative_to((home / root).resolve()) for root in ("sessions", "archived_sessions"))]
-        if len(homes) != 1:
+        if not homes:
             return False
-        async with asyncio.timeout(github_plan_native.read_timeout(until)), \
-                github_plan_native.connection(homes[0], deadline_at=until) as request:
-            before = await github_plan_native.read_thread_facts(request, node["session_id"], include_active=True)
-            after = await github_plan_native.read_thread_facts(request, node["session_id"], include_active=True)
-            background = before["background"]
-            return (before == after and before["path"] == str(primary)
-                    and before["state"] == "active" and not before["queue"]
-                    and before["executions"]["ended"] and len(background) == 1
-                    and background[0][1] == process and bool(background[0][0])
-                    and not before["realtime"] and before["goal"] != "active"
-                    and claim_receipts.current_check_process(node["records"], claim_history.root_records(
+        async with asyncio.timeout(github_plan_native.read_timeout(until)), AsyncExitStack() as connections:
+            readers = {home: await connections.enter_async_context(
+                github_plan_native.connection(home, deadline_at=until)) for home in sorted(set(homes))}
+            # Shared history locates candidates, not the live owner. Fence the
+            # whole authenticated set so a change in an earlier copy is visible.
+            first = {home: await github_plan_native.read_thread_facts(request, node["session_id"], include_active=True)
+                     for home, request in readers.items()}
+            owners = 0
+            for home, request in readers.items():
+                before = first[home]
+                after = await github_plan_native.read_thread_facts(request, node["session_id"], include_active=True)
+                if (before["path"] != str(primary) or before["queue"]
+                        or github_plan_native.current_facts(before) != github_plan_native.current_facts(after)):
+                    return False
+                if before["state"] == "active":
+                    background = before["background"]
+                    if (before != after or not before["executions"]["ended"] or len(background) != 1
+                            or background[0][1] != process or not background[0][0]
+                            or before["realtime"] or before["goal"] == "active"):
+                        return False
+                    owners += 1
+                elif before["state"] in {"idle", "notLoaded"}:
+                    github_plan_native._require_runtime_quiet(before, [])
+                    github_plan_native._require_runtime_quiet(after, [])
+                else:
+                    return False
+            return (owners == 1 and claim_receipts.current_check_process(node["records"], claim_history.root_records(
                         primary, "codex", node["session_id"], native_helpers()[1].read_jsonl(primary))) == process
                     and time.time() < until)
     try:

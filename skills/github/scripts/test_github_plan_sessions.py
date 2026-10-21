@@ -1774,6 +1774,80 @@ class ObservationMergeTests(unittest.TestCase):
                 pass
             self.assertFalse(SESSIONS._physical_quiescent(node, [], complete))
 
+    def test_active_check_finds_one_owner_across_shared_history_homes(self):
+        from test_claim_receipts import cell_header, composed_result
+        with ReceiptFixture("11111111-2222-4333-8444-555555555555") as f:
+            original = [json.loads(line) for line in f.transcript.read_text().splitlines()][:2]
+            original.append({"type": "response_item", "payload": {"type": "custom_tool_call", "call_id": "call-check",
+                "name": "exec", "input": 'text(await tools.exec_command({cmd:"uv run check_claims.py"}));'}})
+            started = composed_result({"session_id": 123, "output": ""}, "call-check")
+            started["payload"]["output"].insert(0, cell_header())
+            f.transcript.write_text("".join(json.dumps(row) + "\n" for row in [*original, started]))
+            node = {"session_id": f.session, "harness": "codex", "transcript": str(f.transcript), "records": original}
+            for name in ("second", "third"):
+                home = f.root / name
+                f.add_home(home, copy_transcript=False)
+                (home / "sessions").symlink_to(f.home / "sessions", target_is_directory=True)
+            homes = list(f.homes)
+            pair = {"itemId": "exec-native-check", "processId": "123"}
+            def owner_at(selected_owner):
+                for index, candidate in enumerate(homes):
+                    f.home_states[str(candidate)] = "active" if candidate == selected_owner else ("idle" if index == 0 else "notLoaded")
+                    f.rpc_results[str(candidate), "thread/backgroundTerminals/list"] = {
+                        "data": [pair] if candidate == selected_owner else [], "nextCursor": None}
+            for owner in homes:
+                owner_at(owner)
+                for order in (homes, list(reversed(homes))):
+                    with self.subTest(owner=owner.name, order=[h.name for h in order]), \
+                            patch.object(SESSIONS, "codex_homes", return_value=order):
+                        self.assertTrue(SESSIONS._current_check_quiet(node))
+
+            owner_at(homes[-1])
+            replica = str(homes[0])
+            for method, result in (
+                ("thread/queue/list", {"data": [{"id": "queued", "clientUserMessageId": "other", "input": []}], "nextCursor": None}),
+                ("thread/backgroundTerminals/list", {"data": [pair], "nextCursor": None}),
+                ("thread/items/list", {"data": [{"turnId": "other-turn", "item": {
+                    "id": "working", "type": "commandExecution", "status": "inProgress"}}], "nextCursor": None}),
+                ("thread/goal/get", {"goal": {"threadId": f.session, "status": "active"}}),
+                ("thread/timeline/list", {"data": [], "activeRealtimeSessionAtPageStart": "live"}),
+                ("thread/read", {"thread": {"id": f.session, "path": str(f.root / "other.jsonl"),
+                    "historyMode": "paginated", "status": {"type": "idle"}}}),
+            ):
+                key = replica, method
+                previous = f.rpc_results.pop(key, None)
+                with self.subTest(other_home_work=method):
+                    f.rpc_results[key] = result
+                    self.assertFalse(SESSIONS._current_check_quiet(node))
+                f.rpc_results.pop(key)
+                if previous is not None:
+                    f.rpc_results[key] = previous
+            # A second active home is ambiguous even when its local handle collides.
+            f.home_states[replica] = "active"
+            f.rpc_results[replica, "thread/backgroundTerminals/list"] = {"data": [pair], "nextCursor": None}
+            self.assertFalse(SESSIONS._current_check_quiet(node))
+            owner_at(homes[-1])
+            f.rpc_results["initialize"] = {"codexHome": str(homes[-1])}
+            self.assertFalse(SESSIONS._current_check_quiet(node))
+            f.rpc_results.pop("initialize")
+            # Work in an earlier replica begins after its first complete read.
+            # A whole-set second pass must notice it, not a per-home sandwich.
+            def queue_earlier_replica(_request):
+                f.home_queues[replica] = [{"id": "new", "clientUserMessageId": "other", "input": []}]
+                return {"data": [pair], "nextCursor": None}
+            f.rpc_results[str(homes[-1]), "thread/backgroundTerminals/list"] = queue_earlier_replica
+            self.assertFalse(SESSIONS._current_check_quiet(node))
+            f.home_queues.clear()
+            owner_at(homes[-1])
+            self.assertTrue(SESSIONS._current_check_quiet(node))
+            with patch.object(SESSIONS, "observe", return_value=([], {}, {})):
+                self.assertFalse(SESSIONS.pending_ownership([node], [{"pending": True}]))
+            endpoint = CLOSURE.daemon_endpoint(homes[1])
+            endpoint.chmod(0o666)
+            self.assertFalse(SESSIONS._current_check_quiet(node))
+            endpoint.chmod(0o600)
+            self.assertFalse(f.mutations)
+
     def test_active_check_binds_its_native_background_handle_instead_of_its_call_id(self):
         import claim_receipts
         from test_claim_receipts import cell_header, composed_result
