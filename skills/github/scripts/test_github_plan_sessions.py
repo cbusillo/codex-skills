@@ -1739,6 +1739,20 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
 
 class ObservationMergeTests(unittest.TestCase):
 
+    def test_deadline_context_does_not_replace_a_queue_refusal(self):
+        with ReceiptFixture() as f:
+            f.queue_items = [{"id": "new-work", "clientUserMessageId": "next", "input": []}]
+            peers, states, coverage = f.observe()
+            node = {"session_id": f.session, "harness": "codex", "transcript": str(f.transcript), "records": []}
+            pending = []
+            for now in (10, 30):
+                with patch.object(SESSIONS, "observe", return_value=(peers, states, coverage)), \
+                        patch.object(SESSIONS.time, "time", return_value=now):
+                    pending.append(SESSIONS.pending_ownership([node], [{"pending": True}], deadline_at=20)[0])
+            self.assertEqual(pending[0]["reason"], pending[1]["reason"])
+            self.assertFalse(pending[0]["native_coverage"]["deadline_expired"])
+            self.assertTrue(pending[1]["native_coverage"]["deadline_expired"])
+
     def test_ended_process_needs_a_native_fence_before_clearing_child_uncertainty(self):
         for queued in (False, True):
             with self.subTest(queued_after_first_read=queued), ReceiptFixture() as f:
@@ -1748,15 +1762,15 @@ class ObservationMergeTests(unittest.TestCase):
                 node = {"session_id": f.session, "harness": "codex", "transcript": str(f.transcript), "records": []}
                 root = {"session_id": "root", "harness": "codex", "records": []}
                 f.commands = "456 codex-code-mode-host"
-                probes = []
+                known = iter((True, False))
                 def ended(_pid):
-                    probes.append(_pid)
-                    if queued and len(probes) == 2:
+                    f.commands = ""
+                    if queued:
                         f.queue_items = [{"id": "new-work", "clientUserMessageId": "next", "input": []}]
                     return True
                 with patch.object(SESSIONS, "observe", return_value=([], {}, complete)), \
                         patch.object(CLOSURE, "managed_launch", return_value=False), \
-                        patch.object(SESSIONS, "native_daemon_process", return_value=False), \
+                        patch.object(SESSIONS, "native_daemon_process", side_effect=lambda *_a, **_k: next(known)), \
                         patch.object(SESSIONS.process_liveness(), "process_absent", side_effect=ended):
                     pending = SESSIONS.pending_ownership([root, node], [{"pending": False}, {"pending": True}])
                 self.assertEqual(bool(pending), queued, pending)
@@ -1769,6 +1783,7 @@ class ObservationMergeTests(unittest.TestCase):
                 f.native_state = "notLoaded"
                 f.commands = "456 codex-code-mode-host"
                 def ended(_pid):
+                    f.commands = ""
                     if queued:
                         f.queue_items = [{"id": "new-work", "clientUserMessageId": "next", "input": []}]
                     return True
@@ -1814,11 +1829,15 @@ class ObservationMergeTests(unittest.TestCase):
         with ReceiptFixture() as f:
             CLOSURE.replace_rows([])
             CLOSURE.lease_path(f.session).unlink()
-            f.native_state = "notLoaded"
+            f.native_state = "idle"
             f.commands = "456 codex resume " + f.session
+            def ended(_pid):
+                f.commands = ""
+                f.native_state = "notLoaded"
+                return True
             with patch.object(CLOSURE, "managed_launch", return_value=False), \
                     patch.object(SESSIONS, "native_daemon_process", return_value=False), \
-                    patch.object(SESSIONS.process_liveness(), "process_absent", return_value=True):
+                    patch.object(SESSIONS.process_liveness(), "process_absent", side_effect=ended):
                 peers, states, coverage = f.observe(proof_sessions={f.session})
             self.assertTrue(coverage["peer_complete"], coverage)
             self.assertEqual(states.get(f.session, {}).get("state"), "ended", (peers, states))
@@ -1838,17 +1857,42 @@ class ObservationMergeTests(unittest.TestCase):
             peers, _, complete = f.observe()
             f.commands = "456 codex-code-mode-host"
             for queued in (False, True):
-                probes = []
+                known = iter((True, False))
                 def ended(pid):
-                    probes.append(pid)
-                    if queued and len(probes) == 2:
+                    f.commands = ""
+                    if queued:
                         f.queue_items = [{"id": "new-work", "clientUserMessageId": "next", "input": []}]
                     return True
                 with self.subTest(queued_after_first_read=queued), \
                         patch.object(CLOSURE, "managed_launch", return_value=False), \
-                        patch.object(SESSIONS, "native_daemon_process", return_value=False), \
+                        patch.object(SESSIONS, "native_daemon_process", side_effect=lambda *_a, **_k: next(known)), \
                         patch.object(SESSIONS.process_liveness(), "process_absent", side_effect=ended):
                     self.assertEqual(SESSIONS._current_check_quiet(node, peers=peers, coverage=complete), not queued)
+                f.commands = "456 codex-code-mode-host"
+            f.commands, f.queue_items = "", []
+            reads = []
+            def attach_after_last_read(_request):
+                reads.append(True)
+                if len(reads) == 2:
+                    f.commands = "456 codex resume " + f.session
+                return {"data": [], "nextCursor": None}
+            f.rpc_results["thread/timeline/list"] = attach_after_last_read
+            self.assertFalse(SESSIONS._current_check_quiet(node, peers=peers, coverage=complete))
+
+    def test_a_client_starting_during_the_final_native_read_keeps_uncertainty(self):
+        with ReceiptFixture() as f:
+            CLOSURE.replace_rows([])
+            CLOSURE.lease_path(f.session).unlink()
+            complete = f.observe(proof_sessions={f.session})[2]
+            node = {"session_id": f.session, "harness": "codex", "transcript": str(f.transcript), "records": []}
+            reads = []
+            def attach_after_last_read(_request):
+                reads.append(True)
+                if len(reads) == 2:
+                    f.commands = "456 codex resume " + f.session
+                return {"data": [], "nextCursor": None}
+            f.rpc_results["thread/timeline/list"] = attach_after_last_read
+            self.assertFalse(SESSIONS._physical_quiescent(node, [], complete))
 
     def test_pending_without_a_closeout_record_is_rechecked_from_live_native_evidence(self):
         with ReceiptFixture() as f:

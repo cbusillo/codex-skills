@@ -1536,6 +1536,7 @@ class ProcessArgumentsTests(unittest.TestCase):
                         patch.object(sessions.github_plan_closure, "inherit_observed_leases"), \
                         patch.object(sessions.subprocess, "run", side_effect=[
                             SimpleNamespace(returncode=0, stdout="456 " + command),
+                            SimpleNamespace(returncode=0, stdout=""),
                             SimpleNamespace(returncode=0, stdout="")]), \
                         patch.object(session_liveness.sys, "platform", "darwin"), \
                         patch.object(session_liveness, "native_arguments", side_effect=OSError(errno.EINVAL, "unavailable")), \

@@ -326,11 +326,10 @@ def pending_ownership(histories, historical_states, *, deadline_at=None):
         if node is histories[0] and _current_check_quiet(node, peers=peers, coverage=coverage, deadline_at=deadline_at):
             continue
         pending.append({"session_id": session,
-                        "reason": ("native completion proof exceeded its deadline"
-                                   if deadline_at is not None and time.time() >= deadline_at else
-                                   "ownership is pending current native completion or verified session exit"),
-                        "native_coverage": {key: coverage.get(key) for key in
-                            ("status", "peer_complete", "process_coverage", "source_count", "unavailable_source_count")}})
+                        "reason": "ownership is pending current native completion or verified session exit",
+                        "native_coverage": {**{key: coverage.get(key) for key in
+                            ("status", "peer_complete", "process_coverage", "source_count", "unavailable_source_count")},
+                            "deadline_expired": deadline_at is not None and time.time() >= deadline_at}})
     return pending
 
 
@@ -363,8 +362,8 @@ def _physical_quiescent(node, peers, coverage, *, deadline_at=None):
                 return False
             if source is not None:
                 github_plan_native.verify_source_process(source)
-            def absent():
-                return _process_scope_quiet(session, coverage)
+            def absent(*, allow_absence=True):
+                return _process_scope_quiet(session, coverage, allow_absence=allow_absence)
             async def read():
                 async with asyncio.timeout(github_plan_native.read_timeout(deadline_at)), AsyncExitStack() as connections:
                     readers = {home: await connections.enter_async_context(
@@ -387,7 +386,7 @@ def _physical_quiescent(node, peers, coverage, *, deadline_at=None):
                                     or any(turn["status"] == "inProgress" for facts in (before, after) for turn in facts["turns"])):
                                 return False
                     return bool(homes)
-            if not absent() or not asyncio.run(read()):
+            if not absent() or not asyncio.run(read()) or not absent(allow_absence=False):
                 return False
             if source is not None:
                 github_plan_native.verify_source_process(source)
@@ -400,7 +399,7 @@ def _physical_quiescent(node, peers, coverage, *, deadline_at=None):
         return False
 
 
-def _process_scope_quiet(session, coverage, *, checker=False, checker_home=None):
+def _process_scope_quiet(session, coverage, *, checker=False, checker_home=None, allow_absence=True):
     if (coverage.get("peer_complete") is not True or coverage.get("process_coverage") != "complete"
             or not coverage.get("observed_homes")):
         return False
@@ -414,7 +413,7 @@ def _process_scope_quiet(session, coverage, *, checker=False, checker_home=None)
         commands = {int(fields[0]): fields[1] for line in result.stdout.splitlines()
                     if len(fields := line.split(None, 1)) == 2 and fields[0].isdigit()}
         for peer in named:
-            if process_liveness().process_absent(peer["pid"]):
+            if allow_absence and process_liveness().process_absent(peer["pid"]):
                 continue
             if not checker:
                 return False
@@ -425,7 +424,7 @@ def _process_scope_quiet(session, coverage, *, checker=False, checker_home=None)
                 valid = endpoint is not None and Path(endpoint).resolve() == github_plan_closure.daemon_endpoint(checker_home).resolve()
             endpoints = github_plan_closure.remote_endpoints(argv)
             if not valid or len(endpoints) != 1 or not endpoints[0].startswith("unix://"):
-                if process_liveness().process_absent(peer["pid"]):
+                if allow_absence and process_liveness().process_absent(peer["pid"]):
                     continue
                 return False
             bindings.add(str(Path(endpoints[0][7:]).resolve()))
@@ -434,7 +433,8 @@ def _process_scope_quiet(session, coverage, *, checker=False, checker_home=None)
         # independently by the checker transcript and background registry.
         if len(bindings) > 1:
             return False
-    return process_absence_known(result.stdout, sockets, homes={Path(home) for home in coverage["observed_homes"]})
+    return process_absence_known(result.stdout, sockets, homes={Path(home) for home in coverage["observed_homes"]},
+                                 allow_absence=allow_absence)
 
 
 def _current_check_quiet(node, *, peers=None, coverage=None, deadline_at=None):
@@ -530,7 +530,9 @@ def _current_check_quiet(node, *, peers=None, coverage=None, deadline_at=None):
                     return False
             if (owners != 1 or github_plan_closure.source_records({node["session_id"]}).get(node["session_id"]) != source
                     or github_plan_closure.lease_state(node["session_id"]) != action
-                    or await scope() != (homes, home_paths)):
+                    or await scope() != (homes, home_paths)
+                    or not _process_scope_quiet(node["session_id"], coverage, checker=True,
+                                                checker_home=active[0], allow_absence=False)):
                 return False
             # This is last: a stable identity retry cannot hide other native work
             # appended while the whole-set proof was being collected.
@@ -560,7 +562,7 @@ def process_sessions(text: str, sessions: set[str]) -> list[dict]:
     return peers
 
 
-def process_absence_known(text: str, observed_sockets: set[str] | None = None, *, homes=None, ended=None) -> bool:
+def process_absence_known(text: str, observed_sockets: set[str] | None = None, *, homes=None, ended=None, allow_absence=True) -> bool:
     shared = process_liveness()
     for line in text.splitlines():
         fields = line.split(None, 1)
@@ -580,7 +582,7 @@ def process_absence_known(text: str, observed_sockets: set[str] | None = None, *
             # Verification may lose a process after argv was read successfully.
             # Kernel absence is positive end evidence, never a name exemption.
             # End authority also requires a native fence after this observation.
-            if shared.process_absent(pid):
+            if allow_absence and shared.process_absent(pid):
                 if ended is not None:
                     ended.add(pid)
                 continue
@@ -865,13 +867,38 @@ def _observe(sessions: set[str], proof_sessions: set[str] | None = None):
         states = {session: state for session, state in states.items()
                   if state["state"] != "ended" and session not in ended_sessions}
         sources = []
-        merge(asyncio.run(run()))
+        fenced = asyncio.run(run())
+        for result in fenced:
+            if isinstance(result, BaseException):
+                continue
+            _, outcomes, coverage = result
+            if coverage["peer_complete"]:
+                completed = {session for session, outcome in outcomes.items() if outcome["state"] == "ended"}
+                peers[:] = [p for p in peers if not (
+                    p.get("source") == "codex_session" and p.get("native_state") == "idle"
+                    and p["sessionId"] in ended_sessions & completed and p.get("home") == coverage.get("home"))]
+        merge(fenced)
         github_plan_closure.inherit_observed_leases()
         observed_sources = [s for s in sources if s["status"] != "unavailable"]
         observed_sockets = {s["socket"] for s in sources if s["peer_complete"]}
         observed_homes = {Path(s["home"]) for s in sources if s.get("home")}
         peer_complete = (bool(observed_sources) and all(s["peer_complete"] for s in observed_sources)
                          and required <= {(s.get("home"), s["socket"]) for s in observed_sources})
+        # Nothing that appeared after the native fence gets an absence waiver.
+        # A newly attached client must be positively bound or remain pending.
+        try:
+            final_process = subprocess.run(["ps", "-ww", "-axo", "pid=,args="], capture_output=True, text=True, timeout=5)
+            if final_process.returncode != 0:
+                process_coverage = "unavailable"
+            else:
+                final_peers = process_sessions(final_process.stdout, sessions)
+                peers.extend(final_peers)
+                for peer in final_peers:
+                    states[peer["sessionId"]] = {"state": "live", "source": peer["source"]}
+                if not process_absence_known(final_process.stdout, observed_sockets, homes=observed_homes, allow_absence=False):
+                    process_coverage = "unidentified_interactive_processes"
+        except (OSError, subprocess.SubprocessError):
+            process_coverage = "unavailable"
     for session, outcome in list(states.items()):
         if outcome.get("state") != "ended" or outcome.get("native_state") != "idle":
             continue
