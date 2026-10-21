@@ -224,6 +224,9 @@ class ReceiptTests(unittest.TestCase):
                     "git commit -m \"$(cat <<'EOF'\nfix: a & b\nEOF\n)\"",
                     "git commit -F - <<'EOF'\nQ&A, don't change this\nEOF",
                     "scripts/gh-issue create sample --repo o/r <<'EOF'\nQ&A, don't change this\nEOF",
+                    "cat >body.md <<'EOF'\nQ&A, don't change this\nEOF\ngh pr create --body-file body.md",
+                    'HELPER=/catalog/helper.py; uv run "$HELPER" status',
+                    "sed -e 's/a/b/' >body.md <<'EOF'\nQ&A, don't change this\nEOF",
                     'case a in a) printf x ;& b) printf y ;; esac']
         for command in commands:
             with self.subTest(command=command):
@@ -252,6 +255,7 @@ class ReceiptTests(unittest.TestCase):
             "x=$(cat <<'EOF'\nworker &\nEOF\n); eval \"$x\"",
             "\"$SHELL\" <<'EOF'\nworker &\nEOF", "let x=1<<2\nworker &",
             "bash -ce 'worker &'", "tmux new-session -d worker", "setsid -f worker",
+            "sudo -u svc setsid -fw worker", "cat <<EOF\n$(worker\nEOF",
         ]
         for flags in ('-e', '-euo pipefail', '-o errexit', '-O extglob', '-s -- args'):
             commands += [f"bash {flags} <<'EOF'\nworker &\nEOF", f"bash {flags} <<< 'worker &'"]

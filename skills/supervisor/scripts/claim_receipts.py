@@ -80,53 +80,19 @@ def shell_policy():
     return module
 
 
-def shell_sources(text, *, depth=0):
-    if depth >= 16:
-        raise ValueError('shell nesting exceeds coverage')
-    policy = shell_policy()
-    parsed = policy.ShellScript(text)
-    yield parsed.text, parsed.background
-    nested = list(parsed.substitutions)
-    for argv in literal_shell_commands(parsed.text):
-        nested.extend(shell_inputs(argv)[0])
-    for body, expands, header, delimiter, occurrence in parsed.bodies:
-        if any(shell_inputs(argv)[1] for argv in policy.heredoc_commands(header, delimiter, occurrence)):
-            nested.append(body)
-        elif expands:
-            nested.extend(policy.ShellScript(body, expanding=True).substitutions)
-    for source in nested:
-        yield from shell_sources(source, depth=depth + 1)
+def shell_sources(text):
+    for parsed, _readers in shell_policy().execution_sources(text, completion=True):
+        yield parsed.text, parsed.background
 
 
 def detached_shell(text):
+    policy = shell_policy()
     for source, background in shell_sources(text):
         if background:
             return True
-        if any((unwrapped_command(argv, stop_at={'coproc'}) or [])[:1] == ['coproc']
-               for argv in literal_shell_commands(source)):
+        if any(policy.detached_command(argv) for argv in literal_shell_commands(source)):
             return True
     return False
-
-
-def shell_inputs(argv):
-    """Keep explicit shell programs, including wrapped transports, as execution."""
-    programs, stdin = [], False
-    for index, token in enumerate(argv):
-        name = Path(token).name
-        tail = argv[index + 1:]
-        if name in {'bash', 'sh', 'zsh', 'dash', 'ksh'}:
-            body = shell_c_body(argv[index:])
-            if body is not None:
-                programs.append(body)
-            reads = body is None and shell_policy().reads_program_from_stdin(argv[index:])
-            stdin |= reads
-            if reads and '<<<' in tail and tail.index('<<<') + 1 < len(tail):
-                programs.append(tail[tail.index('<<<') + 1])
-        elif name in {'eval', 'ssh'}:
-            if tail:
-                programs.append(' '.join(tail))
-            stdin |= name == 'ssh'
-    return programs, stdin
 
 
 def shell_commands(name, value, *, depth=0):
@@ -424,50 +390,11 @@ def uv_run_argv(argv):
 
 
 def shell_c_body(argv):
-    """Find the command argument after shell option clusters and value options."""
-    if not argv or Path(argv[0]).name not in {"bash", "sh", "zsh", "dash", "ksh"}:
-        return None
-    cursor = 1
-    while cursor < len(argv):
-        option = argv[cursor]
-        if option == "--" or not option.startswith(("-", "+")):
-            return None
-        if not option.startswith("--") and "c" in option[1:]:
-            return argv[cursor + 1] if cursor + 1 < len(argv) else None
-        cursor += 1
-        if option in {"--rcfile", "--init-file"} or not option.startswith("--") and option.endswith(("o", "O")):
-            cursor += 1
-    return None
+    return shell_policy().shell_c_body(argv)
 
 
 def shell_lexer(text, *, posix=True, punctuation_chars=";&|<>()\n"):
-    # In a shell, # begins a comment only at the start of an unquoted word.
-    # shlex's default also cuts OWNER/REPO#N in half.
-    chars, quote, escaped, boundary, comment = [], None, False, True, False
-    for char in text:
-        if comment:
-            if char != "\n":
-                continue
-            comment = False
-        if escaped:
-            chars.append(char)
-            escaped, boundary = False, False
-            continue
-        if char == "\\" and quote != "'":
-            escaped = True
-        elif quote:
-            if char == quote:
-                quote = None
-        elif char in "\"'":
-            quote = char
-        elif char == "#" and boundary:
-            comment = True
-            continue
-        chars.append(char)
-        boundary = quote is None and (char.isspace() or char in ";&|()")
-    lexer = shlex.shlex("".join(chars), posix=posix, punctuation_chars=punctuation_chars)
-    lexer.commenters = ""
-    return lexer
+    return shell_policy().shell_lexer(text, posix=posix, punctuation_chars=punctuation_chars)
 
 
 def script(argv):
