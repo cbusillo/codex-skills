@@ -361,6 +361,8 @@ binds its original isolated launch and every empty poll of that same handle.
 Native coverage reads standard, account and retained source homes through one
 observation scope. Required copies must answer; a stopped socket is not an exit.
 Process coverage requires native PID, executable and incarnation evidence.
+For an unavailable home, the [managed launcher's diagnostic](../supervisor/scripts/codex_session_proxy.py)
+keeps the source account and names its existing stopped-daemon remedy.
 Unbound clients keep the refusal; use the maintained managed launcher for new
 work. The checker never restarts daemons or terminates processes.
 

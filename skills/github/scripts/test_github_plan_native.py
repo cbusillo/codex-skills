@@ -1536,6 +1536,10 @@ class NativeQueueTests(unittest.TestCase):
             f.observe()
             self.assertEqual(CLOSURE.lease_path(f.session).read_bytes(), barrier)
             self.assertTrue(CLOSURE.action_pending(f.session))
+            f.commands = "456 codex"
+            f.observe()
+            self.assertEqual(CLOSURE.lease_path(f.session).read_bytes(), barrier)
+            self.assertTrue(CLOSURE.action_pending(f.session))
             f.commands = ""
             f.observe()
             self.assertFalse(CLOSURE.action_pending(f.session))

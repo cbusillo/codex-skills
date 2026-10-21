@@ -7,6 +7,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 from datetime import datetime, timezone
 import socket
@@ -62,6 +63,7 @@ class ResumeTests(unittest.TestCase):
 
     def setUp(self):
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="resume-", dir="/tmp"))).resolve()
+        self.enterContext(patch.dict(os.environ, {"HOME": str(self.root), "CODEX_HOME": str(self.root / "account")}))
         self.home = self.root / "account"
         self.native = str(uuid.uuid4())
         path = self.home / "sessions" / (self.native + ".jsonl")

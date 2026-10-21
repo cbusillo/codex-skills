@@ -1439,14 +1439,8 @@ class ProcessArgumentsTests(unittest.TestCase):
             process.mkdir(parents=True)
             (process / "exe").symlink_to(executable)
             (process / "stat").write_text("123 (native process) S 42 " + "0 " * 17 + "789")
-            class FixturePath(type(Path())):
-                def __init__(self, *parts):
-                    value = Path(*parts)
-                    if value.is_relative_to("/proc"):
-                        value = root / value.relative_to("/")
-                    super().__init__(value)
             with patch.object(session_liveness.sys, "platform", "linux"), \
-                    patch.object(session_liveness, "Path", FixturePath):
+                    patch.object(session_liveness, "PROC_ROOT", root / "proc"):
                 observed = session_liveness.native_process_details(123)
                 self.assertEqual(observed["executable"], str(executable))
                 self.assertEqual(observed["ppid"], 42)

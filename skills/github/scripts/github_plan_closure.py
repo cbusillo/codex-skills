@@ -522,6 +522,10 @@ def transcript_identity(info: os.stat_result) -> list[int]:
     return [info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns]
 
 
+class TranscriptChanging(ValueError):
+    """A live append raced an identity read; it supplies no closure evidence."""
+
+
 def transcript_facts(session: str, primary: str, *, include_status: bool = False, additional_homes: set[Path] | None = None, additional_roots: set[Path] | frozenset[Path] | None = None, reader=None, identity_only=False) -> dict:
     """Authenticate stable native transcripts without deciding final-safe authority."""
     from github_plan_sessions import observation_homes, native_helpers
@@ -538,7 +542,7 @@ def transcript_facts(session: str, primary: str, *, include_status: bool = False
                 root.stat()
             except FileNotFoundError:
                 continue
-            roots.add(root)
+            roots.add(root.resolve(strict=True))
     for root in additional_roots or set():
         root = root.resolve(strict=True)
         if not root.is_dir():
@@ -576,7 +580,7 @@ def transcript_facts(session: str, primary: str, *, include_status: bool = False
             records, truncated = reader(lines)
             if time.monotonic() > deadline:
                 raise TimeoutError("native closure read exceeded its budget")
-        if reader is None:
+        if identity_only and reader is None:
             import claim_history
             records = claim_history.root_records(path, "codex", session, records)
         identities = {r.get("payload", {}).get("id") for r in records if r.get("type") == "session_meta"}
@@ -585,7 +589,7 @@ def transcript_facts(session: str, primary: str, *, include_status: bool = False
         status = native_helpers()[1].summarize(records, "codex", inspect_claims=False)
         after = path.stat()
         if transcript_identity(before) != transcript_identity(after):
-            raise ValueError("native transcript is changing")
+            raise TranscriptChanging("native transcript is changing")
         if identity_only:
             # Current native liveness needs identity, never an authored end.
             snapshots[str(path)] = {"identity": transcript_identity(after), "sha256": digest.hexdigest()}

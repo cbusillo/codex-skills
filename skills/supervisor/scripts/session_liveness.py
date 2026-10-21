@@ -94,6 +94,7 @@ def harness_family(executable):
 
 
 ARGUMENT_BYTES = 2 * 1024 * 1024
+PROC_ROOT = Path("/proc")
 
 
 def darwin_arguments(data):
@@ -154,7 +155,7 @@ def native_process_details(pid):
     if type(pid) is not int or pid <= 0:
         raise ValueError("native process identity requires a PID")
     if sys.platform == "linux":
-        root = Path(f"/proc/{pid}")
+        root = PROC_ROOT / str(pid)
         fields = (root / "stat").read_text().rsplit(")", 1)[1].split()
         if root.stat().st_uid != os.getuid() or fields[0] == "Z":
             raise ValueError("native process owner or state is unavailable")

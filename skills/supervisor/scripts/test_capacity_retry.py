@@ -58,6 +58,7 @@ class CapacityTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory(dir="/tmp")
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name).resolve()
+        self.enterContext(patch.dict(os.environ, {"HOME": str(self.root), "CODEX_HOME": str(self.root / "account")}))
         self.enterContext(patch.object(capacity_retry.github_plan_closure, "closed_log", return_value=self.root / "closed.json"))
         self.home = self.root / "account"
         self.transcript = self.home / "sessions" / "fixture.jsonl"

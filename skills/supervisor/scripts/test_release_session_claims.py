@@ -6,6 +6,7 @@
 """Disposable transcripts and GitHub adapters exercise session claim release."""
 
 import json
+import os
 import contextlib
 import io
 import itertools
@@ -48,6 +49,7 @@ class ReleaseTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
+        self.enterContext(patch.dict(os.environ, {"HOME": str(self.root), "CODEX_HOME": str(self.root / "account")}))
         remote = patch.object(helper.claim, "run_read", side_effect=lambda _args, *, cwd: f"https://github.com/test/{cwd.name}.git")
         remote.start()
         self.addCleanup(remote.stop)

@@ -1838,6 +1838,8 @@ class ObservationMergeTests(unittest.TestCase):
                 f.commands = "\n".join(str(pid) + " " + " ".join(argv) for pid, argv in commands.items())
                 coverage = f.observe(proof_sessions={f.session})[2]
                 self.assertTrue(SESSIONS._physical_quiescent(node, [], coverage))
+                self.assertFalse(SESSIONS._physical_quiescent(node, [{"sessionId": f.session,
+                    "source": "codex_session", "home": str(f.root / "outside"), "native_state": "idle"}], coverage))
                 f.commands += "\n300 codex app-server"
                 self.assertFalse(SESSIONS._physical_quiescent(node, [], coverage))
                 f.commands = "\n".join(str(pid) + " " + " ".join(argv) for pid, argv in commands.items())
@@ -1867,6 +1869,12 @@ class ObservationMergeTests(unittest.TestCase):
                 records()
                 self.assertFalse(SESSIONS.process_absence_known(f.commands + "\n200 codex app-server", sockets))
                 self.assertFalse(SESSIONS.process_absence_known(f.commands + "\n200 codex resume " + f.session, sockets))
+                for name in ("daemon.pid", "daemon-updater.pid"):
+                    path = directory / name
+                    row = json.loads(path.read_text())
+                    row["linuxProcessIdentity"] = row.pop("processIdentity")
+                    path.write_text(json.dumps(row))
+                self.assertTrue(SESSIONS.process_absence_known(f.commands, sockets))
 
     def test_active_check_finds_one_owner_across_shared_history_homes(self):
         from test_claim_receipts import cell_header, composed_result
@@ -1966,6 +1974,21 @@ class ObservationMergeTests(unittest.TestCase):
                 self.assertFalse(SESSIONS._current_check_quiet(node))
                 f.commands = "456 codex app-server"
                 self.assertFalse(SESSIONS._current_check_quiet(node))
+            f.commands = ""
+            owner_at(f.home)
+            native = ["codex", "--remote", "unix://", "resume", f.session]
+            with patch.object(CLOSURE, "process_started_at", return_value=datetime.now(timezone.utc) - timedelta(seconds=2)):
+                f.managed(native)
+                f.commands = "456 " + " ".join(native)
+                with patch.object(SESSIONS.process_liveness(), "native_arguments", return_value=native):
+                    self.assertTrue(SESSIONS._current_check_quiet(node))
+                f.commands = ""
+            outside = f.root / "outside-home"
+            f.add_home(outside, copy_transcript=False)
+            for state in ("idle", "active"):
+                f.home_states[str(outside)] = state
+                with self.subTest(uncovered_peer=state):
+                    self.assertFalse(SESSIONS._current_check_quiet(node))
             self.assertFalse(f.mutations)
 
     def test_active_check_binds_its_native_background_handle_instead_of_its_call_id(self):
@@ -2036,6 +2059,18 @@ class ObservationMergeTests(unittest.TestCase):
             node["records"] = original
             f.transcript.write_text("".join(json.dumps(row) + "\n" for row in current))
             f.rpc_results["thread/backgroundTerminals/list"] = {"data": [pair], "nextCursor": None}
+            summarize = SESSIONS.native_helpers()[1].summarize
+            appended = False
+            def poll_during_identity_read(*args, **kwargs):
+                nonlocal appended
+                result = summarize(*args, **kwargs)
+                if not appended:
+                    appended = True
+                    append_poll({})
+                return result
+            with patch.object(SESSIONS.native_helpers()[1], "summarize", side_effect=poll_during_identity_read):
+                self.assertTrue(SESSIONS._current_check_quiet(node))
+            f.transcript.write_text("".join(json.dumps(row) + "\n" for row in current))
             for pairs in ([], [{**pair, "processId": "other"}], [pair, pair],
                           [pair, {"itemId": "exec-other", "processId": "456"}]):
                 f.rpc_results["thread/backgroundTerminals/list"]["data"] = pairs
@@ -2058,11 +2093,11 @@ class ObservationMergeTests(unittest.TestCase):
                 await asyncio.sleep(1.4)
                 return {"thread": {"id": f.session, "path": str(f.transcript),
                     "historyMode": "paginated", "status": {"type": "active"}}}
-            coverage = f.observe()[2]
+            peers, _states, coverage = f.observe()
             f.rpc_results["thread/read"] = delayed_thread
             # The caller's remaining budget covers the entire native sandwich;
             # the former shorter connection/outer budgets failed this read.
-            self.assertTrue(SESSIONS._current_check_quiet(node, coverage=coverage, deadline_at=time.time() + 15))
+            self.assertTrue(SESSIONS._current_check_quiet(node, peers=peers, coverage=coverage, deadline_at=time.time() + 15))
 
     def setUp(self):
         shared = SESSIONS.process_liveness()
@@ -2079,6 +2114,17 @@ class ObservationMergeTests(unittest.TestCase):
             self.assertEqual(states[f.session]["state"], "live")
             self.assertIsNone(CLOSURE.verified_record(f.session, f.home))
             self.assertEqual({p: p.read_bytes() for p in f.log.parent.rglob("*") if p.is_file()}, before)
+        with ReceiptFixture("11111111-2222-4333-8444-555555555555") as f:
+            bad = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+            with CLOSURE.ownership(bad, create=True):
+                CLOSURE.write_lease_state(bad, {"action_pending": True, "action_at": datetime.now(timezone.utc).isoformat(),
+                                              "action_homes": {"known": "malformed", "unscoped": False}})
+            with CLOSURE.resume_guard(f.session, method="thread/resume", home=f.home):
+                pass
+            f.native_state = "notLoaded"
+            SESSIONS.observe({f.session, bad}, set())
+            self.assertFalse(CLOSURE.action_pending(f.session))
+            self.assertTrue(CLOSURE.action_pending(bad))
 
     def test_nonempty_or_missing_queue_evidence_blocks_even_authored_release_fallback(self):
         for native in ("idle", "notLoaded"):
@@ -2116,8 +2162,8 @@ class ObservationMergeTests(unittest.TestCase):
             expected = [canonical_home.resolve()]
             with patch.dict(os.environ, {"CODE_HOME": str(root / "other-runtime"), "CODEX_HOME": str(root / "other-account")}):
                 self.assertEqual(SESSIONS.configured_homes(strict=True), expected)
-                self.assertEqual(set(SESSIONS.observation_homes(strict=True)), {
-                    canonical_home.resolve(), (root / ".codex").resolve(), (root / "other-account").resolve()})
+                self.assertTrue({canonical_home.resolve(), (root / ".codex").resolve(),
+                                 (root / "other-account").resolve()} <= set(SESSIONS.observation_homes(strict=True)))
 
     def test_configured_receipt_homes_do_not_depend_on_caller_account_or_order(self):
         config = {"accounts": [{"provider": "openai", "env": {"CODEX_HOME": "/fixture/b"}},

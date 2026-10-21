@@ -39,6 +39,7 @@ HARNESS_CHOICES = (
 class ResumeLaunchTests(unittest.TestCase):
     def setUp(self):
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory(dir="/tmp", prefix="resume-tab-"))).resolve()
+        self.enterContext(patch.dict(os.environ, {"HOME": str(self.root), "CODEX_HOME": str(self.root / "account")}))
         self.home = self.root / "account"
         self.session = str(uuid.uuid4())
         transcript = self.home / "sessions" / (self.session + ".jsonl")
