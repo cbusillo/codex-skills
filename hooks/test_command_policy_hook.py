@@ -770,6 +770,7 @@ class CommandPolicyHookTests(unittest.TestCase):
             "cat > fixture.sh <<'EOF'\ngit commit -qm base\n(cd ../landing && git commit -qam \"next\")\nEOF",
             "cat > notes.md <<'EOF'\n| launchplane | skill |\n| --- | --- |\nEOF\ngit status",
             "cat <<EOF > body.md\nRun gh api repos/o/r/pulls; then git push origin main.\nEOF",
+            "scripts/gh-issue create sample --repo o/r <<'EOF'\ngh api repos/o/r/pulls\nEOF",
             "python3 - <<-'EOF'\n\tlaunchplane merge-train run-once\n\tEOF",
             "printf '%s\\n' \"$((1 << 2))\" 'gh pr merge 17'",
         ):
@@ -786,6 +787,7 @@ class CommandPolicyHookTests(unittest.TestCase):
             ("cat <<-EOF\n\tdata\n\tEOF\ngh pr merge 17", "gh pr merge 17"),
             ("git commit -m \"$(cat <<'EOF'\nmessage\nEOF\n)\"", "git commit -m"),
             ("echo \"$(gh api repos/o/r/pulls)\"", "gh api repos/o/r/pulls"),
+            ("printf owner/repo#12; gh api repos/o/r/pulls", "gh api repos/o/r/pulls"),
             ("echo \"`gh api repos/o/r/pulls`\"", "gh api repos/o/r/pulls"),
             ("echo `gh api repos/o/r/pulls`", "gh api repos/o/r/pulls"),
             ("diff <(gh api repos/o/r/pulls) saved.json", "gh api repos/o/r/pulls"),
@@ -812,6 +814,7 @@ class CommandPolicyHookTests(unittest.TestCase):
                 self.assertIn(matched, result.stderr)
 
     def test_other_tools_and_unreadable_events_are_let_through(self) -> None:
+        self.assertEqual(bash("x=\"$(bash <<'EOF'\nworker &\nEOF").returncode, 0)
         self.assertEqual(run_hook(json.dumps({"tool_name": "Read", "tool_input": {}})).returncode, 0)
         for payload in ("not json", json.dumps({"tool_name": "Bash"})):
             with self.subTest(payload=payload):
