@@ -578,13 +578,14 @@ def current_check_process(initial, current):
     """Bind one yielded checker to native startup metadata, never its stdout."""
     if current[:len(initial)] != initial:
         return None
-    calls = [call for record in initial for call in calls_and_results(record, "codex")[0]]
+    calls = [(index, call) for index, record in enumerate(initial)
+             for call in calls_and_results(record, "codex")[0]
+             if call[1] in {"exec", "functions.exec"}
+             and single_composed_call(call[2], "exec_command")
+             and isolated_command(call[1], call[2], "check_claims.py")]
     if not calls:
         return None
-    identifier, name, value = calls[-1]
-    if not (name in {"exec", "functions.exec"} and single_composed_call(value, "exec_command")
-            and isolated_command(name, value, "check_claims.py")):
-        return None
+    launch_index, (identifier, _name, _value) = calls[-1]
     startups = [wrappers[0] for source, serial, wrappers in serial_native_bindings(current).values()
                 if source == identifier and len(serial) == 1 and not serial[0][2]]
     if (len(startups) != 1 or type(startups[0].get("session_id")) is not int
@@ -594,7 +595,9 @@ def current_check_process(initial, current):
     allowed, cells = {identifier}, set()
     for index, record in enumerate(current):
         calls, results = calls_and_results(record, "codex")
-        if index >= len(initial):
+        # Startup may finish after the caller has already polled. Validate the
+        # entire suffix from the launch, including polls in the initial prefix.
+        if index > launch_index:
             payload = record.get("payload") or {}
             if payload.get("type") in {"task_started", "user_message"}:
                 return None

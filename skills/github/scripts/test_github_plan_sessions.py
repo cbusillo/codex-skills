@@ -1134,7 +1134,13 @@ class IdleReceiptIntegrationTests(unittest.TestCase):
                 CLOSURE.resumed_launch(f.session, metadata, str(resumed_transcript), "resumed-tty")
             before = CLOSURE.source_records({f.session})[f.session]
             f.native_state = "notLoaded"
-            f.commands = "789 codex app-server --listen unix://" + str(CLOSURE.daemon_endpoint(f.home))
+            # The original home is no longer configured, but its positively
+            # guarded client still binds to that independently observed daemon.
+            client = ["codex", "--remote", "unix://" + str(CLOSURE.daemon_endpoint(f.home)), "--", "task"]
+            f.stack.enter_context(patch.object(CLOSURE, "process_started_at",
+                return_value=datetime.fromisoformat(f.entry["launch_started_at"])))
+            f.managed(client)
+            f.commands = "456 " + " ".join(client)
             with patch.object(SESSIONS, "codex_homes", return_value=[resumed_home]), CLOSURE.admission():
                 for _ in range(2):
                     _, states, coverage = f.observe()
@@ -1235,6 +1241,9 @@ class IdleReceiptIntegrationTests(unittest.TestCase):
                 self.assertEqual(CLOSURE.guarded_launch_endpoint(456, native), endpoint)
                 self.assertFalse(CLOSURE.managed_launch(456, native, set()))
                 self.assertTrue(CLOSURE.managed_launch(456, native, {endpoint}))
+                alias = f.root / "socket-alias"
+                alias.symlink_to(CLOSURE.daemon_endpoint(f.home))
+                self.assertTrue(CLOSURE.managed_launch(456, native, {str(alias)}))
                 f.commands = "456 " + " ".join(native)
                 self.assert_ended(f)
                 f.commands = "456 python3 /fixture/codex " + " ".join(native[1:])
@@ -1774,6 +1783,62 @@ class ObservationMergeTests(unittest.TestCase):
                 pass
             self.assertFalse(SESSIONS._physical_quiescent(node, [], complete))
 
+    def test_native_daemon_helpers_need_current_owning_process_and_observed_home(self):
+        with ReceiptFixture("11111111-2222-4333-8444-555555555555") as f:
+            shared = SESSIONS.process_liveness()
+            directory = f.home / "app-server-daemon"
+            directory.mkdir()
+            executable = str(f.root / "bin/codex")
+            helper = str(Path(executable).with_name("codex-code-mode-host"))
+            daemon = [executable, "app-server", "--listen", "unix://", "--managed-daemon"]
+            updater = [executable, "app-server", "daemon", "pid-update-loop"]
+            child = [helper]
+            identities = {pid: {"bootId": "fixture-boot", "uniqueId": pid,
+                "startSeconds": 100, "startMicroseconds": pid} for pid in (100, 101, 102)}
+            details = {pid: {"pid": pid, "ppid": 100 if pid == 102 else 1,
+                "executable": helper if pid == 102 else executable, "identity": identities[pid]} for pid in identities}
+            def records():
+                for name, pid in (("daemon.pid", 100), ("daemon-updater.pid", 101)):
+                    (directory / name).write_text(json.dumps({"pid": pid, "processIdentity": identities[pid]}))
+            records()
+            commands = {100: daemon, 101: updater, 102: child}
+            f.commands = "\n".join(str(pid) + " " + " ".join(argv) for pid, argv in commands.items())
+            sockets = {str(CLOSURE.daemon_endpoint(f.home).resolve())}
+            with patch.object(shared, "native_process_details", side_effect=lambda pid: copy.deepcopy(details[pid]), create=True), \
+                    patch.object(shared, "native_arguments", side_effect=lambda pid: list(commands[pid])):
+                self.assertTrue(SESSIONS.process_absence_known(f.commands, sockets))
+                self.assertFalse(SESSIONS.process_absence_known(f.commands, set()))
+                # Stock standalone installs retain the native legacy filenames.
+                for current, legacy in (("daemon.pid", "app-server.pid"), ("daemon-updater.pid", "app-server-updater.pid")):
+                    (directory / current).rename(directory / legacy)
+                self.assertTrue(SESSIONS.process_absence_known(f.commands, sockets))
+                for current, legacy in (("daemon.pid", "app-server.pid"), ("daemon-updater.pid", "app-server-updater.pid")):
+                    (directory / legacy).rename(directory / current)
+                node = {"session_id": f.session, "harness": "codex", "transcript": str(f.transcript), "records": []}
+                CLOSURE.replace_rows([])
+                CLOSURE.lease_path(f.session).unlink()
+                self.assertTrue(SESSIONS._physical_quiescent(node, [], {"peer_complete": True, "process_coverage": "complete"}))
+                self.assertFalse(CLOSURE.lease_path(f.session).exists())
+                for pid, key, value in ((100, "identity", {**identities[100], "uniqueId": 999}),
+                        (101, "identity", {**identities[101], "bootId": "previous-boot"}),
+                        (102, "ppid", 999), (102, "executable", "/unrelated/codex-code-mode-host")):
+                    previous = details[pid][key]
+                    details[pid][key] = value
+                    with self.subTest(pid=pid, changed=key):
+                        self.assertFalse(SESSIONS.process_absence_known(f.commands, sockets))
+                    details[pid][key] = previous
+                for pid, extra in ((100, "--unknown-listener"), (101, "--unknown-role"), (102, "--listen=grpc://127.0.0.1:42")):
+                    commands[pid].append(extra)
+                    with self.subTest(pid=pid, extra=extra):
+                        row = str(pid) + " " + " ".join(commands[pid])
+                        self.assertFalse(SESSIONS.process_absence_known(row, sockets))
+                    commands[pid].pop()
+                (directory / "daemon.pid").unlink()
+                self.assertFalse(SESSIONS.process_absence_known(f.commands, sockets))
+                records()
+                self.assertFalse(SESSIONS.process_absence_known(f.commands + "\n200 codex app-server", sockets))
+                self.assertFalse(SESSIONS.process_absence_known(f.commands + "\n200 codex resume " + f.session, sockets))
+
     def test_active_check_finds_one_owner_across_shared_history_homes(self):
         from test_claim_receipts import cell_header, composed_result
         with ReceiptFixture("11111111-2222-4333-8444-555555555555") as f:
@@ -1905,6 +1970,15 @@ class ObservationMergeTests(unittest.TestCase):
                 return {"data": [pair], "nextCursor": None}
             f.rpc_results["thread/backgroundTerminals/list"] = append_poll
             self.assertTrue(SESSIONS._current_check_quiet(node))
+            # Slow startup can snapshot after an isolated native poll has
+            # already arrived. Its launch boundary and handle stay the same.
+            polled = [*current, {"payload": {"type": "custom_tool_call", "call_id": "early-poll", "name": "exec",
+                "input": 'text(await tools.write_stdin({session_id:123}));'}}]
+            f.transcript.write_text("".join(json.dumps(row) + "\n" for row in polled))
+            node["records"] = polled
+            f.rpc_results["thread/backgroundTerminals/list"] = {"data": [pair], "nextCursor": None}
+            self.assertTrue(SESSIONS._current_check_quiet(node))
+            node["records"] = original
             f.transcript.write_text("".join(json.dumps(row) + "\n" for row in current))
             f.rpc_results["thread/backgroundTerminals/list"] = {"data": [pair], "nextCursor": None}
             for pairs in ([], [{**pair, "processId": "other"}], [pair, pair],
@@ -1998,6 +2072,9 @@ class ObservationMergeTests(unittest.TestCase):
                 results.append(SESSIONS.codex_homes(strict=True, configured_only=True))
         self.assertTrue(all(homes == results[0] for homes in results))
         self.assertEqual(set(results[0]), {Path(a["env"]["CODEX_HOME"]).resolve() for a in config["accounts"]})
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"HOME": folder, "CODEX_HOME": "/fixture/a"}), \
+                patch.object(SESSIONS, "native_helpers", return_value=(helpers, None)):
+            self.assertIn((Path(folder) / ".codex").resolve(), SESSIONS.codex_homes(strict=True))
 
     def test_receipt_proofs_require_available_account_inventory(self):
         config = SimpleNamespace(load_config=lambda: (_ for _ in ()).throw(ValueError("missing account inventory")))
@@ -2041,7 +2118,7 @@ class ObservationMergeTests(unittest.TestCase):
 
     def test_app_server_process_requires_its_exact_observed_socket(self):
         socket_path = str(Path("/fixture/socket").resolve())
-        self.assertTrue(SESSIONS.process_absence_known(f"codex app-server --listen unix://{socket_path}", {socket_path}))
+        self.assertFalse(SESSIONS.process_absence_known(f"codex app-server --listen unix://{socket_path}", {socket_path}))
         self.assertFalse(SESSIONS.process_absence_known("codex app-server", {socket_path}))
         self.assertFalse(SESSIONS.process_absence_known("codex app-server --listen unix:///other/socket", {socket_path}))
 

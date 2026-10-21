@@ -1428,6 +1428,53 @@ class ProcessArgumentsTests(unittest.TestCase):
             import github_plan_sessions as sessions
         self.enterContext(patch.object(sessions.github_plan_closure, "managed_launch", return_value=False))
 
+    def test_kernel_process_details_bind_executable_incarnation_and_owner(self):
+        import ctypes
+        import struct
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder).resolve()
+            executable = root / "native-bin"
+            executable.touch()
+            process = root / "proc" / "123"
+            process.mkdir(parents=True)
+            (process / "exe").symlink_to(executable)
+            (process / "stat").write_text("123 (native process) S 42 " + "0 " * 17 + "789")
+            real_path = Path
+            with patch.object(session_liveness.sys, "platform", "linux"), \
+                    patch.object(session_liveness, "Path", side_effect=lambda value: process if value == "/proc/123" else real_path(value)):
+                observed = session_liveness.native_process_details(123)
+                self.assertEqual(observed["executable"], str(executable))
+                self.assertEqual(observed["ppid"], 42)
+                self.assertEqual(observed["identity"], {"startTicks": 789})
+                (process / "stat").write_text("123 (native process) Z 42 " + "0 " * 17 + "789")
+                with self.assertRaises(ValueError):
+                    session_liveness.native_process_details(123)
+            library = Mock()
+            path_bytes = os.fsencode(executable) + b"\0"
+            def path(_pid, output, _size):
+                ctypes.memmove(output, path_bytes, len(path_bytes))
+                return len(path_bytes)
+            def info(_pid, _flavor, _arg, output, size):
+                data = struct.pack("=16sQQQQQ", b"", 789, 42, 0, 0, 0)
+                ctypes.memmove(output, data, len(data))
+                return len(data) if size == len(data) else 0
+            library.proc_pidpath.side_effect = path
+            library.proc_pidinfo.side_effect = info
+            with patch.object(session_liveness.sys, "platform", "darwin"), \
+                    patch.object(ctypes, "CDLL", return_value=library), \
+                    patch.object(session_liveness.subprocess, "run", return_value=SimpleNamespace(stdout=f"{os.getuid()} 42")) as process_read:
+                observed = session_liveness.native_process_details(123)
+                self.assertEqual(observed["executable"], str(executable))
+                self.assertEqual(observed["identity"], {"uniqueId": 789})
+                self.assertEqual(observed["ppid"], 42)
+                process_read.return_value.stdout = f"{os.getuid() + 1} 42"
+                with self.assertRaises(ValueError):
+                    session_liveness.native_process_details(123)
+                library.proc_pidinfo.return_value = 0
+                library.proc_pidinfo.side_effect = None
+                with self.assertRaises(OSError):
+                    session_liveness.native_process_details(123)
+
     def test_only_kernel_absence_clears_stale_process_coverage(self):
         github = str(Path(__file__).resolve().parents[2] / "github/scripts")
         with patch.object(sys, "path", [github, *sys.path]):

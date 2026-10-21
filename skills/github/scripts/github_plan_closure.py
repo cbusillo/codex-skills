@@ -406,7 +406,7 @@ def guarded_launch_endpoint(pid: int, argv: list[str]) -> str | None:
 def managed_launch(pid: int, argv: list[str], sockets: set[str]) -> bool:
     """Require guarded identity and independently observed daemon coverage."""
     endpoint = guarded_launch_endpoint(pid, argv)
-    return endpoint is not None and endpoint in sockets
+    return endpoint is not None and str(Path(endpoint).resolve()) in {str(Path(socket).resolve()) for socket in sockets}
 
 
 @contextmanager

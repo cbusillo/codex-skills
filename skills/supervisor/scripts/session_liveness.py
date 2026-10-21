@@ -149,6 +149,43 @@ def native_arguments(pid):
     return darwin_arguments(memoryview(data)[:size.value])
 
 
+def native_process_details(pid):
+    """Kernel executable and incarnation, without reading process environments."""
+    if type(pid) is not int or pid <= 0:
+        raise ValueError("native process identity requires a PID")
+    if sys.platform == "linux":
+        root = Path(f"/proc/{pid}")
+        fields = (root / "stat").read_text().rsplit(")", 1)[1].split()
+        if root.stat().st_uid != os.getuid() or fields[0] == "Z":
+            raise ValueError("native process owner or state is unavailable")
+        return {"pid": pid, "ppid": int(fields[1]), "executable": str((root / "exe").resolve(strict=True)),
+                "identity": {"startTicks": int(fields[19])}}
+    if sys.platform != "darwin":
+        raise ValueError("native process incarnation is unavailable on this host")
+    library = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+    library.proc_pidpath.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+    library.proc_pidpath.restype = ctypes.c_int
+    path = ctypes.create_string_buffer(4096)
+    if library.proc_pidpath(pid, path, len(path)) <= 0:
+        raise OSError(ctypes.get_errno(), "native process executable is unavailable")
+    # XNU PROC_PIDUNIQIDENTIFIERINFO identifies this incarnation even when a
+    # PID is reused within the same second. Its native ABI contains no secrets.
+    class UniqueInfo(ctypes.Structure):
+        _fields_ = [("executable_uuid", ctypes.c_ubyte * 16), ("unique_id", ctypes.c_uint64),
+                    ("parent_unique_id", ctypes.c_uint64), ("reserved", ctypes.c_uint64 * 3)]
+    identity = UniqueInfo()
+    library.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
+    library.proc_pidinfo.restype = ctypes.c_int
+    if library.proc_pidinfo(pid, 17, 1, ctypes.byref(identity), ctypes.sizeof(identity)) != ctypes.sizeof(identity):
+        raise OSError(ctypes.get_errno(), "native process incarnation is unavailable")
+    owner, parent = map(int, subprocess.run(["ps", "-p", str(pid), "-o", "uid=,ppid="],
+        check=True, capture_output=True, text=True, timeout=2).stdout.split())
+    if owner != os.getuid():
+        raise ValueError("native process belongs to another user")
+    return {"pid": pid, "ppid": parent, "executable": str(Path(os.fsdecode(path.value)).resolve()),
+            "identity": {"uniqueId": identity.unique_id}}
+
+
 def interpreter_family(executable):
     name = Path(executable).name
     if name in {"node", "nodejs", "bun", "deno"}:
