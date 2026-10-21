@@ -10,13 +10,11 @@ by callers rather than inferred from an immutable execution history.
 """
 from __future__ import annotations
 
-import copy
 import json
 import re
 import shlex
 import shutil
 import subprocess
-import sys
 from functools import lru_cache
 from pathlib import Path
 
@@ -693,11 +691,6 @@ def isolated_command(name, value, helper):
     if name in {"exec", "functions.exec"} and isinstance(native, str):
         return single_composed_call(value, "exec_command")
     return True
-
-
-def ownership_activity(records, harness):
-    """Missing/redirected ownership writes still require readback."""
-    yield from ownership_state(records, harness)["indices"]
 
 
 def bound_outputs(records, harness, predicate, *, receipts=None, isolated_polls=False, opaque_calls=()):

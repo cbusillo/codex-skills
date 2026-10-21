@@ -1760,11 +1760,6 @@ def is_meta_echo(text: str) -> bool:
     return bool(META_ECHO_RE.search(normalized))
 
 
-def is_investigation_noise(text: str) -> bool:
-    normalized = canonical_hit_text(" ".join(text.strip().split()))
-    return bool(INVESTIGATION_NOISE_RE.search(normalized))
-
-
 def is_suppressed_noise(text: str) -> bool:
     normalized = canonical_hit_text(" ".join(text.strip().split()))
     return bool(INVESTIGATION_NOISE_RE.search(normalized) or INJECTED_CONTEXT_NOISE_RE.search(normalized))
