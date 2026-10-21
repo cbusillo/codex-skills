@@ -137,7 +137,7 @@ class ProcessDrainTests(unittest.TestCase):
         reaped, clock = False, 0
         stream = bytearray(b"Done.\n" + b"info\n" * 6 + b"end\n") if combined else bytearray()
         log = self.private / "logs/idea.log"
-        original_open = Path.open
+        original_open: Any = Path.open
 
         def tick():
             nonlocal clock

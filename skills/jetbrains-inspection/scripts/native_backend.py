@@ -510,8 +510,8 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
     def leader_exited():
         try:
             return exit_watch.exited()
-        except OSError as error:
-            receipt["exit_observer_errno"] = error.errno
+        except OSError as observation_error:
+            receipt["exit_observer_errno"] = observation_error.errno
             raise Blocked("native_exit_observation_unproven") from None
 
     def scan_license(scanner, data, final=False):
@@ -524,7 +524,7 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
         # Scan the whole received chunk before ERROR, cancellation, oversized
         # lines or any other ordinary observation can abort processing it.
         # Leader exit does not end streams inherited by descendants. Only the
-        # post-group drain may finalize the independent licence-line scanner.
+        # post-group drain may finalize the independent license-line scanner.
         scan_license(scanner, data)
         if receipt.get("license_boundary_observed"):
             raise Blocked("native_owner_activation_required")
@@ -534,13 +534,13 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
         if partial:
             observer.observe(partial, partial=True)
 
-    def ordinary_read_size(budget, requested):
-        if budget is None:
+    def ordinary_read_size(read_budget, requested: int) -> int:
+        if read_budget is None:
             return requested
-        if budget["remaining"] <= 0 or time.monotonic() >= budget["deadline"]:
+        if read_budget["remaining"] <= 0 or time.monotonic() >= read_budget["deadline"]:
             receipt["ordinary_drain_bound"] = True
             raise Blocked("native_final_drain_limit")
-        return min(requested, budget["remaining"])
+        return min(requested, int(read_budget["remaining"]))
 
     def read_logs(final=False, budget=None):
         if not require_completion:
@@ -568,13 +568,13 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
                 stream.seek(offset)
                 while True:
                     check_lifetime(parent_fd, deadline)
-                    size = ordinary_read_size(budget, 1024 * 1024)
-                    data = stream.read(size)
+                    log_read_size = ordinary_read_size(budget, 1024 * 1024)
+                    data = stream.read(log_read_size)
                     if budget is not None:
                         budget["remaining"] -= len(data)
                     log_offsets[identity] = stream.tell()
                     consume(framer, scanner, data)
-                    if not final or len(data) < size:
+                    if not final or len(data) < log_read_size:
                         break
                 log_offsets[identity] = stream.tell()
             if final:
@@ -713,20 +713,20 @@ def execute(argv, env, private: Path, deadline: float, parent_fd: int | None, re
                     selector.unregister(stdout)
             read_logs()
             if leader_exited():
-                budget = {"deadline": time.monotonic() + DRAIN_SECONDS, "remaining": DRAIN_BYTES}
+                final_budget = {"deadline": time.monotonic() + DRAIN_SECONDS, "remaining": DRAIN_BYTES}
                 while True:
                     check_lifetime(parent_fd, deadline)
-                    size = ordinary_read_size(budget, 65536)
+                    size = ordinary_read_size(final_budget, 65536)
                     try:
                         chunk = os.read(stdout.fileno(), size)
                     except BlockingIOError:
                         break
                     if not chunk:
                         break
-                    budget["remaining"] -= len(chunk)
+                    final_budget["remaining"] -= len(chunk)
                     consume(output_framer, output_license_scanner, chunk)
                 consume(output_framer, output_license_scanner, b"", final=True)
-                read_logs(final=True, budget=budget)
+                read_logs(final=True, budget=final_budget)
                 break
             load = os.getloadavg()[0]
             if load > LOAD_LIMIT and not paused:
