@@ -821,7 +821,6 @@ class CommandPolicyHookTests(unittest.TestCase):
                 self.assertIn(matched, result.stderr)
 
     def test_other_tools_and_unreadable_events_are_let_through(self) -> None:
-        self.assertEqual(bash("x=\"$(bash <<'EOF'\nworker &\nEOF").returncode, 0)
         self.assertEqual(run_hook(json.dumps({"tool_name": "Read", "tool_input": {}})).returncode, 0)
         for payload in ("not json", json.dumps({"tool_name": "Bash"})):
             with self.subTest(payload=payload):

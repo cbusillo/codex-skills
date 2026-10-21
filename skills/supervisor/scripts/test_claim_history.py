@@ -46,12 +46,14 @@ class NativeHistoryTests(unittest.TestCase):
         session = original[0]['sessionId']
         root = self.home / (session + '.jsonl')
         child = self.home / session / 'subagents/agent-handback.jsonl'
-        for change in ('none', 'failed', 'error', 'wrong-call', 'wrong-assistant', 'parallel',
+        for change in ('none', 'cancelled-stop', 'failed', 'error', 'wrong-call', 'wrong-assistant', 'parallel',
                        'queued', 'resumed', 'blocked-hook', 'unknown-tail', 'background'):
             with self.subTest(change=change):
                 rows = copy.deepcopy(original)
                 result = rows[1]
                 if change == 'failed': result['toolUseResult']['success'] = False
+                elif change == 'cancelled-stop':
+                    rows[-1]['attachment'].update(type='hook_cancelled', hookEvent='SubagentStop', timedOut=True, timeoutMs=3000)
                 elif change == 'error': result['message']['content'][0]['is_error'] = True
                 elif change == 'wrong-call': result['message']['content'][0]['tool_use_id'] = 'another'
                 elif change == 'wrong-assistant': result['sourceToolAssistantUUID'] = 'another'
@@ -67,7 +69,7 @@ class NativeHistoryTests(unittest.TestCase):
                     rows[:0] = work
                 self.write(root, records('claude', session))
                 self.write(child, rows)
-                if change == 'none':
+                if change in ('none', 'cancelled-stop'):
                     nodes = claim_history.collect(root, 'claude', session, session_record.read_jsonl(root), lambda p, *_: session_record.read_jsonl(p))
                     self.assertEqual(len(nodes), 2)
                 else:

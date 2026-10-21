@@ -231,6 +231,11 @@ class ReceiptTests(unittest.TestCase):
                     "tee notes.md <<'EOF'\nQ&A, don't\nEOF",
                     "source .venv/bin/activate && cat >notes.md <<'EOF'\nit's prose\nEOF",
                     'rg -n eval "isn\'t"',
+                    '\"$PY\" -c \'print(1)\'',
+                    "bash scripts/release.sh <<'EOF'\nnotes with don't\nEOF",
+                    "sudo docker exec -i db psql <<'EOF'\n-- don't parse SQL as shell\nEOF",
+                    'ps aux | grep bash', 'grep -q zsh <<< "$SHELL"', 'grep bash <(ps aux)',
+                    "bash -n x.sh; cat <(printf 'a & b')",
                     'case a in a) printf x ;& b) printf y ;; esac']
         for command in commands:
             with self.subTest(command=command):
@@ -267,6 +272,15 @@ class ReceiptTests(unittest.TestCase):
             "cat >run.sh <<'EOF'\nworker &\nEOF\nsudo ./run.sh",
             "cat >run.sh <<'EOF'\nworker &\nEOF\nout=\"$(./run.sh)\"",
             "source <(cat <<'EOF'\nworker &\nEOF\n)",
+            "caffeinate -i bash -c 'worker &'", "ionice -t bash -c 'worker &'",
+            "sudo -iu svc bash -c 'worker &'", "sudo -Hiu svc bash <<'EOF'\nworker &\nEOF",
+            "sudo xargs -I{} sh -c '{}' <<'EOF'\nworker &\nEOF",
+            "docker compose exec -T web bash <<'EOF'\nworker &\nEOF",
+            "kubectl exec -i pod -- sh <<'EOF'\nworker &\nEOF", "flock /lock bash -c 'worker &'",
+            "( cd /repo && bash ) <<'EOF'\nworker &\nEOF",
+            "echo 'worker &' | bash", "printf '%s\\n' 'worker &' | sh", 'echo "$x" | bash',
+            "bash <(echo 'worker &')", "bash <(cat unknown.sh)", "\"$SHELL\" <<< 'worker &'",
+            "echo 'worker &' | docker compose exec -T web bash", 'bash -c "$CMD"',
         ]
         for flags in ('-e', '-euo pipefail', '-o errexit', '-O extglob', '-s -- args'):
             commands += [f"bash {flags} <<'EOF'\nworker &\nEOF", f"bash {flags} <<< 'worker &'"]
