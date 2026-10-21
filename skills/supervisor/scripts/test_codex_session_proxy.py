@@ -223,7 +223,7 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
             f.rpc_results["thread/queue/add"] = ValueError("synthetic rejected queue")
             args = SimpleNamespace(command="queue", session_id=f.session, codex_home=f.home,
                                    message="status?", message_file=None)
-            with patch.object(github_plan_sessions, "codex_homes", return_value=[f.home]), self.assertRaises(ValueError):
+            with patch.object(github_plan_sessions, "configured_homes", return_value=[f.home]), self.assertRaises(ValueError):
                 await asyncio.to_thread(SESSION.run, args)
             self.assertTrue(closure.action_pending(f.session))
             self.assertFalse(f.mutations)
@@ -295,7 +295,7 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                 result = await self.send(task, request, response, "turn/start", f.session)
                 self.assertIn("result", result)
                 with patch.dict(os.environ, {"PATH": str(queue_bin)}), \
-                        patch.object(github_plan_sessions, "codex_homes", return_value=[f.home]):
+                        patch.object(github_plan_sessions, "configured_homes", return_value=[f.home]):
                     self.assertEqual(await asyncio.to_thread(SESSION.run, args), 0)
                     # Capacity target validation is covered by its full module;
                     # exercise the shared typed queue writer while this client stays connected.

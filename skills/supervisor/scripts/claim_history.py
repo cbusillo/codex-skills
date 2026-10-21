@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import sys
 
 import claim_receipts
 
@@ -87,15 +88,11 @@ def child_records(records, harness, session, context=None):
 
 
 def codex_homes(path):
-    homes = {Path.home() / ".codex", Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))}
-    homes.update(p.parent for p in path.parents if p.name in {"sessions", "archived_sessions"})
-    try:
-        import account_choice
-        homes.update(Path(a["env"].get("CODEX_HOME", str(Path.home() / ".codex")))
-                     for a in account_choice.load_config()["accounts"] if a["provider"] == "openai")
-    except (OSError, ValueError, KeyError):
-        pass  # The native parent index below must still establish coverage.
-    return sorted({p.expanduser().resolve() for p in homes})
+    github = str(Path(__file__).resolve().parents[2] / "github/scripts")
+    if github not in sys.path:
+        sys.path.append(github)
+    from github_plan_sessions import observation_homes
+    return observation_homes(additional_homes={p.parent for p in path.parents if p.name in {"sessions", "archived_sessions"}})
 
 
 @contextmanager

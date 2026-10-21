@@ -1428,6 +1428,52 @@ class ProcessArgumentsTests(unittest.TestCase):
             import github_plan_sessions as sessions
         self.enterContext(patch.object(sessions.github_plan_closure, "managed_launch", return_value=False))
 
+    def test_kernel_process_details_bind_executable_incarnation_and_owner(self):
+        import ctypes
+        import struct
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder).resolve()
+            executable = root / "native-bin"
+            executable.touch()
+            process = root / "proc" / "123"
+            process.mkdir(parents=True)
+            (process / "exe").symlink_to(executable)
+            (process / "stat").write_text("123 (native process) S 42 " + "0 " * 17 + "789")
+            with patch.object(session_liveness.sys, "platform", "linux"), \
+                    patch.object(session_liveness, "PROC_ROOT", root / "proc"):
+                observed = session_liveness.native_process_details(123)
+                self.assertEqual(observed["executable"], str(executable))
+                self.assertEqual(observed["ppid"], 42)
+                self.assertEqual(observed["identity"]["startTicks"], int((process / "stat").read_text().split()[-1]))
+                (process / "stat").write_text("123 (native process) Z 42 " + "0 " * 17 + "789")
+                with self.assertRaises(ValueError):
+                    session_liveness.native_process_details(123)
+            library = Mock()
+            path_bytes = os.fsencode(executable) + b"\0"
+            kernel_identity = struct.pack("=16sQQQQQ", b"", 789, 42, 0, 0, 0)
+            def path(_pid, output, _size):
+                ctypes.memmove(output, path_bytes, len(path_bytes))
+                return len(path_bytes)
+            def info(_pid, _flavor, _arg, output, size):
+                ctypes.memmove(output, kernel_identity, len(kernel_identity))
+                return len(kernel_identity) if size == len(kernel_identity) else 0
+            library.proc_pidpath.side_effect = path
+            library.proc_pidinfo.side_effect = info
+            with patch.object(session_liveness.sys, "platform", "darwin"), \
+                    patch.object(ctypes, "CDLL", return_value=library), \
+                    patch.object(session_liveness.subprocess, "run", return_value=SimpleNamespace(stdout=f"{os.getuid()} 42")) as process_read:
+                observed = session_liveness.native_process_details(123)
+                self.assertEqual(observed["executable"], str(executable))
+                self.assertEqual(observed["identity"]["uniqueId"], struct.unpack("=16sQQQQQ", kernel_identity)[1])
+                self.assertEqual(observed["ppid"], 42)
+                process_read.return_value.stdout = f"{os.getuid() + 1} 42"
+                with self.assertRaises(ValueError):
+                    session_liveness.native_process_details(123)
+                library.proc_pidinfo.return_value = 0
+                library.proc_pidinfo.side_effect = None
+                with self.assertRaises(OSError):
+                    session_liveness.native_process_details(123)
+
     def test_only_kernel_absence_clears_stale_process_coverage(self):
         github = str(Path(__file__).resolve().parents[2] / "github/scripts")
         with patch.object(sys, "path", [github, *sys.path]):
@@ -1485,7 +1531,7 @@ class ProcessArgumentsTests(unittest.TestCase):
                         "status": "available" if native_complete else "incomplete",
                         "peer_complete": native_complete, "socket": "/fixture/socket"}
                 with self.subTest(command=command, native_complete=native_complete), \
-                        patch.object(sessions, "codex_homes", return_value=[Path("/fixture")]), \
+                        patch.object(sessions, "observation_homes", return_value=[Path("/fixture")]), \
                         patch.object(sessions, "observe_home", side_effect=read), \
                         patch.object(sessions.github_plan_closure, "inherit_observed_leases"), \
                         patch.object(sessions.subprocess, "run", side_effect=[

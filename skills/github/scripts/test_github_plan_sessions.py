@@ -25,6 +25,8 @@ from aiohttp import web
 import github_plan_sessions as SESSIONS
 import github_plan_closure as CLOSURE
 
+NATIVE_PROCESS_ARGUMENTS = SESSIONS.process_liveness().process_arguments
+
 
 class ReceiptFixture:
     """A real read-only Unix daemon plus an actual shared closure receipt."""
@@ -65,10 +67,10 @@ class ReceiptFixture:
             {"type": "event_msg", "timestamp": "2026-10-01T02:00:01Z", "payload": {"type": "task_complete", "turn_id": "source-turn"}},
         ]) + "\n")
         self.log = self.root / ".code/skill-data/supervisor-closed-sessions.json"
-        self.stack.enter_context(patch.dict(os.environ, {"HOME": str(self.root), "CODE_HOME": str(self.log.parent.parent)}))
+        self.stack.enter_context(patch.dict(os.environ, {"HOME": str(self.root), "CODE_HOME": str(self.log.parent.parent), "CODEX_HOME": str(self.home)}))
         self.stack.enter_context(patch.object(CLOSURE, "closed_log", return_value=self.log))
         self.stack.enter_context(patch.object(CLOSURE, "host_identity", return_value={"boot": "fixture-boot", "uid": os.getuid()}))
-        self.stack.enter_context(patch.object(SESSIONS, "codex_homes", side_effect=lambda **_kw: sorted(self.homes)))
+        self.stack.enter_context(patch.object(SESSIONS, "configured_homes", side_effect=lambda **_kw: sorted(self.homes)))
         SESSIONS.native_helpers()
         self.stack.enter_context(patch.object(SESSIONS.process_liveness(), "process_arguments",
             side_effect=lambda _pid, command: (SESSIONS.process_liveness().harness_arguments(command), True)))
@@ -1134,8 +1136,14 @@ class IdleReceiptIntegrationTests(unittest.TestCase):
                 CLOSURE.resumed_launch(f.session, metadata, str(resumed_transcript), "resumed-tty")
             before = CLOSURE.source_records({f.session})[f.session]
             f.native_state = "notLoaded"
-            f.commands = "789 codex app-server --listen unix://" + str(CLOSURE.daemon_endpoint(f.home))
-            with patch.object(SESSIONS, "codex_homes", return_value=[resumed_home]), CLOSURE.admission():
+            # The original home is no longer configured, but its positively
+            # guarded client still binds to that independently observed daemon.
+            client = ["codex", "--remote", "unix://" + str(CLOSURE.daemon_endpoint(f.home)), "--", "task"]
+            f.stack.enter_context(patch.object(CLOSURE, "process_started_at",
+                return_value=datetime.fromisoformat(f.entry["launch_started_at"])))
+            f.managed(client)
+            f.commands = "456 " + " ".join(client)
+            with patch.object(SESSIONS, "configured_homes", return_value=[resumed_home]), CLOSURE.admission():
                 for _ in range(2):
                     _, states, coverage = f.observe()
                     self.assertEqual(coverage["process_coverage"], "complete")
@@ -1158,7 +1166,7 @@ class IdleReceiptIntegrationTests(unittest.TestCase):
                 CLOSURE.replace_rows(rows)
                 good_home = resumed_home if broken == "original" else f.home
                 f.native_state = "active"
-                with patch.object(SESSIONS, "codex_homes", return_value=[]):
+                with patch.object(SESSIONS, "configured_homes", return_value=[]):
                     peers, states, _ = f.observe()
                 self.assertTrue(any(peer.get("home") == str(good_home) for peer in peers))
                 self.assertEqual(states[f.session]["state"], "live")
@@ -1235,6 +1243,9 @@ class IdleReceiptIntegrationTests(unittest.TestCase):
                 self.assertEqual(CLOSURE.guarded_launch_endpoint(456, native), endpoint)
                 self.assertFalse(CLOSURE.managed_launch(456, native, set()))
                 self.assertTrue(CLOSURE.managed_launch(456, native, {endpoint}))
+                alias = f.root / "socket-alias"
+                alias.symlink_to(CLOSURE.daemon_endpoint(f.home))
+                self.assertTrue(CLOSURE.managed_launch(456, native, {str(alias)}))
                 f.commands = "456 " + " ".join(native)
                 self.assert_ended(f)
                 f.commands = "456 python3 /fixture/codex " + " ".join(native[1:])
@@ -1757,7 +1768,7 @@ class ObservationMergeTests(unittest.TestCase):
             CLOSURE.replace_rows([])
             CLOSURE.lease_path(f.session).unlink()
             node = {"session_id": f.session, "harness": "codex", "transcript": str(f.transcript), "records": []}
-            complete = {"peer_complete": True, "process_coverage": "complete"}
+            complete = f.observe(proof_sessions={f.session})[2]
             self.assertTrue(SESSIONS._physical_quiescent(node, [], complete))
             self.assertFalse(CLOSURE.lease_path(f.session).exists())
             f.commands = "456 codex resume " + f.session
@@ -1773,6 +1784,99 @@ class ObservationMergeTests(unittest.TestCase):
             with CLOSURE.resume_guard(f.session, method="turn/start", home=other):
                 pass
             self.assertFalse(SESSIONS._physical_quiescent(node, [], complete))
+
+    def test_native_daemon_helpers_need_current_owning_process_and_observed_home(self):
+        with ReceiptFixture("11111111-2222-4333-8444-555555555555") as f:
+            shared = SESSIONS.process_liveness()
+            directory = f.home / "app-server-daemon"
+            directory.mkdir()
+            executable = str(f.root / "bin/codex")
+            helper = str(Path(executable).with_name("codex-code-mode-host"))
+            daemon = [executable, "app-server", "--listen", "unix://", "--analytics-default-enabled", "--managed-daemon"]
+            updater = [executable, "app-server", "daemon", "pid-update-loop"]
+            child = [helper]
+            identities = {pid: {"bootId": "fixture-boot", "uniqueId": pid,
+                "startSeconds": 100, "startMicroseconds": pid} for pid in (100, 101, 102)}
+            details = {pid: {"pid": pid, "ppid": 100 if pid == 102 else 1,
+                "executable": helper if pid == 102 else executable, "identity": identities[pid]} for pid in identities}
+            def records():
+                for name, pid in (("daemon.pid", 100), ("daemon-updater.pid", 101)):
+                    (directory / name).write_text(json.dumps({"pid": pid, "processIdentity": identities[pid]}))
+            records()
+            commands = {100: daemon, 101: updater, 102: child}
+            f.commands = "\n".join(str(pid) + " " + " ".join(argv) for pid, argv in commands.items())
+            sockets = {str(CLOSURE.daemon_endpoint(f.home).resolve())}
+            with patch.object(shared, "native_process_details", side_effect=lambda pid: copy.deepcopy(details[pid])), \
+                    patch.object(shared, "native_arguments", side_effect=lambda pid: list(commands[pid])):
+                self.assertTrue(SESSIONS.process_absence_known(f.commands, sockets))
+                for options in (["--remote-control", "--listen", "unix://", "--analytics-default-enabled", "--managed-daemon"],
+                        ["--listen", "unix://", "--analytics-default-enabled", "-c", "features.fixture=true", "--managed-daemon"],
+                        ["--listen", "unix://", "--analytics-default-enabled"]):
+                    commands[100] = [executable, "app-server", *options]
+                    with self.subTest(native_options=options):
+                        self.assertTrue(SESSIONS.process_absence_known("100 " + " ".join(commands[100]), sockets))
+                commands[100] = daemon
+                self.assertFalse(SESSIONS.process_absence_known(f.commands, set()))
+                # Stock standalone installs retain the native legacy filenames.
+                for current, legacy in (("daemon.pid", "app-server.pid"), ("daemon-updater.pid", "app-server-updater.pid")):
+                    (directory / current).rename(directory / legacy)
+                self.assertTrue(SESSIONS.process_absence_known(f.commands, sockets))
+                for current, legacy in (("daemon.pid", "app-server.pid"), ("daemon-updater.pid", "app-server-updater.pid")):
+                    (directory / legacy).rename(directory / current)
+                node = {"session_id": f.session, "harness": "codex", "transcript": str(f.transcript), "records": []}
+                CLOSURE.replace_rows([])
+                CLOSURE.lease_path(f.session).unlink()
+                self.assertTrue(SESSIONS._physical_quiescent(node, [], f.observe(proof_sessions={f.session})[2]))
+                self.assertFalse(CLOSURE.lease_path(f.session).exists())
+                other = f.root / "independent-account"
+                f.add_home(other)
+                other_directory = other / "app-server-daemon"
+                other_directory.mkdir()
+                for pid, name, argv in ((200, "daemon.pid", daemon), (201, "daemon-updater.pid", updater)):
+                    identity = {**identities[100], "uniqueId": pid}
+                    (other_directory / name).write_text(json.dumps({"pid": pid, "processIdentity": identity}))
+                    commands[pid] = argv
+                    details[pid] = {"pid": pid, "ppid": 1, "executable": executable, "identity": identity}
+                f.commands = "\n".join(str(pid) + " " + " ".join(argv) for pid, argv in commands.items())
+                coverage = f.observe(proof_sessions={f.session})[2]
+                self.assertTrue(SESSIONS._physical_quiescent(node, [], coverage))
+                self.assertFalse(SESSIONS._physical_quiescent(node, [{"sessionId": f.session,
+                    "source": "codex_session", "home": str(f.root / "outside"), "native_state": "idle"}], coverage))
+                f.commands += "\n300 codex app-server"
+                self.assertFalse(SESSIONS._physical_quiescent(node, [], coverage))
+                f.commands = "\n".join(str(pid) + " " + " ".join(argv) for pid, argv in commands.items())
+                for pid in (200, 201):
+                    commands.pop(pid)
+                    details.pop(pid)
+                f.commands = "\n".join(str(pid) + " " + " ".join(argv) for pid, argv in commands.items())
+                for pid, key, value in ((100, "identity", {**identities[100], "uniqueId": 999}),
+                        (101, "identity", {**identities[101], "bootId": "previous-boot"}),
+                        (102, "ppid", 999), (102, "executable", "/unrelated/codex-code-mode-host")):
+                    previous = details[pid][key]
+                    details[pid][key] = value
+                    with self.subTest(pid=pid, changed=key):
+                        self.assertFalse(SESSIONS.process_absence_known(f.commands, sockets))
+                    details[pid][key] = previous
+                for pid, extra in ((100, "--unknown-listener"), (101, "--unknown-role"), (102, "--listen=grpc://127.0.0.1:42")):
+                    commands[pid].append(extra)
+                    with self.subTest(pid=pid, extra=extra):
+                        row = str(pid) + " " + " ".join(commands[pid])
+                        self.assertFalse(SESSIONS.process_absence_known(row, sockets))
+                    commands[pid].pop()
+                (directory / "daemon.pid").unlink()
+                self.assertFalse(SESSIONS.process_absence_known(f.commands, sockets))
+                # This verified maintenance entrypoint does not host threads;
+                # an intentionally stopped daemon need not exist beside it.
+                self.assertTrue(SESSIONS.process_absence_known("101 " + " ".join(updater), set()))
+                records()
+                self.assertFalse(SESSIONS.process_absence_known(f.commands + "\n200 codex app-server", sockets))
+                self.assertFalse(SESSIONS.process_absence_known(f.commands + "\n200 codex resume " + f.session, sockets))
+                for name in ("daemon.pid", "daemon-updater.pid"):
+                    path = directory / name
+                    row = json.loads(path.read_text())
+                    row["linuxProcessIdentity"] = row.pop("processIdentity")
+                    path.write_text(json.dumps(row))
+                self.assertTrue(SESSIONS.process_absence_known(f.commands, sockets))
 
     def test_active_check_finds_one_owner_across_shared_history_homes(self):
         from test_claim_receipts import cell_header, composed_result
@@ -1799,7 +1903,7 @@ class ObservationMergeTests(unittest.TestCase):
                 owner_at(owner)
                 for order in (homes, list(reversed(homes))):
                     with self.subTest(owner=owner.name, order=[h.name for h in order]), \
-                            patch.object(SESSIONS, "codex_homes", return_value=order):
+                            patch.object(SESSIONS, "configured_homes", return_value=order):
                         self.assertTrue(SESSIONS._current_check_quiet(node))
 
             owner_at(homes[-1])
@@ -1840,12 +1944,53 @@ class ObservationMergeTests(unittest.TestCase):
             f.home_queues.clear()
             owner_at(homes[-1])
             self.assertTrue(SESSIONS._current_check_quiet(node))
-            with patch.object(SESSIONS, "observe", return_value=([], {}, {})):
+            with patch.object(SESSIONS, "observe", return_value=([], {}, f.observe()[2])):
                 self.assertFalse(SESSIONS.pending_ownership([node], [{"pending": True}]))
             endpoint = CLOSURE.daemon_endpoint(homes[1])
             endpoint.chmod(0o666)
             self.assertFalse(SESSIONS._current_check_quiet(node))
             endpoint.chmod(0o600)
+            # The standard home is independent of the account configuration,
+            # but a shared rollout can also be active there.
+            standard = f.root / ".codex"
+            f.add_home(standard, copy_transcript=False)
+            (standard / "sessions").symlink_to(f.home / "sessions", target_is_directory=True)
+            f.home_states[str(standard)] = "active"
+            f.rpc_results[str(standard), "thread/backgroundTerminals/list"] = {"data": [pair], "nextCursor": None}
+            with patch.object(SESSIONS, "configured_homes", return_value=homes):
+                self.assertFalse(SESSIONS._current_check_quiet(node))
+                f.home_states[str(standard)] = "notLoaded"
+                f.rpc_results[str(standard), "thread/backgroundTerminals/list"] = {"data": [], "nextCursor": None}
+                self.assertTrue(SESSIONS._current_check_quiet(node))
+            environment = f.root / "environment-home"
+            f.add_home(environment)
+            f.home_states[str(environment)] = "active"
+            f.rpc_results[str(environment), "thread/backgroundTerminals/list"] = {"data": [pair], "nextCursor": None}
+            with patch.dict(os.environ, {"CODEX_HOME": str(environment)}), \
+                    patch.object(SESSIONS, "configured_homes", return_value=homes):
+                self.assertFalse(SESSIONS._current_check_quiet(node))
+                f.home_states[str(environment)] = "notLoaded"
+                f.rpc_results[str(environment), "thread/backgroundTerminals/list"] = {"data": [], "nextCursor": None}
+                self.assertTrue(SESSIONS._current_check_quiet(node))
+                f.commands = "456 codex resume " + f.session
+                self.assertFalse(SESSIONS._current_check_quiet(node))
+                f.commands = "456 codex app-server"
+                self.assertFalse(SESSIONS._current_check_quiet(node))
+            f.commands = ""
+            owner_at(f.home)
+            native = ["codex", "--remote", "unix://", "resume", f.session]
+            with patch.object(CLOSURE, "process_started_at", return_value=datetime.now(timezone.utc) - timedelta(seconds=2)):
+                f.managed(native)
+                f.commands = "456 " + " ".join(native)
+                with patch.object(SESSIONS.process_liveness(), "native_arguments", return_value=native):
+                    self.assertTrue(SESSIONS._current_check_quiet(node))
+                f.commands = ""
+            outside = f.root / "outside-home"
+            f.add_home(outside, copy_transcript=False)
+            for state in ("idle", "active"):
+                f.home_states[str(outside)] = state
+                with self.subTest(uncovered_peer=state):
+                    self.assertFalse(SESSIONS._current_check_quiet(node))
             self.assertFalse(f.mutations)
 
     def test_active_check_binds_its_native_background_handle_instead_of_its_call_id(self):
@@ -1905,8 +2050,32 @@ class ObservationMergeTests(unittest.TestCase):
                 return {"data": [pair], "nextCursor": None}
             f.rpc_results["thread/backgroundTerminals/list"] = append_poll
             self.assertTrue(SESSIONS._current_check_quiet(node))
+            # Slow startup can snapshot after an isolated native poll has
+            # already arrived. Its launch boundary and handle stay the same.
+            polled = [*current, {"payload": {"type": "custom_tool_call", "call_id": "early-poll", "name": "exec",
+                "input": 'text(await tools.write_stdin({session_id:123}));'}}]
+            f.transcript.write_text("".join(json.dumps(row) + "\n" for row in polled))
+            node["records"] = polled
+            f.rpc_results["thread/backgroundTerminals/list"] = {"data": [pair], "nextCursor": None}
+            self.assertTrue(SESSIONS._current_check_quiet(node))
+            node["records"] = original
             f.transcript.write_text("".join(json.dumps(row) + "\n" for row in current))
             f.rpc_results["thread/backgroundTerminals/list"] = {"data": [pair], "nextCursor": None}
+            open_path = Path.open
+            appended = False
+            from contextlib import contextmanager
+            @contextmanager
+            def poll_during_identity_read(path, *args, **kwargs):
+                nonlocal appended
+                with open_path(path, *args, **kwargs) as stream:
+                    yield stream
+                    if path == f.transcript and args == ("rb",) and not appended:
+                        appended = True
+                        append_poll({})
+            with patch.object(Path, "open", poll_during_identity_read):
+                self.assertTrue(SESSIONS._current_check_quiet(node))
+            self.assertTrue(appended)
+            f.transcript.write_text("".join(json.dumps(row) + "\n" for row in current))
             for pairs in ([], [{**pair, "processId": "other"}], [pair, pair],
                           [pair, {"itemId": "exec-other", "processId": "456"}]):
                 f.rpc_results["thread/backgroundTerminals/list"]["data"] = pairs
@@ -1929,15 +2098,108 @@ class ObservationMergeTests(unittest.TestCase):
                 await asyncio.sleep(1.4)
                 return {"thread": {"id": f.session, "path": str(f.transcript),
                     "historyMode": "paginated", "status": {"type": "active"}}}
+            peers, _states, coverage = f.observe()
             f.rpc_results["thread/read"] = delayed_thread
             # The caller's remaining budget covers the entire native sandwich;
             # the former shorter connection/outer budgets failed this read.
-            self.assertTrue(SESSIONS._current_check_quiet(node, deadline_at=time.time() + 15))
+            self.assertTrue(SESSIONS._current_check_quiet(node, peers=peers, coverage=coverage, deadline_at=time.time() + 15))
 
     def setUp(self):
         shared = SESSIONS.process_liveness()
         self.enterContext(patch.object(shared, "process_arguments",
             side_effect=lambda _pid, command: (shared.harness_arguments(command), True)))
+
+    def test_checker_normalizes_guarded_npm_wrapper_and_child_as_one_ingress(self):
+        from test_claim_receipts import cell_header, composed_result
+        with ReceiptFixture("11111111-2222-4333-8444-555555555555") as f:
+            original = [json.loads(line) for line in f.transcript.read_text().splitlines()][:2]
+            original.append({"type": "response_item", "payload": {"type": "custom_tool_call", "call_id": "call-check",
+                "name": "exec", "input": 'text(await tools.exec_command({cmd:"uv run check_claims.py"}));'}})
+            started = composed_result({"session_id": 123, "output": ""}, "call-check")
+            started["payload"]["output"].insert(0, cell_header())
+            f.transcript.write_text("".join(json.dumps(row) + "\n" for row in [*original, started]))
+            f.native_state = "active"
+            f.rpc_results["thread/backgroundTerminals/list"] = {
+                "data": [{"itemId": "exec-native-check", "processId": "123"}], "nextCursor": None}
+            node = {"session_id": f.session, "harness": "codex", "transcript": str(f.transcript), "records": original}
+            native = ["codex", "--remote", "unix://", "resume", f.session]
+            with patch.object(CLOSURE, "process_started_at", return_value=datetime.now(timezone.utc) - timedelta(seconds=2)), \
+                    patch.object(SESSIONS.process_liveness(), "process_absent", return_value=False):
+                f.managed(native)
+                argv = {456: ["/fixture/bin/node", "/fixture/npm/bin/codex.js", *native[1:]],
+                        457: ["/fixture/native/codex", *native[1:]]}
+                f.commands = "\n".join(str(pid) + " " + " ".join(args) for pid, args in argv.items())
+                fixture_run = SESSIONS.subprocess.run
+                def run(args, **kwargs):
+                    if args == ["ps", "-p", "457", "-o", "ppid="]:
+                        return SimpleNamespace(returncode=0, stdout="456")
+                    return fixture_run(args, **kwargs)
+                with patch.object(SESSIONS.process_liveness(), "native_arguments", side_effect=lambda pid: argv[pid]), \
+                        patch.object(SESSIONS.process_liveness(), "process_arguments", side_effect=NATIVE_PROCESS_ARGUMENTS), \
+                        patch.object(SESSIONS.subprocess, "run", side_effect=run):
+                    peers, _, coverage = f.observe()
+                    self.assertEqual(coverage["process_coverage"], "complete")
+                    self.assertTrue(SESSIONS._current_check_quiet(node, peers=peers, coverage=coverage))
+                    # A second positively registered ingress is a separate client.
+                    binding = f.root / "second-ingress.sock"
+                    sock = socket.socket(socket.AF_UNIX)
+                    f.stack.callback(sock.close)
+                    sock.bind(str(binding))
+                    binding.chmod(0o600)
+                    with patch.object(CLOSURE.os, "getpid", return_value=900):
+                        proxy = CLOSURE.register_proxy(str(f.home), str(binding))
+                    second = [native[0], "--remote", "unix://" + str(binding), "resume", f.session]
+                    with patch.object(CLOSURE.os, "getpid", return_value=458):
+                        CLOSURE.register_launch(second, str(f.home), proxy=proxy)
+                    argv[458] = second
+                    f.commands += "\n458 " + " ".join(second)
+                    self.assertEqual(f.observe()[2]["process_coverage"], "complete")
+                    self.assertFalse(SESSIONS._current_check_quiet(node))
+
+    def test_invalid_retained_home_isolates_only_its_source_and_never_proves_it(self):
+        for malformed in ("/malformed\0home", "~codex_scope_no_such_user/home"):
+            for resumed in (False, True):
+                with self.subTest(malformed=malformed, resumed=resumed), ReceiptFixture() as f:
+                    bad = "other-source"
+                    source = {**f.entry, "session_id": bad, "resumed_at": "2026-10-01T02:00:00Z"}
+                    target = source
+                    if resumed:
+                        source["resumed_generation"] = {"codex_home": str(f.home)}
+                        target = source["resumed_generation"]
+                    target["codex_home"] = malformed
+                    CLOSURE.replace_rows([*CLOSURE.log_rows(), source])
+                    f.native_state = "notLoaded"
+                    with CLOSURE.resume_guard(f.session, method="thread/resume", home=f.home):
+                        pass
+                    _, states, _ = SESSIONS.observe({f.session, bad}, set())
+                    self.assertEqual(states[f.session]["state"], "ended")
+                    self.assertFalse(CLOSURE.action_pending(f.session))
+                    self.assertEqual(states[bad]["state"], "live")
+                    self.assertEqual(CLOSURE.source_records({bad})[bad]["resumed_at"], source["resumed_at"])
+                    with self.assertRaises(ValueError):
+                        SESSIONS.retained_homes(sources=[source])
+
+    def test_recovering_non_source_home_observes_post_list_threads_and_queues(self):
+        for state in ("active", "idle", "notLoaded"):
+            with self.subTest(state=state), ReceiptFixture() as f:
+                other = f.root / "explicit-path-home"
+                f.add_home(other, copy_transcript=False)
+                f.native_state = "notLoaded"
+                f.rpc_results[str(other), "thread/loaded/list"] = {"data": [], "nextCursor": None}
+                f.rpc_results[str(other), "thread/read"] = {"thread": {"id": f.session,
+                    "cwd": "/fixture/shared-work", "path": str(f.transcript), "historyMode": "paginated",
+                    "status": {"type": state}}}
+                if state == "notLoaded":
+                    f.home_queues[str(other)] = [{"id": "queued", "clientUserMessageId": "new", "input": []}]
+                with CLOSURE.resume_guard(f.session, method="thread/resume", home=f.home):
+                    pass
+                peers, states, _ = f.observe()
+                self.assertTrue(CLOSURE.action_pending(f.session))
+                self.assertEqual(states[f.session]["state"], "live")
+                self.assertTrue(any(peer.get("home") == str(other) for peer in peers))
+                if state == "notLoaded":
+                    self.assertIn((str(other), "thread/queue/list"), f.home_requests)
+                self.assertFalse(f.mutations)
 
     def test_malformed_action_barrier_blocks_native_end_proof_without_writing(self):
         with ReceiptFixture() as f:
@@ -1949,6 +2211,17 @@ class ObservationMergeTests(unittest.TestCase):
             self.assertEqual(states[f.session]["state"], "live")
             self.assertIsNone(CLOSURE.verified_record(f.session, f.home))
             self.assertEqual({p: p.read_bytes() for p in f.log.parent.rglob("*") if p.is_file()}, before)
+        with ReceiptFixture("11111111-2222-4333-8444-555555555555") as f:
+            bad = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+            with CLOSURE.ownership(bad, create=True):
+                CLOSURE.write_lease_state(bad, {"action_pending": True, "action_at": datetime.now(timezone.utc).isoformat(),
+                                              "action_homes": {"known": "malformed", "unscoped": False}})
+            with CLOSURE.resume_guard(f.session, method="thread/resume", home=f.home):
+                pass
+            f.native_state = "notLoaded"
+            SESSIONS.observe({f.session, bad}, set())
+            self.assertFalse(CLOSURE.action_pending(f.session))
+            self.assertTrue(CLOSURE.action_pending(bad))
 
     def test_nonempty_or_missing_queue_evidence_blocks_even_authored_release_fallback(self):
         for native in ("idle", "notLoaded"):
@@ -1985,7 +2258,9 @@ class ObservationMergeTests(unittest.TestCase):
                                 + 'env={CODEX_HOME=' + json.dumps(str(home)) + '}\n')
             expected = [canonical_home.resolve()]
             with patch.dict(os.environ, {"CODE_HOME": str(root / "other-runtime"), "CODEX_HOME": str(root / "other-account")}):
-                self.assertEqual(SESSIONS.codex_homes(strict=True, configured_only=True), expected)
+                self.assertEqual(SESSIONS.configured_homes(strict=True), expected)
+                self.assertTrue({canonical_home.resolve(), (root / ".codex").resolve(),
+                                 (root / "other-account").resolve()} <= set(SESSIONS.observation_homes(strict=True)))
 
     def test_configured_receipt_homes_do_not_depend_on_caller_account_or_order(self):
         config = {"accounts": [{"provider": "openai", "env": {"CODEX_HOME": "/fixture/b"}},
@@ -1995,16 +2270,19 @@ class ObservationMergeTests(unittest.TestCase):
         for current in ("/fixture/a", "/fixture/b", "/fixture/unconfigured"):
             with patch.dict(os.environ, {"CODEX_HOME": current}), \
                     patch.object(SESSIONS, "native_helpers", return_value=(helpers, None)):
-                results.append(SESSIONS.codex_homes(strict=True, configured_only=True))
+                results.append(SESSIONS.configured_homes(strict=True))
         self.assertTrue(all(homes == results[0] for homes in results))
         self.assertEqual(set(results[0]), {Path(a["env"]["CODEX_HOME"]).resolve() for a in config["accounts"]})
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"HOME": folder, "CODEX_HOME": "/fixture/a"}), \
+                patch.object(SESSIONS, "native_helpers", return_value=(helpers, None)):
+            self.assertIn((Path(folder) / ".codex").resolve(), SESSIONS.observation_homes(strict=True))
 
     def test_receipt_proofs_require_available_account_inventory(self):
-        config = SimpleNamespace(load_config=lambda: (_ for _ in ()).throw(ValueError("missing account inventory")))
+        config = SimpleNamespace(load_config=lambda **_kw: (_ for _ in ()).throw(ValueError("missing account inventory")))
         with patch.object(SESSIONS, "native_helpers", return_value=(config, None)):
-            self.assertTrue(SESSIONS.codex_homes())
+            self.assertTrue(SESSIONS.observation_homes())
             with self.assertRaisesRegex(ValueError, "missing account inventory"):
-                SESSIONS.codex_homes(strict=True)
+                SESSIONS.observation_homes(strict=True)
 
     def test_shared_log_is_independent_of_provider_account_home(self):
         with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"HOME": folder}):
@@ -2020,7 +2298,7 @@ class ObservationMergeTests(unittest.TestCase):
                 "status": "available", "peer_complete": True, "socket": "/fixture/socket"}
         for returncode in (0, 1):
             with self.subTest(returncode=returncode), \
-                    patch.object(SESSIONS, "codex_homes", return_value=[Path("/fixture")]), \
+                    patch.object(SESSIONS, "observation_homes", return_value=[Path("/fixture")]), \
                     patch.object(SESSIONS, "observe_home", side_effect=read), \
                     patch.object(SESSIONS.subprocess, "run", return_value=SimpleNamespace(
                         returncode=returncode, stdout="codex exec fresh-unrelated-work")):
@@ -2031,7 +2309,7 @@ class ObservationMergeTests(unittest.TestCase):
         async def read(_home, _sessions, _proof):
             return [{"sessionId": "holder", "source": "codex_session"}], {"holder": {"state": "live"}}, {"status": "available", "peer_complete": True, "socket": "/fixture/socket"}
         with patch.dict(os.environ, {"PATH": ""}), \
-                patch.object(SESSIONS, "codex_homes", return_value=[Path("/fixture")]), \
+                patch.object(SESSIONS, "observation_homes", return_value=[Path("/fixture")]), \
                 patch.object(SESSIONS, "observe_home", side_effect=read), \
                 patch.object(SESSIONS.subprocess, "run", side_effect=FileNotFoundError):
             peers, states, coverage = SESSIONS.observe({"holder"})
@@ -2039,16 +2317,16 @@ class ObservationMergeTests(unittest.TestCase):
         self.assertTrue(peers)
         self.assertEqual(coverage["process_coverage"], "unavailable")
 
-    def test_app_server_process_requires_its_exact_observed_socket(self):
+    def test_listener_arguments_without_native_identity_never_establish_coverage(self):
         socket_path = str(Path("/fixture/socket").resolve())
-        self.assertTrue(SESSIONS.process_absence_known(f"codex app-server --listen unix://{socket_path}", {socket_path}))
+        self.assertFalse(SESSIONS.process_absence_known(f"codex app-server --listen unix://{socket_path}", {socket_path}))
         self.assertFalse(SESSIONS.process_absence_known("codex app-server", {socket_path}))
         self.assertFalse(SESSIONS.process_absence_known("codex app-server --listen unix:///other/socket", {socket_path}))
 
     def test_incomplete_peer_scan_is_reported_and_cannot_prove_native_end(self):
         async def read(_home, _sessions, _proof):
             return [], {"holder": {"state": "ended"}}, {"status": "incomplete", "peer_complete": False, "socket": "/fixture/socket"}
-        with patch.object(SESSIONS, "codex_homes", return_value=[Path("/fixture")]), \
+        with patch.object(SESSIONS, "observation_homes", return_value=[Path("/fixture")]), \
                 patch.object(SESSIONS, "observe_home", side_effect=read), \
                 patch.object(SESSIONS.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="")):
             _, states, coverage = SESSIONS.observe({"holder"})
@@ -2070,7 +2348,7 @@ class ObservationMergeTests(unittest.TestCase):
                 "type": "event_msg", "timestamp": "2026-10-01T03:00:00Z", "payload": {"type": "task_started"}}])):
                 path.parent.mkdir()
                 path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
-            with patch.object(SESSIONS, "codex_homes", return_value=[home]):
+            with patch.object(SESSIONS, "observation_homes", return_value=[home]):
                 snapshot = SESSIONS.transcript_snapshot("holder", str(primary))
             self.assertTrue(snapshot[str(primary.resolve())]["declared_safe_verdict"])
             self.assertFalse(snapshot[str(sibling.resolve())]["safe_verdict"])
@@ -2080,7 +2358,7 @@ class ObservationMergeTests(unittest.TestCase):
         for command in ("codex resume --last", "codex --remote unix://fixture", "codex", "node /opt/codex-cli", "codex app-server", "codex app-server --listen unix:///unobserved/socket", ""):
             for returncode in (0, 1):
                 with self.subTest(command=command, returncode=returncode), \
-                        patch.object(SESSIONS, "codex_homes", return_value=[Path("/fixture")]), \
+                        patch.object(SESSIONS, "observation_homes", return_value=[Path("/fixture")]), \
                         patch.object(SESSIONS, "observe_home", side_effect=read), \
                         patch.object(SESSIONS.subprocess, "run", return_value=SimpleNamespace(returncode=returncode, stdout=command)):
                     _, states, _ = SESSIONS.observe({"holder"})
@@ -2089,7 +2367,7 @@ class ObservationMergeTests(unittest.TestCase):
     def test_live_evidence_wins_across_account_homes(self):
         async def read(home, _sessions, _proof):
             return [], {"holder": {"state": "live" if home.name == "live" else "ended"}}, {"status": "available", "peer_complete": True, "socket": str(home / "socket")}
-        with patch.object(SESSIONS, "codex_homes", return_value=[Path("/live"), Path("/ended")]), \
+        with patch.object(SESSIONS, "observation_homes", return_value=[Path("/live"), Path("/ended")]), \
                 patch.object(SESSIONS, "observe_home", side_effect=read), \
                 patch.object(SESSIONS.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="")):
             _, states, _ = SESSIONS.observe({"holder"})

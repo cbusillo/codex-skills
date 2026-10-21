@@ -7,6 +7,7 @@ import copy
 import json
 from pathlib import Path
 import sqlite3
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -505,6 +506,14 @@ class NativeHistoryTests(unittest.TestCase):
         child = next(node for node in nodes if node['session_id'] == 'child')
         self.assertEqual([r['payload']['id'] for r in child['records'] if r.get('type') == 'session_meta'], ['child'])
         self.assertFalse(claim_history.delegated(child['records'], 'codex'))
+        github = str(Path(__file__).resolve().parents[2] / 'github/scripts')
+        with patch.object(sys, 'path', [github, *sys.path]):
+            import github_plan_native
+            import github_plan_sessions
+            with patch.object(github_plan_sessions, 'observation_homes', return_value=[self.home]):
+                homes, copies = github_plan_native.observation_scope('child', self.child)
+        self.assertIn(self.home.resolve(), homes)
+        self.assertIn(str(self.child.resolve()), copies[str(self.home.resolve())])
 
     def test_parent_and_child_claims_require_exact_disposition_after_fork(self):
         parent_claim, child_claim = claim(), claim('example/b', 2, 20)

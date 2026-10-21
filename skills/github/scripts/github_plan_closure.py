@@ -406,7 +406,7 @@ def guarded_launch_endpoint(pid: int, argv: list[str]) -> str | None:
 def managed_launch(pid: int, argv: list[str], sockets: set[str]) -> bool:
     """Require guarded identity and independently observed daemon coverage."""
     endpoint = guarded_launch_endpoint(pid, argv)
-    return endpoint is not None and endpoint in sockets
+    return endpoint is not None and str(Path(endpoint).resolve()) in {str(Path(socket).resolve()) for socket in sockets}
 
 
 @contextmanager
@@ -522,15 +522,19 @@ def transcript_identity(info: os.stat_result) -> list[int]:
     return [info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns]
 
 
-def transcript_facts(session: str, primary: str, *, include_status: bool = False, additional_homes: set[Path] | None = None, additional_roots: set[Path] | frozenset[Path] | None = None, reader=None) -> dict:
+class TranscriptChanging(ValueError):
+    """A live append raced an identity read; it supplies no closure evidence."""
+
+
+def transcript_facts(session: str, primary: str, *, include_status: bool = False, additional_homes: set[Path] | None = None, additional_roots: set[Path] | frozenset[Path] | None = None, reader=None, identity_only=False) -> dict:
     """Authenticate stable native transcripts without deciding final-safe authority."""
-    from github_plan_sessions import codex_homes, native_helpers
+    from github_plan_sessions import observation_homes, native_helpers
     from github_plan_release import stamp
     deadline = time.monotonic() + 3
     paths = {Path(primary).resolve(strict=True)}
     def fail(error):
         raise error
-    homes = {*codex_homes(strict=True, configured_only=True), *(additional_homes or set())}
+    homes = observation_homes(strict=True, additional_homes=additional_homes or set())
     roots = set()
     for home in homes:
         for root in (home / "sessions", home / "archived_sessions"):
@@ -538,7 +542,7 @@ def transcript_facts(session: str, primary: str, *, include_status: bool = False
                 root.stat()
             except FileNotFoundError:
                 continue
-            roots.add(root)
+            roots.add(root.resolve(strict=True))
     for root in additional_roots or set():
         root = root.resolve(strict=True)
         if not root.is_dir():
@@ -576,13 +580,20 @@ def transcript_facts(session: str, primary: str, *, include_status: bool = False
             records, truncated = reader(lines)
             if time.monotonic() > deadline:
                 raise TimeoutError("native closure read exceeded its budget")
+        if identity_only and reader is None:
+            import claim_history
+            records = claim_history.root_records(path, "codex", session, records)
         identities = {r.get("payload", {}).get("id") for r in records if r.get("type") == "session_meta"}
         if identities != {session}:
             raise ValueError("native transcript identity mismatch")
         status = native_helpers()[1].summarize(records, "codex", inspect_claims=False)
         after = path.stat()
         if transcript_identity(before) != transcript_identity(after):
-            raise ValueError("native transcript is changing")
+            raise TranscriptChanging("native transcript is changing")
+        if identity_only:
+            # Current native liveness needs identity, never an authored end.
+            snapshots[str(path)] = {"identity": transcript_identity(after), "sha256": digest.hexdigest()}
+            continue
         timestamps = [r["timestamp"] for r in records if r.get("timestamp")]
         if not timestamps:
             raise ValueError("native transcript lacks timestamped evidence")
@@ -613,12 +624,12 @@ def transcripts(session: str, primary: str, *, include_status: bool = False, add
 
 
 def evidence(entry: dict) -> dict:
-    from github_plan_sessions import codex_homes
+    from github_plan_sessions import configured_homes
     if not Path(entry["codex_home"]).expanduser().is_absolute() or not Path(entry["transcript"]).is_absolute():
         raise ValueError("closure identity paths must be absolute")
     home = Path(entry["codex_home"]).expanduser().resolve(strict=True)
     primary = Path(entry["transcript"]).resolve(strict=True)
-    homes = codex_homes(strict=True, configured_only=True)
+    homes = configured_homes(strict=True)
     if home not in homes or not any(
         primary.is_relative_to((home / root).resolve()) for root in ("sessions", "archived_sessions")
     ):

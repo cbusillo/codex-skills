@@ -302,6 +302,7 @@ class ReceiptTests(unittest.TestCase):
             row = {"payload": {"type": "function_call", "call_id": "later", "name": method,
                                "arguments": json.dumps(args)}}
             self.assertEqual(receipts.current_check_process(initial, current + [row]), expected)
+            self.assertEqual(receipts.current_check_process(current + [row], current + [row]), expected)
         changed = [{"payload": {**launch["payload"], "input": "computed()"}}, startup]
         self.assertIsNone(receipts.current_check_process(initial, changed))
 

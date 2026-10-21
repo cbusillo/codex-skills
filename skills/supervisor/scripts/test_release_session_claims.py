@@ -6,6 +6,7 @@
 """Disposable transcripts and GitHub adapters exercise session claim release."""
 
 import json
+import os
 import contextlib
 import io
 import itertools
@@ -48,6 +49,7 @@ class ReleaseTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
+        self.enterContext(patch.dict(os.environ, {"HOME": str(self.root), "CODEX_HOME": str(self.root / "account")}))
         remote = patch.object(helper.claim, "run_read", side_effect=lambda _args, *, cwd: f"https://github.com/test/{cwd.name}.git")
         remote.start()
         self.addCleanup(remote.stop)
@@ -1077,7 +1079,7 @@ class ReleaseTests(unittest.TestCase):
         self.transcript.rename(sessions / self.transcript.name)
         self.transcript = sessions / self.transcript.name
         self.entry.update(transcript=str(self.transcript), codex_home=str(self.root))
-        self.enterContext(patch.object(github_plan_sessions, "codex_homes", return_value=[self.root.resolve()]))
+        self.enterContext(patch.object(github_plan_sessions, "configured_homes", return_value=[self.root.resolve()]))
         self.enterContext(patch.object(helper.closure, "host_identity", return_value={"host": "fixture", "boot": "boot-a", "uid": 1}))
         log = self.root / "closed.json"
         self.enterContext(patch.object(helper.closure, "closed_log", return_value=log))
@@ -1137,7 +1139,7 @@ class ReleaseTests(unittest.TestCase):
         archived = other / "archived_sessions"
         archived.mkdir(parents=True)
         (archived / self.transcript.name).write_bytes(self.transcript.read_bytes())
-        with patch.object(github_plan_sessions, "codex_homes", return_value=[self.root.resolve(), other.resolve()]):
+        with patch.object(github_plan_sessions, "configured_homes", return_value=[self.root.resolve(), other.resolve()]):
             self.assertIsNone(helper.closure.verified_record(SOURCE["session"], self.root))
 
     def test_shared_receipt_refuses_home_boot_malformed_and_missing_evidence(self):

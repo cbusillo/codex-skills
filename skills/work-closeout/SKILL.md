@@ -356,6 +356,16 @@ foreground process handle with its isolated polls. Do not background the check.
 Claude's records sharing one API message ID have one launch boundary: finish
 ownership before launching a separate check. Check one at a time.
 
+A slow startup can snapshot after the checker's own first poll; the proof still
+binds its original isolated launch and every empty poll of that same handle.
+Native coverage reads standard, account and retained source homes through one
+observation scope. Required copies must answer; a stopped socket is not an exit.
+Process coverage requires native PID, executable and incarnation evidence.
+For an unavailable home, the [managed launcher's diagnostic](../supervisor/scripts/codex_session_proxy.py)
+keeps the source account and names its existing stopped-daemon remedy.
+Unbound clients keep the refusal; use the maintained managed launcher for new
+work. The checker never restarts daemons or terminates processes.
+
 Native receipts use literal, command-bound outputs; arbitrary stdout and nested
 saved JSON cannot supply execution completion or a fresh checker result.
 Computed or detached code is not reconstructed. Current native evidence decides

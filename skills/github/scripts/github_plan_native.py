@@ -402,9 +402,19 @@ def _authenticated_paths(snapshots, homes):
     return {home: copies for home, copies in paths.items() if copies}
 
 
+def observation_scope(session, primary, *, sources=(), actions=()):
+    """Fence every authenticated copy and required retained home, without admission."""
+    from github_plan_sessions import observation_homes, retained_homes
+    homes = observation_homes(strict=True, sources=sources, actions=actions)
+    snapshots = closure.transcript_facts(session, str(primary), additional_homes=set(homes), identity_only=True)
+    paths = _authenticated_paths(snapshots, homes)
+    # A required but stopped home remains a veto; absence of a socket is not exit.
+    return ({Path(home) for home in paths} | retained_homes(sources=sources, actions=actions), paths)
+
+
 def source_snapshot(entry, process=None):
     """Only file/process reads; safe to await in a cancellable worker thread."""
-    from github_plan_sessions import codex_homes
+    from github_plan_sessions import configured_homes, observation_homes
     if process is None:
         process = verify_source_process(entry)
     else:
@@ -422,7 +432,7 @@ def source_snapshot(entry, process=None):
     primary = Path(effective["transcript"]).resolve(strict=True)
     if generation is None and not any(primary.is_relative_to((home / root).resolve()) for root in ("sessions", "archived_sessions")):
         raise ValueError("native source home and transcript disagree")
-    configured = set(codex_homes(strict=True, configured_only=True))
+    configured = set(configured_homes(strict=True))
     if home not in configured and saved is None:
         raise ValueError("unconfigured native source lacks retained launch identity")
     scope = closure.action_homes(closure.lease_state(session))
@@ -438,7 +448,7 @@ def source_snapshot(entry, process=None):
             if any(status.get(key) and stamp(status[key]) > context.ended_at
                    for key in ("turn_started_at", "turn_completed_at", "message_at")):
                 raise _SourceEndMismatch("source actual turn is newer than the canonical closed-session evidence")
-    paths = _authenticated_paths(snapshots, homes | configured)
+    paths = _authenticated_paths(snapshots, observation_homes(strict=True, additional_homes=homes))
     # Relevant authenticated copies remain current-work coverage even if an old
     # buggy finish already cleared the marker that originally touched that home.
     homes.update(Path(value) for value in paths)
@@ -626,9 +636,9 @@ def _cancel_generation(entry, saved):
 
 
 def _cancel_origin(entry, action):
-    from github_plan_sessions import codex_homes
+    from github_plan_sessions import configured_homes
     primary = Path(entry["transcript"]).resolve(strict=True)
-    configured = set(codex_homes(strict=True, configured_only=True))
+    configured = set(configured_homes(strict=True))
     known = {Path(value).resolve(strict=True) for value in closure.action_homes(action)["known"]}
     if entry.get("codex_home"):
         if not isinstance(entry["codex_home"], str) or not Path(entry["codex_home"]).expanduser().is_absolute():
@@ -646,11 +656,12 @@ def _cancel_origin(entry, action):
 
 
 def _cancel_files(entry, action, reader=None, retained_homes=(), transcript_roots=None):
-    primary, home, configured, known = _cancel_origin(entry, action)
+    from github_plan_sessions import observation_homes
+    primary, home, _configured, known = _cancel_origin(entry, action)
     homes = {home, *known, *retained_homes}
     snapshots = closure.transcript_facts(entry["session_id"], str(primary), include_status=True,
                                          additional_homes=homes, additional_roots=transcript_roots, reader=reader)
-    paths = _authenticated_paths(snapshots, configured | homes)
+    paths = _authenticated_paths(snapshots, observation_homes(strict=True, additional_homes=homes))
     homes.update(Path(value) for value in paths)
     return {"home": str(home), "path": str(primary), "homes": sorted(str(value) for value in homes),
             "home_paths": paths, "transcripts": snapshots}
