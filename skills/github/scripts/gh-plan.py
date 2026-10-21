@@ -2363,7 +2363,20 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
             "release_refusal_scope": github_plan_release.ISSUE_REFUSAL_SCOPE if isinstance(exc, github_plan_release.IssueReleaseRefusal) else "session_or_unknown"}) from exc
 
 
-def release_inherited_prs(record: dict[str, str]) -> set[str]:
+def release_inherited_prs(record: dict[str, str], current_claim: int) -> set[str]:
+    try:
+        return read_release_inherited_prs(record)
+    except (ValueError, PlanError) as error:
+        if isinstance(error, PlanError) and error.api_result and plan_error_status(error) != 404:
+            raise
+        raise ClassifiedPlanError("release_inherited_handoff_changed",
+            "Inherited handoff cannot be verified. Preserve every artifact. The source author restores edited proof; "
+            "deleted proof requires Supervisor recovery from native session evidence before release. --retained-pr does not override missing provenance.",
+            payload={"retained_handoff": record.get("retained_handoff"), "resume_from": record.get("resume_from"),
+                     "claim_comment": current_claim}) from error
+
+
+def read_release_inherited_prs(record: dict[str, str]) -> set[str]:
     handoff_url = record.get("retained_handoff")
     if not handoff_url:
         return set()
@@ -2403,19 +2416,26 @@ def release_retained_prs(issue: dict[str, Any], source: dict[str, Any], actor: s
     repo, number = issue["repo"], issue["number"]
     record = github_plan_release.source_record(source)
     started = github_plan_release.stamp(source["created_at"])
-    inherited = release_inherited_prs(record)
+    inherited = {url.casefold() for url in release_inherited_prs(record, source["id"])}
+    declared = {url.casefold() for url in declared}
+    excluded = {url.casefold() for url in excluded}
     _, pulls = collect_paged_rest_items(f"/repos/{repo}/pulls", query={"state": "open"},
                                       bucket="rest_core", step_prefix="release_retained_prs")
     _, timeline = collect_paged_rest_items(f"/repos/{repo}/issues/{number}/timeline", query={},
                                          bucket="rest_core", step_prefix="release_source_links")
-    by_url = {f"https://api.github.com/repos/{repo}/pulls/{pull['number']}": pull for pull in pulls}
+    by_url = {f"https://api.github.com/repos/{repo}/pulls/{pull['number']}".casefold(): pull for pull in pulls}
     for event in timeline:
         if event.get("event") != "cross-referenced":
             continue
         linked = (event.get("source") or {}).get("issue") or {}
         url = (linked.get("pull_request") or {}).get("url", "")
-        if not re.fullmatch(r"https://api\.github\.com/repos/[\w.-]+/[\w.-]+/pulls/[1-9]\d*", url):
+        match = re.fullmatch(r"https://api\.github\.com/repos/([\w.-]+/[\w.-]+)/pulls/([1-9]\d*)", url)
+        if not match or linked.get("state") == "closed":
             continue
+        mentioned = int(match[2]) in github_plan_claim.handoff_pr_numbers(handoff, issue_repo=repo, target_repo=match[1])
+        if linked.get("created_at") and not mentioned and github_plan_release.stamp(linked["created_at"]) < started:
+            continue
+        url = url.casefold()
         if url not in by_url and (linked.get("user") or {}).get("login") == actor:
             try:
                 _, by_url[url] = api_json("GET", url.removeprefix("https://api.github.com"),
@@ -2424,7 +2444,8 @@ def release_retained_prs(issue: dict[str, Any], source: dict[str, Any], actor: s
                 if plan_error_status(error) == 404:
                     continue
                 raise
-    retained = set(inherited) | declared
+    retained = set(inherited)
+    accounted = set(inherited)
     ambiguous = []
     for pull in by_url.values():
         if pull.get("state") != "open" or (pull.get("user") or {}).get("login") != actor:
@@ -2435,29 +2456,37 @@ def release_retained_prs(issue: dict[str, Any], source: dict[str, Any], actor: s
             continue
         source_branch = head_repo.casefold() == repo.casefold() and (pull.get("head") or {}).get("ref") == record["branch"]
         subject = "pull_request" in issue and head_repo.casefold() == repo.casefold() and pull["number"] == number
+        url = f"https://github.com/{head_repo}/pull/{pull['number']}".casefold()
+        named = pull["number"] in github_plan_claim.handoff_pr_numbers(handoff, issue_repo=repo, target_repo=head_repo)
         linked_source = github_plan_claim.pr_issue_reference(
             pull, number, repo=repo, local_references=head_repo.casefold() == repo.casefold(),
             attestation=True, record_kind="pr" if "pull_request" in issue else "issue")
-        if not source_branch and not subject:
+        if not source_branch and not subject and url not in inherited:
             if not linked_source:
                 continue
-            if github_plan_release.stamp(pull.get("created_at")) < started:
+            if not named and url not in declared and github_plan_release.stamp(pull.get("created_at")) < started:
                 continue
-        url = f"https://github.com/{head_repo}/pull/{pull['number']}"
-        named = pull["number"] in github_plan_claim.handoff_pr_numbers(handoff, issue_repo=repo, target_repo=head_repo)
+        accounted.add(url)
         if url in excluded:
-            if source_branch or subject or url in inherited or named:
+            if source_branch or subject or url in inherited:
                 raise PlanError("Cannot exclude a source branch, subject PR, or inherited retained handoff")
+            if named:
+                raise ClassifiedPlanError("release_excluded_pr_mentioned",
+                    "Handoff narrative still names an excluded PR. Remove that PR reference before release; the successor parser treats it as retained.",
+                    payload={"excluded_pr": url})
             continue
-        if source_branch or subject or url in retained or named:
+        if source_branch or subject or url in inherited or url in declared:
             retained.add(url)
         else:
             ambiguous.append(url)
     if ambiguous:
         raise ClassifiedPlanError("release_pr_attribution_required",
-            "Shared bot authorship does not identify this session. Name each candidate in the handoff or with --retained-pr URL; "
-            "use --exclude-pr URL for another session's work. Preserve all artifacts.",
+            "Shared bot authorship and narrative mentions do not identify this session. Use --retained-pr URL for this session's work; "
+            "use --exclude-pr URL for another session's work and remove its references from the handoff. Preserve all artifacts.",
             payload={"unclassified_prs": sorted(ambiguous)})
+    if declared - accounted:
+        raise ClassifiedPlanError("release_declared_pr_unverified", "Declared PR is not verified open source-linked work or inherited custody",
+                                  payload={"unverified_prs": sorted(declared - accounted)})
     return sorted(retained)
 
 
@@ -2504,7 +2533,7 @@ def cmd_release(args: argparse.Namespace) -> None:
               "release_comment": {"id": existing["id"], "url": existing.get("html_url")}, "completed_steps": completed})
         return
     declared, excluded = set(getattr(args, "retained_pr", []) or []), set(getattr(args, "exclude_pr", []) or [])
-    if declared & excluded or any(not re.fullmatch(r"https://github\.com/[\w.-]+/[\w.-]+/pull/[1-9]\d*", url)
+    if {url.casefold() for url in declared} & {url.casefold() for url in excluded} or any(not re.fullmatch(r"https://github\.com/[\w.-]+/[\w.-]+/pull/[1-9]\d*", url)
                                   for url in declared | excluded):
         raise PlanError("Retained and excluded PRs require distinct exact GitHub PR URLs")
     retained_prs = release_retained_prs(issue, preflight["source"], expected_actor,
@@ -3082,6 +3111,7 @@ def claim_once(args: argparse.Namespace) -> None:
                 query={}, bucket="rest_core", step_prefix="claim_blockers",
             )
         phase["canonical_issue"] = None
+        phase["canonical_issues"] = []
         subject = next((pull for pull in phase["open_pulls"] if pull["number"] == number), None)
         if record_kind == "pr" and subject is not None:
             text = (subject.get("title") or "") + "\n" + (subject.get("body") or "")
@@ -3096,8 +3126,10 @@ def claim_once(args: argparse.Namespace) -> None:
                     continue
                 _, linked = get_issue(str(linked_number), linked_repo)
                 if "pull_request" not in linked:
-                    phase["canonical_issue"] = f"https://github.com/{linked_repo}/issues/{linked_number}"
-                    break
+                    canonical_url = f"https://github.com/{linked_repo}/issues/{linked_number}"
+                    if canonical_url.casefold() not in {url.casefold() for url in phase["canonical_issues"]}:
+                        phase["canonical_issues"].append(canonical_url)
+            phase["canonical_issue"] = next(iter(phase["canonical_issues"]), None)
         return source_info, prepared
 
     def check_phase_peers(source_inventory):
@@ -3264,10 +3296,11 @@ def claim_once(args: argparse.Namespace) -> None:
         fresh_pulls = phase["open_pulls"]
         source_issue_url = (f"https://github.com/{issue_repo}/issues/{resume_source_number}"
                             if retained_mode and record_kind == "pr" else None)
-        if phase["canonical_issue"] is not None and phase["canonical_issue"].casefold() != (source_issue_url or "").casefold():
+        other_canonical = [url for url in phase["canonical_issues"] if url.casefold() != (source_issue_url or "").casefold()]
+        if other_canonical:
             raise ClassifiedPlanError("claim_issue_record_required",
                 "PR has a canonical implementation issue; claim that issue instead",
-                payload={"canonical_issue": phase["canonical_issue"]})
+                payload={"canonical_issue": other_canonical[0], "canonical_issues": phase["canonical_issues"]})
         _, own = github_plan_claim.discussion_evidence("", current_comments, claim)
         ended_branches = github_plan_claim.ended_artifact_branches(ended_owners, current_comments, fresh_pulls)
         recorded_branches = github_plan_claim.recorded_claim_branches(status_to_check, current_comments)

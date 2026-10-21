@@ -449,6 +449,17 @@ class ClaimTests(unittest.TestCase):
                             for entry in caught.exception.payload["competing_evidence"]))
         self.assert_no_writes()
 
+    def test_pr_only_source_release_cannot_hide_another_canonical_issue(self) -> None:
+        self.released_issue_pr_fixture()
+        self.pulls[0]["body"] = "Refs #42\nCloses #43"
+        self.targets["43"] = {**copy.deepcopy(self.targets["42"]), "number": 43}
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_claim()
+        self.assertEqual(caught.exception.code, "claim_issue_record_required")
+        self.assertEqual(set(caught.exception.payload["canonical_issues"]),
+                         {"https://github.com/owner/repo/issues/42", "https://github.com/owner/repo/issues/43"})
+        self.assert_no_writes()
+
     def test_authorized_split_pr_refresh_claim_succeeds_with_release_and_handoff(self):
         self.refresh_fixture()
         self.run_claim()

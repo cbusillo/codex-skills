@@ -1632,6 +1632,72 @@ class OwnReleaseTests(ReleaseHarness):
         self.run_own_release()
         self.assertNotIn(99, CLAIM.handoff_pr_numbers(self.f.comments[-1]["body"], issue_repo="owner/repo", target_repo="owner/repo"))
 
+    def test_release_never_uses_incidental_narrative_as_pr_attribution(self) -> None:
+        for created in ("2026-10-01T01:00:00Z", "2026-09-29T00:00:00Z"):
+            with self.subTest(created=created):
+                self.setUp()
+                url = "https://github.com/owner/repo/pull/99"
+                self.f.pulls = [{"number": 99, "state": "open", "user": {"login": BOT}, "created_at": created,
+                    "body": "Refs #42\nCloses #43", "head": {"ref": "work/other-session", "repo": {"full_name": "owner/repo"}},
+                    "base": {"repo": {"full_name": "owner/repo"}}}]
+                self.handoff.write_text("Left #99 alone. It belongs to another session.")
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.run_own_release()
+                self.assertEqual(caught.exception.code, "release_pr_attribution_required")
+                self.f.assert_no_writes()
+                self.args.exclude_pr = ["https://github.com/Owner/Repo/pull/99"]
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.run_own_release()
+                self.assertEqual(caught.exception.code, "release_excluded_pr_mentioned")
+                self.f.assert_no_writes()
+                self.handoff.write_text("Other session's work remains with its owner.")
+                self.run_own_release()
+                self.assertNotIn(99, CLAIM.handoff_pr_numbers(self.f.comments[-1]["body"], issue_repo="owner/repo", target_repo="owner/repo"))
+
+    def test_release_accepts_case_varied_explicit_attribution(self) -> None:
+        self.f.pulls = [{"number": 99, "state": "open", "user": {"login": BOT}, "created_at": "2026-10-01T01:00:00Z",
+            "body": "Refs #42", "head": {"ref": "work/other", "repo": {"full_name": "Owner/Repo"}},
+            "base": {"repo": {"full_name": "Owner/Repo"}}}]
+        self.args.retained_pr = ["https://github.com/owner/repo/pull/99"]
+        self.run_own_release()
+        self.assertIn(99, CLAIM.handoff_pr_numbers(self.f.comments[-1]["body"], issue_repo="owner/repo", target_repo="owner/repo"))
+
+    def test_release_checks_older_cross_repository_narrative_references(self) -> None:
+        self.handoff.write_text("Left owner/other#77 alone.")
+        self.f.closed_pulls[77] = {"number": 77, "state": "open", "user": {"login": BOT},
+            "created_at": "2026-09-29T00:00:00Z", "body": "Refs owner/repo#42",
+            "head": {"ref": "work/other-session", "repo": {"full_name": "owner/other"}},
+            "base": {"repo": {"full_name": "owner/other"}}}
+        self.f.timelines["/repos/owner/repo/issues/42/timeline"] = [{"event": "cross-referenced", "source": {"issue": {
+            "state": "open", "created_at": "2026-09-29T00:00:00Z", "user": {"login": BOT},
+            "pull_request": {"url": "https://api.github.com/repos/owner/other/pulls/77"}}}}]
+        with patch.object(PLAN, "api_json", side_effect=self.f.read_api):
+            with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                self.run_own_release()
+        self.assertEqual(caught.exception.code, "release_pr_attribution_required")
+        self.f.assert_no_writes()
+
+    def test_release_classifies_missing_inherited_proof_without_declaration_override(self) -> None:
+        url = CLAIM.handoff_url("owner/repo", 42, 12)
+        record = {**fixtures.OTHER, "resume_from": "11", "retained_handoff": url}
+        self.f.comments[0]["body"] = CLAIM.marker(record)
+        for declared in ([], ["https://github.com/owner/repo/pull/99"]):
+            with self.subTest(declared=declared):
+                self.args.retained_pr = declared
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.run_own_release()
+                self.assertEqual(caught.exception.code, "release_inherited_handoff_changed")
+                self.assertEqual(caught.exception.payload["retained_handoff"], url)
+                self.assertEqual(caught.exception.payload["claim_comment"], self.args.claim_comment)
+                self.f.assert_no_writes()
+
+    def test_release_refuses_unverified_declared_prs(self) -> None:
+        self.args.retained_pr = ["https://github.com/owner/repo/pull/99"]
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_own_release()
+        self.assertEqual(caught.exception.code, "release_declared_pr_unverified")
+        self.f.assert_no_writes()
+
     def test_release_carries_inherited_prs_created_before_this_claim(self) -> None:
         predecessor = {**fixtures.OTHER, "session": "predecessor", "branch": "work/predecessor",
                        "claimed_at": "2026-09-28T00:00:00Z"}
