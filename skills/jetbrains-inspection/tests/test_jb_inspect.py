@@ -27,6 +27,7 @@ from unittest.mock import ANY, MagicMock, patch
 
 TEST_CACHE = tempfile.TemporaryDirectory(prefix="jetbrains-inspection-tests-")
 os.environ["JETBRAINS_INSPECTION_CACHE_DIR"] = TEST_CACHE.name
+os.environ["JETBRAINS_INSPECTION_REGISTRY_DIR"] = str(Path(TEST_CACHE.name) / "registry")
 os.environ["JB_INSPECT_OUTCOME_LOG"] = "0"
 os.environ["JB_INSPECT_UNKNOWN_LOG"] = "0"
 # API-route behavior; backend selection has its own tests in test_qodana_backend.
@@ -39,6 +40,17 @@ jb_inspect = cast(Any, importlib.util.module_from_spec(SPEC))
 assert SPEC.loader is not None
 sys.modules["jb_inspect"] = jb_inspect
 SPEC.loader.exec_module(jb_inspect)
+NO_LIVE_IDE = patch.object(
+    jb_inspect.urllib.request, "urlopen", side_effect=jb_inspect.urllib.error.URLError(ConnectionRefusedError("connection refused"))
+)
+
+
+def setUpModule() -> None:
+    NO_LIVE_IDE.start()
+
+
+def tearDownModule() -> None:
+    NO_LIVE_IDE.stop()
 
 
 def write_json(path: Path, payload: dict) -> None:

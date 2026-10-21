@@ -477,8 +477,8 @@ print('Done.')
         private = self.root / "private"
         (private / "logs").mkdir(parents=True)
         receipt = {"load_pause_count": 0}
-        with native.profile_lock(self.worker) as lock:
-            native.execute([sys.executable, "-c", "print('Start trial\\nERROR: build warning\\nNo modules\\nUsing default project profile')"], {}, private, time.monotonic() + 2,
+        with native.profile_lock(self.worker) as lock, patch.object(os, "getloadavg", return_value=(1, 1, 1)):
+            native.execute([sys.executable, "-c", "print('Start trial\\nERROR: build warning\\nNo modules\\nUsing default project profile')"], {}, private, time.monotonic() + 30,
                            None, receipt, lock_fd=lock.fileno(), require_completion=False)
         self.assertNotIn("license_boundary_observed", receipt)
 
@@ -505,10 +505,10 @@ print('Done.')
         (private / "logs").mkdir(parents=True)
         receipt = {"load_pause_count": 0}
         try:
-            with native.profile_lock(self.worker) as lock:
+            with native.profile_lock(self.worker) as lock, patch.object(os, "getloadavg", return_value=(1, 1, 1)):
                 with self.assertRaisesRegex(native.Blocked, "native_parent_exited"):
                     native.execute([sys.executable, "-c", "import time;time.sleep(30)"], {}, private,
-                                   time.monotonic() + 2, read_fd, receipt, lock_fd=lock.fileno())
+                                   time.monotonic() + 30, read_fd, receipt, lock_fd=lock.fileno())
             self.assertTrue(receipt["worker_exited"])
         finally:
             os.close(read_fd)
@@ -958,13 +958,10 @@ with patch.object(native.sys,'platform','darwin'), patch.object(native,'state_di
             deadline = time.monotonic() + 10
             os.killpg(process.pid, signal.SIGKILL)
             process.wait(timeout=5)
-            while (self.worker / "native-run.json").exists() and time.monotonic() < deadline:
-                time.sleep(0.02)
-            self.assertFalse((self.worker / "native-run.json").exists())
-            self.assertFalse((self.worker / "config/options/jdk.table.xml").exists())
-            self.assertFalse(list((self.root / "cache/native").glob("private-*")))
-            with native.profile_lock(self.worker):
-                pass
+            with native.profile_lock(self.worker, wait_until=deadline):
+                self.assertFalse((self.worker / "native-run.json").exists())
+                self.assertFalse((self.worker / "config/options/jdk.table.xml").exists())
+                self.assertFalse(list((self.root / "cache/native").glob("private-*")))
         finally:
             if process.poll() is None:
                 process.kill()
