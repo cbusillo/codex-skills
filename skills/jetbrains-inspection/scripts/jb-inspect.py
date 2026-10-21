@@ -768,12 +768,14 @@ def ide_selection_advice(reason: str, context: Any) -> str | None:
 
 def hint_for_error_reason(reason: str, context: Any = None) -> str | None:
     if reason == "ide_launch_disabled":
-        return "Make the intended IDE available on the selected port, then run a fresh assessment; application launch is disabled."
+        return "Open the exact worktree in the intended IDE with the Inspection API plugin, pass --ide-launch to start the IDE when none is running, or use --backend native."
+    if reason == "ide_launch_refused":
+        return "The selected IDE app is running, or could not be proven absent, without a usable Inspection API identity. Enable or update the plugin there and restart it yourself, or use --backend native; the helper never launches or activates a running app."
     lane_advice = ide_selection_advice(reason, context)
     if lane_advice:
         return lane_advice
     return {
-        "inspection_api_unavailable": "Open the repo in the configured JetBrains IDE with the inspection plugin installed, or allow lifecycle open to start it.",
+        "inspection_api_unavailable": "Open the repo in the configured JetBrains IDE with the inspection plugin installed, or pass --ide-launch when that IDE is not running.",
         "invalid_api_response": "Check the installed inspection plugin version and IDE logs; the helper could not parse the API response.",
         "inspection_api_http_error": "Inspect the API error body and IDE logs for the failing endpoint.",
         "timeout": "Increase the timeout or check whether the IDE is indexing, opening, or blocked by a modal dialog.",
@@ -909,7 +911,8 @@ def add_common(command: argparse.ArgumentParser, include_scope: bool) -> None:
     command.add_argument("--project", help="Project name selector. Prefer project-key/path when possible.")
     command.add_argument("--session-id", help="Expected IDE session id for drift detection.")
     command.add_argument("--open", action="store_true", help="Open the repo in the preferred IDE if no route is available, then retry briefly.")
-    command.add_argument("--no-ide-launch", action="store_true", help="Require a running IDE; never fall back to launching an application when opening a project.")
+    command.add_argument("--ide-launch", dest="ide_launch", action="store_true", help="Allow launching the IDE app when none is running; never launches or activates an app that is already running.")
+    command.add_argument("--no-ide-launch", dest="ide_launch", action="store_false", help="Require a running IDE; the default.")
     command.add_argument("--no-worktree-check", action="store_true", help="Allow routes outside the current worktree.")
     if include_scope:
         command.add_argument("--native-project-scope", action="store_true", help="Assess the selected nested lane project with its native scope instead of dispatching the worktree lanes.")
@@ -5597,17 +5600,20 @@ def open_project_for_lifecycle(
     open_attempt = open_via_running_ide(args, context, attempts, "running_ide", lease)
     if open_attempt is not None:
         return open_method_for_outcome("running_ide", open_attempt), attempts, bool(open_attempt.get("ownership_registered"))
-    if getattr(args, "no_ide_launch", False):
-        if lease is not None and project_open_was_not_requested(attempts):
-            lease["open_not_attempted"] = True
-            lease["open_request_may_have_been_accepted"] = False
-            lease["open_attempts"] = attempts
+    if not getattr(args, "ide_launch", False):
+        record_open_not_attempted(lease, attempts)
         raise InspectError(
             "The running IDE did not accept the lifecycle open; application launch is disabled.",
             3,
             {"error_reason": "ide_launch_disabled", "open_attempts": attempts},
         )
-    bootstrap_attempt = bootstrap_ide_app(context, background=getattr(args, "background_open", False))
+    try:
+        bootstrap_attempt = bootstrap_ide_app(context, background=getattr(args, "background_open", False))
+    except InspectError as error:
+        if error.payload.get("error_reason") == "ide_launch_refused":
+            record_open_not_attempted(lease, attempts)
+            error.payload["open_attempts"] = attempts
+        raise
     attempts.append(bootstrap_attempt)
     timeout_ms = getattr(args, "prepare_timeout_ms", DEFAULT_PREPARE_TIMEOUT_MS)
     wait_for_matching_ide_identity(args, context, timeout_ms)
@@ -5619,6 +5625,13 @@ def open_project_for_lifecycle(
         3,
         auto_open_timeout_payload(args, context, timeout_ms) | {"open_attempts": attempts},
     )
+
+
+def record_open_not_attempted(lease: dict[str, Any] | None, attempts: list[dict[str, Any]]) -> None:
+    if lease is not None and project_open_was_not_requested(attempts):
+        lease["open_not_attempted"] = True
+        lease["open_request_may_have_been_accepted"] = False
+        lease["open_attempts"] = attempts
 
 
 def wait_for_lifecycle_open(
@@ -7426,6 +7439,7 @@ def attribution_classification(code: str, payload: dict[str, Any]) -> str:
         "ide_not_ready_timeout",
         "ide_open_failed",
         "ide_launch_disabled",
+        "ide_launch_refused",
         "project_open_blocked",
         "already_opening_stuck",
         PROJECT_OPEN_BLOCKED_REASON,
@@ -7865,6 +7879,7 @@ def outcome_bucket(payload: dict[str, Any], reason: str) -> str:
         "inspection_api_unavailable",
         "ide_open_failed",
         "ide_launch_disabled",
+        "ide_launch_refused",
         "untrusted_auto_open_root",
         "project_open_blocked",
         "ide_not_ready_timeout",
@@ -12538,64 +12553,16 @@ def ensure_exact_worktree(route: dict[str, Any], context: dict[str, Any], args: 
         )
 
 
-def open_in_ide(context: dict[str, Any], background: bool = False, method: str = "app_open") -> dict[str, Any]:
-    ide_app = resolved_ide_app_name(context)
-    ide_app_path = resolved_ide_app_path(context)
-    if not (ide_app or ide_app_path) or sys.platform != "darwin":
-        raise InspectError("Cannot auto-open IDE without a configured macOS IDE name.", 3)
-    target = lifecycle_target_path(context)
-    command = ["open"]
-    if background:
-        command.append("-g")
-    if ide_app_path:
-        command.extend(["-n", "-a", str(ide_app_path), str(target)])
-    else:
-        command.extend(["-a", str(ide_app), str(target)])
-    # JetBrains restores its cwd from PWD after LaunchServices starts it in /.
-    environment = {**os.environ, "PWD": "/"}
-    completed = subprocess.run(command, env=environment, check=False, capture_output=True, text=True)
-    if completed.returncode != 0:
-        raise InspectError(
-            "Failed to ask macOS to open the JetBrains IDE.",
-            3,
-            {
-                "command": command,
-                "returncode": completed.returncode,
-                "stdout": completed.stdout.strip(),
-                "stderr": completed.stderr.strip(),
-                "ide": context.get("ide"),
-                "ide_app": ide_app,
-                "ide_app_path": str(ide_app_path) if ide_app_path else None,
-                "worktree_root": context.get("worktree_root"),
-                "lifecycle_target_path": lifecycle_target_path(context),
-                "background_open": background,
-                "hint": "Check the configured JetBrains app name/path; product metadata uses the latest stable app, while exact EAP/version selection may require jetbrains.ideApp.",
-            },
-        )
-    return {
-        "method": method,
-        "accepted": True,
-        "target_worktree": lifecycle_target_path(context),
-        "requested_ide": context.get("ide"),
-        "ide_app": ide_app,
-        "ide_app_path": str(ide_app_path) if ide_app_path else None,
-        "background_open": background,
-        "command": command,
-    }
-
-
 def bootstrap_ide_app(context: dict[str, Any], background: bool = True) -> dict[str, Any]:
     ide_app = resolved_ide_app_name(context)
     ide_app_path = resolved_ide_app_path(context)
     if not (ide_app or ide_app_path) or sys.platform != "darwin":
         raise InspectError("Cannot auto-open IDE without a configured macOS IDE name.", 3)
+    refuse_launch_while_app_runs(ide_app, ide_app_path)
     command = ["open"]
     if background:
         command.extend(["-g", "-j"])
-    if ide_app_path:
-        command.extend(["-n", "-a", str(ide_app_path)])
-    else:
-        command.extend(["-a", str(ide_app)])
+    command.extend(["-a", str(ide_app_path or ide_app)])
     # JetBrains restores its cwd from PWD after LaunchServices starts it in /.
     environment = {**os.environ, "PWD": "/"}
     completed = subprocess.run(command, env=environment, check=False, capture_output=True, text=True)
@@ -12626,6 +12593,39 @@ def bootstrap_ide_app(context: dict[str, Any], background: bool = True) -> dict[
         "background_open": background,
         "command": command,
     }
+
+
+def refuse_launch_while_app_runs(ide_app: str | None, ide_app_path: Path | None) -> None:
+    if pids := running_app_pids(ide_app, ide_app_path):
+        raise InspectError(
+            "The selected JetBrains app is already running without a usable Inspection API identity; refusing to launch or activate it.",
+            3,
+            {"error_reason": "ide_launch_refused", "running_app_pids": pids, "ide_app": ide_app, "ide_app_path": str(ide_app_path) if ide_app_path else None},
+        )
+
+
+def running_app_pids(ide_app: str | None, ide_app_path: Path | None) -> list[int]:
+    executable_marker = app_executable_marker(ide_app, ide_app_path)
+    try:
+        output = subprocess.check_output(["ps", "-axo", "pid=,comm="], text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise InspectError(
+            "Cannot prove the selected JetBrains app is not running; refusing to launch it.",
+            3,
+            {"error_reason": "ide_launch_refused", "process_census_error": str(error)},
+        ) from error
+    pids = []
+    for line in output.splitlines():
+        pid, _, command = line.strip().partition(" ")
+        if pid.isdigit() and executable_marker in command.strip().lower():
+            pids.append(int(pid))
+    return pids
+
+
+def app_executable_marker(ide_app: str | None, ide_app_path: Path | None) -> str:
+    if ide_app_path:
+        return f"{ide_app_path.resolve()}/Contents/MacOS/".lower()
+    return f"/{ide_app}.app/Contents/MacOS/".lower()
 
 
 def resolved_ide_app_name(context: dict[str, Any]) -> str | None:
