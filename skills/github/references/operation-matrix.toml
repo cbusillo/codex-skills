@@ -1569,7 +1569,7 @@ request_priority = "essential"
 capabilities = []
 permission_mode = "local"
 permission_note = "Local commit identity. With a configured App and a github.com origin, App JWT reads (no installation grant) decide whether the person commits as themselves in another owner's repository; no profile impact."
-entrypoint = "github/scripts/git-commit-as-bot [--git-command COMMAND] <git-args>"
+entrypoint = "github/scripts/git-commit-as-bot --worktree PATH [--git-command COMMAND] <git-args>"
 intent = "Run commit or a supported commit-creating integration command with the configured automation author and committer environment."
 current_transport = "local_git"
 selected_transport = "local_git"
@@ -1581,7 +1581,7 @@ idempotency = "non_idempotent"
 retry_eligibility = "manual"
 reconciliation_strategy = "identity_env"
 retained_graphql_rationale = "No retained GraphQL transport; this is a local git identity wrapper."
-source_refs = ["github/scripts/git-commit-as-bot"]
+source_refs = ["github/scripts/git-commit-as-bot", "github/scripts/github-task-worktree.sh"]
 test_refs = ["github/scripts/validate-gh-issue.sh", "github/scripts/validate-operation-matrix.py:self-test"]
 
 [[operations]]
@@ -1590,7 +1590,7 @@ request_priority = "essential"
 capabilities = ["contents_write", "workflows_write"]
 permission_mode = "input_dependent"
 permission_note = "Own-user publishing additionally requires the active login to match GH_WITH_ENV_TOKEN_OWN_USER_LOGIN; missing or mismatched declarations refuse locally before mutation. Existing GET /user probes suffice, with no new endpoint, grant or profile impact. Ordinary pushes require Contents write; pushes changing workflow files also require Workflows write. Authorization and protected-branch discipline remain independent."
-entrypoint = "github/scripts/git-push-as-bot <git-push-args>"
+entrypoint = "github/scripts/git-push-as-bot --worktree PATH <git-push-args>"
 intent = "Push to a GitHub remote through an HTTPS token flow while restoring the selected remote's stored URL."
 current_transport = "git_remote"
 selected_transport = "git_remote"
@@ -1602,7 +1602,7 @@ idempotency = "conditional"
 retry_eligibility = "conditional"
 reconciliation_strategy = "restore_remote_url"
 retained_graphql_rationale = "No retained GraphQL transport; push uses the git remote protocol with an automation token."
-source_refs = ["github/scripts/git-push-as-bot", "github/scripts/github-own-user.sh:validate_own_user_login"]
+source_refs = ["github/scripts/git-push-as-bot", "github/scripts/github-task-worktree.sh", "github/scripts/github-own-user.sh:validate_own_user_login"]
 test_refs = ["github/scripts/validate-gh-issue.sh", "github/scripts/validate-operation-matrix.py:self-test"]
 
 [[operations]]

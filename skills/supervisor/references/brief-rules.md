@@ -61,7 +61,8 @@ Rules for this brief (every Supervisor brief carries them):
   ([task worktrees](../../github/references/worktrees.md)). Never edit a
   primary checkout. Commit and push with
   `/Users/cbusillo/Developer/codex-skills/skills/github/scripts/git-commit-as-bot`
-  and `git-push-as-bot`
+  and `git-push-as-bot`, with `--worktree /absolute/task/path` first on both.
+  Name your intended task path, never the result of `pwd` or Git discovery
   ([bot helpers](../../github/SKILL.md#helpers-and-identity)). Never
   force-push or use `git stash`.
 - PRs land only through the merge train. When a PR is green and reviewed,

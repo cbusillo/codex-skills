@@ -162,7 +162,8 @@ concurrency, workflow-queue, or protection-rule diagnostic rather than silently
 treated as ordinary execution.
 
 Agent-authored commits and pushes should use `github/scripts/git-commit-as-bot`
-and `github/scripts/git-push-as-bot` so GitHub attribution remains
+and `github/scripts/git-push-as-bot`, passing `--worktree /absolute/task/path`
+first to assert the intended worker checkout, so GitHub attribution remains
 the configured automation account. Write-like `gh-with-env-token` commands verify the
 authenticated login before running and fail closed instead of silently using the
 active human account.
@@ -330,7 +331,7 @@ Default to PR-backed implementation work.
 Each change still needs its own Client acceptance; release acceptance is a
 separate final check and never replaces it. After a PR asks its Client for
 review, end every later commit message with one trailer, for example
-`git-commit-as-bot -m "..." --trailer "Client-impact: none"`:
+`git-commit-as-bot --worktree /absolute/task/path -m "..." --trailer "Client-impact: none"`:
 
 - `Client-impact: none` only when the commit cannot change anything the Client
   saw or accepted, such as tests, CI or comments.
@@ -543,8 +544,9 @@ use `scripts/gh-pr.py update-branch <pr>`; the helper observes the asynchronous
 update. Both helpers refuse a refresh this section does not permit; name an
 explicit requirement GitHub cannot see with `--required-by` or
 `--refresh-required`. For a real conflict, merge the base locally with
-`git-commit-as-bot --git-command merge`, resolve it and continue with
-`git-commit-as-bot --git-command merge --continue`, then push with `git-push-as-bot`.
+`git-commit-as-bot --worktree /absolute/task/path --git-command merge`, resolve it and continue with
+`git-commit-as-bot --worktree /absolute/task/path --git-command merge --continue`, then push with
+`git-push-as-bot --worktree /absolute/task/path`.
 Re-read the PR to capture the new head SHA, then use `babysit-pr` to wait for
 checks and review evidence on that exact head. A check result for the old head
 does not qualify the updated branch. Do not update a fork or another person's

@@ -785,7 +785,7 @@ def update_branch_refusal(
     if mergeable_state == "dirty":
         cause, message = "refresh_conflicting_branch", (
             "The PR conflicts with its base, which update-branch cannot resolve; merge the base locally "
-            "with git-commit-as-bot --git-command merge, resolve, --continue and push "
+            "with git-commit-as-bot --worktree /absolute/task/path --git-command merge, resolve, --continue and push "
             "(repo-workflow.md Merge Readiness)")
     elif mergeable_state == "behind" or required_by:
         return None

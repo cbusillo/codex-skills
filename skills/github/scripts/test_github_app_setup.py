@@ -201,6 +201,11 @@ def test_fixture_repository_setup_and_direction_review():
             repo = root / "repo"
             repo.mkdir()
             subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                            "commit", "--allow-empty", "-qm", "seed"], check=True)
+            task = root / "task"
+            subprocess.run(["git", "-C", str(repo), "worktree", "add", "-qb", "work/task", str(task)], check=True)
+            repo = task
             (repo / "DIRECTION.md").write_text("Fixture owner direction\n")
             (repo / ".github").mkdir()
             (repo / ".github" / "CODEOWNERS").write_text(f"/DIRECTION.md @{OWNER}\n")
@@ -211,7 +216,7 @@ def test_fixture_repository_setup_and_direction_review():
                            GIT_COMMIT_AS_BOT_NAME="fixture-previous-owner",
                            GIT_COMMIT_AS_BOT_EMAIL="previous@example.test",
                            GH_WITH_ENV_TOKEN_EXPECTED_LOGIN="fixture-previous-owner")
-            commit = subprocess.run([str(SCRIPTS / "git-commit-as-bot"), "-m", "fixture direction"],
+            commit = subprocess.run([str(SCRIPTS / "git-commit-as-bot"), "--worktree", str(repo), "-m", "fixture direction"],
                                     cwd=repo, env=environ, capture_output=True, text=True)
             assert commit.returncode == 0, commit.stderr
             author = subprocess.check_output(["git", "-C", str(repo), "log", "-1", "--format=%an"], text=True).strip()
