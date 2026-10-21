@@ -242,12 +242,11 @@ class ReceiptTests(unittest.TestCase):
                     "cat >body.md <<'EOF'\nQ&A, don't\nEOF\nbash scripts/post.sh body.md",
                     "cat >body.md <<'EOF'\nQ&A, don't\nEOF\nbash -c 'printf done' _ body.md",
                     "tee body.md <<'EOF'\nQ&A, don't\nEOF\nbash scripts/post.sh body.md",
-                    "git ls-files '*.sh' | xargs bash -n",
                     "find . -name '*.sh' | xargs -n1 sh -c 'shellcheck \"$1\"' _",
-                    "ls scripts/*.sh | xargs -n1 bash",
+                    "ls scripts/*.sh | xargs -n1 bash --",
                     "find . | xargs -I{} sh -c 'shellcheck \"$1\"' _ '{}'",
                     "find . | xargs --replace sh -c 'shellcheck \"$1\"' _ '{}'",
-                    "find . | xargs -J{} bash -n '{}'",
+                    "find . | xargs -J{} bash -n -- '{}'",
                     "find . | xargs --max-procs 4 sh -c 'printf done' _",
                     "xargs -a list sh -c 'printf done' <<'EOF'\nQ&A, don't\nEOF",
                     'case a in a) printf x ;& b) printf y ;; esac']
@@ -326,6 +325,14 @@ class ReceiptTests(unittest.TestCase):
             "find . | xargs -I{} env sh -c '{}'",
             "xargs -a /dev/null sh -s <<'EOF'\nworker &\nEOF",
             "xargs -o sh -s",
+            "git ls-files '*.sh' | xargs bash -n",
+            "ls scripts/*.sh | xargs -n1 bash",
+            "find . | xargs -J{} bash -n '{}'",
+            "printf '%s\\0' -c 'worker &' | xargs -0 sh",
+            "printf '%s\\0' +n -c 'worker &' | xargs -0 bash -n",
+            "find . | xargs --eof sh -c 'worker &'",
+            "find . | xargs --max-lines sh -c 'worker &'",
+            "cat >run.sh <<'EOF'\nworker &\nEOF\nls run.sh | xargs bash --",
         ]
         for flags in ('-e', '-euo pipefail', '-o errexit', '-O extglob', '-s -- args'):
             commands += [f"bash {flags} <<'EOF'\nworker &\nEOF", f"bash {flags} <<< 'worker &'"]

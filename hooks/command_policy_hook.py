@@ -48,7 +48,7 @@ import shlex
 import sys
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, NamedTuple
 from urllib.parse import parse_qs, urlsplit
 
 # Resolve through the install link so the catalog is found wherever it is linked from.
@@ -346,15 +346,41 @@ def without_redirections(argv: list[str]) -> list[str]:
     return words
 
 
-def shell_invocation(argv: list[str]) -> tuple[str | None, bool, str | None]:
-    """The literal -c body, stdin-program flag and actual script operand."""
+class ShellInvocation(NamedTuple):
+    body: str | None
+    mode: str
+    script: str | None
+    index: int
+    options_closed: bool = False
+
+    @property
+    def stdin(self) -> bool:
+        return self.mode in {"implicit", "stdin"}
+
+
+class XargsInput(NamedTuple):
+    replacement: str | None
+    stdin_uncertain: bool
+    unknown: bool
+    template: tuple[str, ...]
+
+
+class Command(NamedTuple):
+    argv: list[str]
+    roles: set[str]
+    xargs: tuple[XargsInput, ...]
+
+
+def shell_invocation(argv: list[str]) -> ShellInvocation:
+    """One source position: inline code, script file, explicit stdin or implicit."""
     argv = without_redirections(argv)
     if not argv or Path(argv[0]).name not in SHELLS:
-        return None, False, None
-    cursor, command, stdin = 1, False, False
+        return ShellInvocation(None, "other", None, 0)
+    cursor, command, stdin, options_closed = 1, False, False, False
     while cursor < len(argv):
         option = argv[cursor]
         if option == "--":
+            options_closed = True
             cursor += 1
             break
         if not option.startswith(("-", "+")) or option == "-":
@@ -365,28 +391,80 @@ def shell_invocation(argv: list[str]) -> tuple[str | None, bool, str | None]:
         if option in {"--rcfile", "--init-file"} or not option.startswith("--") and option.endswith(("o", "O")):
             cursor += 1
     if command:
-        return (argv[cursor] if cursor < len(argv) else None), False, None
-    stdin = stdin or cursor >= len(argv) or argv[cursor] in STDIN_PROGRAM_PATHS
-    return None, stdin, None if stdin else argv[cursor]
+        return ShellInvocation(argv[cursor] if cursor < len(argv) else None, "inline", None, cursor, options_closed)
+    if stdin or cursor < len(argv) and argv[cursor] in STDIN_PROGRAM_PATHS:
+        return ShellInvocation(None, "stdin", None, cursor, options_closed)
+    if cursor >= len(argv):
+        return ShellInvocation(None, "implicit", None, cursor, options_closed)
+    return ShellInvocation(None, "script", argv[cursor], cursor, options_closed)
 
 
 def shell_c_body(argv: list[str]) -> str | None:
-    return shell_invocation(argv)[0]
+    return shell_invocation(argv).body
 
 
-def normalize_command(argv: list[str], *, preserve_path: bool = False) -> tuple[list[str], set[str]]:
+def xargs_command(argv: list[str]) -> tuple[list[str], XargsInput]:
+    """Option arity and input placement, without reconstructing input tokens."""
+    required = {"I", "J", "R", "S", "n", "P", "L", "s", "E", "d", "a"}
+    long_values = {"--max-args", "--max-procs", "--max-chars", "--process-slot-var", "--delimiter", "--arg-file"}
+    long_flags = {"--null", "--open-tty", "--interactive", "--no-run-if-empty", "--show-limits", "--verbose", "--exit", "--help", "--version"}
+    cursor, replacement, uncertain, unknown = 0, None, False, False
+    while cursor < len(argv) and argv[cursor].startswith("-") and argv[cursor] != "-":
+        option = argv[cursor]
+        cursor += 1
+        if option == "--":
+            break
+        if option.startswith("--"):
+            flag, equals, value = option.partition("=")
+            if flag == "--replace":
+                replacement = value if equals else "{}"
+            elif flag in {"--eof", "--max-lines"}:
+                pass  # Optional values use =; a following word is the utility.
+            elif flag in long_values:
+                if not equals:
+                    unknown |= cursor >= len(argv)
+                    cursor += 1
+                uncertain |= flag == "--arg-file"
+            elif flag not in long_flags or equals:
+                unknown = True
+            uncertain |= flag == "--open-tty"
+            continue
+        for index, flag in enumerate(option[1:], 2):
+            rest = option[index:]
+            if flag in required:
+                value = rest or (argv[cursor] if cursor < len(argv) else "")
+                unknown |= not value
+                cursor += not rest
+                if flag in {"I", "J"}:
+                    replacement = value
+                uncertain |= flag == "a"
+                break
+            if flag in {"i", "e", "l"}:
+                if flag == "i":
+                    replacement = rest or "{}"
+                break  # Optional values are attached, never the next word.
+            unknown |= flag not in "0oprtx"
+            uncertain |= flag == "o"
+    command = argv[cursor:]
+    return command or ["echo"], XargsInput(replacement, uncertain, unknown, tuple(command))
+
+
+def normalize_command(argv: list[str]) -> Command:
     """One stable command position and its supported foreground wrapper roles."""
-    argv, roles = list(argv), set()
+    argv, roles, frames = list(argv), set(), []
+    def finish(command):
+        return Command(command, roles, tuple(frame._replace(
+            unknown=frame.unknown or bool(frame.template) and len(frame.template) != len(command)
+        ) for frame in frames))
     value_flags = {
         "nice": {"-n", "--adjustment"},
         "ionice": {"-c", "-n", "-p", "-P", "-u", "--class", "--classdata", "--pid"},
         "stdbuf": {"-i", "-o", "-e", "--input", "--output", "--error"},
         "caffeinate": {"-t", "-w"},
-        "xargs": {"-I", "-J", "-n", "-P", "-L", "-s", "-E", "-d", "-a", "--replace", "--max-args", "--delimiter", "--arg-file"},
     }
     for _ in range(32):
         if not argv:
-            return (["echo"] if "xargs" in roles else []), roles
+            return finish([])
         head = argv[0] if argv[0] == "." else Path(argv[0]).name
         tail = argv[1:]
         if ASSIGNMENT.match(argv[0]) or head in TRANSPARENT | SHELL_KEYWORDS:
@@ -416,7 +494,11 @@ def normalize_command(argv: list[str], *, preserve_path: bool = False) -> tuple[
                         shell |= flag in "is"
             argv = tail[cursor:]
             if not without_redirections(argv):
-                return (["sh", *argv] if shell else [head, *tail]), roles
+                return finish(["sh", *argv] if shell else [head, *tail])
+        elif head == "xargs":
+            roles.add(head)
+            argv, placement = xargs_command(tail)
+            frames.append(placement)
         elif head == "timeout":
             roles.add(head)
             argv = drop_flags(tail, {"-k", "--kill-after", "-s", "--signal"})[1:]
@@ -432,24 +514,38 @@ def normalize_command(argv: list[str], *, preserve_path: bool = False) -> tuple[
         elif head == "gh-with-env-token":
             while tail and tail[0] in GH_WRAPPER_FLAGS:
                 tail = tail[1:]
-            return [head, *tail], roles
+            return finish([head, *tail])
         else:
-            return [argv[0] if preserve_path else head, *tail], roles
+            return finish([head, *tail])
     raise ValueError("foreground wrapper nesting exceeds coverage")
 
 
-def command_input(argv: list[str], *, completion: bool = False) -> tuple[list[str], str]:
-    """Inline sources and stdin kind: shell, possible, unknown, or data."""
-    argv, roles = normalize_command(argv)
+def shell_candidates(argv: list[str], *, conservative: bool = False) -> list[list[str]]:
+    """One command-position view shared by source inputs and file references."""
     if not argv:
-        return [], "unknown"
+        return []
+    if argv[0] in SHELLS:
+        return [argv]
+    if not conservative:
+        return []
+    if any(char in argv[0] for char in "$`"):
+        return [["sh", *argv[1:]]]
+    return [argv[index:] for index, word in enumerate(argv[1:], 1) if Path(word).name in SHELLS]
+
+
+def command_input(argv: list[str], *, completion: bool = False) -> tuple[list[str], str]:
+    """Inline sources and stdin kind, with completion-local mapping opacity."""
+    normalized = normalize_command(argv)
+    argv, frames = normalized.argv, normalized.xargs
+    if not argv:
+        return [], "opaque" if completion and frames else "unknown"
     name, tail = argv[0], argv[1:]
     programs, kind = [], "data"
     if name in SHELLS:
-        body, stdin, _script = shell_invocation(argv)
-        if body is not None:
-            programs.append(body)
-        if stdin or "xargs" in roles:
+        invocation = shell_invocation(argv)
+        if invocation.body is not None:
+            programs.append(invocation.body)
+        if invocation.stdin:
             kind = "shell"
     elif name in {"eval", "ssh"}:
         if name == "ssh":
@@ -470,21 +566,41 @@ def command_input(argv: list[str], *, completion: bool = False) -> tuple[list[st
         if name in {"su", "runuser"} and not programs:
             kind = "shell"
     if completion and ("$" in name or "`" in name):
-        body, stdin, _script = shell_invocation(["sh", *tail])
-        if body is not None:
-            programs.append(body)
-        if stdin:
+        invocation = shell_invocation(shell_candidates(argv, conservative=True)[0])
+        if invocation.body is not None:
+            programs.append(invocation.body)
+        if invocation.stdin:
             kind = "unknown"
-    elif completion and name not in SHELLS and kind == "data":
+    elif (completion or frames) and name not in SHELLS and kind == "data":
         # An unfamiliar launcher can contain a possible shell. This is a
         # conservative source hint, not authority to interpret the launcher.
-        for index, word in enumerate(tail, 1):
-            if Path(word).name in SHELLS:
-                body, stdin, _script = shell_invocation(argv[index:])
-                if body is not None:
-                    programs.append(body)
-                if stdin:
-                    kind = "possible"
+        for candidate in shell_candidates(argv, conservative=True):
+            invocation = shell_invocation(candidate)
+            if invocation.body is not None:
+                programs.append(invocation.body)
+            if invocation.stdin:
+                kind = "possible"
+    if frames:
+        # xargs input constructs argv; it is not the shell's ordinary stdin.
+        # Never pretend its tokenization/replacement preserved literal quoting.
+        unproved = len(frames) != 1 or any(frame.unknown for frame in frames)
+        unproved |= any(char in name for char in "$`")
+        unproved |= any(frame.replacement and frame.replacement in name for frame in frames)
+        if name in SHELLS:
+            invocation = shell_invocation(argv)
+            words = without_redirections(argv)
+            unproved |= invocation.mode == "inline" and invocation.body is None
+            unproved |= invocation.mode == "implicit" and not invocation.options_closed
+            for frame in frames:
+                if frame.replacement:
+                    unproved |= any(frame.replacement in word for word in words[:invocation.index])
+                    unproved |= invocation.body is not None and frame.replacement in invocation.body
+                    unproved |= (invocation.script is not None and invocation.script.startswith(frame.replacement)
+                                 and not invocation.options_closed)
+                unproved |= invocation.mode == "stdin" or frame.stdin_uncertain and invocation.mode == "implicit"
+            kind = "opaque" if completion and unproved else "data"
+        elif unproved or name in {"eval", "ssh", "source", ".", "su", "runuser", "script", "flock"} or kind != "data":
+            kind = "opaque" if completion else "data"
     if kind != "data" and "<<<" in argv[:-1]:
         payload = argv[argv.index("<<<") + 1]
         if kind != "possible" or not any(char in payload for char in "$`"):
@@ -593,7 +709,7 @@ def pipelines(shell: str) -> list[list[list[str]]]:
 
 def literal_payload(command: list[str]) -> str | None:
     """Only simple literal producer forms; no expansion or program evaluation."""
-    argv, _roles = normalize_command(command)
+    argv = normalize_command(command).argv
     if not argv or any("$" in word or "`" in word for word in argv):
         return None
     if argv[0] == "echo":
@@ -616,7 +732,7 @@ def literal_payload(command: list[str]) -> str | None:
 
 def pipeline_payload(stages: list[list[str]]) -> str | None:
     for stage in stages[1:]:
-        argv, _roles = normalize_command(stage)
+        argv = normalize_command(stage).argv
         if argv not in (["cat"], ["cat", "-"]) and not (argv and argv[0] == "tee" and not {"--help", "--version"} & set(argv)):
             return None
     return literal_payload(stages[0]) if stages else None
@@ -635,7 +751,7 @@ def written_files(command: list[str]) -> set[str]:
     """Literal same-call file targets, shared by write discovery and body binding."""
     paths = {str(Path(command[index + 1])) for index, token in enumerate(command[:-1])
              if token in {">", ">>", ">|", "&>"}}
-    argv, _roles = normalize_command(command)
+    argv = normalize_command(command).argv
     if argv and argv[0] == "tee":
         operands = without_redirections(argv)[1:]
         options = True
@@ -647,13 +763,35 @@ def written_files(command: list[str]) -> set[str]:
     return paths
 
 
+def program_references(command: list[str], written: set[str]) -> set[str]:
+    """Same-call MAY-alias keys; never proof of file identity or process end."""
+    normalized = normalize_command(command)
+    argv = normalized.argv
+    if not argv:
+        return set()
+    references = {argv[0]}
+    for candidate in shell_candidates(argv, conservative=True):
+        invocation = shell_invocation(candidate)
+        if invocation.script is not None:
+            references.add(invocation.script)
+        if normalized.xargs and (invocation.mode == "implicit" or invocation.script is not None
+                and any(frame.replacement and frame.replacement in invocation.script for frame in normalized.xargs)):
+            references.update(written)  # Input may select any same-call written script.
+    if argv[0] in {"source", "."}:
+        words = without_redirections(argv)[1:]
+        references.update(words[:1] if words[:1] != ["--"] else words[1:2])
+    if command_input(command, completion=True)[1] in {"shell", "possible", "unknown"}:
+        references.update(argv[index + 1] for index, word in enumerate(argv[:-1]) if word == "<")
+    return {Path(path).name for path in references}
+
+
 def stdin_kind(commands: list[list[str]], executed_files: set[str], *, completion: bool = False) -> str:
     """Shell/compound input executes; other literal programs receive data."""
     if not commands or any(not argv for argv in commands):
         return "unknown"
     result = "data"
     for command in commands:
-        argv, _roles = normalize_command(command)
+        argv = normalize_command(command).argv
         programs, kind = command_input(command, completion=completion)
         if not argv:
             return "unknown"
@@ -661,7 +799,7 @@ def stdin_kind(commands: list[list[str]], executed_files: set[str], *, completio
             return "shell"
         if kind in {"possible", "unknown"}:
             result = "unknown"
-        if written_files(command) & executed_files:
+        if {Path(path).name for path in written_files(command)} & executed_files:
             return "shell"
     return result
 
@@ -682,22 +820,11 @@ def execution_sources(shell: str, *, completion: bool = False, depth: int = 0,
     if depth == 0 and "<<" in shell:
         # Same-call syntax only. No generated program is reconstructed and no
         # filesystem or cross-call state contributes completion authority.
-        nodes = list(execution_sources(shell, depth=depth + 1, executed_files=set()))
+        nodes = list(execution_sources(shell, completion=True, depth=depth + 1, executed_files=set()))
         commands = [argv for node, _ in nodes if isinstance(node, ShellScript) for argv in shell_commands(node.command_text)]
         written = set().union(*(written_files(argv) for argv in commands))
-        executed = set()
-        for command in commands:
-            argv = normalize_command(command, preserve_path=True)[0]
-            if argv:
-                executed.add(str(Path(argv[0])))
-                name = argv[0] if argv[0] == "." else Path(argv[0]).name
-                operand = shell_invocation([name, *argv[1:]])[2]
-                if name in {"source", "."}:
-                    words = without_redirections(argv)[1:]
-                    operand = next((word for word in words if word != "--"), None)
-                if operand is not None:
-                    executed.add(str(Path(operand)))
-        executed_files = written & executed
+        executed = set().union(*(program_references(command, written) for command in commands))
+        executed_files = {Path(path).name for path in written} & executed
     script = ShellScript(shell)
     opaque = ["unfinished shell syntax"] if script.stack or script.pending or script.incomplete else []
     try:
@@ -705,7 +832,7 @@ def execution_sources(shell: str, *, completion: bool = False, depth: int = 0,
     except ValueError as error:
         yield error, []
         return
-    inputs = [normalize_command(argv)[0] for argv in commands]
+    inputs = [normalize_command(argv).argv for argv in commands]
     nested = []
     for index, source in enumerate(script.substitutions):
         force = False
@@ -721,12 +848,15 @@ def execution_sources(shell: str, *, completion: bool = False, depth: int = 0,
             continue
         if completion and inline and ("$" in argv[0] or "`" in argv[0]):
             opaque.append("nonliteral inline shell program")
-        nested.extend((source, True, False) for source in command_input(raw, completion=completion)[0])
+        sources, kind = command_input(raw, completion=completion)
+        if completion and kind == "opaque":
+            opaque.append("unproved xargs program mapping")
+        nested.extend((source, True, False) for source in sources)
     for stages in pipelines(script.command_text):
         if len(stages) < 2:
             continue
         kind = command_input(stages[-1], completion=completion)[1]
-        if kind == "data":
+        if kind in {"data", "opaque"}:
             continue
         payload = pipeline_payload(stages[:-1])
         if payload is not None:
@@ -770,7 +900,7 @@ def execution_sources(shell: str, *, completion: bool = False, depth: int = 0,
 
 
 def detached_command(argv: list[str]) -> bool:
-    return normalize_command(argv)[0][:1] == ["coproc"]
+    return normalize_command(argv).argv[:1] == ["coproc"]
 
 
 def simple_commands(shell: str) -> list[list[str]]:
@@ -808,7 +938,8 @@ def drop_flags(argv: list[str], value_flags: set[str] | None = None) -> list[str
 
 def unwrap(argv: list[str], *, expand: bool = True) -> list[list[str]]:
     """Policy view preserves the existing opaque sudo/xargs prefix contract."""
-    command, roles = normalize_command(argv)
+    normalized = normalize_command(argv)
+    command, roles = normalized.argv, normalized.roles
     if not command:
         return []
     commands = [list(argv) if roles & {"sudo", "xargs"} else command]
