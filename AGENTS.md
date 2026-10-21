@@ -27,7 +27,7 @@
 - For test changes, read the [shared test rules](instructions/global.md#tests).
 - New Python comments and docstrings follow
   [Names Instead Of Comments](skills/references/python-odoo-style.md#names-instead-of-comments);
-  `scripts/check_new_comments.py --base origin/main` runs the CI check locally.
+  `uv run scripts/check_new_comments.py --base origin/main` runs the CI check locally.
 
 ## Runtime Checkout Discipline
 
