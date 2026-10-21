@@ -49,24 +49,32 @@ local lease, serialize helper-owned IDE
 opens, open the exact current worktree only when no exact route exists, wait for
 indexing/scanning to settle, run the inspection loop, and call the plugin
 lifecycle close endpoint only for projects the helper opened. Projects that were
-already open before inspection must remain open. Lifecycle opens use macOS
-background activation by default to reduce focus stealing; when the target IDE is
-not already running, the helper launches the app hidden first and then asks the
-plugin to open the exact worktree. The macOS app launch helpers set `PWD=/` in
-the child environment because JetBrains restores its process working directory
-from `PWD` after LaunchServices starts it in `/`. This keeps a helper-started
-IDE outside the disposable caller worktree after project closure, without
-changing the caller's cwd or environment or relative app-path resolution.
-An already-running IDE keeps its cwd; retain any checkout it holds for supported
-retirement once the hold ends. Use `--foreground-open` only when debugging
-IDE launch behavior.
-For disposable-instance measurements, pass `--port <private-port>` and
-`--no-ide-launch`. The latter preserves the running-instance lifecycle open
-but fails with `ide_launch_disabled` at application-launch fallback, retaining
-its open attempts. Actual lifecycle rejections and ambiguous requests keep their
-original evidence and ownership rules. Normal callers keep the
-existing bootstrap behavior. This option does not isolate discovery or
-configuration: launch the disposable IDE with a private registry and a port
+already open before inspection must remain open. Lifecycle opens ask a running
+IDE's plugin to open the exact worktree. When none accepts, the helper stops
+with `ide_launch_disabled` and its open attempts; it launches no application.
+With `--ide-launch`, and only when no `*.app/Contents/MacOS/` launcher of the
+selected product is running, it launches the app hidden first and then asks the
+plugin to open the worktree. A product the helper does not catalogue is never
+launched.
+The census matches launcher names, so renamed, linked or relative app selectors
+cannot hide a running IDE. That IDE is not journaled or closed by the helper; it stays as the
+caller's own desktop IDE. A matching IDE that is running without a usable
+plugin identity, or a `ps` census that cannot prove absence, stops with
+`ide_launch_refused` and sends no `open`: `open -n` would start a second
+launcher that hands its empty command line to the running IDE and then stays
+behind, and plain `open -a` would activate the running IDE. The launch helper
+sets `PWD=/` in the child environment because JetBrains restores its process
+working directory from `PWD` after LaunchServices starts it in `/`. This keeps
+a helper-started IDE outside the disposable caller worktree after project
+closure, without changing the caller's cwd or environment or relative app-path
+resolution. An already-running IDE keeps its cwd; retain any checkout it holds
+for supported retirement once the hold ends. Use `--foreground-open` only when
+debugging IDE launch behavior.
+For disposable-instance measurements, pass `--port <private-port>`; the default
+running-instance open fails with `ide_launch_disabled` at application-launch
+fallback, retaining its open attempts. Actual lifecycle rejections and
+ambiguous requests keep their original evidence and ownership rules. This does
+not isolate discovery or configuration: launch the disposable IDE with a private registry and a port
 outside the helper's default discovery range, and set
 `JETBRAINS_INSPECTION_IDE_CONFIG_DIR` to its private config when invoking the
 helper.
