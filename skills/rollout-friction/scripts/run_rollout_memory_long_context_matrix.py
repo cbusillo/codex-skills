@@ -124,8 +124,6 @@ def parse_status_filter(values: list[str], default: set[str]) -> set[str]:
 def parse_variant(value: str) -> dict[str, str]:
     name, sep, rest = value.partition("=")
     provider, sep2, model = rest.partition(":")
-    if provider == "code-llm":
-        raise SystemExit("error: code-llm belongs to the retired Every Code harness; use NAME=claude:MODEL")
     if not sep or not sep2 or provider != "claude" or not name.strip() or not model:
         raise SystemExit(f"error: invalid variant {value!r}; expected NAME=PROVIDER:MODEL")
     return {"name": name.strip(), "provider": provider, "model": model}
