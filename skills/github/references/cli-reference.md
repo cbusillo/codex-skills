@@ -2579,7 +2579,21 @@ the configured automation account. The push helper picks credentials the same
 way as the wrapper: a configured GitHub App first, then `CODEX_GITHUB_TOKEN`,
 `GH_TOKEN`, and `GITHUB_TOKEN`.
 
-`git-commit-as-bot <commit args>` defaults to identity selection for `origin`.
+Both Git helpers require `--worktree /absolute/task/path` as their first pair
+of arguments. Use the worker's intended linked task path, independent of the
+current directory; never fill it from `pwd` or `git rev-parse`. This assertion
+catches a failed `cd` and refuses a different worker's checkout. It is not a
+claim lookup or a grant of branch ownership. The helpers check the physical
+current directory and Git checkout before loading private configuration,
+selecting an identity, changing a remote URL, committing or pushing. Missing,
+unavailable or relative expected paths, primary checkouts and
+default branches refuse with a diagnostic. Subdirectories and path aliases of
+the expected linked task checkout are supported. Create the task worktree with
+[dev-worktree](worktrees.md) first; run `cd /absolute/task/path || exit 1`, then
+supply that same absolute path to each helper. Non-creating default-checkout
+synchronization keeps its documented raw `merge --ff-only` route.
+
+`git-commit-as-bot --worktree /absolute/task/path <commit args>` defaults to identity selection for `origin`.
 For a fork contribution, pass `--repo UPSTREAM-OWNER/REPO` before the Git
 arguments to select the identity for the PR's target repository. This does not
 infer a target from an `upstream` remote or grant approval to write there.
@@ -2589,15 +2603,15 @@ automation auth still refuses it. App-installed targets keep the bot identity
 even with the opt-in. For example, after approval:
 
 ```bash
-GH_WITH_ENV_TOKEN_OWN_USER=1 scripts/git-commit-as-bot --repo upstream-owner/project -m 'Fix example'
-scripts/git-push-as-bot -u origin work/fix-example
+GH_WITH_ENV_TOKEN_OWN_USER=1 scripts/git-commit-as-bot --worktree /absolute/task/path --repo upstream-owner/project -m 'Fix example'
+scripts/git-push-as-bot --worktree /absolute/task/path -u origin work/fix-example
 ```
 
 The push authenticates for its actual destination (the fork), independently of
 the commit's target. An App-installed fork keeps App credentials; the upstream
 PR write needs its own per-command approval opt-in. Do not apply `--repo` to
 the push helper. For local
-integration, use `git-commit-as-bot --git-command COMMAND <args>`, where COMMAND
+integration, use `git-commit-as-bot --worktree /absolute/task/path --git-command COMMAND <args>`, where COMMAND
 is `commit`, `merge`, `pull`, `rebase`, `cherry-pick`, `revert`, or `am`.
 Run the helper from the target directory; use `cd` first when working in
 another checkout. Conflict resolution uses the same mode with `--continue`. New commits use the
@@ -2619,10 +2633,10 @@ conflicting fast-forward option, `--abort`, and `--quit` stay allowed
 because they create no commits. Sequencer `--skip` still needs the bot wrapper
 because it can recreate later commits.
 
-`git-push-as-bot [options] origin <refspec>` remains the default. When
+`git-push-as-bot --worktree /absolute/task/path [options] origin <refspec>` remains the default. When
 `origin` points at upstream and the Director's repository is a named remote, use
-`git-push-as-bot --remote public -u work/task` or
-`git-push-as-bot --remote fork --delete work/task`. Put `--remote NAME` first;
+`git-push-as-bot --worktree /absolute/task/path --remote public -u work/task` or
+`git-push-as-bot --worktree /absolute/task/path --remote fork --delete work/task`. Put `--remote NAME` immediately after `--worktree PATH`;
 the remaining arguments are push options and refspecs, without another remote.
 The helper resolves that configured remote to a GitHub owner/repository, selects
 and verifies its credentials, temporarily uses its HTTPS URL, checks all its

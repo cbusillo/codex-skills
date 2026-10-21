@@ -7,6 +7,11 @@ gh_bin=${GIT_PUSH_AS_BOT_GH:-gh}
 identity_helper=${GIT_PUSH_AS_BOT_IDENTITY_HELPER:-$script_dir/github_identity.py}
 python_command=${GIT_PUSH_AS_BOT_PYTHON:-}
 
+. "$script_dir/github-task-worktree.sh"
+[ "${1:-}" = --worktree ] || require_task_worktree ""
+require_task_worktree "${2:-}"
+shift 2
+
 # A caller's required automation auth holds even when local.env says otherwise,
 # and only the caller can opt in to pushing as their own GitHub user.
 caller_require_automation_auth=${GH_WITH_ENV_TOKEN_REQUIRE_AUTOMATION_AUTH:-}
@@ -57,7 +62,7 @@ for argument in "$@"; do
 	fi
 	case $argument in
 	--remote | --remote=*)
-		echo "error: use --remote NAME as the first two arguments, followed by push options and refspecs" >&2
+		echo "error: use --remote NAME immediately after --worktree PATH, followed by push options and refspecs" >&2
 		exit 1 ;;
 	--repo | --repo=*)
 		echo "error: --repo overrides are unsupported; use --remote NAME" >&2
@@ -70,7 +75,7 @@ for argument in "$@"; do
 done
 if [ "$repository_argument" != "$selected_remote" ]; then
 	echo "error: git-push-as-bot pushes only to origin unless --remote NAME is supplied; got '${repository_argument:-<none>}'" >&2
-	echo "hint: run git-push-as-bot [options] origin <refspec>, or git-push-as-bot --remote NAME [options] <refspec>" >&2
+	echo "hint: run git-push-as-bot --worktree PATH [options] origin <refspec>, or git-push-as-bot --worktree PATH --remote NAME [options] <refspec>" >&2
 	exit 1
 fi
 
