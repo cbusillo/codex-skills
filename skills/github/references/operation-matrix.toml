@@ -58,27 +58,6 @@ source_refs = ["github/scripts/github_app_setup.py:register", "github/scripts/gi
 test_refs = ["github/scripts/test_github_app_setup.py:test_manifest_callback_and_private_recovery", "github/scripts/test_github_app_setup.py:test_fixture_repository_setup_and_direction_review", "github/scripts/test_github_app_setup.py:test_wrong_installation_and_missing_permissions_preserve_configuration", "github/scripts/test_github_app_setup.py:test_existing_identity_requires_explicit_replacement_and_keeps_backup"]
 
 [[operations]]
-id = "github.app.ownership_inventory"
-request_priority = "essential"
-capabilities = ["metadata_read"]
-permission_mode = "fixed"
-permission_note = "Enumerates only existing configured writer Apps and their verified installation membership through the shared authentication owner. No App registration, configuration, grant or personal identity fallback."
-entrypoint = "github/scripts/github_identity.py automation_repositories"
-intent = "Expose verified writer App installation and repository membership for callers requesting an inventory."
-current_transport = "rest_api"
-selected_transport = "rest_api"
-endpoint_or_command = "GET /app/installations pages; GET /app/installations/{id}; existing installation token mint/cache; GET /installation/repositories pages"
-quota_bucket = "mixed"
-actor_policy = "automation_required"
-mutation_class = "read"
-idempotency = "read_only"
-retry_eligibility = "manual"
-reconciliation_strategy = "fresh_read"
-retained_graphql_rationale = "No GraphQL. App metadata and installation repository membership are complete paged REST reads; failures remain incomplete until fresh evidence succeeds."
-source_refs = ["github/scripts/github_identity.py:automation_repositories", "github/scripts/github_identity.py:app_installations"]
-test_refs = ["github/scripts/test_github_identity.py:test_complete_writer_installation_inventory_and_live_failures"]
-
-[[operations]]
 id = "github.api.call"
 request_priority = "essential"
 capabilities = ["contents_read", "contents_write", "issues_read", "issues_write", "pull_requests_read", "pull_requests_write", "actions_read", "actions_write", "metadata_read", "checks_read", "statuses_read", "security_events_read", "vulnerability_alerts_read", "secret_scanning_alerts_read", "administration_read", "deployments_read", "workflows_write", "discussions_read", "discussions_write", "operator_session", "operator_actions_read", "environment_approve", "protection_write", "checks_publish", "statuses_publish", "deployments_publish", "projects_read", "packages_read", "projects_write", "packages_write"]

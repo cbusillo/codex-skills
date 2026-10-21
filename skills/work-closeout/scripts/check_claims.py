@@ -147,7 +147,7 @@ def check_record(reader, repo, number, session, actor, *, pulls_cache=None, data
 transcript_values = history.values
 
 
-def recorded_targets(entry: dict) -> set[tuple[str, int]]:
+def recorded_targets(entry: dict, unresolved: list[dict] | None = None) -> set[tuple[str, int]]:
     require_own_transcript(entry)
     native = entry["session_id"]
     targets = claim_log.read(native)
@@ -157,7 +157,7 @@ def recorded_targets(entry: dict) -> set[tuple[str, int]]:
             target = history.claim_target(value, native)
             if target is not None:
                 targets.add(target)
-    targets.update(history.literal_targets(rows, native))
+    targets.update(history.literal_targets(rows, native, unresolved=unresolved, directory=Path(entry["native_output_directory"]) if entry.get("native_output_directory") else None))
     return targets
 
 
@@ -171,12 +171,15 @@ def check(
     deadline = time.time() + read_timeout
     native_sessions = {entry["session_id"] for entry in entries}
     targets: dict[str, set[tuple[str, int]]] = {}
+    unresolved = []
     for entry in history.expand(entries):
-        targets.setdefault(entry["session_id"], set()).update(recorded_targets(entry))
+        pending = []
+        targets.setdefault(entry["session_id"], set()).update(recorded_targets(entry, pending))
+        unresolved.extend({**item, "session": entry["session_id"], "transcript": entry["transcript"]} for item in pending)
     repos = {repo for records in targets.values() for repo, _ in records}
     accounts = set(owners) | {repo.split("/")[0] for repo in repos}
     released, blocked, readers, pulls_cache, data_cache = [], [], {}, {}, {}
-    complete = True
+    complete = not unresolved
     for native, records in sorted(targets.items()):
         for repo, number in sorted(records):
             try:
@@ -195,8 +198,8 @@ def check(
                 complete = False
     return {
         "operation": CHECK_OPERATION,
-        "ok": not blocked,
-        "claims_clear": not blocked,
+        "ok": not blocked and complete,
+        "claims_clear": not blocked and complete,
         "session_ids": sorted(native_sessions),
         "coverage": {
             "owners": sorted(accounts),
@@ -207,6 +210,7 @@ def check(
         "request_count": sum(len(selected.requests) for selected in readers.values()),
         "released_claims": released,
         "blocked": blocked,
+        "unresolved_invocations": unresolved,
     }
 
 

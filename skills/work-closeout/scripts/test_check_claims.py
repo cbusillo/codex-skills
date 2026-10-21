@@ -401,7 +401,8 @@ class ClaimCloseoutTests(unittest.TestCase):
         output.parent.mkdir(parents=True)
         receipt = {"operation": "github.plan.claim", "claim": SOURCE, "issue": {"repo": REPO, "number": 1}}
         output.write_text(json.dumps(receipt))
-        path.write_text(json.dumps({"sessionId": SESSION, "type": "user", "toolUseResult": {
+        invocation = {"sessionId": SESSION, "message": {"content": [{"type": "tool_use", "name": "Bash", "id": "saved", "input": {"command": "uv run gh-plan.py claim 1"}}]}}
+        path.write_text(json.dumps(invocation) + "\n" + json.dumps({"sessionId": SESSION, "type": "user", "toolUseResult": {
             "persistedOutputPath": str(output), "persistedOutputSize": output.stat().st_size},
             "message": {"content": [{"type": "tool_result", "tool_use_id": "saved", "content": "preview omitted"}]}}) + "\n")
         subagents = directory / "subagents"
@@ -411,8 +412,10 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.comments.append(self.release)
         self.assertTrue(helper.check([root])["claims_clear"])
         output.unlink()
-        with self.assertRaises(OSError):
-            helper.check([root])
+        report = helper.check([root])
+        self.assertFalse(report["claims_clear"])
+        self.assertFalse(report["coverage"]["complete"])
+        self.assertTrue(report["unresolved_invocations"])
 
     def test_legacy_yielded_claim_receipt_is_recovered_from_later_native_output(self) -> None:
         root = self.entry()
@@ -477,8 +480,10 @@ class ClaimCloseoutTests(unittest.TestCase):
                 "call_id": "claim-call", "input": 'text(await tools.exec_command({cmd:"uv run gh-plan.py claim 1 --session native-session"}));'}}) + "\n")
             stream.write(json.dumps({"type": "response_item", "payload": {"type": "custom_tool_call_output", "call_id": "claim-call",
                 "output": 'Warning: truncated output\n{"claim":'}}) + "\n")
-        with patch.object(helper, "repository_reader") as reader, self.assertRaises(ValueError):
-            helper.check([entry])
+        with patch.object(helper, "repository_reader") as reader:
+            report = helper.check([entry])
+        self.assertFalse(report["claims_clear"])
+        self.assertTrue(report["unresolved_invocations"])
         reader.assert_not_called()
 
     def test_unknown_write_without_its_target_cannot_use_another_journal_entry(self) -> None:
@@ -491,17 +496,20 @@ class ClaimCloseoutTests(unittest.TestCase):
         ]
         with Path(root["transcript"]).open("a") as stream:
             stream.write("\n".join(json.dumps({"type": "response_item", "payload": row}) for row in rows) + "\n")
-        with patch.object(helper, "repository_reader") as reader, self.assertRaises(ValueError):
-            helper.check([root])
-        reader.assert_not_called()
+        with patch.object(helper, "check_record", return_value=[]) as check:
+            report = helper.check([root])
+        self.assertFalse(report["claims_clear"])
+        self.assertTrue(report["unresolved_invocations"])
+        self.assertIn(2, {call.args[2] for call in check.call_args_list})
 
     def test_escaped_native_commands_preserve_claim_scope(self) -> None:
         for command in (
             'uv run gh-plan.py --repo="test/a" claim 1 --session="$CODEX_THREAD_ID"',
+            'uv run --python 3.12 gh-plan.py --repo test/a claim 1 --session "$CODEX_THREAD_ID"',
             'uv run gh-plan.py --repo test/a claim --worker worker --session "$CODEX_THREAD_ID" 1',
         ):
             records = [{"payload": {"type": "custom_tool_call", "name": "exec", "call_id": "quoted",
-                "input": "text(await tools.exec_command({cmd:" + json.dumps(command) + "}));"}}]
+                "input": "text(await tools.exec_command({workdir:\"/fixture\",cmd:" + json.dumps(command) + "}));"}}]
             with self.subTest(command=command):
                 self.assertEqual(helper.history.literal_targets(records, SESSION), {(REPO, 1)})
         command = 'uv run gh-plan.py claim 1 --session "$CODEX_THREAD_ID"'
@@ -515,7 +523,8 @@ class ClaimCloseoutTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             helper.history.literal_targets(rows, SESSION)
         rows.append({"payload": {"type": "custom_tool_call_output", "call_id": "computed", "output": json.dumps({"claim": SOURCE, "issue": {"repo": REPO, "number": 1}})}})
-        self.assertEqual(helper.history.literal_targets(rows, SESSION), set())
+        with self.assertRaises(ValueError):
+            helper.history.literal_targets(rows, SESSION)
 
     def test_shell_searches_and_heredoc_text_are_not_claim_invocations(self) -> None:
         commands = ["rg 'gh-plan.py claim 1' .", "cat <<'EOF'\ngh-plan.py claim 1\nEOF", 'git commit -m "gh-plan.py claim 1"']
@@ -565,21 +574,25 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.comments.append(self.release)
         self.assertTrue(helper.check([root])["claims_clear"])
         output.unlink()
-        with self.assertRaises(OSError):
-            helper.check([root])
+        report = helper.check([root])
+        self.assertFalse(report["claims_clear"])
+        self.assertFalse(report["coverage"]["complete"])
+        self.assertTrue(report["unresolved_invocations"])
 
     def test_explicit_claude_child_uses_its_root_saved_output_after_restore(self) -> None:
         root = self.entry()
         path = Path(root["transcript"])
         path.write_text(json.dumps({"sessionId": SESSION, "toolUseResult": {"agentId": "child"}}) + "\n")
-        child = path.with_suffix("") / "subagents/agent-child.jsonl"
+        child = self.folder / "restored/agent-child.jsonl"
         output = path.with_suffix("") / "tool-results/result.txt"
         child.parent.mkdir(parents=True)
-        output.parent.mkdir()
+        output.parent.mkdir(parents=True)
         output.write_text(json.dumps({"claim": SOURCE, "issue": {"repo": REPO, "number": 1}}))
         original = self.folder / "old-host" / SESSION / "tool-results/result.txt"
-        child.write_text(json.dumps({"sessionId": SESSION, "agentId": "child", "toolUseResult": {"persistedOutputPath": str(original)}, "message": {"content": [{"type": "tool_result", "tool_use_id": "saved", "content": "preview"}]}}) + "\n")
+        invocation = {"sessionId": SESSION, "agentId": "child", "message": {"content": [{"type": "tool_use", "name": "Bash", "id": "saved", "input": {"command": "uv run gh-plan.py claim 1"}}]}}
+        child.write_text(json.dumps(invocation) + "\n" + json.dumps({"sessionId": SESSION, "agentId": "child", "toolUseResult": {"persistedOutputPath": str(original)}, "message": {"content": [{"type": "tool_result", "tool_use_id": "saved", "content": "preview"}]}}) + "\n")
         supplied = {"session_id": SESSION, "transcript": str(child)}
+        self.assertFalse(helper.check([supplied, root])["claims_clear"])
         self.comments.append(self.release)
         self.assertTrue(helper.check([supplied, root])["claims_clear"])
 
@@ -615,6 +628,78 @@ class ClaimCloseoutTests(unittest.TestCase):
                 else:
                     with self.assertRaises(ValueError):
                         helper.history.literal_targets(rows, SESSION)
+
+    def test_unrelated_missing_claude_artifacts_do_not_block(self) -> None:
+        root = self.entry()
+        path = Path(root["transcript"])
+        for tool, command in (("Bash", "uv run pytest"), ("Read", None)):
+            rows = [
+                {"sessionId": SESSION, "message": {"content": [{"type": "tool_use", "name": tool, "id": "unrelated", "input": {"command": command}}]}},
+                {"sessionId": SESSION, "toolUseResult": {"persistedOutputPath": str(self.folder / "deleted/unexpected/result.txt")}, "message": {"content": [{"type": "tool_result", "tool_use_id": "unrelated", "content": "preview"}]}},
+            ]
+            path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+            with self.subTest(tool=tool):
+                self.assertTrue(helper.check([root])["claims_clear"])
+
+    def test_native_shell_adapters_recover_targets_from_truncated_results(self) -> None:
+        command = f"uv run gh-plan.py --repo {REPO} claim 1 --session {SESSION}"
+        payloads = [
+            {"type": "function_call", "name": "shell_command", "call_id": "legacy", "arguments": json.dumps({"command": command})},
+            {"type": "function_call", "name": "shell", "call_id": "legacy", "arguments": json.dumps({"command": ["zsh", "-lc", command]})},
+            {"type": "local_shell_call", "call_id": "legacy", "action": {"type": "exec", "command": ["zsh", "-lc", command]}},
+        ]
+        for payload in payloads:
+            with self.subTest(tool=payload.get("name", payload["type"])):
+                self.assertEqual(helper.history.literal_targets([{"payload": payload}], SESSION), {(REPO, 1)})
+        native = {"type": "event_msg", "payload": {"type": "item_completed", "item": {
+            "type": "CommandExecution", "id": "native-command", "command": ["zsh", "-lc", command], "status": "completed", "aggregated_output": "truncated", "exit_code": 0}}}
+        self.assertEqual(helper.history.literal_targets([native], SESSION), {(REPO, 1)})
+        native["payload"]["item"].update(command=["zsh", "-lc", "uv run gh-plan.py claim 1"], status="declined")
+        self.assertEqual(helper.history.literal_targets([native], SESSION), set())
+
+    def test_mixed_literal_and_computed_claim_cannot_clear(self) -> None:
+        rows = [{"payload": {"type": "custom_tool_call", "name": "exec", "call_id": "mixed", "input":
+            'const command = "uv run gh-plan.py claim 1"; text(await tools.exec_command({cmd:"git status"})); text(await tools.exec_command({cmd:command}));'}}]
+        with self.assertRaises(ValueError):
+            helper.history.literal_targets(rows, SESSION)
+
+    def test_structured_native_denial_is_prewrite_but_unknown_interrupt_is_not(self) -> None:
+        root = self.entry()
+        path = Path(root["transcript"])
+        rows = [
+            {"sessionId": SESSION, "message": {"content": [{"type": "tool_use", "name": "Bash", "id": "denied", "input": {"command": "uv run gh-plan.py claim 1"}}]}},
+            {"sessionId": SESSION, "toolDenialKind": "user-rejected", "toolUseResult": "denied", "message": {"content": [{"type": "tool_result", "tool_use_id": "denied", "is_error": True, "content": "The user doesn't want to proceed with this tool use."}]}},
+        ]
+        path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+        self.assertTrue(helper.check([root])["claims_clear"])
+        rows[-1].pop("toolDenialKind")
+        rows[-1]["message"]["content"][0]["content"] = json.dumps({"operation": "github.plan.claim", "ok": False, "write_outcome": "unknown", "error": "KeyboardInterrupt"})
+        path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+        self.assertFalse(helper.check([root])["claims_clear"])
+        rows[-1]["message"]["content"][0]["content"] = json.dumps({"operation": "github.plan.claim", "ok": False, "write_outcome": "not_started", "failed_step": "argument_parsing"})
+        path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+        self.assertTrue(helper.check([root])["claims_clear"])
+
+    def test_unresolved_output_does_not_hide_a_known_held_claim(self) -> None:
+        root = self.entry()
+        helper.claim_log.record(SESSION, REPO, 1)
+        with Path(root["transcript"]).open("a") as stream:
+            stream.write(json.dumps({"payload": {"type": "function_call", "name": "shell_command", "call_id": "lost", "arguments": json.dumps({"command": "uv run gh-plan.py claim 2"})}}) + "\n")
+        report = helper.check([root])
+        self.assertFalse(report["claims_clear"])
+        self.assertFalse(report["coverage"]["complete"])
+        self.assertTrue(report["blocked"])
+        self.assertIn("lost", {item["call_id"] for item in report["unresolved_invocations"]})
+
+    def test_orphan_saved_shell_output_cannot_prove_complete_claim_coverage(self) -> None:
+        root = self.entry()
+        path = Path(root["transcript"])
+        output = path.with_suffix("") / "tool-results/result.txt"
+        path.write_text(json.dumps({"sessionId": SESSION, "toolUseResult": {"persistedOutputPath": str(output)}, "message": {"content": [{"type": "tool_result", "tool_use_id": "orphan", "content": "preview"}]}}) + "\n")
+        report = helper.check([root])
+        self.assertFalse(report["claims_clear"])
+        self.assertFalse(report["coverage"]["complete"])
+        self.assertIn("orphan", {item["call_id"] for item in report["unresolved_invocations"]})
 
     def test_duplicate_receipts_check_a_record_once(self) -> None:
         entry = self.receipt_entry(records=((REPO, 1), (REPO, 1)))

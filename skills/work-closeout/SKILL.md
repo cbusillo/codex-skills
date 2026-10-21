@@ -302,30 +302,39 @@ uv run <skill-dir>/scripts/check_claims.py \
 The check takes its targets from the session's private host-local claim journal
 and recorded claim results in its own native transcript. `gh-plan.py claim`
 records the exact repository and issue or PR number after target preflight and
-before it can post a claim;
-failed or interrupted attempts remain targets until GitHub readback accounts
-for them. Codex child threads and Claude subagents use the root session ID,
-so their targets enter the same journal even when their tool output is absent
-from the root transcript. Closeout also reads linked local native child transcripts: Claude's sibling
-`subagents` directory and Codex descendants read through the existing native child index plus
-`SubAgentActivity.agent_thread_id` events, recursively. It never scans rollout
-directories. Claude saved tool output is read from the native advertised artifact
-in the session's own `tool-results` directory. This
-covers older child claims and mixed sessions predating the journal. An indexed or advertised child missing its transcript refuses with the
-supported recovery: check on
-the claiming host or pass the child's native `--session` and `--transcript`. Keep the journal with the session on its claiming host;
-checking from another host also needs that session's complete native lineage and
-recorded claim results. An unresolved claim invocation stays conditional; restore
-its complete native output. Literal repository-qualified claim targets can be
-read directly even when the command result was truncated. No shell text is executed.
+before posting. Failed or interrupted attempts stay targets until GitHub
+readback accounts for them. Children claiming under the root session ID enter
+the same journal even when their output is absent from the root transcript.
+
+For older helpers and mixed sessions, the check reads linked local native child
+transcripts recursively: Claude's own `subagents` directory, Codex's existing
+native child index and `SubAgentActivity.agent_thread_id` events. It never
+scans rollout directories. A missing indexed or advertised child refuses;
+restore its transcript on the claiming host or pass that child's native
+`--session` and `--transcript`. Supplied child paths can restore moved evidence.
+Keep the journal with its session; another host also needs the complete native
+lineage and recorded claim results.
+
+Native evaluated shell commands, older shell-tool arguments and decoded literal
+commands provide targets when output was truncated. No shell or JavaScript is
+executed. Unresolved claim commands may read their own advertised saved or
+background output; unrelated artifacts are ignored. Copied foreign-session
+artifacts are excluded. A missing own artifact, orphan artifact without its
+invocation, computed command without sufficient native provenance, or unknown
+write stays conditional. The report lists `unresolved_invocations` with its
+session, transcript, call ID and recovery, while still verifying every known
+target. Restore the missing native command/output on the claiming host. A
+plain nonzero exit or traceback never proves that an old helper did not post.
+Only structured native denials or explicit helper prewrite outcomes do that.
 
 The check reads only those issues and PRs, including closed records. It never
 inventories App installations or scans other repositories. It verifies every
 claim on each target against its exact authored release or validated Supervisor
 release, and checks each retained PR's handoff. Repeat `--session` and
 `--transcript` for any other session to include. A transcript belonging to
-another session, malformed claim evidence or an incomplete GitHub read refuses. Unrelated
-truncated transcript noise is ignored; a malformed recorded claim is not.
+another session, malformed claim evidence or an incomplete GitHub read refuses.
+Unrelated truncated transcript noise is ignored; a malformed recorded claim
+is not.
 `--repository OWNER/REPO` and `--owner OWNER` are compatibility context flags;
 they cannot narrow the recorded targets or request a fleet scan. Only exit 0
 with `claims_clear: true` and complete coverage permits an all-clear. The result
@@ -334,7 +343,8 @@ Keep the verdict conditional/no on a held claim, unverified retained PR or
 incomplete read. A later-deleted record or removed App access remains unreadable
 evidence, never a release. Preserve the journal and owning issue; restore the
 authorized read path, or record an irrecoverable-evidence decision for the
-Director. Do not silently retire the target or manufacture an all-clear. The Supervisor runs the same check for any session.
+Director. Do not silently retire the target or manufacture an all-clear.
+The Supervisor runs the same check for any session.
 
 An open PR need not merge before a session exits. Its exact release names the
 retained PR, and the check verifies the same repository, source identity and

@@ -167,7 +167,7 @@ def native_output(path: Path, directory: Path, session: str, identifier: str) ->
     return {"native_tool_output": candidate.read_text(encoding="utf-8"), "tool_use_id": identifier}
 
 
-def persisted_output(records: list[dict], directory: Path, session: str) -> list[dict]:
+def persisted_output(records: list[dict], directory: Path, session: str, wanted: str) -> list[dict]:
     output = []
     background = {}
     for row in records:
@@ -183,13 +183,15 @@ def persisted_output(records: list[dict], directory: Path, session: str) -> list
             identifier = str(block.get("tool_use_id", ""))
             if isinstance(result, dict) and isinstance(result.get("backgroundTaskId"), str):
                 background[result["backgroundTaskId"]] = identifier
+            if identifier != wanted:
+                continue
             if isinstance(result, dict) and isinstance(result.get("persistedOutputPath"), str):
+                if len(blocks) != 1:
+                    raise ValueError("claim artifact advertisement has several tool results")
                 paths.add((result["persistedOutputPath"], identifier))
             text = block.get("content")
             if isinstance(text, str) and text.startswith("<persisted-output>\n"):
-                match = re.search(r"(?m)^Output too large[^\n]*\n(?:Full output saved to: )?([^\n]+)$", text)
-                if not match:
-                    match = re.search(r"(?m)^Output too large[^\n]*Full output saved to: ([^\n]+)$", text)
+                match = re.search(r"Full output saved to: ([^\n]+)", text)
                 if match:
                     paths.add((match[1], identifier))
         for path, identifier in sorted(paths):
@@ -199,7 +201,7 @@ def persisted_output(records: list[dict], directory: Path, session: str) -> list
             continue
         fields = dict(re.findall(r"<(task-id|tool-use-id|output-file)>([^<]+)</\1>", content))
         identifier = fields.get("tool-use-id")
-        if identifier and background.get(fields.get("task-id")) == identifier and fields.get("output-file"):
+        if identifier == wanted and background.get(fields.get("task-id")) == identifier and fields.get("output-file"):
             path = Path(fields["output-file"]).expanduser()
             output.append(native_output(path, directory.with_name("tasks"), session, identifier))
     return output
@@ -227,8 +229,9 @@ def claude_entries(root: dict, supplied: dict[str, set[Path]]) -> list[dict]:
             raise ValueError(f"native transcript does not belong to {native}")
         if agent is not None and claude_agent(own) != agent:
             raise ValueError(f"native subagent identity differs for {agent}")
-        outputs = persisted_output(own, root_path.with_suffix("") / "tool-results", native)
-        expanded.append(entry(native, path, [*own, *outputs], native))
+        expanded.append(
+            {**entry(native, path, own, native), "native_output_directory": str(root_path.with_suffix("") / "tool-results")}
+        )
         for child in claude_children(own):
             paths = supplied.get(child) or {directory / f"agent-{child}.jsonl"}
             if not any(path.exists() for path in paths):
@@ -297,12 +300,31 @@ def claim_target(value: dict, session: str) -> tuple[str, int] | None:
     return None
 
 
+def command_text(command: object) -> str:
+    if isinstance(command, str):
+        return command
+    if isinstance(command, list) and all(isinstance(argument, str) for argument in command):
+        return shlex.join(command)
+    raise ValueError("native shell command is neither text nor argv")
+
+
+def execution_item(row: dict) -> dict:
+    payload = row.get("payload") or {}
+    item = payload.get("item") if isinstance(payload, dict) else None
+    return item if isinstance(item, dict) and item.get("type") == "CommandExecution" else {}
+
+
 def tool_inputs(records: list[dict]) -> Iterator[tuple[str, str]]:
     for row in records:
+        item = execution_item(row)
+        if item and "command" in item:
+            yield "command:" + str(item.get("id", "")), command_text(item["command"])
         payload = row.get("payload")
+        if isinstance(payload, dict) and payload.get("type") == "local_shell_call":
+            yield str(payload.get("call_id", "")), json.dumps(payload.get("action") or {})
         if isinstance(payload, dict) and payload.get("type") in {"function_call", "custom_tool_call"}:
             name = str(payload.get("name", "")).split(".")[-1].casefold()
-            if name in {"exec", "exec_command", "bash", "write_stdin"}:
+            if name in {"exec", "exec_command", "bash", "write_stdin", "shell_command", "shell"}:
                 raw = payload.get("arguments", payload.get("input", ""))
                 yield str(payload.get("call_id", "")), raw if isinstance(raw, str) else json.dumps(raw)
         content = (row.get("message") or {}).get("content", [])
@@ -314,15 +336,38 @@ def tool_inputs(records: list[dict]) -> Iterator[tuple[str, str]]:
                         yield str(block.get("id", "")), command
 
 
+def denied_invocations(records: list[dict]) -> set[str]:
+    denied = set()
+    for row in records:
+        item = execution_item(row)
+        if item.get("status") == "declined":
+            denied.add("command:" + str(item.get("id", "")))
+        content = (row.get("message") or {}).get("content", [])
+        if row.get("toolDenialKind") and isinstance(row["toolDenialKind"], str) and isinstance(content, list):
+            denied.update(
+                str(block.get("tool_use_id", ""))
+                for block in content
+                if isinstance(block, dict) and block.get("type") == "tool_result"
+            )
+    return denied
+
+
 def tool_outputs(records: list[dict]) -> dict[str, list[object]]:
     outputs: dict[str, list[object]] = {}
     for row in records:
+        item = execution_item(row)
+        if item:
+            outputs.setdefault("command:" + str(item.get("id", "")), []).append(item.get("aggregated_output"))
         if "native_tool_output" in row:
             outputs.setdefault(str(row.get("tool_use_id", "")), []).append(row["native_tool_output"])
         if "foreign_native_output" in row:
             outputs.setdefault(str(row["foreign_native_output"]), []).append({"foreign_native_output": True})
         payload = row.get("payload")
-        if isinstance(payload, dict) and payload.get("type") in {"function_call_output", "custom_tool_call_output"}:
+        if isinstance(payload, dict) and payload.get("type") in {
+            "function_call_output",
+            "custom_tool_call_output",
+            "local_shell_call_output",
+        }:
             outputs.setdefault(str(payload.get("call_id", "")), []).append(payload.get("output"))
         content = (row.get("message") or {}).get("content", [])
         if isinstance(content, list):
@@ -338,27 +383,55 @@ def tool_outputs(records: list[dict]) -> dict[str, list[object]]:
     return outputs
 
 
-def shell_texts(text: str) -> Iterator[str]:
+def command_literal(text: str, start: int, literal: str) -> str | None:
+    tokens = [match[0] for match in re.finditer(literal + r"|[A-Za-z_$][A-Za-z0-9_$]*|[^\s]", text[start:])]
+    if not tokens or tokens[0] != "{":
+        return None
+    depth = 0
+    for index, token in enumerate(tokens):
+        if token in {"{", "[", "("}:
+            depth += 1
+        elif token in {"}", "]", ")"}:
+            depth -= 1
+            if depth == 0:
+                break
+        if depth != 1 or token.strip("\"'") not in {"cmd", "command"} or tokens[index + 1 : index + 2] != [":"]:
+            continue
+        tail = tokens[index + 2 : index + 4]
+        if len(tail) != 2 or tail[1] not in {",", "}"} or not re.fullmatch(literal, tail[0], re.DOTALL):
+            return None
+        value = tail[0]
+        if value.startswith("`"):
+            return value[1:-1] if "${" not in value else None
+        try:
+            return ast.literal_eval(value)
+        except (ValueError, SyntaxError):
+            return None
+    return None
+
+
+def shell_texts(text: str) -> tuple[list[str], bool]:
     try:
         decoded = json.loads(text)
     except ValueError:
         decoded = None
     if isinstance(decoded, dict):
-        if isinstance(decoded.get("cmd"), str):
-            yield decoded["cmd"]
-        return
+        command = decoded.get("cmd", decoded.get("command"))
+        return ([command_text(command)], False) if command is not None else ([], False)
     literal = r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|`(?:\\.|[^`\\])*`'
-    pattern = re.compile(r'(?:(?:\bcmd|"cmd"|\'cmd\')\s*:\s*(?P<command>' + literal + r"))|(?:" + literal + r")", re.DOTALL)
-    commands = [match["command"] for match in pattern.finditer(text) if match["command"] is not None]
-    if not commands:
-        if "exec_command(" in text and "gh-plan.py" in text and "claim" in text:
-            raise ValueError("native claim command is computed; restore its complete native output")
-        yield text
-    for command in commands:
-        try:
-            yield ast.literal_eval(command) if command[0] != "`" else command[1:-1]
-        except (ValueError, SyntaxError) as error:
-            raise ValueError("native command literal cannot be decoded") from error
+    site = re.compile(r"(?P<call>\btools\.(?:exec_command|shell_command|shell)\s*\()|(?:" + literal + r")", re.DOTALL)
+    calls = [match for match in site.finditer(text) if match["call"] is not None]
+    if not calls:
+        return [text], False
+    commands = []
+    opaque = False
+    for call in calls:
+        command = command_literal(text, call.end(), literal)
+        if command is None:
+            opaque = True
+        else:
+            commands.append(command)
+    return commands, opaque and "gh-plan" in text and "claim" in text
 
 
 def shell_groups(text: str) -> Iterator[list[str]]:
@@ -392,8 +465,9 @@ def shell_groups(text: str) -> Iterator[list[str]]:
 
 def shell_argv(text: str) -> Iterator[list[str]]:
     for argv in shell_groups(text):
-        if argv and Path(argv[0]).name in {"bash", "sh", "zsh"} and "-c" in argv:
-            index = argv.index("-c") + 1
+        shell_flag = next((index for index, argument in enumerate(argv[1:], 1) if re.fullmatch(r"-[a-z]*c[a-z]*", argument)), None)
+        if argv and Path(argv[0]).name in {"bash", "sh", "zsh"} and shell_flag is not None:
+            index = shell_flag + 1
             if index < len(argv):
                 yield from shell_argv(argv[index])
         else:
@@ -410,35 +484,149 @@ def claim_arguments(argv: list[str]) -> list[str] | None:
     executable = Path(argv[0]).name
     if executable == "uv" and "run" in argv:
         argv = argv[argv.index("run") + 1 :]
-    elif executable.startswith("python"):
+    elif re.fullmatch(r"python(?:[0-9]+(?:\.[0-9]+)*)?", executable):
         argv = argv[1:]
-    while argv and argv[0].startswith("-"):
-        argv = argv[1:]
+    elif executable != "gh-plan.py":
+        return None
+    index = next((index for index, argument in enumerate(argv) if Path(argument).name == "gh-plan.py"), None)
+    if index is None or any(argument.endswith(".py") for argument in argv[:index]):
+        return None
+    argv = argv[index:]
     if not argv or Path(argv[0]).name != "gh-plan.py":
         return None
     return argv[1:]
 
 
-def literal_targets(records: list[dict], session: str) -> set[tuple[str, int]]:
-    targets = set()
-    outputs = tool_outputs(records)
+def resolve_invocations(arguments_list: list[list[str]], blocks: list[object], session: str) -> tuple[set[tuple[str, int]], bool]:
+    results = [item for block in blocks for item in values(block)]
+    completed = [
+        (item["claim"]["session"], target)
+        for item in results
+        if isinstance(item.get("claim"), dict)
+        and isinstance(item["claim"].get("session"), str)
+        and (target := claim_target(item, item["claim"]["session"])) is not None
+    ]
+    targets = {target for native, target in completed if native == session}
+    foreign = any(item.get("foreign_native_output") for item in results)
+    rejected = [
+        item
+        for item in results
+        if item.get("operation") == "github.plan.claim"
+        and item.get("ok") is False
+        and item.get("write_outcome") in {"not_started", "rejected"}
+        and not item.get("claim_comment")
+        and "post_claim" not in item.get("completed_steps", [])
+    ]
+    unresolved = False
     reference = re.compile(r"(?:https://github\.com/)?([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(?:#|/(?:issues|pull)/)([1-9]\d*)\Z")
-    for identifier, text in tool_inputs(records):
-        results = [item for block in outputs.get(identifier, []) for item in values(block)]
-        completed = [
-            item
-            for item in results
-            if isinstance(item.get("claim"), dict)
-            and isinstance(item["claim"].get("session"), str)
-            and claim_target(item, item["claim"]["session"]) is not None
-        ]
-        foreign = any(item.get("foreign_native_output") for item in results)
-        try:
-            shells = list(shell_texts(text))
-        except ValueError:
-            if completed or foreign:
+    for arguments in arguments_list:
+        options = {}
+        positionals = []
+        index = 0
+        while index < len(arguments):
+            argument = arguments[index]
+            if argument.startswith("-"):
+                key, equal, value = argument.partition("=")
+                if not equal:
+                    index += 1
+                    value = arguments[index] if index < len(arguments) else ""
+                options[key] = value
+            else:
+                positionals.append(argument)
+            index += 1
+        if not positionals or positionals[0] != "claim":
+            continue
+        declared = options.get("--session", "")
+        if declared and not any(character in declared for character in "$`\\") and declared != session:
+            continue
+        if foreign:
+            continue
+        repo = options.get("--repo", options.get("-R", ""))
+        target = positionals[1] if len(positionals) > 1 else ""
+        qualified = reference.fullmatch(target)
+        known = (
+            (qualified[1], int(qualified[2]))
+            if qualified
+            else (
+                (repo, int(target))
+                if claim_log.REPOSITORY_PATTERN.fullmatch(repo) and target.isdecimal() and int(target) > 0
+                else None
+            )
+        )
+        match = next(
+            (
+                index
+                for index, (_, receipt) in enumerate(completed)
+                if receipt == known or (known is None and target.isdecimal() and receipt[1] == int(target))
+            ),
+            None,
+        )
+        if match is not None:
+            completed.pop(match)
+        elif known is not None:
+            targets.add(known)
+        elif rejected:
+            rejected.pop()
+        else:
+            unresolved = True
+    return targets, unresolved
+
+
+def orphan_artifacts(records: list[dict], session: str, directory: Path) -> list[str]:
+    inputs = {
+        str(block.get("id", ""))
+        for row in records
+        for content in [(row.get("message") or {}).get("content")]
+        if isinstance(content, list)
+        for block in content
+        if isinstance(block, dict) and block.get("type") == "tool_use"
+    }
+    missing = set()
+    for row in records:
+        result = row.get("toolUseResult") or {}
+        content = (row.get("message") or {}).get("content", [])
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_result" or str(block.get("tool_use_id", "")) in inputs:
                 continue
-            raise
+            path = result.get("persistedOutputPath") if isinstance(result, dict) else None
+            if (
+                isinstance(path, str)
+                and Path(path).parent.name == "tool-results"
+                and Path(path).parent.parent.name not in {session, directory.parent.name}
+            ):
+                continue
+            preview = block.get("content")
+            if (
+                path
+                or (isinstance(result, dict) and result.get("backgroundTaskId"))
+                or (isinstance(preview, str) and preview.startswith("<persisted-output>"))
+            ):
+                missing.add(str(block.get("tool_use_id", "")))
+    return sorted(missing)
+
+
+def literal_targets(
+    records: list[dict], session: str, *, unresolved: list[dict] | None = None, directory: Path | None = None
+) -> set[tuple[str, int]]:
+    targets = set()
+    errors = []
+    outputs = tool_outputs(records)
+    denied = denied_invocations(records)
+    if directory is not None:
+        errors.extend(
+            {
+                "call_id": identifier,
+                "reason": "missing_invocation",
+                "recovery": "Restore this artifact's matching native tool invocation on the claiming host; its command is needed to establish claim coverage.",
+            }
+            for identifier in orphan_artifacts(records, session, directory)
+        )
+    for identifier, text in tool_inputs(records):
+        if identifier in denied:
+            continue
+        shells, opaque = shell_texts(text)
         invocations = [
             arguments
             for shell in shells
@@ -448,56 +636,28 @@ def literal_targets(records: list[dict], session: str) -> set[tuple[str, int]]:
             and "--help" not in arguments
             and "-h" not in arguments
         ]
-        for arguments in invocations:
-            options = {}
-            positionals = []
-            index = 0
-            while index < len(arguments):
-                argument = arguments[index]
-                if argument.startswith("-"):
-                    key, equal, value = argument.partition("=")
-                    if not equal:
-                        index += 1
-                        value = arguments[index] if index < len(arguments) else ""
-                    options[key] = value
-                else:
-                    positionals.append(argument)
-                index += 1
-            if not positionals or positionals[0] != "claim":
-                continue
-            declared = options.get("--session", "")
-            if declared and not any(character in declared for character in "$`\\") and declared != session:
-                continue
-            if foreign:
-                continue
-            completed_targets = {claim_target(item, item["claim"]["session"]) for item in completed}
-            repo = options.get("--repo", options.get("-R", ""))
-            target = positionals[1] if len(positionals) > 1 else ""
-            qualified = reference.fullmatch(target)
-            if qualified:
-                target_record = (qualified[1], int(qualified[2]))
-                if target_record not in completed_targets:
-                    targets.add(target_record)
-                continue
-            if claim_log.REPOSITORY_PATTERN.fullmatch(repo) and target.isdecimal() and int(target) > 0:
-                if (repo, int(target)) not in completed_targets:
-                    targets.add((repo, int(target)))
-                continue
-            if target.isdecimal() and any(number == int(target) for _, number in completed_targets):
-                continue
-            if not target.isdecimal() and completed and len(invocations) == 1:
-                continue
-            rejected = any(
-                item.get("operation") == "github.plan.claim"
-                and item.get("ok") is False
-                and not item.get("claim_comment")
-                and "post_claim" not in item.get("completed_steps", [])
-                and item.get("outcome_certainty") != "unknown"
-                for item in results
+        blocks = outputs.get(identifier, [])
+        found, unknown = resolve_invocations(invocations, blocks, session)
+        targets.update(found)
+        reason = "computed" if opaque else "missing_output"
+        if unknown and directory is not None:
+            try:
+                saved = persisted_output(records, directory, session, identifier)
+                blocks = [*blocks, *tool_outputs(saved).get(identifier, [])]
+                found, unknown = resolve_invocations(invocations, blocks, session)
+                targets.update(found)
+            except (OSError, ValueError) as error:
+                reason = "missing_output: " + str(error)
+        if unknown or opaque:
+            errors.append(
+                {
+                    "call_id": identifier,
+                    "reason": reason,
+                    "recovery": "Restore this invocation's complete native command and output on the claiming host; keep unknown writes conditional. If evidence is irrecoverable, record the Director's decision on the owning issue.",
+                }
             )
-            if not rejected or len(invocations) > 1:
-                raise ValueError(
-                    f"claim invocation {identifier} lacks a complete result or literal repository target; restore its native output"
-                )
-
+    if errors and unresolved is None:
+        raise ValueError(str(errors))
+    if unresolved is not None:
+        unresolved.extend(errors)
     return targets
