@@ -505,7 +505,7 @@ def _format_timestamp(value: dt.datetime) -> str:
     return value.astimezone(dt.timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _parse_timestamp(value: Any) -> Optional[dt.datetime]:
+def parse_timestamp(value: Any) -> Optional[dt.datetime]:
     if not isinstance(value, str) or not value:
         return None
     try:
@@ -540,7 +540,7 @@ def reconcile_created_comment(
     retry_context: github_api_core.ReconciliationContext,
     retry_summaries: list[github_api_core.RetrySummary],
 ) -> github_api_core.ReconciliationDecision:
-    threshold = _parse_timestamp(started_at)
+    threshold = parse_timestamp(started_at)
     if threshold is None:
         return github_api_core.ReconciliationDecision(
             "failed",
@@ -578,7 +578,7 @@ def reconcile_created_comment(
     matches: list[dict[str, Any]] = []
     for item in comments:
         item_actor = (item.get("user") or {}).get("login") if isinstance(item.get("user"), dict) else None
-        created_at = _parse_timestamp(item.get("created_at"))
+        created_at = parse_timestamp(item.get("created_at"))
         comment_id = item.get("id")
         if not isinstance(comment_id, int) or comment_id in existing_comment_ids:
             continue

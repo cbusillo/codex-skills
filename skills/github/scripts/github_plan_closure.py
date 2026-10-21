@@ -285,11 +285,6 @@ def inherit_observed_leases():
         _LEASES.set({*(_LEASES.get() or set()), *group[2]})
 
 
-def held_sources() -> set[str]:
-    """Current owner's retained native source leases, independent of proof format."""
-    return set(_LEASES.get() or set())
-
-
 def log_rows() -> list[dict]:
     path = closed_log()
     info = path.lstat()

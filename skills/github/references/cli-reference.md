@@ -128,7 +128,7 @@ already meet the requested removal. Do not replay completed mutations.
 
 `uv run scripts/github_request_usage.py --hours 1` ranks local HTTP attempts
 for all observed identities, separately by actor, helper, operation, repository
-and quota bucket. Use `--actor LOGIN` to filter one identity. The private hourly receipts
+and quota bucket, including HTTP and charged REST requests per hour over the requested window. GraphQL point cost stays unknown in this count-only ledger. Use `--actor LOGIN` to filter one identity. The private hourly receipts
 live under the shared retry-state directory's `request-usage` folder and contain
 no request/response bodies, endpoint queries or credentials. Delegating watchers
 pass their caller name to the PR helper, so its reads count toward that watcher.
@@ -250,6 +250,22 @@ headers/API version. Every read still contacts GitHub: an ETag is sent as
 the stored body and pagination headers while preserving the fresh HTTP status,
 request ID and quota diagnostics. Changed 200s replace the entry. Authentication,
 permission and actor failures never become cached success.
+
+Plain JSON `gh-with-env-token api repos/OWNER/REPO/...` GETs under the selected
+App identity also use this conditional cache and record each response once.
+`--method GET` and `-X GET` are supported; formatting, custom headers, pagination,
+input, hostname overrides, downloads, credential/log surfaces and alternate identities keep
+their original CLI route. Fresh response bytes and gh error output are preserved; non-JSON bodies are not cached.
+The adapter never retries a completed failed request
+or serves a body after a provider/authentication failure.
+
+The Supervisor auto-enqueue and pending-review helpers discover open PRs across
+repositories with one GraphQL query per ordinary pass. Additional pages are read
+only for overflowing PR/label connections; partial or changing inventories skip
+only the affected repositories until the next pass. Discovery snapshots may precede
+controller reads; they never replace final freshness checks. This replaces discovery alone: controller policy, ready receipts,
+Client acceptance, reviews, checks and final fresh pre-write reads still decide
+eligibility. The final auto-enqueue queue-inventory recheck stays live REST.
 
 For lazy GitHub fields that require an unconditional observation, shared reader
 callers use `GitHubReader.request(..., fresh=True)`. It bypasses both conditional
