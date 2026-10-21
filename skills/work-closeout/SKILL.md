@@ -342,7 +342,7 @@ release or verified recovery release. Historical pending output is never a
 permanent refusal before live readback. An active check may exclude only its
 own exactly identified native execution; other running work keeps it pending.
 Shared history roots do not select a native home: the active check reads every
-matching authenticated home, requires one owner of its bound execution and
+matching authenticated home, requires one active home with its bound execution and
 stable quiet copies elsewhere. Unavailable or conflicting facts stay pending.
 
 Run the checker as its own native shell invocation, optionally piped to `tee`,
