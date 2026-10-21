@@ -361,6 +361,15 @@ binds its original isolated launch and every empty poll of that same handle.
 Native coverage reads standard, account and retained source homes through one
 observation scope. Required copies must answer; a stopped socket is not an exit.
 Process coverage requires native PID, executable and incarnation evidence.
+Kernel-confirmed PID absence also requires a subsequent native queue and runtime
+fence before it can support completion. A live, reused or unreadable PID stays
+unknown. Reported `native_coverage` describes the inventory observation; it does
+not attest that the later physical proof passed. `deadline_expired` reports
+the budget at refusal time, without claiming why the proof failed. A final
+process scan grants no new absence waiver after the native fence.
+Status-only reads authenticate their own
+history without reconstructing descendant claim history; the claim checker
+still verifies every native child, raw digest and exact claim disposition.
 For an unavailable home, the [managed launcher's diagnostic](../supervisor/scripts/codex_session_proxy.py)
 keeps the source account and names its existing stopped-daemon remedy.
 Unbound clients keep the refusal; use the maintained managed launcher for new

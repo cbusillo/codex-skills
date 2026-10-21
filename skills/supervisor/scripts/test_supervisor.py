@@ -1519,7 +1519,7 @@ class ProcessArgumentsTests(unittest.TestCase):
                 self.assertFalse(sessions.process_absence_known(row))
                 existence.assert_not_called()
 
-    def test_disappearing_snapshot_row_keeps_prior_source_peer(self):
+    def test_disappearing_snapshot_row_requires_a_complete_native_fence(self):
         github = str(Path(__file__).resolve().parents[2] / "github/scripts")
         with patch.object(sys, "path", [github, *sys.path]):
             import github_plan_sessions as sessions
@@ -1536,6 +1536,7 @@ class ProcessArgumentsTests(unittest.TestCase):
                         patch.object(sessions.github_plan_closure, "inherit_observed_leases"), \
                         patch.object(sessions.subprocess, "run", side_effect=[
                             SimpleNamespace(returncode=0, stdout="456 " + command),
+                            SimpleNamespace(returncode=0, stdout=""),
                             SimpleNamespace(returncode=0, stdout="")]), \
                         patch.object(session_liveness.sys, "platform", "darwin"), \
                         patch.object(session_liveness, "native_arguments", side_effect=OSError(errno.EINVAL, "unavailable")), \
@@ -1543,9 +1544,9 @@ class ProcessArgumentsTests(unittest.TestCase):
                     peers, states, coverage = sessions._observe({self.source})
                 self.assertEqual(coverage["process_coverage"], "complete")
                 self.assertEqual(coverage["peer_complete"], native_complete)
-                self.assertEqual(bool(peers), source_visible)
+                self.assertEqual(bool(peers), source_visible and not native_complete)
                 self.assertEqual(states.get(self.source, {}).get("state"),
-                                 "live" if source_visible else "ended" if native_complete else None)
+                                 "live" if source_visible and not native_complete else "ended" if native_complete else None)
 
     def test_authoritative_non_harness_argv_clears_an_ambiguous_ps_candidate(self):
         github = str(Path(__file__).resolve().parents[2] / "github/scripts")

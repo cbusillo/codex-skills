@@ -523,10 +523,11 @@ def session_status(entry: dict, *, inspect_claims=True) -> dict:
         return data
 
     histories, error = None, None
-    try:
-        histories = claim_history.collect(path, entry["harness"], entry["session_id"], records, child_read)
-    except (OSError, ValueError, TypeError, KeyError) as missing:
-        error = str(missing)
+    if inspect_claims:
+        try:
+            histories = claim_history.collect(path, entry["harness"], entry["session_id"], records, child_read)
+        except (OSError, ValueError, TypeError, KeyError) as missing:
+            error = str(missing)
     result = summarize(records, entry["harness"], claim_histories=histories, history_error=error,
                        inspect_claims=inspect_claims)
     after = checked_stat()
