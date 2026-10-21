@@ -1,0 +1,9 @@
+<odoo>
+  <record id="native_valid_view" model="ir.ui.view">
+    <field name="name">Native valid view</field>
+    <field name="model">jb.native.probe</field>
+    <field name="arch" type="xml">
+      <form><field name="name" invisible="not name"/></form>
+    </field>
+  </record>
+</odoo>

@@ -1,0 +1,125 @@
+{
+  "data": [
+    {
+      "traceID": "11111111111111111111111111111111",
+      "processes": {
+        "p1": {
+          "serviceName": "PyCharm",
+          "tags": []
+        }
+      },
+      "spans": [
+        {
+          "traceID": "11111111111111111111111111111111",
+          "spanID": "0000000000000001",
+          "operationName": "inspectionRun",
+          "processID": "p1",
+          "startTime": 1000000,
+          "duration": 166477,
+          "startTimeNano": 1000000000,
+          "durationNano": 166477958,
+          "tags": [
+            {
+              "key": "inspectionId",
+              "type": "string",
+              "value": "SpellCheckingInspection"
+            },
+            {
+              "key": "file",
+              "type": "string",
+              "value": "/fixture/project/src/example.py"
+            }
+          ]
+        },
+        {
+          "traceID": "11111111111111111111111111111111",
+          "spanID": "0000000000000002",
+          "operationName": "inspectionRun",
+          "processID": "p1",
+          "startTime": 1000000,
+          "duration": 2756,
+          "startTimeNano": 1000000000,
+          "durationNano": 2756084,
+          "tags": [
+            {
+              "key": "inspectionId",
+              "type": "string",
+              "value": "PyProtectedMemberInspection"
+            },
+            {
+              "key": "file",
+              "type": "string",
+              "value": "/fixture/project/src/example.py"
+            }
+          ]
+        },
+        {
+          "traceID": "11111111111111111111111111111111",
+          "spanID": "0000000000000003",
+          "operationName": "inspectionRun",
+          "processID": "p1",
+          "startTime": 1000000,
+          "duration": 29232,
+          "startTimeNano": 1000000000,
+          "durationNano": 29232958,
+          "tags": [
+            {
+              "key": "inspectionId",
+              "type": "string",
+              "value": "PyCompatibilityInspection"
+            },
+            {
+              "key": "file",
+              "type": "string",
+              "value": "/fixture/project/src/example.py"
+            }
+          ]
+        },
+        {
+          "traceID": "11111111111111111111111111111111",
+          "spanID": "0000000000000004",
+          "operationName": "inspectionRun",
+          "processID": "p1",
+          "startTime": 1000000,
+          "duration": 346,
+          "startTimeNano": 1000000000,
+          "durationNano": 346667,
+          "tags": [
+            {
+              "key": "inspectionId",
+              "type": "string",
+              "value": "PyUnusedLocalVariableInspection"
+            },
+            {
+              "key": "file",
+              "type": "string",
+              "value": "/fixture/project/src/example.py"
+            }
+          ]
+        },
+        {
+          "traceID": "11111111111111111111111111111111",
+          "spanID": "0000000000000005",
+          "operationName": "inspectionRun",
+          "processID": "p1",
+          "startTime": 1000000,
+          "duration": 13683,
+          "startTimeNano": 1000000000,
+          "durationNano": 13683458,
+          "tags": [
+            {
+              "key": "inspectionId",
+              "type": "string",
+              "value": "OdooXml"
+            },
+            {
+              "key": "file",
+              "type": "string",
+              "value": "/fixture/project/controls/control.xml"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

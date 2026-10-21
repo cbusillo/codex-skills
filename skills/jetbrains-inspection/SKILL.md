@@ -1,6 +1,6 @@
 ---
 name: jetbrains-inspection
-description: Use JetBrains inspections through local headless Qodana (the Python default) or the local Inspection API; trigger for code changes, readiness checks, PR/push validation, IDE warnings, inspection triage, worktree-safe inspection routing, or when code quality should be driven toward zero actionable IDE findings.
+description: Use JetBrains inspections through isolated native PyCharm for Python/Odoo on macOS, local Qodana, or the Inspection API; trigger for code changes, readiness checks, PR/push validation, IDE warnings, inspection triage, worktree-safe inspection routing, or when code quality should be driven toward zero actionable IDE findings.
 metadata:
   short-description: Run JetBrains IDE inspections safely
 resources:
@@ -104,26 +104,32 @@ policy:
 Apply [task scope and authorization](../references/execution-scope.md) when
 using this workflow; it defines how existing approval and task boundaries apply.
 
-Use this skill to run and interpret JetBrains IDE inspections through the local
-inspection plugin HTTP API. The script-backed helper is the primary agent
-interface; prefer it over direct curl or MCP tool calls.
+Use the script-backed helper to run and interpret JetBrains inspections through
+native PyCharm, Qodana or the Inspection API. Prefer it over direct curl or MCP
+tool calls.
 
-`agent-inspect` runs a selection of only Python files through headless local
-Qodana when its pinned image is in local Docker and the repository declares
-structured Python preparation, with no desktop IDE; Odoo repositories, other
-languages and non-PyCharm lanes keep the Inspection API.
-`--backend api|qodana` chooses explicitly, and the host setting
-`JB_INSPECT_DEFAULT_BACKEND=api|qodana` pins the default. Read
-[local Qodana](references/qodana-backend.md) before diagnosing a Qodana result
-or changing the runner. It uses an isolated per-run profile and the same agent
-envelope. Never copy, export or move license or credential files. Licensed
-headless runs use only an independently Director-activated profile; see
-[Director activation](references/qodana-backend.md#director-activation).
-Stop on trial start, activation or purchase. Run one capped, niced Qodana
-worker at a time and pause above load1 64. Coverage that cannot be proved
-remains UNKNOWN. Results name profile inspections the engine does not run in
-`uncovered_inspections`; report them with the verdict. While the Director's
-Q481 is open, they keep a clean result UNKNOWN.
+On macOS, `agent-inspect` defaults to isolated native PyCharm for Python-only
+selections and Odoo Python/XML selections in root PyCharm lanes when an eligible
+independent worker, interpreter and profile are configured. Otherwise the
+existing Qodana/API selection remains available. Read
+[native PyCharm](references/native-backend.md) before configuring, diagnosing
+or changing that runner. It uses the independently Director-activated worker
+in place, with its shared exclusive lock and private system/cache/log paths;
+it never opens the desktop IDE. Never copy, export or move its config,
+activation, accounts, licence or credentials, or read activation-bearing files.
+On a licence prompt, lapsed activation or trial offer, stop the licensed run
+and post an `Owner question:` on the item. The Director restores activation
+through the normal product UI using existing entitlements.
+
+Hosts without eligible native prerequisites retain the qualified local Qodana
+Python default when available; other selections retain the API. Explicit Qodana options select Qodana. Choose with
+`--backend native|api|qodana` or `JB_INSPECT_DEFAULT_BACKEND`. Read
+[local Qodana](references/qodana-backend.md) before diagnosing or changing it.
+Never copy license or credential files into a Qodana profile either. Run one
+capped, niced headless worker at a time and pause above load1 64. Report the
+backend and coverage with every verdict. Missing or unproven required checks
+remain UNKNOWN; Q481 accepted no coverage gap. Native retains current findings
+alongside UNKNOWN and separates registration from positive execution evidence.
 
 When IDE configuration appears in the change set, use
 `../references/ide-configuration-policy.md` before deciding whether to keep,
@@ -152,7 +158,11 @@ running IDE was updated.
 
 ## Before The First Inspection
 
-If `.github/github.json` sets `qualityGate.inspection.prepare`, the assessment
+The following desktop lifecycle procedure applies to the API backend. Native
+uses its private-snapshot preparation and cleanup from the linked reference;
+Qodana uses its isolated container procedure.
+
+If `.github/github.json` sets `qualityGate.inspection.prepare`, the API assessment
 commands run that exact repository command in the exact linked worktree before
 opening it. Start the assessment directly:
 
