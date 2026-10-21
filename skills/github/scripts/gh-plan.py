@@ -3068,7 +3068,6 @@ def claim_once(args: argparse.Namespace) -> None:
             f"--session {claim['session']} is a Codex child thread. Claim under its root session {root_session} "
             "(CODEX_SESSION_ID): child hooks renew the root's lease, and the root's closeout check covers its claims.",
             payload={"native_sessions": native, "running_agent": agent})
-    github_plan_claim_log.record(claim["session"], issue_repo, number)
     github_plan_lease.renew(claim["session"], minutes=github_plan_lease.lease_minutes())
 
     def check_agent(assigned_issue: dict[str, Any]) -> None:
@@ -3209,6 +3208,7 @@ def claim_once(args: argparse.Namespace) -> None:
         )
         # Freeze the source before any external claim write. If publication
         # fails, the closed source stays frozen for supported claim recovery.
+        github_plan_claim_log.record(claim["session"], issue_repo, number)
         admit_observed_sources()
         if not comment_recorded:
             claim_comment = github_comment_core.comment(

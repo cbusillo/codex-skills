@@ -7,13 +7,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 import stat
+import tempfile
 from pathlib import Path
 
 import github_plan_lease as lease
-
-REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+from github_identity import REPOSITORY_PATTERN
 
 
 def log_path(session: str, *, create: bool = False) -> Path:
@@ -21,7 +20,11 @@ def log_path(session: str, *, create: bool = False) -> Path:
     if create:
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     lease.require_private(directory.lstat(), stat.S_ISDIR)
-    return directory / f"{hashlib.sha256(session.encode()).hexdigest()}.jsonl"
+    path = directory / hashlib.sha256(session.encode()).hexdigest()
+    if create:
+        path.mkdir(exist_ok=True, mode=0o700)
+    lease.require_private(path.lstat(), stat.S_ISDIR)
+    return path
 
 
 def target(record: dict, session: str) -> tuple[str, int]:
@@ -29,7 +32,7 @@ def target(record: dict, session: str) -> tuple[str, int]:
     if (
         record.get("session") != session
         or not isinstance(repo, str)
-        or not REPOSITORY.fullmatch(repo)
+        or not REPOSITORY_PATTERN.fullmatch(repo)
         or type(number) is not int
         or number <= 0
     ):
@@ -40,28 +43,38 @@ def target(record: dict, session: str) -> tuple[str, int]:
 def record(session: str, repo: str, number: int) -> None:
     row = {"session": session, "repository": repo, "record": number}
     target(row, session)
-    path = log_path(session, create=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    directory = log_path(session, create=True)
+    filename = hashlib.sha256(f"{repo}#{number}".encode()).hexdigest() + ".json"
+    fd, temporary = tempfile.mkstemp(prefix=".pending-", dir=directory)
     try:
-        lease.require_private(os.fstat(fd), stat.S_ISREG)
-        content = (json.dumps(row, sort_keys=True) + "\n").encode()
-        if os.write(fd, content) != len(content):
-            raise OSError("claim journal write was incomplete; do not post a claim")
-        os.fsync(fd)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(row, stream, sort_keys=True)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, directory / filename)
+        for parent in (directory, directory.parent):
+            directory_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
     finally:
-        os.close(fd)
+        Path(temporary).unlink(missing_ok=True)
 
 
 def read(session: str) -> set[tuple[str, int]]:
     try:
-        path = log_path(session)
-        lease.require_private(path.lstat(), stat.S_ISREG)
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        directory = log_path(session)
     except FileNotFoundError:
         return set()
-    with os.fdopen(fd, encoding="utf-8") as stream:
-        lease.require_private(os.fstat(stream.fileno()), stat.S_ISREG)
-        records = [json.loads(line) for line in stream]
-    if any(not isinstance(row, dict) for row in records):
-        raise ValueError("claim journal has an invalid record")
-    return {target(row, session) for row in records}
+    targets = set()
+    for path in directory.glob("*.json"):
+        lease.require_private(path.lstat(), stat.S_ISREG)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, encoding="utf-8") as stream:
+            lease.require_private(os.fstat(stream.fileno()), stat.S_ISREG)
+            row = json.load(stream)
+        if not isinstance(row, dict):
+            raise ValueError("claim journal has an invalid record")
+        targets.add(target(row, session))
+    return targets

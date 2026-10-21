@@ -205,6 +205,12 @@ class ClaimTests(unittest.TestCase):
                                 "repo": {"full_name": "owner/repo"}},
                        "base": {"repo": {"full_name": "owner/repo"}}}]
 
+    def test_failed_initial_target_read_does_not_poison_the_journal(self) -> None:
+        with patch.object(PLAN, "claim_snapshot", side_effect=PLAN.PlanError("not found")):
+            with self.assertRaises(PLAN.PlanError):
+                self.run_claim()
+        self.assertEqual(PLAN.github_plan_claim_log.read(OWNER["session"]), set())
+
     def test_journal_failure_refuses_before_any_claim_write(self) -> None:
         with patch.object(PLAN.github_plan_claim_log, "record", side_effect=OSError("journal unavailable")):
             with self.assertRaises((OSError, PLAN.PlanError)):

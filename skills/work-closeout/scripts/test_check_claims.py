@@ -58,8 +58,6 @@ class ClaimCloseoutTests(unittest.TestCase):
         return self.issue
 
     def paged(self, path, **kwargs):
-        if path == "/installation/repositories":
-            return [{"full_name": REPO}]
         return self.pulls if path.endswith("/pulls") else self.comments
 
     def check(self):
@@ -72,15 +70,6 @@ class ClaimCloseoutTests(unittest.TestCase):
             row["timestamp"] = timestamp
         path.write_text(json.dumps(row) + "\n")
         return {"session_id": session, "transcript": str(path)}
-
-    def canonical_pages(self, path, **kw):
-        if path == "/installation/repositories":
-            return [{"full_name": REPO}]
-        if path.endswith("/issues/comments"):
-            return [{**c, "issue_url": f"https://api.github.com/repos/{REPO}/issues/1"} for c in self.comments]
-        if path.endswith("/issues") or path.endswith("/pulls"):
-            return []
-        return self.comments
 
     def test_held_claim_blocks_without_an_exact_release(self):
         with self.assertRaises(ValueError):
@@ -285,7 +274,9 @@ class ClaimCloseoutTests(unittest.TestCase):
         report = helper.check([self.receipt_entry()])
         self.assertTrue(report["claims_clear"], report)
         self.assertEqual([r["claim_comment"] for r in report["released_claims"]], [self.source["id"]])
-        self.assertEqual(self.reader.get_json.call_count + self.reader.paged_json.call_count, 3)
+        paths = [call.args[0] for method in (self.reader.get_json, self.reader.paged_json) for call in method.call_args_list]
+        self.assertTrue(paths)
+        self.assertTrue(all(path.startswith(f"/repos/{REPO}/issues/1") or path == f"/repos/{REPO}/pulls" for path in paths))
         self.assertEqual(report["coverage"]["repositories"], [REPO])
 
     def test_recorded_claim_targets_include_closed_and_pr_only_work_across_sessions(self) -> None:
@@ -314,15 +305,84 @@ class ClaimCloseoutTests(unittest.TestCase):
             self.assertTrue(helper.check([first, second])["claims_clear"])
         self.assertEqual({call.args[2] for call in check.call_args_list}, {1, 2})
 
-    def test_invalid_transcript_or_journal_blocks_before_network_reads(self) -> None:
+    def test_malformed_journal_blocks_before_network_reads(self) -> None:
         entry = self.receipt_entry()
-        for path in (Path(entry["transcript"]), helper.claim_log.log_path(SESSION, create=True)):
-            with path.open("a") as stream:
-                stream.write('{"truncated":')
-            with patch.object(helper, "repository_reader") as reader, self.assertRaises(ValueError):
-                helper.check([entry])
-            reader.assert_not_called()
-            path.write_text(json.dumps({"type": "session_meta", "payload": {"id": SESSION}}) + "\n")
+        helper.claim_log.record(SESSION, REPO, 1)
+        path = next(helper.claim_log.log_path(SESSION).glob("*.json"))
+        path.write_text('{"truncated":')
+        with patch.object(helper, "repository_reader") as reader, self.assertRaises(ValueError):
+            helper.check([entry])
+        reader.assert_not_called()
+
+    def test_unrelated_truncated_transcript_line_does_not_hide_a_journaled_claim(self) -> None:
+        entry = self.entry()
+        with Path(entry["transcript"]).open("a") as stream:
+            stream.write('{"unrelated":')
+        helper.claim_log.record(SESSION, REPO, 1)
+        self.assertFalse(helper.check([entry])["claims_clear"])
+
+    def test_legacy_codex_descendant_claims_are_found_without_a_root_receipt(self) -> None:
+        entry = self.entry()
+        native = self.folder / "codex/sessions/2026/01/01"
+        native.mkdir(parents=True)
+        root = native / "root.jsonl"
+        Path(entry["transcript"]).rename(root)
+        entry["transcript"] = str(root)
+        child = self.receipt_entry("child", records=(("second/b", 5),))
+        rows = Path(child["transcript"]).read_text().splitlines()
+        header = json.loads(rows[0])
+        header["payload"]["source"] = {"subagent": {"thread_spawn": {"parent_thread_id": SESSION}}}
+        rows[0] = json.dumps(header)
+        (native / "child.jsonl").write_text("\n".join(rows) + "\n")
+        with patch.object(helper, "check_record", return_value=[]) as check:
+            self.assertTrue(helper.check([entry])["claims_clear"])
+        self.assertIn(("second/b", 5, "child"), {(c.args[1], c.args[2], c.args[3]) for c in check.call_args_list})
+
+    def test_legacy_claude_subagent_claim_is_checked_under_the_root(self) -> None:
+        entry = self.entry()
+        Path(entry["transcript"]).write_text(json.dumps({"sessionId": SESSION, "type": "user"}) + "\n")
+        subagents = Path(entry["transcript"]).with_suffix("") / "subagents"
+        subagents.mkdir(parents=True)
+        receipt = {"operation": "github.plan.claim", "claim": SOURCE, "issue": {"repo": REPO, "number": 1}}
+        (subagents / "agent-fixture.jsonl").write_text(json.dumps({"sessionId": SESSION, "type": "user", "message": {"content": [
+            {"type": "tool_result", "content": json.dumps(receipt)}]}}) + "\n")
+        report = helper.check([entry])
+        self.assertFalse(report["claims_clear"], report)
+
+    def test_malformed_nested_claim_data_returns_a_json_failure(self) -> None:
+        entry = self.entry()
+        with Path(entry["transcript"]).open("a") as stream:
+            stream.write(json.dumps({"claim": SOURCE, "issue": "unreadable"}) + "\n")
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            code = helper.main(["--session", SESSION, "--transcript", entry["transcript"]])
+        self.assertNotEqual(code, 0)
+        self.assertFalse(json.loads(output.getvalue())["claims_clear"])
+
+    def test_reader_gets_the_checks_deadline_before_its_first_read(self) -> None:
+        self.comments.append(self.release)
+        started = helper.time.time()
+        with patch.object(helper, "repository_reader", return_value=self.reader) as factory:
+            self.assertTrue(helper.check([self.receipt_entry()], read_timeout=123)["claims_clear"])
+        deadline = factory.call_args.args[1]
+        self.assertGreaterEqual(deadline, started + 123)
+        self.assertLessEqual(deadline, helper.time.time() + 123)
+
+    def test_product_agent_ids_are_not_native_children(self) -> None:
+        entry = self.entry()
+        with Path(entry["transcript"]).open("a") as stream:
+            stream.write(json.dumps({"type": "response_item", "payload": {"type": "function_call_output", "output":
+                json.dumps({"agent_id": "product-agent"})}}) + "\n")
+        self.assertTrue(helper.check([entry])["claims_clear"])
+
+    def test_missing_advertised_child_requires_its_native_transcript(self) -> None:
+        entry = self.entry()
+        with Path(entry["transcript"]).open("a") as stream:
+            stream.write(json.dumps({"type": "response_item", "payload": {"type": "function_call", "name": "collaboration.spawn_agent", "call_id": "spawn"}}) + "\n")
+            stream.write(json.dumps({"type": "response_item", "payload": {"type": "function_call_output", "call_id": "spawn", "output":
+                json.dumps({"agent_id": "missing-child"})}}) + "\n")
+        with patch.object(helper, "repository_reader") as reader, self.assertRaises(ValueError):
+            helper.check([entry])
+        reader.assert_not_called()
 
     def test_duplicate_receipts_check_a_record_once(self) -> None:
         entry = self.receipt_entry(records=((REPO, 1), (REPO, 1)))

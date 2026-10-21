@@ -301,12 +301,17 @@ uv run <skill-dir>/scripts/check_claims.py \
 
 The check takes its targets from the session's private host-local claim journal
 and recorded claim results in its own native transcript. `gh-plan.py claim`
-appends the exact repository and issue or PR number before it can post a claim;
+records the exact repository and issue or PR number after target preflight and
+before it can post a claim;
 failed or interrupted attempts remain targets until GitHub readback accounts
 for them. Codex child threads and Claude subagents use the root session ID,
 so their targets enter the same journal even when their tool output is absent
-from the root transcript. Transcript results also cover claims made before the
-journal was introduced. Keep the journal with the session on its claiming host;
+from the root transcript. Closeout also reads linked local native child transcripts: Claude's sibling
+`subagents` directory and Codex descendants identified by rollout metadata in
+that transcript home's `sessions` and `archived_sessions` directories. This
+covers older child claims and mixed sessions predating the journal. An advertised
+Codex child missing its transcript refuses with the supported recovery: check on
+the claiming host or pass the child's native `--session` and `--transcript`. Keep the journal with the session on its claiming host;
 checking from another host also needs that session's recorded claim results.
 
 The check reads only those issues and PRs, including closed records. It never
@@ -314,7 +319,8 @@ inventories App installations or scans other repositories. It verifies every
 claim on each target against its exact authored release or validated Supervisor
 release, and checks each retained PR's handoff. Repeat `--session` and
 `--transcript` for any other session to include. A transcript belonging to
-another session, malformed local evidence or an incomplete GitHub read refuses.
+another session, malformed claim evidence or an incomplete GitHub read refuses. Unrelated
+truncated transcript noise is ignored; a malformed recorded claim is not.
 `--repository OWNER/REPO` and `--owner OWNER` are compatibility context flags;
 they cannot narrow the recorded targets or request a fleet scan. Only exit 0
 with `claims_clear: true` and complete coverage permits an all-clear. The result

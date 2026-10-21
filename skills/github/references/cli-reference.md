@@ -1002,9 +1002,11 @@ open PRs. It reads no process, session registry or daemon: ownership lives in
 the claim comments and their exact releases
 ([Q621](https://github.com/cbusillo/codex-skills/issues/2453)).
 
-Before posting, `claim` appends its session ID, exact repository and issue or
-PR number to `~/.code/skill-data/claim-log/<session-hash>.jsonl`. The private,
-append-only journal is synced before any claim write; a journal failure refuses
+After target preflight and before posting, `claim` records its session ID, exact
+repository and issue or PR number under `~/.code/skill-data/claim-log/<session-hash>/`.
+Each target is an atomically published JSON file. Concurrent children cannot
+interleave rows, and interrupted writes cannot corrupt earlier targets. The
+private journal is synced before any claim write; a journal failure refuses
 before posting. Root and child agents using the same session ID share it.
 Closeout reads this journal plus recorded transcript claim results, then checks
 only those targets on GitHub. Keep the journal on the claiming host with the

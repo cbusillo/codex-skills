@@ -16,6 +16,7 @@ from pathlib import Path
 SKILLS = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(SKILLS / "github/scripts"))
 sys.path.insert(0, str(SKILLS / "supervisor/scripts"))
+import claim_history
 import github_identity
 import github_plan_claim as claim
 import github_plan_claim_log as claim_log
@@ -162,25 +163,117 @@ def transcript_values(value: object) -> Iterator[dict]:
             yield from transcript_values(nested)
 
 
+def transcript_records(path: Path) -> list[dict]:
+    records = []
+    with path.open(encoding="utf-8") as stream:
+        for line in stream:
+            try:
+                record = json.loads(line)
+            except ValueError:
+                if "github.plan.claim" in line:
+                    raise ValueError(f"unreadable claim result in {path}; restore its native transcript")
+                continue
+            if isinstance(record, dict):
+                records.append(record)
+    return records
+
+
+def native_entries(entries: list[dict]) -> list[dict]:
+    expanded = {(entry["session_id"], entry["transcript"]): entry for entry in entries}
+    for entry in entries:
+        require_own_transcript(entry)
+        path = Path(entry["transcript"])
+        records = transcript_records(path)
+        children = {}
+        for supplied in entries:
+            candidate = Path(supplied["transcript"])
+            with candidate.open(encoding="utf-8") as stream:
+                first = stream.readline()
+            header = json.loads(first)
+            metadata = header.get("payload") if isinstance(header, dict) else None
+            if isinstance(metadata, dict) and isinstance(metadata.get("source"), dict):
+                parent = claim_history.source_parent(metadata["source"])
+                if isinstance(parent, str):
+                    children.setdefault(parent, set()).add((supplied["session_id"], str(candidate)))
+        for ancestor in path.parents:
+            if ancestor.name not in {"sessions", "archived_sessions"}:
+                continue
+            for directory in (ancestor.parent / "sessions", ancestor.parent / "archived_sessions"):
+                for candidate in directory.rglob("*.jsonl"):
+                    with candidate.open(encoding="utf-8") as stream:
+                        first = stream.readline()
+                    try:
+                        header = json.loads(first)
+                    except ValueError:
+                        continue
+                    if not isinstance(header, dict) or header.get("type") != "session_meta":
+                        continue
+                    metadata = header.get("payload")
+                    if not isinstance(metadata, dict) or not isinstance(metadata.get("source"), dict):
+                        continue
+                    parent = claim_history.source_parent(metadata["source"])
+                    child = metadata.get("id")
+                    if isinstance(parent, str) and isinstance(child, str):
+                        children.setdefault(parent, set()).add((child, str(candidate)))
+            break
+        pending = [entry["session_id"]]
+        visited = set()
+        while pending:
+            parent = pending.pop()
+            if parent in visited:
+                continue
+            visited.add(parent)
+            for child, transcript in children.get(parent, ()):
+                expanded[(child, transcript)] = {"session_id": child, "transcript": transcript}
+                expanded[(entry["session_id"], transcript)] = {
+                    "session_id": entry["session_id"],
+                    "transcript": transcript,
+                    "native_child": child,
+                }
+                pending.append(child)
+        for candidate in (path.with_suffix("") / "subagents").rglob("*.jsonl"):
+            expanded[(entry["session_id"], str(candidate))] = {"session_id": entry["session_id"], "transcript": str(candidate)}
+        spawn_calls = {
+            row["payload"].get("call_id")
+            for row in records
+            if isinstance(row.get("payload"), dict)
+            and row["payload"].get("type") == "function_call"
+            and str(row["payload"].get("name", "")).split(".")[-1] == "spawn_agent"
+        }
+        advertised = {
+            value["agent_id"]
+            for row in records
+            if isinstance(row.get("payload"), dict)
+            and row["payload"].get("type") == "function_call_output"
+            and row["payload"].get("call_id") in spawn_calls
+            for value in transcript_values(row["payload"].get("output"))
+            if isinstance(value.get("agent_id"), str)
+        }
+        supplied = {item["session_id"] for item in entries}
+        if advertised - visited - supplied:
+            raise ValueError(
+                "native child transcripts are missing; run on the claiming host or pass each child's --session and --transcript"
+            )
+    return list(expanded.values())
+
+
 def recorded_targets(entry: dict) -> set[tuple[str, int]]:
     require_own_transcript(entry)
     native = entry["session_id"]
     targets = claim_log.read(native)
-    with open(entry["transcript"], encoding="utf-8") as stream:
-        for line in stream:
-            row = json.loads(line)
-            for value in transcript_values(row):
-                source = value.get("claim")
-                if not isinstance(source, dict) or source.get("session") != native:
-                    continue
-                receipt = value.get("claim_comment") or {}
-                record = value.get("issue") or receipt
-                if record.get("repo") and record.get("number"):
-                    targets.add(
-                        claim_log.target({"session": native, "repository": record["repo"], "record": record["number"]}, native)
-                    )
-                elif receipt or "post_claim" in value.get("completed_steps", []):
-                    raise ValueError("recorded claim write lacks its repository and record number")
+    for row in transcript_records(Path(entry["transcript"])):
+        for value in transcript_values(row):
+            source = value.get("claim")
+            if not isinstance(source, dict) or source.get("session") != native:
+                continue
+            receipt = value.get("claim_comment") or {}
+            record = value.get("issue") or receipt
+            if not isinstance(record, dict) or not isinstance(receipt, dict):
+                raise ValueError("recorded claim result has an invalid target")
+            if record.get("repo") and record.get("number"):
+                targets.add(claim_log.target({"session": native, "repository": record["repo"], "record": record["number"]}, native))
+            elif receipt or "post_claim" in value.get("completed_steps", []):
+                raise ValueError("recorded claim write lacks its repository and record number")
     return targets
 
 
@@ -194,7 +287,7 @@ def check(
     deadline = time.time() + read_timeout
     native_sessions = {entry["session_id"] for entry in entries}
     targets: dict[str, set[tuple[str, int]]] = {}
-    for entry in entries:
+    for entry in native_entries(entries):
         targets.setdefault(entry["session_id"], set()).update(recorded_targets(entry))
     repos = {repo for records in targets.values() for repo, _ in records}
     accounts = set(owners) | {repo.split("/")[0] for repo in repos}
@@ -246,15 +339,20 @@ def require_own_transcript(entry: dict) -> None:
             identities.add(record.get("sessionId"))
             if record.get("type") == "session_meta" and isinstance(record.get("payload"), dict):
                 identities.add(record["payload"].get("id"))
-    if entry["session_id"] not in identities:
+    if entry.get("native_child", entry["session_id"]) not in identities:
         raise ValueError(f"transcript {entry['transcript']} does not belong to session {entry['session_id']}")
 
 
 def repository_reader(repo: str, deadline: float) -> GitHubReader:
     # The shared reader selects the existing App by target repository, exactly
     # as the claim helper does. No credential/config mutation or fallback.
-    return GitHubReader(repository=repo, expected_actor=github_identity.automation_login(),
-                        gh_prefix_args=["--require-automation-auth"], deadline_at=deadline, cache_revalidate=True)
+    return GitHubReader(
+        repository=repo,
+        expected_actor=github_identity.automation_login(),
+        gh_prefix_args=["--require-automation-auth"],
+        deadline_at=deadline,
+        cache_revalidate=True,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

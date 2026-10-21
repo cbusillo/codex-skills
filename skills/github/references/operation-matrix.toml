@@ -64,7 +64,7 @@ capabilities = ["metadata_read"]
 permission_mode = "fixed"
 permission_note = "Enumerates only existing configured writer Apps and their verified installation membership through the shared authentication owner. No App registration, configuration, grant or personal identity fallback."
 entrypoint = "github/scripts/github_identity.py automation_repositories"
-intent = "Establish complete canonical repository coverage for session claim closeout without interpreting commands."
+intent = "Expose verified writer App installation and repository membership for callers requesting an inventory."
 current_transport = "rest_api"
 selected_transport = "rest_api"
 endpoint_or_command = "GET /app/installations pages; GET /app/installations/{id}; existing installation token mint/cache; GET /installation/repositories pages"
@@ -75,8 +75,8 @@ idempotency = "read_only"
 retry_eligibility = "manual"
 reconciliation_strategy = "fresh_read"
 retained_graphql_rationale = "No GraphQL. App metadata and installation repository membership are complete paged REST reads; failures remain incomplete until fresh evidence succeeds."
-source_refs = ["github/scripts/github_identity.py:automation_repositories", "github/scripts/github_identity.py:app_installations", "work-closeout/scripts/check_claims.py:check"]
-test_refs = ["github/scripts/test_github_identity.py:test_complete_writer_installation_inventory_and_live_failures", "work-closeout/scripts/test_check_claims.py:ClaimCloseoutTests"]
+source_refs = ["github/scripts/github_identity.py:automation_repositories", "github/scripts/github_identity.py:app_installations"]
+test_refs = ["github/scripts/test_github_identity.py:test_complete_writer_installation_inventory_and_live_failures"]
 
 [[operations]]
 id = "github.api.call"

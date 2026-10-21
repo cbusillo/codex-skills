@@ -26,9 +26,16 @@ class ClaimLogTests(unittest.TestCase):
         self.assertEqual(journal.read("root"), set(records))
         self.assertEqual(journal.read("another-session"), set())
 
+    def test_interrupted_write_leaves_the_previous_targets_readable(self) -> None:
+        journal.record("root", "owner/repo", 1)
+        with patch.object(journal.os, "fsync", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                journal.record("root", "owner/other", 2)
+        self.assertEqual(journal.read("root"), {("owner/repo", 1)})
+
     def test_unreadable_or_malformed_journal_cannot_mean_no_claims(self) -> None:
         journal.record("root", "owner/repo", 1)
-        path = journal.log_path("root")
+        path = next(journal.log_path("root").glob("*.json"))
         for content in ('{"session":', '{"session":"other","repository":"owner/repo","record":1}\n', "[]\n"):
             path.write_text(content)
             with self.subTest(content=content), self.assertRaises(ValueError):
@@ -39,13 +46,16 @@ class ClaimLogTests(unittest.TestCase):
 
     def test_symlinked_store_or_file_refuses_read_and_write(self) -> None:
         journal.record("root", "owner/repo", 1)
-        path = journal.log_path("root")
+        path = next(journal.log_path("root").glob("*.json"))
         saved = path.with_suffix(".saved")
         path.rename(saved)
         path.symlink_to(saved)
-        for operation in (lambda: journal.read("root"), lambda: journal.record("root", "owner/repo", 2)):
-            with self.assertRaises((OSError, ValueError)):
-                operation()
+        original = saved.read_bytes()
+        with self.assertRaises((OSError, ValueError)):
+            journal.read("root")
+        journal.record("root", "owner/repo", 1)
+        self.assertFalse(path.is_symlink())
+        self.assertEqual(saved.read_bytes(), original)
         path.unlink()
         saved.unlink()
         directory = path.parent
