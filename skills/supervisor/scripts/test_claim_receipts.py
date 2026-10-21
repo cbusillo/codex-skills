@@ -236,6 +236,12 @@ class ReceiptTests(unittest.TestCase):
                     "sudo docker exec -i db psql <<'EOF'\n-- don't parse SQL as shell\nEOF",
                     'ps aux | grep bash', 'grep -q zsh <<< "$SHELL"', 'grep bash <(ps aux)',
                     "bash -n x.sh; cat <(printf 'a & b')",
+                    'echo "$f: $(sed -n "$((l+1))p" $p | xargs)"',
+                    "sed -n '1p' data | xargs -n1", "sed -n '1p' data | xargs -0",
+                    "xargs <<'EOF'\nprose don't\nEOF",
+                    "cat >body.md <<'EOF'\nQ&A, don't\nEOF\nbash scripts/post.sh body.md",
+                    "cat >body.md <<'EOF'\nQ&A, don't\nEOF\nbash -c 'printf done' _ body.md",
+                    "tee body.md <<'EOF'\nQ&A, don't\nEOF\nbash scripts/post.sh body.md",
                     'case a in a) printf x ;& b) printf y ;; esac']
         for command in commands:
             with self.subTest(command=command):
@@ -281,6 +287,11 @@ class ReceiptTests(unittest.TestCase):
             "echo 'worker &' | bash", "printf '%s\\n' 'worker &' | sh", 'echo "$x" | bash',
             "bash <(echo 'worker &')", "bash <(cat unknown.sh)", "\"$SHELL\" <<< 'worker &'",
             "echo 'worker &' | docker compose exec -T web bash", 'bash -c "$CMD"',
+            'cat > "$S/rt.sh" <<\'EOF\'\nworker &\nEOF\nchmod +x "$S/rt.sh"; "$S/rt.sh"',
+            "cat >scripts/run.sh <<'EOF'\nworker &\nEOF\n./scripts/run.sh",
+            "cat >/tmp/run.sh <<'EOF'\nworker &\nEOF\ntimeout 60 /tmp/run.sh",
+            "tee scripts/run.sh <<'EOF'\nworker &\nEOF\nbash scripts/run.sh",
+            "cat <<'EOF' | tee scripts/run.sh\nworker &\nEOF\n./scripts/run.sh",
         ]
         for flags in ('-e', '-euo pipefail', '-o errexit', '-O extglob', '-s -- args'):
             commands += [f"bash {flags} <<'EOF'\nworker &\nEOF", f"bash {flags} <<< 'worker &'"]
