@@ -157,7 +157,7 @@ def publish(root: pathlib.Path, path: pathlib.Path, item: dict[str, Any], *,
 def request(
     transport: Callable[[dict[str, str]], Any], *, method: str, path: str,
     body: Any, headers: dict[str, str], api_version: str, host: str,
-    actor: str | None, expected_actor: str | None, identity_scope: str, enabled: bool,
+    actor: str | None, expected_actor: str | None, identity_scope: str, enabled: bool, body_filter: Callable[[Any], bool] | None = None,
 ) -> Any:
     normalized = {name.casefold(): value for name, value in headers.items()}
     # Identity probes, grants, credential surfaces, logs and caller-owned
@@ -182,6 +182,8 @@ def request(
             raise OSError('Cache directory is not owned')
         root.chmod(0o700)
         cached = _read(entry, key)
+        if cached and body_filter is not None and not body_filter(cached["body"]):
+            cached = None
     except OSError:
         result = transport(headers)
         result.headers['x-codex-cache'] = 'unavailable'
@@ -207,6 +209,8 @@ def request(
         result.body = cached['body']
         result.headers = {**cached['headers'], **result.headers, 'x-codex-cache': 'revalidated'}
     elif not result.ok or result.status != 200:
+        return result
+    if body_filter is not None and not body_filter(result.body):
         return result
     if not any(result.headers.get(name) for name in ('etag', 'last-modified')):
         return result

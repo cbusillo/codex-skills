@@ -23,8 +23,10 @@ from collections import Counter
 from contextlib import contextmanager
 
 ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "skills/github/scripts"))
 sys.path.insert(0, str(ROOT / "skills/model-review/scripts"))
+from skills.github.scripts import github_open_prs
 from github_api import redact_string
 from github_direction_next import issue_references
 from github_identity import OWN_USER_OPT_IN, automation_login, configured_bot_logins
@@ -620,6 +622,9 @@ class IO:
         self.reader = GitHubReader(gh_prefix_args=automation_only_gh_prefix_args(), cache_revalidate=True)
         self.claims = {}
 
+    def open_pulls(self, repos):
+        return github_open_prs.scan(self.reader, repos)
+
     def get_json(self, path, **kwargs):
         return self.reader.get_json(path, **kwargs)
 
@@ -895,10 +900,16 @@ def sweep(io, entries, checkouts, logins, evidence, apply=False):
     retained, reports = retained_repositories(evidence)
     repos = sorted(retained | {e["repository"].casefold() for e in entries if e.get("supervisor_owned") is True})
     checkouts = {repo.casefold(): path for repo, path in checkouts.items()}
+    try:
+        inventory = io.open_pulls(repos)
+    except (GitHubReadError, GitHubReadShapeError, ValueError, KeyError, TypeError) as error:
+        return reports + [{"repository": repo, "status": "refused", "error": str(error)} for repo in repos]
     for repo in repos:
         print(f"Discovering Supervisor reviews in {repo}", file=sys.stderr, flush=True)
         try:
-            pulls = io.paged_json(f"/repos/{repo}/pulls", step_prefix="open_prs", params={"state": "open"})
+            pulls = inventory[repo]
+            if isinstance(pulls, Exception):
+                raise pulls
         except (GitHubReadError, GitHubReadShapeError, ValueError, KeyError, TypeError) as error:
             reports.append({"repository": repo, "status": "refused", "error": str(error)})
             continue

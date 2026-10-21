@@ -1144,8 +1144,17 @@ fi
 
 verify_bot_login_for_write "$@"
 
-status=0
-run_with_input "$gh_command" "$@" >"$stdout_file" 2>"$stderr_file" || status=$?
+# Only plain JSON API reads under the selected App try the optional adapter.
+# Reuse the ordinary output/classification path; 125 declines before a reply.
+status=125
+if [ "${1:-}" = api ] && [ "$api_sent_method" = GET ] && [ "$auth_source" = github_app ] && [ "$own_user_opt_in" -eq 0 ] && ! allows_active_auth_fallback; then
+    status=0
+    run_python "$script_dir/github_raw_read.py" "$gh_command" "$expected_login" "${GH_HOST:-github.com}" "$@" >"$stdout_file" 2>"$stderr_file" || status=$?
+fi
+if [ "$status" -eq 125 ]; then
+    status=0
+    run_with_input "$gh_command" "$@" >"$stdout_file" 2>"$stderr_file" || status=$?
+fi
 if [ "$status" -eq 0 ]; then
 	cat "$stdout_file"
 	exit 0
