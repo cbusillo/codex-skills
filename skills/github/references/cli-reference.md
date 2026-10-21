@@ -900,8 +900,8 @@ source claim's exact URL to `--resume-from`, for example
 `--resume-from https://github.com/OWNER/REPO/issues/123#issuecomment-456`.
 The source must be an issue in the PR's repository with an exact authored,
 timestamp-proved release and a qualified handoff naming this PR. The helper
-reuses retained-handoff provenance, checks the source family and retained PR
-owners on both readbacks, and preserves every artifact and product hold.
+reuses retained-handoff provenance, checks claims on the source family and
+retained PRs on both readbacks, and preserves every artifact and product hold.
 This route permits a PR-only claim when that released source is also its
 canonical implementation issue; other canonical issues still require their
 own claim. Use a new task branch separate from every retained source branch.
