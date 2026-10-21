@@ -1790,7 +1790,7 @@ class ObservationMergeTests(unittest.TestCase):
             directory.mkdir()
             executable = str(f.root / "bin/codex")
             helper = str(Path(executable).with_name("codex-code-mode-host"))
-            daemon = [executable, "app-server", "--listen", "unix://", "--managed-daemon"]
+            daemon = [executable, "app-server", "--listen", "unix://", "--analytics-default-enabled", "--managed-daemon"]
             updater = [executable, "app-server", "daemon", "pid-update-loop"]
             child = [helper]
             identities = {pid: {"bootId": "fixture-boot", "uniqueId": pid,
@@ -1804,9 +1804,16 @@ class ObservationMergeTests(unittest.TestCase):
             commands = {100: daemon, 101: updater, 102: child}
             f.commands = "\n".join(str(pid) + " " + " ".join(argv) for pid, argv in commands.items())
             sockets = {str(CLOSURE.daemon_endpoint(f.home).resolve())}
-            with patch.object(shared, "native_process_details", side_effect=lambda pid: copy.deepcopy(details[pid]), create=True), \
+            with patch.object(shared, "native_process_details", side_effect=lambda pid: copy.deepcopy(details[pid])), \
                     patch.object(shared, "native_arguments", side_effect=lambda pid: list(commands[pid])):
                 self.assertTrue(SESSIONS.process_absence_known(f.commands, sockets))
+                for options in (["--remote-control", "--listen", "unix://", "--analytics-default-enabled", "--managed-daemon"],
+                        ["--listen", "unix://", "--analytics-default-enabled", "-c", "features.fixture=true", "--managed-daemon"],
+                        ["--listen", "unix://", "--analytics-default-enabled"]):
+                    commands[100] = [executable, "app-server", *options]
+                    with self.subTest(native_options=options):
+                        self.assertTrue(SESSIONS.process_absence_known("100 " + " ".join(commands[100]), sockets))
+                commands[100] = daemon
                 self.assertFalse(SESSIONS.process_absence_known(f.commands, set()))
                 # Stock standalone installs retain the native legacy filenames.
                 for current, legacy in (("daemon.pid", "app-server.pid"), ("daemon-updater.pid", "app-server-updater.pid")):
@@ -1835,6 +1842,9 @@ class ObservationMergeTests(unittest.TestCase):
                     commands[pid].pop()
                 (directory / "daemon.pid").unlink()
                 self.assertFalse(SESSIONS.process_absence_known(f.commands, sockets))
+                # This verified maintenance entrypoint does not host threads;
+                # an intentionally stopped daemon need not exist beside it.
+                self.assertTrue(SESSIONS.process_absence_known("101 " + " ".join(updater), set()))
                 records()
                 self.assertFalse(SESSIONS.process_absence_known(f.commands + "\n200 codex app-server", sockets))
                 self.assertFalse(SESSIONS.process_absence_known(f.commands + "\n200 codex resume " + f.session, sockets))
@@ -1911,6 +1921,18 @@ class ObservationMergeTests(unittest.TestCase):
             endpoint.chmod(0o666)
             self.assertFalse(SESSIONS._current_check_quiet(node))
             endpoint.chmod(0o600)
+            # The standard home is independent of the account configuration,
+            # but a shared rollout can also be active there.
+            standard = f.root / ".codex"
+            f.add_home(standard, copy_transcript=False)
+            (standard / "sessions").symlink_to(f.home / "sessions", target_is_directory=True)
+            f.home_states[str(standard)] = "active"
+            f.rpc_results[str(standard), "thread/backgroundTerminals/list"] = {"data": [pair], "nextCursor": None}
+            with patch.object(SESSIONS, "codex_homes", side_effect=lambda **kw: homes if kw.get("configured_only") else [*homes, standard]):
+                self.assertFalse(SESSIONS._current_check_quiet(node))
+                f.home_states[str(standard)] = "notLoaded"
+                f.rpc_results[str(standard), "thread/backgroundTerminals/list"] = {"data": [], "nextCursor": None}
+                self.assertTrue(SESSIONS._current_check_quiet(node))
             self.assertFalse(f.mutations)
 
     def test_active_check_binds_its_native_background_handle_instead_of_its_call_id(self):
@@ -2116,7 +2138,7 @@ class ObservationMergeTests(unittest.TestCase):
         self.assertTrue(peers)
         self.assertEqual(coverage["process_coverage"], "unavailable")
 
-    def test_app_server_process_requires_its_exact_observed_socket(self):
+    def test_listener_arguments_without_native_identity_never_establish_coverage(self):
         socket_path = str(Path("/fixture/socket").resolve())
         self.assertFalse(SESSIONS.process_absence_known(f"codex app-server --listen unix://{socket_path}", {socket_path}))
         self.assertFalse(SESSIONS.process_absence_known("codex app-server", {socket_path}))

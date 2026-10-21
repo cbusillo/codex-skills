@@ -11,6 +11,7 @@ from contextvars import ContextVar
 import os
 import json
 import stat
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -76,7 +77,6 @@ def transcript_snapshot(session: str, primary: str) -> dict[str, dict]:
 
 async def observe_home(home: Path, sessions: set[str], proof_sessions: set[str] | None = None):
     """Read the existing stock daemon over its native socket; only read RPCs."""
-    import stat
     binding = github_plan_closure.daemon_endpoint(home)
     coverage = {"status": "incomplete", "peer_complete": False, "socket": str(binding), "home": str(home.resolve())}
     try:
@@ -418,7 +418,8 @@ def _current_check_quiet(node, *, deadline_at=None):
                     if calls or results or (appended.get("payload") or {}).get("type") in {"task_started", "user_message"}:
                         return False
                 await asyncio.sleep(0.05)
-        homes = [home for home in codex_homes(strict=True, configured_only=True)
+        candidates = {*codex_homes(strict=True, configured_only=True), Path.home() / ".codex"}
+        homes = [home for home in candidates
                  if any(primary.is_relative_to((home / root).resolve()) for root in ("sessions", "archived_sessions"))]
         if not homes:
             return False
@@ -506,10 +507,11 @@ def process_absence_known(text: str, observed_sockets: set[str] | None = None, *
 
 
 def native_daemon_process(pid, argv, sockets, *, homes=None):
-    """Bind native maintenance/stdio children to an independently observed home.
+    """Bind native maintenance/stdio children to their actual owning home.
 
     A helper name alone grants nothing. The native PID records, kernel process
-    incarnation, executable, parent and authenticated home must all agree.
+    incarnation and executable identify maintenance. Thread-hosting processes
+    also need an independently observed home and their owning daemon parent.
     """
     shared = process_liveness()
 
@@ -532,12 +534,29 @@ def native_daemon_process(pid, argv, sockets, *, homes=None):
                 and all(identity.get(key) == value for key, value in details["identity"].items()))
 
     def daemon(args):
-        # Native managed launch uses the default control socket. Other shapes
-        # keep the existing explicit-listener path or remain unidentified.
-        return (args[1:4] == ["app-server", "--listen", "unix://"]
-                and len(set(args[4:])) == len(args[4:])
-                and set(args[4:]) <= {"--analytics-default-enabled", "--managed-daemon"}
-                and "--managed-daemon" in args[4:])
+        # Native command_args supplies these flags and feature pairs;
+        # pid_start appends --managed-daemon only when the binary supports it.
+        if args[1:2] != ["app-server"]:
+            return False
+        seen, index = set(), 2
+        while index < len(args):
+            option = args[index]
+            if option == "--listen":
+                if index + 1 == len(args) or args[index + 1] != "unix://":
+                    return False
+                index += 1
+            elif option == "-c":
+                if index + 1 == len(args) or not re.fullmatch(r"features\.[A-Za-z0-9_]+=(?:true|false)", args[index + 1]):
+                    return False
+                index += 1
+                option = args[index].split("=", 1)[0]
+            elif option not in {"--analytics-default-enabled", "--managed-daemon", "--remote-control"}:
+                return False
+            if option in seen:
+                return False
+            seen.add(option)
+            index += 1
+        return "--listen" in seen
 
     try:
         details = shared.native_process_details(pid)
@@ -546,18 +565,19 @@ def native_daemon_process(pid, argv, sockets, *, homes=None):
         child = Path(argv[0]).name == "codex-code-mode-host"
         if child and argv[1:] not in ([], ["--listen", "grpc+stdio://"], ["--listen", "stdio://"]):
             return False
-        updater = argv[1:] == ["app-server", "daemon", "pid-update-loop"]
+        updater = (argv[1:4] == ["app-server", "daemon", "pid-update-loop"]
+                   and (len(argv) == 4 or len(argv) == 6 and argv[4] == "--restore-release" and bool(argv[5])))
         if not (child or updater or daemon(argv)):
             return False
         parent = shared.native_process_details(details["ppid"]) if child else details
         daemon_args = shared.native_arguments(parent["pid"]) if child else argv
         for home in codex_homes(strict=True) if homes is None else homes:
-            if str(github_plan_closure.daemon_endpoint(home).resolve()) not in sockets:
+            if not updater and str(github_plan_closure.daemon_endpoint(home).resolve()) not in sockets:
                 continue
             directory = home / "app-server-daemon"
             try:
                 pairs = [("daemon.pid", "daemon-updater.pid"), ("app-server.pid", "app-server-updater.pid")]
-                present = [pair for pair in pairs if (directory / pair[0]).exists()]
+                present = [pair for pair in pairs if (directory / pair[1 if updater else 0]).exists()]
                 if len(present) != 1:
                     continue
                 server_name, updater_name = present[0]
@@ -567,11 +587,13 @@ def native_daemon_process(pid, argv, sockets, *, homes=None):
                 if not matches(original, selected):
                     continue
                 if updater:
-                    server = record(directory / server_name)
-                    parent = shared.native_process_details(server["pid"])
-                    daemon_args = shared.native_arguments(parent["pid"])
-                    if not matches(server, parent) or parent["executable"] != details["executable"]:
-                        continue
+                    # This exact native entrypoint maintains installations; it
+                    # never hosts/attaches threads. The stock updater survives
+                    # daemon stop. Classifying it does not assert daemon exit;
+                    # every actual server/client row still needs its own proof.
+                    return (Path(details["executable"]).name == "codex"
+                            and shared.native_process_details(pid) == details
+                            and shared.native_arguments(pid) == argv and record(selected_path) == original)
                 if (not daemon(daemon_args) or Path(parent["executable"]).name != "codex"
                         or str(Path(daemon_args[0]).resolve()) != parent["executable"]
                         or child and str(Path(parent["executable"]).with_name("codex-code-mode-host")) != details["executable"]):
@@ -580,8 +602,7 @@ def native_daemon_process(pid, argv, sockets, *, homes=None):
                         and shared.native_process_details(parent["pid"]) == parent
                         and shared.native_arguments(pid) == argv
                         and shared.native_arguments(parent["pid"]) == daemon_args
-                        and record(selected_path) == original
-                        and (not updater or record(directory / server_name) == server))
+                        and record(selected_path) == original)
             except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
                 continue
     except (OSError, ValueError, KeyError, TypeError, UnicodeError, subprocess.SubprocessError):
@@ -746,7 +767,7 @@ def _observe(sessions: set[str], proof_sessions: set[str] | None = None):
     observed_sources = [s for s in sources if s["status"] != "unavailable"]
     peer_complete = bool(observed_sources) and all(s["peer_complete"] for s in observed_sources)
     observed_sockets = {s["socket"] for s in sources if s["peer_complete"]}
-    observed_homes = {Path(s["home"]) for s in sources if s["peer_complete"] and s.get("home")}
+    observed_homes = {Path(s["home"]) for s in sources if s.get("home")}
     process_coverage = "unavailable" if process_text is None else "complete" if process_absence_known(
         process_text, observed_sockets, homes=observed_homes) else "unidentified_interactive_processes"
     for session, outcome in list(states.items()):

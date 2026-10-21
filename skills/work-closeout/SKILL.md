@@ -356,20 +356,12 @@ foreground process handle with its isolated polls. Do not background the check.
 Claude's records sharing one API message ID have one launch boundary: finish
 ownership before launching a separate check. Check one at a time.
 
-A slow checker startup may snapshot after its own first poll. The proof still
-binds the original isolated launch and validates every subsequent call as an
-empty poll of that same native handle, including polls already in the snapshot.
-Any other work, changed prefix or mismatched handle keeps ownership pending.
-
-Native process coverage includes the standard Codex home alongside configured
-account homes. Managed daemons and their updater processes require matching
-native PID records, current kernel incarnation and executable, and an independently
-observed authenticated home. A local Code Mode host additionally needs that
-verified daemon as its current parent and a sibling executable using its known
-stdio role. Listener arguments or helper names alone are insufficient. Existing
-guarded launches accept endpoint aliases only after canonical path comparison.
-A missing or stale binding remains pending; use the maintained managed launcher
-for new work. This check never starts, restarts or terminates a daemon.
+A slow startup can snapshot after the checker's own first poll; the proof still
+binds its original isolated launch and every empty poll of that same handle.
+Native coverage reads the standard Codex home alongside account homes and
+requires positive process identity, rather than helper names or listener text.
+Unbound clients keep the refusal; use the maintained managed launcher for new
+work. The checker never restarts daemons or terminates processes.
 
 Native receipts use literal, command-bound outputs; arbitrary stdout and nested
 saved JSON cannot supply execution completion or a fresh checker result.
