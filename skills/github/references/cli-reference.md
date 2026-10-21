@@ -902,6 +902,17 @@ worktree and live-session checks still refuse competing work. Historical
 `Claimed by` directives remain legacy claim records under the existing guarded
 release path; arbitrary status prose does not become a legacy claim.
 
+A `claim_wait_unresolved` refusal identifies the actual blocked issue or retained
+PR in `waiting_record`: its repository, number, record kind, URL and Current
+Status. `structured_wait` and `review_required` describe that record. The error
+names its supported `gh-plan.py --repo OWNER/REPO wait N` review command.
+`previous_current_status` remains the canonical claim record's recovery context;
+it can differ from `waiting_record.current_status`. A clear canonical issue
+does not clear a retained PR's wait. Review the named record's full evidence
+and preserve its existing-resolution requirements before any separately
+authorized successor attempt; this diagnostic supplies no resolution or retry
+authority.
+
 Before the first claim of a legacy issue or PR, read its full body/discussion
 and run `gh-plan.py wait <issue>` for the one-time review report. Record every
 actual person, decision, external-event or prose-only executing-session hold:

@@ -2588,11 +2588,18 @@ def _claim_once(args: argparse.Namespace) -> None:
         status_state = next_plan_status(waiting_issue, phase["target_config"] if target else config)
         has_wait = bool(wait["state"] != "clear" or status_state in {"stale", "done"})
         if has_wait and not args.wait_resolved:
+            waiting_repo, waiting_number = waiting_issue["repo"], waiting_issue["number"]
+            waiting_record = {
+                "repo": waiting_repo, "number": waiting_number,
+                "record_kind": "pr" if "pull_request" in waiting_issue else "issue",
+                "url": waiting_issue.get("html_url"), "current_status": waiting_status,
+            }
             raise ClassifiedPlanError("claim_wait_unresolved",
-                "Review the structured wait with gh-plan.py wait. For a missing legacy record, read the full "
+                f"Review the structured wait on {waiting_repo}#{waiting_number} with "
+                f"gh-plan.py --repo {waiting_repo} wait {waiting_number}. For a missing legacy record, read the full "
                 "issue/discussion once and record its waits or verified absence; --wait-resolved records existing resolution evidence.",
                 payload={"structured_wait": wait, "previous_current_status": waiting_status,
-                         "review_required": wait["state"] == "review"})
+                         "review_required": wait["state"] == "review", "waiting_record": waiting_record})
         return has_wait
 
     def check_issue_holds(checked_issue: dict[str, Any]) -> None:

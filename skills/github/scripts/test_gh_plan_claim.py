@@ -744,15 +744,55 @@ class ClaimTests(unittest.TestCase):
         self.assert_no_writes()
 
     def test_refresh_preserves_target_recorded_wait(self):
-        self.refresh_fixture()
-        previous = PLAN.section_map(self.issue["body"])["Current Status"]
-        self.target_comments["/repos/owner/repo/issues/99/comments"].append({"id": 88, "user": {"login": TEST_BOT}, "body": wait_record.marker(wait_record.reviewed(evidence="Client asked to hold", waiting_for="Client test", ends_when="Accepted head"))})
-        with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
-        self.assertEqual(caught.exception.code, "claim_wait_unresolved")
-        self.assertEqual(caught.exception.payload["previous_current_status"], previous)
-        self.assert_no_writes()
-        self.args.wait_resolved = "Existing conflict-refresh authorization resolves this wait for source work only."
-        self.run_claim()
+        for cross_repo, merged, review in product((False, True), repeat=3):
+            with self.subTest(cross_repo=cross_repo, merged=merged, review=review):
+                self.setUp()
+                (self.cross_repository_fixture if cross_repo else self.refresh_fixture)()
+                previous = PLAN.section_map(self.issue["body"])["Current Status"]
+                target = self.targets["99"]
+                target["html_url"] = "https://github.com/owner/repo/pull/99"
+                target_status = "State: Retained source needs its own evidence review."
+                target["body"] += "\n\n## Current Status\n\n" + target_status
+                if merged:
+                    pull = self.pulls.pop(0)
+                    pull.update(state="closed", merged_at="2026-10-02T01:00:00Z")
+                    self.closed_pulls[pull["number"]] = pull
+                    target["state"] = "closed"
+                wait = ({"version": 1, "state": "review", "evidence": "", "waits": []}
+                        if review else wait_record.reviewed(evidence="Client asked to hold",
+                            waiting_for="Client test", ends_when="Accepted head"))
+                self.target_comments["/repos/owner/repo/issues/99/comments"].append(
+                    {"id": 88, "user": {"login": TEST_BOT}, "body": wait_record.marker(wait)})
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.run_claim()
+                error = caught.exception
+                self.assertEqual(error.code, "claim_wait_unresolved")
+                self.assertEqual(error.payload["previous_current_status"], previous)
+                self.assertEqual(error.payload["structured_wait"], wait)
+                self.assertEqual(error.payload["waiting_record"], {
+                    "repo": "owner/repo", "number": target["number"], "record_kind": "pr",
+                    "url": target["html_url"], "current_status": target_status})
+                self.assertIn(f"--repo owner/repo wait {target['number']}", str(error))
+                self.assert_no_writes()
+                self.args.wait_resolved = "Existing conflict-refresh authorization resolves this wait for source work only."
+                self.run_claim()
+
+    def test_canonical_wait_refusal_identifies_its_own_record(self):
+        for kind in ("issue", "pr"):
+            with self.subTest(kind=kind):
+                self.setUp()
+                if kind == "pr":
+                    self.pr_fixture()
+                self.issue["html_url"] = f"https://github.com/owner/repo/{'pull' if kind == 'pr' else 'issues'}/42"
+                self.wait = wait_record.reviewed(evidence="Owner retained the hold",
+                    waiting_for="Owner", ends_when="Recorded decision")
+                previous = PLAN.section_map(self.issue["body"]).get("Current Status", "")
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.run_claim()
+                self.assertEqual(caught.exception.payload["waiting_record"], {
+                    "repo": self.issue["repo"], "number": self.issue["number"], "record_kind": kind,
+                    "url": self.issue["html_url"], "current_status": previous})
+                self.assert_no_writes()
 
     def test_planning_checkout_inventory_reads_and_verifies_exact_git_identity(self):
         planning_path = Path("/verified/plans")
