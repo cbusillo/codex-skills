@@ -763,35 +763,61 @@ class ClaimTests(unittest.TestCase):
                             waiting_for="Client test", ends_when="Accepted head"))
                 self.target_comments["/repos/owner/repo/issues/99/comments"].append(
                     {"id": 88, "user": {"login": TEST_BOT}, "body": wait_record.marker(wait)})
+                comment_status = "State: The retained record's current evidence is in this comment."
+                self.target_comments["/repos/owner/repo/issues/99/comments"].append(
+                    {"id": 89, "user": {"login": TEST_BOT},
+                     "body": "## Current Status\n\n" + comment_status})
                 with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
                     self.run_claim()
                 error = caught.exception
                 self.assertEqual(error.code, "claim_wait_unresolved")
                 self.assertEqual(error.payload["previous_current_status"], previous)
                 self.assertEqual(error.payload["structured_wait"], wait)
-                self.assertEqual(error.payload["waiting_record"], {
+                expected_record = {
                     "repo": "owner/repo", "number": target["number"], "record_kind": "pr",
-                    "url": target["html_url"], "current_status": target_status})
-                self.assertIn(f"--repo owner/repo wait {target['number']}", str(error))
+                    "url": target["html_url"], "current_status": target_status + "\n\n" + comment_status}
+                for key, value in expected_record.items():
+                    self.assertEqual(error.payload["waiting_record"][key], value)
                 self.assert_no_writes()
                 self.args.wait_resolved = "Existing conflict-refresh authorization resolves this wait for source work only."
                 self.run_claim()
 
     def test_canonical_wait_refusal_identifies_its_own_record(self):
-        for kind in ("issue", "pr"):
-            with self.subTest(kind=kind):
+        for kind, cross_repo in product(("issue", "pr"), (False, True)):
+            with self.subTest(kind=kind, cross_repo=cross_repo):
                 self.setUp()
                 if kind == "pr":
                     self.pr_fixture()
-                self.issue["html_url"] = f"https://github.com/owner/repo/{'pull' if kind == 'pr' else 'issues'}/42"
+                    self.comments.append({"id": 1, "user": {"login": TEST_BOT},
+                        "body": "## Current Status\n\nState: Current PR evidence."})
+                repo = "other/plans" if cross_repo else self.issue["repo"]
+                self.args.issue = f"{repo}#{self.issue['number']}"
+                self.issue["html_url"] = f"https://github.com/{repo}/{'pull' if kind == 'pr' else 'issues'}/42"
                 self.wait = wait_record.reviewed(evidence="Owner retained the hold",
                     waiting_for="Owner", ends_when="Recorded decision")
                 previous = PLAN.section_map(self.issue["body"]).get("Current Status", "")
+                if kind == "pr":
+                    previous = "State: Current PR evidence."
                 with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
                     self.run_claim()
-                self.assertEqual(caught.exception.payload["waiting_record"], {
-                    "repo": self.issue["repo"], "number": self.issue["number"], "record_kind": kind,
-                    "url": self.issue["html_url"], "current_status": previous})
+                self.assertEqual(caught.exception.code, "claim_wait_unresolved")
+                expected_record = {"repo": repo, "number": self.issue["number"], "record_kind": kind,
+                    "url": self.issue["html_url"], "current_status": previous}
+                for key, value in expected_record.items():
+                    self.assertEqual(caught.exception.payload["waiting_record"][key], value)
+                self.assert_no_writes()
+
+    def test_clear_wait_refusal_preserves_the_blocking_plan_status(self):
+        for status in ("stale", "done"):
+            with self.subTest(status=status):
+                self.setUp()
+                self.issue["labels"] = [PLAN.DEFAULT_CONFIG["labels"][status]]
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.run_claim()
+                self.assertEqual(caught.exception.code, "claim_wait_unresolved")
+                self.assertEqual(caught.exception.payload["structured_wait"], self.wait)
+                self.assertFalse(caught.exception.payload["review_required"])
+                self.assertEqual(caught.exception.payload["waiting_record"]["plan_status"], status)
                 self.assert_no_writes()
 
     def test_planning_checkout_inventory_reads_and_verifies_exact_git_identity(self):
