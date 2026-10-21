@@ -290,6 +290,27 @@ operation is `apply_odoo_addon_settings`, defined by the producer contract.
 - Apply changes the record, not the database. Check `read_back_matches`, then
   run Odoo post-deploy for the lane and verify the settings there.
 
+## Odoo website settings
+
+`odoo-website-settings-dry-run` and `odoo-website-settings-apply` call
+`POST /v1/product-config/odoo-website-settings/apply` to prepare a product's
+production website settings. The Launchplane operation is
+`apply_odoo_website_settings`, defined by the producer contract.
+
+- The private payload file holds `product`, `context`, `reason`, optional
+  `instance` (only `prod`), and `website_settings`: `artifact_id` naming the
+  product's current testing artifact plus `settings` with `website_id`,
+  `public_origin` (HTTPS), `public_indexing_enabled`, `google_analytics_key`,
+  `cookies_bar` and `block_third_party_domains`. Unknown fields, a non-HTTPS
+  origin and collection-only rollback are refused locally. Launchplane checks
+  the origin, artifact and analytics consent rules.
+- `website_settings: null` withdraws the pending intent.
+- Apply uses the same gates as addon settings: `--reviewed-dry-run`,
+  `--expected-plan-digest`, `--dry-run-evidence-file` for the same product and
+  context, and `--idempotency-key`.
+- Preparation writes inert intent and changes no Odoo database. The
+  Client-accepted release applies it.
+
 ## Integration allowances
 
 `integration-allowances-read`, `integration-allowances-dry-run` and
@@ -1257,8 +1278,8 @@ with `status: "incomplete"` may still have a local token source; read the
 
 - `0`: Launchplane accepted the request and the helper emitted a redacted
   summary. `status: "accepted_unverified"` exits 0 for the Odoo addon-settings,
-  integration-allowances, testing-hold, product-repository-identity,
-  generic-web deploy-recovery, repository-inventory,
+  Odoo website-settings, integration-allowances, testing-hold,
+  product-repository-identity, generic-web deploy-recovery, repository-inventory,
   product expected-config, and merge-train policy import applies; product-config
   apply does not emit it. It exits 1 for the reviewed lane-setup
   applies (product Client, product image repository, Dokploy target, production
