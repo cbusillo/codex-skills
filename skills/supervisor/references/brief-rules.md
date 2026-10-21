@@ -106,6 +106,11 @@ Rules for this brief (every Supervisor brief carries them):
   fix every reproduced defect, proven by the cheapest check that would catch
   it again; decline only non-defects, with one line each. After two review
   rounds on the same PR, stop patching and redesign with a fresh look.
+- Style ([codex-skills#2455](https://github.com/cbusillo/codex-skills/issues/2455)):
+  before writing Python, Odoo XML or JavaScript, read
+  [python-odoo-style](../../references/python-odoo-style.md) in full, and
+  check your diff against it before handoff. CI fails on new comments and
+  docstrings outside its exceptions.
 - Tests ([Q375](https://github.com/cbusillo/codex-skills/issues/1884#issuecomment-6215129557)):
   run focused tests plus the full test modules for the safety areas you touch
   locally ([gate selection](../../repo-readiness/SKILL.md#gate-selection));
