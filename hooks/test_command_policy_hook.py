@@ -841,6 +841,7 @@ class CommandPolicyHookTests(unittest.TestCase):
             ("ssh build-host bash <<'EOF'\ngh api repos/o/r/pulls\nEOF", "gh api repos/o/r/pulls"),
             ("gh-with-env-token api repos/o/r/issues/1 --method PATCH -f body=x", "repos/o/r/issues/1"),
             ("zsh --no-rcs -c 'gh pr merge 17'", "gh pr merge 17"),
+            ("launcher zsh --no-rcs -c 'gh pr merge 17'", "gh pr merge 17"),
             ("zsh --no-rcs <<'EOF'\ngh pr merge 17\nEOF", "gh pr merge 17"),
             ("ssh host '>x; gh pr merge 17'", "gh pr merge 17"),
             ("eval '>x; gh pr merge 17'", "gh pr merge 17"),

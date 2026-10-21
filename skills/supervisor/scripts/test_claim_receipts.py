@@ -421,6 +421,7 @@ class ReceiptTests(unittest.TestCase):
             "flock /tmp/lock '-cworker &'",
             "su --command='worker &' svc",
             "zsh --no-rcs -c 'worker &'",
+            "launcher zsh --no-rcs -c 'worker &'",
             "zsh --no-rcs <<'EOF'\nworker &\nEOF",
             "xargs zsh --no-rcs -c '{}'",
             "bash -c 'bash \"${1:-x}\"' _ <(printf 'worker &')",
