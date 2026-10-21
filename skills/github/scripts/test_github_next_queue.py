@@ -26,7 +26,7 @@ def item(action: str = "Implement the missing export path.", state: str = "Activ
 
 
 def evidence() -> dict:
-    return {'complete': True, 'pulls': [], 'inventory': {'local_branches': [], 'remote_branches': [], 'worktrees': [], 'sessions': []},
+    return {'complete': True, 'pulls': [], 'inventory': {'local_branches': [], 'remote_branches': [], 'worktrees': []},
             'coverage': {'sessions': 'partial'}}
 
 
@@ -107,11 +107,8 @@ def test_claim_and_linked_pr_cannot_be_advertised_as_unclaimed_work() -> None:
     observed['pulls'] = []
     observed['inventory']['remote_branches'] = [source['branch']]
     observed['inventory']['local_branches'] = [source['branch']]
-    observed['inventory']['session_states'] = {source['session']: {'state': 'live'}}
-    assert classify(row, observed)['state'] == 'underway'
-    observed['inventory']['session_states'][source['session']]['state'] = 'ended'
     assert classify(row, observed)['state'] == 'available'
-    row['discussion']['comments'].pop()  # Physical end cannot release the source.
+    row['discussion']['comments'].pop()
     assert classify(row, observed)['state'] == 'underway'
 
 

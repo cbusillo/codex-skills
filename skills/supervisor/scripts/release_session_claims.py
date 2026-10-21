@@ -26,7 +26,7 @@ import session_record
 import session_liveness
 import account_choice
 import backfill_inventory
-from session_liveness import idle_terminal_command, inventory
+from session_liveness import inventory
 
 GITHUB = Path(__file__).resolve().parents[2] / "github/scripts"
 sys.path.insert(0, str(GITHUB))
@@ -172,7 +172,7 @@ def validate_closure(entry, supervisor_session, *, native=None, process=None):
     for path in paths:
         other = session_record.session_status({**entry, "transcript": str(path)})
         records = session_record.read_jsonl(path)
-        if not other.get("declared_safe_verdict", other["safe_verdict"]) or any(
+        if not other["safe_verdict"] or any(
             release.stamp(r["timestamp"]) > ended for r in records if r.get("timestamp")
         ):
             raise ValueError("source resumed or has newer activity in a configured native transcript")

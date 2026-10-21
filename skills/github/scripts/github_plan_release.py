@@ -93,12 +93,6 @@ def evidence_header(source_id: int, record: dict[str, str]) -> str:
     return f"Closed legacy claim {source_id}" if "legacy_reason" in record else f"Closed session {record['session']}"
 
 
-def check_activity(comments: list[dict[str, Any]], source: dict[str, Any], cutoff: datetime,
-                   record: dict[str, str] | None = None) -> None:
-    record = record_from_receipt(source, record) if record is not None else source_record(source)
-    _check_activity(comments, source, cutoff, record)
-
-
 def _check_activity(comments, source, cutoff, record):
     source_at = stamp(source.get("updated_at") or source.get("created_at"))
     if max(source_at, stamp(record["claimed_at"])) >= cutoff:
@@ -204,12 +198,6 @@ def check_related(record: dict[str, str], comment: dict[str, Any], actor: str, c
         raise ValueError("Related ownership follow-up is newer than the session-ended evidence")
 
 
-def _check_peers(inventory, paths):
-    if any(any(cwd == root or root in cwd.parents for root in paths)
-           for session in inventory["sessions"] for cwd in [pathlib.Path(session.get("cwd") or "/").resolve()]):
-        raise ValueError("A live peer is using the source claim's retained worktree")
-
-
 def _observed_branches(inventory):
     return (set(inventory["local_branches"]) | set(inventory["remote_branches"])
             | {tree["branch"] for tree in inventory["worktrees"]})
@@ -223,10 +211,6 @@ def validate_source_release(facts: ReleaseFacts, comments: list[dict[str, Any]],
     if legacy and (related or retained_prs):
         raise ValueError("Legacy releases do not support related releases or structured retained-PR handoffs")
     _check_activity(comments, facts.source, cutoff, record)
-    if any(s.get("sessionId") == record["session"] or
-           (legacy and any(s.get(k) == record["worker"] for k in ("sessionId", "name", "worker")))
-           for s in inventory["sessions"]):
-        raise ValueError("Source session is still visible in the active native session inventory")
     known_paths = {pathlib.Path(tree["path"]).resolve() for tree in inventory["worktrees"]
                    if tree["branch"] == record["branch"]}
     if terminated is not None:
@@ -236,7 +220,6 @@ def validate_source_release(facts: ReleaseFacts, comments: list[dict[str, Any]],
         if not known_paths.issubset(artifact_paths):
             raise ValueError("Termination evidence must name every preserved source/retained worktree")
         known_paths.update(artifact_paths)
-    _check_peers(inventory, known_paths)
     for comment in related:
         check_related(record, comment, facts.actor, cutoff)
     return known_paths
@@ -260,7 +243,6 @@ def validate_retained_release(facts: ReleaseFacts, inventory: dict[str, Any], *,
         artifact_paths = {pathlib.Path(a["worktree"]).resolve() for a in artifacts if a.get("worktree") is not None}
         if not paths.issubset(artifact_paths):
             raise ValueError("Termination evidence must name every preserved source/retained worktree")
-    _check_peers(inventory, paths)
 
 
 def validate_release(facts: ReleaseFacts, comments: list[dict[str, Any]], inventory: dict[str, Any], *,

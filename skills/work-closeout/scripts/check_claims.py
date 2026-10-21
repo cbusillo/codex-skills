@@ -1,13 +1,8 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["aiohttp==3.14.5"]
+# dependencies = []
 # ///
-"""Read back a native session's claim dispositions before a safe-exit verdict.
-
-This never releases ownership or closes a session. Every configured writer App
-installation is inventoried, including closed issues and PR-only claims.
-"""
 from __future__ import annotations
 
 import argparse
@@ -20,36 +15,13 @@ import time
 SKILLS = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(SKILLS / "github/scripts"))
 sys.path.insert(0, str(SKILLS / "supervisor/scripts"))
-import github_agent
 import github_identity
 import github_plan_claim as claim
 import github_plan_release as release
 from github_read import GitHubReader, GitHubReadError, GitHubReadShapeError
 import release_session_claims as sessions
-import session_record
-import claim_receipts
-import claim_history
-import github_plan_sessions as native_ownership
 
-
-def transcript_snapshot(path, harness, session, context=None):
-    # Read one immutable prefix. A running harness may append a partial final
-    # record; never weaken the strict ended-session reader used for shutdown.
-    lines = path.read_bytes().splitlines(keepends=True)
-    if lines and not lines[-1].endswith(b"\n"):
-        lines.pop()
-    records = [json.loads(line) for line in lines if line.strip()]
-    for record in records:
-        session_record.validate_record(record)
-    if context is None:
-        return claim_history.root_records(path, harness, session, records)
-    claim_history.child_records(records, harness, session, context)
-    return records
-
-
-def receipt_history(path, harness, session):
-    records = transcript_snapshot(path, harness, session)
-    return [r for node in claim_history.collect(path, harness, session, records, transcript_snapshot) for r in node["records"]]
+CHECK_OPERATION = "work-closeout.claims"
 
 
 def explicit_pr_numbers(text, repo):
@@ -169,38 +141,15 @@ def check_record(reader, repo, number, session, actor, *, pulls_cache=None, data
     return result
 
 
-def check(reader, owner, entry, actor, *, reader_for_repo=None, read_timeout=None):
-    histories = entry.get("_claim_histories") or [{"session_id": entry["session_id"], "harness": entry["harness"],
-                                                "records": entry.get("_transcript_records", [])}]
-    states = [claim_receipts.ownership_state(node["records"], node["harness"]) for node in histories]
-    native_sessions = {node["session_id"] for node in histories}
-    expected = []
-    receipt_issues = set()
-    for node in histories:
-        parsed = list(claim_receipts.outputs(node["records"], node["harness"]))
-        for _, value in parsed:
-            if value.get("operation") != claim_receipts.CLAIM_OPERATION:
-                continue
-            issue, identity = value.get("issue") or {}, value.get("claim") or {}
-            if not isinstance(issue, dict) or not isinstance(identity, dict):
-                continue  # Canonical inventory still reconciles every source.
-            repo, number = issue.get("repo"), issue.get("number")
-            if (identity.get("session") in native_sessions
-                    and isinstance(repo, str) and sessions.REPO.fullmatch(repo)
-                    and type(number) is int and number > 0):
-                receipt_issues.add((repo, number))
-        for native in native_sessions:
-            found, _ = claim_receipts.sources(node["records"], node["harness"], native, parsed=parsed)
-            expected.extend(found)
+def check(reader, owner, entries, actor, *, repositories=(), reader_for_repo=None, read_timeout=None):
     if read_timeout is not None:
         reader.deadline_at = time.time() + read_timeout
-    required_repos = ({r["repository"] for r in expected} | {repo for repo, _ in receipt_issues}
-                      | set(entry.get("_extra_repositories", [])))
-    entries = [{**entry, "session_id": node["session_id"], "_transcript_records": node["records"]} for node in histories]
+    native_sessions = {entry["session_id"] for entry in entries}
+    required_repos = set(repositories)
     try:
-        since = min(release.stamp(sessions.scan_start([native_entry])) for native_entry in entries)
+        since = min(release.stamp(sessions.scan_start([entry])) for entry in entries)
     except (ValueError, TypeError):
-        since = None  # Unknown history can never justify a suspension exclusion.
+        since = None
     inventory = github_identity.automation_repositories(deadline_at=reader.deadline_at,
         since=since, required_repositories=required_repos)
     writers = inventory["repositories"]
@@ -211,7 +160,7 @@ def check(reader, owner, entry, actor, *, reader_for_repo=None, read_timeout=Non
     known_accounts.update(row["account"]["login"].casefold() for row in inventory["installations"])
     if any(account.casefold() not in known_accounts for account in owners):
         raise ValueError("required account has no verified repository inventory")
-    issues = {(r["repository"], r["record"]) for r in expected} | receipt_issues
+    issues = set()
     readers = {}
     blocked = [f"installation {row['installation_id']}: ownership inventory pending: {row['reason']}"
                for row in inventory.get("pending_installations", [])]
@@ -243,21 +192,13 @@ def check(reader, owner, entry, actor, *, reader_for_repo=None, read_timeout=Non
             blocked.append(f"{repo}#{number}: {error}")
             if not isinstance(error, ValueError):
                 complete = False
-    observed = {(r["repository"], r["record"], r["claim_comment"]) for r in released}
-    if any((r["repository"], r["record"], r["claim_comment"]) not in observed for r in expected) and not blocked:
-        blocked.append("native source claims were not verified in the installed repository scope")
-    pending = native_ownership.pending_ownership(histories, states, deadline_at=reader.deadline_at)
-    blocked.extend(f"{item['session_id']} ({item['transcript']}): {item['reason']}" for item in pending)
-    return {"operation": claim_receipts.CHECK_OPERATION, "ok": not blocked, "claims_clear": not blocked,
-            "session_id": entry["session_id"], "harness": entry["harness"],
+    return {"operation": CHECK_OPERATION, "ok": not blocked, "claims_clear": not blocked,
+            "session_ids": sorted(native_sessions),
             "coverage": {"owners": sorted(owners), "repositories": sorted(repos), "complete": complete,
                          "installation_count": len(inventory["installations"]),
                          "excluded_installations": inventory.get("excluded_installations", []),
-                         "session_ids": sorted(native_sessions),
-                         "histories": [{k: node[k] for k in ("session_id", "transcript", "digest")} for node in histories[1:]],
                          "scope": "all configured automation writer App installations plus explicitly added repositories"},
-            "receipt_reconciliation": not blocked,
-            "released_claims": released, "pending": pending, "blocked": blocked}
+            "released_claims": released, "blocked": blocked}
 
 
 def repository_reader(repo, deadline):
@@ -268,40 +209,32 @@ def repository_reader(repo, deadline):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--owner", action="append", default=[], help="Require account coverage; absent repository context refuses instead of narrowing native scope")
-    parser.add_argument("--repository", action="append", default=[], help="Add exact repository context for a missing receipt or another installation")
-    parser.add_argument("--harness", required=True, choices=github_agent.FAMILIES)
-    parser.add_argument("--session", required=True)
-    parser.add_argument("--transcript", required=True, type=Path)
+    parser = argparse.ArgumentParser(description="Read back every claim of the named sessions on GitHub.")
+    parser.add_argument("--owner", action="append", default=[], help="Require account coverage; absent repository context refuses")
+    parser.add_argument("--repository", action="append", default=[], help="Add exact repository context, such as another installation")
+    parser.add_argument("--session", action="append", required=True, help="Native session ID; repeat for child sessions with their own IDs")
+    parser.add_argument("--transcript", action="append", required=True, type=Path,
+                        help="Native transcript for each --session, in the same order; its first timestamp starts the scan")
     args = parser.parse_args(argv)
     try:
         if any(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}", owner) for owner in args.owner):
             raise ValueError("owner must be a GitHub login")
         if any(not sessions.REPO.fullmatch(repo) for repo in args.repository):
             raise ValueError("repository must use ACCOUNT/REPOSITORY form")
-        if github_agent.running_agent() != args.harness:
-            raise ValueError("requested harness differs from the running harness")
-        native = github_agent.native_sessions(args.harness)
-        if not native or args.session not in native.values():
-            raise ValueError("closeout must use the running harness's native session ID")
-        transcript = args.transcript.expanduser().resolve()
-        entry = {"harness": args.harness, "session_id": args.session, "transcript": str(transcript)}
-        root_records = transcript_snapshot(transcript, args.harness, args.session)
-        entry["_claim_histories"] = claim_history.collect(transcript, args.harness, args.session, root_records, transcript_snapshot)
-        entry["_transcript_records"] = [r for node in entry["_claim_histories"] for r in node["records"]]
-        entry["_extra_repositories"] = args.repository
+        if len(args.session) != len(args.transcript):
+            raise ValueError("pass one --transcript for each --session")
+        entries = [{"session_id": session, "transcript": str(transcript.expanduser().resolve())}
+                   for session, transcript in zip(args.session, args.transcript)]
         actor = github_identity.automation_login()
         if not actor:
             raise ValueError("configured automation identity is unavailable")
         reader = GitHubReader(expected_actor=actor, gh_prefix_args=["--require-automation-auth"], cache_revalidate=True)
-        report = check(reader, args.owner, entry, actor, read_timeout=600)
+        report = check(reader, args.owner, entries, actor, repositories=args.repository, read_timeout=600)
         report["checked_at"] = time.time()
         print(json.dumps(report, sort_keys=True))
         return 0 if report["claims_clear"] else 1
     except (ValueError, OSError, TypeError, KeyError, GitHubReadError, GitHubReadShapeError, github_identity.GitHubAppError) as error:
-        print(json.dumps({"operation": claim_receipts.CHECK_OPERATION,
-                          "session_id": args.session, "harness": args.harness,
+        print(json.dumps({"operation": CHECK_OPERATION, "session_ids": args.session,
                           "ok": False, "claims_clear": False, "coverage": {"complete": False},
                           "error": str(error), "next_action": "Preserve ownership, record the blocker, and use conditional/no; do not report safe exit yes."}))
         return 1

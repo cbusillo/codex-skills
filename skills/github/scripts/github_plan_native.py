@@ -402,16 +402,6 @@ def _authenticated_paths(snapshots, homes):
     return {home: copies for home, copies in paths.items() if copies}
 
 
-def observation_scope(session, primary, *, sources=(), actions=()):
-    """Fence every authenticated copy and required retained home, without admission."""
-    from github_plan_sessions import observation_homes, retained_homes
-    homes = observation_homes(strict=True, sources=sources, actions=actions)
-    snapshots = closure.transcript_facts(session, str(primary), additional_homes=set(homes), identity_only=True)
-    paths = _authenticated_paths(snapshots, homes)
-    # A required but stopped home remains a veto; absence of a socket is not exit.
-    return ({Path(home) for home in paths} | retained_homes(sources=sources, actions=actions), paths)
-
-
 def source_snapshot(entry, process=None):
     """Only file/process reads; safe to await in a cancellable worker thread."""
     from github_plan_sessions import configured_homes, observation_homes

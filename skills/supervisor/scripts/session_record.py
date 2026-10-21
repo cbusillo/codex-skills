@@ -11,10 +11,7 @@ import json
 import re
 from pathlib import Path
 
-import claim_receipts
 import claim_history
-
-CLAIM_VERDICT_REFUSED = "claim_disposition_refused"
 
 MEMORY_CITATION_TAIL = re.compile(
     r"^<oai-mem-citation>(?:(?!</?oai-mem-citation>).)*"
@@ -321,7 +318,7 @@ def track_claude_background_tasks(record: dict, running: dict, scheduled: dict, 
         scheduled.pop(fired)
 
 
-def summarize(records: list[dict], harness: str, *, claim_histories=None, history_error=None, inspect_claims=True) -> dict:
+def summarize(records: list[dict], harness: str) -> dict:
     result = {
         "last_text": "",
         "timestamp": None,
@@ -468,16 +465,6 @@ def summarize(records: list[dict], harness: str, *, claim_histories=None, histor
         "recognized" if result["safe_verdict"] else
         "unrecognized" if "Safe to exit:" in verdict_text else "absent"
     )
-    identities = ({r.get("sessionId") for r in records if r.get("sessionId")} if harness == "claude" else
-                  {r.get("payload", {}).get("id") for r in records if r.get("type") == "session_meta"})
-    session = next(iter(identities)) if len(identities) == 1 else None
-    disposition = (claim_receipts.acceptance(records, harness, session, histories=claim_histories, history_error=history_error)
-                   if inspect_claims else {"clear": False, "reason": "not_evaluated"})
-    result["claim_disposition"] = disposition
-    result["declared_safe_verdict"] = result["safe_verdict"]
-    result["safe_verdict"] = result["safe_verdict"] and disposition["clear"]
-    if result["declared_safe_verdict"] and not result["safe_verdict"] and inspect_claims:
-        result["verdict_recognition"] = CLAIM_VERDICT_REFUSED
     # A turn end with a live task is a wait on that task; with none, nothing will resume the turn.
     result["background_tasks"] = [
         {"task_id": task_id, "started": started} for task_id, started in running_tasks.items()
@@ -493,7 +480,7 @@ class TranscriptChanged(ValueError):
     """The native transcript changed while its status was being read."""
 
 
-def session_status(entry: dict, *, inspect_claims=True) -> dict:
+def session_status(entry: dict) -> dict:
     path = Path(entry["transcript"])
     before = path.stat()
 
@@ -512,24 +499,7 @@ def session_status(entry: dict, *, inspect_claims=True) -> dict:
         raise
     checked_stat()
     records = claim_history.root_records(path, entry["harness"], entry["session_id"], records)
-
-    def child_read(child, harness, session, context=None):
-        initial = child.stat()
-        data = read_jsonl(child)
-        claim_history.child_records(data, harness, session, context)
-        final = child.stat()
-        if (initial.st_mtime_ns, initial.st_size) != (final.st_mtime_ns, final.st_size):
-            raise ValueError("child transcript identity or activity changed")
-        return data
-
-    histories, error = None, None
-    if inspect_claims:
-        try:
-            histories = claim_history.collect(path, entry["harness"], entry["session_id"], records, child_read)
-        except (OSError, ValueError, TypeError, KeyError) as missing:
-            error = str(missing)
-    result = summarize(records, entry["harness"], claim_histories=histories, history_error=error,
-                       inspect_claims=inspect_claims)
+    result = summarize(records, entry["harness"])
     after = checked_stat()
     result.update(
         session_id=entry["session_id"],

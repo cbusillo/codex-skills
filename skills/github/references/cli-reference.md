@@ -994,55 +994,25 @@ or `pull`, owner/repo case) count once, recorded as first written. Admission rec
 taken; it grants no authority and does not verify the linked decision.
 
 The command checks Current Status and the complete discussion, unresolved
-native blockers, registered worktrees, local branches, live remote heads, open
-PRs, and Claude's native `claude agents --json` session inventory when available.
-Codex uses the stock app-server read protocol on existing daemon sockets in the current
-and configured Supervisor account homes. It reads loaded threads and exact
-claim session IDs without starting or resuming them. Active threads and observed
-native CLI resumes refuse, including a different session using a retained
-worktree. Native-only completion requires an unloaded exact thread, stable
-safe-exit transcripts across configured session/archive roots, and successful
-process inventory excluding any matching or unidentified interactive Codex
-process. A loaded idle thread still refuses, even after a safe-exit turn.
-Missing daemons, unreadable transcripts, age and partial peer coverage cannot
-establish native completion. This needs no attestation comment or release write.
-An app-server process is excluded only when its exact listening socket was read;
-extension/stdio and unconfigured servers remain unidentified. On a host with
-unidentified interactive clients, native-only recovery stays unavailable; an
-exact authored release remains the supported ended-ownership proof.
-Loaded peers are read before transcript scans. A timed-out or truncated observed
-peer inventory is reported as incomplete and preserves retained-artifact conflicts.
-Socket reads do not require `codex` on PATH. Existing unsafe or unreadable sockets
-are incomplete sources. `session_coverage` also reports unidentified interactive
-processes for exact-release successors; an authored release proves ended claim
-ownership, not the absence of every unobservable session on the host.
-An absent or non-listening socket is unavailable, not an active peer. Incomplete
-handoff coverage is scoped to retained branches still present locally/remotely;
-the refusal names those branches and the source session for coordination.
+native blockers, registered worktrees, local branches, live remote heads and
+open PRs. It reads no process, session registry or daemon: ownership lives in
+the claim comments and their exact releases
+([Q621](https://github.com/cbusillo/codex-skills/issues/2453)).
 
-A confirmed canonical Supervisor or direction release can also identify a
-minimal saved resume generation. The helper binds its actual launch identity,
-home and transcript to the verified source and closure time, then checks all
-relevant native homes and physical processes. It rereads the canonical release
-authority before clearing a pending action; it adds no ownership fields to the
-saved row. Each publication phase collects its canonical source family, retained
-PR discussions, waits, blockers and checkout inventories before one shared native
-observation. Each discussion supplies its own exact releases and proof obligations;
-the shared result keeps each checkout's registry and local ownership independent.
-A verified End for the same native session can
-support physical completion across those records; each record still needs its
-own exact ownership release. The authority read after native verification stays
-fresh. Pending, legacy, worker-only and termination releases cannot supply
-this alternative. A recovering generation still needs its native proof after
-the pending marker clears and on every claim readback; another account's
-unloaded thread cannot replace a failed proof. Source activity is measured by
-actual turns, so a passive delivery alone does not require a new final verdict.
-The same-record no-PR resume route below keeps its original branch exception.
+Each claim carries a host-local lease. The catalog's `PreToolUse` hook, and on
+Claude Code its lifecycle hook, renews the session's lease on activity without
+a GitHub write; `claim` renews the claimant's own. An unreleased claim of
+another session refuses while its lease is live, or unknown because this host
+holds no lease for it, such as a claim made on another host. After 30 minutes
+without activity (`GH_PLAN_CLAIM_LEASE_MINUTES`) the lease expires and a
+successor takes over: the claim posts a `Lease takeover: claim <id>` line,
+reports the old claim's branches and worktrees in `retained_artifacts`, and
+freezes that session against a later Codex resume, as for a released source.
+Search claim comments for `Lease takeover:` to count crash takeovers.
 
 An exact authored release also establishes ended claim ownership. Its retained
 branches, worktrees and closed-PR artifacts no longer block an independent claim;
-the result names them in `retained_artifacts` and leaves them intact. Positive
-live-session evidence overrides a release. Automatic reconciliation grants no
+the result names them in `retained_artifacts` and leaves them intact. Automatic reconciliation grants no
 artifact adoption: use a new task branch, or the existing explicit `--resume-from`
 source-recovery route. Open PRs keep their separate handoff
 and wait checks. Unreleased or uncertain holders refuse with `coordination`
@@ -1390,16 +1360,13 @@ grandchild holder blocks the grandparent and its other children, and the reverse
 claim order checks those same holders. Once a child records
 that source or handoff, its full ownership is checked, including later plain
 resumes that omit handoff metadata or change branch. Its claims refuse until
-exact authored releases or verified native session completion account for
-them; positive live-session evidence still refuses. Closing a child does not
-release its ownership; use its exact authored release or verified native session
-completion before retrying. A child with no record of
+exact authored releases or expired leases account for
+them. Closing a child does not release its ownership; use its exact authored
+release before retrying. A child with no record of
 that source remains unrelated and does not block it. Later claims on a child,
 including plain resume, retained handoff and fresh claims, also recheck the
 original source family recorded in its claim history, so they cannot race a
-new holder on the parent or another child. The requester's own native session
-may occupy a released source worktree; foreign sessions and unreleased
-ownership still refuse. Malformed lineage
+new holder on the parent or another child. Unreleased ownership still refuses. Malformed lineage
 refuses with `claim_resume_lineage_invalid`. These checks read ownership only;
 they do not transfer authority or change the original parent's holds.
 Taking a parent's handoff also checks the claimed child's existing native

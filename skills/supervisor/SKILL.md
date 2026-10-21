@@ -767,11 +767,10 @@ others. A missed target remains visible in the next check and handoff.
    qualify. Never infer completion from silence,
    idleness, or the screen; Claude Code redraws its screen and can hide the
    close-out message. If later transcript activity resumes work, keep it open.
-   Use `safe_verdict`, not declaration recognition alone. When
-   `verdict_recognition` is `claim_disposition_refused`, follow
-   [claim-gated verdicts](references/helpers.md#claim-gated-verdicts): nudge the
-   worker to complete claim disposition and keep the terminal open. A required
-   review wait still takes precedence; do not close that worker out.
+   Use `safe_verdict`, then run the session's
+   [claim check](references/helpers.md#claim-checks-at-close-out); keep the
+   terminal open until it clears. A required review wait still takes
+   precedence; do not close that worker out.
 2. Inspect the input line before sending keys. `read` reports its visible
    style as `dim`, `non_dim`, `mixed`, `empty` or `unknown`; this is style
    evidence, never authorship or approval. Never record dim suggestions as
@@ -885,13 +884,10 @@ issue while pending. There is no local rule list.
 - Start a fresh tab per task; reused old sessions caused most of the friction.
   Put Supervisor tabs in one dedicated terminal window and leave the
   Director's own sessions alone.
-- A Codex thread may stay loaded after its client exits. Loaded status alone
-  does not require a fixed wait before a successor can claim. An exactly released
-  source needs verified idle closure or current native end proof with validated
-  source ownership; active work, queued input and unknown coverage still refuse.
-  Use the reported native state and recovery evidence rather than a timer
-  ([#1951](https://github.com/cbusillo/codex-skills/issues/1951),
-  [#2285](https://github.com/cbusillo/codex-skills/issues/2285)).
+- An exact release frees an issue for a successor at once, whatever the
+  released session's process or thread is doing. An unreleased claim refuses a
+  successor until its holder's lease expires
+  ([Q621](https://github.com/cbusillo/codex-skills/issues/2453)).
 - Take every time you write from `date`, never from memory or a summary.
 - Recorded pilot compactions preserved briefs and issues on both harnesses;
   keep recording degradation during the experiment above. The previous 450k
