@@ -658,6 +658,7 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
             shells, opaque = shell_texts(text, javascript)
             opaque = opaque and seen_claim_source
             for shell in shells:
+                repeated = repeated or re.search(r"(?:^|[;\n])\s*[A-Za-z_]\w*\s*\(\s*\)\s*\{", shell) is not None
                 for argv in shell_argv(shell):
                     repeated = repeated or bool(argv and argv[0] in {"for", "while", "until", "function"})
                     arguments = claim_arguments(argv)

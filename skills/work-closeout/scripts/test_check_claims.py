@@ -1119,6 +1119,12 @@ class ClaimCloseoutTests(unittest.TestCase):
                 [receipt, {**receipt, "issue": {"repo": "second/b", "number": 5}}],
             ),
         ]
+        cases.append(
+            (
+                'claim_repos() { for repo in first/a second/b; do uv run gh-plan.py --repo "$repo" claim 5; done; }; claim_repos; uv run gh-plan.py claim 5',
+                [receipt, {**receipt, "issue": {"repo": "second/b", "number": 5}}],
+            )
+        )
         for command, result in cases:
             root = self.entry()
             rows = [
