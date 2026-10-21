@@ -425,7 +425,7 @@ def shell_texts(text: str, javascript: bool) -> tuple[list[str], bool]:
             return ([command_text(command)], False) if command is not None else ([], False)
         return [text], False
     literal = r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|`(?:\\.|[^`\\])*`'
-    reference = r"\btools\[\s*['\"](?:exec_command|shell_command|shell)['\"]\s*\]|\b(?:exec_command|shell_command)\b|\btools\.shell\b|\bshell\s*\("
+    reference = r"\btools\s*\[\s*['\"](?:exec_command|shell_command|shell)['\"]\s*\]|\b(?:exec_command|shell_command)\b|\btools\.shell\b|\bshell\s*\("
     site = re.compile(
         r"(?P<call>\btools\.(?:exec_command|shell_command|shell)\s*\()|(?P<reference>"
         + reference
@@ -653,22 +653,32 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
         opaque = False
         reason = "missing_output"
         decode_failed = False
+        repeated = False
         try:
             shells, opaque = shell_texts(text, javascript)
             opaque = opaque and seen_claim_source
             for shell in shells:
                 for argv in shell_argv(shell):
+                    repeated = repeated or bool(argv and argv[0] in {"for", "while", "until", "function"})
                     arguments = claim_arguments(argv)
                     if arguments is not None and "claim" in arguments and "--help" not in arguments and "-h" not in arguments:
                         invocations.append(arguments)
         except ValueError as error:
             decode_failed = True
             reason = "decode_failure: " + str(error)
+        opaque = opaque or (
+            repeated
+            and any(
+                item is not None and item["known"] is None and not item["foreign"]
+                for arguments in invocations
+                for item in [invocation_target(arguments, session)]
+            )
+        )
         blocks = outputs.get(identifier, [])
         found, unknown = resolve_invocations(invocations, blocks, session)
         targets.update(found)
         if opaque:
-            reason = "computed"
+            reason = "repeated_execution" if repeated else "computed"
         if unknown and directory is not None:
             try:
                 saved = persisted_output(records, directory, session, identifier)

@@ -1110,6 +1110,14 @@ class ClaimCloseoutTests(unittest.TestCase):
             ("uv run gh-plan.py claim 3 --session foreign --bad; uv run gh-plan.py claim 5", rejection),
             ("uv run gh-plan.py claim 5; uv run gh-plan.py --repo first/a claim 5", receipt),
             ("cd first; uv run gh-plan.py claim 5; cd second; uv run gh-plan.py claim 5", receipt),
+            (
+                'for flag in --bad1 --bad2; do uv run gh-plan.py claim 7 "$flag"; done; uv run gh-plan.py claim 5',
+                [rejection, {**rejection, "error": "another invalid flag"}],
+            ),
+            (
+                'for repo in first/a second/b; do uv run gh-plan.py --repo "$repo" claim 5; done; uv run gh-plan.py claim 5',
+                [receipt, {**receipt, "issue": {"repo": "second/b", "number": 5}}],
+            ),
         ]
         for command, result in cases:
             root = self.entry()
