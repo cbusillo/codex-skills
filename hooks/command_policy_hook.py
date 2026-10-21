@@ -506,6 +506,10 @@ def xargs_command(argv: list[str]) -> tuple[list[str], XargsInput]:
     return command or ["echo"], XargsInput(replacement, uncertain, unknown, tuple(command))
 
 
+def is_command_option(word: str) -> bool:
+    return word == "--command" or word.startswith("--command=") or word.startswith("-") and not word.startswith("--") and "c" in word[1:]
+
+
 def normalize_command(argv: list[str]) -> Command:
     argv, roles, frames = list(argv), set(), []
     def finish(command: list[str]) -> Command:
@@ -568,13 +572,13 @@ def normalize_command(argv: list[str]) -> Command:
             cursor = 0
             while cursor < len(tail) and tail[cursor].startswith("-"):
                 option = tail[cursor]
-                if option in {"-c", "--command"} or option.startswith("--command="):
+                if is_command_option(option):
                     return finish([head, *tail])
                 cursor += 2 if option in {"-w", "--timeout", "-E", "--conflict-exit-code"} else 1
                 if option == "--":
                     break
             child = tail[cursor + 1:]
-            if not child or child[0] in {"-c", "--command"}:
+            if not child or is_command_option(child[0]):
                 return finish([head, *tail])
             roles.add(head)
             argv = child
@@ -680,9 +684,16 @@ def command_input(argv: list[str], *, completion: bool = False, depth: int = 0,
         if not words or words[0] in STDIN_PROGRAM_PATHS:
             kind = "shell"
     elif name in {"su", "runuser", "script", "flock"}:
-        for index, flag in enumerate(tail[:-1]):
-            if flag == "--command" or flag.startswith("-") and "c" in flag[1:]:
-                programs.append(tail[index + 1])
+        for index, flag in enumerate(tail):
+            if flag.startswith("--command="):
+                programs.append(flag.partition("=")[2])
+                break
+            if flag == "--command":
+                programs.extend(tail[index + 1:index + 2])
+                break
+            if is_command_option(flag):
+                attached = flag[flag.index("c") + 1:]
+                programs.extend([attached] if attached else tail[index + 1:index + 2])
                 break
         if name in {"su", "runuser"} and not programs:
             kind = "shell"
