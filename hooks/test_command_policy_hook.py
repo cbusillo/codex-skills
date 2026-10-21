@@ -781,6 +781,9 @@ class CommandPolicyHookTests(unittest.TestCase):
             "bash -c 'echo fixed | bash' <<'EOF'\ngh pr merge 17\nEOF",
             "echo fixed <<'EOF' | bash\ngh pr merge 17\nEOF",
             "cat >notes.md <<'EOF'\ngh pr merge 17\nEOF\nfind . -exec grep bash notes.md \\;",
+            "cat >notes.md <<'EOF'\ngh pr merge 17\nEOF\ngrep bash notes.md",
+            "cat >notes.md <<'EOF'\ngh pr merge 17\nEOF\nfind . \\( -name '*.md' \\) -exec grep bash notes.md \\;",
+            "grep bash <<< 'gh pr merge 17'",
             "python3 - <<-'EOF'\n\tlaunchplane merge-train run-once\n\tEOF",
             "printf '%s\\n' \"$((1 << 2))\" 'gh pr merge 17'",
         ):
