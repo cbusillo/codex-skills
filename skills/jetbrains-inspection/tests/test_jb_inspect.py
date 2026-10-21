@@ -6762,6 +6762,8 @@ class LifecycleTest(unittest.TestCase):
         with patch.object(jb_inspect.subprocess, "check_output", return_value=census):
             self.assertEqual(jb_inspect.running_app_pids("PyCharm", app_path), [783])
             self.assertEqual(jb_inspect.running_app_pids("PyCharm", None), [783])
+            self.assertEqual(jb_inspect.running_app_pids("PyCharm.app", Path("PyCharm.app")), [783])
+            self.assertEqual(jb_inspect.running_app_pids("PyCharm.app", None), [783])
 
     def test_unprovable_process_census_refuses_launch(self):
         with patch.object(jb_inspect.subprocess, "check_output", side_effect=OSError("ps unavailable")), \

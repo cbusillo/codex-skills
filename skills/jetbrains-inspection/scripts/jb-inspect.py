@@ -12623,9 +12623,10 @@ def running_app_pids(ide_app: str | None, ide_app_path: Path | None) -> list[int
 
 
 def app_executable_marker(ide_app: str | None, ide_app_path: Path | None) -> str:
-    if ide_app_path:
+    if ide_app_path and ide_app_path.is_absolute():
         return f"{ide_app_path.resolve()}/Contents/MacOS/".lower()
-    return f"/{ide_app}.app/Contents/MacOS/".lower()
+    bundle_name = (ide_app_path.name if ide_app_path else str(ide_app)).removesuffix(".app")
+    return f"/{bundle_name}.app/Contents/MacOS/".lower()
 
 
 def resolved_ide_app_name(context: dict[str, Any]) -> str | None:
