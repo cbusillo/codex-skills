@@ -28,6 +28,9 @@ sys.path.insert(0, str(HOOK.parent))
 
 import command_policy_hook  # noqa: E402
 
+sys.path.insert(0, str(HOOK.parents[1] / "skills/github/scripts"))
+import github_plan_lease  # noqa: E402
+
 VALIDATOR_PATH = HOOK.parents[1] / "skills/skill-creator/scripts/quick_validate.py"
 validator_spec = importlib.util.spec_from_file_location("quick_validate", VALIDATOR_PATH)
 assert validator_spec is not None and validator_spec.loader is not None
@@ -66,6 +69,29 @@ def linked_worktree(checkout: Path, linked: Path) -> Path:
 
 
 class CommandPolicyHookTests(unittest.TestCase):
+    def test_each_harness_tool_call_renews_its_claim_lease_without_skipping_policy(self) -> None:
+        payloads = {
+            "codex": {"hook_event_name": "PreToolUse", "session_id": "codex-session", "turn_id": "turn", "model": "gpt",
+                      "tool_name": "Bash", "tool_input": {"command": "kill -9 $(pgrep -f codex)"}},
+            "claude": {"hook_event_name": "PreToolUse", "session_id": "claude-session", "transcript_path": "/t.jsonl",
+                       "permission_mode": "default", "tool_name": "Bash", "tool_input": {"command": "kill -9 $(pgrep -f codex)"}},
+        }
+        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"HOME": home}):
+            for harness, payload in payloads.items():
+                with self.subTest(harness=harness):
+                    result = subprocess.run([sys.executable, str(HOOK), "--json"], input=json.dumps(payload),
+                                            capture_output=True, text=True, env={**os.environ, "HOME": home})
+                    self.assertEqual(json.loads(result.stdout)["hookSpecificOutput"]["permissionDecision"], "deny")
+                    self.assertEqual(github_plan_lease.state(payload["session_id"]), github_plan_lease.LIVE)
+
+    def test_unwritable_lease_store_still_applies_policy(self) -> None:
+        payload = {"session_id": "codex-session", "tool_name": "Bash", "tool_input": {"command": "kill -9 $(pgrep -f codex)"}}
+        with tempfile.TemporaryDirectory() as home:
+            (Path(home) / ".code").write_text("not a directory")
+            result = subprocess.run([sys.executable, str(HOOK), "--json"], input=json.dumps(payload),
+                                    capture_output=True, text=True, env={**os.environ, "HOME": home})
+        self.assertEqual(json.loads(result.stdout)["hookSpecificOutput"]["permissionDecision"], "deny")
+
     def test_pattern_process_kills_are_refused_without_running_them(self) -> None:
         for line in (
             "pkill sleep", "pkill -f 'sleep 10|sleep 15'", "killall sleep",

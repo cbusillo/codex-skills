@@ -14,6 +14,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from argparse import Namespace
 from itertools import product
@@ -25,6 +26,7 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).parent))
 import github_agent
 import github_plan_claim as CLAIM
+import github_plan_lease as LEASE
 import github_plan_sessions as SESSIONS
 import github_plan_wait as wait_record
 import github_identity
@@ -873,6 +875,60 @@ class ClaimTests(unittest.TestCase):
         ][:2 if released else 1]
         self.inventory["worktrees"] = [{"branch": OTHER["branch"], "path": "/retained/other-42"}]
         self.inventory["local_branches"] = self.inventory["remote_branches"] = [OTHER["branch"]]
+
+    def lease_fixture(self, state):
+        home = self.enterContext(tempfile.TemporaryDirectory())
+        os.environ["HOME"] = home
+        if state == "unknown":
+            return
+        LEASE.renew(OTHER["session"])
+        if state == "expired":
+            stale = time.time() - (LEASE.DEFAULT_LEASE_MINUTES + 1) * 60
+            os.utime(LEASE.lease_path(OTHER["session"]), (stale, stale))
+
+    def refuse_native_scans(self):
+        self.observe_native = Mock(side_effect=AssertionError("claim ownership must not scan native processes"))
+        self.inventory["sessions"] = [{"sessionId": OTHER["session"], "cwd": "/retained/other-42"}]
+
+    def test_exact_release_frees_the_issue_without_a_native_scan(self):
+        self.ended_holder_fixture()
+        self.lease_fixture("live")
+        self.refuse_native_scans()
+        self.issue["body"] = self.issue["body"].replace("State: Open, not started.", CLAIM.marker(OTHER))
+        self.run_claim()
+        result = self.emitted.call_args.args[0]
+        self.assertTrue(result["ok"])
+        self.assertEqual([entry["claim_id"] for entry in result["retained_artifacts"]], [71])
+
+    def test_live_lease_refuses_a_successor_before_any_write(self):
+        self.ended_holder_fixture(released=False)
+        self.lease_fixture("live")
+        self.refuse_native_scans()
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_claim()
+        self.assertEqual(caught.exception.code, "claim_conflict")
+        self.assert_no_writes()
+
+    def test_expired_lease_lets_a_successor_take_over_and_records_the_takeover(self):
+        self.ended_holder_fixture(released=False)
+        self.lease_fixture("expired")
+        self.refuse_native_scans()
+        self.run_claim()
+        result = self.emitted.call_args.args[0]
+        self.assertTrue(result["ok"])
+        self.assertEqual([entry["claim_id"] for entry in result["retained_artifacts"]], [71])
+        posted = next(c["body"] for c in self.comments if CLAIM.records(c["body"]) and CLAIM.records(c["body"])[0]["session"] == OWNER["session"])
+        self.assertIn("Lease takeover: claim 71", posted)
+        self.assertEqual(LEASE.state(OWNER["session"]), LEASE.LIVE)
+
+    def test_unreadable_lease_keeps_the_claim_for_supervisor_release(self):
+        self.ended_holder_fixture(released=False)
+        self.lease_fixture("unknown")
+        self.refuse_native_scans()
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_claim()
+        self.assert_no_writes()
+        self.assertIn("release-claim", caught.exception.payload["coordination"][0]["next_action"])
 
     def test_native_finished_handoff_still_requires_an_exact_release(self):
         self.ended_holder_fixture(released=False)
