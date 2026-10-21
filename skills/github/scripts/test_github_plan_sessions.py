@@ -5,7 +5,7 @@
 """Fake native daemon evidence, including refusal and read-only transport."""
 import copy
 import asyncio
-from contextlib import ExitStack, redirect_stdout
+from contextlib import ExitStack, asynccontextmanager, nullcontext, redirect_stdout
 import io
 import inspect
 import json
@@ -1737,7 +1737,156 @@ class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(coverage["status"], "unavailable")
 
 
+class FamilyObservationTests(unittest.TestCase):
+    def setUp(self):
+        self.stack = ExitStack()
+        self.addCleanup(self.stack.close)
+        self.home = Path(self.stack.enter_context(tempfile.TemporaryDirectory())).resolve()
+        self.clock, self.sources, self.reads = [0], {}, {}
+        self.busy, self.missing, self.queues, self.live, self.change_source, self.change_scope = set(), set(), set(), set(), set(), set()
+        self.changed_scope, self.unknown = set(), False
+        self.managed = True
+        self.coverage = {"status": "available", "peer_complete": True, "process_coverage": "complete",
+                         "observed_homes": [str(self.home)], "observed_sockets": ["/fixture/socket"]}
+        @asynccontextmanager
+        async def connection(home, **_kwargs):
+            if home != self.home:
+                raise OSError("fixture home unavailable")
+            yield None
+        async def facts(_request, session, **_kwargs):
+            self.reads[session] = self.reads.get(session, 0) + 1
+            if self.reads[session] == 2:
+                if session in self.change_source:
+                    self.sources[session] = {"changed": True}
+                if session in self.change_scope:
+                    self.changed_scope.add(session)
+            return {"id": session, "path": self.path(session), "state": "idle",
+                    "queue": {"queued": "work"} if session in self.queues else {},
+                    "turns": [{"id": "finished", "status": "completed"}],
+                    "executions": {"ended": True, "items": []}, "background": [], "realtime": [], "goal": None}
+        def process_scan(argv, **_kwargs):
+            self.assertEqual(argv[0], "ps")
+            self.clock[0] += 1
+            commands = "\n".join(f"{900 + i} codex resume {session}" for i, session in enumerate(sorted(self.live)))
+            if self.unknown:
+                commands += "\n999 codex resume unidentified"
+            return SimpleNamespace(returncode=0, stdout=commands)
+        def ownership(session):
+            if session in self.busy:
+                raise CLOSURE.LeaseBusy("fixture child is busy")
+            return nullcontext(True)
+        def scope(session, primary, **_kwargs):
+            homes = {self.home} | ({self.home / "missing"} if session in self.missing else set())
+            path = str(primary) + (".changed" if session in self.changed_scope else "")
+            return homes, {str(self.home): [path]}
+        for target, name, value in (
+                (SESSIONS, "observe", lambda *_a, **_kw: ([], {}, self.coverage)),
+                (SESSIONS, "configured_homes", lambda **_kw: [self.home]),
+                (SESSIONS.subprocess, "run", process_scan),
+                (SESSIONS.process_liveness(), "process_arguments", lambda _pid, command: (command.split(), True)),
+                (CLOSURE, "managed_launch", lambda pid, *_a: self.managed and pid != 999),
+                (SESSIONS, "native_daemon_process", lambda *_a, **_kw: False),
+                (SESSIONS.process_liveness(), "process_absent", lambda _pid: False),
+                (SESSIONS.time, "time", lambda: self.clock[0]),
+                (CLOSURE, "ownership", ownership),
+                (CLOSURE, "lease_path", lambda s: self.home / (s + ".lease")),
+                (CLOSURE, "require_canonical_identity", lambda _s: None),
+                (CLOSURE, "source_records", lambda _s: dict(self.sources)),
+                (CLOSURE, "lease_state", lambda _s: {}),
+                (SESSIONS.github_plan_native, "observation_scope", scope),
+                (SESSIONS.github_plan_native, "connection", connection),
+                (SESSIONS.github_plan_native, "read_thread_facts", facts)):
+            self.stack.enter_context(patch.object(target, name, side_effect=value))
+
+    def path(self, session):
+        return str(self.home / "sessions" / (session + ".jsonl"))
+
+    def family(self, count, *, deadline=4.5):
+        nodes = [{"session_id": f"00000000-0000-4000-8000-{i:012d}", "harness": "codex",
+                  "records": [], "transcript": self.path(f"00000000-0000-4000-8000-{i:012d}")} for i in range(count)]
+        root = {"session_id": "root", "harness": "codex", "records": []}
+        pending = SESSIONS.pending_ownership([root, *nodes], [{"pending": False}, *({"pending": True} for _ in nodes)],
+                                             deadline_at=deadline)
+        return nodes, pending
+
+    def test_quiet_family_fits_one_process_proof_budget_as_it_grows(self):
+        elapsed = []
+        for size in (2, 40):
+            self.clock[0], self.reads = 0, {}
+            _, pending = self.family(size)
+            self.assertFalse(pending, pending)
+            elapsed.append(self.clock[0])
+        self.assertEqual(*elapsed)
+
+    def test_a_child_failure_does_not_veto_its_quiet_sibling(self):
+        child = "00000000-0000-4000-8000-000000000001"
+        for failure in (self.queues, self.busy, self.missing, self.live, self.change_source, self.change_scope):
+            with self.subTest(failure=failure):
+                self.clock[0], self.sources, self.reads, self.changed_scope = 0, {}, {}, set()
+                failure.add(child)
+                try:
+                    _, pending = self.family(2, deadline=100)
+                finally:
+                    failure.clear()
+                self.assertEqual([p["session_id"] for p in pending], [child], pending)
+
+    def test_unknown_process_vetoes_the_whole_family(self):
+        self.unknown = True
+        nodes, pending = self.family(2)
+        self.assertEqual({p["session_id"] for p in pending}, {n["session_id"] for n in nodes})
+
+    def test_unmanaged_named_client_vetoes_the_whole_family(self):
+        self.managed = False
+        self.live.add("00000000-0000-4000-8000-000000000001")
+        nodes, pending = self.family(2)
+        self.assertEqual({p["session_id"] for p in pending}, {n["session_id"] for n in nodes})
+
+
 class ObservationMergeTests(unittest.TestCase):
+
+    def test_checker_observes_a_pending_native_wait_end_in_the_same_turn(self):
+        from test_claim_receipts import cell_header, composed_result
+        for in_initial, queued, duplicate in ((False, False, False), (True, False, False), (False, True, False), (True, False, True)):
+            with self.subTest(wait_in_initial_snapshot=in_initial, queued=queued, duplicate=duplicate), ReceiptFixture() as f:
+                f.native_state = "active"
+                original = SESSIONS.native_helpers()[1].read_jsonl(f.transcript)[:2]
+                original.append({"payload": {"type": "custom_tool_call", "call_id": "check", "name": "exec",
+                    "input": 'text(await tools.exec_command({cmd:"uv run check_claims.py"}));'}})
+                startup = composed_result({"session_id": 123, "output": ""}, "check")
+                startup["payload"]["output"].insert(0, cell_header())
+                wait = {"payload": {"type": "function_call", "namespace": "clock", "name": "sleep",
+                    "call_id": "timer", "arguments": json.dumps({"duration_ms": 20})}}
+                prefix = [*original, startup, wait]
+                f.transcript.write_text("".join(json.dumps(r) + "\n" for r in prefix))
+                node = {"session_id": f.session, "harness": "codex", "transcript": str(f.transcript),
+                        "records": prefix if in_initial else original}
+                f.rpc_results["thread/backgroundTerminals/list"] = {"data": [{"itemId": "exec-check", "processId": "123"}], "nextCursor": None}
+                peers, _, coverage = f.observe()
+                if queued:
+                    f.queue_items = [{"id": "new", "clientUserMessageId": "next", "input": []}]
+                completion = [
+                    {"type": "response_item", "payload": {"type": "function_call_output", "call_id": "timer", "output": "native wait result"}},
+                    {"type": "event_msg", "payload": {"type": "item_completed", "thread_id": f.session, "turn_id": "source-turn",
+                        "item": {"type": "Extension", "kind": "clock.sleep", "id": "timer", "durationMs": 20},
+                        "started_at_ms": 100, "completed_at_ms": 120}}]
+                if duplicate:
+                    node["records"] = [*prefix, *completion]
+                    f.transcript.write_text("".join(json.dumps(r) + "\n" for r in [*node["records"], completion[-1]]))
+                    with patch.object(SESSIONS.asyncio, "sleep", side_effect=AssertionError("invalid proof must refuse without waiting")):
+                        self.assertFalse(SESSIONS._current_check_quiet(node, peers=peers, coverage=coverage,
+                                                                      deadline_at=SESSIONS.time.time() + 2))
+                    continue
+                def finish():
+                    with f.transcript.open("a") as stream:
+                        stream.write("".join(json.dumps(r) + "\n" for r in completion))
+                timer = threading.Timer(.05, finish)
+                timer.start()
+                try:
+                    quiet = SESSIONS._current_check_quiet(node, peers=peers, coverage=coverage,
+                                                         deadline_at=SESSIONS.time.time() + 2)
+                finally:
+                    timer.join()
+                self.assertEqual(quiet, not queued)
 
     def test_deadline_context_does_not_replace_a_queue_refusal(self):
         with ReceiptFixture() as f:
@@ -1762,7 +1911,6 @@ class ObservationMergeTests(unittest.TestCase):
                 node = {"session_id": f.session, "harness": "codex", "transcript": str(f.transcript), "records": []}
                 root = {"session_id": "root", "harness": "codex", "records": []}
                 f.commands = "456 codex-code-mode-host"
-                known = iter((True, False))
                 def ended(_pid):
                     f.commands = ""
                     if queued:
@@ -1770,7 +1918,7 @@ class ObservationMergeTests(unittest.TestCase):
                     return True
                 with patch.object(SESSIONS, "observe", return_value=([], {}, complete)), \
                         patch.object(CLOSURE, "managed_launch", return_value=False), \
-                        patch.object(SESSIONS, "native_daemon_process", side_effect=lambda *_a, **_k: next(known)), \
+                        patch.object(SESSIONS, "native_daemon_process", return_value=False), \
                         patch.object(SESSIONS.process_liveness(), "process_absent", side_effect=ended):
                     pending = SESSIONS.pending_ownership([root, node], [{"pending": False}, {"pending": True}])
                 self.assertEqual(bool(pending), queued, pending)
@@ -1892,7 +2040,7 @@ class ObservationMergeTests(unittest.TestCase):
                     f.commands = "456 codex resume " + f.session
                 return {"data": [], "nextCursor": None}
             f.rpc_results["thread/timeline/list"] = attach_after_last_read
-            self.assertFalse(SESSIONS._physical_quiescent(node, [], complete))
+            self.assertFalse(SESSIONS._physical_quiescent([node], [], complete))
 
     def test_pending_without_a_closeout_record_is_rechecked_from_live_native_evidence(self):
         with ReceiptFixture() as f:
@@ -1919,7 +2067,7 @@ class ObservationMergeTests(unittest.TestCase):
     def test_live_claude_uncertainty_cannot_use_an_old_physical_exit(self):
         node = {"session_id": "live-claude", "harness": "claude"}
         with patch.object(CLOSURE, "ownership") as ownership:
-            self.assertFalse(SESSIONS._physical_quiescent(node, [], {}))
+            self.assertFalse(SESSIONS._physical_quiescent([node], [], {}))
         ownership.assert_not_called()
 
     def test_unmanaged_completed_native_child_needs_positive_current_coverage(self):
@@ -1928,26 +2076,26 @@ class ObservationMergeTests(unittest.TestCase):
             CLOSURE.lease_path(f.session).unlink()
             node = {"session_id": f.session, "harness": "codex", "transcript": str(f.transcript), "records": []}
             complete = f.observe(proof_sessions={f.session})[2]
-            self.assertTrue(SESSIONS._physical_quiescent(node, [], complete))
+            self.assertTrue(SESSIONS._physical_quiescent([node], [], complete))
             self.assertFalse(CLOSURE.lease_path(f.session).exists())
             f.commands = "456 codex resume " + f.session
-            self.assertFalse(SESSIONS._physical_quiescent(node, [], complete))
+            self.assertFalse(SESSIONS._physical_quiescent([node], [], complete))
 
             f.commands = ""
-            self.assertFalse(SESSIONS._physical_quiescent(node, [], {**complete, "peer_complete": False}))
+            self.assertFalse(SESSIONS._physical_quiescent([node], [], {**complete, "peer_complete": False}))
             f.execution_items = [{"id": "working", "type": "commandExecution", "status": "inProgress"}]
-            self.assertFalse(SESSIONS._physical_quiescent(node, [], complete))
+            self.assertFalse(SESSIONS._physical_quiescent([node], [], complete))
             f.execution_items = []
             turns = iter(("completed", "inProgress"))
             f.rpc_results["thread/turns/list"] = lambda _request: {
                 "data": [{"id": "source-turn", "status": next(turns)}], "nextCursor": None}
-            self.assertFalse(SESSIONS._physical_quiescent(node, [], complete))
+            self.assertFalse(SESSIONS._physical_quiescent([node], [], complete))
             del f.rpc_results["thread/turns/list"]
             other = f.root / "unavailable-retained-home"
             other.mkdir()
             with CLOSURE.resume_guard(f.session, method="turn/start", home=other):
                 pass
-            self.assertFalse(SESSIONS._physical_quiescent(node, [], complete))
+            self.assertFalse(SESSIONS._physical_quiescent([node], [], complete))
 
     def test_native_daemon_helpers_need_current_owning_process_and_observed_home(self):
         with ReceiptFixture("11111111-2222-4333-8444-555555555555") as f:
@@ -1990,7 +2138,7 @@ class ObservationMergeTests(unittest.TestCase):
                 node = {"session_id": f.session, "harness": "codex", "transcript": str(f.transcript), "records": []}
                 CLOSURE.replace_rows([])
                 CLOSURE.lease_path(f.session).unlink()
-                self.assertTrue(SESSIONS._physical_quiescent(node, [], f.observe(proof_sessions={f.session})[2]))
+                self.assertTrue(SESSIONS._physical_quiescent([node], [], f.observe(proof_sessions={f.session})[2]))
                 self.assertFalse(CLOSURE.lease_path(f.session).exists())
                 other = f.root / "independent-account"
                 f.add_home(other)
@@ -2003,11 +2151,11 @@ class ObservationMergeTests(unittest.TestCase):
                     details[pid] = {"pid": pid, "ppid": 1, "executable": executable, "identity": identity}
                 f.commands = "\n".join(str(pid) + " " + " ".join(argv) for pid, argv in commands.items())
                 coverage = f.observe(proof_sessions={f.session})[2]
-                self.assertTrue(SESSIONS._physical_quiescent(node, [], coverage))
-                self.assertFalse(SESSIONS._physical_quiescent(node, [{"sessionId": f.session,
+                self.assertTrue(SESSIONS._physical_quiescent([node], [], coverage))
+                self.assertFalse(SESSIONS._physical_quiescent([node], [{"sessionId": f.session,
                     "source": "codex_session", "home": str(f.root / "outside"), "native_state": "idle"}], coverage))
                 f.commands += "\n300 codex app-server"
-                self.assertFalse(SESSIONS._physical_quiescent(node, [], coverage))
+                self.assertFalse(SESSIONS._physical_quiescent([node], [], coverage))
                 f.commands = "\n".join(str(pid) + " " + " ".join(argv) for pid, argv in commands.items())
                 for pid in (200, 201):
                     commands.pop(pid)

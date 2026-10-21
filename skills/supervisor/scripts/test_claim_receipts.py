@@ -306,6 +306,46 @@ class ReceiptTests(unittest.TestCase):
         changed = [{"payload": {**launch["payload"], "input": "computed()"}}, startup]
         self.assertIsNone(receipts.current_check_process(initial, changed))
 
+    def test_checker_wait_requires_exact_observed_native_completion(self):
+        import copy
+        launch = {"payload": {"type": "custom_tool_call", "call_id": "check", "name": "exec",
+                  "input": 'text(await tools.exec_command({cmd:"uv run check_claims.py"}));'}}
+        initial = [{"type": "session_meta", "payload": {"id": SESSION}},
+                   {"payload": {"type": "task_started", "turn_id": "turn"}}, launch]
+        startup = composed_result({"session_id": 123, "output": ""}, "check")
+        startup["payload"]["output"].insert(0, cell_header())
+        wait = {"payload": {"type": "function_call", "namespace": "clock", "name": "sleep",
+                "call_id": "timer", "arguments": json.dumps({"duration_ms": 20})}}
+        result = {"type": "response_item", "payload": {"type": "function_call_output", "call_id": "timer", "output": "native wait result"}}
+        ended = {"type": "event_msg", "payload": {"type": "item_completed", "thread_id": SESSION, "turn_id": "turn",
+            "item": {"type": "Extension", "kind": "clock.sleep", "id": "timer", "durationMs": 20},
+            "started_at_ms": 100, "completed_at_ms": 120}}
+        prefix = [*initial, startup, wait]
+        self.assertIsNone(receipts.current_check_process(prefix, prefix))
+        current = [*prefix, result, ended]
+        self.assertEqual(receipts.current_check_process(initial, current), "123")
+        self.assertEqual(receipts.current_check_process(initial, [*prefix, ended, result]), "123")
+        self.assertEqual(receipts.current_check_process(current, current), "123")
+        for duplicate in (result, ended):
+            for pending_waits in (False, True):
+                with self.subTest(duplicate=duplicate["payload"]["type"], pending_waits=pending_waits):
+                    self.assertIsNone(receipts.current_check_process(initial, [*current, duplicate], pending_waits=pending_waits))
+        for label, change in (
+                ("missing result", lambda rows: rows.pop(-2)),
+                ("missing end", lambda rows: rows.pop()),
+                ("wrong namespace", lambda rows: rows[-3]["payload"].update(namespace="unknown")),
+                ("wrong result", lambda rows: rows[-2]["payload"].update(call_id="other")),
+                ("wrong end", lambda rows: rows[-1]["payload"]["item"].update(id="other")),
+                ("wrong thread", lambda rows: rows[-1]["payload"].update(thread_id="other")),
+                ("wrong turn", lambda rows: rows[-1]["payload"].update(turn_id="other")),
+                ("wrong duration", lambda rows: rows[-1]["payload"]["item"].update(durationMs=21)),
+                ("invalid end", lambda rows: rows[-1]["payload"].update(completed_at_ms=99)),
+                ("malformed call", lambda rows: rows[-3]["payload"].update(arguments='{"duration_ms":true}'))):
+            changed = copy.deepcopy(current)
+            change(changed)
+            with self.subTest(label=label):
+                self.assertIsNone(receipts.current_check_process(initial, changed))
+
     def test_reading_a_saved_proof_does_not_attest_a_fresh_check(self):
         records = history("codex", claim(), proof(("example/a", 1, 10)))
         records[-4]["payload"]["arguments"] = json.dumps({"cmd": "cat saved-proof.json"})

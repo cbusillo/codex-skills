@@ -574,7 +574,7 @@ def serial_ownership_records(records):
     return [r for r, _ in kept], [p for _, p in kept]
 
 
-def current_check_process(initial, current):
+def current_check_process(initial, current, *, pending_waits=False):
     """Bind one yielded checker to native startup metadata, never its stdout."""
     if current[:len(initial)] != initial:
         return None
@@ -592,17 +592,33 @@ def current_check_process(initial, current):
             or startups[0]["session_id"] <= 0 or startups[0].get("exit_code") is not None):
         return None
     handle = startups[0]["session_id"]
-    allowed, cells = {identifier}, set()
+    allowed, cells, waits, returned, completed = {identifier}, set(), {}, {}, {}
+    thread = turn = None
     for index, record in enumerate(current):
         calls, results = calls_and_results(record, "codex")
+        payload = record.get("payload") or {}
+        if record.get("type") == "session_meta":
+            thread = payload.get("id")
+        if payload.get("type") == "task_started":
+            turn = payload.get("turn_id")
         # Startup may finish after the caller has already polled. Validate the
         # entire suffix from the launch, including polls in the initial prefix.
         if index > launch_index:
-            payload = record.get("payload") or {}
             if payload.get("type") in {"task_started", "user_message"}:
                 return None
             for call_id, method, args in calls:
                 args = arguments(args)
+                if method == "sleep" and payload.get("namespace") == "clock":
+                    if (not isinstance(args, dict) or set(args) != {"duration_ms"}
+                            or type(args["duration_ms"]) is not int or args["duration_ms"] <= 0
+                            or not isinstance(thread, str) or not thread or not isinstance(turn, str) or not turn
+                            or not isinstance(call_id, str) or not call_id or call_id in waits):
+                        return None
+                    waits[call_id] = (args["duration_ms"], thread, turn)
+                    allowed.add(call_id)
+                    continue
+                if payload.get("namespace") not in {None, "functions"}:
+                    return None
                 if method in {"exec", "functions.exec"}:
                     serial = composed_calls(args)
                     if len(serial) != 1 or serial[0][2]:
@@ -619,10 +635,29 @@ def current_check_process(initial, current):
                 else:
                     return None
                 allowed.add(call_id)
+        if record.get("type") == "response_item" and payload.get("type") == "function_call_output" and payload.get("call_id") in waits:
+            call_id = payload["call_id"]
+            returned[call_id] = returned.get(call_id, 0) + 1
+        item = payload.get("item")
+        if record.get("type") == "event_msg" and payload.get("type") == "item_completed" and isinstance(item, dict) and item.get("id") in waits:
+            duration, owner, source_turn = waits[item["id"]]
+            if (item.get("type") != "Extension" or item.get("kind") != "clock.sleep"
+                    or type(item.get("durationMs")) is not int or item["durationMs"] != duration or payload.get("thread_id") != owner
+                    or payload.get("turn_id") != source_turn
+                    or type(payload.get("started_at_ms")) is not int
+                    or type(payload.get("completed_at_ms")) is not int
+                    or payload["completed_at_ms"] < payload["started_at_ms"]):
+                return None
+            completed[item["id"]] = completed.get(item["id"], 0) + 1
         if any(result in allowed for result in results):
             _, cell = serial_native_chunk(record)
             if cell:
                 cells.add(cell)
+    if any(count > 1 for count in (*returned.values(), *completed.values())):
+        return None
+    pending = {call_id for call_id in waits if returned.get(call_id) != 1 or completed.get(call_id) != 1}
+    if len(pending) > 1 or pending and not pending_waits:
+        return None
     return str(handle)
 
 

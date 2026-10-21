@@ -351,10 +351,19 @@ check before later native activity cannot attest current disposition. In Codex
 use one literal `text(await tools.exec_command({cmd: "CHECK COMMAND"}));`
 cell. Poll with one literal `text(await tools.write_stdin({session_id: PROCESS_ID}));`
 cell using its returned handle. Keep saved output and other polls separate.
+The poll's own yield supplies the wait. If a native `clock.sleep` is used between
+polls, binding waits for that exact call's native result and completion event;
+it never treats a pending timer, shell sleep or unknown tool as ended.
 For long checks allow at least 600 seconds on Claude Bash, or collect Codex's
 foreground process handle with its isolated polls. Do not background the check.
 Claude's records sharing one API message ID have one launch boundary: finish
 ownership before launching a separate check. Check one at a time.
+
+Make this the last tool operation before the verdict. Finish releases, Current
+Status updates, cleanup and reporting writes first. The source session leaves
+its complete checker result and verdict in its native response; a Supervisor
+can record that result on GitHub afterward. A source-side reporting command
+after the check makes its earlier claim disposition stale.
 
 A slow startup can snapshot after the checker's own first poll; the proof still
 binds its original isolated launch and every empty poll of that same handle.
@@ -367,6 +376,10 @@ unknown. Reported `native_coverage` describes the inventory observation; it does
 not attest that the later physical proof passed. `deadline_expired` reports
 the budget at refusal time, without claiming why the proof failed. A final
 process scan grants no new absence waiver after the native fence.
+Physical completion shares the global process observations and home connections
+across the uncertain family. Every child still supplies its own paired native
+facts and stable source, lease and home/path identity. A child-specific refusal
+leaves that child pending; unknown host process coverage refuses the whole set.
 Status-only reads authenticate their own
 history without reconstructing descendant claim history; the claim checker
 still verifies every native child, raw digest and exact claim disposition.
