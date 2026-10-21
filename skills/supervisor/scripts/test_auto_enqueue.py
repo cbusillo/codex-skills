@@ -140,6 +140,12 @@ class Fake:
         self.scheduler_owns_batch = False
         self.candidate_status = "ready_for_checks"
 
+    def discover(self, repos):
+        self.discovered = repos
+
+    def open_pulls(self, repo):
+        return self.pages(f"/repos/{repo}/pulls", state="open")
+
     def policies(self, _owner):
         return copy.deepcopy(self.targets)
 

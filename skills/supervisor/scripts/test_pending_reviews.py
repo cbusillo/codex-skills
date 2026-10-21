@@ -79,6 +79,9 @@ class FakeIO:
         self.review_text = "No blocking findings."
         self.extra_pulls = []
 
+    def open_pulls(self, repos):
+        return {repo: self.paged_json(f"/repos/{repo}/pulls", step_prefix="open_prs", params={"state": "open"}) for repo in repos}
+
     def get_json(self, path, **kwargs):
         if "/issues/comments/" in path:
             return copy.deepcopy(self.sources[int(path.rsplit("/", 1)[1])])

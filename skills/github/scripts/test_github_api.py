@@ -497,7 +497,7 @@ def test_call_gh_post_sends_body_as_json_stdin() -> None:
     assert stdin_data["title"] == "my issue"
 
 
-def test_call_gh_forwards_wrapper_prefix_arguments_without_explicit_environment() -> None:
+def test_call_gh_forwards_wrapper_prefix_arguments() -> None:
     proc = _fake_proc(stdout=_include_output(200, body={"ok": True}))
     with patch("subprocess.run", return_value=proc) as run:
         result = _api.call_gh(
@@ -512,7 +512,6 @@ def test_call_gh_forwards_wrapper_prefix_arguments_without_explicit_environment(
         "--require-automation-auth",
         "api",
     ]
-    assert "env" not in run.call_args.kwargs
 
 
 def test_call_gh_timeout_marks_started_write_outcome_unknown() -> None:
@@ -3117,7 +3116,7 @@ def main() -> None:
         test_call_gh_blank_expected_actor_fails_before_subprocess,
         test_call_gh_explicit_fallback_allows_unconfigured_write,
         test_call_gh_post_sends_body_as_json_stdin,
-        test_call_gh_forwards_wrapper_prefix_arguments_without_explicit_environment,
+        test_call_gh_forwards_wrapper_prefix_arguments,
         test_call_gh_timeout_marks_started_write_outcome_unknown,
         test_call_gh_timeout_preserves_authorized_fallback_actor,
         test_call_gh_uses_provider_reported_search_bucket,

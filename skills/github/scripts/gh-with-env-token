@@ -1144,6 +1144,16 @@ fi
 
 verify_bot_login_for_write "$@"
 
+# Only plain JSON reads under the already selected automation identity use the
+# cache adapter. Shared transport children keep their own response accounting.
+if [ -z "${GITHUB_API_TRANSPORT:-}" ] && [ "$auth_source" = github_app ] && [ "$own_user_opt_in" -eq 0 ] && ! allows_active_auth_fallback; then
+    raw_status=0
+    run_python "$script_dir/github_raw_read.py" "$gh_command" "$expected_login" "${GH_HOST:-github.com}" "$@" || raw_status=$?
+    if [ "$raw_status" -ne 125 ]; then
+        exit "$raw_status"
+    fi
+fi
+
 status=0
 run_with_input "$gh_command" "$@" >"$stdout_file" 2>"$stderr_file" || status=$?
 if [ "$status" -eq 0 ]; then

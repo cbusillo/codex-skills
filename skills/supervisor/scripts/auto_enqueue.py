@@ -28,7 +28,7 @@ from urllib.parse import quote
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT.parent))
 sys.path.insert(0, str(ROOT / "github/scripts"))
-from skills.github.scripts import github_api, github_pr_batch
+from skills.github.scripts import github_api, github_pr_batch, github_open_prs
 from skills.github.scripts.github_identity import automation_login
 from skills.github.scripts.ready_handoff import (
     latest_ready,
@@ -315,6 +315,12 @@ class Live:
                     }
                 )
         return targets
+
+    def discover(self, repos):
+        self.open_prs = github_open_prs.scan(self.reader, repos)
+
+    def open_pulls(self, repo):
+        return self.open_prs[repo]
 
     def batch(self, repo, numbers):
         if numbers:
@@ -687,7 +693,7 @@ def report_ready_skips(io, target, args, emit, reason, *, pulls=None, queue=None
 
     if pulls is None:
         try:
-            pulls = io.pages(f"/repos/{target['repo']}/pulls", state="open")
+            pulls = io.open_pulls(target["repo"])
         except failures as error:
             unavailable(error)
             return
@@ -739,6 +745,8 @@ def run_pass(io, args, emit, *, state=None):
     state = PassState() if state is None else state
     targets = io.policies(args.owner)
     selected = {repo.casefold() for repo in args.repo}
+    io.discover([target["repo"] for target in targets
+                 if not selected or target["repo"].casefold() in selected])
     for target in targets:
         repo = target["repo"]
         if selected and repo.casefold() not in selected:
@@ -790,7 +798,7 @@ def run_pass(io, args, emit, *, state=None):
                 for item in queue
                 if needs_ready_handoff(item, target)
             }
-            pulls = io.pages(f"/repos/{repo}/pulls", state="open")
+            pulls = io.open_pulls(repo)
             report_skips('controller_ineligible',
                                pulls=[pr for pr in pulls if pr['number'] not in author_allowed], queue=queue)
             # Active candidates were checked above. Only controller-proven

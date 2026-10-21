@@ -3381,6 +3381,7 @@ def _call_gh_uncached(
         proc = subprocess.run(
             cmd,
             input=stdin_bytes,
+            env={**os.environ, "GITHUB_API_TRANSPORT": "1"},
             # Without a body the child must not inherit an open, idle stdin from an agent host.
             stdin=None if stdin_bytes is not None else subprocess.DEVNULL,
             stdout=subprocess.PIPE,
