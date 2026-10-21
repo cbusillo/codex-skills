@@ -22,6 +22,8 @@ INLINE_TEST_NOTES = re.compile(
     r"(?i)^(?:client|owner) test(?: notes|ing)(?:\*\*|[_`])*\s*(?::(?:\*\*|[_`])*|\s*$)"
 )
 ENGINEERING_RELEASE_TESTS = "Engineering: merge to testing; Client tests at release."
+# "Nothing for Justin to test." means the marker but would otherwise read as steps.
+NEAR_MISS_NOTHING_TO_TEST = re.compile(r"(?i)^nothing(?: for [^\n]*?)? to test\b")
 
 
 @dataclass(frozen=True)
@@ -148,6 +150,12 @@ def client_test_notes(notes: str, *, review_override: bool = False) -> ClientTes
         return ClientTestNotes(
             True,
             f"Write {NOTHING_TO_TEST}: <reason> as a plain notes line.",
+            review_override,
+        )
+    if NEAR_MISS_NOTHING_TO_TEST.match(undecorated):
+        return ClientTestNotes(
+            True,
+            f"Write {NOTHING_TO_TEST}: <reason> exactly; other wording reads as Client test steps.",
             review_override,
         )
     return ClientTestNotes(True, explicit_override=review_override)

@@ -601,6 +601,10 @@ class ReadyTests(unittest.TestCase):
             "Nothing for the Client to tests: extra s.",
             "Nothing for the Client to test in this source-only repair; duplicate tools removed.",
             "nothing for the client to test: wrong case.",
+            # Naming the Client instead of the role read as real steps (odoo-tenant-cm#214).
+            "Nothing for Justin to test. No screen, menu or data changes.",
+            "Nothing for Justin to test: no screen changes.",
+            "Nothing to test: documentation only.",
         ):
             with self.subTest(invalid=invalid):
                 self.reader.pr["body"] = f"## Client test notes\n{invalid}"
