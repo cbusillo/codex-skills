@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from handoff_record import handoff_record
+from handoff_record import explicit_config, handoff_record
 
 
 class HandoffRecordTest(unittest.TestCase):
@@ -43,6 +43,10 @@ class HandoffRecordTest(unittest.TestCase):
         for text in ('[handoff]\nissue = "someone/direction"\n', "[handoff]\nissue = 12\n", 'handoff = "x"\n'):
             with self.subTest(text=text), self.assertRaises(ValueError):
                 handoff_record("someone", [self.config("supervisor.toml", text)])
+
+    def test_missing_explicit_config_is_refused_instead_of_defaulting(self) -> None:
+        with self.assertRaisesRegex(ValueError, "does not exist"):
+            explicit_config(self.folder / "moved.toml")
 
 
 if __name__ == "__main__":

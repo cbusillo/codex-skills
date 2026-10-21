@@ -36,6 +36,12 @@ def configured_issue(paths: list[Path]) -> tuple[str, Path] | None:
     return None
 
 
+def explicit_config(path: Path) -> list[Path]:
+    if not path.exists():
+        raise ValueError(f"handoff config file {path} does not exist")
+    return [path]
+
+
 def handoff_record(owner: str, paths: list[Path]) -> dict[str, str]:
     if not LOGIN.fullmatch(owner):
         raise ValueError("--owner takes the Director's GitHub login")
@@ -60,8 +66,8 @@ def main(env: Mapping[str, str] = os.environ) -> None:
     parser.add_argument("--owner", required=True, help="the Director's GitHub login")
     parser.add_argument("--config", type=Path, help="private config; default skill-data/supervisor.toml")
     args = parser.parse_args()
-    paths = [args.config] if args.config else config_paths(env, Path.home())
     try:
+        paths = explicit_config(args.config) if args.config else config_paths(env, Path.home())
         print(json.dumps(handoff_record(args.owner, paths), indent=2))
     except ValueError as error:
         parser.exit(1, f"refused: {error}\n")
