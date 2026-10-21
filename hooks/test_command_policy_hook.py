@@ -651,16 +651,21 @@ class CommandPolicyHookTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 2)
 
     def test_commit_creating_git_commands_require_bot_path(self) -> None:
+        catalog = {(entry["skill"], entry["id"]): entry for entry in SIMULATOR.policy_catalog()}
         for command in ("merge --no-edit origin/main", "pull", "rebase --continue",
                         "cherry-pick abc", "revert HEAD", "am patch.mbox",
                         "merge --ff-only --no-ff main", "merge --ff-only --ff main",
                         "rebase --skip", "am --skip"):
             for prefix in ("git ", "git -C 'a path' ", "env FLAG=x git --no-pager ", "git -Cpath -cuser.name=Human "):
-                with self.subTest(command=prefix + command):
-                    result = bash(prefix + command)
+                line = prefix + command
+                with self.subTest(command=line):
+                    winner = SIMULATOR.primary_match(shlex.split(line), line)
+                    self.assertIsNotNone(winner)
+                    expected = catalog[(winner.skill, winner.policy_id)]
+                    result = bash(line)
                     self.assertEqual(result.returncode, 2, result.stderr)
-                    self.assertIn("git-commit-as-bot", result.stderr)
-                    self.assertIn("update-branch", result.stderr)
+                    self.assertIn(expected["id"], result.stderr)
+                    self.assertIn(str(expected["message"]), result.stderr)
         for command in ("git merge-base main topic", "git log --grep merge",
                         "git-commit-as-bot --git-command merge --no-edit main",
                         "git -C path -c core.hooksPath=/dev/null merge --ff-only --no-autostash --no-overwrite-ignore abc",

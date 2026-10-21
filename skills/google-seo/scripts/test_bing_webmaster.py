@@ -184,15 +184,21 @@ class BingWebmasterHelperTest(TestCase):
         )
 
     def test_submit_url_batch_limits_to_500(self) -> None:
-        with self.assertRaises(SystemExit):
-            with patch.object(
+        with (
+            patch.object(
                 bing_webmaster,
                 "read_url_list",
                 return_value=[f"https://example.com/{index}" for index in range(501)],
-            ):
-                bing_webmaster.cmd_submit_url_batch(
-                    argparse.Namespace(site="https://example.com/", url=None, url_file=None)
-                )
+            ),
+            patch.object(bing_webmaster, "bing_api_key", return_value="api-key"),
+            patch.object(bing_webmaster, "http_json") as http_json,
+            self.assertRaises(SystemExit),
+        ):
+            bing_webmaster.cmd_submit_url_batch(
+                argparse.Namespace(site="https://example.com/", url=None, url_file=None)
+            )
+
+        http_json.assert_not_called()
 
     def test_submit_url_batch_uses_post_url_list_shape(self) -> None:
         calls: list[dict[str, Any]] = []
