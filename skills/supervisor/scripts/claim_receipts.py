@@ -30,11 +30,11 @@ class ReceiptCoverageError(ValueError):
     pass
 
 
-def unwrapped_command(argv, *, stop_at=()):
+def unwrapped_command(argv):
     """Recognize literal launchers, without executing or interpreting programs."""
     argv = list(argv)
     for _ in range(16):
-        if not argv or Path(argv[0]).name in stop_at:
+        if not argv:
             return argv
         name = Path(argv[0]).name
         if name == "uv":
@@ -84,7 +84,7 @@ def shell_sources(text, *, completion=True):
             if completion:
                 raise parsed
             continue
-        yield parsed.text, parsed.background
+        yield parsed.command_text, parsed.background
 
 
 def detached_shell(text):
@@ -651,12 +651,12 @@ def isolated_command(name, value, helper):
     texts = list(shell_texts(name, value))
     if len(texts) != 1 or "$(" in texts[0] or "`" in texts[0]:
         return False
-    lexer = shell_lexer(texts[0].strip())
-    lexer.whitespace = " \t\r"
-    lexer.whitespace_split = True
     try:
+        lexer = shell_lexer(texts[0].strip())
+        lexer.whitespace = " \t\r"
+        lexer.whitespace_split = True
         tokens = list(lexer)
-    except ValueError:
+    except (ValueError, OSError, ImportError):
         return False
     # Merging stderr preserves visible helper output; other redirections do not.
     normalized, cursor = [], 0

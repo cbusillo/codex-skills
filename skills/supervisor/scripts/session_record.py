@@ -362,10 +362,14 @@ def summarize(records: list[dict], harness: str, *, claim_histories=None, histor
         if harness == "claude":
             if handback is not None:
                 hook = record.get('attachment') or {}
-                if not (record.get('type') == 'attachment' and isinstance(hook, dict) and hook.get('type') == 'hook_success'
-                        and hook.get('exitCode', 0) == 0 and record.get('agentId') == handback[1]
-                        and (hook.get('hookEvent') == 'SubagentStop'
-                             or hook.get('hookEvent') == 'PostToolUse' and hook.get('toolUseID') == handback[0])):
+                hook = hook if isinstance(hook, dict) else {}
+                nonblocking_stop = (hook.get('hookEvent') == 'SubagentStop'
+                                    and hook.get('type') == 'hook_cancelled' and hook.get('timedOut') is True)
+                successful_hook = (hook.get('type') == 'hook_success' and hook.get('exitCode', 0) == 0
+                                   and (hook.get('hookEvent') == 'SubagentStop'
+                                        or hook.get('hookEvent') == 'PostToolUse' and hook.get('toolUseID') == handback[0]))
+                if not (record.get('type') == 'attachment' and isinstance(hook, dict)
+                        and record.get('agentId') == handback[1] and (successful_hook or nonblocking_stop)):
                     handback = None
                     result.update(at_turn_end=False)
             track_claude_background_tasks(record, running_tasks, scheduled_jobs, scheduled_tools)
