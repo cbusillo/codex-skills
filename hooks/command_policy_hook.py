@@ -363,6 +363,7 @@ class XargsInput(NamedTuple):
     stdin_uncertain: bool
     unknown: bool
     template: tuple[str, ...]
+    composed: bool = False
 
 
 class Command(NamedTuple):
@@ -454,7 +455,9 @@ def normalize_command(argv: list[str]) -> Command:
     argv, roles, frames = list(argv), set(), []
     def finish(command):
         return Command(command, roles, tuple(frame._replace(
-            unknown=frame.unknown or bool(frame.template) and len(frame.template) != len(command)
+            composed=frame.composed or bool(frame.template) and len(frame.template) != len(command),
+            unknown=frame.unknown or bool(frame.replacement and any(frame.replacement in word
+                for word in frame.template[:max(0, len(frame.template) - len(command))]))
         ) for frame in frames))
     value_flags = {
         "nice": {"-n", "--adjustment"},
@@ -590,6 +593,7 @@ def command_input(argv: list[str], *, completion: bool = False) -> tuple[list[st
             invocation = shell_invocation(argv)
             words = without_redirections(argv)
             unproved |= invocation.mode == "inline" and invocation.body is None
+            unproved |= any(frame.composed for frame in frames)
             unproved |= invocation.mode == "implicit" and not invocation.options_closed
             for frame in frames:
                 if frame.replacement:

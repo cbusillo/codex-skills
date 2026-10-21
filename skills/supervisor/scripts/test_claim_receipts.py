@@ -249,6 +249,7 @@ class ReceiptTests(unittest.TestCase):
                     "find . | xargs -J{} bash -n -- '{}'",
                     "find . | xargs --max-procs 4 sh -c 'printf done' _",
                     "xargs -a list sh -c 'printf done' <<'EOF'\nQ&A, don't\nEOF",
+                    "git diff --name-only | xargs uv run --extra dev ruff check",
                     'case a in a) printf x ;& b) printf y ;; esac']
         for command in commands:
             with self.subTest(command=command):
