@@ -3582,6 +3582,34 @@ def test_product_environment_read_refuses_invalid_monitoring_evidence(field: str
     assert "private.example.invalid" not in json.dumps(payload)
 
 
+@pytest.mark.parametrize(
+    "capacity",
+    [
+        {"host_network_capacity_available": False, "host_network_capacity": None},
+        {
+            "host_network_capacity_available": True,
+            "host_network_capacity": {
+                "server_id": "server-example",
+                "observed_at": "2026-10-21T13:00:00Z",
+                "status": "short",
+                "capacity": {"total_slots": 31, "free_slots": 1},
+                "required_networks": 2,
+                "safety_margin": 1,
+                "reason": "",
+            },
+        },
+    ],
+)
+def test_product_environment_read_accepts_and_drops_host_network_capacity(capacity: dict[str, Any]) -> None:
+    # Launchplane's ProductEnvironmentResponse always carries the availability flag.
+    argv = ["product-environment-read", "--product", "example-product", "--environment", "testing"]
+    _status, baseline, _calls = _run_product_read(argv, _product_environment_response())
+    status, payload, _calls = _run_product_read(argv, {**_product_environment_response(), **capacity})
+    assert status == 0
+    assert (payload["result"], payload["summary"]) == (baseline["result"], baseline["summary"])
+    assert "network_capacity" not in json.dumps(payload)
+
+
 def test_product_environment_read_uses_path_route_and_projects_deploy_identity() -> None:
     argv = ["product-environment-read", "--product", "example-product", "--environment", "testing"]
     status, payload, calls = _run_product_read(argv, _product_environment_response())

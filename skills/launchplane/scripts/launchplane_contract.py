@@ -449,6 +449,51 @@ INTERNAL_HELPER_ROUTES = {
     },
 }
 
+# Top-level response fields each bounded GET read accepts. A field outside its
+# set fails closed; an accepted field the read does not project is dropped.
+# references/launchplane-read-response-fields.json pins the fields Launchplane
+# declares for these routes, and the tests require each pinned set to fit here.
+BOUNDED_READ_RESPONSE_FIELDS: dict[str, frozenset[str]] = {
+    command: frozenset(fields)
+    for command, fields in {
+        "dokploy-inventory-read": {"status", "trace_id", "inventory"},
+        "generic-web-deploy-recovery-reference-read": {
+            "product", "context", "instance", "recovery_reference",
+            "reservation_state", "reservation_attempt",
+        },
+        "integration-allowances-read": {
+            "status", "trace_id", "records", "result", "replayed", "original_trace_id",
+        },
+        "merge-train-policy-read": {"status", "trace_id", "record"},
+        "path-check": {"status", "trace_id", "check"},
+        "preview-history-read": {"status", "trace_id", "preview", "generations"},
+        "private-health-endpoint-read": {
+            "status", "trace_id", "product", "context", "instance", "limit", "count", "records",
+        },
+        "private-health-endpoint-record-read": {"status", "trace_id", "record"},
+        "product-activity-read": {"status", "trace_id", "activity"},
+        "product-environment-read": {
+            "status", "trace_id", "environment",
+            "host_network_capacity_available", "host_network_capacity",
+        },
+        "product-profile-read": {"status", "trace_id", "profile"},
+        "product-promotion-status-read": {"status", "trace_id", "promotion_status"},
+        "product-secret-bindings-read": {"status", "trace_id", "product", "bindings"},
+        "production-backup-authority-read": {"status", "trace_id", "authority"},
+        "protected-artifacts-read": {"status", "trace_id", "protected_artifacts"},
+        "reconcile-requests-read": {"status", "trace_id", "product", "requests"},
+        "repository-inventory-read": {
+            "status", "trace_id", "read_model", "config_authority_delivery",
+        },
+        "target-replacement-operation-read": {
+            "status", "trace_id", "operation", "result", "recovery",
+        },
+        "testing-hold-read": {
+            "status", "trace_id", "records", "result", "replayed", "original_trace_id",
+        },
+    }.items()
+}
+
 
 class ContractError(ValueError):
     """Public-safe binding validation error."""
@@ -509,3 +554,11 @@ def internal_helper_path(name: str) -> str:
         return INTERNAL_HELPER_ROUTES[name]["path"]
     except KeyError:
         raise ContractError("unknown_internal_helper_route") from None
+
+
+def bounded_read_path(command: str) -> str:
+    """The GET route a bounded read command calls, from either route table."""
+    route = LOCAL_EXTENSION_ROUTES.get(command) or INTERNAL_HELPER_ROUTES.get(command)
+    if route is None or route["method"] != "GET":
+        raise ContractError("unknown_bounded_read")
+    return route["path"]

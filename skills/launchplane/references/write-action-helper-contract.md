@@ -1822,6 +1822,20 @@ operations, drop or list unknown fields instead. A Launchplane PR that adds a
 field to a strictly projected response lands the matching helper allowlist
 change first and says so in its PR body.
 
+For bounded GET reads, the top-level allowlists live in
+`BOUNDED_READ_RESPONSE_FIELDS` in `scripts/launchplane_contract.py`. A field
+Launchplane declares there but the read does not project, such as the
+environment read's `host_network_capacity_available` and
+`host_network_capacity`, is accepted and dropped; any other field still fails
+closed. `references/launchplane-read-response-fields.json` pins the top-level
+fields Launchplane's published OpenAPI declares for each of those routes, and
+the tests require every pinned field to be in its read's allowlist. Refresh the
+pin with `uv run scripts/sync-read-response-fields.py sync` from this skill
+directory, then add each new field to its read's allowlist, projecting it only
+when the read should emit it, and name the Launchplane commit in the commit
+message. The `Launchplane Read Response Fields` workflow fails on pull
+requests, on `main` and daily when the pin differs from Launchplane's `main`.
+
 The merge-train controller reply has no helper allowlist. Launchplane publishes
 its contract as `contracts/merge-train-controller-reply.schema.json` and tests
 every reply against it; this skill pins a byte-for-byte copy at

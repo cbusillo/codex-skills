@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from launchplane_contract import BOUNDED_READ_RESPONSE_FIELDS  # noqa: E402
 from launchplane_contract import helper_command_path  # noqa: E402
 from launchplane_contract import internal_helper_path  # noqa: E402
 from launchplane_inventory import project_inventory  # noqa: E402
@@ -4097,8 +4098,7 @@ def _project_success_output(
 def summarize_repository_inventory_read(
     *, request: dict[str, object], provider_payload: dict[str, Any]
 ) -> dict[str, object]:
-    if any(str(key) not in {"status", "trace_id", "read_model"} for key in provider_payload):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
+    _require_read_fields("repository-inventory-read", provider_payload)
     status = public_code(provider_payload.get("status"), default="ok")
     payload = base_payload(
         status=status, operation="repository-inventory-read", request=request
@@ -4116,6 +4116,14 @@ def summarize_repository_inventory_read(
     assert_public_safe_shape(payload["result"])
     assert_public_safe_shape(payload["summary"])
     return payload
+
+
+def _require_read_fields(
+    operation: str, provider_payload: dict[str, Any], *, required: frozenset[str] = frozenset()
+) -> None:
+    keys = set(map(str, provider_payload))
+    if keys.difference(BOUNDED_READ_RESPONSE_FIELDS[operation]) or required.difference(keys):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
 
 
 def _require_exact_fields(value: object, fields: set[str]) -> dict[str, Any]:
@@ -4871,10 +4879,7 @@ def _summarize_lane_config_read(
     project: Any,
     recommendation: str,
 ) -> dict[str, object]:
-    if any(
-        str(key) not in {"status", "trace_id", "records", "result"} for key in provider_payload
-    ):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
+    _require_read_fields(operation, provider_payload)
     status = public_code(provider_payload.get("status"), default="ok")
     payload = base_payload(status=status, operation=operation, request=request)
     payload["records"] = _project_records(
@@ -4968,8 +4973,7 @@ def _summarize_product_read(
     project: Any,
     recommendation: str | None = None,
 ) -> dict[str, object]:
-    if any(str(key) not in {"status", "trace_id", result_key} for key in provider_payload):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
+    _require_read_fields(operation, provider_payload)
     status = public_code(provider_payload.get("status"), default="ok")
     payload = base_payload(status=status, operation=operation, request=request)
     payload["result"] = project(provider_payload.get(result_key))
@@ -5140,8 +5144,7 @@ def summarize_protected_artifacts_read(
 def summarize_preview_history_read(
     *, request: dict[str, object], provider_payload: dict[str, Any]
 ) -> dict[str, object]:
-    if any(str(key) not in {"status", "trace_id", "preview", "generations"} for key in provider_payload):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
+    _require_read_fields("preview-history-read", provider_payload)
     status = public_code(provider_payload.get("status"), default="ok")
     payload = base_payload(status=status, operation="preview-history-read", request=request)
     payload["result"] = _project_preview_history(provider_payload)
@@ -5160,8 +5163,7 @@ def summarize_preview_history_read(
 def summarize_reconcile_requests_read(
     *, request: dict[str, object], provider_payload: dict[str, Any]
 ) -> dict[str, object]:
-    if any(str(key) not in {"status", "trace_id", "product", "requests"} for key in provider_payload):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
+    _require_read_fields("reconcile-requests-read", provider_payload)
     status = public_code(provider_payload.get("status"), default="ok")
     payload = base_payload(status=status, operation="reconcile-requests-read", request=request)
     target_key = request.get("target_key")
@@ -5189,9 +5191,11 @@ def _recovery_reference(value: object) -> str:
 def summarize_recovery_reference_read(
     *, request: dict[str, object], provider_payload: dict[str, Any]
 ) -> dict[str, object]:
-    fields = {"product", "context", "instance", "recovery_reference", "reservation_state", "reservation_attempt"}
-    if set(provider_payload) != fields:
-        raise LaunchplaneSafetyError("unsafe_response_shape")
+    _require_read_fields(
+        "generic-web-deploy-recovery-reference-read",
+        provider_payload,
+        required=BOUNDED_READ_RESPONSE_FIELDS["generic-web-deploy-recovery-reference-read"],
+    )
     if (
         provider_payload["product"] != request["product"]
         or provider_payload["instance"] != "testing"
@@ -5218,8 +5222,7 @@ def summarize_recovery_reference_read(
 def summarize_product_secret_bindings_read(
     *, request: dict[str, object], provider_payload: dict[str, Any]
 ) -> dict[str, object]:
-    if any(str(key) not in {"status", "trace_id", "product", "bindings"} for key in provider_payload):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
+    _require_read_fields("product-secret-bindings-read", provider_payload)
     status = public_code(provider_payload.get("status"), default="ok")
     payload = base_payload(
         status=status, operation="product-secret-bindings-read", request=request
@@ -5280,8 +5283,7 @@ def _project_target_replacement_recovery(value: object) -> dict[str, object] | N
 def summarize_target_replacement_operation_read(
     *, request: dict[str, object], provider_payload: dict[str, Any]
 ) -> dict[str, object]:
-    if any(str(key) not in {"status", "trace_id", "operation", "result", "recovery"} for key in provider_payload):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
+    _require_read_fields("target-replacement-operation-read", provider_payload)
     status = public_code(provider_payload.get("status"), default="ok")
     payload = base_payload(
         status=status, operation="target-replacement-operation-read", request=request
@@ -5398,11 +5400,13 @@ def summarize_merge_train_policy_read(
     *, request: dict[str, object], provider_payload: dict[str, Any]
 ) -> dict[str, object]:
     """Project one repository; never emit credential sources or the fleet."""
-    source = _require_exact_fields(provider_payload, {"status", "trace_id", "record"})
-    record = _require_dict(source.get("record"))
+    _require_read_fields(
+        "merge-train-policy-read", provider_payload, required=frozenset({"status", "trace_id", "record"})
+    )
+    record = _require_dict(provider_payload.get("record"))
     policy = _require_dict(record.get("policy"))
     policies = policy.get("policies")
-    if source.get("status") != "ok" or record.get("status") != "active" or not isinstance(policies, list) or not policies:
+    if provider_payload.get("status") != "ok" or record.get("status") != "active" or not isinstance(policies, list) or not policies:
         raise LaunchplaneSafetyError("invalid_response")
     repository = public_identifier(request.get("repository"))
     targets: list[dict[str, str]] = []
@@ -5438,7 +5442,7 @@ def summarize_merge_train_policy_read(
             "updated_at": public_timestamp(record.get("updated_at")),
             "policy_sha256": _project_sha256(record.get("policy_sha256")),
         },
-        "trace_id": public_trace_id(source.get("trace_id")),
+        "trace_id": public_trace_id(provider_payload.get("trace_id")),
     }
     assert_public_safe_shape(summary)
     payload = base_payload(status="available", operation="merge-train-policy-read", request=request)
@@ -8743,8 +8747,7 @@ def read_production_backup_authority(
         timeout=timeout,
     )
     try:
-        if any(str(key) not in {"status", "trace_id", "authority"} for key in provider_payload):
-            raise LaunchplaneSafetyError("unsafe_response_shape")
+        _require_read_fields("production-backup-authority-read", provider_payload)
         return _project_production_backup_authority_read(provider_payload.get("authority"))
     except (LaunchplaneSafetyError, ValueError, TypeError) as exc:
         raise ServiceResponseError(service_response_diagnostics(provider_payload)) from exc
@@ -9437,8 +9440,7 @@ def execute_production_backup_authority_read(
             },
             timeout=args.timeout,
         )
-        if any(str(key) not in {"status", "trace_id", "authority"} for key in provider_payload):
-            raise LaunchplaneSafetyError("unsafe_response_shape")
+        _require_read_fields("production-backup-authority-read", provider_payload)
         status = public_code(provider_payload.get("status"), default="ok")
         payload = base_payload(status=status, operation=operation, request=request)
         try:
@@ -9493,16 +9495,6 @@ PRIVATE_HEALTH_ENDPOINT_PAYLOAD_FIELDS = {
 }
 PRIVATE_HEALTH_ENDPOINT_RECORD_FIELDS = PRIVATE_HEALTH_ENDPOINT_PAYLOAD_FIELDS | {"updated_at"}
 PRIVATE_HEALTH_ENDPOINT_RESULT_FIELDS = {"mode", "endpoint_key", "endpoint_status", "record"}
-PRIVATE_HEALTH_ENDPOINT_LIST_FIELDS = {
-    "status",
-    "trace_id",
-    "product",
-    "context",
-    "instance",
-    "limit",
-    "count",
-    "records",
-}
 PRIVATE_HEALTH_ENDPOINT_STATUSES = {"active", "disabled"}
 PRIVATE_HEALTH_ENDPOINT_PLAN_STATUSES = {"dry-run": "planned", "apply": "applied"}
 PRIVATE_HEALTH_ENDPOINT_MAX_RECORDS = 100
@@ -9729,8 +9721,7 @@ def read_private_health_endpoint(
         timeout=timeout,
     )
     try:
-        if any(str(key) not in {"status", "trace_id", "record"} for key in provider_payload):
-            raise LaunchplaneSafetyError("unsafe_response_shape")
+        _require_read_fields("private-health-endpoint-record-read", provider_payload)
         record = provider_payload.get("record")
         return _project_private_health_endpoint_record(record), _private_health_endpoint_url(record)
     except (LaunchplaneSafetyError, ValueError, TypeError) as exc:
@@ -9821,8 +9812,7 @@ def execute_private_health_endpoint_read(
             query=query,
             timeout=args.timeout,
         )
-        if any(str(key) not in PRIVATE_HEALTH_ENDPOINT_LIST_FIELDS for key in provider_payload):
-            raise LaunchplaneSafetyError("unsafe_response_shape")
+        _require_read_fields("private-health-endpoint-read", provider_payload)
         records = provider_payload.get("records")
         if not isinstance(records, list) or len(records) > PRIVATE_HEALTH_ENDPOINT_MAX_RECORDS:
             raise LaunchplaneSafetyError("invalid_response")
@@ -9946,10 +9936,7 @@ def _project_product_promotion_status(provider_payload: dict[str, Any]) -> dict[
     """Whether a testing-to-prod promotion could run and its evidence fingerprint. The
     release checklist, artifacts, commits, repository, workflow, live confirmations and
     every free-text reason are dropped."""
-    if any(
-        str(key) not in {"status", "trace_id", "promotion_status"} for key in provider_payload
-    ):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
+    _require_read_fields("product-promotion-status-read", provider_payload)
     source = _require_dict(provider_payload.get("promotion_status"))
     release_review = _require_dict(source.get("release_review") or {})
     blockers = release_review.get("blockers") or []
