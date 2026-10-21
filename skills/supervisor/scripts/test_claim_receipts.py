@@ -326,6 +326,10 @@ class ReceiptTests(unittest.TestCase):
         self.assertEqual(receipts.current_check_process(initial, current), "123")
         self.assertEqual(receipts.current_check_process(initial, [*prefix, ended, result]), "123")
         self.assertEqual(receipts.current_check_process(current, current), "123")
+        for duplicate in (result, ended):
+            for pending_waits in (False, True):
+                with self.subTest(duplicate=duplicate["payload"]["type"], pending_waits=pending_waits):
+                    self.assertIsNone(receipts.current_check_process(initial, [*current, duplicate], pending_waits=pending_waits))
         for label, change in (
                 ("missing result", lambda rows: rows.pop(-2)),
                 ("missing end", lambda rows: rows.pop()),

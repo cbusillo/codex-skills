@@ -1745,6 +1745,7 @@ class FamilyObservationTests(unittest.TestCase):
         self.clock, self.sources, self.reads = [0], {}, {}
         self.busy, self.missing, self.queues, self.live, self.change_source, self.change_scope = set(), set(), set(), set(), set(), set()
         self.changed_scope, self.unknown = set(), False
+        self.managed = True
         self.coverage = {"status": "available", "peer_complete": True, "process_coverage": "complete",
                          "observed_homes": [str(self.home)], "observed_sockets": ["/fixture/socket"]}
         @asynccontextmanager
@@ -1764,9 +1765,11 @@ class FamilyObservationTests(unittest.TestCase):
                     "turns": [{"id": "finished", "status": "completed"}],
                     "executions": {"ended": True, "items": []}, "background": [], "realtime": [], "goal": None}
         def process_scan(argv, **_kwargs):
-            self.assertEqual(argv[:3], ["ps", "-ww", "-axo"])
+            self.assertEqual(argv[0], "ps")
             self.clock[0] += 1
             commands = "\n".join(f"{900 + i} codex resume {session}" for i, session in enumerate(sorted(self.live)))
+            if self.unknown:
+                commands += "\n999 codex resume unidentified"
             return SimpleNamespace(returncode=0, stdout=commands)
         def ownership(session):
             if session in self.busy:
@@ -1780,7 +1783,9 @@ class FamilyObservationTests(unittest.TestCase):
                 (SESSIONS, "observe", lambda *_a, **_kw: ([], {}, self.coverage)),
                 (SESSIONS, "configured_homes", lambda **_kw: [self.home]),
                 (SESSIONS.subprocess, "run", process_scan),
-                (SESSIONS, "process_absence_known", lambda *_a, **_kw: not self.unknown),
+                (SESSIONS.process_liveness(), "process_arguments", lambda _pid, command: (command.split(), True)),
+                (CLOSURE, "managed_launch", lambda pid, *_a: self.managed and pid != 999),
+                (SESSIONS, "native_daemon_process", lambda *_a, **_kw: False),
                 (SESSIONS.process_liveness(), "process_absent", lambda _pid: False),
                 (SESSIONS.time, "time", lambda: self.clock[0]),
                 (CLOSURE, "ownership", ownership),
@@ -1830,13 +1835,19 @@ class FamilyObservationTests(unittest.TestCase):
         nodes, pending = self.family(2)
         self.assertEqual({p["session_id"] for p in pending}, {n["session_id"] for n in nodes})
 
+    def test_unmanaged_named_client_vetoes_the_whole_family(self):
+        self.managed = False
+        self.live.add("00000000-0000-4000-8000-000000000001")
+        nodes, pending = self.family(2)
+        self.assertEqual({p["session_id"] for p in pending}, {n["session_id"] for n in nodes})
+
 
 class ObservationMergeTests(unittest.TestCase):
 
     def test_checker_observes_a_pending_native_wait_end_in_the_same_turn(self):
         from test_claim_receipts import cell_header, composed_result
-        for in_initial, queued in ((False, False), (True, False), (False, True)):
-            with self.subTest(wait_in_initial_snapshot=in_initial, queued=queued), ReceiptFixture() as f:
+        for in_initial, queued, duplicate in ((False, False, False), (True, False, False), (False, True, False), (True, False, True)):
+            with self.subTest(wait_in_initial_snapshot=in_initial, queued=queued, duplicate=duplicate), ReceiptFixture() as f:
                 f.native_state = "active"
                 original = SESSIONS.native_helpers()[1].read_jsonl(f.transcript)[:2]
                 original.append({"payload": {"type": "custom_tool_call", "call_id": "check", "name": "exec",
@@ -1858,6 +1869,13 @@ class ObservationMergeTests(unittest.TestCase):
                     {"type": "event_msg", "payload": {"type": "item_completed", "thread_id": f.session, "turn_id": "source-turn",
                         "item": {"type": "Extension", "kind": "clock.sleep", "id": "timer", "durationMs": 20},
                         "started_at_ms": 100, "completed_at_ms": 120}}]
+                if duplicate:
+                    node["records"] = [*prefix, *completion]
+                    f.transcript.write_text("".join(json.dumps(r) + "\n" for r in [*node["records"], completion[-1]]))
+                    with patch.object(SESSIONS.asyncio, "sleep", side_effect=AssertionError("invalid proof must refuse without waiting")):
+                        self.assertFalse(SESSIONS._current_check_quiet(node, peers=peers, coverage=coverage,
+                                                                      deadline_at=SESSIONS.time.time() + 2))
+                    continue
                 def finish():
                     with f.transcript.open("a") as stream:
                         stream.write("".join(json.dumps(r) + "\n" for r in completion))

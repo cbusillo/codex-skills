@@ -653,6 +653,8 @@ def current_check_process(initial, current, *, pending_waits=False):
             _, cell = serial_native_chunk(record)
             if cell:
                 cells.add(cell)
+    if any(count > 1 for count in (*returned.values(), *completed.values())):
+        return None
     pending = {call_id for call_id in waits if returned.get(call_id) != 1 or completed.get(call_id) != 1}
     if len(pending) > 1 or pending and not pending_waits:
         return None

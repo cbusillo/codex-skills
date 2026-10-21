@@ -517,6 +517,8 @@ def _current_check_quiet(node, *, peers=None, coverage=None, deadline_at=None):
                     if claim_receipts.current_check_process(node["records"], current, pending_waits=True) is not None:
                         await asyncio.sleep(0.05)
                         continue  # Wait for positive completion, never infer it.
+                    if not launch_pending:
+                        return None  # An observed binding became invalid; startup cannot repair it.
                     if current[:len(node["records"])] != node["records"]:
                         return None
                     for appended in current[len(node["records"]):]:
