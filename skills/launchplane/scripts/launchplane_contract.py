@@ -43,6 +43,7 @@ HELPER_OPERATIONS = {
     "disposable-lane-inspect": "record_disposable_lane_safety",
     "disposable-lane-collect": "record_disposable_lane_safety",
     "disposable-lane-record": "record_disposable_lane_safety",
+    "disposable-lane-clear": "record_disposable_lane_safety",
 }
 
 LOCAL_EXTENSION_ROUTES = {
