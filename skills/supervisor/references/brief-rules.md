@@ -22,6 +22,7 @@ and keep it with the brief through compaction.
 <!-- brief-rules:start -->
 Rules for this brief (every Supervisor brief carries them):
 
+- On Claude Code, use the Read tool for your own session's `tool-results` files and pass this instruction to subagents you start to avoid sensitive-path prompts from shell reads.
 - A command-policy "Run instead" message is the supported route, not a
   refusal: follow it. Correct your own command mistakes and retry. Only a real
   denial (a permission, sandbox or authorization refusal of the action itself)
