@@ -72,7 +72,14 @@ Rules for this brief (every Supervisor brief carries them):
   under the [ready handoff contract](../../github/references/cli-reference.md#ready-handoffs);
   a later push needs a fresh `ready`. A PR that needs the Client's acceptance
   hands off with `--waiting-for-client` ("Engineering ready; waiting for the
-  Client's acceptance") until the Client accepts its current head. Every PR in a repository that feeds a Client release carries
+  Client's acceptance") until the Client accepts its current head. When the
+  brief holds a PR for anyone else before the train (Chris, the Supervisor, a
+  landing decision), never post plain `ready`: the train enqueues it within
+  minutes ([codex-skills#2428](https://github.com/cbusillo/codex-skills/issues/2428)).
+  Post the waiting handoff instead, a `gh-pr.py comment <pr> --body-file <file>`
+  whose first line is `Engineering ready; waiting for <named reason>`, and run
+  `ready` once the hold ends. A brief that holds a PR names that wait in one
+  line. Every PR in a repository that feeds a Client release carries
   a `## Client test notes` section. Launchplane and codex-skills have no
   Client.
 - Scope ([approved scope rule](https://github.com/cbusillo/codex-skills/issues/1043#issuecomment-6091977127)):
