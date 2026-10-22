@@ -113,7 +113,7 @@ class ReleaseHarness(unittest.TestCase):
 
 
 class ReleaseTests(ReleaseHarness):
-    def test_verified_ended_ownership_attestation_needs_no_source_safe_verdict(self):
+    def test_verified_ended_ownership_attestation_needs_no_source_safe_verdict(self) -> None:
         self.evidence["body"] = self.evidence["body"].replace(
             "Safe to exit: yes", "Ownership release only: yes\nNative session: session-b\n"
             "Original claim: https://github.com/owner/repo/issues/42#issuecomment-1")

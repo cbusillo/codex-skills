@@ -1,3 +1,7 @@
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
 from __future__ import annotations
 
 import asyncio
@@ -9,12 +13,15 @@ import stat
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import github_plan_closure as closure
 import github_plan_native as native
 import github_plan_sessions as sessions
 import github_plan_termination as termination
+
+if TYPE_CHECKING:
+    from github_plan_release import ReleaseFacts
 
 
 def session(text: str) -> str | None:
@@ -122,7 +129,7 @@ def transcript_snapshot(entry: dict[str, Any], path: Path) -> TranscriptSnapshot
     return TranscriptSnapshot(records, after.st_mtime_ns, after.st_size, truncated)
 
 
-def verify(path: Path | None, facts: Any, *, source_url: str) -> None:
+def verify(path: Path | None, facts: ReleaseFacts, *, source_url: str) -> None:
     identity = session(facts.evidence.get("body") or "")
     if identity is None:
         if path is not None:

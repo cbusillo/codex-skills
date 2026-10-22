@@ -23,6 +23,7 @@ import test_gh_plan_release as fixtures
 class EndedClaimTests(fixtures.ReleaseHarness):
     def setUp(self) -> None:
         super().setUp()
+        self.addCleanup(self.f.doCleanups)
         self.directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.native = "01a0fcce-ef3c-74e3-af74-6721809e4990"
         self.transcript = self.directory / f"{self.native}.jsonl"
