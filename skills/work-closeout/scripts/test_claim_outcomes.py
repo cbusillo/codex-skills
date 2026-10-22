@@ -22,6 +22,179 @@ def invocation(source: str, output: object = "") -> list[dict]:
 
 
 class RecordedClaimOutcomeTests(unittest.TestCase):
+    def assert_discovered_targets(self, rows: list[dict], targets: set[tuple[str, int]]) -> None:
+        report = check_claims.history.literal_targets(rows, SESSION)
+        self.assertEqual(report["targets"], targets)
+        self.assertTrue(all(item["reason"] == check_claims.history.UNFINISHED_CLAIM for item in report["unresolved_invocations"]))
+
+    def test_known_target_requires_an_ended_attempt(self) -> None:
+        for source, output in (
+            (
+                f"text(await tools.exec_command({{cmd:{json.dumps(COMMAND)}}}));",
+                {"session_id": 123, "exit_code": None, "output": ""},
+            ),
+            (f"text((await tools.exec_command({{cmd:{json.dumps(COMMAND)}}})).output);", ""),
+            (f"await tools.exec_command({{cmd:{json.dumps(COMMAND)}}});", ""),
+        ):
+            with self.subTest(source=source):
+                report = check_claims.history.literal_targets(invocation(source, output), SESSION)
+                self.assertEqual(report["targets"], {("test/a", 5)})
+                self.assertTrue(report["unresolved_invocations"])
+
+    def test_completion_belongs_to_the_exact_ended_attempt(self) -> None:
+        source = f"text(await tools.exec_command({{cmd:{json.dumps(COMMAND)}}}));"
+        for command, output, ended in (
+            (COMMAND, {"exit_code": 0, "output": ""}, True),
+            (COMMAND, {"exit_code": None, "session_id": 123, "output": ""}, False),
+            (COMMAND + " &", {"exit_code": 0, "output": ""}, False),
+            (COMMAND, {"exit_code": 0, "session_id": 123, "output": ""}, False),
+        ):
+            with self.subTest(command=command, output=output):
+                rows = invocation(source.replace(json.dumps(COMMAND), json.dumps(command)), output)
+                report = check_claims.history.literal_targets(rows, SESSION)
+                self.assertEqual(report["targets"], {("test/a", 5)})
+                self.assertEqual(not report["unresolved_invocations"], ended)
+
+    def test_terminal_native_events_require_unique_bounded_execution(self) -> None:
+        source = f"const r=await tools.exec_command({{cmd:{json.dumps(COMMAND)}}});text(r.output);"
+        event = {
+            "type": "event_msg",
+            "payload": {
+                "type": "item_completed",
+                "thread_id": SESSION,
+                "started_at_ms": 1767225601000,
+                "item": {
+                    "type": "CommandExecution",
+                    "id": "process",
+                    "source": "unified_exec_startup",
+                    "command": ["sh", "-c", COMMAND],
+                    "status": "completed",
+                    "exit_code": 0,
+                },
+            },
+        }
+        for kind in ("ended", "prior", "foreign", "duplicate", "unknown_count", "overlap", "yielded", "while", "do"):
+            with self.subTest(kind=kind):
+                code = source
+                if kind == "duplicate":
+                    code = f"for(const n of [1,2]){{{source}}}"
+                if kind == "while":
+                    code = f"let i=0;while(i++<2){{{source}}}"
+                if kind == "do":
+                    code = f"let i=0;do{{{source}}}while(i++<2);"
+                if kind == "unknown_count":
+                    code = f'load("jobs").map(async n=>{{{source}}});'
+                rows = invocation(code)
+                rows[0]["timestamp"] = "2026-01-01T00:00:00Z"
+                rows[1]["timestamp"] = "2026-01-01T00:00:02Z"
+                item = json.loads(json.dumps(event))
+                if kind == "prior":
+                    item["payload"]["started_at_ms"] -= 2000
+                if kind == "foreign":
+                    item["payload"]["thread_id"] = "other"
+                if kind in {"overlap", "yielded"}:
+                    other = invocation('await tools.exec_command({cmd:"sleep 10"});')
+                    other[0]["payload"]["call_id"] = "other"
+                    other[1]["payload"]["call_id"] = "other"
+                    if kind == "yielded":
+                        other[1]["payload"]["output"] = "Script running with cell ID 99"
+                        rows = [*other, *rows]
+                    else:
+                        rows = [other[0], *rows, other[1]]
+                rows.append(item)
+                if kind == "duplicate":
+                    rows.append(item)
+                report = check_claims.history.literal_targets(rows, SESSION)
+                self.assertEqual(report["targets"], {("test/a", 5)})
+                self.assertEqual(not report["unresolved_invocations"], kind == "ended")
+
+    def test_only_later_polls_from_the_same_process_generation_can_complete(self) -> None:
+        claim = f"text(await tools.exec_command({{cmd:{json.dumps(COMMAND)}}}));"
+        poll = 'text(await tools.write_stdin({session_id:123,chars:""}));'
+
+        def renamed(source: str, output: object, identifier: str) -> list[dict]:
+            return [{"payload": {**row["payload"], "call_id": identifier}} for row in invocation(source, output)]
+
+        for kind in ("later", "earlier", "reuse", "partial"):
+            with self.subTest(kind=kind):
+                finished = renamed(poll, {"exit_code": 0, "output": ""}, "poll")
+                rows = renamed(claim, {"session_id": 123, "exit_code": None, "output": ""}, "claim")
+                if kind == "earlier":
+                    rows = [*finished, *rows]
+                else:
+                    if kind == "reuse":
+                        rows.extend(renamed('text(await tools.exec_command({cmd:"sleep 10"}));', {"session_id": 123}, "new"))
+                    if kind == "partial":
+                        rows.extend(
+                            renamed(
+                                'text(await tools.exec_command({cmd:"sleep 10"}));text(await tools.exec_command({cmd:"sleep 20"}));',
+                                {"session_id": 456},
+                                "new",
+                            )
+                        )
+                    rows.extend(finished)
+                report = check_claims.history.literal_targets(rows, SESSION)
+                self.assertEqual(report["targets"], {("test/a", 5)})
+                self.assertEqual(not report["unresolved_invocations"], kind == "later")
+
+    def test_background_bash_results_do_not_prove_claim_completion(self) -> None:
+        for request, result in ((True, {}), (False, {"backgroundTaskId": "task"}), (False, {})):
+            with self.subTest(request=request, result=result):
+                rows = [
+                    {
+                        "message": {
+                            "content": [
+                                {
+                                    "type": "tool_use",
+                                    "id": "bash",
+                                    "name": "Bash",
+                                    "input": {"command": COMMAND, "run_in_background": request},
+                                }
+                            ]
+                        }
+                    },
+                    {
+                        "toolUseResult": result,
+                        "message": {"content": [{"type": "tool_result", "tool_use_id": "bash", "content": ""}]},
+                    },
+                ]
+                report = check_claims.history.literal_targets(rows, SESSION)
+                self.assertEqual(report["targets"], {("test/a", 5)})
+                self.assertEqual(not report["unresolved_invocations"], not request and not result)
+
+    def test_old_runtime_unprinted_non_tty_launches_keep_input_context(self) -> None:
+        boundary = check_claims.history.CLOSED_STDIN_SINCE
+        for version in (None, ".".join(map(str, (boundary[0], boundary[1] - 1, boundary[2])))):
+            for javascript in (False, True):
+                with self.subTest(version=version, javascript=javascript):
+                    rows = [] if version is None else [{"type": "session_meta", "payload": {"cli_version": version}}]
+                    command = "CMD='uv run gh-plan.py claim 5'; bash"
+                    if javascript:
+                        rows.extend(invocation(f"text(await tools.exec_command({{cmd:{json.dumps(command)}}}));"))
+                    else:
+                        rows.extend(
+                            [
+                                {
+                                    "payload": {
+                                        "type": "function_call",
+                                        "name": "exec_command",
+                                        "call_id": "call",
+                                        "arguments": json.dumps({"cmd": command}),
+                                    }
+                                },
+                                {
+                                    "payload": {
+                                        "type": "function_call_output",
+                                        "call_id": "call",
+                                        "output": "Process running with session ID 41",
+                                    }
+                                },
+                            ]
+                        )
+                    later = 'const t=tools;const m=load("method");await t[m]({session_id:41,chars:"$CMD\\n"});'
+                    rows.extend({"payload": {**row["payload"], "call_id": "later"}} for row in invocation(later))
+                    self.assertTrue(check_claims.history.literal_targets(rows, SESSION)["unresolved_invocations"])
+
     def test_explicit_interactive_launches_do_not_require_printed_process_ids(self) -> None:
         boundary = check_claims.history.CLOSED_STDIN_SINCE
         versions = [None, ".".join(map(str, (boundary[0], boundary[1] - 1, boundary[2]))), ".".join(map(str, boundary))]
@@ -208,7 +381,12 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
                     invocation(prefix + source, json.dumps(receipt) if writes_claim else ""), SESSION
                 )
                 self.assertEqual(report["targets"], {("test/a", 5), ("test/a", 6)} if writes_claim else {("test/a", 5)})
-                self.assertEqual(bool(report["unresolved_invocations"]), uncertain)
+                if uncertain:
+                    self.assertTrue(report["unresolved_invocations"])
+                else:
+                    self.assertTrue(
+                        all(item["reason"] == check_claims.history.UNFINISHED_CLAIM for item in report["unresolved_invocations"])
+                    )
 
     def test_single_wrapped_claim_uses_its_prewrite_refusal(self) -> None:
         command = 'tools.exec_command({"cmd":"uv run gh-plan.py claim 5","max_output_tokens":1000})'
@@ -247,10 +425,7 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
         ]
         for source in sources:
             with self.subTest(source=source):
-                self.assertEqual(
-                    check_claims.history.literal_targets(invocation(source), SESSION),
-                    {"targets": {("test/a", 5)}, "unresolved_invocations": []},
-                )
+                self.assert_discovered_targets(invocation(source), {("test/a", 5)})
 
     def test_literal_repository_pairs_with_store_and_output_reads_are_bounded(self) -> None:
         source = (
@@ -263,10 +438,7 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
             check_claims.history.literal_targets(invocation(source), SESSION), {"targets": set(), "unresolved_invocations": []}
         )
         source = source.replace("show ${n}", "claim ${n}")
-        self.assertEqual(
-            check_claims.history.literal_targets(invocation(source), SESSION),
-            {"targets": {("test/a", 1), ("test/b", 2)}, "unresolved_invocations": []},
-        )
+        self.assert_discovered_targets(invocation(source), {("test/a", 1), ("test/b", 2)})
 
     def test_array_mutations_and_dynamic_execution_are_not_bounded(self) -> None:
         sources = [
@@ -333,10 +505,7 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
         for source in sources:
             for prefix in ("", f"text(await tools.exec_command({{cmd:{json.dumps(COMMAND)}}}));"):
                 with self.subTest(source=source, prefix=prefix):
-                    self.assertEqual(
-                        check_claims.history.literal_targets(invocation(prefix + source), SESSION),
-                        {"targets": {("test/a", 5)} if prefix else set(), "unresolved_invocations": []},
-                    )
+                    self.assert_discovered_targets(invocation(prefix + source), {("test/a", 5)} if prefix else set())
 
     def test_recorded_command_pairs_and_map_indices_are_bounded(self) -> None:
         pairs = json.dumps([["read", "uv run gh-plan.py --repo test/a wait --help"], ["claim", COMMAND]])
@@ -348,10 +517,7 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
         ]
         for source, targets in zip(sources, ({("test/a", 5)}, {("test/a", 1), ("test/a", 2)}), strict=True):
             with self.subTest(source=source):
-                self.assertEqual(
-                    check_claims.history.literal_targets(invocation(source), SESSION),
-                    {"targets": targets, "unresolved_invocations": []},
-                )
+                self.assert_discovered_targets(invocation(source), targets)
 
     def test_structural_command_fields_cannot_be_replaced_by_decoys(self) -> None:
         sources = [

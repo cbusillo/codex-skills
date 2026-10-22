@@ -383,7 +383,7 @@ class LiteralCommands:
         else:
             raise ValueError("binding")
 
-    def environments(self, node: Node) -> list[dict]:
+    def environments(self, node: Node, *, strict: bool = False) -> list[dict]:
         lineage = []
         while node is not None:
             lineage.append(node)
@@ -411,6 +411,8 @@ class LiteralCommands:
                             except (ValueError, SyntaxError):
                                 value = None
                             self.bind(declaration.child_by_field_name("name"), value, row)
+            if strict and node.type in {"for_statement", "while_statement", "do_statement"}:
+                raise ValueError("execution count")
             if node.type == "for_statement":
                 initializer = node.child_by_field_name("initializer")
                 if initializer is not None and initializer.type in {"lexical_declaration", "variable_declaration"}:
@@ -432,7 +434,7 @@ class LiteralCommands:
                 if (
                     callee is not None
                     and callee.type == "member_expression"
-                    and source(callee.child_by_field_name("property")) == "map"
+                    and source(callee.child_by_field_name("property")) in CALLBACK_METHODS
                 ):
                     receiver = callee.child_by_field_name("object")
                 expanded = []
@@ -442,6 +444,10 @@ class LiteralCommands:
                     except (ValueError, SyntaxError):
                         values = None
                     if not isinstance(values, list) or not values:
+                        if strict:
+                            if values == []:
+                                continue
+                            raise ValueError("execution count")
                         local = row.copy()
                         self.bind(pattern, None, local)
                         expanded.append(local)
@@ -465,6 +471,10 @@ class LiteralCommands:
                         or not isinstance(values, list)
                         or not values
                     ):
+                        if strict:
+                            if values == []:
+                                continue
+                            raise ValueError("execution count")
                         local = row.copy()
                         self.bind(node.child_by_field_name("left"), None, local)
                         expanded.append(local)
@@ -478,7 +488,7 @@ class LiteralCommands:
                 raise ValueError("expansion limit")
         return rows
 
-    def commands(self, arguments: Node) -> list[str]:
+    def commands(self, arguments: Node, *, occurrences: bool = False) -> list[str]:
         args = children(arguments)
         if arguments.type != "arguments" or len(args) != 1 or args[0].type != "object":
             raise ValueError("arguments")
@@ -501,18 +511,23 @@ class LiteralCommands:
             command = value
         if command is None:
             raise ValueError("missing command")
-        try:
-            commands = [self.value(command, {})]
-        except (ValueError, SyntaxError):
-            commands = [self.value(command, row) for row in self.environments(arguments)]
+        if occurrences:
+            commands = [self.value(command, row) for row in self.environments(arguments, strict=True)]
+        else:
+            try:
+                commands = [self.value(command, {})]
+            except (ValueError, SyntaxError):
+                commands = [self.value(command, row) for row in self.environments(arguments)]
         if not all(isinstance(item, str) for item in commands) or sum(len(item.encode()) for item in commands) > self.byte_limit:
             raise ValueError("commands")
         return commands
 
 
-def literal_commands(arguments: Node, shell_word: re.Pattern, count_limit: int, byte_limit: int) -> list[str] | None:
+def literal_commands(
+    arguments: Node, shell_word: re.Pattern, count_limit: int, byte_limit: int, *, occurrences: bool = False
+) -> list[str] | None:
     try:
-        return LiteralCommands(shell_word, count_limit, byte_limit).commands(arguments)
+        return LiteralCommands(shell_word, count_limit, byte_limit).commands(arguments, occurrences=occurrences)
     except (ValueError, KeyError, SyntaxError, RecursionError):
         return None
 

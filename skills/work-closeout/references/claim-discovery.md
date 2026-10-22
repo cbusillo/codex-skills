@@ -116,6 +116,24 @@ an earlier possible context. Printed exit codes never retire one. A non-PTY
 claim with an unknown target still needs a conclusive receipt; known targets
 require GitHub verification. Closed stdin never proves that a claim was not written.
 
+Known targets also need evidence that their attempt ended before GitHub is read.
+An unfinished native process, missing terminal result, background Bash task or
+asynchronous shell claim stays conditional even when its repository is known.
+A bound canonical helper outcome ends that helper attempt; an unknown write
+outcome still requires checking its known target on GitHub. A terminal result
+belongs only to a whole native result, not printed stdout or a projected exit
+field. Later empty polls can finish their originating process only while its
+process generation remains unambiguous. Earlier polls, reused IDs and partially
+printed intervening launches cannot supply that proof.
+
+For bounded wrappers that project or combine results, native terminal events
+can prove completion when the exact command started during that wrapper's
+recorded timestamp interval, belongs to the same native session and matches
+the full possible execution count. Overlapping or still-yielded tool calls,
+unbounded repetitions, missing timestamps, foreign events and duplicate event
+IDs cannot satisfy that proof. Literal loops and callbacks reuse the existing
+bounded literal expansion; no historical code is executed.
+
 A shell variable assigned once to a literal value at the top level, and a `for`
 loop over literal words, expand into exact claim targets, so
 `for i in 147 148; do ... claim $i; done` checks both records. This applies
