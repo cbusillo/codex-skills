@@ -39,6 +39,7 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
         refusal = {"operation": "github.plan.claim", "ok": False, "write_outcome": "not_started"}
         command = 'tools.exec_command({cmd:"uv run gh-plan.py claim 5"})'
         for source, result in (
+            (f"text(await {command});", {"session_id": 123, "output": ""}),
             (f"text(await {command});", {**refusal, "write_outcome": "unknown"}),
             (f"text(await {command});", {**refusal, "completed_steps": ["post_claim"]}),
             (f"text(await {command});", {**refusal, "claim_comment": {"id": 10}}),
@@ -127,6 +128,17 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
 
     def test_dynamic_dispatch_does_not_hide_sibling_claims(self) -> None:
         sources = [
+            'text("function eval ("); eval(load("claim"));',
+            'const r=/function eval ()/; eval(load("claim"));',
+            'text(`${eval(load("claim"))}`);',
+            'const xs=[1]; await Promise.all(xs.map(n=>tools.exec_command({cmd:`uv run gh-plan.py --repo test/a claim ${n}`,max_output_tokens:(async()=>{}).constructor(load("claim"))()})));',
+            'const xs=[{text:eval}]; await Promise.all(xs.map(({text})=>text(load("claim"))));',
+            'function run(text){text(load("claim"));} run(eval);',
+            "\\u0065val('tools.exec_command({cmd:\"uv run gh-plan.py claim 5\"})');",
+            "await (async()=>{}).constructor('return tools.exec_command({cmd:\"uv run gh-plan.py claim 5\"})')()();",
+            'await (async()=>{}).constructor(load("claim"))()();',
+            'const xs=[{text:eval}]; await Promise.all(xs.map(({text})=>text(load("claim"))));',
+            'for(const cmd of [{includes:eval}]){text(cmd.includes("claim"));}',
             'const run=tools[load("method")]; await run({cmd:load("claim")});',
             'Function("return tools.exec_comm"+"and")()({cmd:"gh-plan.py claim 5"});',
             'globalThis["tools"]["exec_"+"command"]({cmd:"gh-plan.py claim 5"});',

@@ -491,6 +491,105 @@ def javascript_object_end(tokens: list[str]) -> int | None:
     return None
 
 
+def javascript_calls_are_bounded(text: str) -> bool:
+    tokens = javascript_tokens(text)
+    globals_ = {"tools", "text", "store", "load", "exit", "Promise", "JSON", "Object", "ALL_TOOLS"}
+    code = " ".join(tokens)
+    syntax_tokens = ["literal" if re.fullmatch(JAVASCRIPT_LITERAL, token, re.DOTALL) else token for token in tokens]
+    syntax = " ".join(syntax_tokens)
+    functions = set(re.findall(r"\bfunction ([A-Za-z_]\w*) \(", syntax))
+    bindings = re.findall(r"\b(?:const|let|var) ([A-Za-z_]\w*)", syntax)
+    if globals_ & (set(bindings) | functions):
+        return False
+    parameters = re.findall(r"\bfunction [A-Za-z_]\w* \( ([^)]*) \)", syntax)
+    parameters.extend(re.findall(r"([A-Za-z_]\w*|\( [A-Za-z_][\w ,]* \)|\( \[ [\w ,]+ \] \)) = >", syntax))
+    if any(globals_ & set(re.findall(r"[A-Za-z_]\w*", parameter)) for parameter in parameters):
+        return False
+    for index, token in enumerate(tokens):
+        if token in {"\\", "/"}:
+            return False
+        if token.startswith("`"):
+            if "${" in re.sub(r"\$\{[A-Za-z_]\w*\}", "", token):
+                return False
+            if index and tokens[index - 1] not in {"(", "=", ":", ",", "[", "return", "await"}:
+                return False
+        if (
+            token in {"class", "import", "export"}
+            and tokens[index + 1 : index + 2] != [":"]
+            and (index == 0 or tokens[index - 1] != ".")
+        ):
+            return False
+        if token in {"const", "let", "var"} and (
+            index + 1 >= len(tokens) or re.fullmatch(r"[A-Za-z_]\w*", tokens[index + 1]) is None
+        ):
+            return False
+        if token == "=" and tokens[index + 1 : index + 2] not in ([">"], ["="]) and tokens[index - 1] not in {"=", "!", "<", ">"}:
+            if index < 2 or tokens[index - 2] not in {"const", "let", "var"}:
+                return False
+        if token != "(":
+            continue
+        previous = tokens[index - 1] if index else ""
+        end = javascript_object_end(tokens[index:])
+        if end is not None and tokens[index + end + 1 : index + end + 3] == ["=", ">"]:
+            parameter_text = " ".join(tokens[index + 1 : index + end])
+            if re.fullmatch(r"(?:[A-Za-z_]\w*(?: , [A-Za-z_]\w*)*|\[ [A-Za-z_]\w*(?: , [A-Za-z_]\w*)* \])?", parameter_text) is None:
+                return False
+            if globals_ & set(re.findall(r"[A-Za-z_]\w*", parameter_text)):
+                return False
+        if previous in {"if", "for", "while", "switch", "catch"}:
+            if previous == "catch" and end is not None and globals_ & set(tokens[index + 1 : index + end]):
+                return False
+            continue
+        if index == 0 or previous in {"(", "=", ">", ":", ",", "return", "await", "!", ";", "{"}:
+            continue
+        if previous in {"text", "store", "load", "exit"} and (index < 2 or tokens[index - 2] != "."):
+            continue
+        if previous in functions and (index < 2 or tokens[index - 2] != "."):
+            continue
+        if index >= 3 and tokens[index - 2] == ".":
+            receiver = tokens[index - 3]
+            if receiver == "tools" and previous in {"exec_command", "shell_command", "shell", "write_stdin", "apply_patch"}:
+                continue
+            if receiver == "Promise" and previous in {"all", "allSettled"}:
+                continue
+            if receiver in {"JSON", "Object"} and previous in {"stringify", "parse", "keys", "entries"}:
+                end = javascript_object_end(tokens[index:])
+                if end is not None and "," not in tokens[index + 1 : index + end]:
+                    continue
+            if previous == "includes" and re.search(r"for \( const " + re.escape(receiver) + r" of \[", code):
+                loop = re.match(r"for \( const " + re.escape(receiver) + r" of (\[ .+? \]) \) \{", code)
+                if (
+                    loop is not None
+                    and bindings.count(receiver) == 1
+                    and re.fullmatch(JAVASCRIPT_LITERAL, tokens[index + 1]) is not None
+                ):
+                    try:
+                        items = ast.literal_eval(loop[1])
+                    except (SyntaxError, ValueError):
+                        return False
+                    if isinstance(items, list) and all(isinstance(item, str) for item in items):
+                        continue
+            if previous == "map":
+                prefix = syntax_tokens[:index]
+                if re.search(
+                    r"const "
+                    + re.escape(receiver)
+                    + r" = \[ .+? \] ; .*Promise \. (?:all|allSettled) \( "
+                    + re.escape(receiver)
+                    + r" \. map$",
+                    " ".join(prefix),
+                ):
+                    continue
+                array = re.search(r"Promise \. (?:all|allSettled) \( (\[ .+? \]) \. map$", " ".join(prefix))
+                if array is not None:
+                    continue
+            if previous == "forEach" and tokens[index + 1 : index + 3] == ["text", ")"]:
+                if re.search(r"const " + re.escape(receiver) + r" = await Promise \. (?:all|allSettled) \(", code):
+                    continue
+        return False
+    return True
+
+
 def literal_bindings(text: str, start: int, *, command_reference: str | None = None) -> list[dict[str, str | int]] | None:
     code = " ".join(javascript_tokens(text[:start]))
     literal = r"""(?:"[^"\\]*"|'[^'\\]*')"""
@@ -515,7 +614,7 @@ def literal_bindings(text: str, start: int, *, command_reference: str | None = N
     if "\\" in names:
         return None
     parameters = re.findall(r"[A-Za-z_]\w*", match["name"])
-    if "eval" in names or len(set(parameters)) != len(parameters):
+    if len(set(parameters)) != len(parameters):
         return None
     if "array" in match.re.groupindex:
         tail_tokens = javascript_tokens(text[start:])
@@ -672,7 +771,7 @@ def shell_texts(text: str, javascript: bool) -> ShellTexts:
     )
     commands = []
     tokens = javascript_tokens(text)
-    opaque = bool(javascript_names(text) & {"eval", "Function", "globalThis", "import"}) or any(
+    opaque = not javascript_calls_are_bounded(text) or any(
         token == "tools"
         and (
             tokens[index + 1 : index + 2] != ["."]

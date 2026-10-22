@@ -53,7 +53,7 @@ Only directly bound names may be interpolated, and every interpolated value
 must be a plain shell word under the same
 bounds as literal shell loops. Each expanded command stays a separate shell
 execution and goes through claim discovery and canonical release checks. Map
-arrays and parameters must have no other references during the callback; dynamic tool dispatch, `eval`, `Function` and global-object dispatch stay
+arrays and parameters must have no other references during the callback; unsupported execution stays
 conditional. Command objects with duplicate command fields, spreads, computed
 keys or accessors also stay conditional. Other statements before the call,
 mutations, additional template substitutions, escaped identifiers, escaped keys,
@@ -63,6 +63,20 @@ shared by JavaScript and Python, including quoted newlines and hexadecimal or
 four-digit Unicode escapes. Use a plain command key and keep unrelated template
 substitutions in a separate code cell. This is literal
 decoding, never JavaScript execution.
+
+In claim-related cells, call coverage uses a positive grammar. It accepts
+literal shell calls, the three output wrappers above, literal-array mapping,
+plain loops and conditions, and their `text`, `store`, `load` and early `exit`
+calls. A command string from a literal `for` loop may use `includes`; native
+result arrays may use `forEach(text)`. Simple locally declared functions keep
+their bodies under the same checks. Single-argument JSON/Object data calls
+are supported. Global capabilities cannot be shadowed, properties cannot be
+assigned, and array callbacks cannot hide additional executable options.
+Unknown calls, computed dispatch, escaped identifiers, tagged or executable
+templates, module/class declarations and unclassified regex/division syntax
+keep coverage conditional. Use direct literal shell calls and `text(result)`
+when orchestration falls outside this subset. Every decoded target remains
+subject to release verification even when the surrounding cell is conditional.
 
 A shell variable assigned once to a literal value at the top level, and a `for`
 loop over literal words, expand into exact claim targets, so
