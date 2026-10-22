@@ -5944,7 +5944,9 @@ def close_attention_preflight(
             str(exc),
             failure=github_api_core.FailureDetail(
                 cause=exc.cause,
-                message="closure needs every outside comment answered, or the Director's decision",
+                message=("closure needs each missing body reference corrected"
+                         if exc.cause == "missing_references"
+                         else "closure needs every outside comment answered, or the Director's decision"),
                 retryable=False,
                 fallback_eligible=False,
                 disposition="stop",

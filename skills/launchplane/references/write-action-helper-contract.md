@@ -603,8 +603,8 @@ installed local helper bindings.
   The operation projection returns the operation's id, product,
   context, instance, status, phase, attempt, deployment record id, the
   requested artifact id, created, updated, started, heartbeat and finished
-  times, `error_code`, a bounded `error_description` using the existing
-  public-summary validator (the descriptive word `credential` is redacted),
+  times, `error_code`, a bounded `error_description` using the response-prose
+  redaction policy,
   and validated
   `error_detail_keys` (env-key names only); and, once a result exists, the deploy, post-deploy,
   health, canonical and logo statuses, the deployment and release tuple ids,
@@ -1273,6 +1273,23 @@ does not print token values, subjects, labels, URLs, headers, or request bodies.
 Global options such as `--url` must appear before the subcommand. A diagnostic
 with `status: "incomplete"` may still have a local token source; read the
 `classification` field before describing the failure.
+
+## Response prose
+
+Output-only prose is redacted at every nesting level. Person-written metadata
+also redacts long opaque words; service diagnostics preserve long identifiers
+subject to credential-marker redaction. Credential assignments, tokens and URLs are redacted, and
+remaining denylist markers hide the entire field. Types, lengths, structural
+allowlists and raw secret-shape checks retain their existing validation.
+The context helper uses the same service-prose projection.
+
+Reasons compared with saved reviewed evidence (testing-hold, product Client
+and image repository), merge-train `ineligible_reasons` matched by downstream
+code, and structural fields retain strict validation. Lossy prose never
+establishes apply authority or substitutes for machine-matched protocol text.
+If an allowance apply receives HTTP success but its response cannot be
+projected, its result is `accepted_unverified`, with HTTP status, safe trace
+and a readback recommendation. It must not be retried as a failed write.
 
 ## Exit Behavior
 

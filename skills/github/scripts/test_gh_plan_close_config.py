@@ -285,6 +285,15 @@ class CloseConfigTests(unittest.TestCase):
                 labels.assert_not_called()
                 project.assert_not_called()
 
+    def test_missing_reference_refusal_summary_offers_no_director_route(self) -> None:
+        refusal = PLAN.github_close_attention.CloseAttentionError(
+            "Cannot close fixture/target#7", cause="missing_references", payload={})
+        with patch.multiple(PLAN.github_close_attention, check=Mock(side_effect=refusal)), \
+                self.assertRaises(PLAN.PlanError) as refused:
+            PLAN.close_attention_preflight("fixture/target", 7, {"state": "open"}, None, "gh")
+        self.assertEqual(refused.exception.failure.cause, "missing_references")
+        self.assertNotIn("Director", refused.exception.failure.message)
+
     def test_discovery_evidence_survives_partial_close_and_project_failure(self) -> None:
         code, result, state, labels, _ = self.run_close(fail_labels=True)
         self.assertNotEqual(code, 0)

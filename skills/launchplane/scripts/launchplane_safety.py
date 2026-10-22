@@ -313,7 +313,8 @@ FREE_TEXT_URL_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s<>\"']+", re.IGNOR
 
 
 def public_operator_text(
-    value: object, *, max_length: int = 500, redact_denied_markers: bool = False
+    value: object, *, max_length: int = 500, redact_denied_markers: bool = False,
+    redact_opaque_words: bool = True,
 ) -> str:
     """Project operator prose, redacting credential assignments, tokens and URLs.
 
@@ -334,8 +335,14 @@ def public_operator_text(
     for match in CREDENTIAL_ASSIGNMENT_HEAD_RE.finditer(compact):
         if not is_denied_key(match[1]):
             continue
+        if not redact_opaque_words and _compact_key(match[1]) in {
+            "request", "requestbody", "rawrequest", "value", "values", "payload", "headers", "providerenvironment",
+        }:
+            continue
         credential_value = CREDENTIAL_VALUE_RE.match(compact, match.end())
         if credential_value is None:
+            if redact_denied_markers:
+                return public_summary_string("[redacted]", max_length=max_length)
             raise LaunchplaneSafetyError("invalid_response")
         if match.start() < cursor:
             cursor = max(cursor, credential_value.end())
@@ -346,7 +353,8 @@ def public_operator_text(
     redacted = "".join(pieces)
     redacted = FREE_TEXT_URL_RE.sub("[redacted]", redacted)
     redacted = _redact_token_like(redacted)
-    redacted = CREDENTIAL_LIKE_WORD_RE.sub("[redacted]", redacted)
+    if redact_opaque_words:
+        redacted = CREDENTIAL_LIKE_WORD_RE.sub("[redacted]", redacted)
     # A leftover marker may be prose or an unrecognized credential assignment.
     # Hide the entire field rather than risk publishing an adjacent value.
     if redact_denied_markers and any(
@@ -354,6 +362,12 @@ def public_operator_text(
     ):
         redacted = "[redacted]"
     return public_summary_string(redacted, max_length=max_length)
+
+
+def public_service_text(value: object, *, max_length: int = 500) -> str:
+    return public_operator_text(
+        value, max_length=max_length, redact_denied_markers=True, redact_opaque_words=False,
+    )
 
 
 def public_url(value: object) -> str:

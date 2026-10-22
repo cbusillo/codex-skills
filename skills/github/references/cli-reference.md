@@ -1752,6 +1752,10 @@ competitor's record.
   later does not answer it, even when the edit links or mentions it. Planning
   records and Director question or decision records are not replies, even when
   they link the comment. Answer each with a new reply on its thread and rerun.
+  When degraded coverage comes from a body reference that does not exist, such
+  as a bare `#N` meant for another repository, the refusal names each one with
+  its `owner/repo#N` correction and does not offer the override for it; fix
+  the body and rerun.
   Only the Director overrides:
   `--unanswered-decision COMMENT_URL` names a repository owner comment on
   this issue after the newest such comment, or an unedited `Director decision:`
