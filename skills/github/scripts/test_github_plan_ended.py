@@ -328,6 +328,53 @@ class EndedClaimTests(fixtures.ReleaseHarness):
         self.assertIn(str(self.transcript), snapshots)
 
 
+class ClaimReceiptBoundaryTests(unittest.TestCase):
+    def test_replayed_or_quoted_receipts_do_not_bind_an_investigator(self) -> None:
+        url = "https://github.com/owner/repo/issues/42#issuecomment-1"
+        receipt = {"ok": True, "claim": fixtures.fixtures.OTHER, "claim_comment": {"comment": {"id": 1, "url": url}}}
+        for output in (json.dumps(receipt), json.dumps({"payload": {"output": json.dumps(receipt)}})):
+            rows = [
+                {
+                    "timestamp": "2026-10-03T00:00:00Z",
+                    "payload": {"type": "function_call", "call_id": "read", "input": "rg 'gh-plan.py claim 42' source.jsonl"},
+                },
+                {
+                    "timestamp": "2026-10-03T00:01:00Z",
+                    "payload": {"type": "function_call_output", "call_id": "read", "output": output},
+                },
+            ]
+            with self.subTest(output=output):
+                self.assertFalse(ended.original_claim_output(rows, url, fixtures.fixtures.OTHER, created_at="2026-10-01T00:00:00Z"))
+
+    def test_native_execution_receipt_requires_the_original_creation_interval(self) -> None:
+        url = "https://github.com/owner/repo/issues/42#issuecomment-1"
+        receipt = {"ok": True, "claim": fixtures.fixtures.OTHER, "claim_comment": {"comment": {"id": 1, "url": url}}}
+        item = {
+            "type": "CommandExecution",
+            "command": ["sh", "-c", "gh-plan.py claim 42"],
+            "status": "completed",
+            "exit_code": 0,
+            "stdout": json.dumps(receipt),
+            "duration": {"secs": 10, "nanos": 0},
+        }
+        rows = [{"timestamp": "2026-10-01T00:00:10Z", "payload": {"item": item}}]
+        self.assertTrue(ended.original_claim_output(rows, url, fixtures.fixtures.OTHER, created_at="2026-10-01T00:00:05Z"))
+        self.assertFalse(ended.original_claim_output(rows, url, fixtures.fixtures.OTHER, created_at="2026-09-30T23:59:00Z"))
+        self.assertFalse(ended.original_claim_output(rows, url, fixtures.fixtures.OTHER, created_at="2026-10-01T00:00:11Z"))
+
+    def test_historical_process_inventory_refuses_unbound_resume_targets(self) -> None:
+        shared = ended.sessions.process_liveness()
+        source = {"session_id": "01a0fcce-ef3c-74e3-af74-6721809e4990", "_inventory": True}
+        commands = {"codex": ("codex resume --last", "codex resume"), "claude": ("claude --continue", "claude -r")}
+        for harness, invocations in commands.items():
+            for command in invocations:
+                with self.subTest(command=command), patch.object(shared, "process_arguments", return_value=(command.split(), True)):
+                    with self.assertRaises(ValueError):
+                        shared.verify_process_exit(
+                            {**source, "harness": harness, "_historical_exit": True}, rows=[(1234, "ttys002", command)]
+                        )
+
+
 class NativeEndedTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.entry = {"harness": "codex", "session_id": "01a0fcce-ef3c-74e3-af74-6721809e4990", "codex_home": "/account"}
