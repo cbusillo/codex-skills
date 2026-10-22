@@ -283,10 +283,11 @@ returned PR and head; `replayed` covers an identical proposal that already
 exists, open or closed. `pending` means this run's candidate was not applied and
 the existing proposal needs ordinary review first. A refusal, conflict,
 malformed response or unconfirmed effect fails the run, prints the request's
-SHA-256 and keeps the exact request and response as an artifact. The proposal
-body has no run-specific text, so running the workflow again from the same
-`main` sends the identical request, which reconciles it. Do not publish the
-change another way.
+SHA-256 and keeps the exact request and response as an artifact. To reconcile
+an unconfirmed effect, re-run only the failed `submit` job: it reads the same
+candidate and sends the identical request, which returns any proposal it
+created. A new workflow run recalculates against PyPI and may send a different
+request. Do not publish the change another way.
 
 Launchplane must allow-list this workflow before a submission can succeed;
 that access change belongs to

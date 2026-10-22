@@ -119,6 +119,16 @@ def run_context(environment: Mapping[str, str]) -> RunContext:
     return context
 
 
+def calculation_context(context: RunContext, environment: Mapping[str, str]) -> RunContext:
+    calculated_in = environment.get("CANDIDATE_RUN_ATTEMPT", "")
+    require(
+        RUN_NUMBER.fullmatch(calculated_in) is not None
+        and int(calculated_in) <= int(context.run_attempt),
+        "The calculation job reported no attempt of this run.",
+    )
+    return RunContext(context.repository, context.base_sha, context.run_id, calculated_in)
+
+
 def git(cwd: Path, *args: str, stdin: bytes | None = None) -> bytes:
     result = subprocess.run(["git", *args], cwd=cwd, input=stdin, capture_output=True, check=False)
     if result.returncode != 0:
@@ -476,8 +486,9 @@ def _failure_guidance(status: str) -> str:
         )
     return (
         "The effect is unconfirmed. Keep this run's request artifact for reconciliation: "
-        "running the workflow again from the same main sends the identical request, which "
-        "returns any proposal it created. No other publisher may be used."
+        "re-running this failed submit job resends the identical request, which returns any "
+        "proposal it created. A new workflow run recalculates and may send a different request. "
+        "No other publisher may be used."
     )
 
 
@@ -571,7 +582,10 @@ def main(argv: Sequence[str] | None = None, environment: Mapping[str, str] | Non
     if args.command == "prepare":
         require_default_branch_workflow(environment, context.base_sha, cwd)
         prepared = prepare_request(
-            context, args.candidate_directory, environment.get("EXPECTED_DIGEST", ""), cwd
+            calculation_context(context, environment),
+            args.candidate_directory,
+            environment.get("EXPECTED_DIGEST", ""),
+            cwd,
         )
         with args.request_file.open("xb") as handle:
             handle.write(prepared.payload)

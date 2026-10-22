@@ -23,6 +23,7 @@ jobs:
     permissions:
       contents: read
     outputs:
+      attempt: ${{ github.run_attempt }}
       changed: ${{ steps.package.outputs.changed }}
       digest: ${{ steps.package.outputs.digest }}
     steps:
@@ -79,10 +80,11 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
 
+      # Re-running only this job resends the same candidate's identical request.
       - name: Download this run's candidate outside the checkout
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: pep723-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          name: pep723-candidate-${{ github.run_id }}-${{ needs.calculate.outputs.attempt }}
           path: ${{ runner.temp }}/pep723-candidate
 
       # The runner's own Python runs only standard-library code from this
@@ -90,6 +92,7 @@ jobs:
       - name: Validate the candidate as data and build the request
         id: prepare
         env:
+          CANDIDATE_RUN_ATTEMPT: ${{ needs.calculate.outputs.attempt }}
           EXPECTED_DIGEST: ${{ needs.calculate.outputs.digest }}
         run: >-
           python3 -E -s scripts/pep723_proposal.py prepare

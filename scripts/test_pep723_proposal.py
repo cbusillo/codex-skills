@@ -202,7 +202,7 @@ class ProposalBoundaryTests(unittest.TestCase):
                 str(request_file),
             ],
             cwd=self.root,
-            env=self.submit_environment(EXPECTED_DIGEST=digest),
+            env=self.submit_environment(EXPECTED_DIGEST=digest, CANDIDATE_RUN_ATTEMPT="2"),
             capture_output=True,
             text=True,
             check=False,
@@ -217,15 +217,37 @@ class ProposalBoundaryTests(unittest.TestCase):
         self.assertIn("26.2 → 26.3", request["body"])
         self.assertFalse(self.marker.exists())
 
-    def test_identical_candidates_produce_identical_requests(self) -> None:
+    def test_rerunning_submit_resends_the_identical_request(self) -> None:
         candidate, _ = self.updated_candidate()
-        first = self.prepare(candidate).payload
-        later_run = proposal.RunContext("fixture/catalog", self.base_sha, "99", "1")
-        moved = {**candidate, "run_id": "99", "run_attempt": "1"}
-        directory, digest = self.write_candidate(moved)
-        self.assertEqual(
-            proposal.prepare_request(later_run, directory, digest, self.root).payload, first
-        )
+        directory, digest = self.write_candidate(candidate)
+        requests = []
+        for submit_attempt in ("2", "3"):
+            request_file = self.temporary / f"request-{submit_attempt}.json"
+            environment = self.submit_environment(
+                GITHUB_RUN_ATTEMPT=submit_attempt,
+                CANDIDATE_RUN_ATTEMPT="2",
+                EXPECTED_DIGEST=digest,
+            )
+            self.enter_repository()
+            self.assertEqual(
+                proposal.main(["prepare", str(directory), str(request_file)], environment), 0
+            )
+            requests.append(request_file.read_bytes())
+        self.assertEqual(requests[0], requests[1])
+        for calculated_in in ("", "0", "4"):
+            with self.subTest(calculated_in=calculated_in):
+                self.assert_refused(
+                    partial(
+                        proposal.main,
+                        ["prepare", str(directory), str(self.temporary / "never.json")],
+                        self.submit_environment(
+                            GITHUB_RUN_ATTEMPT="3",
+                            CANDIDATE_RUN_ATTEMPT=calculated_in,
+                            EXPECTED_DIGEST=digest,
+                        ),
+                    ),
+                    "no attempt of this run",
+                )
 
     def test_no_dependency_change_packages_nothing(self) -> None:
         self.run_updater({"packaging": "26.2", "pyyaml": "6.0.2"})
@@ -492,10 +514,17 @@ class ProposalBoundaryTests(unittest.TestCase):
         self.context = proposal.RunContext("fixture/catalog", self.base_sha, "41", "2")
         self.assert_refused_when_packaged_and_when_hand_built("old-plus-new bytes")
 
-    def test_more_files_than_the_route_accepts_are_refused(self) -> None:
-        for index in range(32):
+    def test_file_count_is_accepted_up_to_the_route_limit(self) -> None:
+        fixture_scripts_changed = 2
+        for index in range(proposal.ROUTE_FILE_LIMIT - fixture_scripts_changed):
             self.write(f"tools/many_{index:02d}.py", script_source(["PyYAML==6.0.2"]))
-        self.base_sha = self.commit("many scripts")
+        self.base_sha = self.commit("scripts up to the limit")
+        self.context = proposal.RunContext("fixture/catalog", self.base_sha, "41", "2")
+        candidate, _ = self.updated_candidate()
+        self.assertEqual(self.prepare(candidate).changed_files, proposal.ROUTE_FILE_LIMIT)
+
+        self.write("tools/one_more.py", script_source(["PyYAML==6.0.2"]))
+        self.base_sha = self.commit("one script over the limit")
         self.context = proposal.RunContext("fixture/catalog", self.base_sha, "41", "2")
         self.run_updater()
         self.assert_refused(
