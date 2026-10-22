@@ -251,7 +251,7 @@ active issue labels and continuing background jobs do not lift a hold.
    while recommending independent work.
 5. For `next`, report the selected issue, why it fits the plan, and recorded
    waits, then stop without changing planning state. On authorized `go`, run
-   `gh-plan.py claim <issue> --worker <worker> --session <session-id>
+   `gh-plan.py --repo OWNER/REPO claim <issue> --worker <worker> --session <session-id>
    --branch <task-branch> --next-action "<action>"` before creating a
    branch or worktree, adding `--admission <kind>` when the overall Order
    admits the work: live-site breakage, a named `milestone` item (linked into

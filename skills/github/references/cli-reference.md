@@ -1329,7 +1329,7 @@ For an authorized **ordinary successor** whose next step precedes PR refresh,
 use the canonical open planning issue in the PRs' repository:
 
 ```bash
-uv run <skill-dir>/scripts/gh-plan.py claim <canonical-issue> \
+uv run <skill-dir>/scripts/gh-plan.py --repo OWNER/REPO claim <canonical-issue> \
   --worker <worker-token> --session <native-session-id> \
   --branch work/<new-task-slug> --next-action "<authorized next step>" \
   --resume-from <released-claim-comment-id> \

@@ -490,6 +490,10 @@ def shell_texts(text: str, javascript: bool) -> ShellTexts:
 SHELL_NAMES = {"sh", "bash", "zsh", "dash", "ksh", "fish"}
 
 
+def has_claim_text(text: str) -> bool:
+    return "gh-plan" in text and CLAIM_WORD.search(text) is not None
+
+
 def is_interpreter(consumer: str) -> bool:
     return (
         Path(consumer).name in SHELL_NAMES | {"node", "nodejs", "deno", "bun", "perl", "ruby"}
@@ -498,7 +502,7 @@ def is_interpreter(consumer: str) -> bool:
 
 
 def has_executable_claim_source(text: str, consumer: str, *, claim_related: bool = False) -> bool:
-    if not claim_related and ("gh-plan" not in text or CLAIM_WORD.search(text) is None):
+    if not claim_related and not has_claim_text(text):
         return False
     if not re.fullmatch(r"python(?:[0-9]+(?:\.[0-9]+)*)?", Path(consumer).name):
         if Path(consumer).name in SHELL_NAMES | {"eval", "source", "."}:
@@ -514,11 +518,22 @@ def has_executable_claim_source(text: str, consumer: str, *, claim_related: bool
     )
     modules = {"subprocess", "os", "asyncio", "pty", "runpy"}
     launchers = {"exec": "exec", "eval": "eval"}
+    unknown_bindings = False
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             modules.update(item.asname or item.name for item in node.names if item.name in modules)
         if isinstance(node, ast.ImportFrom) and node.module in modules:
             launchers.update({item.asname or item.name: item.name for item in node.names if pattern.fullmatch(item.name)})
+        if isinstance(node, ast.ImportFrom) and any(item.name == "*" for item in node.names):
+            unknown_bindings = True
+        if isinstance(node, ast.Call) and python_dynamic_import(node.func):
+            unknown_bindings = True
+        if (
+            isinstance(node, ast.ImportFrom)
+            and node.module == "importlib"
+            and any(item.name == "import_module" for item in node.names)
+        ):
+            unknown_bindings = True
         if isinstance(node, ast.Assign) and isinstance(node.value, (ast.Name, ast.Attribute)):
             if (name := python_launcher_name(node.value, modules, launchers, pattern)) is not None:
                 launchers.update({target.id: name for target in node.targets if isinstance(target, ast.Name)})
@@ -531,6 +546,12 @@ def has_executable_claim_source(text: str, consumer: str, *, claim_related: bool
     for node in calls:
         name = python_launcher_name(node.func, modules, launchers, pattern)
         if name is None:
+            if (
+                not python_dynamic_import(node.func)
+                and not python_data_call(node.func)
+                and (unknown_bindings or python_claim_arguments(node))
+            ):
+                return True
             continue
         if name == "*":
             return True
@@ -548,6 +569,51 @@ def has_executable_claim_source(text: str, consumer: str, *, claim_related: bool
         if "gh-plan" in str(value) and (CLAIM_WORD.search(str(value)) or name in {"run_path", "run_module"}):
             return True
     return False
+
+
+def python_dynamic_import(function: ast.AST) -> bool:
+    return (isinstance(function, ast.Name) and function.id == "__import__") or (
+        isinstance(function, ast.Attribute) and function.attr == "import_module"
+    )
+
+
+def python_data_call(function: ast.AST) -> bool:
+    if isinstance(function, ast.Name):
+        return function.id in {"print", "repr", "str", "bytes", "dict", "list", "tuple", "set", "frozenset", "Path", "len"}
+    return isinstance(function, ast.Attribute) and function.attr in {
+        "write_text",
+        "write_bytes",
+        "replace",
+        "join",
+        "index",
+        "find",
+        "split",
+        "splitlines",
+        "strip",
+        "lstrip",
+        "rstrip",
+        "encode",
+        "decode",
+        "format",
+        "dumps",
+        "dump",
+        "loads",
+        "load",
+        "parse",
+        "literal_eval",
+    }
+
+
+def python_claim_arguments(call: ast.Call) -> bool:
+    arguments = [*call.args, *(item.value for item in call.keywords)]
+    return has_claim_text(
+        " ".join(
+            node.value
+            for argument in arguments
+            for node in ast.walk(argument)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        )
+    )
 
 
 def python_launcher_name(node: ast.AST, modules: set[str], launchers: dict[str, str], pattern: re.Pattern) -> str | None:
@@ -582,6 +648,7 @@ class ProgramSource:
     consumer: str
     generated: bool = False
     produced: bool = False
+    argument_indexes: tuple[int, ...] = ()
 
 
 def shell_nodes(node: Node) -> Iterator[Node]:
@@ -623,29 +690,123 @@ def command_argv(node: Node) -> list[str]:
     return [shell_word(word) for word in command_words(node)]
 
 
+@dataclass
+class CommandPosition:
+    index: int
+    python_script: bool = False
+
+
+def command_position(argv: list[str]) -> CommandPosition | None:
+    if not argv:
+        return None
+    if Path(argv[0]).name != "uv":
+        return CommandPosition(0)
+    if argv[1:2] != ["run"]:
+        return None
+    value_flags = {"--python", "-p", "--with", "--with-requirements"}
+    boolean_flags = {"--no-project", "--no-config", "--offline", "--no-cache", "--frozen", "--locked", "--no-sync", "--isolated"}
+    index = 2
+    python_script = False
+    while index < len(argv) and argv[index].startswith("-"):
+        flag, equal, value = argv[index].partition("=")
+        if flag == "--" and not equal:
+            index += 1
+            break
+        if flag in value_flags:
+            if equal:
+                if not value:
+                    return None
+                index += 1
+                continue
+            if index + 1 >= len(argv) or argv[index + 1].startswith("-"):
+                return None
+            index += 2
+            continue
+        if flag == "--script" and not equal:
+            python_script = True
+        elif flag not in boolean_flags or equal:
+            if argv[index] == "-" and python_script:
+                break
+            return None
+        index += 1
+    return CommandPosition(index, python_script) if index < len(argv) or python_script else None
+
+
 def script_consumer(argv: list[str]) -> str:
-    if argv and argv[0] in {"eval", "source", "."}:
-        return argv[0]
-    if argv and Path(argv[0]).name == "uv" and "run" in argv and "--script" in argv:
+    position = command_position(argv)
+    if position is None:
+        return ""
+    if position.python_script:
         return "python"
-    return next((argument for argument in argv if is_interpreter(argument)), "")
+    command = argv[position.index]
+    return command if is_interpreter(command) or command in {"eval", "source", "."} else ""
 
 
-def interpreter_arguments(argv: list[str], consumer: str) -> list[str]:
-    if consumer in argv:
-        return argv[argv.index(consumer) + 1 :]
-    return argv[argv.index("--script") + 1 :] if "--script" in argv else []
+def interpreter_arguments(argv: list[str]) -> list[str]:
+    position = command_position(argv)
+    return argv[position.index + (not position.python_script) :] if position is not None else []
 
 
 def reads_program_stdin(argv: list[str], consumer: str) -> bool:
     if not is_interpreter(consumer):
         return False
-    arguments = interpreter_arguments(argv, consumer)
+    arguments = interpreter_arguments(argv)
     return not any(is_evaluator_flag(argument, consumer) for argument in arguments) and (
         any(argument in {"-", "-s", "/dev/stdin"} for argument in arguments)
         or any(re.fullmatch(r"-[a-z]*s[a-z]*", argument) for argument in arguments)
         or all(argument.startswith("-") for argument in arguments)
     )
+
+
+def accepts_claim_data(argv: list[str]) -> bool:
+    position = command_position(argv)
+    if position is None:
+        return False
+    name = Path(argv[position.index]).name if position.index < len(argv) else ""
+    if name in {
+        "rg",
+        "grep",
+        "git",
+        "gh",
+        "cat",
+        "tee",
+        "echo",
+        "printf",
+        "sed",
+        "jq",
+        "read",
+        "head",
+        "tail",
+        "cut",
+        "wc",
+        "pytest",
+        "gh-issue",
+        "gh-comment",
+    }:
+        return True
+    if name.endswith(".py") and name != "gh-plan.py":
+        return True
+    consumer = script_consumer(argv)
+    arguments = interpreter_arguments(argv)
+    if (
+        not is_interpreter(consumer)
+        or reads_program_stdin(argv, consumer)
+        or any(is_evaluator_flag(argument, consumer) for argument in arguments)
+    ):
+        return False
+    script = next((argument for argument in arguments if not argument.startswith("-")), "")
+    return bool(script) and not any(marker in script for marker in ("$", "`", "<(", ">("))
+
+
+def input_consumer(argv: list[str]) -> str | None:
+    if accepts_claim_data(argv):
+        return None
+    consumer = script_consumer(argv)
+    if reads_program_stdin(argv, consumer):
+        return consumer
+    if consumer:
+        return None
+    return ""
 
 
 def statement_command(node: Node) -> Node | None:
@@ -663,21 +824,33 @@ def node_program(node: Node, consumer: str, *, produced: bool = False) -> Progra
 def command_programs(node: Node) -> Iterator[ProgramSource]:
     words = command_words(node)
     argv = [shell_word(word) for word in words]
-    if not argv or Path(argv[0]).name in {"rg", "grep", "git", "cat", "tee", "echo", "printf"}:
+    if not argv or accepts_claim_data(argv):
+        return
+    position = command_position(argv)
+    if position is None:
         return
     consumer = script_consumer(argv)
+    offset = position.index + (not position.python_script) if consumer else len(argv)
     if consumer == "eval":
-        yield ProgramSource(" ".join(argv[1:]), consumer, any(shell_generated(word) for word in words[1:]))
+        yield ProgramSource(
+            " ".join(argv[offset:]),
+            consumer,
+            any(shell_generated(word) for word in words[offset:]),
+            argument_indexes=tuple(range(offset, len(argv))),
+        )
         return
-    offset = argv.index(consumer) + 1 if consumer in argv else len(argv)
     for index in range(offset, len(argv) - 1):
         argument = argv[index]
         if is_evaluator_flag(argument, consumer):
-            yield node_program(words[index + 1], consumer)
+            program = node_program(words[index + 1], consumer)
+            program.argument_indexes = (index + 1,)
+            yield program
             return
     script = next((word for word, value in zip(words[offset:], argv[offset:], strict=True) if not value.startswith("-")), None)
     if script is not None and (consumer in {"source", "."} or is_interpreter(consumer)):
-        yield node_program(script, consumer, produced=True)
+        program = node_program(script, consumer, produced=True)
+        program.argument_indexes = (words.index(script),)
+        yield program
 
 
 def input_programs(node: Node) -> Iterator[ProgramSource]:
@@ -686,8 +859,8 @@ def input_programs(node: Node) -> Iterator[ProgramSource]:
         for index, stage in enumerate(stages[1:], 1):
             command = statement_command(stage)
             argv = command_argv(command) if command is not None else []
-            consumer = script_consumer(argv)
-            if reads_program_stdin(argv, consumer):
+            consumer = input_consumer(argv)
+            if consumer is not None:
                 yield ProgramSource(
                     " | ".join(item.text.decode() for item in stages[:index]),
                     consumer,
@@ -702,8 +875,8 @@ def input_programs(node: Node) -> Iterator[ProgramSource]:
     if pipeline is not None:
         command = statement_command(pipeline.named_children[-1])
     argv = command_argv(command) if command is not None else []
-    consumer = script_consumer(argv)
-    if not reads_program_stdin(argv, consumer):
+    consumer = input_consumer(argv)
+    if consumer is None:
         return
     if node.type == "heredoc_redirect":
         body = next((child for child in node.named_children if child.type == "heredoc_body"), None)
@@ -742,21 +915,28 @@ def shell_claims(text: str, *, claim_related: bool = False) -> ShellClaims:
         programs = list(input_programs(node))
         if node.type == "command":
             argv = command_argv(node)
+            command_sources = list(command_programs(node))
             arguments = claim_arguments(argv)
             if arguments is not None and "claim" in arguments and "--help" not in arguments and "-h" not in arguments:
                 discovery.arguments.append(arguments)
             else:
                 discovery.receipt_pure = False
-                discovery.opaque = discovery.opaque or (arguments is None and has_opaque_claim_execution(argv))
+                covered = {index for source in command_sources for index in source.argument_indexes}
+                generated = related and any(
+                    index not in covered and shell_generated(word) for index, word in enumerate(command_words(node))
+                )
+                discovery.opaque = discovery.opaque or (
+                    arguments is None and has_opaque_claim_execution(argv, covered, generated=generated)
+                )
             name = node.child_by_field_name("name")
             discovery.opaque = discovery.opaque or bool(name is not None and shell_generated(name) and related)
-            programs.extend(command_programs(node))
+            programs.extend(command_sources)
         for program in programs:
             discovery.receipt_pure = False
             if program.generated:
                 discovery.opaque = discovery.opaque or related
-            elif program.produced:
-                discovery.opaque = discovery.opaque or ("gh-plan" in program.text and CLAIM_WORD.search(program.text) is not None)
+            elif program.produced or not program.consumer:
+                discovery.opaque = discovery.opaque or has_claim_text(program.text)
             elif Path(program.consumer).name in SHELL_NAMES | {"eval"}:
                 nested = shell_claims(program.text, claim_related=related)
                 discovery.arguments.extend(nested.arguments)
@@ -770,12 +950,12 @@ def shell_claims(text: str, *, claim_related: bool = False) -> ShellClaims:
 
 
 def claim_arguments(argv: list[str]) -> list[str] | None:
-    if not argv:
+    position = command_position(argv)
+    if position is None or position.index >= len(argv):
         return None
+    argv = argv[position.index :]
     executable = Path(argv[0]).name
-    if executable == "uv" and "run" in argv:
-        argv = argv[argv.index("run") + 1 :]
-    elif re.fullmatch(r"python(?:[0-9]+(?:\.[0-9]+)*)?", executable):
+    if re.fullmatch(r"python(?:[0-9]+(?:\.[0-9]+)*)?", executable):
         argv = argv[1:]
     elif executable != "gh-plan.py":
         return None
@@ -788,19 +968,15 @@ def claim_arguments(argv: list[str]) -> list[str] | None:
     return argv[1:]
 
 
-def has_opaque_claim_execution(argv: list[str]) -> bool:
-    if not argv or Path(argv[0]).name in {"rg", "grep", "git", "gh", "cat", "tee", "echo", "printf", "sed", "jq", "pytest"}:
+def has_opaque_claim_execution(argv: list[str], covered: set[int], *, generated: bool = False) -> bool:
+    if not argv or accepts_claim_data(argv):
         return False
     helper = next((index for index, argument in enumerate(argv) if Path(argument).name == "gh-plan.py"), None)
     if helper is not None and "claim" in argv[helper + 1 :]:
         return True
     if "claim" in argv and any("$" in argument or "`" in argument for argument in argv[: argv.index("claim")]):
         return True
-    if Path(argv[0]).name == "uv" and "run" in argv:
-        launched = argv[argv.index("run") + 1 :]
-        if launched and (launched[0].endswith(".py") or Path(launched[0]).name == "pytest"):
-            return False
-    return not script_consumer(argv) and any("gh-plan" in argument and CLAIM_WORD.search(argument) for argument in argv)
+    return generated or any(index not in covered and has_claim_text(argument) for index, argument in enumerate(argv))
 
 
 def is_evaluator_flag(argument: str, consumer: str) -> bool:

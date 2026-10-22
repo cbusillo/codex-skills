@@ -340,6 +340,21 @@ Interactive input and command strings passed to unclassified launchers cannot
 prove complete claim coverage. Their known receipts are still checked. Keep
 the claiming host's journal and complete native lineage when using remote shells.
 
+The legacy reader follows literal evaluator payloads and checks each remaining
+claim-bearing argv, heredoc, herestring or pipeline channel. Unknown consumers
+stay conditional. Known data commands, repository GitHub wrappers, direct Python
+files and interpreter-launched files consume their bodies and arguments as data.
+Python also distinguishes conventional string construction, JSON/AST operations
+and Path writes from process launchers; an unknown callable receiving literal
+claim text stays conditional. Star and dynamic imports leave unknown callable identities
+conditional when claim text is present. The reader does not inspect script
+files, propagate arbitrary Python values or reconstruct preloaded callable
+identities. A claim hidden behind those boundaries needs its journal entry or
+complete native helper receipt. Preserve those records rather than relying on
+arbitrary program reconstruction.
+For `uv run`, recognized option arities locate the command; interpreter-looking
+option values do not become consumers, and unknown options stay conditional.
+
 The check reads only those issues and PRs, including closed records. It never
 inventories App installations or scans other repositories. It verifies every
 claim on each target against its exact authored release or validated Supervisor

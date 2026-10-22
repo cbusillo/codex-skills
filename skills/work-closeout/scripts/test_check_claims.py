@@ -1517,6 +1517,114 @@ class ClaimCloseoutTests(unittest.TestCase):
                     self.assertEqual(report["targets"], {("first/a", 5)})
                     self.assertEqual(bool(report["unresolved_invocations"]), unresolved)
 
+    def test_unknown_command_channels_keep_claims_conditional(self) -> None:
+        claim = "uv run gh-plan.py claim 5"
+        commands = [
+            f"ssh host <<'EOF'\n{claim}\nEOF",
+            f"ssh host <<< '{claim}'",
+            f"echo '{claim}' | ssh host",
+            f"sudo -s <<'EOF'\n{claim}\nEOF",
+            f"su user <<'EOF'\n{claim}\nEOF",
+            f"echo '{claim}' | xargs sh -c",
+            f"echo '{claim}' | xargs -I{{}} sh -c '{{}}'",
+            f"echo '{claim}' | parallel",
+            f"at now <<'EOF'\n{claim}\nEOF",
+            f"script -q <<'EOF'\n{claim}\nEOF",
+            f"docker exec node sh -c '{claim}'",
+            f"sudo -u node bash -c '{claim}'",
+            f"tmux new-window -n node -c DIR '{claim}'",
+            f"screen -S ruby -X stuff '{claim}'",
+            f"ssh -l perl host '{claim}'",
+            f"CMD='{claim}'; timeout sh -c \"$CMD\"",
+            f"CMD='{claim}'; ssh host \"$CMD\"",
+        ]
+        for command in commands:
+            rows = [{"message": {"content": [{"type": "tool_use", "name": "Bash", "id": "channel", "input": {"command": command}}]}}]
+            with self.subTest(command=command):
+                self.assertTrue(helper.history.literal_targets(rows, SESSION)["unresolved_invocations"])
+
+    def test_file_helper_arguments_and_input_remain_data(self) -> None:
+        claim = "uv run gh-plan.py claim 5"
+        commands = [
+            f"skills/github/scripts/gh-issue create '{claim}' --repo o/r < body.md",
+            f"skills/github/scripts/gh-comment 5 --repo o/r '{claim}'",
+            f"skills/github/scripts/gh-pr.py comment 5 --body '{claim}'",
+            f"uv run skills/github/scripts/gh-pr.py comment 5 --body '{claim}'",
+            f"python skills/github/scripts/gh-pr.py comment 5 --body '{claim}'",
+            f"skills/github/scripts/gh-issue create Follow-up --repo o/r <<'EOF'\n{claim}\nEOF",
+            f"skills/github/scripts/gh-pr.py comment 5 --body-file - <<'EOF'\n{claim}\nEOF",
+            f"echo '{claim}' | skills/github/scripts/gh-comment 5 --repo o/r",
+            f"echo '{claim}' | uv run python -c 'import sys; print(sys.stdin.read())'",
+        ]
+        for command in commands:
+            rows = [{"message": {"content": [{"type": "tool_use", "name": "Bash", "id": "data", "input": {"command": command}}]}}]
+            with self.subTest(command=command):
+                self.assertEqual(helper.history.literal_targets(rows, SESSION), {"targets": set(), "unresolved_invocations": []})
+
+    def test_python_residual_calls_preserve_launcher_and_data_boundaries(self) -> None:
+        claim = "uv run gh-plan.py claim 5"
+        cases = [
+            (f"from subprocess import *; run('{claim}', shell=True)", True),
+            (f"command='{claim}'; from subprocess import *; run(command, shell=True)", True),
+            (f"__import__('os').system('{claim}')", True),
+            (f"command='{claim}'; launcher=__import__('os'); launcher.system(command)", True),
+            (f"import importlib; importlib.import_module('os').system('{claim}')", True),
+            (f"command='{claim}'; import importlib as loader; module=loader.import_module('os'); module.system(command)", True),
+            (f"command='{claim}'; from importlib import import_module as load; module=load('os'); module.system(command)", True),
+            (f"import invoke; invoke.run('{claim}')", True),
+            ("import pexpect; pexpect.spawn('uv', ['run', 'gh-plan.py', 'claim', '5'])", True),
+            (f"launch('{claim}')", True),
+            (f"print('{claim}')", False),
+            (f"import json; print(json.dumps({{'cmd':'{claim}'}}))", False),
+            (f"from pathlib import Path; Path('fixture').write_text('{claim}')", False),
+            (f"from pathlib import Path; p=Path('fixture'); p.write_text('{claim}')", False),
+            (f"source='old'; source=source.replace('old', '{claim}'); print(source)", False),
+            (f"print(' '.join(['gh-plan.py', 'claim', '5']))", False),
+            (f"import ast; ast.parse({claim!r})", False),
+            (f"from subprocess import *; rows='{claim}'; print(rows)", False),
+            (f"loader=__import__('os'); rows='{claim}'; print(rows)", False),
+        ]
+        for source, unresolved in cases:
+            command = "python - <<'PY'\n" + source + "\nPY"
+            rows = [{"message": {"content": [{"type": "tool_use", "name": "Bash", "id": "python", "input": {"command": command}}]}}]
+            with self.subTest(source=source):
+                self.assertEqual(bool(helper.history.literal_targets(rows, SESSION)["unresolved_invocations"]), unresolved)
+
+    def test_native_text_pipeline_consumers_remain_data(self) -> None:
+        commands = [
+            r"rg -n 'gh-plan\.py claim (?:<|[0-9])' skills --glob '*.md' | head -35",
+            "printf '%s' 'gh-plan.py claim 5' | sed -n '1p' | wc -l",
+            "printf '%s' 'gh-plan.py claim 5' | tail -5 | cut -c1-20",
+        ]
+        for command in commands:
+            rows = [{"message": {"content": [{"type": "tool_use", "name": "Bash", "id": "text", "input": {"command": command}}]}}]
+            with self.subTest(command=command):
+                self.assertEqual(helper.history.literal_targets(rows, SESSION), {"targets": set(), "unresolved_invocations": []})
+
+    def test_uv_options_select_the_command_instead_of_interpreter_option_values(self) -> None:
+        source = """from tree_sitter import Language,Parser
+import tree_sitter_bash
+source=b\'''gh pr create --body "$(cat <<'EOF'\\nResume gh-plan.py claim 5. Don't merge.\\nEOF\\n)"\'''
+root=Parser(Language(tree_sitter_bash.language())).parse(source).root_node
+print(root)"""
+        prefixes = [
+            "uv run --no-project --python /opt/homebrew/bin/python3.14 --with tree-sitter==0.26.0 --with tree-sitter-bash==0.25.1 python -",
+            "uv run --python=/opt/homebrew/bin/python3.14 --with=tree-sitter python -",
+            "uv run --offline --with-requirements requirements.txt --no-project python -",
+            "uv run --script --python /opt/homebrew/bin/python3.14 -",
+        ]
+        for prefix in prefixes:
+            for program, unresolved in ((source, False), ("import os; os.system('uv run gh-plan.py claim 5')", True)):
+                command = prefix + " <<'PY'\n" + program + "\nPY"
+                rows = [{"message": {"content": [{"type": "tool_use", "name": "Bash", "id": "uv", "input": {"command": command}}]}}]
+                with self.subTest(prefix=prefix, program=program):
+                    self.assertEqual(bool(helper.history.literal_targets(rows, SESSION)["unresolved_invocations"]), unresolved)
+        for option in ("--unknown-option", "--unknown-option=value"):
+            command = f"uv run {option} python - <<'PY'\n" + source + "\nPY"
+            rows = [{"message": {"content": [{"type": "tool_use", "name": "Bash", "id": "uv", "input": {"command": command}}]}}]
+            with self.subTest(option=option):
+                self.assertTrue(helper.history.literal_targets(rows, SESSION)["unresolved_invocations"])
+
     def test_python_terminal_and_in_process_helpers_remain_conditional(self) -> None:
         sources = [
             "import pty; pty.spawn(['uv', 'run', 'gh-plan.py', 'claim', '5'])",
