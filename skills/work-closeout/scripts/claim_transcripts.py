@@ -602,6 +602,7 @@ NON_EXECUTING_COMMANDS = frozenset({"cat", "cut", "echo", "head", "ls", "nl", "p
 def python_data_argv(call: ast.Call, command: ast.AST | None) -> bool:
     return (
         not any(item.arg in {None, "executable", "shell"} for item in call.keywords)
+        and (len(call.args) <= 1 or command is not call.args[0])
         and isinstance(command, (ast.List, ast.Tuple))
         and bool(command.elts)
         and isinstance(executable := command.elts[0], ast.Constant)

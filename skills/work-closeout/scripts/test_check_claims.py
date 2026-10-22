@@ -809,6 +809,8 @@ class ClaimCloseoutTests(unittest.TestCase):
             "python3 - <<'PY'\nimport subprocess\nsubprocess.run(['uv', 'run', path, 'claim'])  # gh-plan\nPY",
             "python3 - <<'PY'\nimport subprocess\nverb = 'claim'\n"
             "subprocess.run(['git', '-c', 'alias.claim=!uv run gh-plan.py --repo test/a claim 2', verb])\nPY",
+            "python3 - <<'PY'\nimport subprocess\ncmd = 'uv run gh-plan.py --repo test/a claim 2'\n"
+            "subprocess.Popen(['cat', '-c', cmd], -1, '/bin/bash').wait()\nPY",
             "SECONDS=2; sleep 2; uv run gh-plan.py --repo test/a claim $SECONDS",
             "for RANDOM in 1 2; do uv run gh-plan.py --repo test/a claim $RANDOM; done",
             "for BASH_ARGV0 in 1; do uv run gh-plan.py --repo test/a claim $BASH_ARGV0; done",
