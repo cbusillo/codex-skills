@@ -7,47 +7,15 @@ from __future__ import annotations
 import json
 import os
 import re
-import subprocess
-from datetime import datetime
+import sys
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import github_plan_closure as closure
 import github_plan_sessions as sessions
 import github_plan_termination as termination
-
-
-def claude_accounts() -> list[dict[str, Any]]:
-    config = sessions.native_helpers()[0].load_config(path=closure.closed_log().with_name("supervisor.toml"))
-    accounts = [a for a in config["accounts"] if a["provider"] == "anthropic"]
-    if not accounts:
-        raise ValueError("Claude native inventory coverage is unavailable")
-    return accounts
-
-
-def native_owners(entry: dict[str, Any]) -> dict[int, dict[str, Any]]:
-    owners = {}
-    for account in claude_accounts():
-        env = {key: value for key, value in os.environ.items() if key != "CLAUDE_CONFIG_DIR"}
-        env.update({key: os.path.expanduser(value) for key, value in account["env"].items()})
-        result = subprocess.run(
-            ["claude", "agents", "--json", "--all"], env=env, check=True, capture_output=True, text=True, timeout=10
-        )
-        agents = json.loads(result.stdout)
-        if not isinstance(agents, list):
-            raise TypeError("Claude native inventory is uncertain")
-        for agent in agents:
-            if not isinstance(agent, dict) or sessions.process_liveness().native_uuid(agent.get("sessionId")) is None:
-                raise ValueError("Claude native inventory is uncertain")
-            if agent["sessionId"] == entry["session_id"]:
-                raise ValueError("Source Claude session is still live; preserve claims")
-            pid = agent.get("pid")
-            if type(pid) is not int or pid <= 0 or type(agent.get("startedAt")) is not int:
-                raise TypeError("Claude native process identity is uncertain")
-            if pid in owners and owners[pid] != agent:
-                raise ValueError("Claude process has conflicting native identities")
-            owners[pid] = agent
-    return owners
 
 
 def claim_write(text: str) -> bool:
@@ -108,16 +76,14 @@ def original_claim_output(records: list[dict[str, Any]], url: str, record: dict[
 def configured_roots(record: dict[str, Any]) -> set[Path]:
     roots = termination._transcript_roots(record)
     config = sessions.native_helpers()[0].load_config(path=closure.closed_log().with_name("supervisor.toml"))
-    provider = "anthropic"
-    accounts = [account for account in config["accounts"] if account["provider"] == provider]
+    accounts = [account for account in config["accounts"] if account["provider"] == "anthropic"]
     if not accounts:
         raise ValueError("Configured source account coverage is unavailable")
-    variable = "CLAUDE_CONFIG_DIR"
     for account in accounts:
-        home = Path(account["env"].get(variable, str(Path.home() / ".claude"))).expanduser()
+        home = Path(account["env"].get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude"))).expanduser()
         if not home.is_dir():
             raise ValueError("Configured source account home is unavailable")
-        for name in ("projects",) if provider == "anthropic" else ("sessions", "archived_sessions"):
+        for name in ("projects",):
             path = home / name
             if path.exists():
                 with os.scandir(path):
@@ -135,7 +101,7 @@ def transcript_paths(record: dict[str, Any], roots: set[Path]) -> set[Path]:
         if not project.is_dir():
             continue
         for path in project.rglob("*.jsonl"):
-            if any(row.get("sessionId") == session for row in candidate_rows(path)):
+            if session.encode() in path.read_bytes() and any(row.get("sessionId") == session for row in candidate_rows(path)):
                 paths.add(path.resolve())
     return paths
 
@@ -148,20 +114,92 @@ def own_records(record: dict[str, Any], path: Path, rows: list[dict[str, Any]]) 
     return claim_history.root_records(path, record["harness"], record["session_id"], rows)
 
 
-def exit_timestamp(record: dict[str, Any], rows: list[dict[str, Any]]) -> str:
-    reader = termination.native_helpers()[0]
-    if (
-        record["harness"] != "claude"
-        or record["exit_record"] != {"kind": "claude_local_exit"}
-        or reader.strip_claude_exit_tail(rows) == rows
-    ):
+@dataclass(frozen=True)
+class OriginalExit:
+    started_at: datetime
+    ended_at: datetime
+    digest: str
+
+
+def command_helpers() -> Any:
+    directory = str(Path(__file__).resolve().parents[2] / "work-closeout/scripts")
+    if directory not in sys.path:
+        sys.path.append(directory)
+    import claim_transcripts
+
+    return claim_transcripts
+
+
+def native_command(command: Any, identity: str) -> None:
+    helper = command_helpers()
+    if not isinstance(command, list) or not all(isinstance(word, str) for word in command):
+        raise ValueError("Original exit requires literal native command argv")
+    if len(command) == 3 and command[0] in {"/bin/zsh", "/bin/bash", "/bin/sh"} and command[1] in {"-c", "-lc"}:
+        tree = helper.Parser(helper.Language(helper.tree_sitter_bash.language())).parse(command[2].encode())
+        nodes = tree.root_node.named_children
+        if tree.root_node.has_error or len(nodes) != 1 or nodes[0].type != "command" or helper.shell_generated(nodes[0]):
+            raise ValueError("Original exit command must be one foreground literal native invocation")
+        node = nodes[0]
+        if any(child.type not in {"command_name", "word", "string", "raw_string"} for child in node.named_children):
+            raise ValueError("Original exit command has unsupported shell syntax")
+        if any(child.type in {"&", ";"} for child in tree.root_node.children):
+            raise ValueError("Original exit command must run in the foreground")
+        command = helper.command_argv(node)
+    if len(command) < 3 or command[0] != "claude" or command[1] not in {"--session-id", "--resume"} or command[2] != identity:
+        raise ValueError("Original exit command does not bind the exact source native UUID")
+    index = 3
+    while index < len(command):
+        if command[index] == "--strict-mcp-config":
+            index += 1
+        elif command[index] in {"--settings", "--mcp-config"} and index + 1 < len(command):
+            index += 2
+        else:
+            raise ValueError("Original exit command has unsupported native arguments")
+
+
+def original_exit(record: dict[str, Any]) -> OriginalExit:
+    import hashlib
+
+    evidence = record["exit_record"]
+    if not isinstance(evidence, dict) or set(evidence) != {"kind", "session_id", "transcript", "execution_id"}:
         raise ValueError("Original completed native exit record is unavailable; preserve claims")
-    return rows[-1]["timestamp"]
+    if (
+        evidence["kind"] != "codex_command"
+        or sessions.process_liveness().native_uuid(evidence["session_id"]) != evidence["session_id"]
+    ):
+        raise ValueError("Original exit requires its native observing session")
+    if not isinstance(evidence["execution_id"], str) or not evidence["execution_id"]:
+        raise ValueError("Original exit requires its native execution ID")
+    observer = {"harness": "codex", "session_id": evidence["session_id"]}
+    path = Path(evidence["transcript"])
+    if not path.is_absolute():
+        raise ValueError("Original exit requires its absolute native observing transcript")
+    rows = own_records(observer, path, termination.transcript_snapshot(observer, path)[0])
+    events = [row for row in rows if command_helpers().execution_item(row).get("id") == evidence["execution_id"]]
+    if len(events) != 1:
+        raise ValueError("Original exit execution is absent or ambiguous")
+    row = events[0]
+    payload = row.get("payload", {})
+    item = command_helpers().execution_item(row)
+    if (
+        row.get("type") != "event_msg"
+        or payload.get("type") != "item_completed"
+        or payload.get("thread_id") != evidence["session_id"]
+        or item.get("status") != "completed"
+        or type(item.get("exit_code")) is not int
+        or item["exit_code"] != 0
+        or any(type(payload.get(key)) is not int for key in ("started_at_ms", "completed_at_ms"))
+    ):
+        raise ValueError("Original native command did not successfully complete")
+    native_command(item.get("command"), record["session_id"])
+    start = datetime.fromtimestamp(payload["started_at_ms"] / 1000, UTC)
+    end = datetime.fromtimestamp(payload["completed_at_ms"] / 1000, UTC)
+    if not start < end <= termination.stamp(row["timestamp"]) <= end + timedelta(seconds=1):
+        raise ValueError("Original native command interval is uncertain")
+    return OriginalExit(start, end, hashlib.sha256(json.dumps(row, sort_keys=True).encode()).hexdigest())
 
 
 def verify(record: dict[str, Any], session: str) -> dict[str, Any]:
-    import hashlib
-
     termination._validate_metadata(record, session)
     if record.get("harness") != "claude":
         raise ValueError("Historical source lacks a supported original exit record; preserve claims")
@@ -181,8 +219,9 @@ def verify(record: dict[str, Any], session: str) -> dict[str, Any]:
     snapshots = {path: termination.transcript_snapshot(record, path) for path in paths}
     original = Path(record["transcript"]).resolve(strict=True)
     rows = own_records(record, original, snapshots[original][0])
-    ended_at = exit_timestamp(record, rows)
-    ended = termination.stamp(ended_at)
+    exit_evidence = original_exit(record)
+    ended = exit_evidence.ended_at
+    ended_at = ended.isoformat()
     if record.get("ended_at") is not None and termination.stamp(record["ended_at"]) != ended:
         raise ValueError("Recorded end time differs from the original native exit")
     now = termination.datetime.now(termination.timezone.utc)
@@ -193,13 +232,15 @@ def verify(record: dict[str, Any], session: str) -> dict[str, Any]:
     for snapshot in snapshots.values():
         times = [termination.stamp(row["timestamp"]) for row in snapshot[0] if row.get("timestamp")]
         last = max(last, termination._transcript_activity(times, snapshot[1], snapshot[3], now, ended))
-    if record.get("claim_session", identity) != identity:
-        source = record.get("claim")
-        url = record.get("claim_url")
-        if not isinstance(source, dict) or source.get("session") != record["claim_session"] or not isinstance(url, str):
-            raise ValueError("Alias recovery requires the exact original claim and URL")
-        if not original_claim_output(rows, url, source, created_at=record.get("claim_created_at")):
-            raise ValueError("Native root lacks the original claim's direct creation receipt")
+    source = record.get("claim")
+    url = record.get("claim_url")
+    if not isinstance(source, dict) or source.get("session") != record.get("claim_session", identity) or not isinstance(url, str):
+        raise ValueError("Historical recovery requires the exact original claim and URL")
+    created = record.get("claim_created_at")
+    if not created or not exit_evidence.started_at <= termination.stamp(created) <= ended:
+        raise ValueError("Original native execution does not enclose the claim creation; attachment is uncertain")
+    if not original_claim_output(rows, url, source, created_at=created):
+        raise ValueError("Native root lacks the original claim's direct creation receipt")
     refuse_duplicate_receipt(record, roots)
     verify_processes(record, ended)
     if (
@@ -208,6 +249,7 @@ def verify(record: dict[str, Any], session: str) -> dict[str, Any]:
         or configured_roots(record) != roots
         or closure.source_records({identity}).get(identity) != canonical
         or closure.action_pending(identity)
+        or original_exit(record) != exit_evidence
     ):
         raise ValueError("Source evidence changed during termination checks")
     refuse_duplicate_receipt(record, roots)
@@ -222,7 +264,7 @@ def verify(record: dict[str, Any], session: str) -> dict[str, Any]:
         last_activity_at=last.isoformat(),
         terminal_state="exit recorded",
         exit_record=record["exit_record"],
-        exit_digest=hashlib.sha256(json.dumps(rows[-3:], sort_keys=True).encode()).hexdigest(),
+        exit_digest=exit_evidence.digest,
     )
     termination.validate(data, session)
     termination._verify_artifacts(data["retained_artifacts"])
@@ -231,32 +273,17 @@ def verify(record: dict[str, Any], session: str) -> dict[str, Any]:
 
 def verify_processes(record: dict[str, Any], ended: datetime) -> None:
     shared = sessions.process_liveness()
-    owners = native_owners(record)
-
-    def independent(pid: int, _argv: list[str]) -> bool:
-        owner = owners.get(pid)
-        if owner is None:
-            return False
-        try:
-            return int(shared.process_started_at(pid).timestamp()) == owner["startedAt"] // 1000
-        except (OSError, ValueError, subprocess.SubprocessError) as error:
-            raise ValueError("Native process birth is unavailable; preserve claims") from error
-
     shared.verify_process_exit(
         {**record, "_inventory": True, "_historical_exit": True},
         rows=termination.inventory(),
         ended_at=ended,
-        independent_harness=independent,
     )
 
 
 def refuse_duplicate_receipt(record: dict[str, Any], roots: set[Path]) -> None:
-    if record.get("claim_session", record["session_id"]) == record["session_id"]:
-        return
     for root in roots:
         for path in root.rglob("*.jsonl"):
-            content = path.read_text(encoding="utf-8")
-            if record["claim_url"] not in content:
+            if record["claim_url"].encode() not in path.read_bytes():
                 continue
             rows = candidate_rows(path)
             identities = {row.get("sessionId") for row in rows if row.get("sessionId")}

@@ -64,7 +64,7 @@ def _validate_metadata(data, session):
 def validate(data, session, *, apply_policy=True):
     _validate_metadata(data, session)
     if data.get("terminal_state") == "exit recorded":
-        if data.get("exit_record") != {"kind": "claude_local_exit"} or not re.fullmatch(r"[0-9a-f]{64}", data.get("exit_digest", "")):
+        if not isinstance(data.get("exit_record"), dict) or data["exit_record"].get("kind") != "codex_command" or not re.fullmatch(r"[0-9a-f]{64}", data.get("exit_digest", "")):
             raise ValueError("Historical termination requires its original exit evidence digest")
     elif data.get("exit_record"):
         raise ValueError("Historical exit cannot substitute for crash terminal evidence")
@@ -313,7 +313,7 @@ def verify_attestation(record_path, text, session, *, source=None, source_url=No
     if not record_path:
         raise ValueError("Terminated-session release requires --termination-record for fresh source-host checks")
     record = json.loads(Path(record_path).read_text(encoding="utf-8"))
-    if record.get("claim_session", record["session_id"]) != record["session_id"]:
+    if record.get("exit_record"):
         import github_plan_release
         if (source is None or record.get("claim") != github_plan_release.record_from_receipt(source, record["claim"])
                 or record.get("claim_url") != source_url or record.get("claim_created_at") != source["created_at"]):

@@ -5,7 +5,7 @@
 """Shared process and transcript facts; callers retain closure and terminal authority."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
 import shlex
@@ -491,11 +491,17 @@ def verify_process_exit(entry, *, rows=None, ended_at=None, started_at=None,
             if source in [native_uuid(value) or value for value in resumed]:
                 raise ValueError("source native session is visible in a resumed harness process")
             if entry.get("_inventory") and argv and harness_family(argv[0]) == entry.get("harness"):
-                independent = native_uuid(exact_resume) is not None or command_kind == "exec" or (
-                    independent_harness is not None and independent_harness(pid, argv))
-                if (command_kind == "resume" and native_uuid(exact_resume) is None
-                        or not bounded or versioned_claude(argv[0]) or entry.get("_historical_exit")) and not independent:
-                    raise ValueError("Unresolved native process may own the historical source; preserve claims")
+                if command_kind == "resume" and native_uuid(exact_resume) is None:
+                    raise ValueError("Unresolved native process may own the source; preserve claims")
+                if entry.get("_historical_exit"):
+                    if not bounded or versioned_claude(argv[0]) or native_uuid(exact_resume) is None:
+                        raise ValueError("Unresolved native process may own the historical source; preserve claims")
+                    try:
+                        born = started_at(pid)
+                    except (OSError, ValueError, TypeError, subprocess.SubprocessError) as error:
+                        raise ValueError("Native process birth is unavailable; preserve claims") from error
+                    if ended_at is None or born <= ended_at + timedelta(seconds=1) or born > datetime.now(timezone.utc):
+                        raise ValueError("Native process predates the original exit; preserve claims")
         if process_tty != tty or idle_terminal_command(command):
             continue
         if not entry.get("_backfill"):

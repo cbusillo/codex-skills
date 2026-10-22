@@ -24,6 +24,14 @@ class HistoricalTerminationTests(fixtures.ReleaseHarness):
         self.directory = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
         self.native = "e5bd6d9f-d638-4a78-a6d1-ae9f8944beca"
         self.transcript = self.directory / f"{self.native}.jsonl"
+        self.observer = self.directory / "observer.jsonl"
+        self.exit_row = json.loads((Path(__file__).parent / "fixtures/native-exit-command.json").read_text())
+        self.exit_row["timestamp"] = "2026-10-01T00:10:01Z"
+        self.exit_row["payload"].update(
+            started_at_ms=int(release.stamp("2026-09-30T23:59:58Z").timestamp() * 1000),
+            completed_at_ms=int(release.stamp("2026-10-01T00:10:01Z").timestamp() * 1000),
+        )
+        self.exit_row["payload"]["item"]["command"][2] = "claude --session-id " + self.native
         self.record = {
             "session_id": self.native,
             "claim_session": "session-b",
@@ -33,14 +41,16 @@ class HistoricalTerminationTests(fixtures.ReleaseHarness):
             "transcript_roots": [str(self.directory)],
             "cause": "native local exit completed",
             "retained_artifacts": [],
-            "exit_record": {"kind": "claude_local_exit"},
+            "exit_record": {
+                "kind": "codex_command",
+                "session_id": self.exit_row["payload"]["thread_id"],
+                "transcript": str(self.observer),
+                "execution_id": self.exit_row["payload"]["item"]["id"],
+            },
             "claim": fixtures.fixtures.OTHER,
             "claim_url": "https://github.com/owner/repo/issues/42#issuecomment-1",
             "claim_created_at": self.f.comments[0]["created_at"],
         }
-
-        def user(text: str, at: str, **extra: object) -> dict:
-            return {"sessionId": self.native, "timestamp": at, "type": "user", "message": {"content": text}, **extra}
 
         receipt = {
             "ok": True,
@@ -71,16 +81,9 @@ class HistoricalTerminationTests(fixtures.ReleaseHarness):
                 "type": "user",
                 "message": {"content": [{"type": "tool_result", "tool_use_id": "claim", "content": json.dumps(receipt)}]},
             },
-            user("<local-command-caveat>Local command output</local-command-caveat>", "2026-10-01T00:09:59Z", isMeta=True),
-            user(
-                "<command-name>/exit</command-name>\n<command-message>exit</command-message>\n<command-args></command-args>",
-                "2026-10-01T00:10:00Z",
-            ),
-            user("<local-command-stdout></local-command-stdout>", "2026-10-01T00:10:01Z"),
         ]
         self.path = self.directory / "termination.json"
         self.args.termination_record = self.path
-        self.native_check = self.enterContext(patch.object(ended, "native_owners", return_value={}))
         self.enterContext(patch.object(ended, "configured_roots", return_value={self.directory}))
         self.enterContext(patch.object(ended.termination, "inventory", return_value=[]))
         self.enterContext(patch.object(ended.termination.socket, "gethostname", return_value="source-host"))
@@ -97,12 +100,18 @@ class HistoricalTerminationTests(fixtures.ReleaseHarness):
         self.attest()
 
     def save(self) -> None:
+        self.observer.write_text(
+            json.dumps({"type": "session_meta", "payload": {"id": self.record["exit_record"]["session_id"]}})
+            + "\n"
+            + json.dumps(self.exit_row)
+            + "\n"
+        )
         self.transcript.write_text("".join(json.dumps(row) + "\n" for row in self.rows))
         os.utime(self.transcript, (1759276800, 1759276800))
         self.path.write_text(json.dumps(self.record))
 
     def attest(self) -> None:
-        self.evidence["body"] = ended.termination.body(ended.termination.verify(self.record, "session-b"))
+        self.evidence["body"] = ended.termination.body(ended.termination.verify(self.record, self.record["claim_session"]))
 
     def test_original_alias_exit_round_trips_and_releases_only_original_claim(self) -> None:
         original = dict(self.f.comments[0])
@@ -119,7 +128,8 @@ class HistoricalTerminationTests(fixtures.ReleaseHarness):
                 rows = json.loads(json.dumps(self.rows))
                 record = dict(self.record)
                 if mutation == "typed_only":
-                    rows.pop()
+                    self.exit_row["payload"]["item"]["status"] = "in_progress"
+                    self.save()
                 if mutation == "copy":
                     block = rows[1]["message"]["content"][0]
                     block["content"] = json.dumps({"nested": json.loads(block["content"])})
@@ -135,6 +145,8 @@ class HistoricalTerminationTests(fixtures.ReleaseHarness):
                 os.utime(self.transcript, (1759276800, 1759276800))
                 with self.assertRaises(ValueError):
                     ended.termination.verify(record, "session-b")
+                self.exit_row["payload"]["item"]["status"] = "completed"
+                self.save()
         self.f.assert_no_writes()
 
     def test_second_account_copy_and_canonical_resume_veto_exit(self) -> None:
@@ -170,7 +182,8 @@ class HistoricalTerminationTests(fixtures.ReleaseHarness):
 
     def test_original_exit_and_claim_are_pinned_across_pending_write(self) -> None:
         def change() -> None:
-            self.rows[-1]["timestamp"] = "2026-10-01T00:10:02Z"
+            self.exit_row["timestamp"] = "2026-10-01T00:10:02Z"
+            self.exit_row["payload"]["completed_at_ms"] += 1000
             self.save()
 
         self.race = change
@@ -246,23 +259,122 @@ class HistoricalTerminationTests(fixtures.ReleaseHarness):
         with self.assertRaises(ValueError):
             self.attest()
 
-    def test_independent_native_process_can_keep_working_during_history_verification(self) -> None:
+    def test_explicit_other_process_started_after_exit_can_keep_working(self) -> None:
         shared = ended.sessions.process_liveness()
-        other = "f5bd6d9f-d638-4a78-a6d1-ae9f8944beca"
-        born = release.stamp("2026-09-30T00:00:00Z")
-        self.native_check.return_value = {123: {"sessionId": other, "startedAt": int(born.timestamp() * 1000)}}
+        command = "claude --resume f5bd6d9f-d638-4a78-a6d1-ae9f8944beca"
         with (
-            patch.object(ended.termination, "inventory", return_value=[(123, "ttys002", "claude")]),
-            patch.object(shared, "process_arguments", return_value=(["claude"], True)),
-            patch.object(shared, "process_started_at", return_value=born),
+            patch.object(ended.termination, "inventory", return_value=[(123, "ttys002", command)]),
+            patch.object(shared, "process_arguments", return_value=(command.split(), True)),
+            patch.object(shared, "process_started_at", return_value=release.stamp("2026-10-01T00:20:00Z")),
         ):
             self.attest()
+
+    def test_native_claim_also_requires_unique_receipt_and_fresh_source_binding(self) -> None:
+        claim = {**self.record["claim"], "session": self.native}
+        self.record.update(claim_session=self.native, claim=claim)
+        self.f.comments[0]["body"] = fixtures.CLAIM.marker(claim)
+        self.rows[1]["message"]["content"][0]["content"] = json.dumps(
+            {"ok": True, "claim": claim, "claim_comment": {"comment": {"id": 1, "url": self.record["claim_url"]}}}
+        )
+        self.save()
+        self.attest()
+        self.args.dry_run = True
+        self.run_release()
+        copied = self.directory / "f5bd6d9f-d638-4a78-a6d1-ae9f8944beca.jsonl"
+        copied.write_text("".join(json.dumps({**row, "sessionId": copied.stem}) + "\n" for row in self.rows))
+        with self.assertRaises(ValueError):
+            self.attest()
+        copied.unlink()
+        self.f.comments[0]["body"] = fixtures.CLAIM.marker({**claim, "worker": "changed-worker"})
+        with self.assertRaises(fixtures.PLAN.PlanError):
+            self.run_release()
+        self.f.assert_no_writes()
+
+    def test_native_completion_requires_successful_original_event_and_claim_attachment(self) -> None:
+        original = json.loads(json.dumps(self.exit_row))
+        for mutation in ("failure", "bool", "event", "observer", "missing", "duplicate", "before_claim", "wrong_source"):
+            with self.subTest(mutation=mutation):
+                self.exit_row = json.loads(json.dumps(original))
+                payload = self.exit_row["payload"]
+                item = payload["item"]
+                if mutation == "failure":
+                    item["exit_code"] = 1
+                elif mutation == "bool":
+                    item["exit_code"] = False
+                elif mutation == "event":
+                    payload["type"] = "tool_result"
+                elif mutation == "observer":
+                    payload["thread_id"] = self.native
+                elif mutation == "missing":
+                    item["id"] += "other"
+                elif mutation == "before_claim":
+                    payload["started_at_ms"] = int(release.stamp("2026-10-01T00:01:00Z").timestamp() * 1000)
+                elif mutation == "wrong_source":
+                    item["command"][2] = "claude --resume f5bd6d9f-d638-4a78-a6d1-ae9f8944beca"
+                self.save()
+                if mutation == "duplicate":
+                    with self.observer.open("a") as stream:
+                        stream.write(json.dumps(self.exit_row) + "\n")
+                with self.assertRaises(ValueError):
+                    self.attest()
+        self.exit_row = original
+        self.save()
+        self.attest()
+
+    def test_shell_status_cannot_substitute_for_source_exit(self) -> None:
+        command = "claude --session-id " + self.native
+        unsupported = [
+            command + " &",
+            command + "; true",
+            command + " | cat",
+            command + " && true",
+            "echo $(" + command + ")",
+            "timeout 2 " + command,
+            command + " > out",
+            command + " --fork-session",
+            command + " --session-id " + self.native,
+        ]
+        for text in unsupported:
+            with self.subTest(text=text):
+                self.exit_row["payload"]["item"]["command"][2] = text
+                self.save()
+                with self.assertRaises(ValueError):
+                    self.attest()
+
+    def test_inherited_native_completion_cannot_end_a_source(self) -> None:
+        meta = {"type": "session_meta", "payload": {"id": self.native}}
+        self.observer.write_text(json.dumps(meta) + "\n" + json.dumps(self.exit_row) + "\n")
+        with self.assertRaises(ValueError):
+            self.attest()
+
+    def test_plain_or_uncertain_or_preexisting_native_process_refuses(self) -> None:
+        shared = ended.sessions.process_liveness()
+        other = "claude --resume f5bd6d9f-d638-4a78-a6d1-ae9f8944beca"
+        for command, bounded, born in (
+            ("claude", True, "2026-10-01T00:20:00Z"),
+            (other, False, "2026-10-01T00:20:00Z"),
+            (other, True, "2026-09-30T00:00:00Z"),
+        ):
+            with (
+                self.subTest(command=command, bounded=bounded, born=born),
+                patch.object(ended.termination, "inventory", return_value=[(123, "ttys002", command)]),
+                patch.object(shared, "process_arguments", return_value=(command.split(), bounded)),
+                patch.object(shared, "process_started_at", return_value=release.stamp(born)),
+                self.assertRaises(ValueError),
+            ):
+                self.attest()
+
+    def test_unrelated_corrupt_history_does_not_supply_claim_or_block_verification(self) -> None:
+        (self.directory / "unrelated.jsonl").write_bytes(b"\xffcorrupt unrelated history")
+        self.attest()
 
     def test_codex_without_original_exit_and_changed_exit_receipt_refuse(self) -> None:
         record = {**self.record, "harness": "codex"}
         with self.assertRaises(ValueError):
             ended.termination.verify(record, "session-b")
-        self.evidence["body"] = self.evidence["body"].replace('"exit_digest": "', '"exit_digest": "changed')
+        data = ended.termination.evidence(self.evidence["body"], "session-b")
+        data["exit_digest"] = "0" * 64
+        self.evidence["body"] = ended.termination.body(data)
         with self.assertRaises(fixtures.PLAN.PlanError):
             self.run_release()
         self.f.assert_no_writes()
@@ -313,6 +425,54 @@ class ClaimReceiptBoundaryTests(unittest.TestCase):
                         started_at=lambda _pid: release.stamp("2026-10-02T00:00:00Z"),
                     )
 
+    def test_independent_registry_cannot_clear_unresolved_resume(self) -> None:
+        shared = ended.sessions.process_liveness()
+        for command in ("claude --continue --fork-session", "claude -r", "codex resume --last"):
+            with (
+                self.subTest(command=command),
+                patch.object(shared, "process_arguments", return_value=(command.split(), True)),
+                self.assertRaises(ValueError),
+            ):
+                shared.verify_process_exit(
+                    {"session_id": "01a0fcce-ef3c-74e3-af74-6721809e4990", "harness": command.split()[0], "_inventory": True},
+                    rows=[(1234, "ttys002", command)],
+                    ended_at=release.stamp("2026-10-01T00:00:00Z"),
+                    independent_harness=lambda _pid, _argv: True,
+                )
+
+    def test_backfill_keeps_unrelated_plain_and_versioned_process_behavior(self) -> None:
+        shared = ended.sessions.process_liveness()
+        for command in ("claude", "/opt/claude/versions/2.0.0", "codex"):
+            for bounded in (True, False):
+                with (
+                    self.subTest(command=command, bounded=bounded),
+                    patch.object(shared, "process_arguments", return_value=([command], bounded)),
+                ):
+                    shared.verify_process_exit(
+                        {"session_id": "01a0fcce-ef3c-74e3-af74-6721809e4990", "harness": "claude", "_inventory": True},
+                        rows=[(1234, "ttys002", command)],
+                    )
+
+    def test_real_native_completion_fixture_supplies_original_exit(self) -> None:
+        row = json.loads((Path(__file__).parent / "fixtures/native-exit-command.json").read_text())
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "observer.jsonl"
+            identity = row["payload"]["thread_id"]
+            path.write_text(json.dumps({"type": "session_meta", "payload": {"id": identity}}) + "\n" + json.dumps(row) + "\n")
+            source = "673145b1-3867-476f-993c-d484352a8004"
+            record = {
+                "session_id": source,
+                "exit_record": {
+                    "kind": "codex_command",
+                    "session_id": identity,
+                    "transcript": str(path),
+                    "execution_id": row["payload"]["item"]["id"],
+                },
+            }
+            evidence = ended.original_exit(record)
+            self.assertLess(evidence.started_at, evidence.ended_at)
+            self.assertLessEqual(evidence.ended_at, release.stamp(row["timestamp"]))
+
 
 class HistoryCoverageTests(unittest.TestCase):
     def test_configured_accounts_are_required_and_unreadable_accounts_refuse(self) -> None:
@@ -342,24 +502,6 @@ class HistoryCoverageTests(unittest.TestCase):
 
                 with patch.object(ended.os, "scandir", side_effect=scan), self.assertRaises(PermissionError):
                     ended.configured_roots(entry)
-
-    def test_native_registry_vetoes_source_and_binds_other_process_identity(self) -> None:
-        from types import SimpleNamespace
-
-        source = "e5bd6d9f-d638-4a78-a6d1-ae9f8944beca"
-        other = "f5bd6d9f-d638-4a78-a6d1-ae9f8944beca"
-        account = {"provider": "anthropic", "env": {}}
-        agent = {"pid": 123, "sessionId": other, "startedAt": 1790812800000}
-        with patch.object(ended, "claude_accounts", return_value=[account]):
-            with patch.object(ended.subprocess, "run", return_value=SimpleNamespace(stdout=json.dumps([agent]))):
-                self.assertEqual(ended.native_owners({"session_id": source}), {agent["pid"]: agent})
-            for rows in ([{**agent, "sessionId": source}], {}, [{"pid": 123}], [{**agent, "startedAt": None}]):
-                with (
-                    self.subTest(rows=rows),
-                    patch.object(ended.subprocess, "run", return_value=SimpleNamespace(stdout=json.dumps(rows))),
-                    self.assertRaises((ValueError, TypeError)),
-                ):
-                    ended.native_owners({"session_id": source})
 
 
 if __name__ == "__main__":

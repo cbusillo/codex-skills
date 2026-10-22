@@ -1288,31 +1288,50 @@ Use the existing `--termination-record` procedure when the original native exit
 completed without a safe-exit verdict. Do not add a closure-log row or rewrite
 the original verdict. The private record keeps the native UUID, harness,
 source host, transcript, transcript roots, cause and retained artifacts.
-A historical Claude record with that original sequence may use `"exit_record": {"kind": "claude_local_exit"}`
-instead of PID, TTY and tmux fields. The generator derives the exit time from
-the existing completed native `/exit` sequence, pins that original evidence,
-and refuses a conflicting supplied `ended_at`. Typed input and history entries
-alone are insufficient. Codex without original terminal exit proof refuses.
+A historical Claude record may name an original Codex harness completion event:
 
-For a recovered alias, also supply `claim_session` (the original recorded
-Session field), `claim` (the exact original structured claim), `claim_url`,
-and `claim_created_at` from GitHub. The source root must contain the direct
-creation receipt, inside the original creation interval. Quoted output, copied
+```json
+"exit_record": {
+  "kind": "codex_command",
+  "session_id": "<observing Codex UUID>",
+  "transcript": "/absolute/original/observer.jsonl",
+  "execution_id": "<original native execution ID>"
+}
+```
+
+This replaces PID, TTY and tmux fields only for this historical path. The native
+`item_completed` event must record a successful command with an explicit source
+UUID: `claude --session-id UUID` or `claude --resume UUID`. The supported argv may
+also contain `--settings VALUE`, `--mcp-config VALUE` and `--strict-mcp-config`.
+Only one literal foreground command, directly or through `/bin/sh`, `/bin/bash`
+or `/bin/zsh` with `-c` or `-lc`, qualifies. Wrappers, shell control syntax,
+background jobs, redirections, failed commands, typed `/exit` and history alone
+supply no exit proof. Other harness/evidence forms refuse. The original launch
+and completion times must enclose the source claim's creation. This proves the
+source was attached during that execution, rather than merely attempting a
+resume that never opened it. The generator derives `ended_at` and pins the
+original completion event's digest. It refuses a conflicting supplied end time.
+
+Every historical record also supplies `claim` (the exact original claim),
+`claim_url` and `claim_created_at` from GitHub. For an alias, supply `claim_session`
+(the original recorded Session field). The source root must contain its direct
+creation receipt inside the original creation interval. Quoted output, copied
 history, forks and spawned children cannot establish that identity. Bare legacy
-claims retain `--legacy`, branch and reason and their independent PR proof;
-they can use a termination record only with the same exact native receipt
-binding and original exit proof. No recovered identity changes the source claim.
+claims retain `--legacy`, branch and reason and their independent PR proof.
+No recovered identity changes the source claim.
 
 The generator and release preflight check configured account roots, every source
-copy, pending actions, native loaded/queued state and live or uncertain process
+copy, pending actions, canonical resume records and live or uncertain process
 owners. A canonical closure row, if present, is a resume veto only. Missing
 closure rows supply no exit proof and require no shared-log write. A historical
-source refuses while a same-family process has no independent native identity.
-An exact other-session resume or fresh PID/start-time binding from Claude's
-native registry lets unrelated sessions keep working. Unresolved resume targets
-still refuse on the existing inventory backfill route. The existing crash route keeps its PID, TTY and
-nonce-bearing tmux checks. The release repeats verification after its pending
-write, preserves artifacts, and keeps branch, PR, wait and blocker checks.
+source refuses while a same-family process lacks a bounded, exact other-session
+resume operand, or predates the original exit. Process birth checks allow for
+one second of native timestamp rounding. Registry entries never establish that
+a process is independent. Unresolved resume targets also refuse on the existing
+inventory backfill route; unrelated plain processes keep that route's existing
+behavior. The crash route keeps its PID, TTY and nonce-bearing tmux checks.
+The release repeats verification after its pending write, pins the original
+exit, preserves artifacts, and keeps branch, PR, wait and blocker checks.
 Generate the attestation with `github_plan_termination.py --record FILE`, inspect
 it, post it through `gh-comment`, then inspect the ordinary release dry run with
 `--termination-record FILE`. Never invent an attestation URL or release a claim
