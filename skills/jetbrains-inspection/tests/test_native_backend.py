@@ -54,12 +54,14 @@ def copy_tracked_fixture(fixture, destination):
     return revision
 
 
-def hold_lock(path, seconds, held):
+def hold_lock(path, seconds, held, release_when=None):
     import fcntl
     with path.open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         held.set()
-        time.sleep(seconds)
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline and not (release_when and release_when.exists()):
+            time.sleep(0.02)
 
 
 class NativeTests(unittest.TestCase):
@@ -477,8 +479,8 @@ print('Done.')
         private = self.root / "private"
         (private / "logs").mkdir(parents=True)
         receipt = {"load_pause_count": 0}
-        with native.profile_lock(self.worker) as lock:
-            native.execute([sys.executable, "-c", "print('Start trial\\nERROR: build warning\\nNo modules\\nUsing default project profile')"], {}, private, time.monotonic() + 2,
+        with native.profile_lock(self.worker) as lock, patch.object(os, "getloadavg", return_value=(1, 1, 1)):
+            native.execute([sys.executable, "-c", "print('Start trial\\nERROR: build warning\\nNo modules\\nUsing default project profile')"], {}, private, time.monotonic() + 30,
                            None, receipt, lock_fd=lock.fileno(), require_completion=False)
         self.assertNotIn("license_boundary_observed", receipt)
 
@@ -491,10 +493,19 @@ print('Done.')
         self.assertTrue(result["diagnostic"]["native"]["worker_exited"])
 
     def test_load_pause_resumes_and_exits_under_the_same_deadline(self):
+        resumed = self.root / "resumed"
         original = self.script.read_text()
-        self.script.write_text(original.replace("out=pathlib.Path", "import time;time.sleep(0.4)\nout=pathlib.Path"))
+        self.script.write_text(original.replace("out=pathlib.Path", f"import time\nfor _ in range(500):\n if pathlib.Path({str(resumed)!r}).exists(): break\n time.sleep(0.02)\nout=pathlib.Path"))
         loads = iter([(1, 1, 1), (native.LOAD_LIMIT + 1, 1, 1)])
-        result = self.assess(lambda: next(loads, (1, 1, 1)))
+
+        def load_then_mark_resume():
+            sample = next(loads, None)
+            if sample is None:
+                resumed.touch()
+                return 1, 1, 1
+            return sample
+
+        result = self.assess(load_then_mark_resume)
         self.assertEqual(result["diagnostic"]["native"]["load_pause_count"], 1)
         self.assertEqual(result["agent_result"]["verdict"], "RED")
 
@@ -505,10 +516,10 @@ print('Done.')
         (private / "logs").mkdir(parents=True)
         receipt = {"load_pause_count": 0}
         try:
-            with native.profile_lock(self.worker) as lock:
+            with native.profile_lock(self.worker) as lock, patch.object(os, "getloadavg", return_value=(1, 1, 1)):
                 with self.assertRaisesRegex(native.Blocked, "native_parent_exited"):
                     native.execute([sys.executable, "-c", "import time;time.sleep(30)"], {}, private,
-                                   time.monotonic() + 2, read_fd, receipt, lock_fd=lock.fileno())
+                                   time.monotonic() + 30, read_fd, receipt, lock_fd=lock.fileno())
             self.assertTrue(receipt["worker_exited"])
         finally:
             os.close(read_fd)
@@ -778,26 +789,42 @@ print('Done.')
         self.assertEqual(result["inspection_outcome"]["reason"], "native_worker_busy")
         self.assertNotIn("worker_pid", result["diagnostic"]["native"])
 
-    def hold(self, path, seconds=60.0):
+    def hold(self, path, seconds=60.0, release_when=None):
         """Another process holds the lock until it exits, like a live run."""
         context = multiprocessing.get_context("fork")
         held = context.Event()
-        holder = context.Process(target=hold_lock, args=(path, seconds, held))
+        holder = context.Process(target=hold_lock, args=(path, seconds, held, release_when))
         holder.start()
         self.addCleanup(holder.join)
         self.addCleanup(holder.kill)
         self.assertTrue(held.wait(10))
         return holder
 
+    def mark_admission_waits(self):
+        marker = self.root / "admission-waited"
+        original = native.check_lifetime
+
+        def check_and_mark(parent_fd, deadline):
+            if deadline == float("inf"):
+                marker.touch()
+            return original(parent_fd, deadline)
+
+        patcher = patch.object(native, "check_lifetime", side_effect=check_and_mark)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return marker
+
     def queue_tickets(self):
         return list((self.root / "state/native-queue").glob("*.ticket"))
 
     def test_concurrent_requests_take_the_worker_in_turn_and_each_run_once(self):
         log = self.root / "engine.log"
+        waited = self.mark_admission_waits()
         original = self.script.read_text()
         self.script.write_text(original.replace("import pathlib,sys,json\n", "import pathlib,sys,json,time\n"
-            f"log=open({str(log)!r},'a');log.write(f'start {{time.time()}}\\n');log.flush();time.sleep(0.6)\n")
-            .replace("print('Done.')", "log.write(f'end {time.time()}\\n');log.close()\nprint('Done.')"))
+            f"log=open({str(log)!r},'a');log.write(f'start {{time.monotonic()}}\\n');log.flush()\n"
+            f"for _ in range(500):\n if pathlib.Path({str(waited)!r}).exists(): break\n time.sleep(0.02)\n")
+            .replace("print('Done.')", "log.write(f'end {time.monotonic()}\\n');log.close()\nprint('Done.')"))
         def helper(output):
             output.write_text(json.dumps(native.run(self.args, host)))
             os._exit(0)
@@ -808,6 +835,8 @@ print('Done.')
             callers = [multiprocessing.get_context("fork").Process(target=helper, args=(output,)) for output in outputs]
             for caller in callers:
                 caller.start()
+                self.addCleanup(caller.join, 5)
+                self.addCleanup(caller.kill)
             for caller in callers:
                 caller.join(60)
         results = [json.loads(output.read_text()) for output in outputs]
@@ -816,15 +845,18 @@ print('Done.')
         events = [line.split() for line in log.read_text().splitlines()]
         self.assertEqual([kind for kind, _ in events], ["start", "end", "start", "end"])
         self.assertLessEqual(float(events[1][1]), float(events[2][1]))
-        self.assertGreater(max(result["diagnostic"]["native"]["admission_wait_ms"] for result in results), 300)
+        self.assertTrue(waited.exists())
+        self.assertGreater(max(result["diagnostic"]["native"]["admission_wait_ms"] for result in results), 0)
         self.assertFalse(self.queue_tickets())
 
     def test_admission_waits_for_a_natural_release_then_inspects_once(self):
-        self.hold(self.worker / "worker.lock", 0.4)
+        waited = self.mark_admission_waits()
+        self.hold(self.worker / "worker.lock", 10, release_when=waited)
         result = self.assess()
         self.assertEqual(result["agent_result"]["verdict"], "RED")
         self.assertEqual(result["cleanup"]["status"], "closed")
-        self.assertGreaterEqual(result["diagnostic"]["native"]["admission_wait_ms"], 300)
+        self.assertTrue(waited.exists())
+        self.assertGreater(result["diagnostic"]["native"]["admission_wait_ms"], 0)
         self.assertEqual(result["agent_result"]["retry_policy"], {"retry": False, "max_attempts": 0, "wait_ms": 0})
 
     def test_admission_timeout_leaves_the_owner_untouched_and_launches_nothing(self):
@@ -858,8 +890,10 @@ print('Done.')
 
     def test_admission_after_waiting_still_honours_a_recorded_activation_stop(self):
         (self.worker / "native-activation-stop.json").write_text("{}")
-        self.hold(self.worker / "native-control.lock", 0.2)
+        waited = self.mark_admission_waits()
+        self.hold(self.worker / "native-control.lock", 10, release_when=waited)
         result = self.assess()
+        self.assertTrue(waited.exists())
         self.assertEqual(result["inspection_outcome"]["reason"], "native_activation_stop_recorded")
         self.assertNotIn("worker_pid", result["diagnostic"]["native"])
         self.assertTrue((self.worker / "native-activation-stop.json").exists())
@@ -958,13 +992,10 @@ with patch.object(native.sys,'platform','darwin'), patch.object(native,'state_di
             deadline = time.monotonic() + 10
             os.killpg(process.pid, signal.SIGKILL)
             process.wait(timeout=5)
-            while (self.worker / "native-run.json").exists() and time.monotonic() < deadline:
-                time.sleep(0.02)
-            self.assertFalse((self.worker / "native-run.json").exists())
-            self.assertFalse((self.worker / "config/options/jdk.table.xml").exists())
-            self.assertFalse(list((self.root / "cache/native").glob("private-*")))
-            with native.profile_lock(self.worker):
-                pass
+            with native.profile_lock(self.worker, wait_until=deadline):
+                self.assertFalse((self.worker / "native-run.json").exists())
+                self.assertFalse((self.worker / "config/options/jdk.table.xml").exists())
+                self.assertFalse(list((self.root / "cache/native").glob("private-*")))
         finally:
             if process.poll() is None:
                 process.kill()
