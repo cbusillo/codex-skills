@@ -10,8 +10,10 @@ import json
 import urllib.error
 from contextlib import redirect_stdout
 from datetime import UTC, datetime, timedelta
+from email.message import Message
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -43,13 +45,12 @@ def scope(preview=False, **updates):
     return {**body, **updates}
 
 
-def receipt(kind, **updates):
-    # Producer record_disposable_lane_safety results (Launchplane 07c93f7d9).
+def receipt(kind: str, **updates: object) -> dict[str, Any]:
     # Keep these independent of the consumer's field allowlists.
     result = {
         "inspect": {"mode": "inspect", "binding_sha256": BINDING, "usage": "unknown", "data": "unknown",
                     "production_resources": "unknown", "automatic_fact_collection": "limited_service_records",
-                    "source_coverage": COVERAGE},
+                    "source_coverage": COVERAGE, "observation_sha256": EVIDENCE_HASH, "observation": None},
         "collect": {"mode": "collect", "binding_sha256": BINDING, "observed_by": ACTOR,
                     "observer_kind": "director_agent", "usage": "in_use", "data": "unknown",
                     "production_resources": "shared",
@@ -115,7 +116,7 @@ def invoke(mode="inspect", *, body=None, inspect_body=None, responses=None, edit
 
 def http_error(status, code):
     body = {"trace_id": "launchplane_req_refusal", "error": {"code": code, "message": "PRIVATE_SENTINEL"}}
-    return urllib.error.HTTPError(SERVICE, status, "PRIVATE_SENTINEL", {}, io.BytesIO(json.dumps(body).encode()))
+    return urllib.error.HTTPError(SERVICE, status, "PRIVATE_SENTINEL", Message(), io.BytesIO(json.dumps(body).encode()))
 
 
 @pytest.mark.parametrize("mode", lane.MODES)
@@ -154,6 +155,28 @@ def test_preview_record_sends_facts_and_reports_the_requested_reconcile():
     assert output["request"] == {"mode": "record", "payload_source": "private_file", "known_fact_count": 2}
     text = json.dumps(output)
     assert "PRIVATE_SENTINEL" not in text and "preview-12" not in text and "example-testing" not in text
+
+
+@pytest.mark.parametrize("observation", [None,
+    {"usage": "in_use", "data": "only_copy", "production_resources": "shared"},
+    {"usage": "unused", "data": "reproducible", "production_resources": "isolated"},
+])
+def test_inspect_keeps_stored_observation_separate_from_fresh_unknown_facts(observation):
+    code, output, calls, _ = invoke(responses=[receipt("inspect", observation=observation)])
+    assert code == 0 and len(calls) == 1
+    assert output["result"]["observation_sha256"] == EVIDENCE_HASH
+    assert output["result"]["observation"] == observation
+    assert all(output["result"][fact] == "unknown" for fact in lane.FACTS)
+
+
+@pytest.mark.parametrize("removed", [("observation_sha256",), ("observation",), ("observation_sha256", "observation")])
+def test_inspect_without_stored_observation_metadata_is_invalid(removed):
+    response = receipt("inspect")
+    for field in removed:
+        response["result"].pop(field)
+    code, output, calls, _ = invoke(responses=[response])
+    assert code != 0 and len(calls) == 1
+    assert output["status"] == "invalid" and output["result"] == {}
 
 
 @pytest.mark.parametrize("mode,body", [
@@ -213,7 +236,14 @@ def test_clear_is_not_offered_until_the_service_binds_it():
 
 
 @pytest.mark.parametrize("updates", [{"usage": "unused"}, {"automatic_fact_collection": "unavailable"},
-                                     {"binding_sha256": "not-a-digest"}])
+    {"binding_sha256": "not-a-digest"}, {"observation_sha256": "not-a-digest"},
+    {"observation_sha256": None}, {"observation": "PRIVATE_SENTINEL"}, {"observation": []},
+    {"observation": {}},
+    {"observation": {"usage": "unknown", "data": "unknown", "production_resources": "shared", "extra": "x"}},
+    {"observation": {"usage": {}, "data": "unknown", "production_resources": "shared"}},
+    {"observation": {"usage": "unused", "data": "maybe", "production_resources": "shared"}},
+    {"unexpected": "PRIVATE_SENTINEL"}, {"provider_mutation": False},
+])
 def test_untrustworthy_inspect_is_invalid(updates):
     code, output, calls, _ = invoke("inspect", responses=[receipt("inspect", **updates)])
     assert code != 0 and len(calls) == 1

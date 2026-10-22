@@ -106,7 +106,11 @@ lane. The service collects testing facts itself and would store them as
 `unknown`.
 
 Run inspect first and save its JSON output privately. It returns the lane's
-`binding_sha256`, with every fact `unknown`. Collect and record each require
+`binding_sha256`, with every fresh fact `unknown`, plus `observation_sha256`
+and a nullable `observation` holding the stored report's usage, data and
+production-resource values. A response missing either is invalid. Stored
+reports do not establish current disposal eligibility or replace the fresh
+facts. Collect and record each require
 `--expected-binding-sha256` (that value), `--inspect-evidence-file` (the saved
 output) and `--reviewed-inspect`. The evidence must match the private request
 scope, the configured service and the digest. The helper never runs inspect
@@ -143,7 +147,8 @@ before relying on any stored fact.
 
 After an accepted collect or record, the helper sends one separate inspect
 POST. It reports `binding_readback_matches`. `effect_readback` is always
-`unavailable`, because no route reads stored observations back. A mismatch or
+`unavailable`: this readback checks the binding, without matching the stored
+report to the submitted effect. A mismatch or
 failed readback returns `accepted_unverified` and exits nonzero.
 
 Recording facts for a preview also requests a preview reconcile, reported as
