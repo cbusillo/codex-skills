@@ -900,6 +900,46 @@ class MutationProjectionTests(unittest.TestCase):
                 self.assertEqual(self.records[7]["body"], original)
                 self.assertEqual(self.records[7]["state"], "open")
 
+    def settle_after_first_read(self, number, change):
+        original_get = self.get_issue
+        reads = []
+        def get_issue(ref, repo):
+            result = original_get(ref, repo)
+            if PLAN.issue_ref(str(ref), repo)[1] == number and self.fact_writes:
+                reads.append(ref)
+                if len(reads) == 1:
+                    change(self.records[number])
+            return result
+        return patch.object(PLAN, "get_issue", get_issue)
+
+    def test_link_projection_tolerates_github_settling_relationship_summaries(self):
+        self.records[7].update(updated_at="2026-10-22T10:00:00Z",
+                               issue_dependencies_summary={"blocked_by": 0, "blocking": 0})
+        def settle(issue):
+            issue.update(updated_at="2026-10-22T10:00:05Z",
+                         issue_dependencies_summary={"blocked_by": 1, "blocking": 0},
+                         sub_issues_summary={"total": 1, "completed": 0, "percent_completed": 0},
+                         parent_issue_url=f"https://api.github.com/repos/{REPO}/issues/3")
+        with self.settle_after_first_read(7, settle):
+            result = self.command("link", "7", "blocked-by", "8")
+        self.assertEqual(result["projection"]["coverage"], "complete")
+        self.assertEqual(self.blockers[7], {8})
+        self.assert_labels(7, "plan", "blocked")
+        self.assertEqual(len(self.fact_writes), 1)
+
+    def test_link_projection_still_refuses_a_concurrent_planning_change(self):
+        def concurrent_label(issue):
+            issue["labels"].append({"name": "needs-director"})
+        args = PLAN.build_parser().parse_args(["--repo", REPO, "link", "7", "blocked-by", "8"])
+        with self.settle_after_first_read(7, concurrent_label), self.assertRaises(PLAN.PlanError) as raised:
+            args.func(args)
+        entry = raised.exception.payload["projection"]["issues"][0]
+        self.assertEqual(entry["status"], "reconciliation_failed")
+        self.assertIn("labels", entry["error"]["message"])
+        self.assertEqual(self.blockers[7], {8})
+        self.assert_labels(7, "plan", "active", extras=("bug", "needs-director"))
+        self.assertEqual(len(self.fact_writes), 1)
+
     def test_unlink_last_blocker_refreshes_the_blocked_side_in_both_directions(self):
         for relationship, source, target in (("blocked-by", "7", "8"), ("blocks", "8", "7")):
             with self.subTest(relationship=relationship):
