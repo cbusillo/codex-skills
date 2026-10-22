@@ -857,7 +857,7 @@ class LedgerTests(unittest.TestCase):
         return SimpleNamespace(**{
             "ledger": self.ledger, "idle_seconds": 90, "interval": 45, "deadline_seconds": 1800,
             "once": False, "capacity_state": None, "resume_capacity": False, "harness": "codex",
-            **overrides})
+            "delivered_state": self.root / "delivered.json", **overrides})
 
     def test_watch_exits_on_closeout_request_so_background_caller_wakes(self):
         self.write([event("agent_message", message="Still working."), event("task_started")])
@@ -875,16 +875,28 @@ class LedgerTests(unittest.TestCase):
         notices = [json.loads(line) for line in output.getvalue().splitlines()]
         self.assertEqual(notices[-1]["closeout_request"]["session_id"], self.entry["session_id"])
 
-    def test_watch_rearmed_over_pending_closeout_waits_for_new_one(self):
+    def run_watch_to_deadline(self) -> tuple[int, list[float], list[dict]]:
         clock = iter(range(0, 10_000, 45))
         sleeps = []
         output = io.StringIO()
         with patch.object(codex_idle_watch.time, "monotonic", side_effect=lambda: next(clock)), \
                 patch.object(codex_idle_watch.time, "sleep", side_effect=sleeps.append), \
                 contextlib.redirect_stdout(output):
-            self.assertEqual(codex_idle_watch.watch(self.watch_args(deadline_seconds=180), None), 0)
+            result = codex_idle_watch.watch(self.watch_args(deadline_seconds=180), None)
+        return result, sleeps, [json.loads(line) for line in output.getvalue().splitlines()]
+
+    def test_watch_wakes_once_per_closeout_request_across_rearms(self):
+        result, sleeps, notices = self.run_watch_to_deadline()
+        self.assertEqual((result, sleeps), (0, []))
+        self.assertIsNotNone(notices[0]["closeout_request"])
+        result, sleeps, notices = self.run_watch_to_deadline()
+        self.assertEqual(result, 0)
         self.assertGreater(len(sleeps), 1)
-        self.assertEqual(len(output.getvalue().splitlines()), 1)
+        self.assertEqual(len(notices), 1)
+        self.write([event("agent_message", message="Safe to exit: yes"),
+                    {**event("task_complete"), "timestamp": "2026-10-03T00:05:00Z"}])
+        _, sleeps, _ = self.run_watch_to_deadline()
+        self.assertEqual(sleeps, [])
 
     def test_watch_selects_claude_sessions_for_closeout(self):
         self.entry["harness"] = "claude"
