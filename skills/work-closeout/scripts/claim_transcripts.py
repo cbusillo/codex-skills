@@ -66,6 +66,7 @@ def codex_children(records: list[dict]) -> set[str]:
         and row["payload"].get("type") == "item_completed"
         and isinstance(item := row["payload"].get("item"), dict)
         and item.get("type") == "SubAgentActivity"
+        and item.get("kind") == "started"
         and isinstance(item.get("agent_thread_id"), str)
     }
 
