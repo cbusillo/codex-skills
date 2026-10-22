@@ -603,8 +603,8 @@ installed local helper bindings.
   The operation projection returns the operation's id, product,
   context, instance, status, phase, attempt, deployment record id, the
   requested artifact id, created, updated, started, heartbeat and finished
-  times, `error_code`, a bounded `error_description` using the existing
-  public-summary validator (the descriptive word `credential` is redacted),
+  times, `error_code`, a bounded `error_description` using the response-prose
+  redaction policy,
   and validated
   `error_detail_keys` (env-key names only); and, once a result exists, the deploy, post-deploy,
   health, canonical and logo statuses, the deployment and release tuple ids,
@@ -1273,6 +1273,25 @@ does not print token values, subjects, labels, URLs, headers, or request bodies.
 Global options such as `--url` must appear before the subcommand. A diagnostic
 with `status: "incomplete"` may still have a local token source; read the
 `classification` field before describing the failure.
+
+## Response prose
+
+Output-only prose uses the same redaction for top-level and nested fields.
+This includes allowance reasons/evidence in changes and readback, sharing
+reasons/evidence, hold snapshots and rehearsal provenance, protected-artifact
+warnings, activity titles/summaries, and service diagnostic text. Credential
+assignments, tokens and URLs are redacted; a remaining denylist marker hides
+the entire field rather than rejecting an otherwise valid response. Type and
+length checks, structural allowlists, identifiers, timestamps, codes and
+review digests retain their existing validation. Read projections that refuse
+secret-shaped raw values still refuse them before projecting prose.
+
+Reasons used to compare a request with saved reviewed evidence (testing-hold,
+product Client and image repository) retain strict projection. A redacted
+field cannot substitute for that comparison or establish apply authority.
+If an allowance apply receives HTTP success but its response cannot be
+projected, its result is `accepted_unverified`, with HTTP status, safe trace
+and a readback recommendation. It must not be retried as a failed write.
 
 ## Exit Behavior
 

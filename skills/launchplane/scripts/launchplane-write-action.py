@@ -857,7 +857,7 @@ def _project_intent_evaluation(value: object) -> dict[str, object]:
     if safe_to_execute is not None:
         projected["safe_to_execute"] = safe_to_execute
     if "next_action" in source:
-        projected["next_action"] = public_summary_string(source["next_action"])
+        projected["next_action"] = _public_response_text(source["next_action"])
     if "secret_evidence" in source:
         projected["secret_evidence"] = _project_secret_evidence(
             source["secret_evidence"]
@@ -1313,7 +1313,7 @@ def _project_merge_train_queue_entry(value: object) -> dict[str, object]:
     reasons = source.get("ineligible_reasons")
     if not isinstance(reasons, list):
         raise LaunchplaneSafetyError("invalid_response")
-    projected["ineligible_reasons"] = [public_summary_string(reason) for reason in reasons]
+    projected["ineligible_reasons"] = [_public_response_text(reason) for reason in reasons]
     return projected
 
 
@@ -1325,7 +1325,7 @@ def _project_merge_train_dry_run(value: object) -> dict[str, object]:
             raise LaunchplaneSafetyError("invalid_response")
         projected["intended_next_action"] = public_code(source["intended_next_action"])
     if "next_action_detail" in source:
-        projected["next_action_detail"] = public_summary_string(source["next_action_detail"])
+        projected["next_action_detail"] = _public_response_text(source["next_action_detail"])
     if "queue_order" in source:
         order = source["queue_order"]
         if not isinstance(order, list):
@@ -1351,7 +1351,7 @@ def _project_merge_train_blocking_reason(value: object) -> dict[str, object]:
         raise LaunchplaneSafetyError("invalid_response")
     return {
         "code": public_code(code),
-        "message": public_summary_string(source.get("message")),
+        "message": _public_response_text(source.get("message")),
     }
 
 
@@ -1448,7 +1448,7 @@ def _project_merge_train_block_result(value: object) -> dict[str, object]:
         if key in source:
             projected[key] = public_identifier(source[key])
     if "detail" in source:
-        projected["detail"] = public_summary_string(source["detail"])
+        projected["detail"] = _public_response_text(source["detail"])
     return projected
 
 
@@ -1486,7 +1486,7 @@ def _project_controller_last_result(value: object) -> dict[str, object]:
         observation = source["next_observation"]
         if not isinstance(observation, str) or len(observation) > 256:
             raise LaunchplaneSafetyError("invalid_response")
-        projected["next_observation"] = public_summary_string(observation)
+        projected["next_observation"] = _public_response_text(observation)
     return projected
 
 
@@ -1823,7 +1823,7 @@ def _project_generic_web_deploy_recovery_result(
     }
     provider_status = source.get("provider_status")
     if provider_status:
-        projected["provider_status"] = public_summary_string(provider_status)
+        projected["provider_status"] = _public_response_text(provider_status)
     if dry_run:
         projected.update(
             {
@@ -2180,6 +2180,10 @@ def _project_odoo_addon_setting_evidence(value: object) -> dict[str, object]:
     return projected
 
 
+def _public_response_text(value: object, *, max_length: int = 500) -> str:
+    return public_operator_text(value, max_length=max_length, redact_denied_markers=True)
+
+
 def _project_integration_allowance(value: object) -> dict[str, object]:
     source = _require_dict(value)
     if any(str(key) not in INTEGRATION_ALLOWANCE_FIELDS for key in source):
@@ -2190,10 +2194,10 @@ def _project_integration_allowance(value: object) -> dict[str, object]:
     projected: dict[str, object] = {
         "integration": public_code(source.get("integration")),
         "kind": kind,
-        "reason": public_operator_text(source.get("reason")),
+        "reason": _public_response_text(source.get("reason")),
     }
     if source.get("evidence"):
-        projected["evidence"] = public_operator_text(source.get("evidence"))
+        projected["evidence"] = _public_response_text(source.get("evidence"))
     if source.get("recorded_by"):
         projected["recorded_by"] = public_identifier(source.get("recorded_by"))
     if source.get("recorded_at"):
@@ -2211,8 +2215,8 @@ def _project_sharing_reason(value: object) -> dict[str, object]:
         raise LaunchplaneSafetyError("invalid_response")
     projected: dict[str, object] = {
         "kind": kind,
-        "reason": public_operator_text(source.get("reason")),
-        "evidence": public_operator_text(source.get("evidence")),
+        "reason": _public_response_text(source.get("reason")),
+        "evidence": _public_response_text(source.get("evidence")),
     }
     if source.get("recorded_by"):
         projected["recorded_by"] = public_identifier(source.get("recorded_by"))
@@ -2260,7 +2264,7 @@ def _project_integration_allowances_plan(result: object) -> dict[str, object]:
         "instance": public_identifier(source.get("instance")),
         "environment_class": public_code(source.get("environment_class")),
         # This plan is review-bound by its service digest, not projected prose.
-        "reason": public_operator_text(source.get("reason"), redact_denied_markers=True),
+        "reason": _public_response_text(source.get("reason")),
         "source_label": public_identifier(source.get("source_label")),
         "record_sha256_before": _optional_sha256(source.get("record_sha256_before")),
         "record_sha256_after": _optional_sha256(source.get("record_sha256_after")),
@@ -2332,7 +2336,7 @@ def _project_testing_hold(value: object) -> dict[str, object] | None:
     source = _require_dict(value)
     if any(str(key) not in TESTING_HOLD_FIELDS for key in source):
         raise LaunchplaneSafetyError("unsafe_response_shape")
-    projected: dict[str, object] = {"reason": public_operator_text(source.get("reason"))}
+    projected: dict[str, object] = {"reason": _public_response_text(source.get("reason"))}
     if "purpose" in source:
         projected["purpose"] = _testing_hold_purpose(source["purpose"])
     if source.get("rehearsal") is not None:
@@ -2340,10 +2344,10 @@ def _project_testing_hold(value: object) -> dict[str, object] | None:
         projected["rehearsal"] = {
             "binding_sha256": _project_sha256(rehearsal.get("binding_sha256")),
             # Producer provenance is free text; legacy target labels may be empty.
-            "target_updated_at": public_operator_text(rehearsal["target_updated_at"]),
+            "target_updated_at": _public_response_text(rehearsal["target_updated_at"]),
             "target_source_label": (
                 "" if rehearsal["target_source_label"] == ""
-                else public_operator_text(rehearsal["target_source_label"])
+                else _public_response_text(rehearsal["target_source_label"])
             ),
         }
     if source.get("recorded_by"):
@@ -2428,6 +2432,12 @@ def _optional_text(value: object, *, max_length: int = 64) -> str:
     if value in {None, ""}:
         return ""
     return public_summary_string(value, max_length=max_length)
+
+
+def _optional_response_text(value: object, *, max_length: int = 64) -> str:
+    if value is None or value == "":
+        return ""
+    return _public_response_text(value, max_length=max_length)
 
 
 def _optional_code(value: object) -> str:
@@ -2522,7 +2532,7 @@ def _project_product_target(value: object) -> dict[str, object]:
             source.get("observed_runtime_identity")
         ),
         "runtime_identity_status": _optional_code(source.get("runtime_identity_status")),
-        "runtime_identity_detail": _optional_text(
+        "runtime_identity_detail": _optional_response_text(
             source.get("runtime_identity_detail"), max_length=300
         ),
         "trust_state": _optional_code(source.get("trust_state")),
@@ -2541,7 +2551,7 @@ def _project_product_health(value: object) -> dict[str, object] | None:
         check = _require_dict(check_value)
         projected_checks.append(
             {
-                "name": _optional_text(check.get("name"), max_length=120),
+                "name": _optional_response_text(check.get("name"), max_length=120),
                 "kind": _optional_code(check.get("kind")),
                 "enabled": bool(_optional_bool(check.get("enabled"))),
                 "probe_effective": _optional_bool(check.get("probe_effective")),
@@ -2642,7 +2652,7 @@ def _project_product_profile(value: object) -> dict[str, object]:
         raise LaunchplaneSafetyError("invalid_response")
     projected: dict[str, object] = {
         "product": public_identifier(source.get("product")),
-        "display_name": _optional_text(source.get("display_name"), max_length=120),
+        "display_name": _optional_response_text(source.get("display_name"), max_length=120),
         "driver_id": _optional_identifier(source.get("driver_id")),
         "repository": _optional_identifier(source.get("repository")),
         "production_use": production_use,
@@ -2722,7 +2732,7 @@ def _project_product_activity_event(
     def text(field: str, max_length: int) -> object:
         return drops.keep(
             f"events[].{field}",
-            lambda value: public_summary_string(value, max_length=max_length),
+            lambda value: _public_response_text(value, max_length=max_length),
             event.get(field),
         )
 
@@ -2796,7 +2806,7 @@ def _protected_artifact_warning(value: object) -> str:
         for reference in value.split():
             if "@" in reference and not re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", reference):
                 _protected_artifact_identifier(reference)
-    return public_operator_text(value)
+    return _public_response_text(value)
 
 
 def _protected_artifact_lane(value: object, *, optional: bool = False) -> str:
@@ -2914,11 +2924,11 @@ def _reconcile_plan_validators() -> dict[str, Any]:
         )
     )
     fields.update(
-        detail=lambda value: public_summary_string(value, max_length=400),
+        detail=lambda value: _public_response_text(value, max_length=400),
         # Launchplane's fixed description plus up to 32 validated env-key names
         # (launchplane#2717); the helper's own summary redaction still applies.
-        last_failed_error_summary=lambda value: public_summary_string(value, max_length=1500),
-        hold_reason=lambda value: public_operator_text(value, max_length=300),
+        last_failed_error_summary=lambda value: _public_response_text(value, max_length=1500),
+        hold_reason=lambda value: _public_response_text(value, max_length=300),
         hold_recorded_at=lambda value: public_summary_string(value, max_length=64),
         preview_url=_public_origin_url,
     )
@@ -3060,7 +3070,7 @@ def _project_reconcile_request(
         "request_count": count("request_count"),
         "attempt": count("attempt"),
         "last_delivery_id": field("last_delivery_id", public_identifier),
-        "last_error": field("last_error", lambda value: public_summary_string(value, max_length=400)),
+        "last_error": field("last_error", lambda value: _public_response_text(value, max_length=400)),
         "last_plan": _project_reconcile_plan(request.get("last_plan"), drops),
     }
 
@@ -3328,12 +3338,7 @@ def _project_target_replacement_result(
 
 
 def _public_operation_error_description(value: object) -> str:
-    if not isinstance(value, str):
-        raise LaunchplaneSafetyError("invalid_response")
-    # Fixed service prose describes a credential refusal. Redact that word
-    # rather than loosening the public-summary policy; _FieldDrops checks the raw shape.
-    summary = re.sub(r"\bcredential\b(?!\s*[:=])", "[redacted]", value, flags=re.IGNORECASE)
-    return public_summary_string(summary)
+    return _public_response_text(value)
 
 
 def _project_target_replacement_operation(provider_payload: dict[str, Any]) -> dict[str, object]:
@@ -3749,7 +3754,7 @@ def _project_preview_generation(
         "overall_health_status": field("overall_health_status", _public_dotted_code),
         "failure_stage": field("failure_stage", _public_dotted_code),
         "failure_summary": field(
-            "failure_summary", lambda value: public_summary_string(value, max_length=300)
+            "failure_summary", lambda value: _public_response_text(value, max_length=300)
         ),
         "runtime_identity": projected_identity,
     }
@@ -3856,7 +3861,7 @@ def _project_product_repository_identity_plan(result: object) -> dict[str, objec
         "inventory_record_id": public_identifier(source.get("inventory_record_id")),
         "inventory_revision": inventory_revision,
         "inventory_digest": _project_sha256(source.get("inventory_digest")),
-        "reason": public_operator_text(source.get("reason")),
+        "reason": _public_response_text(source.get("reason")),
         "source_label": public_identifier(source.get("source_label")),
         "profile_record_sha256_before": _optional_sha256(
             source.get("profile_record_sha256_before")
@@ -3889,7 +3894,7 @@ def _project_odoo_addon_settings_result(result: object) -> dict[str, object]:
         "instance": public_identifier(source.get("instance")),
         "addon": public_code(source.get("addon")),
         "rendered_action": public_code(source.get("rendered_action")),
-        "reason": public_operator_text(source.get("reason")),
+        "reason": _public_response_text(source.get("reason")),
         "source_label": public_identifier(source.get("source_label")),
         "record_sha256_before": _optional_sha256(source.get("record_sha256_before")),
         "record_sha256_after": _optional_sha256(source.get("record_sha256_after")),
@@ -3924,7 +3929,7 @@ def _project_odoo_addon_settings_result(result: object) -> dict[str, object]:
     next_actions = source.get("next_actions", [])
     if not isinstance(next_actions, list):
         raise LaunchplaneSafetyError("invalid_response")
-    projected["next_actions"] = [public_summary_string(item) for item in next_actions]
+    projected["next_actions"] = [_public_response_text(item) for item in next_actions]
     assert_public_safe_shape(projected)
     return projected
 
@@ -5164,7 +5169,7 @@ def _project_path_check(value: object) -> dict[str, object]:
                 "state": step["state"],
                 # A failed testing deploy carries the operation's dotted error code.
                 "code": _path_check_step_code(step["code"]),
-                "description": public_summary_string(step["description"]),
+                "description": _public_response_text(step["description"]),
                 "fix": step["fix"],
                 "record_ids": [public_identifier(record_id) for record_id in record_ids],
             }

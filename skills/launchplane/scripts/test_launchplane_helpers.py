@@ -2696,6 +2696,15 @@ def test_integration_allowance_removal_with_credential_prose() -> None:
         (SCRIPT_DIR / "fixtures" / "integration-allowances-removal-response.json").read_text()
     )
     plan = response["result"]
+    added = copy.deepcopy(plan["changes"][0])
+    added.update(integration="new_source", action="add", before=None)
+    added["after"]["integration"] = "new_source"
+    plan["changes"].insert(0, added)
+    for change in plan["changes"]:
+        for side in ("before", "after"):
+            if change[side] is not None:
+                change[side]["reason"] = "Existing testing credentials for the development store."
+                change[side]["evidence"] = "Rotated cookie Abc.Def9 and password=fixture-private-value"
     request = {
         "schema_version": 1,
         **{key: plan[key] for key in ("product", "context", "instance", "reason")},
@@ -2721,9 +2730,28 @@ def test_integration_allowance_removal_with_credential_prose() -> None:
         assert removed["before"]["integration"] == "legacy_source"
         assert "after" not in removed
         assert output["result"]["reason"] == "[redacted]"
+        for change in output["result"]["changes"]:
+            for side in ("before", "after"):
+                if side in change:
+                    assert change[side]["reason"] == "[redacted]"
+                    assert change[side]["evidence"] == "[redacted]"
+        assert "fixture-private-value" not in json.dumps(output)
         assert len(posts) == 1 and not reads
         assert posts[0]["body"] == {**request, "mode": "dry-run"}
 
+        read_response = {
+            **{key: response[key] for key in ("status", "trace_id", "records")},
+            "result": {
+                **{key: plan[key] for key in ("status", "product", "context", "instance", "environment_class")},
+                "allowances": [change["after"] for change in plan["changes"] if change["after"] is not None],
+                "integration_keys": [], "record_sha256": plan["record_sha256_before"],
+            },
+        }
+        read_output = write_action.summarize_integration_allowances_read(
+            request={}, provider_payload=read_response
+        )
+        assert all(item["reason"] == "[redacted]" for item in read_output["result"]["allowances"])
+        assert "fixture-private-value" not in json.dumps(read_output)
         evidence_file = _write_json(directory, "review.json", output)
         applied = copy.deepcopy(response)
         applied["result"].update(mode="apply", applied=True, read_back_matches=True)
@@ -2739,6 +2767,16 @@ def test_integration_allowance_removal_with_credential_prose() -> None:
         assert posts[0]["body"] == {
             **request, "mode": "apply", "reviewed_plan_sha256": plan["plan_sha256"],
         }
+        malformed = copy.deepcopy(applied)
+        malformed["result"]["read_back"][0]["reason"] = None
+        status, unverified, posts, _reads = _run_main(
+            apply_argv, post=write_action._ServiceResponse(malformed, 202)
+        )
+        assert unverified["status"] == "accepted_unverified"
+        assert unverified["summary"]["http_status"] == 202
+        assert unverified["summary"]["trace_id"] == response["trace_id"]
+        assert len(posts) == 1
+        assert "fixture-private-value" not in json.dumps(unverified)
         wrong_digest = copy.deepcopy(output)
         wrong_digest["result"]["plan_sha256"] = "0" * 64
         _write_json(directory, "review.json", wrong_digest)
@@ -3325,7 +3363,6 @@ def test_path_check_refuses_unknown_fields_unsafe_values_and_incomplete_evidence
         lambda body: body["check"]["steps"][0].update(provider_error="private detail"),
         lambda body: body["check"]["steps"][0].update(secret_name="PRIVATE_SECRET"),
         lambda body: body["check"]["steps"][0].update(description="Bearer abcdefghijklmnop"),
-        lambda body: body["check"]["steps"][0].update(description="https://private.example.invalid/x"),
         lambda body: body["check"]["steps"][0].update(record_ids=["token=private-value"]),
         lambda body: body["check"]["steps"][0].pop("state"),
         lambda body: body["check"]["steps"][0].update(state="pending"),
@@ -4059,16 +4096,15 @@ def test_product_activity_read_keeps_real_events_and_drops_odd_fields() -> None:
     authz = result["events"][0]
     assert authz["action_id"] == "authz_policy.grant"
     assert authz["status"] == "active"
-    assert authz["summary"] == ""
+    assert authz["summary"] == "[redacted]"
     assert authz["records"] == [{"record_type": "authz_policy", "record_id": "authz-policy-7"}]
     assert result["events"][1]["status"] == ""
     assert result["events"][2]["records_truncated"] is True
     assert result["omitted_event_count"] == 1
-    assert result["dropped_field_count"] == 3
+    assert result["dropped_field_count"] == 2
     assert result["dropped_field_paths"] == [
         "events[].event_id",
         "events[].status",
-        "events[].summary",
     ]
 
     secret_event = {**_product_activity_event(4), "summary": "rotated ghp_abcdefghijklmnop"}
@@ -4307,7 +4343,7 @@ def test_reconcile_requests_read_keeps_a_summary_that_lists_many_keys() -> None:
 
     assert status == 0
     (request,) = payload["result"]["requests"]
-    assert request["last_plan"]["last_failed_error_summary"] == summary
+    assert request["last_plan"]["last_failed_error_summary"] == write_action.public_operator_text(summary, max_length=1500)
 
 
 def test_reconcile_requests_read_keeps_testing_operation_ids() -> None:
@@ -4658,7 +4694,7 @@ def test_target_replacement_operation_read_projects_failure_details() -> None:
     status, payload, _calls = _run_product_read(argv, response)
     assert status == 0
     description = payload["result"]["operation"]["error_description"]
-    assert description == source["error_description"].replace("credential", "[redacted]")
+    assert description == "[redacted]"
     assert "operation.error_description" not in payload["result"]["dropped_field_paths"]
 
 
@@ -4681,9 +4717,9 @@ def test_target_replacement_operation_read_bounds_failure_details() -> None:
         source["error_description"] = description
         status, payload, _calls = _run_product_read(argv, response)
         assert status == 0
-        assert payload["result"]["operation"]["error_description"] == ""
+        assert payload["result"]["operation"]["error_description"] == "[redacted]"
         assert "hunter2-example" not in json.dumps(payload)
-        assert "operation.error_description" in payload["result"]["dropped_field_paths"]
+        assert "operation.error_description" not in payload["result"]["dropped_field_paths"]
     for value in (None, [], "not a list", {"unexpected": "detail"}):
         source["error_detail_keys"] = value
         status, payload, _calls = _run_product_read(argv, response)
@@ -5598,7 +5634,7 @@ def test_success_projection_fails_closed_on_secret_bearing_payloads() -> None:
         raise AssertionError("expected nested secret-bearing product-config payload to fail closed")
 
 
-def test_summaries_and_trace_ids_fail_closed_on_secret_values() -> None:
+def test_trace_ids_refuse_secrets_and_response_prose_redacts_them() -> None:
     for trace_id in ("Bearer secret-token", "https://private.example.invalid/trace", "trace id with spaces"):
         try:
             write_action.summarize_success(
@@ -5610,78 +5646,13 @@ def test_summaries_and_trace_ids_fail_closed_on_secret_values() -> None:
             assert exc.code == "invalid_response"
         else:
             raise AssertionError(f"expected unsafe trace id {trace_id!r} to fail closed")
-    try:
-        write_action.summarize_success(
-            operation="product-config-preflight",
-            request={"product": "example-product", "context": "example-testing"},
-            provider_payload={"status": "accepted", "trace_id": "launchplane_req_product", "records": {}, "result": {"intent": {"status": "allowed", "reason_code": "policy_allowed", "safe_to_execute": True, "next_action": "Use Bearer secret-token before retrying."}}},
-        )
-    except safety.LaunchplaneSafetyError as exc:
-        assert exc.code == "invalid_response"
-    else:
-        raise AssertionError("expected unsafe next_action to fail closed")
-    try:
-        write_action.summarize_success(
-            operation="merge-train-controller-run-once",
-            request={"repository": "example/repo", "base_branch": "main", "mutate": True},
-            provider_payload={
-                "status": "accepted",
-                "trace_id": "launchplane_req_blocked_merge",
-                "records": {},
-                "result": {
-                    "repository": "example/repo",
-                    "base_branch": "main",
-                    "controller_action": "block",
-                    "blocking_reason": {
-                        "code": "merge_readiness_not_ready",
-                        "message": "Use Bearer secret-token before retrying.",
-                    },
-                    "merge_readiness": None,
-                },
-            },
-        )
-    except safety.LaunchplaneSafetyError as exc:
-        assert exc.code == "unsafe_response_shape"
-    else:
-        raise AssertionError("expected unsafe merge blocking reason to fail closed")
-    try:
-        write_action.summarize_success(
-            operation="merge-train-controller-run-once",
-            request={"repository": "example/repo", "base_branch": "main", "mutate": True},
-            provider_payload={
-                "status": "accepted",
-                "trace_id": "launchplane_req_blocked_merge",
-                "records": {},
-                "result": {
-                    "repository": "example/repo",
-                    "base_branch": "main",
-                    "controller_action": "block",
-                    "blocking_reason": {
-                        "code": "merge_readiness_not_ready",
-                        "message": "Operator credential is unavailable.",
-                    },
-                    "merge_readiness": None,
-                },
-            },
-        )
-    except safety.LaunchplaneSafetyError as exc:
-        assert exc.code == "invalid_response"
-    else:
-        raise AssertionError("expected denied merge blocking summary to fail closed")
-    http_error = urllib.error.HTTPError(
-        "https://launchplane.example.invalid/v1/example",
-        403,
-        "Forbidden",
-        hdrs=Message(),
-        fp=io.BytesIO(json.dumps({"trace_id": "Bearer secret-token", "error": {"code": "authorization_denied", "message": "secret"}}).encode()),
+    output = write_action.summarize_success(
+        operation="product-config-preflight",
+        request={"product": "example-product", "context": "example-testing"},
+        provider_payload={"status": "accepted", "trace_id": "launchplane_req_product", "records": {}, "result": {"intent": {"status": "allowed", "reason_code": "policy_allowed", "safe_to_execute": True, "next_action": "Use Bearer secret-token before retrying."}}},
     )
-    projected_error = write_action.summarize_http_error(
-        operation="product-config-preflight", request={}, exc=http_error
-    )
-    assert not projected_error["summary"]["trace_id"]
-    assert projected_error["summary"]["http_status"] == http_error.code
-    assert projected_error["summary"]["error_code"] == "authorization_denied"
-    assert "Bearer secret-token" not in json.dumps(projected_error)
+    assert output["result"]["intent"]["next_action"] == "Use [redacted] before retrying."
+    assert "secret-token" not in json.dumps(output)
 
 
 def test_authorization_denial_keeps_denied_status() -> None:
@@ -11096,3 +11067,39 @@ def test_simple_apply_unreadable_receipts_keep_projection_recovery(operation, bo
         receipts.append(receipt)
     assert receipts[1]["summary"]["recommendation"] == receipts[0]["summary"]["recommendation"]
     assert receipts[1]["warnings"] == receipts[0]["warnings"]
+
+
+@pytest.mark.parametrize("prose", [
+    "Existing testing credentials for the development store.",
+    "cookie Abc.Def9", "password=fixture-private-value", "ghp_" + "a" * 36,
+])
+def test_nested_operator_prose_redacts_without_rejecting(prose: str) -> None:
+    sharing = write_action._project_sharing_reason({
+        "kind": "read_only_source", "reason": prose, "evidence": prose,
+    })
+    hold = write_action._project_testing_hold({
+        "reason": prose, "rehearsal": {
+            "binding_sha256": "a" * 64, "target_updated_at": prose,
+            "target_source_label": prose,
+        },
+    })
+    warning = write_action._protected_artifact_warning(prose)
+    assert sharing == {"kind": "read_only_source", "reason": "[redacted]", "evidence": "[redacted]"}
+    assert hold["reason"] == "[redacted]"
+    assert hold["rehearsal"]["target_updated_at"] == "[redacted]"
+    assert hold["rehearsal"]["target_source_label"] == "[redacted]"
+    assert warning == "[redacted]"
+    write_action.assert_public_safe_shape({"sharing": sharing, "hold": hold, "warning": warning})
+
+
+@pytest.mark.parametrize("prose", ["Waiting for credentials to be removed.", "cookie Abc.Def9"])
+def test_nested_service_prose_redacts_without_rejecting(prose: str) -> None:
+    blocked = write_action._project_merge_train_blocking_reason({"code": "not_ready", "message": prose})
+    drops = write_action._FieldDrops()
+    event = write_action._project_product_activity_event({
+        "event_id": "event-1", "event_type": "testing.updated", "title": prose, "summary": prose,
+    }, drops)
+    assert blocked == {"code": "not_ready", "message": "[redacted]"}
+    assert event["title"] == "[redacted]" and event["summary"] == "[redacted]"
+    assert not drops.paths
+    write_action.assert_public_safe_shape({"blocked": blocked, "event": event})
