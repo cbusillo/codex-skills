@@ -31,6 +31,7 @@ import gui_launch
 CLAUDE_SUGGESTION_SETTING = "promptSuggestionEnabled"
 CLAUDE_SUGGESTION_ENV = "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION"
 CLAUDE_AUTOCOMPACT_OPTION = "--autocompact"
+CLAUDE_QUESTION_TOOL = "AskUserQuestion"
 # Codex draws its first screen seconds after exec (3.3s from an isolated home
 # on Chris-Studio; account and MCP startup add more), so watch for its
 # hook-review prompt until the brief's turn runs, within this bound.
@@ -413,6 +414,7 @@ def append_brief(command_text, brief):
         settings = claude_settings(command_text, words)
         if settings is not None:
             command_text += " --settings " + shlex.quote(json.dumps(settings))
+        command_text += f" --disallowedTools {CLAUDE_QUESTION_TOOL}"
         # A launch-flag window stops the autocompact offer dialog, which an unattended
         # session cannot answer; "auto" keeps the window Claude Code tunes for the model.
         if not any(word == CLAUDE_AUTOCOMPACT_OPTION or word.startswith(CLAUDE_AUTOCOMPACT_OPTION + "=")
