@@ -521,12 +521,9 @@ def has_executable_claim_source(text: str, consumer: str, *, claim_related: bool
     claim_names: set[str] = set()
     binding_texts: dict[str, str] = {}
     for node in ast.walk(tree):
-        if not isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.NamedExpr)) or node.value is None:
-            continue
-        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-        for target in targets:
+        for target, literal_text in python_literal_bindings(node):
             for name in python_binding_names(target):
-                text = f"{binding_texts.get(name, '')} {python_literal_text(node.value)}"
+                text = f"{binding_texts.get(name, '')} {literal_text}"
                 binding_texts[name] = text
                 if has_claim_text(text):
                     claim_names.add(name)
@@ -685,6 +682,7 @@ def python_data_call(function: ast.AST) -> bool:
             "loads",
             "load",
             "parse",
+            "shlex",
             "literal_eval",
             "literal_targets",
             "shell_claims",
@@ -694,14 +692,34 @@ def python_data_call(function: ast.AST) -> bool:
     )
 
 
+def python_literal_bindings(node: ast.AST) -> Iterator[tuple[ast.AST, str]]:
+    if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.NamedExpr)) and node.value is not None:
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        for target in targets:
+            yield target, python_literal_text(node.value)
+    elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+        yield node.target, python_literal_text(node.iter)
+    elif isinstance(node, ast.withitem) and node.optional_vars is not None:
+        yield node.optional_vars, python_literal_text(node.context_expr)
+    elif isinstance(node, ast.Match):
+        for case in node.cases:
+            yield case.pattern, python_literal_text(node.subject)
+
+
 def python_binding_names(target: ast.AST) -> Iterator[str]:
     if isinstance(target, ast.Name):
         yield target.id
     elif isinstance(target, (ast.Tuple, ast.List)):
         for item in target.elts:
             yield from python_binding_names(item)
-    elif isinstance(target, ast.Starred):
+    elif isinstance(target, (ast.Starred, ast.Attribute, ast.Subscript)):
         yield from python_binding_names(target.value)
+    elif isinstance(target, ast.pattern):
+        for pattern in ast.walk(target):
+            if isinstance(pattern, (ast.MatchAs, ast.MatchStar)) and pattern.name is not None:
+                yield pattern.name
+            elif isinstance(pattern, ast.MatchMapping) and pattern.rest is not None:
+                yield pattern.rest
 
 
 def python_literal_text(node: ast.AST) -> str:
@@ -715,8 +733,21 @@ def python_claim_text(node: ast.AST) -> bool:
 def python_claim_arguments(call: ast.Call, claim_names: set[str]) -> bool:
     arguments = [*call.args, *(item.value for item in call.keywords)]
     return any(
-        python_claim_text(argument) or any(isinstance(node, ast.Name) and node.id in claim_names for node in ast.walk(argument))
+        not python_parsed_root(argument)
+        and (
+            python_claim_text(argument) or any(isinstance(node, ast.Name) and node.id in claim_names for node in ast.walk(argument))
+        )
         for argument in arguments
+    )
+
+
+def python_parsed_root(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == "root_node"
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Attribute)
+        and node.value.func.attr == "parse"
     )
 
 
@@ -951,7 +982,7 @@ def accepts_claim_data(argv: list[str]) -> bool:
         or any(is_evaluator_flag(argument, consumer) for argument in arguments)
     ):
         return False
-    script = next((argument for argument in arguments if not argument.startswith("-")), "")
+    script = arguments[0] if arguments and not arguments[0].startswith("-") else ""
     return bool(re.fullmatch(r"[A-Za-z0-9_./@:+~-]+", script)) and ("/" in script or bool(Path(script).suffix))
 
 
@@ -965,6 +996,8 @@ def input_consumer(argv: list[str]) -> str | None:
         return consumer
     if Path(consumer).name in SHELL_NAMES:
         return ""
+    if is_interpreter(consumer) and not any(is_evaluator_flag(argument, consumer) for argument in interpreter_arguments(argv)):
+        return consumer
     if consumer:
         return None
     return ""
@@ -983,6 +1016,10 @@ def node_program(node: Node, consumer: str, *, produced: bool = False) -> Progra
 
 
 def shell_evaluator_payload(argv: list[str], start: int) -> int | None:
+    operand_count = sum(letter in "oO" for letter in argv[start - 1][1:-1])
+    if any(argument.startswith(("-", "+")) for argument in argv[start : start + operand_count]):
+        return None
+    start += operand_count
     index = start
     while index < len(argv) and argv[index].startswith(("-", "+")):
         option = argv[index]
@@ -1073,7 +1110,9 @@ def input_programs(node: Node) -> Iterator[ProgramSource]:
     elif any(child.type == "<" for child in node.children):
         destination = node.child_by_field_name("destination")
         if destination is not None:
-            yield node_program(destination, consumer, produced=True)
+            program = node_program(destination, consumer, produced=True)
+            program.generated = program.generated or is_interpreter(consumer)
+            yield program
 
 
 def shell_claims(text: str, *, claim_related: bool = False) -> ShellClaims:

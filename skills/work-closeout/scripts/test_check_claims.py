@@ -1582,6 +1582,21 @@ class ClaimCloseoutTests(unittest.TestCase):
                 "bash -c --unknown-option value '$CMD'",
             )
         )
+        for interpreter in (
+            "node -r ts-node/register",
+            "node --require ./hook.js",
+            "node --import ./register.mjs",
+            "perl -I lib/",
+            "ruby -I ./lib",
+            "python3 --unknown-option ./operand.py",
+        ):
+            commands.extend(
+                (
+                    f"{interpreter} <<'EOF'\n{claim}\nEOF",
+                    f"{interpreter} <<< '{claim}'",
+                    f"CMD='{claim}'; {interpreter} < program",
+                )
+            )
         for command in commands:
             rows = [{"message": {"content": [{"type": "tool_use", "name": "Bash", "id": "channel", "input": {"command": command}}]}}]
             with self.subTest(command=command):
@@ -1666,6 +1681,47 @@ class ClaimCloseoutTests(unittest.TestCase):
             (f"[other, *command]=[None, {claim!r}]; launch(command)", True),
             (f"launch(command := [{claim!r}])", True),
             (f"command: list[str]=[{claim!r}]; launch(command)", True),
+            (f"for command in [{claim!r}]: pexpect.spawn(command)", True),
+            (f"async def run():\n async for command in [{claim!r}]: invoke.run(command)", True),
+            (f"[pexpect.spawn(command) for command in [{claim!r}]]", True),
+            (f"{{invoke.run(command) for command in [{claim!r}]}}", True),
+            (f"with context({claim!r}) as command: invoke.run(command)", True),
+            (f"async def run():\n async with context({claim!r}) as command: invoke.run(command)", True),
+            (f"match {claim!r}:\n case command: pexpect.spawn(command)", True),
+            (f"match {{'cmd': {claim!r}}}:\n case {{'cmd': command}}: invoke.run(command)", True),
+            (f"match [{claim!r}]:\n case [*command]: invoke.run(command)", True),
+            (f"match {{'cmd': {claim!r}}}:\n case {{**command}}: invoke.run(command)", True),
+            (f"commands={{}}; commands['cmd']={claim!r}; invoke.run(commands['cmd'])", True),
+            (f"self.command={claim!r}; pexpect.spawn(self.command)", True),
+            (f"for command in [{claim!r}]: print(command)", False),
+            (f"[str(command) for command in [{claim!r}]]", False),
+            (f"commands={{}}; commands['cmd']={claim!r}; print(commands['cmd'])", False),
+            (f"self.command={claim!r}; print(self.command)", False),
+            (
+                f"import shlex\nfor text in [{claim!r}]:\n lexer=shlex.shlex(text,posix=False,punctuation_chars=';&|()<>')\n lexer.whitespace_split=True\n lexer.commenters=''\n print(text,list(lexer))",
+                False,
+            ),
+            (
+                f"import shlex\nfor source in [{claim!r}]:\n for mode in (False,True):\n  lex=shlex.shlex(source,posix=mode)\n  print(mode,repr(source),list(lex))",
+                False,
+            ),
+            (
+                f"def show(node):\n print(node.type)\n for child in node.children: show(child)\nfor source in [{claim!r}]: show(parser.parse(source.encode()).root_node)",
+                False,
+            ),
+            (f"source={claim!r}; shlex.shlex(source)", False),
+            (f"source={claim!r}; invoke.run(shlex.shlex(source))", True),
+            (f"source={claim!r}; invoke.run(shlex.split(source))", True),
+            (f"source={claim!r}; invoke.run(list(shlex.shlex(source)))", True),
+            (f"source={claim!r}; invoke.run(parser.parse(source.encode()).root_node.text)", True),
+            (f"source={claim!r}; invoke.run(str(parser.parse(source.encode()).root_node))", True),
+            (f"source={claim!r}; invoke.run(f'{{parser.parse(source.encode()).root_node}}')", True),
+            (f"source={claim!r}; invoke.run('{{}}'.format(parser.parse(source.encode()).root_node))", True),
+            (f"source={claim!r}; invoke.run([parser.parse(source.encode()).root_node])", True),
+            (f"source={claim!r}; invoke.run(str(source))", True),
+            (f"source={claim!r}; invoke.run(source.format())", True),
+            (f"source={claim!r}; invoke.run(' '.join([source]))", True),
+            (f"source={claim!r}; invoke.run(unknown(source).root_node)", True),
             (f"rows=[{claim!r}]; print(rows); rows.append({claim!r})", False),
             (f"rows=[{claim!r}]; print(history.literal_targets(rows, 'session'))", False),
         ]
@@ -1713,7 +1769,16 @@ class ClaimCloseoutTests(unittest.TestCase):
         )
         commands.extend(
             f"bash {options} 'uv run gh-plan.py --repo first/a claim 5'"
-            for options in ("-c -e", "-c -x", "-c -o pipefail", "-c +o pipefail", "-c -O extglob", "-c --")
+            for options in (
+                "-c -e",
+                "-c -x",
+                "-c -o pipefail",
+                "-c +o pipefail",
+                "-c -O extglob",
+                "-c --",
+                "-oc pipefail",
+                "-Oc extglob",
+            )
         )
         for command in commands:
             rows = [

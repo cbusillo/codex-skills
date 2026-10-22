@@ -31,7 +31,10 @@ the claiming host's journal and complete native lineage when using remote shells
 The legacy reader follows literal evaluator payloads and checks each remaining
 claim-bearing argv, heredoc, herestring or pipeline channel. Unknown consumers
 stay conditional. Known data commands, repository GitHub wrappers, direct Python
-files and interpreter-launched files consume their bodies and arguments as data.
+files and unambiguous interpreter-launched files consume their bodies and arguments
+as data. An option before the interpreter's file argument leaves its role
+unknown; stdin remains a possible program channel. Input redirection to such
+an interpreter stays conditional because the file's program is not inspected.
 Python also distinguishes conventional string construction, JSON/AST operations
 and Path writes from process launchers; an unknown callable receiving literal
 claim text stays conditional. Star and dynamic imports leave unknown callable identities
@@ -39,11 +42,18 @@ conditional when claim text is present. The reader does not inspect script
 files, propagate arbitrary Python values beyond one-hop literal claim-text
 bindings or reconstruct preloaded callable identities. Those bindings include
 literal fragments in formatted strings and containers, augmented assignments
-to the same name and unpacked targets. Fragments accumulate across assignments
+to the same name, unpacked targets, loop and comprehension targets, context
+manager bindings, match captures and stores through attributes or subscripts.
+Fragments accumulate across bindings
 without execution-order or lexical-scope emulation, so disjoint assignments
 can conservatively add uncertainty. A claim hidden beyond these boundaries
 needs its journal entry or complete native helper receipt. Preserve those
 records rather than relying on arbitrary program reconstruction.
+Constructing a shlex parser consumes fixture text as data. A terminal
+`parser.parse(...).root_node` argument is a parsed tree object; reading its
+text or wrapping it in a string, formatting operation or collection preserves
+uncertainty at an unknown callable. Tokenized shlex output also preserves
+uncertainty when passed to an unknown callable.
 For `uv run`, recognized option arities locate the command; interpreter-looking
 option values do not become consumers, and unknown options stay conditional.
 In claim-related context, unexamined interpreter, evaluator and source-shaped
