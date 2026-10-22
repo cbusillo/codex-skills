@@ -937,7 +937,6 @@ def bounded_paths(paths):
 
 
 def source_input_drift(repo, hashes, selected, current_selected):
-    """Relative paths and counts only: what differs from the snapshot, never file contents or the writer."""
     missing = [f for f in hashes if not (repo / f).is_file()]
     changed = [f for f, h in hashes.items() if (repo / f).is_file() and digest(repo / f) != h]
     added, removed = current_selected - selected, selected - current_selected
