@@ -2421,7 +2421,7 @@ print(root)"""
                 helper.history.literal_targets(rows, SESSION), {"targets": {("first/a", 5)}, "unresolved_invocations": []}
             )
 
-    def test_uncertain_javascript_reads_its_saved_receipt_targets(self) -> None:
+    def test_single_wrapped_claim_reads_its_saved_receipt_target(self) -> None:
         rows = [
             {
                 "payload": {
@@ -2445,7 +2445,21 @@ print(root)"""
             report = helper.history.literal_targets(rows, SESSION, directory=self.folder)
         read.assert_called_once()
         self.assertEqual(report["targets"], {("second/b", 5)})
-        self.assertTrue(report["unresolved_invocations"])
+        self.assertEqual(report["unresolved_invocations"], [])
+
+    def test_single_wrapped_claim_receipt_still_needs_its_exact_release(self) -> None:
+        root = self.entry()
+        rows = [
+            {"payload": {"type": "custom_tool_call", "name": "exec", "call_id": "single",
+                         "input": 'text(await tools.exec_command({cmd:"uv run gh-plan.py claim 1"}));'}},
+            {"payload": {"type": "custom_tool_call_output", "call_id": "single",
+                         "output": json.dumps({"claim": SOURCE, "issue": {"repo": REPO, "number": 1}})}},
+        ]
+        with Path(root["transcript"]).open("a") as stream:
+            stream.write("\n".join(json.dumps(row) for row in rows) + "\n")
+        self.assertFalse(helper.check([root])["claims_clear"])
+        self.comments.append(self.release)
+        self.assertTrue(helper.check([root])["claims_clear"])
 
     def test_recorded_claim_uses_the_target_repositories_writer(self) -> None:
         client_actor = "client-fixture[bot]"

@@ -6,9 +6,11 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import re
 import shlex
 import sqlite3
+import subprocess
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -433,13 +435,25 @@ def command_literal(text: str, start: int, literal: str) -> list[str] | None:
                 return None
         if len(field) == 1 and key not in {"cmd", "command", "chars"}:
             continue
+        if len(field) == 1 and key in {"cmd", "command", "chars"}:
+            field = [key, ":", key]
         if field[1:2] != [":"]:
             return None
         if key not in {"cmd", "command", "chars"}:
             continue
-        if command is not None or len(field) != 3 or re.fullmatch(literal, field[2], re.DOTALL) is None:
+        if command is not None or len(field) != 3:
             return None
         value = field[2]
+        if re.fullmatch(literal, value, re.DOTALL) is None:
+            bindings = literal_bindings(text, start, command_reference=value)
+            if bindings is None or set(bindings[0]) != {value}:
+                return None
+            command = [binding[value] for binding in bindings]
+            if not all(isinstance(item, str) for item in command):
+                return None
+            if sum(len(item.encode()) for item in command) > LITERAL_EXPANSION_BYTES:
+                return None
+            continue
         if value.startswith("`"):
             command = literal_template(text, start, value)
             if command is None:
@@ -459,6 +473,95 @@ CLAIM_WORD = re.compile(r"""(?:^|[\s'"`])claim(?:$|[\s'"`])""")
 JAVASCRIPT_PATCH = re.compile(r"\btools\.apply_patch\s*\(\s*(?:" + JAVASCRIPT_LITERAL + r")\s*\)", re.DOTALL)
 
 
+def javascript_tokens(text: str) -> list[str]:
+    return [
+        token
+        for token in re.findall(JAVASCRIPT_LITERAL + r"|//[^\n]*|/\*.*?\*/|[A-Za-z_$][A-Za-z0-9_$]*|[0-9]+|[^\s]", text, re.DOTALL)
+        if not token.startswith(("//", "/*"))
+    ]
+
+
+def javascript_object_end(tokens: list[str]) -> int | None:
+    depth = 0
+    for index, token in enumerate(tokens):
+        if token in {"{", "[", "("}:
+            depth += 1
+        elif token in {"}", "]", ")"}:
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
+def literal_bindings(text: str, start: int, *, command_reference: str | None = None) -> list[dict[str, str | int]] | None:
+    code = " ".join(javascript_tokens(text[:start]))
+    literal = r"""(?:"[^"\\]*"|'[^'\\]*')"""
+    code = re.sub(r"^store \( " + literal + r" , " + literal + r" \) ; ", "", code)
+    binding = r"(?P<name>[A-Za-z_][A-Za-z0-9_]*|\[ [A-Za-z_]\w*(?: , [A-Za-z_]\w*)* \])"
+    array = r"\[ (?P<values>.+?) \]"
+    call = r"tools \. (?:exec_command|shell_command|shell) \("
+    match = re.fullmatch(r"for \( const " + binding + r" of " + array + r" \) \{ (?:const \w+ = )?(?:text \( )?await " + call, code)
+    if match is None:
+        match = re.fullmatch(
+            r"const (?P<array>[A-Za-z_]\w*) = "
+            + array
+            + r" ; (?:const \w+ = |for \( const \w+ of )?(?:text \( )?await Promise \. (?:all|allSettled) \( (?P=array) \. map \( (?:\( )?"
+            + binding
+            + r"(?: \))? = > "
+            + call,
+            code,
+        )
+    if match is None:
+        return None
+    names = re.findall(JAVASCRIPT_LITERAL + r"|//[^\n]*|/\*.*?\*/|(?P<name>[A-Za-z_$][A-Za-z0-9_$]*|\\)", text, re.DOTALL)
+    if "\\" in names:
+        return None
+    parameters = re.findall(r"[A-Za-z_]\w*", match["name"])
+    if "eval" in names or len(set(parameters)) != len(parameters):
+        return None
+    if "array" in match.re.groupindex:
+        tail_tokens = javascript_tokens(text[start:])
+        close = javascript_object_end(tail_tokens)
+        if close is None or tail_tokens[close + 1 : close + 4] != [")", ")", ")"]:
+            return None
+        tail = " ".join(tail_tokens)
+        active_tokens = javascript_tokens(text[:start]) + tail_tokens[: close + 4]
+        if active_tokens.count(match["array"]) != 2:
+            return None
+        if command_reference is not None:
+            reference = re.escape(command_reference)
+            tail_without_command = re.sub(
+                r"(?P<boundary>\{ |, )(?:cmd|command|chars) : " + reference + r"(?= ,| \})",
+                r"\g<boundary>placeholder : literal",
+                tail,
+                count=1,
+            )
+            if command_reference in {"cmd", "command", "chars"}:
+                tail_without_command = re.sub(
+                    r"(?P<boundary>\{ |, )" + reference + r"(?= ,| \})",
+                    r"\g<boundary>placeholder : literal",
+                    tail_without_command,
+                    count=1,
+                )
+            names = javascript_tokens(text[:start] + tail_without_command)
+        if any(names.count(parameter) != 1 for parameter in parameters):
+            return None
+    if re.search(r"\\(?![\\\"'nrtbfv]|x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4})", match["values"]):
+        return None
+    try:
+        values = ast.literal_eval("[" + match["values"] + "]")
+    except (SyntaxError, ValueError):
+        return None
+    if not isinstance(values, list) or not 0 < len(values) <= LITERAL_LOOP_VALUES:
+        return None
+    rows = values if match["name"].startswith("[") else [[value] for value in values]
+    if any(not isinstance(row, list) or len(row) != len(parameters) for row in rows):
+        return None
+    if any(type(value) not in {str, int} or (type(value) is int and abs(value) > (1 << 53) - 1) for row in rows for value in row):
+        return None
+    return [dict(zip(parameters, row, strict=True)) for row in rows]
+
+
 def literal_template(text: str, start: int, template: str) -> list[str] | None:
     if "\\" in template:
         return None
@@ -467,46 +570,19 @@ def literal_template(text: str, start: int, template: str) -> list[str] | None:
         return [body]
     if text.count("${") != template.count("${"):
         return None
-    tokens = re.findall(JAVASCRIPT_LITERAL + r"|//[^\n]*|/\*.*?\*/|[A-Za-z_$][A-Za-z0-9_$]*|[0-9]+|[^\s]", text[:start], re.DOTALL)
-    code = " ".join(token for token in tokens if not token.startswith(("//", "/*")))
-    binding = r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)"
-    array = r"\[ (?P<values>.+?) \]"
-    call = r"tools \. (?:exec_command|shell_command|shell) \("
-    match = re.fullmatch(r"for \( const " + binding + r" of " + array + r" \) \{ (?:const \w+ = )?(?:text \( )?await " + call, code)
-    if match is None:
-        match = re.fullmatch(
-            r"const (?P<array>[A-Za-z_]\w*) = "
-            + array
-            + r" ; (?:const \w+ = )?(?:text \( )?await Promise \. (?:all|allSettled) \( (?P=array) \. map \( "
-            + binding
-            + r" = > "
-            + call,
-            code,
-        )
-    if match is None or "\\" in match["values"]:
+    bindings = literal_bindings(text, start)
+    if bindings is None:
         return None
-    names = re.findall(JAVASCRIPT_LITERAL + r"|//[^\n]*|/\*.*?\*/|(?P<name>[A-Za-z_$][A-Za-z0-9_$]*|\\)", text, re.DOTALL)
-    if "\\" in names:
-        return None
-    if "eval" in names or ("array" in match.re.groupindex and (names.count(match["array"]) != 2 or names.count(match["name"]) != 1)):
-        return None
-    try:
-        values = ast.literal_eval("[" + match["values"] + "]")
-    except (SyntaxError, ValueError):
-        return None
-    if not isinstance(values, list) or not 0 < len(values) <= LITERAL_LOOP_VALUES:
-        return None
-    if any(
-        type(value) not in {str, int}
-        or (type(value) is int and abs(value) > (1 << 53) - 1)
-        or not LITERAL_SHELL_VALUE.fullmatch(str(value))
-        for value in values
-    ):
-        return None
-    marker = "${" + match["name"] + "}"
-    if "${" in body.replace(marker, ""):
-        return None
-    commands = [body.replace(marker, str(value)) for value in values]
+    commands = []
+    for binding in bindings:
+        command = body
+        for name, value in binding.items():
+            if not LITERAL_SHELL_VALUE.fullmatch(str(value)):
+                return None
+            command = command.replace("${" + name + "}", str(value))
+        if "${" in command:
+            return None
+        commands.append(command)
     return commands if sum(len(command.encode()) for command in commands) <= LITERAL_EXPANSION_BYTES else None
 
 
@@ -522,6 +598,52 @@ def javascript_names(text: str) -> set[str]:
         elif match[0].startswith("`") and "${" in match[0]:
             names.update(re.findall(r"\b(?:store|load)\b", match[0]))
     return names
+
+
+def single_javascript_shell(text: str) -> bool:
+    literal = r"(?:" + JAVASCRIPT_LITERAL + r")"
+    value = r"(?:" + literal + r"|[0-9]+|true|false)"
+    key = r"(?:cmd|command|workdir|yield_time_ms|max_output_tokens|login|tty)"
+    field = r"(?:" + key + r"|\"" + key + r"\"|'" + key + r"') : " + value
+    tokens = javascript_tokens(text)
+    if any(token.startswith("`") and "${" in token for token in tokens):
+        return False
+    code = " ".join(tokens)
+    call = r"tools \. (?:exec_command|shell_command|shell) \( \{ " + field + r"(?: , " + field + r")* \} \)"
+    return any(
+        re.fullmatch(prefix + call + suffix, code) is not None
+        for prefix, suffix in (
+            (r"text \( await ", r" \) ;?"),
+            (r"text \( \( await ", r" \) \. output \) ;?"),
+            (r"const (?P<result>[A-Za-z_]\w*) = await ", r" ; text \( (?P=result)(?: \. output)? \) ;?"),
+        )
+    )
+
+
+def native_javascript_parse_failure(text: str, blocks: list[object]) -> bool:
+    messages = [
+        item["text"]
+        for block in blocks
+        if isinstance(block, list)
+        for item in block
+        if isinstance(item, dict) and item.get("type") == "input_text" and isinstance(item.get("text"), str)
+    ]
+    if len(messages) != 2 or not re.fullmatch(r"Script failed\nWall time [0-9.]+ seconds\nOutput:\n", messages[0]):
+        return False
+    if not messages[1].startswith("Script error:\nSyntaxError:"):
+        return False
+    try:
+        result = subprocess.run(
+            ["node", "--check", "--input-type=module"],
+            input=text,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            env={key: value for key, value in os.environ.items() if key not in {"NODE_OPTIONS", "NODE_PATH"}},
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 1 and "SyntaxError:" in result.stderr
 
 
 @dataclass
@@ -1099,7 +1221,9 @@ SAFE_GIT_CONFIG = frozenset(
     }
 )
 GIT_GLOBAL_VALUE_OPTIONS = frozenset({"-C", "--git-dir", "--work-tree", "--namespace"})
-GIT_GLOBAL_FLAGS = frozenset({"--version", "--help", "--no-pager", "-P", "--no-optional-locks", "--bare", "--literal-pathspecs", "--no-replace-objects"})
+GIT_GLOBAL_FLAGS = frozenset(
+    {"--version", "--help", "--no-pager", "-P", "--no-optional-locks", "--bare", "--literal-pathspecs", "--no-replace-objects"}
+)
 GIT_DATA_COMMANDS = frozenset(
     {
         "add",
@@ -1184,7 +1308,18 @@ GIT_CONFIG_VALUE_OPTIONS = frozenset({"-f", "--file", "--blob", "--type", "--def
 GIT_COMMAND_SETTINGS = frozenset({"core.pager", "core.editor", "sequence.editor"})
 INERT_COMMANDS = frozenset({"", "cat", "true", "false", ":"})
 GIT_CONFIG_READ_OPTIONS = frozenset(
-    {"--get", "--get-all", "--get-regexp", "--get-urlmatch", "-l", "--list", "--unset", "--unset-all", "--remove-section", "--rename-section"}
+    {
+        "--get",
+        "--get-all",
+        "--get-regexp",
+        "--get-urlmatch",
+        "-l",
+        "--list",
+        "--unset",
+        "--unset-all",
+        "--remove-section",
+        "--rename-section",
+    }
 )
 GH_DATA_COMMANDS = frozenset(
     {
@@ -1258,11 +1393,7 @@ def long_option(argument: str, option: str, options: tuple[str, ...] = ()) -> bo
     flag = argument.partition("=")[0]
     if flag == option:
         return True
-    return (
-        len(flag) > 3
-        and option.startswith(flag)
-        and not any(other != option and other.startswith(flag) for other in options)
-    )
+    return len(flag) > 3 and option.startswith(flag) and not any(other != option and other.startswith(flag) for other in options)
 
 
 def short_option(argument: str, letter: str) -> bool:
@@ -2238,9 +2369,7 @@ def shell_claims(text: str, *, claim_related: bool = False) -> ShellClaims:
                 )
             name = node.child_by_field_name("name")
             discovery.opaque = discovery.opaque or bool(name is not None and shell_generated(name) and related)
-            discovery.opaque = discovery.opaque or (
-                loads_test_code(argv) and (claim_related or claim_text_outside(root, node))
-            )
+            discovery.opaque = discovery.opaque or (loads_test_code(argv) and (claim_related or claim_text_outside(root, node)))
             programs.extend(command_sources)
         for program in programs:
             discovery.receipt_pure = False
@@ -2471,6 +2600,8 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
     for identifier, text, javascript in tool_inputs(records):
         if identifier in denied:
             continue
+        if javascript and native_javascript_parse_failure(text, outputs.get(identifier, [])):
+            continue
         names = javascript_names(text) if javascript else set()
         executable_text = without_patch_text(text) if javascript else text
         claim_related_here = "gh-plan" in executable_text or CLAIM_WORD.search(executable_text) is not None
@@ -2479,7 +2610,7 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
         unclassified = False
         reason = "missing_output"
         decode_failed = False
-        receipt_pure = not javascript
+        receipt_pure = not javascript or single_javascript_shell(text)
         try:
             sources = shell_texts(text, javascript)
             opaque = sources.opaque
