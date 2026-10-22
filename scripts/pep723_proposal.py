@@ -130,16 +130,16 @@ def calculation_context(context: RunContext, environment: Mapping[str, str]) -> 
 
 
 def git(cwd: Path, *args: str, stdin: bytes | None = None) -> bytes:
-    result = subprocess.run(["git", *args], cwd=cwd, input=stdin, capture_output=True, check=False)
+    result = subprocess.run(["git", *args], cwd=cwd, input=stdin, capture_output=True)
     if result.returncode != 0:
-        detail = result.stderr.decode("utf-8", "replace").strip()
+        detail = result.stderr.decode(errors="replace").strip()
         raise ProposalRefused(f"git {args[0]} failed: {detail}")
     return result.stdout
 
 
 def decode_utf8(data: bytes, label: str) -> str:
     try:
-        return data.decode("utf-8")
+        return data.decode()
     except UnicodeDecodeError as exc:
         raise ProposalRefused(f"{label} is not UTF-8 text.") from exc
 
@@ -181,7 +181,7 @@ def read_base_snapshot(base_sha: str, cwd: Path) -> BaseSnapshot:
     sources: dict[str, str] = {}
     for path, blob in zip(paths, blobs, strict=True):
         try:
-            sources[path] = blob.decode("utf-8")
+            sources[path] = blob.decode()
         except UnicodeDecodeError:
             continue
     return BaseSnapshot(modes=modes, sources=sources)
@@ -323,7 +323,7 @@ def build_request(candidate: object, context: RunContext, base: BaseSnapshot) ->
         base_source = base.sources[path]
         require(content != base_source, f"{path} is unchanged; omit it.")
         changed[path], _ = _validated_file(path, base_source, content)
-        change_bytes += len(base_source.encode("utf-8")) + len(encoded)
+        change_bytes += len(base_source.encode()) + len(encoded)
     require(
         change_bytes <= ROUTE_CHANGE_LIMIT,
         f"The change needs {change_bytes} old-plus-new bytes; the route allows {ROUTE_CHANGE_LIMIT}.",
@@ -337,7 +337,7 @@ def build_request(candidate: object, context: RunContext, base: BaseSnapshot) ->
         "body": _proposal_body(before, after, len(changed)),
         "files": [{"path": path, "content": files[path]} for path in sorted(changed)],
     }
-    payload = json.dumps(request, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    payload = json.dumps(request, ensure_ascii=False, separators=(",", ":")).encode()
     require(
         len(payload) <= ROUTE_BODY_LIMIT,
         f"The request is {len(payload)} bytes; the route allows {ROUTE_BODY_LIMIT}.",
@@ -386,7 +386,7 @@ def package_candidate(context: RunContext, output_directory: Path, cwd: Path) ->
         "files": files,
     }
     build_request(candidate, context, base)
-    data = json.dumps(candidate, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    data = json.dumps(candidate, ensure_ascii=False, separators=(",", ":")).encode()
     output_directory.mkdir()
     with (output_directory / CANDIDATE_FILE).open("xb") as handle:
         handle.write(data)
@@ -465,9 +465,9 @@ def prepare_request(
 def _failure_detail(response: object) -> str:
     details: list[str] = []
     if isinstance(response, dict):
-        error = response.get("error")
-        if isinstance(error, dict) and isinstance(error.get("code"), str):
-            details.append(f"code `{error['code']}`")
+        route_error = response.get("error")
+        if isinstance(route_error, dict) and isinstance(route_error.get("code"), str):
+            details.append(f"code `{route_error['code']}`")
         if isinstance(response.get("trace_id"), str):
             details.append(f"trace `{response['trace_id']}`")
     return ", ".join(details) or "no detail"
@@ -540,7 +540,7 @@ def _read_response(path: Path) -> object:
         file_status = os.lstat(path)
         if not stat.S_ISREG(file_status.st_mode) or file_status.st_size > ROUTE_BODY_LIMIT:
             return None
-        return json.loads(path.read_bytes().decode("utf-8"))
+        return json.loads(path.read_bytes().decode())
     except (OSError, UnicodeDecodeError, ValueError):
         return None
 

@@ -16,7 +16,8 @@ import tempfile
 import unittest
 from functools import partial
 from pathlib import Path
-from collections.abc import Callable
+from types import MappingProxyType
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from packaging.utils import canonicalize_name
@@ -30,7 +31,7 @@ import update_pep723_dependencies as updater
 SCRIPT = Path(__file__).with_name("pep723_proposal.py")
 FIXTURE_SCRIPT_MARKER = "# /// script"
 WORKFLOW_REF = "fixture/catalog/.github/workflows/update-pep723-dependencies.yml@refs/heads/main"
-NEW_VERSIONS = {"packaging": "26.3", "pyyaml": "6.0.3"}
+NEW_VERSIONS = MappingProxyType({"packaging": "26.3", "pyyaml": "6.0.3"})
 
 
 def script_source(dependencies: list[str], body: str = 'print("ok")\n', *, extra: str = "") -> str:
@@ -109,7 +110,7 @@ class ProposalBoundaryTests(unittest.TestCase):
         self.git("commit", "-q", "-m", message)
         return self.git("rev-parse", "HEAD")
 
-    def run_updater(self, versions: dict[str, str] = NEW_VERSIONS) -> tuple[Path, ...]:
+    def run_updater(self, versions: Mapping[str, str] = NEW_VERSIONS) -> tuple[Path, ...]:
         changed, _ = updater.update_repository(
             self.root,
             dry_run=False,
@@ -142,7 +143,7 @@ class ProposalBoundaryTests(unittest.TestCase):
     def write_candidate(self, candidate: Any, *, raw: str | None = None) -> tuple[Path, str]:
         directory = self.temporary / f"artifact-{len(list(self.temporary.iterdir()))}"
         directory.mkdir()
-        data = (raw if raw is not None else json.dumps(candidate)).encode("utf-8", "surrogatepass")
+        data = (raw if raw is not None else json.dumps(candidate)).encode(errors="surrogatepass")
         (directory / proposal.CANDIDATE_FILE).write_bytes(data)
         return directory, hashlib.sha256(data).hexdigest()
 
@@ -205,7 +206,6 @@ class ProposalBoundaryTests(unittest.TestCase):
             env=self.submit_environment(EXPECTED_DIGEST=digest, CANDIDATE_RUN_ATTEMPT="2"),
             capture_output=True,
             text=True,
-            check=False,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         request = json.loads(request_file.read_text(encoding="utf-8"))

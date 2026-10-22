@@ -44,7 +44,7 @@ def _line_body(line: str) -> str:
 
 
 def read_source_text(path: Path) -> str:
-    with path.open("r", encoding="utf-8", newline="") as handle:
+    with path.open(encoding="utf-8", newline="") as handle:
         return handle.read()
 
 
