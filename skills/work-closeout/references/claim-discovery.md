@@ -91,9 +91,29 @@ session ID and subsequent input/output on the owning issue; keep coverage
 conditional when that evidence cannot establish it. The existing Director-decision
 route applies to irrecoverable older evidence. For new cells, use the supported
 direct literal shell calls and `text(result)`; use `.includes` for plain string
-filters. The reader does not currently retire interactive uncertainty from an
-exit printed by code-mode output. A completed helper process may therefore leave
-conservative uncertainty in later unsupported cells.
+filters. Literal string replacement arguments are also supported, including
+bounded output filenames derived from literal command lists or object entries.
+
+Process IDs alone do not establish an input channel. Starting with stable Codex
+0.87.0, non-PTY `exec_command` uses closed stdin; see the upstream
+[process manager](https://raw.githubusercontent.com/openai/codex/rust-v0.87.0/codex-rs/core/src/unified_exec/process_manager.rs)
+and [pipe implementation](https://raw.githubusercontent.com/openai/codex/rust-v0.87.0/codex-rs/utils/pty/src/pipe.rs).
+The reader admits this contract only when every native session metadata record
+has a supported stable version. Earlier, missing, malformed or prerelease
+versions remain conservative. A bounded code-mode cell cannot seed input
+uncertainty when every shell call has a plain argument object, known option
+names and absent or literal `tty:false`; empty `write_stdin` polls also cannot
+introduce claim input. Duplicates, spreads, escaped or computed keys, unknown
+TTY values, other shell APIs, borrowed `load` results and opaque code retain
+conservative coverage. Possible TTY launches seed uncertainty even if their
+process ID was not printed. Explicit claim input always remains subject to the
+existing checks. This proof concerns native `write_stdin`, not files or sockets.
+
+A structurally terminal native `CommandExecution` event, or the supported native
+parse-failure proof, cannot initiate a new interactive context. Neither clears
+an earlier possible context. Printed exit codes never retire one. A non-PTY
+claim command still running without a conclusive receipt remains unresolved;
+closed stdin never proves that a claim was not written.
 
 A shell variable assigned once to a literal value at the top level, and a `for`
 loop over literal words, expand into exact claim targets, so

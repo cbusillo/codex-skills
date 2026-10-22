@@ -22,6 +22,116 @@ def invocation(source: str, output: object = "") -> list[dict]:
 
 
 class RecordedClaimOutcomeTests(unittest.TestCase):
+    def test_noninteractive_helper_reads_do_not_taint_later_formatting(self) -> None:
+        followup = 'text(String(load("result")).replace(/x/g,"y"));'
+        command = '"uv run gh-plan.py --repo test/a show 5"'
+        for options in (f"cmd:{command}", f"cmd:{command},tty:false", f'cmd:{command},"tty":false'):
+            with self.subTest(options=options):
+                rows = [
+                    {
+                        "type": "session_meta",
+                        "payload": {"cli_version": ".".join(map(str, check_claims.history.CLOSED_STDIN_SINCE))},
+                    }
+                ]
+                rows.extend(invocation(f"text(await tools.exec_command({{{options}}}));", {"session_id": 123}))
+                rows.extend({"payload": {**row["payload"], "call_id": "later"}} for row in invocation(followup))
+                self.assertEqual(
+                    check_claims.history.literal_targets(rows, SESSION), {"targets": set(), "unresolved_invocations": []}
+                )
+        rows = [{"type": "session_meta", "payload": {"cli_version": ".".join(map(str, check_claims.history.CLOSED_STDIN_SINCE))}}]
+        rows.extend(
+            invocation(
+                f'text(await tools.exec_command({{cmd:{command}}}));text(await tools.write_stdin({{session_id:1,chars:""}}));',
+                {"session_id": 123},
+            )
+        )
+        rows.extend({"payload": {**row["payload"], "call_id": "later"}} for row in invocation(followup))
+        self.assertEqual(check_claims.history.literal_targets(rows, SESSION), {"targets": set(), "unresolved_invocations": []})
+
+    def test_unknown_and_historical_runtime_records_keep_input_uncertainty(self) -> None:
+        boundary = check_claims.history.CLOSED_STDIN_SINCE
+        supported = ".".join(map(str, boundary))
+        older = ".".join(map(str, (boundary[0], boundary[1] - 1, boundary[2])))
+        for versions in ([], [None], ["unknown"], [older], [supported + "-alpha"], [supported, older]):
+            with self.subTest(versions=versions):
+                rows = [{"type": "session_meta", "payload": {"cli_version": version}} for version in versions]
+                rows.extend(invocation('text(await tools.exec_command({cmd:"uv run gh-plan.py show 5"}));', {"session_id": 123}))
+                rows.extend(
+                    {"payload": {**row["payload"], "call_id": "later"}} for row in invocation('text(String(load("result")));')
+                )
+                self.assertTrue(check_claims.history.literal_targets(rows, SESSION)["unresolved_invocations"])
+
+    def test_ambiguous_input_capabilities_keep_the_pending_context(self) -> None:
+        command = '"uv run gh-plan.py --repo test/a show 5"'
+        followup = 'text(String(load("result")).replace(/x/g,"y"));'
+        sources = [
+            f"text(await tools.exec_command({{cmd:{command},{options}}}));"
+            for options in (
+                "tty:true",
+                "tty:undefined",
+                "tty:0",
+                "tty:null",
+                "tty:false,tty:true",
+                'tty:true,"tty":false',
+                "...{}",
+                "unknown:false",
+                '["tty"]:false',
+                '"t\\u0074y":false',
+            )
+        ]
+        sources.extend(
+            (
+                f"const tty=true;text(await tools.exec_command({{cmd:{command},tty}}));",
+                f"text(await tools.shell_command({{cmd:{command}}}));",
+                f'text(await tools.exec_command({{cmd:{command}}}));text(load("old"));',
+                f'text(await tools.exec_command({{cmd:{command},workdir:await tools.exec_command({{cmd:"sh",tty:true}})}}));',
+            )
+        )
+        for source in sources:
+            with self.subTest(source=source):
+                rows = [
+                    {
+                        "type": "session_meta",
+                        "payload": {"cli_version": ".".join(map(str, check_claims.history.CLOSED_STDIN_SINCE))},
+                    }
+                ]
+                rows.extend(invocation(source, {"session_id": 123}))
+                rows.extend({"payload": {**row["payload"], "call_id": "later"}} for row in invocation(followup))
+                report = check_claims.history.literal_targets(rows, SESSION)
+                self.assertTrue(any(item["call_id"] == "later" for item in report["unresolved_invocations"]))
+        rows = [{"type": "session_meta", "payload": {"cli_version": ".".join(map(str, check_claims.history.CLOSED_STDIN_SINCE))}}]
+        rows.extend(invocation(f"await tools.exec_command({{cmd:{command},tty:true}});"))
+        rows.extend({"payload": {**row["payload"], "call_id": "later"}} for row in invocation(followup))
+        self.assertTrue(check_claims.history.literal_targets(rows, SESSION)["unresolved_invocations"])
+
+    def test_finished_or_unexecuted_native_commands_cannot_start_input_context(self) -> None:
+        followup = 'text(String(load("result")).replace(/x/g,"y"));'
+        finished = {
+            "type": "event_msg",
+            "payload": {
+                "type": "item_completed",
+                "item": {
+                    "type": "CommandExecution",
+                    "id": "done",
+                    "command": ["sh", "-c", "uv run gh-plan.py show 5"],
+                    "status": "completed",
+                    "exit_code": 0,
+                    "aggregated_output": '{"session_id":123}',
+                },
+            },
+        }
+        source = 'text(await tools.exec_command({cmd:"cat <<EOF\\ngh-plan.py claim status\nEOF"}));'
+        failure = [
+            {"type": "input_text", "text": "Script failed\nWall time 0.0 seconds\nOutput:\n"},
+            {"type": "input_text", "text": "Script error:\nSyntaxError: Invalid or unexpected token"},
+        ]
+        for prefix in ([finished], invocation(source, failure)):
+            with self.subTest(prefix=prefix):
+                rows = [*prefix, *({"payload": {**row["payload"], "call_id": "later"}} for row in invocation(followup))]
+                self.assertEqual(
+                    check_claims.history.literal_targets(rows, SESSION), {"targets": set(), "unresolved_invocations": []}
+                )
+
     def test_created_issue_claims_preserve_receipts_without_clearing_arbitrary_execution(self) -> None:
         create = 'const q=s=>s.replaceAll("!", "!!");const body=load("body");'
         create += 'const r=await tools.exec_command({cmd:"uv run gh-plan.py --repo test/a create title --body "+q(body)});'
@@ -161,6 +271,10 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
 
     def test_native_json_data_chains_remain_bounded(self) -> None:
         sources = [
+            'const paths=["test_claim.py"];await Promise.allSettled(paths.map(async p=>text(await tools.exec_command({'
+            'cmd:`uv run ${p} > ${p.split("/").at(-1).replace(".py","")}.log`}))));',
+            'const jobs={one:"uv run gh-plan.py --repo test/a show 5 --format=json",two:"git status --short"};'
+            "await Promise.allSettled(Object.entries(jobs).map(async([name,cmd])=>text(await tools.exec_command({cmd:`${cmd} > ${name}.log`}))));",
             'const r=await tools.exec_command({cmd:"uv run gh-plan.py --repo test/a show 5"});const j=JSON.parse(r.output);'
             "text({keys:Object.keys(j),comments:j.comments?.map(x=>({body:x.body})),last:j.comments.slice(-1),"
             'selected:j.items.filter(x=>x.name.toLowerCase().includes("claim")).map(x=>x.name)});',

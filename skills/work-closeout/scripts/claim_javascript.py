@@ -225,7 +225,10 @@ class JavascriptData:
                     return "array" if receiver_kind == "array" and method in {"map", "filter", "flatMap"} else "data"
                 if receiver_kind == "array" and method in {"slice", "concat"}:
                     result_kind = "array"
-                if method not in DATA_METHODS:
+                literal_replacement = (
+                    method in {"replace", "replaceAll"} and len(args) == 2 and all(argument.type == "string" for argument in args)
+                )
+                if method not in DATA_METHODS and not literal_replacement:
                     raise ValueError(method)
         else:
             raise ValueError("callee")
@@ -315,6 +318,39 @@ class LiteralCommands:
             if len(elements) > self.count_limit:
                 raise ValueError("array limit")
             return [self.value(child, environment) for child in elements]
+        if node.type == "object":
+            result = {}
+            for member in children(node):
+                if member.type != "pair":
+                    raise ValueError("object")
+                name = property_name(member.child_by_field_name("key"))
+                if name in result or name.isdecimal():
+                    raise ValueError("object key")
+                result[name] = self.value(member.child_by_field_name("value"), environment)
+            if len(result) > self.count_limit:
+                raise ValueError("object limit")
+            return result
+        if node.type == "call_expression":
+            function = node.child_by_field_name("function")
+            if function.type != "member_expression":
+                raise ValueError("call")
+            receiver = function.child_by_field_name("object")
+            method = property_name(function.child_by_field_name("property"))
+            arguments = [self.value(child, environment) for child in children(node.child_by_field_name("arguments"))]
+            if source(receiver) == "Object" and method == "entries" and len(arguments) == 1 and type(arguments[0]) is dict:
+                return [[key, value] for key, value in arguments[0].items()]
+            value = self.value(receiver, environment)
+            if method == "split" and type(value) is str and len(arguments) == 1 and type(arguments[0]) is str and arguments[0]:
+                result = value.split(arguments[0])
+                if len(result) <= self.count_limit:
+                    return result
+            if method == "at" and type(value) is list and len(arguments) == 1 and type(arguments[0]) is int:
+                if -len(value) <= arguments[0] < len(value):
+                    return value[arguments[0]]
+            if method in {"replace", "replaceAll"} and type(value) is str and len(arguments) == 2:
+                if all(type(argument) is str for argument in arguments) and arguments[0] and "$" not in arguments[1]:
+                    return value.replace(arguments[0], arguments[1], 1 if method == "replace" else -1)
+            raise ValueError("call")
         if node.type == "template_string" and "\\" not in source(node):
             parts = []
             for child in children(node):
@@ -322,7 +358,9 @@ class LiteralCommands:
                     parts.append(source(child))
                 elif child.type == "template_substitution" and len(children(child)) == 1:
                     value = self.value(children(child)[0], environment)
-                    if type(value) not in {str, int} or self.shell_word.fullmatch(str(value)) is None:
+                    if type(value) not in {str, int} or any(
+                        self.shell_word.fullmatch(word.replace("=", "")) is None for word in str(value).split(" ")
+                    ):
                         raise ValueError("interpolation")
                     parts.append(str(value))
                 else:
@@ -477,6 +515,49 @@ def literal_commands(arguments: Node, shell_word: re.Pattern, count_limit: int, 
         return LiteralCommands(shell_word, count_limit, byte_limit).commands(arguments)
     except (ValueError, KeyError, SyntaxError, RecursionError):
         return None
+
+
+EXEC_OPTIONS = {
+    "cmd",
+    "workdir",
+    "yield_time_ms",
+    "max_output_tokens",
+    "shell",
+    "login",
+    "tty",
+    "timeout_ms",
+    "sandbox_permissions",
+    "additional_permissions",
+    "justification",
+    "prefix_rule",
+    "environment_id",
+}
+
+
+def closed_stdin(arguments: Node) -> bool:
+    try:
+        function = arguments.parent.child_by_field_name("function")
+        method = property_name(function.child_by_field_name("property"))
+        if method not in {"exec_command", "write_stdin"}:
+            return False
+        objects = children(arguments)
+        if len(objects) != 1 or objects[0].type != "object":
+            return False
+        names = set()
+        for member in children(objects[0]):
+            key = member.child_by_field_name("key") if member.type == "pair" else member
+            name = property_name(key)
+            options = EXEC_OPTIONS if method == "exec_command" else {"session_id", "chars", "yield_time_ms", "max_output_tokens"}
+            if name in names or name not in options or (key.type == "string" and "\\" in source(key)):
+                return False
+            names.add(name)
+            if name == "tty" and (member.type != "pair" or member.child_by_field_name("value").type != "false"):
+                return False
+            if name == "chars" and (member.type != "pair" or literal_string(member.child_by_field_name("value")) != ""):
+                return False
+        return True
+    except (AttributeError, ValueError):
+        return False
 
 
 def analyse(text: str) -> tuple[bool, list[tuple[Node, bool]]]:

@@ -19,6 +19,19 @@ import github_plan_claim_log as claim_log
 import tree_sitter_bash
 from tree_sitter import Language, Node, Parser
 
+CLOSED_STDIN_SINCE = (0, 87, 0)
+
+
+def closed_stdin_runtime(records: list[dict]) -> bool:
+    versions = [row.get("payload") for row in records if row.get("type") == "session_meta"]
+    return bool(versions) and all(
+        isinstance(payload, dict)
+        and isinstance(version := payload.get("cli_version"), str)
+        and re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", version) is not None
+        and tuple(map(int, version.split("."))) >= CLOSED_STDIN_SINCE
+        for payload in versions
+    )
+
 
 def values(value: object) -> Iterator[dict]:
     if isinstance(value, dict):
@@ -545,6 +558,8 @@ class ShellTexts:
     commands: list[ShellCommand]
     opaque: bool = False
     interactive_opaque: bool = False
+    stdin_closed: bool = False
+    stdin_possible: bool = False
 
 
 def shell_texts(text: str, javascript: bool) -> ShellTexts:
@@ -569,7 +584,9 @@ def shell_texts(text: str, javascript: bool) -> ShellTexts:
             interactive_opaque = interactive_opaque or interactive
         else:
             commands.extend(ShellCommand(command, interactive) for command in decoded)
-    return ShellTexts(commands, opaque, interactive_opaque)
+    stdin_possible = any(not claim_javascript.closed_stdin(arguments) for arguments, _ in sites)
+    stdin_closed = bounded and bool(sites) and "load" not in javascript_names(text) and not stdin_possible
+    return ShellTexts(commands, opaque, interactive_opaque, stdin_closed, bounded and stdin_possible)
 
 
 SHELL_NAMES = {"sh", "bash", "zsh", "dash", "ksh", "fish"}
@@ -2458,6 +2475,16 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
     errors = []
     outputs = tool_outputs(records)
     denied = denied_invocations(records)
+    non_tty_stdin_closed = closed_stdin_runtime(records)
+    finished = {
+        "command:" + str(item.get("id", ""))
+        for row in records
+        if row.get("type") == "event_msg"
+        and isinstance(payload := row.get("payload"), dict)
+        and payload.get("type") == "item_completed"
+        and (item := execution_item(row)).get("status") in {"completed", "failed"}
+        and type(item.get("exit_code")) is int
+    }
     if directory is not None:
         errors.extend(
             {
@@ -2486,22 +2513,29 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
         try:
             sources = shell_texts(text, javascript)
             opaque = sources.opaque
-            claim_may_be_interactive = (
-                claim_may_be_interactive
-                or (
-                    claim_related_here
-                    and (
-                        sources.interactive_opaque
-                        or any(
-                            type(value.get("session_id")) is int for block in outputs.get(identifier, []) for value in values(block)
+            if not unexecuted and identifier not in finished:
+                claim_may_be_interactive = (
+                    claim_may_be_interactive
+                    or (
+                        claim_related_here
+                        and (
+                            sources.interactive_opaque
+                            or (non_tty_stdin_closed and sources.stdin_possible)
+                            or (
+                                not (non_tty_stdin_closed and sources.stdin_closed)
+                                and any(
+                                    type(value.get("session_id")) is int
+                                    for block in outputs.get(identifier, [])
+                                    for value in values(block)
+                                )
+                            )
                         )
                     )
+                    or any(
+                        source.interactive and ("gh-plan" in source.text or CLAIM_WORD.search(source.text))
+                        for source in sources.commands
+                    )
                 )
-                or any(
-                    source.interactive and ("gh-plan" in source.text or CLAIM_WORD.search(source.text))
-                    for source in sources.commands
-                )
-            )
             interactive_uncertain = opaque and sources.interactive_opaque and claim_may_be_interactive
             unclassified = opaque
             opaque = opaque and (
