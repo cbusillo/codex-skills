@@ -102,7 +102,8 @@ UNUSED_REASON_BY_KIND = {"odoo-testing-never-served": "never_served", "odoo-test
 RECORDED_PREVIEW_FACTS = {"usage": {"in_use"}, "data": {"reproducible", "only_copy"},
                           "production_resources": {"isolated", "separation_ready", "shared"}}
 RESULT_FIELDS = {
-    "inspect": {"mode", "binding_sha256", *FACTS, "automatic_fact_collection", "source_coverage"},
+    "inspect": {"mode", "binding_sha256", *FACTS, "automatic_fact_collection", "source_coverage",
+                "observation_sha256", "observation"},
     "collect": {"mode", "binding_sha256", "observed_by", "observer_kind", *FACTS, *EVIDENCE,
                 "historical_usage_retained", "observed_at", "odoo_usage", "never_served_qualification",
                 "expires_at", "provider_mutation", "automatic_fact_collection", "source_coverage"},
@@ -213,6 +214,15 @@ def require_review(h: Any, args: argparse.Namespace, scope: dict[str, str]) -> t
 
 def _digest(h: Any, value: object) -> str:
     if not isinstance(value, str) or not DIGEST_RE.fullmatch(value):
+        raise h.LaunchplaneSafetyError("invalid_response")
+    return value
+
+
+def _stored_observation(h: Any, value: object) -> dict[str, str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict) or value.keys() != FACTS.keys() or any(
+            not isinstance(value[fact], str) or value[fact] not in allowed for fact, (allowed, _ref) in FACTS.items()):
         raise h.LaunchplaneSafetyError("invalid_response")
     return value
 
@@ -332,7 +342,11 @@ def project(h: Any, response: dict[str, Any], mode: str, body: dict[str, Any], d
     if mode == "inspect":
         if any(value != "unknown" for value in facts.values()) or automatic != "limited_service_records":
             raise h.LaunchplaneSafetyError("invalid_response")
-        result["automatic_fact_collection"] = automatic
+        if "observation" not in source:
+            raise h.LaunchplaneSafetyError("invalid_response")
+        result.update(observation_sha256=_digest(h, source.get("observation_sha256")),
+                      observation=_stored_observation(h, source["observation"]),
+                      automatic_fact_collection=automatic)
         h.assert_public_safe_shape(result)
         return result
     preview = "preview_id" in body
@@ -360,7 +374,6 @@ def project(h: Any, response: dict[str, Any], mode: str, body: dict[str, Any], d
 
 def _readback(h: Any, call: Any, body: dict[str, Any], mode: str, digest: str,
               result: dict[str, object]) -> tuple[str, dict[str, object]]:
-    """Separate inspect POST. Only the binding can be read back; stored facts have no read route."""
     result["effect_readback"] = "unavailable"
     try:
         readback = call({**scope_of(body), "mode": "inspect"})
@@ -467,13 +480,16 @@ def execute(h: Any, args: argparse.Namespace) -> int:
 def _recommendation(mode: str, status: str, body: dict[str, Any]) -> str:
     if mode == "inspect":
         return ("Save this output privately and review the binding. It is required evidence for collect "
-                "and record. Facts stay unknown until the service collects them.")
+                "and record. Fresh facts stay unknown until the service collects them. Stored observations "
+                "have unverified freshness and binding; they do not establish current disposal eligibility.")
     if status != "accepted":
         return ("The service accepted the request, but the lane binding could not be confirmed afterwards. "
                 "Inspect again before relying on it; do not retry automatically.")
     if mode == "record" and "preview_id" in body:
-        return "The preview observation is recorded and a preview reconcile was requested. Stored facts cannot be read back."
-    return "The observation is stored for a short time. Stored facts cannot be read back; only the lane binding was rechecked."
+        return ("The preview observation is recorded and a preview reconcile was requested. Only the lane "
+                "binding was rechecked; the stored report was not matched to this submission.")
+    return ("The observation is stored for a short time. Only the lane binding was rechecked; "
+            "the stored report was not matched to this submission.")
 
 
 def _outcome_unknown(h: Any, args: argparse.Namespace, request: dict[str, object],

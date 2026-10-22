@@ -173,10 +173,12 @@ policy:
     - id: prefer-coordinated-codex-resume
       match:
         shell_regex: >-
-          (?x)^\s*(?:\S*/)?codex\s+
-          (?:(?:(?:--(?:remote|cd|config|profile|model|sandbox|ask-for-approval|enable|disable|add-dir|image)|-[cCpmsai])
-          (?:=(?:"[^"]*"|'[^']*'|\S+)|\s+(?:"[^"]*"|'[^']*'|\S+))|--[\w-]+|exec)\s+)*
-          (?:resume\b|queue\b(?=[^\n]*\s--message(?:[ =-]|$)))
+          (?x)^\s*(?:(?:\S*/)?codex|"[^"]*/codex"|'[^']*/codex')\s+
+          (?:(?:exec|e|--(?!help\b)[\w-]+
+          |(?:--(?!help\b)[\w-]+|-[cCpmsaio])(?:=|\s+(?!-))(?:"[^"]*"|'[^']*'|[^\s"'])+
+          |(?=['"](?:--[\w-]+=|-[cCpmsaio])|-[cCpmsaio][^=\s])(?:"[^"]*"|'[^']*'|[^\s"'])+)\s+)*
+          (?:resume\b|queue\b(?=[^\n]*\s['"]?--message(?:[ =-]|$)))
+          (?!(?:\s+(?!--(?:\s|$))(?:"[^"]*"|'[^']*'|[^\s"'])+)*?\s+(?:-h|--help)(?:\s|$))
       action: require_preferred
       message: Native resume and queue mutations must invalidate closure evidence under the same ownership lease as successor admission. Use the exact-thread helper with the source account home.
       preferred:
@@ -355,9 +357,10 @@ answers, for example a computer-use session, tell the Director at launch that
 you will relay: bring each question to chat as a numbered Q and send the reply
 with `iterm_tab.py send` at a verified idle prompt.
 
-The shared launcher disables Claude Code prompt suggestions with
-`--settings '{"promptSuggestionEnabled": false}'` on both backends. Keep that
-setting on Supervisor launches; existing sessions may still show suggestions.
+The shared launcher disables Claude Code prompt suggestions and auto memory
+with `--settings '{"promptSuggestionEnabled": false, "autoMemoryEnabled": false}'`
+on both backends. Keep those settings on Supervisor launches; existing sessions
+may still show suggestions.
 It also passes `--autocompact auto` unless the launch file sets
 `--autocompact`, which keeps Claude Code's tuned window and stops the "Want to
 autocompact at … instead?" offer that an unattended session cannot answer
@@ -483,7 +486,9 @@ including non-dim text, establishes neither its author nor approval.
    Before a launch batch, compare PRs merged with PRs opened in each
    repository over the last few hours. If merges are behind and no merge-path
    fix is available, launch only finishing work. Keep each repository under
-   about 8 open agent PRs.
+   about 8 open agent PRs, not counting the merge train's batch PRs (titled
+   `Launchplane batch: #...`), which bundle PRs already counted, or drafts
+   parked on purpose.
 2. **Director questions live on the item's issue**, as a comment that starts
    `Director question:`. Follow the shared
    [question queue rules](../references/talking-with-the-director.md#decisions-holds-and-work-state)
@@ -568,11 +573,15 @@ for products a Client runs business on.
   [launchplane](../launchplane/SKILL.md) for that routing.
 - Open a Client-visible PR as soon as its work is ready; it gets one preview
   request whenever it opens, so holding it only delays the Client.
-- Land each Client-accepted PR first, or in the same train batch as other
-  PRs for that product, so a branch update cannot void the acceptance
-  ([launchplane#3234](https://github.com/cbusillo/launchplane/issues/3234)).
-  [codex-skills#1612](https://github.com/cbusillo/codex-skills/issues/1612)
-  replaces this hand ordering once Launchplane's automatic batch flow ships.
+- Unless the product is `director_standing`, each Client-visible PR needs
+  the Client's own Accept before it lands, and the release needs a separate
+  Accept. Hand the PR off with
+  `--waiting-for-client` until then. The train
+  [lands a product's ready accepted features together](https://github.com/cbusillo/launchplane/blob/main/docs/merge-train-policy.md)
+  and the release invitation names each one. A base update that leaves the
+  change unchanged
+  [keeps its acceptance](https://github.com/cbusillo/launchplane/blob/main/docs/owner-acceptance.md#carried-acceptance),
+  so there is no landing order to track.
 - Green engineering PRs route to the train as soon as they are ready, under
   [Q312](https://github.com/cbusillo/launchplane/issues/3327#issuecomment-6182485308).
   A merge deploys testing; engineering-only changes do not open a release
@@ -661,9 +670,12 @@ for recovery or repeat them as fact.
    before you rely on a background driver or watcher the handoff says is
    running.
 5. Recreate the ~23-minute check and morning digest with the harness's own
-   scheduling feature. Arm Claude Code turn-end notices (`notify_when_idle`)
-   and the bounded `skills/supervisor/scripts/codex_idle_watch.py` watch for
-   Codex turn ends. On either notice, immediately run
+   scheduling feature. Start the bounded
+   `skills/supervisor/scripts/codex_idle_watch.py` watch as a background job
+   once per harness (`--harness codex` and `--harness claude`), each with its
+   own `--delivered-state` file. A background job wakes you only when it
+   exits, so the watch exits on each `closeout_request` it has not delivered.
+   On that exit, or another turn-end notice, immediately run
    [finished-session verification](#close-finished-sessions-on-every-notice-and-check)
    for that exact session; do not defer it to the ~23-minute check. A notice
    prompts verification, never a completion verdict.
@@ -725,8 +737,9 @@ and its terminal, transcript and account readbacks before sending input.
 
 ## Close Finished Sessions On Every Notice And Check
 
-Handle turn-end notices as they arrive. For a Codex notice with
-`closeout_request`, start this procedure immediately. For a Claude
+Handle turn-end notices as they arrive. For a watch notice with
+`closeout_request`, start this procedure immediately and re-arm that
+harness's watch with the same `--delivered-state` file. For a Claude
 `notify_when_idle` notice, resolve its exact native session in the ledger and
 run `finished_map.py --ledger <private-ledger.json> --session-id <native-id>`;
 its `closeout_request` enters the same procedure. Re-read the transcript even

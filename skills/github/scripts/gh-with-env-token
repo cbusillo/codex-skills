@@ -785,7 +785,8 @@ api_endpoint() {
 }
 
 # A `gh api` read that answers only for the authenticated account, which an
-# App installation token cannot read. Bare `user` stays the App actor probe.
+# App installation token cannot read, including the declared own login's billing.
+# Bare `user` stays the App actor probe.
 is_user_scoped_read() {
 	[ "${1:-}" = api ] || return 1
 	! is_write_command "$@" || return 1
@@ -798,8 +799,18 @@ is_user_scoped_read() {
 		[ "${rest#*/}" = subscription ]
 		return
 		;;
+	users/*/settings/billing/*)
+		billing_login=${user_scoped_path#users/}
+		is_declared_own_login "${billing_login%%/*}"
+		return
+		;;
 	esac
 	return 1
+}
+
+is_declared_own_login() {
+	[ -n "${GH_WITH_ENV_TOKEN_OWN_USER_LOGIN:-}" ] &&
+		[ "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$GH_WITH_ENV_TOKEN_OWN_USER_LOGIN" | tr '[:upper:]' '[:lower:]')" ]
 }
 
 # `gh repo fork` creates the fork in the authenticated account unless --org

@@ -104,7 +104,9 @@ authority, mutation gate, and exact landing-SHA checkout handoff requirements.
   It stops on other blocks, failed,
   ineligible, closed, deadline, no response, or repeated controller refusals,
   with each refusal's error code, HTTP status and trace ID. A candidate failure reports the
-  failing checks and run URLs on the candidate commit.
+  failing checks and run URLs on the candidate commit. A failed candidate whose
+  checks are still running, such as a rerun of a failed job, keeps waiting under
+  the deadline; one with no failing and no running check stops after repeated passes.
   Snapshots retain the response's `reason_code` and, when present, the service's
   bounded `last_controller_result`. That canonical pass evidence includes its
   source record, policy/time binding, observed checks, retry lineage and next

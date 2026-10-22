@@ -3,6 +3,8 @@
 # requires-python = ">=3.12"
 # dependencies = [
 #     "aiohttp==3.14.5",
+#     "tree-sitter==0.26.0",
+#     "tree-sitter-bash==0.25.1",
 # ]
 # ///
 """Behavioral tests for claim ownership, races, and partial recovery."""
@@ -206,6 +208,42 @@ class ClaimTests(unittest.TestCase):
                        "head": {"ref": "dependabot/python" if author == "dependabot[bot]" else "work/tool-repair",
                                 "repo": {"full_name": "owner/repo"}},
                        "base": {"repo": {"full_name": "owner/repo"}}}]
+
+    def test_failed_initial_target_read_does_not_poison_the_journal(self) -> None:
+        with patch.object(PLAN, "claim_snapshot", side_effect=PLAN.PlanError("not found")):
+            with self.assertRaises(PLAN.PlanError):
+                self.run_claim()
+        self.assertEqual(PLAN.github_plan_claim_log.read(OWNER["session"]), set())
+
+    def test_journal_failure_refuses_before_any_claim_write(self) -> None:
+        with patch.object(PLAN.github_plan_claim_log, "record", side_effect=OSError("journal unavailable")):
+            with self.assertRaises(PLAN.PlanError) as failure:
+                self.run_claim()
+        self.assert_no_writes()
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "work-closeout/scripts"))
+        import check_claims as closeout
+
+        with (
+            patch.multiple(PLAN, CURRENT_IS_WRITE=True, CURRENT_OPERATION="github.plan.claim"),
+            patch.object(PLAN.github_api_core, "emit_terminal") as emit,
+        ):
+            with self.assertRaises(SystemExit):
+                PLAN.die(str(failure.exception), failure=failure.exception.failure, extra_payload=failure.exception.payload)
+        envelope = emit.call_args.args[0]
+        _, unresolved = closeout.history.resolve_invocations([["claim", "42"]], [envelope], OWNER["session"])
+        self.assertFalse(unresolved)
+
+    def test_claim_target_is_journaled_before_the_post_even_when_readback_fails(self) -> None:
+        def post_then_interrupt() -> None:
+            import github_plan_claim_log
+
+            self.assertIn(("owner/repo", 42), github_plan_claim_log.read(OWNER["session"]))
+            raise OSError("connection lost after posting")
+
+        self.after_post = post_then_interrupt
+        with self.assertRaises((OSError, PLAN.PlanError)):
+            self.run_claim()
+        self.assertTrue(self.comments)
 
     def test_dependabot_pr_can_be_claimed_without_a_tracking_issue(self):
         self.pr_fixture("dependabot[bot]")
@@ -840,15 +878,81 @@ class ClaimTests(unittest.TestCase):
         self.assert_no_writes()
 
     def test_refresh_preserves_target_recorded_wait(self):
-        self.refresh_fixture()
-        previous = PLAN.section_map(self.issue["body"])["Current Status"]
-        self.target_comments["/repos/owner/repo/issues/99/comments"].append({"id": 88, "user": {"login": TEST_BOT}, "body": wait_record.marker(wait_record.reviewed(evidence="Client asked to hold", waiting_for="Client test", ends_when="Accepted head"))})
-        with self.assertRaises(PLAN.ClassifiedPlanError) as caught: self.run_claim()
-        self.assertEqual(caught.exception.code, "claim_wait_unresolved")
-        self.assertEqual(caught.exception.payload["previous_current_status"], previous)
-        self.assert_no_writes()
-        self.args.wait_resolved = "Existing conflict-refresh authorization resolves this wait for source work only."
-        self.run_claim()
+        for cross_repo, merged, review in product((False, True), repeat=3):
+            with self.subTest(cross_repo=cross_repo, merged=merged, review=review):
+                self.setUp()
+                (self.cross_repository_fixture if cross_repo else self.refresh_fixture)()
+                previous = PLAN.section_map(self.issue["body"])["Current Status"]
+                target = self.targets["99"]
+                target["html_url"] = "https://github.com/owner/repo/pull/99"
+                target_status = "State: Retained source needs its own evidence review."
+                target["body"] += "\n\n## Current Status\n\n" + target_status
+                if merged:
+                    pull = self.pulls.pop(0)
+                    pull.update(state="closed", merged_at="2026-10-02T01:00:00Z")
+                    self.closed_pulls[pull["number"]] = pull
+                    target["state"] = "closed"
+                wait = ({"version": 1, "state": "review", "evidence": "", "waits": []}
+                        if review else wait_record.reviewed(evidence="Client asked to hold",
+                            waiting_for="Client test", ends_when="Accepted head"))
+                self.target_comments["/repos/owner/repo/issues/99/comments"].append(
+                    {"id": 88, "user": {"login": TEST_BOT}, "body": wait_record.marker(wait)})
+                comment_status = "State: The retained record's current evidence is in this comment."
+                self.target_comments["/repos/owner/repo/issues/99/comments"].append(
+                    {"id": 89, "user": {"login": TEST_BOT},
+                     "body": "## Current Status\n\n" + comment_status})
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.run_claim()
+                error = caught.exception
+                self.assertEqual(error.code, "claim_wait_unresolved")
+                self.assertEqual(error.payload["previous_current_status"], previous)
+                self.assertEqual(error.payload["structured_wait"], wait)
+                expected_record = {
+                    "repo": "owner/repo", "number": target["number"], "record_kind": "pr",
+                    "url": target["html_url"], "current_status": target_status + "\n\n" + comment_status}
+                for key, value in expected_record.items():
+                    self.assertEqual(error.payload["waiting_record"][key], value)
+                self.assert_no_writes()
+                self.args.wait_resolved = "Existing conflict-refresh authorization resolves this wait for source work only."
+                self.run_claim()
+
+    def test_canonical_wait_refusal_identifies_its_own_record(self):
+        for kind, cross_repo in product(("issue", "pr"), (False, True)):
+            with self.subTest(kind=kind, cross_repo=cross_repo):
+                self.setUp()
+                if kind == "pr":
+                    self.pr_fixture()
+                    self.comments.append({"id": 1, "user": {"login": TEST_BOT},
+                        "body": "## Current Status\n\nState: Current PR evidence."})
+                repo = "other/plans" if cross_repo else self.issue["repo"]
+                self.args.issue = f"{repo}#{self.issue['number']}"
+                self.issue["html_url"] = f"https://github.com/{repo}/{'pull' if kind == 'pr' else 'issues'}/42"
+                self.wait = wait_record.reviewed(evidence="Owner retained the hold",
+                    waiting_for="Owner", ends_when="Recorded decision")
+                previous = PLAN.section_map(self.issue["body"]).get("Current Status", "")
+                if kind == "pr":
+                    previous = "State: Current PR evidence."
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.run_claim()
+                self.assertEqual(caught.exception.code, "claim_wait_unresolved")
+                expected_record = {"repo": repo, "number": self.issue["number"], "record_kind": kind,
+                    "url": self.issue["html_url"], "current_status": previous}
+                for key, value in expected_record.items():
+                    self.assertEqual(caught.exception.payload["waiting_record"][key], value)
+                self.assert_no_writes()
+
+    def test_clear_wait_refusal_preserves_the_blocking_plan_status(self):
+        for status in ("stale", "done"):
+            with self.subTest(status=status):
+                self.setUp()
+                self.issue["labels"] = [PLAN.DEFAULT_CONFIG["labels"][status]]
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.run_claim()
+                self.assertEqual(caught.exception.code, "claim_wait_unresolved")
+                self.assertEqual(caught.exception.payload["structured_wait"], self.wait)
+                self.assertFalse(caught.exception.payload["review_required"])
+                self.assertEqual(caught.exception.payload["waiting_record"]["plan_status"], status)
+                self.assert_no_writes()
 
     def test_planning_checkout_inventory_reads_and_verifies_exact_git_identity(self):
         planning_path = Path("/verified/plans")
@@ -4767,6 +4871,16 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(len(self.comments), 3)
         self.assertIn("post", self.events)
 
+    def test_same_session_reclaims_a_new_branch_in_one_call_after_its_exact_release(self):
+        self.issue["body"] += CLAIM.marker(OWNER) + "\n"
+        self.comments = [{"id": 1, "body": CLAIM.marker(OWNER), "user": {"login": TEST_BOT},
+                          "created_at": "2026-10-01T00:00:05Z"},
+                         {"id": 2, "body": "Released claim 1", "user": {"login": TEST_BOT},
+                          "created_at": "2026-10-01T01:00:00Z"}]
+        self.args.branch = "work/issue-42-next"
+        self.run_claim()
+        self.assertEqual(CLAIM.records(self.comments[-1]["body"])[0]["branch"], "work/issue-42-next")
+
     def test_mid_sentence_closing_reference_refuses(self):
         self.pulls = [{"number": 99, "body": "This change fixes #42 by repairing it", "head": {"ref": "work/repair"}}]
         with self.assertRaises(PLAN.ClassifiedPlanError):
@@ -5148,6 +5262,14 @@ class ClaimTests(unittest.TestCase):
         self.setUp()
         self.admit("spare-capacity")
         self.assertIn(CLAIM.admission_text("spare-capacity", []), self.comments[-1]["body"])
+
+    def test_own_project_admission_is_accepted_and_recorded(self):
+        parsed = PLAN.build_parser().parse_args(["claim", "7", "--worker", "worker", "--session", "session",
+                                                 "--branch", "work/own", "--next-action", "Fix it",
+                                                 "--admission", "own-project"])
+        self.admit(parsed.admission)
+        self.assertIn(CLAIM.admission_text("own-project", []), self.comments[-1]["body"])
+        self.assertTrue(self.emitted.call_args.args[0]["ok"])
 
     def test_admission_details_require_the_kind_they_describe(self):
         for kind, links, unlinked in ((None, ("https://github.com/owner/repo/issues/5",), None),

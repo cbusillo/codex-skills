@@ -53,6 +53,7 @@ import github_next_reads
 import github_plan_claim
 import github_plan_closure
 import github_plan_lease
+import github_plan_claim_log
 import github_plan_wait
 import github_plan_trigger
 import github_plan_release
@@ -2125,6 +2126,15 @@ def _claim_release_evidence(evidence_repo, _number, evidence_id):
         return None
 
 
+def claim_current_status(issue: dict[str, Any], sections: dict[str, str], comments: list[dict[str, Any]]) -> str:
+    status = sections.get("Current Status", "")
+    if "pull_request" in issue:
+        comment_status = next((section_map(c.get("body") or "").get("Current Status", "")
+                               for c in reversed(comments) if "Current Status" in section_map(c.get("body") or "")), "")
+        status = "\n\n".join(part for part in (status, comment_status) if part)
+    return status
+
+
 def claim_snapshot(ref: str, repo: str, *, allow_closed: bool = False) -> tuple[dict[str, Any], str, list[dict[str, Any]], bool]:
     _, issue = get_issue(ref, repo)
     if issue.get("state") not in ({"open", "closed"} if allow_closed else {"open"}):
@@ -2136,11 +2146,7 @@ def claim_snapshot(ref: str, repo: str, *, allow_closed: bool = False) -> tuple[
     )
     comments = github_plan_release.verified_comments(comments, _claim_release_evidence)
     can_update = "pull_request" not in issue and provenance["section_updates_allowed"] and provenance["ownership"] != "contributor_unmanaged"
-    status = sections.get("Current Status", "")
-    if "pull_request" in issue:
-        comment_status = next((section_map(c.get("body") or "").get("Current Status", "")
-                               for c in reversed(comments) if "Current Status" in section_map(c.get("body") or "")), "")
-        status = "\n\n".join(part for part in (status, comment_status) if part)
+    status = claim_current_status(issue, sections, comments)
     issue["claim_wait"] = current_wait(issue, comments, issue["repo"])
     return issue, status, comments, can_update
 
@@ -2674,16 +2680,26 @@ def claim_once(args: argparse.Namespace) -> None:
             ended_claims={entry["claim_id"] for entry in ended_owners})
         return conflicts, owned
 
-    def check_wait(waiting_issue: dict[str, Any], waiting_status: str, *, target: bool = False) -> bool:
+    def check_wait(waiting_issue: dict[str, Any], waiting_status: str, *, target: bool = False,
+                   record_status: str | None = None) -> bool:
         wait = waiting_issue["claim_wait"]
         status_state = next_plan_status(waiting_issue, phase["target_config"] if target else config)
         has_wait = bool(wait["state"] != "clear" or status_state in {"stale", "done"})
         if has_wait and not args.wait_resolved:
+            waiting_repo, waiting_number = waiting_issue["repo"], waiting_issue["number"]
+            waiting_record = {
+                "repo": waiting_repo, "number": waiting_number,
+                "record_kind": "pr" if "pull_request" in waiting_issue else "issue",
+                "url": waiting_issue.get("html_url"), "plan_status": status_state,
+                "current_status": record_status if record_status is not None else waiting_status,
+            }
             raise ClassifiedPlanError("claim_wait_unresolved",
-                "Review the structured wait with gh-plan.py wait. For a missing legacy record, read the full "
+                f"Review claim admission on {waiting_repo}#{waiting_number} "
+                f"(plan status: {status_state}, structured wait: {wait['state']}) with "
+                f"gh-plan.py --repo {waiting_repo} wait {waiting_number}. For a missing legacy record, read the full "
                 "issue/discussion once and record its waits or verified absence; --wait-resolved records existing resolution evidence.",
                 payload={"structured_wait": wait, "previous_current_status": waiting_status,
-                         "review_required": wait["state"] == "review"})
+                         "review_required": wait["state"] == "review", "waiting_record": waiting_record})
         return has_wait
 
     def check_issue_holds(checked_issue: dict[str, Any]) -> None:
@@ -3180,7 +3196,8 @@ def claim_once(args: argparse.Namespace) -> None:
                                             github_plan_claim.exact_released_sources(target_comments))
             target_status = sections.get("Current Status", "")
             target_wait = target["claim_wait"]
-            if check_wait(target, target_status, target=True):
+            if check_wait(target, target_status, target=True,
+                          record_status=claim_current_status(target, sections, target_comments)):
                 wait_labels = sorted(set(normalize_labels(target.get("labels"))) &
                                      {config["labels"][key] for key in ("waiting", "blocked", "stale", "done")})
                 observed_waits[pull["number"]] = "Labels: " + ", ".join(wait_labels) + "\n" + github_plan_wait.marker(target_wait)
@@ -3389,6 +3406,7 @@ def claim_once(args: argparse.Namespace) -> None:
         )
         # Freeze the source before any external claim write. If publication
         # fails, the closed source stays frozen for supported claim recovery.
+        github_plan_claim_log.record(claim["session"], issue_repo, number)
         admit_observed_sources()
         if not comment_recorded:
             claim_comment = github_comment_core.comment(
@@ -5944,7 +5962,9 @@ def close_attention_preflight(
             str(exc),
             failure=github_api_core.FailureDetail(
                 cause=exc.cause,
-                message="closure needs every outside comment answered, or the Director's decision",
+                message=("closure needs each missing body reference corrected"
+                         if exc.cause == "missing_references"
+                         else "closure needs every outside comment answered, or the Director's decision"),
                 retryable=False,
                 fallback_eligible=False,
                 disposition="stop",

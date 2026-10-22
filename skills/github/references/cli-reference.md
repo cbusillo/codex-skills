@@ -867,10 +867,16 @@ Before an authorized `go` creates a branch or worktree, run from a checkout of
 the target repository:
 
 ```bash
-uv run <skill-dir>/scripts/gh-plan.py claim <issue> \
+uv run <skill-dir>/scripts/gh-plan.py --repo OWNER/REPO claim <issue> \
   --worker <worker-token> --session <session-id> \
   --branch work/<task-slug> --next-action "<action>"
 ```
+
+Keep the repository and record literal in JavaScript tool wrappers or repeated
+shell commands. A qualified `OWNER/REPO#N` record also works. Closeout checks
+every known target, but a bare or computed command with uncertain
+execution count remains conditional even when one receipt is present. A
+journaled receipt alone does not prove every execution used a journaling helper.
 
 `--session` is the running session's native ID: `$CLAUDE_CODE_SESSION_ID` on
 Claude Code, the root `$CODEX_SESSION_ID` on Codex. A Codex child thread claims
@@ -937,6 +943,15 @@ worktree and live-session checks still refuse competing work. Historical
 `Claimed by` directives remain legacy claim records under the existing guarded
 release path; arbitrary status prose does not become a legacy claim.
 
+A `claim_wait_unresolved` refusal identifies the actual blocked issue or retained
+PR in `waiting_record`: its repository, number, record kind, URL, plan status
+and Current Status (including its latest PR status comment). `structured_wait`
+and `review_required` describe that record; a stale/done plan status can also
+refuse admission when its wait is clear. The error names its supported
+`gh-plan.py --repo OWNER/REPO wait N` review command. `previous_current_status`
+stays canonical and can differ from `waiting_record.current_status`. This
+diagnostic resolves no wait and supplies no retry authority.
+
 Before the first claim of a legacy issue or PR, read its full body/discussion
 and run `gh-plan.py wait <issue>` for the one-time review report. Record every
 actual person, decision, external-event or prose-only executing-session hold:
@@ -991,7 +1006,7 @@ The helper returns previous Current Status in the recovery result; it links
 the work record without copying that history into the claim comment.
 
 When the overall direction's Order admits the work, name the rule with
-`--admission live-breakage|milestone|repeat-stop|spare-capacity`; the claim
+`--admission live-breakage|milestone|own-project|repeat-stop|spare-capacity`; the claim
 comment records it as an `Admission:` line. Admission does not read or certify
 a milestone graph. Link milestone work into
 its Track during planning and cite that evidence with `--admission-link`.
@@ -1014,6 +1029,17 @@ native blockers, registered worktrees, local branches, live remote heads and
 open PRs. It reads no process, session registry or daemon: ownership lives in
 the claim comments and their exact releases
 ([Q621](https://github.com/cbusillo/codex-skills/issues/2453)).
+
+After target preflight and before posting, `claim` records its session ID, exact
+repository and issue or PR number under `~/.code/skill-data/claim-log/<session-hash>/`.
+Each target is an atomically published JSON file. Concurrent children cannot
+interleave rows, and interrupted writes cannot corrupt earlier targets. The
+private journal is synced before any claim write; a journal failure refuses
+before posting. Root and child agents using the same session ID share it.
+Closeout reads this journal plus recorded transcript claim results, then checks
+only those targets on GitHub. Keep the journal on the claiming host with the
+session, including interrupted attempts; it is discovery evidence, never proof
+of ownership or release. See [claim disposition](../../work-closeout/SKILL.md#claim-disposition).
 
 Each claim carries a host-local lease, renewed without a GitHub write: by the
 catalog's `PreToolUse` hook on shell commands on both harnesses, on Claude Code
@@ -1362,7 +1388,7 @@ For an authorized **ordinary successor** whose next step precedes PR refresh,
 use the canonical open planning issue in the PRs' repository:
 
 ```bash
-uv run <skill-dir>/scripts/gh-plan.py claim <canonical-issue> \
+uv run <skill-dir>/scripts/gh-plan.py --repo OWNER/REPO claim <canonical-issue> \
   --worker <worker-token> --session <native-session-id> \
   --branch work/<new-task-slug> --next-action "<authorized next step>" \
   --resume-from <released-claim-comment-id> \
@@ -1752,6 +1778,10 @@ competitor's record.
   later does not answer it, even when the edit links or mentions it. Planning
   records and Director question or decision records are not replies, even when
   they link the comment. Answer each with a new reply on its thread and rerun.
+  When degraded coverage comes from a body reference that does not exist, such
+  as a bare `#N` meant for another repository, the refusal names each one with
+  its `owner/repo#N` correction and does not offer the override for it; fix
+  the body and rerun.
   Only the Director overrides:
   `--unanswered-decision COMMENT_URL` names a repository owner comment on
   this issue after the newest such comment, or an unedited `Director decision:`
@@ -2551,8 +2581,10 @@ Under the same per-command opt-in, two commands run as the declared personal
 login whatever credential the repository would select, because an App
 installation token can never act for an account: a `gh api` read of an
 endpoint that answers only for the authenticated account (`user/...`,
-`notifications`, `notifications/...`, `repos/OWNER/REPO/subscription`, also
-given as an `https://api.github.com/` URL), and
+`notifications`, `notifications/...`, `repos/OWNER/REPO/subscription`, and
+`users/LOGIN/settings/billing/...` when LOGIN is the declared
+`GH_WITH_ENV_TOKEN_OWN_USER_LOGIN`, also given as an `https://api.github.com/`
+URL), and
 `gh repo fork` without `--org`, whose fork lands in the person's account.
 Stderr names the endpoint or the fork source. Bare `user` stays the App actor
 probe, a fork into an organization keeps the repository's route, and required

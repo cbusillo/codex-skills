@@ -34,7 +34,9 @@ Rules for this brief (every Supervisor brief carries them):
   Supervisor sends "continue"; just resume
   ([capacity stops](helpers.md#codex-provider-capacity-stops)).
 - At a repository's PR cap: count open agent PRs there first; at about 8, do
-  not open another ([the Pattern](../SKILL.md#the-pattern), step 1).
+  not open another ([the Pattern](../SKILL.md#the-pattern), step 1). Leave
+  out the merge train's batch PRs (titled `Launchplane batch: #...`), which
+  only bundle PRs already counted, and drafts parked on purpose.
 - Pace (Director, October 18, 2026): never open PRs faster than they can land.
   Finish and hand off what you open before starting anything new.
 - Never use Chris's own Chrome (the ChatGPT for Chrome extension, Claude in
@@ -49,7 +51,7 @@ Rules for this brief (every Supervisor brief carries them):
   Follow the repository's
   [executing loop](../../references/executing-loop.md), opening each step's
   owning SKILL.md before the step.
-- Recheck ownership, then claim with `gh-plan.py claim` (admission: the kind
+- Recheck ownership, then claim with `gh-plan.py --repo OWNER/REPO claim` (admission: the kind
   named at the top of the brief) before any worktree. The installed
   `gh-plan.py claim --help` and
   [Planning: Claim](../../github/references/cli-reference.md#planning-claim)
