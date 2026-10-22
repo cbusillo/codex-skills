@@ -28,6 +28,18 @@ Interactive input and command strings passed to unclassified launchers cannot
 prove complete claim coverage. Their known receipts are still checked. Keep
 the claiming host's journal and complete native lineage when using remote shells.
 
+A shell variable assigned once to a literal value at the top level, and a `for`
+loop over literal words, expand into exact claim targets, so
+`for i in 147 148; do ... claim $i; done` checks both records. Anything else
+that could change the value keeps the call computed: a second assignment, a use
+before the assignment, a conditional or background assignment, `read`,
+`printf -v`, `declare`, `export`, `unset`, `eval`, `source`, `builtin` or
+`command` wrappers, arithmetic, `${NAME:=...}`, an `IFS` change or a computed
+command name. Values with spaces, quotes, glob or tilde characters, uses inside
+a heredoc, and zsh modifiers such as `$NAME:h` stay computed too. Text passed
+to `apply_patch` in a JavaScript cell is file data and does not make the
+cell's computed commands claim-related.
+
 The legacy reader follows literal evaluator payloads and checks each remaining
 claim-bearing argv, heredoc, herestring or pipeline channel. Unknown consumers
 stay conditional. Known data commands, repository GitHub wrappers, direct Python
@@ -35,8 +47,11 @@ files and unambiguous interpreter-launched files consume their bodies and argume
 as data. An option before the interpreter's file argument leaves its role
 unknown; stdin remains a possible program channel. Input redirection to such
 an interpreter stays conditional because the file's program is not inspected.
-Python also distinguishes conventional string construction, JSON/AST operations
-and Path writes from process launchers; an unknown callable receiving literal
+A heredoc reaches the command it is attached to and every stage piped after it,
+and each is checked as a consumer. Python also distinguishes conventional string
+construction, JSON/AST operations, Path writes and process launchers whose argv
+starts with a literal known data command from other process launchers; an
+unknown callable receiving literal
 claim text stays conditional. Star and dynamic imports leave unknown callable identities
 conditional when claim text is present. The reader does not inspect script
 files, propagate arbitrary Python values beyond one-hop literal claim-text

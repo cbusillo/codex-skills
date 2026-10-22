@@ -33,6 +33,10 @@ def pull(number=2, branch=SOURCE["branch"], **changes):
             "base": {"repo": {"full_name": REPO}}, **changes}
 
 
+def bash_call(command):
+    return [{"message": {"content": [{"type": "tool_use", "name": "Bash", "id": "call", "input": {"command": command}}]}}]
+
+
 class ClaimCloseoutTests(unittest.TestCase):
 
     def setUp(self):
@@ -751,6 +755,101 @@ class ClaimCloseoutTests(unittest.TestCase):
             rows = [{"message": {"content": [{"type": "tool_use", "name": "Bash", "id": "read", "input": {"command": command}}]}}]
             with self.subTest(command=command):
                 self.assertEqual(helper.history.literal_targets(rows, SESSION), {"targets": set(), "unresolved_invocations": []})
+
+    def test_literal_loops_and_variables_are_exact_claim_targets(self) -> None:
+        cases = {
+            "cd /r; P=/skills/github/scripts; for i in 1 2; do uv run $P/gh-plan.py --repo test/a claim $i"
+            " --session native-session 2>&1 | tail -c 900; echo; done": {(REPO, 1), (REPO, 2)},
+            "cd /r && S=/skills; for i in 1 2; do uv run $S/github/scripts/gh-plan.py --repo test/a claim $i"
+            " > /tmp/claim-$i.json; python3 -c 'import json,sys;print(json.load(open(sys.argv[1])))' /tmp/claim-$i.json;"
+            " sleep 3; done": {(REPO, 1), (REPO, 2)},
+            "S=/skills/github/scripts/gh-plan.py; cd /r && uv run $S --repo test/a claim 3 --session native-session"
+            " | python3 -c 'import json,sys;print(json.load(sys.stdin))'": {(REPO, 3)},
+            'for i in other/repo#2; do uv run gh-plan.py --repo test/a claim "$i"; done': {("other/repo", 2)},
+            "R=test/a; for i in 1 2; do for j in 3; do uv run gh-plan.py --repo $R claim $i$j; done; done": {(REPO, 13), (REPO, 23)},
+        }
+        for command, targets in cases.items():
+            with self.subTest(command=command):
+                self.assertEqual(
+                    helper.history.literal_targets(bash_call(command), SESSION), {"targets": targets, "unresolved_invocations": []}
+                )
+
+    def test_claim_values_a_shell_could_change_stay_computed(self) -> None:
+        claim = 'uv run gh-plan.py --repo "$R" claim 2'
+        commands = [
+            "S=gh-plan.py; uv run $S claim 2",
+            'for i in $(cat list); do uv run gh-plan.py --repo test/a claim "$i"; done',
+            "for i in 1 2; do i=3; uv run gh-plan.py --repo test/a claim $i; done",
+            f"R=test/a; builtin read R <<< other/repo; {claim}",
+            f"R=test/a; command read R <<< other/repo; {claim}",
+            f"R=test/a; read R < file; {claim}",
+            f"R=test/a; printf -v R %s other/repo; {claim}",
+            f'N=R; R=test/a; printf -v "$N" %s other/repo; {claim}',
+            f"R=test/a; wait -p R; {claim}",
+            f'R=test/a; eval "$SETUP"; {claim}',
+            f"R=test/a; source ./env.sh; {claim}",
+            f"R=test/a; R=other/repo; {claim}",
+            f"{claim}; R=test/a",
+            f"true && R=test/a; {claim}",
+            f"R=test/a & {claim}",
+            f"R=test/a; unset R; {claim}",
+            f"R=test/a; f() {{ R=other/repo; }}; f; {claim}",
+            f"R=test/a; export R=other/repo; {claim}",
+            f"R=test/a; : ${{R:=other/repo}}; {claim}",
+            f"R=test/a; IFS=/; {claim}",
+            f"R=~/a; {claim}",
+            f"R='test/a other/b'; {claim}",
+            'R=test/b; uv run gh-plan.py --repo "${R}${SUFFIX}" claim 2',
+            "S=/skills/gh-plan.py/x; uv run $S:h --repo test/a claim 2",
+            f"R=test/a; bash <<'EOF'\n{claim}\nEOF",
+            "bash <<'EOF' | cat\nuv run gh-plan.py claim 2\nEOF",
+            "cd /r && bash <<'EOF' | tail -5\nuv run gh-plan.py claim 2\nEOF",
+            "for i in 1; do uv run gh-plan.py --repo test/a claim $i; done;"
+            " python3 -c 'from invoke import run; import sys; run(sys.argv[1])' \"$CMD\"",
+            "python3 - <<'PY'\nimport subprocess\nsubprocess.run(['uv', 'run', path, 'claim'])  # gh-plan\nPY",
+        ]
+        for command in commands:
+            with self.subTest(command=command):
+                self.assertTrue(helper.history.literal_targets(bash_call(command), SESSION)["unresolved_invocations"])
+
+    def test_scripts_and_patches_that_only_mention_claims_are_data(self) -> None:
+        commands = [
+            "cd /w && cat > /tmp/probe.py <<'EOF'\nfor cmd in ['S=gh-plan.py; uv run $S --repo test/a claim 2']:\n    print(cmd)\nEOF\n"
+            "uv run --with tree-sitter==0.26.0 python /tmp/probe.py 2>&1 | cut -c1-400",
+            "S=/tmp/scratch; cat > $S/prompt.md <<'EOF'\nReview whether gh-plan.py claim 2 is cleared.\nEOF\n"
+            "cd /m && timeout 1000 uv run scripts/review_with_model.py run --prompt-file $S/prompt.md --out $S/review.md"
+            " > $S/review.json 2> $S/review.err; echo exit=$?; tail -5 $S/review.err",
+            "cd /w && python3 - <<'EOF'\nfrom pathlib import Path\npath = Path('test.py')\n"
+            "path.write_text(path.read_text().replace('old', 'uv run gh-plan.py --repo test/a claim 2'))\nEOF",
+            "python3 - <<'PY'\nimport subprocess\np = '/x.jsonl.zst'\ns = subprocess.Popen(['zstd', '-dc', p], stdout=subprocess.PIPE, text=True)\n"
+            "for line in s.stdout:\n    if 'claim ' in line and 'gh-plan' in line:\n        print(line)\nPY",
+        ]
+        for command in commands:
+            with self.subTest(command=command):
+                self.assertEqual(
+                    helper.history.literal_targets(bash_call(command), SESSION), {"targets": set(), "unresolved_invocations": []}
+                )
+        cell = (
+            'text(await tools.apply_patch("*** Begin Patch\\n+Keep the source claim unchanged.\\n*** End Patch"));\n'
+            'const ts=["skills/a/test_claim.py","skills/b/test_release.py"];\n'
+            "await Promise.allSettled(ts.map(p=>tools.exec_command({cmd:`scripts/run-python-helper.sh ${p}`})));"
+        )
+        rows = [{"payload": {"type": "custom_tool_call", "name": "exec", "call_id": "cell", "input": cell}}]
+        self.assertEqual(helper.history.literal_targets(rows, SESSION), {"targets": set(), "unresolved_invocations": []})
+        rows[0]["payload"]["input"] = "text(await tools.apply_patch(`${note} the source claim`)); " + cell.split("\n", 1)[1]
+        self.assertTrue(helper.history.literal_targets(rows, SESSION)["unresolved_invocations"])
+
+    def test_released_loop_claims_clear_and_a_computed_loop_stays_conditional(self) -> None:
+        for values, clear in (("1 2", True), ("$(cat issues)", False)):
+            root = self.entry()
+            command = f"for i in {values}; do uv run gh-plan.py --repo {REPO} claim $i --session {SESSION} | tail -c 900; done"
+            call = {"type": "function_call", "name": "shell_command", "call_id": "loop", "arguments": json.dumps({"command": command})}
+            with Path(root["transcript"]).open("a") as stream:
+                stream.write(json.dumps({"payload": call}) + "\n")
+            with self.subTest(values=values), patch.object(helper, "check_record", return_value=[]) as check:
+                self.assertEqual(helper.check([root])["claims_clear"], clear)
+                if clear:
+                    self.assertEqual({call.args[2] for call in check.call_args_list}, {1, 2})
 
     def test_claude_saved_output_completes_the_originating_bare_claim(self) -> None:
         root = self.entry()

@@ -422,6 +422,11 @@ def command_literal(text: str, start: int, literal: str) -> str | None:
 
 JAVASCRIPT_LITERAL = r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|`(?:\\.|[^`\\])*`'
 CLAIM_WORD = re.compile(r"""(?:^|[\s'"`])claim(?:$|[\s'"`])""")
+JAVASCRIPT_PATCH = re.compile(r"\btools\.apply_patch\s*\(\s*(?:" + JAVASCRIPT_LITERAL + r")\s*\)", re.DOTALL)
+
+
+def without_patch_text(text: str) -> str:
+    return JAVASCRIPT_PATCH.sub(lambda match: match[0] if "${" in match[0] else "tools.apply_patch()", text)
 
 
 def javascript_names(text: str) -> set[str]:
@@ -574,6 +579,8 @@ def has_executable_claim_source(text: str, consumer: str, *, claim_related: bool
             command = ast.Tuple(elts=node.args, ctx=ast.Load())
         elif name.startswith(("execv", "spawnv", "posix_spawn")) and len(node.args) > 1:
             command = node.args[2] if name.startswith("spawnv") and len(node.args) > 2 else node.args[1]
+        if not name.startswith(("execv", "spawnv", "posix_spawn")) and python_data_argv(node, command):
+            continue
         try:
             value = ast.literal_eval(command)
         except (ValueError, TypeError):
@@ -587,6 +594,17 @@ def has_executable_claim_source(text: str, consumer: str, *, claim_related: bool
         if "gh-plan" in str(value) and (CLAIM_WORD.search(str(value)) or name in {"run_path", "run_module"}):
             return True
     return False
+
+
+def python_data_argv(call: ast.Call, command: ast.AST | None) -> bool:
+    return (
+        not any(item.arg in {None, "executable", "shell"} for item in call.keywords)
+        and isinstance(command, (ast.List, ast.Tuple))
+        and bool(command.elts)
+        and isinstance(executable := command.elts[0], ast.Constant)
+        and isinstance(executable.value, str)
+        and Path(executable.value).name in DATA_COMMANDS
+    )
 
 
 def python_dynamic_import(function: ast.AST) -> bool:
@@ -926,12 +944,8 @@ def reads_program_stdin(argv: list[str], consumer: str) -> bool:
     )
 
 
-def accepts_claim_data(argv: list[str]) -> bool:
-    position = command_position(argv)
-    if position is None:
-        return False
-    name = Path(argv[position.index]).name if position.index < len(argv) else ""
-    if name in {
+DATA_COMMANDS = frozenset(
+    {
         "rg",
         "grep",
         "git",
@@ -971,7 +985,17 @@ def accepts_claim_data(argv: list[str]) -> bool:
         "pytest",
         "gh-issue",
         "gh-comment",
-    }:
+        "zstd",
+    }
+)
+
+
+def accepts_claim_data(argv: list[str]) -> bool:
+    position = command_position(argv)
+    if position is None:
+        return False
+    name = Path(argv[position.index]).name if position.index < len(argv) else ""
+    if name in DATA_COMMANDS:
         return True
     if name.endswith(".py") and name != "gh-plan.py":
         return True
@@ -1007,6 +1031,8 @@ def input_consumer(argv: list[str]) -> str | None:
 def statement_command(node: Node) -> Node | None:
     if node.type == "command":
         return node
+    if node.type == "list":
+        return statement_command(node.named_children[-1])
     body = node.child_by_field_name("body")
     return statement_command(body) if body is not None else None
 
@@ -1093,14 +1119,15 @@ def input_programs(node: Node) -> Iterator[ProgramSource]:
         return
     if node.type not in {"heredoc_redirect", "herestring_redirect", "file_redirect"} or node.parent is None:
         return
-    command = statement_command(node.parent)
     pipeline = next((child for child in node.named_children if child.type == "pipeline"), None)
-    if pipeline is not None:
-        command = statement_command(pipeline.named_children[-1])
-    argv = command_argv(command) if command is not None else []
-    consumer = input_consumer(argv)
-    if consumer is None:
-        return
+    for command in [node.parent, *(pipeline.named_children if pipeline is not None else [])]:
+        command = statement_command(command)
+        consumer = input_consumer(command_argv(command) if command is not None else [])
+        if consumer is not None:
+            yield from redirect_programs(node, consumer)
+
+
+def redirect_programs(node: Node, consumer: str) -> Iterator[ProgramSource]:
     if node.type == "heredoc_redirect":
         body = next((child for child in node.named_children if child.type == "heredoc_body"), None)
         if body is not None:
@@ -1116,14 +1143,242 @@ def input_programs(node: Node) -> Iterator[ProgramSource]:
             yield program
 
 
+SHELL_VARIABLE_WRITERS = frozenset(
+    {
+        ".",
+        "-",
+        "alias",
+        "builtin",
+        "command",
+        "coproc",
+        "declare",
+        "enable",
+        "eval",
+        "exec",
+        "export",
+        "getln",
+        "getopts",
+        "let",
+        "local",
+        "mapfile",
+        "nocorrect",
+        "noglob",
+        "read",
+        "readarray",
+        "readonly",
+        "sched",
+        "source",
+        "strftime",
+        "sysread",
+        "time",
+        "trap",
+        "typeset",
+        "unset",
+        "vared",
+        "zformat",
+        "zmodload",
+        "zparseopts",
+        "zregexparse",
+        "zstyle",
+    }
+)
+SHELL_VARIABLE_WRITER_FLAGS = {"printf": "v", "print": "v", "wait": "p", "set": "A"}
+LITERAL_SHELL_VALUE = re.compile(r"[A-Za-z0-9_./@:+,%-][A-Za-z0-9_./@:+,%#-]*")
+LITERAL_EXPANSION_PASSES = 64
+LITERAL_EXPANSION_BYTES = 1 << 20
+LITERAL_LOOP_VALUES = 64
+
+
+def parse_shell(source: bytes) -> Node:
+    return Parser(Language(tree_sitter_bash.language())).parse(source).root_node
+
+
+def literal_shell_value(node: Node | None) -> str | None:
+    if node is None or shell_generated(node):
+        return None
+    value = shell_word(node)
+    return value if LITERAL_SHELL_VALUE.fullmatch(value) else None
+
+
+def writes_unknown_variables(root: Node) -> bool:
+    for node in shell_nodes(root):
+        if node.type in {"declaration_command", "unset_command", "arithmetic_expansion", "c_style_for_statement"}:
+            return True
+        if node.type == "compound_statement" and node.children[0].type == "((":
+            return True
+        if (node.type == "for_statement" and node.children[0].type != "for") or (node.type == "expansion" and b"=" in node.text):
+            return True
+        if node.type != "command":
+            continue
+        name = node.child_by_field_name("name")
+        if name is None or shell_generated(name):
+            return True
+        argv = command_argv(node)
+        flags = SHELL_VARIABLE_WRITER_FLAGS.get(argv[0])
+        if argv[0] in SHELL_VARIABLE_WRITERS or (
+            flags and any(re.fullmatch(rf"[-+][A-Za-z]*[{flags}][A-Za-z]*", argument) for argument in argv[1:])
+        ):
+            return True
+    return b"IFS" in root.text
+
+
+def plain_expansion(node: Node, name: str) -> bool:
+    return node.type in {"simple_expansion", "expansion"} and node.text.decode() in {f"${name}", f"${{{name}}}"}
+
+
+def expected_name_position(node: Node) -> bool:
+    parent = node.parent
+    if parent is None:
+        return False
+    if parent.type in {"variable_assignment", "for_statement"}:
+        return parent.child_by_field_name("name" if parent.type == "variable_assignment" else "variable") == node
+    return plain_expansion(parent, node.text.decode())
+
+
+@dataclass
+class ShellNames:
+    assignments: dict[str, list[Node]] = field(default_factory=dict)
+    unsafe: set[str] = field(default_factory=set)
+
+
+def shell_names(root: Node) -> ShellNames:
+    names = ShellNames()
+    for node in shell_nodes(root):
+        if node.type in {"variable_assignment", "for_statement"}:
+            name = node.child_by_field_name("name" if node.type == "variable_assignment" else "variable")
+            if name is not None:
+                names.assignments.setdefault(name.text.decode(), []).append(node)
+        elif node.type == "word" or (node.type == "variable_name" and not expected_name_position(node)):
+            names.unsafe.add(node.text.decode())
+    return names
+
+
+def runs_unconditionally(node: Node) -> bool:
+    while node.parent is not None and node.parent.type == "list":
+        if node.parent.named_children[0] != node:
+            return False
+        node = node.parent
+    following = node.next_sibling
+    return node.parent is not None and node.parent.type == "program" and (following is None or following.type != "&")
+
+
+def substitutable_uses(root: Node, source: bytes, name: str, start: int, end: int) -> list[Node]:
+    return [
+        node
+        for node in shell_nodes(root)
+        if plain_expansion(node, name)
+        and start <= node.start_byte
+        and node.end_byte <= end
+        and source[node.end_byte : node.end_byte + 1] not in {b":", b"["}
+        and not any(ancestor.type == "heredoc_body" for ancestor in shell_ancestors(node))
+    ]
+
+
+def shell_ancestors(node: Node) -> Iterator[Node]:
+    while node.parent is not None:
+        node = node.parent
+        yield node
+
+
+def replaced(source: bytes, edits: list[tuple[int, int, bytes]], offset: int = 0) -> bytes:
+    for start, end, value in sorted(edits, reverse=True):
+        source = source[: start - offset] + value + source[end - offset :]
+    return source
+
+
+def substitution_edits(uses: list[tuple[Node, str]]) -> list[tuple[int, int, bytes]]:
+    substituted = {use.start_byte for use, _ in uses}
+    edits = []
+    for use, value in uses:
+        edits.append((use.start_byte, use.end_byte, value.encode()))
+        previous = use.prev_sibling
+        if (
+            previous is not None
+            and previous.type == "simple_expansion"
+            and previous.end_byte == use.start_byte
+            and previous.start_byte not in substituted
+            and re.match(r"\w", value)
+        ):
+            edits.append((previous.start_byte, previous.end_byte, b"${" + previous.text[1:] + b"}"))
+    return edits
+
+
+def bound_variable_edits(root: Node, source: bytes, names: ShellNames) -> list[tuple[int, int, bytes]]:
+    uses = []
+    for name, assignments in names.assignments.items():
+        assignment = assignments[0]
+        if name in names.unsafe or len(assignments) != 1 or assignment.type != "variable_assignment":
+            continue
+        value = literal_shell_value(assignment.child_by_field_name("value"))
+        if value is None or not runs_unconditionally(assignment):
+            continue
+        uses.extend((use, value) for use in substitutable_uses(root, source, name, assignment.end_byte, len(source)))
+    return substitution_edits(uses)
+
+
+@dataclass
+class LiteralLoop:
+    node: Node
+    name: str
+    body: Node
+    values: list[str]
+
+
+def literal_loop(loop: Node, names: ShellNames) -> LiteralLoop | None:
+    if loop.type != "for_statement":
+        return None
+    variable = loop.child_by_field_name("variable")
+    body = loop.child_by_field_name("body")
+    if variable is None or body is None or body.type != "do_group":
+        return None
+    name = variable.text.decode()
+    if name in names.unsafe or len(names.assignments.get(name, [])) != 1:
+        return None
+    words = loop.children_by_field_name("value")
+    values = [value for word in words if (value := literal_shell_value(word)) is not None]
+    return LiteralLoop(loop, name, body, values) if 0 < len(values) == len(words) <= LITERAL_LOOP_VALUES else None
+
+
+def unrolled_loop(root: Node, source: bytes, loop: LiteralLoop) -> bytes:
+    start, end = loop.body.children[0].end_byte, loop.body.children[-1].start_byte
+    uses = substitutable_uses(root, source, loop.name, start, end)
+    copies = [replaced(source[start:end], substitution_edits([(use, value) for use in uses]), start) for value in loop.values]
+    return source[: loop.node.start_byte] + b"{\n" + b"\n".join(copies) + b"\n}" + source[loop.node.end_byte :]
+
+
+def expanded_once(root: Node, source: bytes) -> bytes | None:
+    if writes_unknown_variables(root):
+        return None
+    names = shell_names(root)
+    edits = bound_variable_edits(root, source, names)
+    if edits:
+        return replaced(source, edits)
+    loops = [loop for node in shell_nodes(root) if (loop := literal_loop(node, names)) is not None]
+    return unrolled_loop(root, source, loops[-1]) if loops else None
+
+
+def with_literal_values(root: Node, source: bytes) -> Node:
+    expanded = root
+    for _ in range(LITERAL_EXPANSION_PASSES):
+        following = expanded_once(expanded, source)
+        if following is None:
+            return expanded
+        expanded = parse_shell(following)
+        source = following
+        if len(source) > LITERAL_EXPANSION_BYTES or expanded.has_error:
+            return root
+    return root
+
+
 def shell_claims(text: str, *, claim_related: bool = False) -> ShellClaims:
     discovery = ShellClaims()
     related = claim_related or ("gh-plan" in text and CLAIM_WORD.search(text) is not None)
-    root = Parser(Language(tree_sitter_bash.language())).parse(text.encode()).root_node
+    root = parse_shell(text.encode())
     if root.has_error:
         discovery.receipt_pure = False
         discovery.decode_failed = related
         return discovery
+    root = with_literal_values(root, text.encode())
     for node in shell_nodes(root):
         if node.type in {
             "pipeline",
@@ -1384,7 +1639,8 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
         if identifier in denied:
             continue
         names = javascript_names(text) if javascript else set()
-        claim_related_here = "gh-plan" in text or CLAIM_WORD.search(text) is not None
+        executable_text = without_patch_text(text) if javascript else text
+        claim_related_here = "gh-plan" in executable_text or CLAIM_WORD.search(executable_text) is not None
         invocations = []
         opaque = False
         unclassified = False
