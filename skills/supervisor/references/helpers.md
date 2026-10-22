@@ -1221,6 +1221,8 @@ uv run skills/supervisor/scripts/codex-session.py resume --session-id <native-id
 uv run skills/supervisor/scripts/codex-session.py status --session-id <native-id>
 ```
 
+Native resume and queue mutations are routed through these helpers by command policy.
+
 Queue submission reports success only after its acknowledgement and connection
 and ownership cleanup complete. Once submission may have started, any failure,
 including timeout or cancellation during cleanup, reports uncertainty with

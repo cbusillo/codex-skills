@@ -173,11 +173,12 @@ policy:
     - id: prefer-coordinated-codex-resume
       match:
         shell_regex: >-
-          (?x)^\s*(?:\S*/)?codex\s+
-          (?:(?:(?:--(?:remote|cd|config|profile|model|sandbox|ask-for-approval|enable|disable|add-dir|image)|-[cCpmsai])
-          (?:=(?:"[^"]*"|'[^']*'|\S+)|\s+(?:"[^"]*"|'[^']*'|\S+))|--(?!help(?:\s|$))[\w-]+|exec)\s+)*
-          (?:resume\b(?!(?:\s+(?:"[^"]*"|'[^']*'|(?!--(?:\s|$))[^\s"']\S*))*?\s+(?:-h|--help)(?:\s|$))
-          |queue\b(?=[^\n]*\s--message(?:[ =-]|$)))
+          (?x)^\s*(?:(?:\S*/)?codex|"[^"]*/codex"|'[^']*/codex')\s+
+          (?:(?:exec|e|--(?!help\b)[\w-]+
+          |(?:--(?!help\b)[\w-]+|-[cCpmsaio])(?:=|\s+(?!-))(?:"[^"]*"|'[^']*'|[^\s"'])+
+          |(?=['"](?:--[\w-]+=|-[cCpmsaio])|-[cCpmsaio][^=\s])(?:"[^"]*"|'[^']*'|[^\s"'])+)\s+)*
+          (?:resume\b|queue\b(?=[^\n]*\s['"]?--message(?:[ =-]|$)))
+          (?!(?:\s+(?!--(?:\s|$))(?:"[^"]*"|'[^']*'|[^\s"'])+)*?\s+(?:-h|--help)(?:\s|$))
       action: require_preferred
       message: Native resume and queue mutations must invalidate closure evidence under the same ownership lease as successor admission. Use the exact-thread helper with the source account home.
       preferred:
