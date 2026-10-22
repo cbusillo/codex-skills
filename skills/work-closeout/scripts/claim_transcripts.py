@@ -535,21 +535,19 @@ def shell_texts(text: str, javascript: bool) -> ShellTexts:
         + ")",
         re.DOTALL,
     )
-    bounded, sites = claim_javascript.analyse(text)
+    analysis = claim_javascript.analyse(text)
     commands = []
-    opaque = not bounded
+    opaque = not analysis.bounded
     tokens = javascript_tokens(text)
-    interactive_opaque = not bounded and (
-        any(
-            token == "tools" and tokens[index + 1 : index + 2] == ["["]
-            for index, token in enumerate(tokens)
-        )
+    interactive_opaque = not analysis.bounded and (
+        analysis.encoded_identifiers
+        or any(token == "tools" and tokens[index + 1 : index + 2] == ["["] for index, token in enumerate(tokens))
         or any(
             "write_stdin" in match[0] and (match["reference"] is not None or (match[0].startswith("`") and "${" in match[0]))
             for match in site.finditer(text)
         )
     )
-    for arguments, interactive in sites:
+    for arguments, interactive in analysis.sites:
         decoded = claim_javascript.literal_commands(arguments, LITERAL_SHELL_VALUE, LITERAL_LOOP_VALUES, LITERAL_EXPANSION_BYTES)
         if decoded is None:
             opaque = True

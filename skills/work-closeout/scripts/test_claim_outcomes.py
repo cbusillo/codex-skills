@@ -186,7 +186,7 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
             with self.subTest(source=source):
                 self.assertTrue(check_claims.history.literal_targets(invocation(source), SESSION)["unresolved_invocations"])
         values = json.dumps(list(range(check_claims.history.LITERAL_LOOP_VALUES)))
-        source = f"for(const a of {values}){{for(const b of {values}){{text(await tools.exec_command({{cmd:`uv run gh-plan.py --repo test/a claim ${{a}}${{b}}`}}));}}}}"
+        source = f"for(const a of [0,1]){{for(const b of {values}){{text(await tools.exec_command({{cmd:`uv run gh-plan.py --repo test/a claim ${{a+1}}${{b+1}}`}}));}}}}"
         self.assertTrue(check_claims.history.literal_targets(invocation(source), SESSION)["unresolved_invocations"])
 
     def test_interactive_capability_aliases_keep_the_pending_claim_context(self) -> None:
@@ -195,6 +195,8 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
             'const w=tools["write_stdin"];await w({session_id:41,chars:"$CMD\\n"});',
             'const w=tools.write_stdin;await w({session_id:41,chars:"$CMD\\n"});',
             'const w=tools[load("method")];await w({session_id:41,chars:"$CMD\\n"});',
+            r'text(await tools.wr\u0069te_stdin({session_id:41,chars:"$CMD\n"}));',
+            r'text(await to\u006fls.write_stdin({session_id:41,chars:"$CMD\n"}));',
         ):
             with self.subTest(source=source):
                 rows = invocation(initial)

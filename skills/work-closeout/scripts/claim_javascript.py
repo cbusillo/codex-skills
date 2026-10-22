@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import ast
 import re
+from dataclasses import dataclass
 
 from tree_sitter import Language, Node, Parser
 
@@ -474,7 +475,14 @@ def literal_commands(arguments: Node, shell_word: re.Pattern, count_limit: int, 
         return None
 
 
-def analyse(text: str) -> tuple[bool, list[tuple[Node, bool]]]:
+@dataclass
+class JavascriptAnalysis:
+    bounded: bool
+    sites: list[tuple[Node, bool]]
+    encoded_identifiers: bool
+
+
+def analyse(text: str) -> JavascriptAnalysis:
     import tree_sitter_javascript
 
     data = text.replace("\r\n", "\n").replace("\r", "\n").encode()
@@ -482,12 +490,15 @@ def analyse(text: str) -> tuple[bool, list[tuple[Node, bool]]]:
     sites = []
     inert = []
     lexical = True
+    encoded_identifiers = False
     pending = [root]
     while pending:
         node = pending.pop()
         pending.extend(reversed(node.named_children))
         if node.is_missing:
             lexical = False
+        if node.type in {"identifier", "property_identifier"} and "\\" in source(node):
+            encoded_identifiers = True
         if node.type in {"string", "string_fragment", "escape_sequence", "comment", "hash_bang_line"}:
             if node.type == "comment" and source(node).startswith(("<!--", "-->")):
                 lexical = False
@@ -504,15 +515,15 @@ def analyse(text: str) -> tuple[bool, list[tuple[Node, bool]]]:
         if receiver.type == "identifier" and source(receiver) == "tools" and method in SHELL_TOOLS:
             sites.append((node.child_by_field_name("arguments"), method == "write_stdin"))
     if not lexical or root.has_error or "\u2028" in text or "\u2029" in text:
-        return False, sites
+        return JavascriptAnalysis(False, sites, encoded_identifiers)
     visible = bytearray(data)
     for start, end in inert:
         visible[start:end] = bytes(value if value in {10, 13} else 32 for value in data[start:end])
     if b"\\" in visible or b"<!--" in visible or b"#!" in visible or b"-->" in visible:
-        return False, sites
+        return JavascriptAnalysis(False, sites, encoded_identifiers)
     try:
         checker = JavascriptData()
         checker.statement(root, checker.environment)
     except (KeyError, ValueError, SyntaxError, RecursionError):
-        return False, sites
-    return True, sites
+        return JavascriptAnalysis(False, sites, encoded_identifiers)
+    return JavascriptAnalysis(True, sites, encoded_identifiers)
