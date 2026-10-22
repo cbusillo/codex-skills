@@ -2387,15 +2387,15 @@ print(root)"""
     def test_raw_javascript_does_not_prove_bare_claim_execution_count(self) -> None:
         command = 'tools.exec_command({cmd:"uv run gh-plan.py claim 5",workdir})'
         sources = [
-            f'for (const workdir of ["/a", "/b"]) text(await {command});',
-            f"while (next()) text(await {command});",
-            f'await Promise.all(["/a", "/b"].map(async workdir => {command}));',
-            f'async function run(workdir) {{ return {command}; }} text(await run("/a")); text(await run("/b"));',
-            f"text(await {command});",
+            (f'for (const workdir of ["/a", "/b"]) text(await {command});', False),
+            (f"while (next()) text(await {command});", True),
+            (f'await Promise.all(["/a", "/b"].map(async workdir => {command}));', False),
+            (f'async function run(workdir) {{ return {command}; }} text(await run("/a")); text(await run("/b"));', False),
+            (f"text(await {command});", True),
         ]
         receipts = [{"claim": SOURCE, "issue": {"repo": repo, "number": 5}} for repo in ("first/a", "second/b")]
         rejection = {"operation": "github.plan.claim", "ok": False, "write_outcome": "not_started"}
-        for source in sources:
+        for source, qualified_unknown in sources:
             for result in (receipts[:1], receipts, rejection):
                 rows = [
                     {"payload": {"type": "custom_tool_call", "name": "exec", "call_id": "repeat", "input": source}},
@@ -2419,7 +2419,7 @@ print(root)"""
             ]
             report = helper.history.literal_targets(rows, SESSION)
             self.assertEqual(report["targets"], {("first/a", 5)})
-            self.assertEqual(bool(report["unresolved_invocations"]), source.startswith("while"))
+            self.assertEqual(bool(report["unresolved_invocations"]), qualified_unknown)
 
 
     def test_single_wrapped_claim_reads_its_saved_receipt_target(self) -> None:

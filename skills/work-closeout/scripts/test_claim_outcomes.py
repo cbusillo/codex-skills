@@ -128,6 +128,10 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
 
     def test_dynamic_dispatch_does_not_hide_sibling_claims(self) -> None:
         sources = [
+            '#!function run()\nrun(load("claim"));',
+            '// data\u2028eval(load("claim"));',
+            'function run(){}; var run=[].filter.constructor; var run=run("return eval"); var run=run(); run(load("claim"));',
+            "text({\"tools.exec_command({cmd:load('claim')})\":{toJSON:eval}});",
             'text("function eval ("); eval(load("claim"));',
             'const r=/function eval ()/; eval(load("claim"));',
             'text(`${eval(load("claim"))}`);',

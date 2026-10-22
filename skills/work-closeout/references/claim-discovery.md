@@ -69,8 +69,8 @@ literal shell calls, the three output wrappers above, literal-array mapping,
 plain loops and conditions, and their `text`, `store`, `load` and early `exit`
 calls. A command string from a literal `for` loop may use `includes`; native
 result arrays may use `forEach(text)`. Simple locally declared functions keep
-their bodies under the same checks. Single-argument JSON/Object data calls
-are supported. Global capabilities cannot be shadowed, properties cannot be
+their bodies under the same checks. Data values come from declared local bindings and the supported native
+results. Global capabilities cannot be shadowed, properties cannot be
 assigned, and array callbacks cannot hide additional executable options.
 Unknown calls, computed dispatch, escaped identifiers, tagged or executable
 templates, module/class declarations and unclassified regex/division syntax

@@ -467,6 +467,8 @@ def command_literal(text: str, start: int, literal: str) -> list[str] | None:
 
 
 JAVASCRIPT_LITERAL = r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|`(?:\\.|[^`\\])*`'
+JAVASCRIPT_COMMENT = r"//[^\r\n\u2028\u2029]*|/\*.*?\*/|#![^\r\n\u2028\u2029]*"
+
 CLAIM_WORD = re.compile(r"""(?:^|[\s'"`])claim(?:$|[\s'"`])""")
 JAVASCRIPT_PATCH = re.compile(r"\btools\.apply_patch\s*\(\s*(?:" + JAVASCRIPT_LITERAL + r")\s*\)", re.DOTALL)
 
@@ -474,8 +476,10 @@ JAVASCRIPT_PATCH = re.compile(r"\btools\.apply_patch\s*\(\s*(?:" + JAVASCRIPT_LI
 def javascript_tokens(text: str) -> list[str]:
     return [
         token
-        for token in re.findall(JAVASCRIPT_LITERAL + r"|//[^\n]*|/\*.*?\*/|[A-Za-z_$][A-Za-z0-9_$]*|[0-9]+|[^\s]", text, re.DOTALL)
-        if not token.startswith(("//", "/*"))
+        for token in re.findall(
+            JAVASCRIPT_LITERAL + "|" + JAVASCRIPT_COMMENT + r"|[A-Za-z_$][A-Za-z0-9_$]*|[0-9]+|[^\s]", text, re.DOTALL
+        )
+        if not token.startswith(("//", "/*", "#!"))
     ]
 
 
@@ -493,18 +497,58 @@ def javascript_object_end(tokens: list[str]) -> int | None:
 
 def javascript_calls_are_bounded(text: str) -> bool:
     tokens = javascript_tokens(text)
-    globals_ = {"tools", "text", "store", "load", "exit", "Promise", "JSON", "Object", "ALL_TOOLS"}
+    globals_ = {"tools", "text", "store", "load", "exit", "Promise", "ALL_TOOLS"}
     code = " ".join(tokens)
     syntax_tokens = ["literal" if re.fullmatch(JAVASCRIPT_LITERAL, token, re.DOTALL) else token for token in tokens]
     syntax = " ".join(syntax_tokens)
     functions = set(re.findall(r"\bfunction ([A-Za-z_]\w*) \(", syntax))
     bindings = re.findall(r"\b(?:const|let|var) ([A-Za-z_]\w*)", syntax)
-    if globals_ & (set(bindings) | functions):
+    if globals_ & (set(bindings) | functions) or functions & set(bindings):
         return False
     parameters = re.findall(r"\bfunction [A-Za-z_]\w* \( ([^)]*) \)", syntax)
-    parameters.extend(re.findall(r"([A-Za-z_]\w*|\( [A-Za-z_][\w ,]* \)|\( \[ [\w ,]+ \] \)) = >", syntax))
-    if any(globals_ & set(re.findall(r"[A-Za-z_]\w*", parameter)) for parameter in parameters):
+    if any(re.fullmatch(r"(?:[A-Za-z_]\w*(?: , [A-Za-z_]\w*)*)?", parameter.strip()) is None for parameter in parameters):
         return False
+    parameters.extend(re.findall(r"([A-Za-z_]\w*|\( [A-Za-z_][\w ,]* \)|\( \[ [\w ,]+ \] \)) = >", syntax))
+    if any((globals_ | functions) & set(re.findall(r"[A-Za-z_]\w*", parameter)) for parameter in parameters):
+        return False
+    catches = set(re.findall(r"\bcatch \( ([A-Za-z_]\w*) \)", syntax))
+    if catches & (globals_ | functions):
+        return False
+    locals_ = set(bindings) | functions | catches
+    locals_.update(name for parameter in parameters for name in re.findall(r"[A-Za-z_]\w*", parameter))
+    keywords = {
+        "const",
+        "let",
+        "var",
+        "async",
+        "await",
+        "function",
+        "return",
+        "for",
+        "of",
+        "if",
+        "else",
+        "while",
+        "switch",
+        "case",
+        "default",
+        "break",
+        "continue",
+        "try",
+        "catch",
+        "finally",
+        "throw",
+        "true",
+        "false",
+        "null",
+        "undefined",
+        "typeof",
+        "void",
+        "in",
+        "instanceof",
+        "do",
+        "new",
+    }
     for index, token in enumerate(tokens):
         if token in {"\\", "/"}:
             return False
@@ -521,6 +565,13 @@ def javascript_calls_are_bounded(text: str) -> bool:
             return False
         if token in {"const", "let", "var"} and (
             index + 1 >= len(tokens) or re.fullmatch(r"[A-Za-z_]\w*", tokens[index + 1]) is None
+        ):
+            return False
+        if (
+            re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", token)
+            and token not in globals_ | locals_ | keywords
+            and (index == 0 or tokens[index - 1] != ".")
+            and tokens[index + 1 : index + 2] != [":"]
         ):
             return False
         if token == "=" and tokens[index + 1 : index + 2] not in ([">"], ["="]) and tokens[index - 1] not in {"=", "!", "<", ">"}:
@@ -552,10 +603,6 @@ def javascript_calls_are_bounded(text: str) -> bool:
                 continue
             if receiver == "Promise" and previous in {"all", "allSettled"}:
                 continue
-            if receiver in {"JSON", "Object"} and previous in {"stringify", "parse", "keys", "entries"}:
-                end = javascript_object_end(tokens[index:])
-                if end is not None and "," not in tokens[index + 1 : index + end]:
-                    continue
             if previous == "includes" and re.search(r"for \( const " + re.escape(receiver) + r" of \[", code):
                 loop = re.match(r"for \( const " + re.escape(receiver) + r" of (\[ .+? \]) \) \{", code)
                 if (
@@ -610,7 +657,7 @@ def literal_bindings(text: str, start: int, *, command_reference: str | None = N
         )
     if match is None:
         return None
-    names = re.findall(JAVASCRIPT_LITERAL + r"|//[^\n]*|/\*.*?\*/|(?P<name>[A-Za-z_$][A-Za-z0-9_$]*|\\)", text, re.DOTALL)
+    names = re.findall(JAVASCRIPT_LITERAL + "|" + JAVASCRIPT_COMMENT + r"|(?P<name>[A-Za-z_$][A-Za-z0-9_$]*|\\)", text, re.DOTALL)
     if "\\" in names:
         return None
     parameters = re.findall(r"[A-Za-z_]\w*", match["name"])
@@ -689,7 +736,9 @@ def without_patch_text(text: str) -> str:
 
 def javascript_names(text: str) -> set[str]:
     names = set()
-    for match in re.finditer(JAVASCRIPT_LITERAL + r"|//[^\n]*|/\*.*?\*/|(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)", text, re.DOTALL):
+    for match in re.finditer(
+        JAVASCRIPT_LITERAL + "|" + JAVASCRIPT_COMMENT + r"|(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)", text, re.DOTALL
+    ):
         if match["name"]:
             names.add(match["name"])
         elif match[0].startswith("`") and "${" in match[0]:
@@ -766,7 +815,9 @@ def shell_texts(text: str, javascript: bool) -> ShellTexts:
         + reference
         + r")|(?:"
         + literal
-        + r")|(?://[^\n]*|/\*.*?\*/)",
+        + r")|(?:"
+        + JAVASCRIPT_COMMENT
+        + ")",
         re.DOTALL,
     )
     commands = []
