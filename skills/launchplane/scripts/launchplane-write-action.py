@@ -3994,6 +3994,11 @@ def _project_success_output(
             result["product"] != request["product"] or result["instance"] != request["instance"]
         ):
             raise LaunchplaneSafetyError("invalid_response")
+        if request and operation == "generic-web-deploy-recovery-apply" and (
+            ("expected_recovery_digest" in request and result["recovery_digest"] != request["expected_recovery_digest"])
+            or ("reviewed_recovery_action" in request and result["recovery_action"] != request["reviewed_recovery_action"])
+        ):
+            raise LaunchplaneSafetyError("invalid_response")
         return {}, result
     if any(str(key) not in SUCCESS_TOP_LEVEL_KEYS for key in provider_payload):
         raise LaunchplaneSafetyError("unsafe_response_shape")
@@ -4489,7 +4494,7 @@ def summarize_success(
             summary["recommendation"] = (
                 "Review the redacted dry-run result before applying the exact same private payload."
                 if operation == "generic-web-deploy-recovery-dry-run"
-                else "Verify the recovered reservation and a subsequent normal deploy before closing the recovery plan."
+                else _recovery_apply_readback(request)
             )
     assert_public_safe_shape(summary)
     payload["summary"] = {key: value for key, value in summary.items() if value not in {"", None}}
@@ -4825,7 +4830,7 @@ def _require_apply_eligible_recovery_dry_run(
     expected_product: str,
     expected_instance: str,
     expected_request_sha256: str | None = None,
-) -> None:
+) -> str:
     evidence_path = str(getattr(args, "dry_run_evidence_file", "") or "").strip()
     if not evidence_path:
         raise ValueError("reviewed_dry_run_not_apply_eligible")
@@ -4839,17 +4844,17 @@ def _require_apply_eligible_recovery_dry_run(
     action = result.get("proposed_action")
     outcome = result.get("provider_outcome")
     retry_safe = result.get("retry_safe")
-    actionable = (
-        action in {"adopt_observed", "retry_original_operation"}
-        and outcome in {"present", "absent"}
-        and retry_safe is True
-    )
+    eligible = {("adopt_observed", "present", True), ("retry_original_operation", "absent", True)}
+    if expected_instance == "testing":
+        eligible.add(("settle_testing_failure", "present", False))
     if expected_request_sha256 is not None:
-        actionable = (
-            (action == "adopt_observed" and outcome == "present" and isinstance(retry_safe, bool))
-            or (action == "retry_original_operation" and outcome == "absent" and retry_safe is True)
-            or (action == "close_out_observed" and outcome == "absent" and retry_safe is False)
-        )
+        eligible.update({("adopt_observed", "present", False), ("close_out_observed", "absent", False)})
+        if expected_instance == "testing":
+            eligible.add(("abandon_testing_original", "unknown", False))
+    actionable = (
+        isinstance(action, str) and isinstance(outcome, str) and isinstance(retry_safe, bool)
+        and (action, outcome, retry_safe) in eligible
+    )
     if (
         evidence.get("operation") != "generic-web-deploy-recovery-dry-run"
         or evidence.get("status") != "ok"
@@ -4865,6 +4870,8 @@ def _require_apply_eligible_recovery_dry_run(
         request = evidence.get("request")
         if not isinstance(request, dict) or request.get("recovery_request_sha256") != expected_request_sha256:
             raise ValueError("reviewed_dry_run_not_apply_eligible")
+    return cast(str, action)
+
 
 
 def _require_apply_eligible_odoo_addon_settings_dry_run(
@@ -6312,7 +6319,7 @@ def generic_web_deploy_recovery_body(
         )
         if payload_recovery_digest and payload_recovery_digest != expected_recovery_digest:
             raise ValueError("recovery_digest_mismatch")
-        _require_apply_eligible_recovery_dry_run(
+        args.reviewed_recovery_action = _require_apply_eligible_recovery_dry_run(
             args,
             expected_recovery_digest=expected_recovery_digest,
             expected_product=product.strip(),
@@ -7236,6 +7243,16 @@ SIMPLE_APPLY_OPERATIONS = frozenset({
 })
 
 
+def _recovery_apply_readback(request: dict[str, object]) -> str:
+    if request.get("reviewed_recovery_action") == "abandon_testing_original":
+        return (
+            "Re-run the same reference dry-run before retrying. Require completed, "
+            "replay_completed and the saved recovery digest, then verify current-main "
+            "post-deploy qualification. Original fixture residue may remain."
+        )
+    return "Verify the original reservation and a subsequent normal deploy before retrying or closing recovery."
+
+
 def _simple_apply_response_unverified(
     *, operation: str, request: dict[str, object], source: object,
 ) -> dict[str, object]:
@@ -7247,9 +7264,8 @@ def _simple_apply_response_unverified(
     payload["summary"] = {
         **service_response_diagnostics(source),
         "recommendation": (
-            "Launchplane accepted the recovery apply, but the response could not be "
-            "verified locally. Inspect the original deploy reservation and normal deploy "
-            "evidence before retrying."
+            "Launchplane accepted the recovery apply, but its reply could not be verified. "
+            + _recovery_apply_readback(request)
             if recovery_apply
             else (
                 "Launchplane accepted the inventory apply, but the response could not be "
@@ -9318,7 +9334,9 @@ def _apply_outcome_unknown(
     payload["summary"] = {
         "recommendation": (
             f"The apply outcome is unknown because the exchange failed after the POST began. "
-            f"Read back the {label} before any retry."
+            + (_recovery_apply_readback(request)
+               if operation == "generic-web-deploy-recovery-apply"
+               else f"Read back the {label} before any retry.")
         )
     }
     payload["warnings"] = [
@@ -11970,6 +11988,10 @@ def main(argv: list[str]) -> int:
         if args.command == "generic-web-deploy-recovery-apply":
             body = generic_web_deploy_recovery_body(args, mode="apply")
             request = _recovery_request(body, mode="apply")
+            request.update({
+                "expected_recovery_digest": body["expected_recovery_digest"],
+                "reviewed_recovery_action": args.reviewed_recovery_action,
+            })
             return execute_post(
                 args=args,
                 operation=args.command,
