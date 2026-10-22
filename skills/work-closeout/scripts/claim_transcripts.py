@@ -292,6 +292,28 @@ def expand(entries: list[dict]) -> list[dict]:
     return expanded
 
 
+def projected_release_target(value: dict, session: str) -> tuple[str, int] | None:
+    command = value.get("release_command")
+    if not isinstance(command, str):
+        return None
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        return None
+    if len(argv) != 13 or Path(argv[0]).name != "uv" or argv[1] != "run" or Path(argv[2]).name != "gh-plan.py":
+        return None
+    arguments = argv[3:]
+    if arguments[::2] != ["--repo", "release", "--claim-comment", "--session", "--handoff-file"]:
+        return None
+    if (
+        arguments[7] != session
+        or any(re.fullmatch(r"[1-9]\d*", arguments[index]) is None for index in (3, 5))
+        or arguments[9] != "<handoff.md>"
+    ):
+        return None
+    return claim_log.target({"session": session, "repository": arguments[1], "record": int(arguments[3])}, session)
+
+
 def claim_target(value: dict, session: str) -> tuple[str, int] | None:
     source = value.get("claim")
     if not isinstance(source, dict) or source.get("session") != session:
@@ -300,9 +322,15 @@ def claim_target(value: dict, session: str) -> tuple[str, int] | None:
     record = value.get("issue") or receipt
     if not isinstance(record, dict) or not isinstance(receipt, dict):
         raise ValueError("recorded claim result has an invalid target")
+    projected = projected_release_target(value, session)
     if record.get("repo") and record.get("number"):
-        return claim_log.target({"session": session, "repository": record["repo"], "record": record["number"]}, session)
+        target = claim_log.target({"session": session, "repository": record["repo"], "record": record["number"]}, session)
+        if projected is not None and projected != target:
+            raise ValueError("recorded claim targets disagree")
+        return target
     if receipt or "post_claim" in value.get("completed_steps", []):
+        if projected is not None:
+            return projected
         raise ValueError("recorded claim write lacks its repository and record number")
     return None
 

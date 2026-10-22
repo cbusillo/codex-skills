@@ -20,6 +20,12 @@ receipt or prewrite refusal. Its options must be literal and its shell must
 contain only claim invocations. Successful receipts still identify targets
 whose claims need exact releases. Additional commands or possible repetitions
 cannot borrow that refusal.
+A shortened helper display can retain its target through the structured
+`release_command` field when it is the helper's canonical `uv run gh-plan.py`
+release route with an exact repository, positive record/comment IDs, matching
+native session and handoff placeholder. This adds a target to verify; it never
+proves release or excuses other execution. A conflicting full receipt refuses.
+Missing or noncanonical target data still refuses; prose is not a release route.
 Other raw JavaScript does not prove how often a bare claim command executed. Use an
 explicit `--repo OWNER/REPO` or qualified record reference in literal commands;
 those targets remain bounded even inside loops. Bare or computed JavaScript

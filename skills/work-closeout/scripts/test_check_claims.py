@@ -338,6 +338,36 @@ class ClaimCloseoutTests(unittest.TestCase):
             stream.write(json.dumps({"claim": SOURCE, "issue": {"repo": REPO, "number": 1}}) + "\n")
         self.assertEqual(helper.recorded_targets(entry)["targets"], {(REPO, 1)})
 
+    def test_projected_receipt_binds_its_canonical_release_target(self) -> None:
+        command = (
+            f"uv run /catalog/gh-plan.py --repo {REPO} release 1 "
+            f"--claim-comment {self.source['id']} --session {SESSION} --handoff-file '<handoff.md>'"
+        )
+        projection = {"claim": SOURCE, "completed_steps": ["post_claim"], "release_command": command}
+        entry = self.entry()
+        rows = [
+            {"payload": {"type": "custom_tool_call", "name": "exec", "call_id": "projection", "input": 'text(load("receipt"));'}},
+            {"payload": {"type": "custom_tool_call_output", "call_id": "projection", "output": json.dumps(projection)}},
+        ]
+        with Path(entry["transcript"]).open("a") as stream:
+            for row in rows:
+                stream.write(json.dumps(row) + "\n")
+        self.assertEqual(helper.recorded_targets(entry)["targets"], {(REPO, 1)})
+        self.assertFalse(helper.check([entry])["claims_clear"])
+        self.comments.append(self.release)
+        self.assertTrue(helper.check([entry])["claims_clear"])
+        for changed in (
+            None,
+            command.replace(SESSION, "another-session"),
+            command.replace("--claim-comment", "--other-comment"),
+            command + "; echo extra",
+            "The command was " + command,
+        ):
+            with self.subTest(command=changed), self.assertRaises(ValueError):
+                helper.history.claim_target({**projection, "release_command": changed}, SESSION)
+        with self.assertRaises(ValueError):
+            helper.history.claim_target({**projection, "issue": {"repo": "another/repository", "number": 2}}, SESSION)
+
     def test_recorded_claim_targets_include_closed_and_pr_only_work_across_sessions(self) -> None:
         records = ((REPO, 1), ("second/b", 5), ("second/b", 6))
         entries = [self.receipt_entry(records=records), self.receipt_entry("child", records=((REPO, 8),))]

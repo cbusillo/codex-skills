@@ -22,6 +22,36 @@ def invocation(source: str, output: object = "") -> list[dict]:
 
 
 class RecordedClaimOutcomeTests(unittest.TestCase):
+    def test_created_issue_claims_preserve_receipts_without_clearing_arbitrary_execution(self) -> None:
+        create = 'const q=s=>s.replaceAll("!", "!!");const body=load("body");'
+        create += 'const r=await tools.exec_command({cmd:"uv run gh-plan.py --repo test/a create title --body "+q(body)});'
+        claim = 'const p=JSON.parse(r.output);text(await tools.exec_command({cmd:"uv run gh-plan.py --repo test/a claim "+p.issue.number}));'
+        sources = [
+            (create, False, True),
+            (create + claim, True, True),
+            (create + claim + 'text(await tools.exec_command({cmd:"cat gates.log"}));', True, True),
+            (
+                'for(const item of [{title:"one"},{title:"two"}]){' + create + "text(JSON.parse(r.output).issue.number);}",
+                False,
+                True,
+            ),
+            (
+                'text(await tools.apply_patch(load("patch")));for(const [pr,file] of [[1,"one"],[2,"two"]]){'
+                "text(await tools.exec_command({cmd:`uv run gh-plan.py --repo test/a show ${pr} > ${file}`}));}",
+                False,
+                False,
+            ),
+        ]
+        receipt = {"claim": {"session": SESSION}, "issue": {"repo": "test/a", "number": 6}}
+        prefix = "text(await tools.exec_command({cmd:" + json.dumps(COMMAND) + "}));"
+        for source, writes_claim, uncertain in sources:
+            with self.subTest(source=source):
+                report = check_claims.history.literal_targets(
+                    invocation(prefix + source, json.dumps(receipt) if writes_claim else ""), SESSION
+                )
+                self.assertEqual(report["targets"], {("test/a", 5), ("test/a", 6)} if writes_claim else {("test/a", 5)})
+                self.assertEqual(bool(report["unresolved_invocations"]), uncertain)
+
     def test_single_wrapped_claim_uses_its_prewrite_refusal(self) -> None:
         command = 'tools.exec_command({"cmd":"uv run gh-plan.py claim 5","max_output_tokens":1000})'
         refusal = {"operation": "github.plan.claim", "ok": False, "write_outcome": "not_started", "completed_steps": []}
