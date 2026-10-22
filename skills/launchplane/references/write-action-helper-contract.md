@@ -82,13 +82,13 @@ source and caller delivery.
 
 ## Disposable lane observations
 
-`disposable-lane-inspect`, `disposable-lane-collect` and
-`disposable-lane-record` call the producer's `record_disposable_lane_safety`
+`disposable-lane-inspect`, `disposable-lane-collect`,
+`disposable-lane-record` and `disposable-lane-clear` call the producer's `record_disposable_lane_safety`
 service API with the existing Director-agent identity. They add no permission
 or provider fallback. An observation
 is short-lived safety evidence for one lane. It is never an access grant.
 
-Clear and prepare-rebuild have no installed catalog command. For the producer's
+Prepare-rebuild has no installed catalog command. For the producer's
 supported modes and requirements, read
 [the producer contract and caller bindings](agent-operator-contract.md).
 
@@ -110,12 +110,24 @@ Run inspect first and save its JSON output privately. It returns the lane's
 and a nullable `observation` holding the stored report's usage, data and
 production-resource values. A response missing either is invalid. Stored
 reports do not establish current disposal eligibility or replace the fresh
-facts. Collect and record each require
+facts. Collect, record and clear each require
 `--expected-binding-sha256` (that value), `--inspect-evidence-file` (the saved
 output) and `--reviewed-inspect`. The evidence must match the private request
-scope, the configured service and the digest. The helper never runs inspect
+scope, the configured service, the binding digest, the stored report digest
+and its summary. Evidence saved before this proof included the report must be
+replaced by running inspect again. The helper never runs inspect
 inside a mutation for you. The service rechecks the binding and refuses a
 changed lane with a 409.
+
+Clear additionally requires `--expected-observation-sha256` from that saved
+inspect. Its private payload accepts only the lane scope. The service compares
+both reviewed digests transactionally before removing the observation. A changed
+report, binding or preview owner refuses without clearing it. Resolve the reason
+for any protective report before clearing it; absence is not proof of non-use,
+data custody or isolation. Clear does not delete lane resources, lift holds or
+alter historical operation records. There is no clear dry-run mode; the supported
+review step is inspect. Its receipt must echo both reviewed digests and
+`provider_mutation=false`.
 
 Output never echoes the product, context, instance, preview ID, evidence
 references or the observing identity. The request shows only the mode, the
@@ -135,7 +147,7 @@ testing record, preview facts that differ from those submitted, collect usage
 evidence that contradicts itself, or a collect window that is not current. The
 window must have started no later than now (5 seconds of clock skew allowed),
 must not have expired, and must last no longer than the requested lifetime. For
-inspect this is `invalid`. For collect and record the service has already
+inspect this is `invalid`. For collect, record and clear the service has already
 answered, so it is `outcome_unknown` with the recovery below.
 
 There is no automatic retry and no `Idempotency-Key`. Transport loss, a
@@ -150,6 +162,14 @@ POST. It reports `binding_readback_matches`. `effect_readback` is always
 `unavailable`: this readback checks the binding, without matching the stored
 report to the submitted effect. A mismatch or
 failed readback returns `accepted_unverified` and exits nonzero.
+
+After accepted clear, the separate inspect must confirm the same binding and
+an absent observation with its canonical null digest. Only then does the helper
+return `accepted` with `effect_readback=verified` and
+`observation_readback_matches=true`. A failed readback, changed binding or
+new observation returns `accepted_unverified`; an uncertain clear exchange
+returns `outcome_unknown`. Neither is retried. A successful nonempty clear
+changes the report digest, so replaying its original request is not idempotent.
 
 Recording facts for a preview also requests a preview reconcile, reported as
 `reconcile_requested=true`.

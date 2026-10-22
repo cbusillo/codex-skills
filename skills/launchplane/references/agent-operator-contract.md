@@ -32,7 +32,7 @@ dispatch and watching to the GitHub skill's `github_workflow_babysit.py`.
 
 For private testing activation and transport planning, read the producer's
 `docs/private-testing-transport.md`. For
-installed disposable-lane inspect, collect and record commands, read the
+installed disposable-lane inspect, collect, record and clear commands, read the
 [disposable lane contract](write-action-helper-contract.md#disposable-lane-observations).
-Clear and prepare-rebuild still need their separate consumer implementation;
+Prepare-rebuild still needs its separate consumer implementation;
 source contract coverage alone does not install them.
