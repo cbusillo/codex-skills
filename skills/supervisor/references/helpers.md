@@ -211,6 +211,7 @@ uv run skills/supervisor/scripts/goal_board.py --owner OWNER --format markdown
 uv run skills/supervisor/scripts/fleet_counts.py --owner OWNER
 uv run skills/supervisor/scripts/status.py --ledger <private-ledger.json>
 uv run skills/supervisor/scripts/codex_idle_watch.py --ledger <private-ledger.json> --deadline-seconds 1800
+uv run skills/supervisor/scripts/codex_idle_watch.py --ledger <private-ledger.json> --harness claude --deadline-seconds 1800
 uv run skills/supervisor/scripts/oq.py OWNER/REPO#123 --owner <Director-login> --decision-author <recording-automation-login>
 uv run skills/supervisor/scripts/finished_map.py --ledger <private-ledger.json>
 ```
@@ -218,8 +219,13 @@ uv run skills/supervisor/scripts/finished_map.py --ledger <private-ledger.json>
 Rebuild the ~23-minute check and morning digest using the harness's scheduler.
 On a turn-end notice, immediately enter the skill's
 [finished-session procedure](../SKILL.md#close-finished-sessions-on-every-notice-and-check)
-for its exact session. Do not collect notices until the next check. Codex
-notices include `closeout_request` only when the latest completed response has
+for its exact session. Do not collect notices until the next check. Run each
+watch as a background job: the harness wakes you when it exits, not when it
+prints. The watch exits right after printing the first `closeout_request`
+that appears after its first poll; requests pending at its first poll are
+printed but do not end it, so re-arming over a session still under
+verification does not wake you again at once. Watch notices include
+`closeout_request` only when the latest completed response has
 an unqualified verdict, the ledger says Supervisor-owned and no background
 task remains. Those notices bypass `--idle-seconds` and arrive on the next
 watch poll (45 seconds by default); ordinary turn ends retain the idle delay.
@@ -252,10 +258,12 @@ never authorizes closing. No script here sends an exit command automatically.
 
 For each scheduled check, scan all sessions as a fallback for missed notices,
 nudge stalls with exact facts and gather Director questions.
-The watcher exits at its wall-clock bound; re-arm it with the harness's built-in
-monitor/scheduler. A new watcher may repeat a notice. `clean: null` means a turn
-ended, not that work succeeded; an abort is also a notice. Use Claude Code's
-`notify_when_idle` when available, not another watcher.
+The watcher exits at its wall-clock bound or on a new closeout request; re-arm
+it with the harness's built-in monitor/scheduler. A new watcher may repeat a
+notice. `clean: null` means a turn ended, not that work succeeded; an abort
+is also a notice. Claude Code's `notify_when_idle`, where it covers a worker,
+routes through the same exact-session read above; the Claude watch covers
+terminal-launched Claude workers it cannot see.
 
 The Codex idle watcher filters a mixed-harness ledger before transcript
 validation. It emits a `skipped: true` diagnostic with the ledger index,

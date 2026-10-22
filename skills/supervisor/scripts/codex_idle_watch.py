@@ -3,7 +3,7 @@
 # requires-python = ">=3.12"
 # dependencies = ["aiohttp==3.14.5"]
 # ///
-"""Emit turn-end notices for explicit Codex sessions; notices are not completion."""
+"""Emit turn-end notices for one harness, exiting on a new closeout request; notices are not completion."""
 
 import argparse
 import json
@@ -17,12 +17,12 @@ from finished_map import closeout_request
 
 def poll(ledger: Path, seen: dict, idle_seconds: float, now: float,
          capacity_state: dict | None = None, state_path: Path | None = None,
-         resume_capacity: bool = False) -> list[dict]:
+         resume_capacity: bool = False, harness: str = "codex") -> list[dict]:
     if resume_capacity and state_path is None:
         raise ValueError("capacity resume requires a persistent state path")
     notices = []
     skipped = []
-    entries = load_ledger(ledger, harness="codex", skipped=skipped)
+    entries = load_ledger(ledger, harness=harness, skipped=skipped)
     for diagnostic in skipped:
         key = ("skipped", diagnostic["ledger_index"])
         value = json.dumps(diagnostic, sort_keys=True)
@@ -80,15 +80,19 @@ def poll(ledger: Path, seen: dict, idle_seconds: float, now: float,
 def watch(args, state: dict | None) -> int:
     deadline = time.monotonic() + args.deadline_seconds
     seen = {}
+    first_poll = True
     while True:
         try:
             notices = poll(args.ledger, seen, args.idle_seconds, time.time(),
-                           state, args.capacity_state, args.resume_capacity)
+                           state, args.capacity_state, args.resume_capacity, args.harness)
             for notice in notices:
                 print(json.dumps(notice), flush=True)
         except (OSError, ValueError, TypeError) as error:
             print(json.dumps({"error": str(error)}), flush=True)
             return 1
+        if not first_poll and any(notice.get("closeout_request") for notice in notices):
+            return 0
+        first_poll = False
         if args.once or time.monotonic() >= deadline:
             return 0
         time.sleep(min(args.interval, max(0, deadline - time.monotonic())))
@@ -97,6 +101,7 @@ def watch(args, state: dict | None) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ledger", required=True, type=Path)
+    parser.add_argument("--harness", choices=("codex", "claude"), default="codex")
     parser.add_argument("--idle-seconds", type=float, default=90)
     parser.add_argument("--interval", type=float, default=45)
     parser.add_argument("--deadline-seconds", type=float, default=1800)
