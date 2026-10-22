@@ -398,8 +398,9 @@ including non-dim text, establishes neither its author nor approval.
 
 ## The Pattern
 
-1. **One brief per session and repository.** Before launch, choose items that
-   share a subsystem and kind of work into one session and one PR, so they
+1. **One brief per session and repository.** Before launching from a survey or
+   report, recheck each item's live state. Choose items that share a subsystem
+   and kind of work into one session and one PR, so they
    share context and avoid conflicting edits. Under `github-plan`, prepare a
    parent in that repository scoped to the group. Reuse that parent, or nest
    a new one under the existing parent to preserve the Track path.
@@ -430,12 +431,14 @@ including non-dim text, establishes neither its author nor approval.
    producing symptoms.
    Never widen a brief after launch. Write it from the decision record,
    quoting the Director's words, never from a PR's wording. Before issuing
-   either a worker or milestone-lead brief, compare every restrictive line
-   with current overall and repository direction and recorded decisions.
-   Attribute actual Director holds to their source. A Supervisor's read
-   minimization or implementation preference is not a Director hold or a
-   reason to request a new grant; apply [task scope](../references/execution-scope.md)
+   either a worker or milestone-lead brief, check every restriction against
+   current overall and repository direction and the decision it cites.
+   Attribute Director holds to their source; write Supervisor preferences as
+   preferences, not prohibitions or reasons to request a grant, under
+   [task scope](../references/execution-scope.md)
    and the shared [question rules](../references/talking-with-the-director.md#decisions-holds-and-work-state).
+   An operate brief names an existing supported path; otherwise write a
+   design brief.
    When a request names a visual thing, check which one before writing the brief. A session
    that needs more scope gets a Director question. If the Director says yes,
    the wider scope goes in a new brief for a fresh session; the running
@@ -477,9 +480,10 @@ including non-dim text, establishes neither its author nor approval.
    launches into `~/Developer` repositories and their worktrees get folder
    trust set before launch, in every Claude home including the default one; other folders must already be trusted
    ([#2100](https://github.com/cbusillo/codex-skills/issues/2100)).
-   Anchor each brief, sweeps and checks included, on an issue in the same
-   repository. Tell read-only checks not to claim it, so two of them on one
-   issue do not clash. A worker that will claim its anchor needs a claimable
+   Give each running session its own anchor issue in the same repository,
+   sweeps and checks included; split concurrent work on one issue into child
+   issues before launch. Tell read-only checks not to claim their anchors.
+   A worker that will claim its anchor needs a claimable
    one: for a `plan:waiting` issue, split out a small active child issue, or,
    when the wait is already resolved, give that evidence to
    `claim --wait-resolved`. Never resolve a wait that still holds.
@@ -488,7 +492,8 @@ including non-dim text, establishes neither its author nor approval.
    fix is available, launch only finishing work. Keep each repository under
    about 8 open agent PRs, not counting the merge train's batch PRs (titled
    `Launchplane batch: #...`), which bundle PRs already counted, or drafts
-   parked on purpose.
+   parked on purpose. Merge-path and CI-repair fixes are exempt from the cap,
+   and their briefs say so.
 2. **Director questions live on the item's issue**, as a comment that starts
    `Director question:`. Follow the shared
    [question and decision-record rules](../references/talking-with-the-director.md#decisions-holds-and-work-state)
