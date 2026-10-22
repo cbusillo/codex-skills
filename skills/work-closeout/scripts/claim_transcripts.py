@@ -422,6 +422,11 @@ def command_literal(text: str, start: int, literal: str) -> str | None:
 
 JAVASCRIPT_LITERAL = r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|`(?:\\.|[^`\\])*`'
 CLAIM_WORD = re.compile(r"""(?:^|[\s'"`])claim(?:$|[\s'"`])""")
+JAVASCRIPT_PATCH = re.compile(r"\btools\.apply_patch\s*\(\s*(?:" + JAVASCRIPT_LITERAL + r")\s*\)", re.DOTALL)
+
+
+def without_patch_text(text: str) -> str:
+    return JAVASCRIPT_PATCH.sub(lambda match: match[0] if "${" in match[0] else "tools.apply_patch()", text)
 
 
 def javascript_names(text: str) -> set[str]:
@@ -574,6 +579,8 @@ def has_executable_claim_source(text: str, consumer: str, *, claim_related: bool
             command = ast.Tuple(elts=node.args, ctx=ast.Load())
         elif name.startswith(("execv", "spawnv", "posix_spawn")) and len(node.args) > 1:
             command = node.args[2] if name.startswith("spawnv") and len(node.args) > 2 else node.args[1]
+        if not name.startswith(("execv", "spawnv", "posix_spawn")) and python_data_argv(node, command):
+            continue
         try:
             value = ast.literal_eval(command)
         except (ValueError, TypeError):
@@ -587,6 +594,21 @@ def has_executable_claim_source(text: str, consumer: str, *, claim_related: bool
         if "gh-plan" in str(value) and (CLAIM_WORD.search(str(value)) or name in {"run_path", "run_module"}):
             return True
     return False
+
+
+NON_EXECUTING_COMMANDS = frozenset({"cat", "cut", "echo", "head", "ls", "nl", "printf", "tail", "tr", "uniq", "wc", "zstd"})
+
+
+def python_data_argv(call: ast.Call, command: ast.AST | None) -> bool:
+    return (
+        not any(item.arg in {None, "executable", "shell"} for item in call.keywords)
+        and (len(call.args) <= 1 or command is not call.args[0])
+        and isinstance(command, (ast.List, ast.Tuple))
+        and bool(command.elts)
+        and isinstance(executable := command.elts[0], ast.Constant)
+        and isinstance(executable.value, str)
+        and Path(executable.value).name in NON_EXECUTING_COMMANDS
+    )
 
 
 def python_dynamic_import(function: ast.AST) -> bool:
@@ -1007,6 +1029,8 @@ def input_consumer(argv: list[str]) -> str | None:
 def statement_command(node: Node) -> Node | None:
     if node.type == "command":
         return node
+    if node.type == "list":
+        return statement_command(node.named_children[-1])
     body = node.child_by_field_name("body")
     return statement_command(body) if body is not None else None
 
@@ -1093,14 +1117,15 @@ def input_programs(node: Node) -> Iterator[ProgramSource]:
         return
     if node.type not in {"heredoc_redirect", "herestring_redirect", "file_redirect"} or node.parent is None:
         return
-    command = statement_command(node.parent)
     pipeline = next((child for child in node.named_children if child.type == "pipeline"), None)
-    if pipeline is not None:
-        command = statement_command(pipeline.named_children[-1])
-    argv = command_argv(command) if command is not None else []
-    consumer = input_consumer(argv)
-    if consumer is None:
-        return
+    for command in [node.parent, *(pipeline.named_children if pipeline is not None else [])]:
+        command = statement_command(command)
+        consumer = input_consumer(command_argv(command) if command is not None else [])
+        if consumer is not None:
+            yield from redirect_programs(node, consumer)
+
+
+def redirect_programs(node: Node, consumer: str) -> Iterator[ProgramSource]:
     if node.type == "heredoc_redirect":
         body = next((child for child in node.named_children if child.type == "heredoc_body"), None)
         if body is not None:
@@ -1116,14 +1141,444 @@ def input_programs(node: Node) -> Iterator[ProgramSource]:
             yield program
 
 
+SIMPLE_SHELL_NODES = frozenset(
+    {
+        "command",
+        "command_name",
+        "command_substitution",
+        "comment",
+        "compound_statement",
+        "concatenation",
+        "do_group",
+        "expansion",
+        "file_descriptor",
+        "file_redirect",
+        "for_statement",
+        "heredoc_body",
+        "heredoc_end",
+        "heredoc_redirect",
+        "heredoc_start",
+        "herestring_redirect",
+        "list",
+        "number",
+        "pipeline",
+        "program",
+        "raw_string",
+        "redirected_statement",
+        "simple_expansion",
+        "special_variable_name",
+        "string",
+        "string_content",
+        "variable_assignment",
+        "variable_name",
+        "word",
+    }
+)
+SHELL_BUILTINS = frozenset(
+    {
+        "-",
+        ".",
+        ":",
+        "[",
+        "[[",
+        "alias",
+        "autoload",
+        "bg",
+        "bind",
+        "bindkey",
+        "break",
+        "builtin",
+        "bye",
+        "caller",
+        "cap",
+        "cd",
+        "chdir",
+        "clone",
+        "command",
+        "comparguments",
+        "compcall",
+        "compctl",
+        "compdescribe",
+        "compfiles",
+        "compgen",
+        "compgroups",
+        "complete",
+        "compopt",
+        "compquote",
+        "comptags",
+        "comptry",
+        "compvalues",
+        "continue",
+        "coproc",
+        "declare",
+        "dirs",
+        "disable",
+        "disown",
+        "echo",
+        "emulate",
+        "enable",
+        "eval",
+        "exec",
+        "exit",
+        "export",
+        "false",
+        "fc",
+        "fg",
+        "float",
+        "function",
+        "functions",
+        "getcap",
+        "getln",
+        "getopts",
+        "hash",
+        "hashinfo",
+        "help",
+        "history",
+        "integer",
+        "jobs",
+        "kill",
+        "let",
+        "limit",
+        "local",
+        "log",
+        "logout",
+        "mapfile",
+        "nocorrect",
+        "noglob",
+        "popd",
+        "print",
+        "printf",
+        "private",
+        "pushd",
+        "pushln",
+        "pwd",
+        "r",
+        "read",
+        "readarray",
+        "readonly",
+        "rehash",
+        "repeat",
+        "return",
+        "sched",
+        "select",
+        "set",
+        "setcap",
+        "setopt",
+        "shift",
+        "shopt",
+        "source",
+        "stat",
+        "strftime",
+        "suspend",
+        "syserror",
+        "sysopen",
+        "sysread",
+        "sysseek",
+        "syswrite",
+        "tcp_open",
+        "test",
+        "time",
+        "times",
+        "trap",
+        "true",
+        "ttyctl",
+        "type",
+        "typeset",
+        "ulimit",
+        "umask",
+        "unalias",
+        "unfunction",
+        "unhash",
+        "unlimit",
+        "unset",
+        "unsetopt",
+        "vared",
+        "wait",
+        "whence",
+        "where",
+        "which",
+        "zcompile",
+        "zcurses",
+        "zformat",
+        "zftp",
+        "zle",
+        "zmodload",
+        "zparseopts",
+        "zprof",
+        "zpty",
+        "zregexparse",
+        "zselect",
+        "zsocket",
+        "zstat",
+        "zstyle",
+        "zsystem",
+        "ztcp",
+    }
+)
+VARIABLE_PRESERVING_BUILTINS = frozenset({":", "cd", "echo", "exit", "false", "pwd", "true"})
+SHELL_MANAGED_NAMES = frozenset(
+    {
+        "ARGC",
+        "CDPATH",
+        "COLUMNS",
+        "COPROC",
+        "DIRSTACK",
+        "EPOCHREALTIME",
+        "EPOCHSECONDS",
+        "ERRNO",
+        "EUID",
+        "FPATH",
+        "FUNCNAME",
+        "GROUPS",
+        "HISTCMD",
+        "HOSTNAME",
+        "LINENO",
+        "LINES",
+        "MAILPATH",
+        "MANPATH",
+        "MAPFILE",
+        "MATCH",
+        "MBEGIN",
+        "MEND",
+        "MODULE_PATH",
+        "OLDPWD",
+        "OPTARG",
+        "OPTIND",
+        "PATH",
+        "PIPESTATUS",
+        "PPID",
+        "PSVAR",
+        "PWD",
+        "RANDOM",
+        "REPLY",
+        "SECONDS",
+        "SHELLOPTS",
+        "SHLVL",
+        "SRANDOM",
+        "TTYIDLE",
+        "UID",
+        "_",
+        "argv",
+        "cdpath",
+        "epochtime",
+        "fpath",
+        "mailpath",
+        "manpath",
+        "match",
+        "mbegin",
+        "mend",
+        "module_path",
+        "path",
+        "pipestatus",
+        "psvar",
+        "reply",
+        "status",
+    }
+)
+PLAIN_EXPANSION = re.compile(r"\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})")
+LITERAL_SHELL_VALUE = re.compile(r"[A-Za-z0-9_./@:+,%-][A-Za-z0-9_./@:+,%#-]*")
+LITERAL_EXPANSION_PASSES = 64
+LITERAL_EXPANSION_BYTES = 1 << 20
+LITERAL_LOOP_VALUES = 64
+
+
+def parse_shell(source: bytes) -> Node:
+    return Parser(Language(tree_sitter_bash.language())).parse(source).root_node
+
+
+def literal_shell_value(node: Node | None) -> str | None:
+    if node is None or shell_generated(node):
+        return None
+    value = shell_word(node)
+    return value if LITERAL_SHELL_VALUE.fullmatch(value) else None
+
+
+def shell_code_nodes(node: Node) -> Iterator[Node]:
+    yield node
+    if node.type == "heredoc_body" and quoted_heredoc(node):
+        return
+    for child in node.named_children:
+        yield from shell_code_nodes(child)
+
+
+def quoted_heredoc(body: Node) -> bool:
+    start = next((child for child in body.parent.named_children if child.type == "heredoc_start"), None) if body.parent else None
+    return start is not None and any(character in start.text for character in b"'\"\\")
+
+
+def variables_keep_assigned_values(root: Node, *, names_resolved: bool = True) -> bool:
+    return all(simple_shell_node(node, names_resolved=names_resolved) for node in shell_code_nodes(root))
+
+
+def simple_shell_node(node: Node, *, names_resolved: bool = True) -> bool:
+    if node.type not in SIMPLE_SHELL_NODES:
+        return False
+    if node.type == "expansion":
+        return PLAIN_EXPANSION.fullmatch(node.text.decode()) is not None
+    if node.type == "compound_statement":
+        return node.children[0].type == "{"
+    if node.type == "for_statement":
+        return node.children[0].type == "for" and node.child_by_field_name("variable").text != b"IFS"
+    if node.type == "variable_assignment":
+        return node.children[1].type == "=" and node.children[0].text != b"IFS"
+    if node.type != "command":
+        return True
+    name = node.child_by_field_name("name")
+    if name is None:
+        return False
+    if shell_generated(name):
+        return not names_resolved
+    return shell_word(name) in VARIABLE_PRESERVING_BUILTINS or shell_word(name) not in SHELL_BUILTINS
+
+
+def plain_expansion(node: Node, name: str) -> bool:
+    return node.type in {"simple_expansion", "expansion"} and node.text.decode() in {f"${name}", f"${{{name}}}"}
+
+
+def shell_assignments(root: Node) -> dict[str, list[Node]]:
+    assignments: dict[str, list[Node]] = {}
+    for node in shell_code_nodes(root):
+        if node.type in {"variable_assignment", "for_statement"}:
+            name = node.child_by_field_name("name" if node.type == "variable_assignment" else "variable")
+            if name is not None:
+                assignments.setdefault(name.text.decode(), []).append(node)
+    return assignments
+
+
+def assigned_once(name: str, assignments: dict[str, list[Node]]) -> bool:
+    return (
+        name not in SHELL_MANAGED_NAMES
+        and not name.startswith(("BASH", "COMP_", "READLINE_", "TRY_BLOCK_", "ZSH_"))
+        and len(assignments.get(name, [])) == 1
+    )
+
+
+def runs_unconditionally(node: Node) -> bool:
+    while node.parent is not None and node.parent.type == "list":
+        if node.parent.named_children[0] != node:
+            return False
+        node = node.parent
+    following = node.next_sibling
+    return node.parent is not None and node.parent.type == "program" and (following is None or following.type != "&")
+
+
+def substitutable_uses(root: Node, source: bytes, name: str, start: int, end: int) -> list[Node]:
+    return [
+        node
+        for node in shell_nodes(root)
+        if plain_expansion(node, name)
+        and start <= node.start_byte
+        and node.end_byte <= end
+        and source[node.end_byte : node.end_byte + 1] not in {b":", b"["}
+        and not any(ancestor.type == "heredoc_body" for ancestor in shell_ancestors(node))
+    ]
+
+
+def shell_ancestors(node: Node) -> Iterator[Node]:
+    while node.parent is not None:
+        node = node.parent
+        yield node
+
+
+def replaced(source: bytes, edits: list[tuple[int, int, bytes]], offset: int = 0) -> bytes:
+    for start, end, value in sorted(edits, reverse=True):
+        source = source[: start - offset] + value + source[end - offset :]
+    return source
+
+
+def substitution_edits(uses: list[tuple[Node, str]]) -> list[tuple[int, int, bytes]]:
+    substituted = {use.start_byte for use, _ in uses}
+    edits = []
+    for use, value in uses:
+        edits.append((use.start_byte, use.end_byte, value.encode()))
+        previous = use.prev_sibling
+        if (
+            previous is not None
+            and previous.type == "simple_expansion"
+            and previous.end_byte == use.start_byte
+            and previous.start_byte not in substituted
+            and re.match(r"\w", value)
+        ):
+            edits.append((previous.start_byte, previous.end_byte, b"${" + previous.text[1:] + b"}"))
+    return edits
+
+
+def bound_variable_edits(root: Node, source: bytes, assignments: dict[str, list[Node]]) -> list[tuple[int, int, bytes]]:
+    uses = []
+    for name, nodes in assignments.items():
+        assignment = nodes[0]
+        if not assigned_once(name, assignments) or assignment.type != "variable_assignment":
+            continue
+        value = literal_shell_value(assignment.child_by_field_name("value"))
+        if value is None or not runs_unconditionally(assignment):
+            continue
+        uses.extend((use, value) for use in substitutable_uses(root, source, name, assignment.end_byte, len(source)))
+    return substitution_edits(uses)
+
+
+@dataclass
+class LiteralLoop:
+    node: Node
+    name: str
+    body: Node
+    values: list[str]
+
+
+def literal_loop(loop: Node, assignments: dict[str, list[Node]]) -> LiteralLoop | None:
+    if loop.type != "for_statement":
+        return None
+    variable = loop.child_by_field_name("variable")
+    body = loop.child_by_field_name("body")
+    if variable is None or body is None or body.type != "do_group":
+        return None
+    name = variable.text.decode()
+    if not assigned_once(name, assignments):
+        return None
+    words = loop.children_by_field_name("value")
+    values = [value for word in words if (value := literal_shell_value(word)) is not None]
+    return LiteralLoop(loop, name, body, values) if 0 < len(values) == len(words) <= LITERAL_LOOP_VALUES else None
+
+
+def unrolled_loop(root: Node, source: bytes, loop: LiteralLoop) -> bytes:
+    start, end = loop.body.children[0].end_byte, loop.body.children[-1].start_byte
+    uses = substitutable_uses(root, source, loop.name, start, end)
+    copies = [replaced(source[start:end], substitution_edits([(use, value) for use in uses]), start) for value in loop.values]
+    return source[: loop.node.start_byte] + b"{\n" + b"\n".join(copies) + b"\n}" + source[loop.node.end_byte :]
+
+
+def expanded_once(root: Node, source: bytes) -> bytes | None:
+    if not variables_keep_assigned_values(root, names_resolved=False):
+        return None
+    assignments = shell_assignments(root)
+    edits = bound_variable_edits(root, source, assignments)
+    if edits:
+        return replaced(source, edits)
+    loops = [loop for node in shell_nodes(root) if (loop := literal_loop(node, assignments)) is not None]
+    return unrolled_loop(root, source, loops[-1]) if loops else None
+
+
+def with_literal_values(root: Node, source: bytes) -> Node:
+    expanded = root
+    for _ in range(LITERAL_EXPANSION_PASSES):
+        following = expanded_once(expanded, source)
+        if following is None:
+            return expanded if variables_keep_assigned_values(expanded) else root
+        expanded = parse_shell(following)
+        source = following
+        if len(source) > LITERAL_EXPANSION_BYTES or expanded.has_error:
+            return root
+    return root
+
+
 def shell_claims(text: str, *, claim_related: bool = False) -> ShellClaims:
     discovery = ShellClaims()
     related = claim_related or ("gh-plan" in text and CLAIM_WORD.search(text) is not None)
-    root = Parser(Language(tree_sitter_bash.language())).parse(text.encode()).root_node
+    root = parse_shell(text.encode())
     if root.has_error:
         discovery.receipt_pure = False
         discovery.decode_failed = related
         return discovery
+    root = with_literal_values(root, text.encode())
     for node in shell_nodes(root):
         if node.type in {
             "pipeline",
@@ -1384,7 +1839,8 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
         if identifier in denied:
             continue
         names = javascript_names(text) if javascript else set()
-        claim_related_here = "gh-plan" in text or CLAIM_WORD.search(text) is not None
+        executable_text = without_patch_text(text) if javascript else text
+        claim_related_here = "gh-plan" in executable_text or CLAIM_WORD.search(executable_text) is not None
         invocations = []
         opaque = False
         unclassified = False
