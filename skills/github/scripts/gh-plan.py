@@ -2225,6 +2225,11 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
             raise PlanError("Release requires the configured source automation identity")
         facts = github_plan_release.parse_release(source, evidence, actor=expected_actor,
             role=args.role, releaser_session=args.session, **legacy_options)
+        github_plan_release.verify_ended(getattr(args, "closed_log", None), facts,
+            source_url=f"https://github.com/{source_issue['repo']}/{'pull' if 'pull_request' in source_issue else 'issues'}/{source_issue['number']}#issuecomment-{args.claim_comment}")
+        ownership_only = github_plan_release.github_plan_ended.session(evidence.get("body") or "") is not None
+        if ownership_only and args.retained_pr:
+            raise PlanError("Ownership-only release cannot adopt retained PRs; preserve their independent ownership")
         source_branch = facts.record["branch"]
         github_plan_release.termination.verify_attestation(
             getattr(args, "termination_record", None), evidence.get("body") or "",
@@ -2238,7 +2243,7 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
                         if legacy_options["legacy"] else {"state": "open"})
         _, open_pulls = collect_paged_rest_items(f"/repos/{source_issue['repo']}/pulls", query=branch_query,
             bucket="rest_core", step_prefix="release_source_branch_prs")
-        if legacy_options["legacy"] and not any(
+        if legacy_options["legacy"] and not ownership_only and not any(
                 (p.get("head") or {}).get("ref") == source_branch
                 and (p.get("user") or {}).get("login") == expected_actor
                 and github_plan_claim.pr_issue_reference(p, source_issue["number"], repo=source_issue["repo"],
@@ -2246,10 +2251,10 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
                 for p in open_pulls):
             raise PlanError("Legacy source branch requires an automation-authored PR linking this canonical record")
         branch_prs = [f"https://github.com/{source_issue['repo']}/pull/{p['number']}" for p in open_pulls
-            if (p.get("head") or {}).get("ref") == source_branch]
+            if not ownership_only and (p.get("head") or {}).get("ref") == source_branch]
         subject_pr = "pull_request" in source_issue
         subject_url = f"https://github.com/{source_issue['repo']}/pull/{source_issue['number']}"
-        if subject_pr or legacy_options["legacy"]:
+        if not ownership_only and (subject_pr or legacy_options["legacy"]):
             # The claim's branch identifies source-session activity. A separate
             # Dependabot work-record branch may advance after that session ends.
             source_ref = None
@@ -6848,6 +6853,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--session", required=True, help="Releasing session's actual native ID")
     p.add_argument("--confirm-session-ended", action="store_true", help="Attest verified closure, including unavailable peer inventory")
     p.add_argument("--termination-record", type=pathlib.Path, help="Private source-host crash record; freshly verifies process, transcripts and tmux for a Terminated session attestation")
+    p.add_argument("--closed-log", type=pathlib.Path, help="Private verified closure log for an ownership-only attestation; rechecks native identity, process exit and activity")
     p.add_argument("--legacy", action="store_true", help="Release a bare legacy claim with no native session identity")
     p.add_argument("--legacy-branch", help="Verified original source branch; requires --legacy")
     p.add_argument("--legacy-reason", help="Why no native session ID exists; must match the legacy attestation")

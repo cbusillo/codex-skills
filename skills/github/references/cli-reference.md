@@ -1282,6 +1282,52 @@ Edited or unavailable evidence and renewed source ownership invalidate the
 legacy receipt just as they do a structured release. Inspect `--dry-run` before
 applying. These flags cannot release or reinterpret a structured source.
 
+#### Verified exit without a safe-exit verdict
+
+When the holder actually ended but wrote no unqualified safe-exit verdict,
+the Supervisor or direction session may release ownership using the existing
+closed-session log and `release-claim --closed-log /absolute/private/log.json`.
+Keep the original verdict and source claim unchanged. This route accepts a
+recovered historical alias or a bare `--legacy` claim; it does not fabricate
+a native identity or declare the source work complete.
+
+Verify the actual exit from the original Supervisor/native evidence first.
+The selected log row identifies `session_id` (the canonical native UUID),
+`harness`, `transcript`, `host`, `ended_at`, `process_exit_verified: true`, and
+`transcript_roots` (every known native transcript root). Codex also records
+`codex_home`. Preserve original `pid` and `tty` when known; a historical
+verified exit can lack both. Keep its original exit evidence with the private
+log. Never create an exit record from age, an absent process, a merged PR,
+`notLoaded`, or a qualified verdict alone. Use the existing log or its private
+evidence copy, owned by this user with mode 0600. A resumed generation refuses.
+
+Post the usual exact `Closed session <claim-recorded-session>` attestation,
+or the existing per-ID legacy attestation with its worker, branch and reason.
+Replace the `Safe to exit: yes` line with these three lines:
+
+```text
+Ownership release only: yes
+Native session: <verified-native-UUID>
+Original claim: https://github.com/OWNER/REPO/issues/N#issuecomment-ID
+```
+
+Keep the verified original `Ended at:` timestamp. The attestation binds that
+exact claim to the recovered native source. Its native transcript must contain
+the original claim's tool receipt. The helper rereads every known source copy,
+including `.jsonl.zst` archives through the local `zstd` executable, checks
+source-host processes, and reads every configured native account. Live,
+queued, uncertain or newly resumed ownership refuses, including an idle
+Claude process. It repeats these checks after the pending write before making
+the release operative. Missing log, transcript or native coverage refuses.
+
+Use the existing release command with `--closed-log`, inspect `--dry-run`,
+then repeat without it. Bare legacy sources keep `--legacy`, `--legacy-branch`
+and `--legacy-reason`. Verified native ownership replaces the legacy PR-link
+corroboration for this route. It does not infer source activity from later
+branch commits or adopt retained PRs; `--retained-pr` refuses. Every branch,
+worktree, PR, wait and native blocker stays intact and subject to the next
+claim's independent checks. Other claims need their own exact releases.
+
 For retained PRs, pass each verified same-repository PR URL with repeatable
 `--retained-pr`. Each PR must independently link the canonical issue and belong
 to the source automation identity. The release comment is the new handoff for
