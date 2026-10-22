@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = ["tree-sitter==0.26.0", "tree-sitter-bash==0.25.1"]
 # ///
 """Read-only source-host checks for claims interrupted by a host/terminal crash."""
 from __future__ import annotations
@@ -42,9 +42,9 @@ def stamp(value):
 
 
 def _validate_metadata(data, session):
-    if not isinstance(data, dict) or data.get("session_id") != session:
+    if not isinstance(data, dict) or data.get("claim_session", data.get("session_id")) != session:
         raise ValueError("Termination evidence must identify the exact native session")
-    if type(data.get("pid")) is not int or data["pid"] <= 0:
+    if not data.get("exit_record") and (type(data.get("pid")) is not int or data["pid"] <= 0):
         raise ValueError("Termination evidence requires the recorded source PID")
     if not isinstance(data.get("host"), str) or not data["host"]:
         raise ValueError("Termination evidence requires the recorded source host")
@@ -63,11 +63,16 @@ def _validate_metadata(data, session):
 
 def validate(data, session, *, apply_policy=True):
     _validate_metadata(data, session)
+    if data.get("terminal_state") == "exit recorded":
+        if not isinstance(data.get("exit_record"), dict) or data["exit_record"].get("kind") != "codex_command" or not re.fullmatch(r"[0-9a-f]{64}", data.get("exit_digest", "")):
+            raise ValueError("Historical termination requires its original exit evidence digest")
+    elif data.get("exit_record"):
+        raise ValueError("Historical exit cannot substitute for crash terminal evidence")
     ended, checked, last = (stamp(data[key]) for key in ("ended_at", "checked_at", "last_activity_at"))
     if last > ended or ended > checked or apply_policy and checked - last < QUIET_PERIOD:
         raise ValueError("Source transcript has recent activity or activity after termination")
     if (not isinstance(data.get("terminal_state"), str) or not data["terminal_state"]
-            or apply_policy and data["terminal_state"] not in {"pane dead", "server missing", "server replaced"}):
+            or apply_policy and data["terminal_state"] not in {"pane dead", "server missing", "server replaced", "exit recorded"}):
         raise ValueError("Termination evidence requires a dead pane or missing server")
     return data
 
@@ -127,7 +132,7 @@ def transcript_snapshot(record, path):
     return records, after.st_mtime_ns, after.st_size, truncated
 
 
-def transcript_records(record, lines):
+def transcript_records(record, lines, *, require_identity: bool = True):
     reader, _ = native_helpers()
     records, truncated = [], False
     for index, line in enumerate(lines):
@@ -147,7 +152,7 @@ def transcript_records(record, lines):
     identities = ({row.get("payload", {}).get("id") for row in records if row.get("type") == "session_meta"}
                   if record["harness"] == "codex" else
                   {row["sessionId"] for row in records if row.get("sessionId")})
-    if identities != {record["session_id"]}:
+    if require_identity and identities != {record["session_id"]}:
         raise ValueError("Source transcript identity is uncertain")
     return records, truncated
 
@@ -230,6 +235,9 @@ def _transcript_roots(record):
 
 
 def _verify(record, session, independent_harness):
+    if record.get("exit_record"):
+        import github_plan_termination_history
+        return github_plan_termination_history.verify(record, session)
     process = _initial_source(record, session, independent_harness)
     roots = process.roots
     paths = {Path(record["transcript"]).resolve()}
@@ -283,16 +291,19 @@ def _verify_artifacts(artifacts):
 
 
 def body(data):
-    validate(data, data["session_id"])
+    validate(data, data.get("claim_session", data["session_id"]))
+    legacy = data.get("claim", {})
+    legacy_fields = (f"Worker: {legacy['worker']}\nSource branch: {legacy['branch']}\n"
+                     f"Native session unavailable: {legacy['legacy_reason']}\n") if "legacy_reason" in legacy else ""
     artifacts = "\n".join(f"- {a.get('worktree') or 'no local worktree'} (branch {a['branch']})" for a in data["retained_artifacts"]) or "None; no source branch or worktree was created."
-    return (f"Terminated session {data['session_id']}\nEnded at: {data['ended_at']}\n"
-            f"Recorded PID: {data['pid']}\nTermination cause: {data['cause']}\n"
+    return (f"Terminated session {data.get('claim_session', data['session_id'])}\nEnded at: {data['ended_at']}\n"
+            + legacy_fields + f"Recorded PID: {data['pid'] or 'not recorded'}\nTermination cause: {data['cause']}\n"
             f"Fresh process, transcript and terminal checks: {data['checked_at']}; {data['terminal_state']}.\n"
             f"Retained artifacts (resume; preserve uncommitted work):\n\n{artifacts}\n\n"
             "<!-- " + MARKER + json.dumps(data, sort_keys=True).replace(">", "\\u003e") + " -->")
 
 
-def verify_attestation(record_path, text, session):
+def verify_attestation(record_path, text, session, *, source=None, source_url=None):
     """Recheck now without changing the historical termination time or evidence."""
     attested = evidence(text, session)
     if attested is None:
@@ -302,9 +313,16 @@ def verify_attestation(record_path, text, session):
     if not record_path:
         raise ValueError("Terminated-session release requires --termination-record for fresh source-host checks")
     record = json.loads(Path(record_path).read_text(encoding="utf-8"))
+    if record.get("exit_record"):
+        import github_plan_release
+        if (source is None or record.get("claim") != github_plan_release.record_from_receipt(source, record["claim"])
+                or record.get("claim_url") != source_url or record.get("claim_created_at") != source["created_at"]):
+            raise ValueError("Termination alias no longer matches the exact original claim")
     observed = verify(record, session)
-    for key in ("session_id", "pid", "host", "ended_at", "cause", "retained_artifacts", "tmux_session_id"):
-        if observed[key] != attested[key]:
+    keys = ((set(observed) | set(attested)) - {"checked_at"} if record.get("exit_record") else
+            {"session_id", "pid", "host", "ended_at", "cause", "retained_artifacts", "tmux_session_id"})
+    for key in keys:
+        if observed.get(key) != attested.get(key):
             raise ValueError("Termination record no longer matches the attested source identity or retained artifacts")
     # The attestation can be reused after a retry, but fresh probes always run.
 
@@ -315,6 +333,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
     try:
         original = json.loads(args.record.read_text(encoding="utf-8"))
-        print(body(verify(original, original["session_id"])))
+        print(body(verify(original, original.get("claim_session", original["session_id"]))))
     except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError) as error:
         parser.exit(1, f"{error}\n")

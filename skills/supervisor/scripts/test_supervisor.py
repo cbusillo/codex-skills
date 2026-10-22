@@ -1257,6 +1257,55 @@ class AccountChoiceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "(?s)no anthropic choice.*multipleUseLast.*Apply main"):
             account_choice.choose("anthropic", accounts_config(), snapshot, None, now=NOW)
 
+    @staticmethod
+    def windowed(snapshot, limiting, five_hour, weekly, weekly_burn):
+        row = snapshot["accounts"][1]
+        row.update(remainingFraction=min(five_hour, weekly), limitingWindowLabel=limiting, windows=[
+            {"id": "anthropic-5h", "label": "Claude 5-hour", "period": "fiveHour", "remainingFraction": five_hour,
+             "naturalResetAt": "2026-10-03T05:00:00Z", "burn": None},
+            {"id": "anthropic-1w", "label": "Claude weekly", "period": "weekly", "remainingFraction": weekly,
+             "naturalResetAt": "2026-10-09T00:00:00Z",
+             "burn": {"unitsPerHour": weekly_burn, "observedDurationHours": 12, "sampleCount": 8}}])
+        return snapshot
+
+    def test_report_keeps_five_hour_and_weekly_capacity_separate(self):
+        snapshot = self.windowed(self.snapshot(), "5-hour", .63, .89, 1.5)
+        choice = account_choice.choose("anthropic", accounts_config(), snapshot, None, now=NOW)
+        self.assertEqual(choice["name"], "spare")
+        self.assertEqual((choice["remaining_fraction"], choice["limiting_window_label"]), (.63, "5-hour"))
+        five_hour, weekly = choice["window_capacity"]["five_hour"], choice["window_capacity"]["weekly"]
+        self.assertEqual([w["remaining_fraction"] for w in five_hour], [.63])
+        self.assertEqual([w["remaining_fraction"] for w in weekly], [.89])
+        self.assertEqual(account_choice.public(choice)["window_capacity"], choice["window_capacity"])
+
+    def test_switching_limiting_window_never_becomes_a_weekly_burn_sample(self):
+        readings = [self.windowed(self.snapshot(), "5-hour", .30, .89, 1.5),
+                    self.windowed(self.snapshot(), "Weekly", .95, .88, 1.5)]
+        choices = [account_choice.choose("anthropic", accounts_config(), s, None, now=NOW) for s in readings]
+        self.assertEqual([c["limiting_window_label"] for c in choices], ["5-hour", "Weekly"])
+        weekly = [c["window_capacity"]["weekly"][0] for c in choices]
+        self.assertEqual([w["remaining_fraction"] for w in weekly], [.89, .88])
+        self.assertEqual([w["burn_units_per_hour"] for w in weekly], [1.5, 1.5])
+        self.assertIsNone(choices[0]["window_capacity"]["five_hour"][0]["burn_units_per_hour"])
+
+    def test_model_windows_sharing_a_period_are_all_retained(self):
+        snapshot = self.windowed(self.snapshot(), "Weekly", .9, .4, 1.0)
+        snapshot["accounts"][1]["windows"].append(
+            {"id": "anthropic-opus", "label": "Opus weekly", "period": "weekly", "remainingFraction": .7})
+        choice = account_choice.choose("anthropic", accounts_config(), snapshot, None, now=NOW)
+        self.assertEqual([w["label"] for w in choice["window_capacity"]["weekly"]], ["Claude weekly", "Opus weekly"])
+
+    def test_snapshots_without_window_periods_report_explicit_unknowns(self):
+        snapshot = self.snapshot()
+        snapshot["accounts"][1]["windows"] = [{"label": "Claude weekly", "naturalResetAt": "2026-10-09T00:00:00Z"}]
+        choice = account_choice.choose("anthropic", accounts_config(), snapshot, None, now=NOW)
+        self.assertEqual((choice["name"], choice["remaining_fraction"]), ("spare", .04))
+        self.assertIsNone(choice["limiting_window_label"])
+        self.assertEqual(choice["window_capacity"], {"five_hour": None, "weekly": None})
+        snapshot["accounts"][1]["windows"] = [{"label": "Odd", "period": {}}, {"label": "Daily", "period": "daily"}]
+        choice = account_choice.choose("anthropic", accounts_config(), snapshot, None, now=NOW)
+        self.assertEqual((choice["name"], choice["window_capacity"]), ("spare", {"five_hour": [], "weekly": []}))
+
     def test_snapshot_read_failures_mean_unavailable(self):
         for stdout, code, reason in (("{", 0, "not JSON"), ('{"schemaVersion":2}', 0, "version 1"), ("", 1, "exited 1")):
             with self.subTest(reason=reason):

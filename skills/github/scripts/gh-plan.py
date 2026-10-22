@@ -4,6 +4,8 @@
 # dependencies = [
 #     "PyYAML==6.0.3",
 #     "aiohttp==3.14.5",
+#     "tree-sitter==0.26.0",
+#     "tree-sitter-bash==0.25.1",
 # ]
 # ///
 """Compact GitHub issue planning helper for Codex skills."""
@@ -2228,7 +2230,8 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
         source_branch = facts.record["branch"]
         github_plan_release.termination.verify_attestation(
             getattr(args, "termination_record", None), evidence.get("body") or "",
-            facts.record["session"])
+            facts.record["session"], source=source,
+            source_url=source.get("html_url"))
         # Check source identity, closure and native peers before a retained-PR
         # refusal can be classified as independent issue work.
         checked_paths = github_plan_release.validate_source_release(facts, source_comments, source_inventory,
@@ -3148,7 +3151,10 @@ def claim_once(args: argparse.Namespace) -> None:
                                                             local_references=linked_repo.casefold() == issue_repo.casefold()):
                     continue
                 _, linked = get_issue(str(linked_number), linked_repo)
-                if "pull_request" not in linked:
+                if "pull_request" not in linked and linked.get("state") == "closed":
+                    linked, linked_status, linked_comments, _ = read_record(linked_number, linked_repo, allow_closed=True)
+                    phase_peers.append((linked_repo, linked_number, linked_status, linked_comments))
+                if "pull_request" not in linked and linked.get("state") != "closed":
                     canonical_url = f"https://github.com/{linked_repo}/issues/{linked_number}"
                     if canonical_url.casefold() not in {url.casefold() for url in phase["canonical_issues"]}:
                         phase["canonical_issues"].append(canonical_url)
@@ -6847,7 +6853,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--role", choices=["supervisor", "direction"], required=True)
     p.add_argument("--session", required=True, help="Releasing session's actual native ID")
     p.add_argument("--confirm-session-ended", action="store_true", help="Attest verified closure, including unavailable peer inventory")
-    p.add_argument("--termination-record", type=pathlib.Path, help="Private source-host crash record; freshly verifies process, transcripts and tmux for a Terminated session attestation")
+    p.add_argument("--termination-record", type=pathlib.Path, help="Private original-exit record; freshly verifies source-host process, native transcript and terminal evidence")
     p.add_argument("--legacy", action="store_true", help="Release a bare legacy claim with no native session identity")
     p.add_argument("--legacy-branch", help="Verified original source branch; requires --legacy")
     p.add_argument("--legacy-reason", help="Why no native session ID exists; must match the legacy attestation")

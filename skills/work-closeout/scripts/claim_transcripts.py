@@ -66,6 +66,7 @@ def codex_children(records: list[dict]) -> set[str]:
         and row["payload"].get("type") == "item_completed"
         and isinstance(item := row["payload"].get("item"), dict)
         and item.get("type") == "SubAgentActivity"
+        and item.get("kind") != "interacted"
         and isinstance(item.get("agent_thread_id"), str)
     }
 
@@ -108,15 +109,17 @@ def codex_entries(root: dict, supplied: dict[str, set[Path]]) -> list[dict]:
     root_identity = metadata(read_records(root_path)).get("session_id", root_id)
     expanded = []
     pending = [(root_id, None, ())]
-    visited = set()
+    parents = {}
     with claim_history.native_databases(root_path) as databases:
         while pending:
             native, parent, ancestors = pending.pop()
-            if native in visited:
+            if native in parents:
+                if parents[native] != parent:
+                    raise ValueError(f"native child {native} has contradictory parent edges")
                 continue
-            if len(visited) >= 4096:
+            if len(parents) >= 4096:
                 raise ValueError("native session lineage exceeds its coverage bound")
-            visited.add(native)
+            parents[native] = parent
             paths = supplied.get(native) or indexed_paths(databases, native)
             if not paths:
                 raise ValueError(f"missing native transcript for child {native}; restore it or pass --session and --transcript")
@@ -383,46 +386,128 @@ def tool_outputs(records: list[dict]) -> dict[str, list[object]]:
                     outputs.setdefault(str(block.get("tool_use_id", "")), []).append(block.get("content"))
     inputs = {identifier: text for identifier, text, _ in tool_inputs(records)}
     recorded = {identifier: list(blocks) for identifier, blocks in outputs.items()}
+    followups: dict[str, list[tuple[int, str]]] = {}
+    for order, (identifier, text) in enumerate(inputs.items()):
+        for match in re.finditer(r"session_id[\"']?\s*:\s*(-?\d+)(?!\d)", text):
+            followups.setdefault(match[1], []).append((order, identifier))
     for identifier, blocks in recorded.items():
         yielded = {item["session_id"] for block in blocks for item in values(block) if type(item.get("session_id")) is int}
-        if not yielded:
-            continue
-        for followup, text in inputs.items():
-            if followup != identifier and any(re.search(rf"session_id[\"']?\s*:\s*{process}(?!\d)", text) for process in yielded):
+        polls = {poll for process in yielded for poll in followups.get(str(process), [])}
+        for _, followup in sorted(polls):
+            if followup != identifier:
                 outputs[identifier].extend(recorded.get(followup, []))
     return outputs
 
 
-def command_literal(text: str, start: int, literal: str) -> str | None:
+def command_literal(text: str, start: int, literal: str) -> list[str] | None:
     tokens = [match[0] for match in re.finditer(literal + r"|[A-Za-z_$][A-Za-z0-9_$]*|[^\s]", text[start:])]
     if not tokens or tokens[0] != "{":
         return None
     depth = 0
+    field_start = 1
+    fields = []
     for index, token in enumerate(tokens):
         if token in {"{", "[", "("}:
             depth += 1
         elif token in {"}", "]", ")"}:
             depth -= 1
             if depth == 0:
+                fields.append(tokens[field_start:index])
                 break
-        if depth != 1 or token.strip("\"'") not in {"cmd", "command", "chars"} or tokens[index + 1 : index + 2] != [":"]:
+        if depth == 1 and token == ",":
+            fields.append(tokens[field_start:index])
+            field_start = index + 1
+    else:
+        return None
+    command = None
+    for field in fields:
+        if not field:
             continue
-        tail = tokens[index + 2 : index + 4]
-        if len(tail) != 2 or tail[1] not in {",", "}"} or not re.fullmatch(literal, tail[0], re.DOTALL):
+        key = field[0]
+        if re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", key) is None:
+            if "\\" in key:
+                return None
+            try:
+                key = ast.literal_eval(key)
+            except (SyntaxError, ValueError):
+                return None
+        if len(field) == 1 and key not in {"cmd", "command", "chars"}:
+            continue
+        if field[1:2] != [":"]:
             return None
-        value = tail[0]
+        if key not in {"cmd", "command", "chars"}:
+            continue
+        if command is not None or len(field) != 3 or re.fullmatch(literal, field[2], re.DOTALL) is None:
+            return None
+        value = field[2]
         if value.startswith("`"):
-            return value[1:-1] if "${" not in value else None
+            command = literal_template(text, start, value)
+            if command is None:
+                return None
+            continue
+        if re.fullmatch(r"(?:[^\\]|\\(?:[\\\"'nrtbfv]|x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}))*", value) is None:
+            return None
         try:
-            return ast.literal_eval(value)
+            command = [ast.literal_eval(value)]
         except (ValueError, SyntaxError):
             return None
-    return None
+    return command
 
 
 JAVASCRIPT_LITERAL = r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|`(?:\\.|[^`\\])*`'
 CLAIM_WORD = re.compile(r"""(?:^|[\s'"`])claim(?:$|[\s'"`])""")
 JAVASCRIPT_PATCH = re.compile(r"\btools\.apply_patch\s*\(\s*(?:" + JAVASCRIPT_LITERAL + r")\s*\)", re.DOTALL)
+
+
+def literal_template(text: str, start: int, template: str) -> list[str] | None:
+    if "\\" in template:
+        return None
+    body = template[1:-1].replace("\r\n", "\n").replace("\r", "\n")
+    if "${" not in body:
+        return [body]
+    if text.count("${") != template.count("${"):
+        return None
+    tokens = re.findall(JAVASCRIPT_LITERAL + r"|//[^\n]*|/\*.*?\*/|[A-Za-z_$][A-Za-z0-9_$]*|[0-9]+|[^\s]", text[:start], re.DOTALL)
+    code = " ".join(token for token in tokens if not token.startswith(("//", "/*")))
+    binding = r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)"
+    array = r"\[ (?P<values>.+?) \]"
+    call = r"tools \. (?:exec_command|shell_command|shell) \("
+    match = re.fullmatch(r"for \( const " + binding + r" of " + array + r" \) \{ (?:const \w+ = )?(?:text \( )?await " + call, code)
+    if match is None:
+        match = re.fullmatch(
+            r"const (?P<array>[A-Za-z_]\w*) = "
+            + array
+            + r" ; (?:const \w+ = )?(?:text \( )?await Promise \. (?:all|allSettled) \( (?P=array) \. map \( "
+            + binding
+            + r" = > "
+            + call,
+            code,
+        )
+    if match is None or "\\" in match["values"]:
+        return None
+    names = re.findall(JAVASCRIPT_LITERAL + r"|//[^\n]*|/\*.*?\*/|(?P<name>[A-Za-z_$][A-Za-z0-9_$]*|\\)", text, re.DOTALL)
+    if "\\" in names:
+        return None
+    if "eval" in names or ("array" in match.re.groupindex and (names.count(match["array"]) != 2 or names.count(match["name"]) != 1)):
+        return None
+    try:
+        values = ast.literal_eval("[" + match["values"] + "]")
+    except (SyntaxError, ValueError):
+        return None
+    if not isinstance(values, list) or not 0 < len(values) <= LITERAL_LOOP_VALUES:
+        return None
+    if any(
+        type(value) not in {str, int}
+        or (type(value) is int and abs(value) > (1 << 53) - 1)
+        or not LITERAL_SHELL_VALUE.fullmatch(str(value))
+        for value in values
+    ):
+        return None
+    marker = "${" + match["name"] + "}"
+    if "${" in body.replace(marker, ""):
+        return None
+    commands = [body.replace(marker, str(value)) for value in values]
+    return commands if sum(len(command.encode()) for command in commands) <= LITERAL_EXPANSION_BYTES else None
 
 
 def without_patch_text(text: str) -> str:
@@ -481,12 +566,12 @@ def shell_texts(text: str, javascript: bool) -> ShellTexts:
             opaque = True
             interactive_opaque = interactive_opaque or "write_stdin" in match[0]
         elif match["call"] is not None:
-            command = command_literal(text, match.end(), literal)
-            if command is None:
+            decoded = command_literal(text, match.end(), literal)
+            if decoded is None:
                 opaque = True
                 interactive_opaque = interactive_opaque or "write_stdin" in match[0]
             else:
-                commands.append(ShellCommand(command, "write_stdin" in match[0]))
+                commands.extend(ShellCommand(command, "write_stdin" in match[0]) for command in decoded)
         elif match[0].startswith("`") and "${" in match[0] and re.search(reference, match[0]):
             opaque = True
             interactive_opaque = interactive_opaque or "write_stdin" in match[0]
@@ -854,12 +939,54 @@ class CommandPosition:
     python_script: bool = False
 
 
-def command_position(argv: list[str]) -> CommandPosition | None:
-    if not argv:
+def timeout_command_index(argv: list[str]) -> int | None:
+    duration = r"(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?[smhd]?"
+    index = 1
+    while index < len(argv) and argv[index].startswith("-"):
+        option, equal, value = argv[index].partition("=")
+        if option == "--" and not equal:
+            index += 1
+            break
+        if option in {"--preserve-status", "--foreground", "-v", "--verbose"} and not equal:
+            index += 1
+            continue
+        if not equal and argv[index][:2] in {"-k", "-s"}:
+            option, value = argv[index][:2], argv[index][2:]
+        if option not in {"-k", "--kill-after", "-s", "--signal"}:
+            return None
+        if equal and option in {"-k", "-s"}:
+            return None
+        if not value and not equal:
+            index += 1
+            if index >= len(argv):
+                return None
+            value = argv[index]
+        pattern = duration if option in {"-k", "--kill-after"} else r"[A-Za-z0-9]+"
+        if re.fullmatch(pattern, value) is None:
+            return None
+        index += 1
+    if index + 1 >= len(argv) or re.fullmatch(duration, argv[index]) is None:
         return None
-    if Path(argv[0]).name != "uv":
-        return CommandPosition(0)
-    if argv[1:2] != ["run"]:
+    return index + 1
+
+
+def unwrap_timeouts(argv: list[str]) -> int | None:
+    index = 0
+    while index < len(argv) and Path(argv[index]).name == "timeout":
+        offset = timeout_command_index(argv[index:])
+        if offset is None:
+            return None
+        index += offset
+    return index
+
+
+def command_position(argv: list[str]) -> CommandPosition | None:
+    index = unwrap_timeouts(argv)
+    if index is None or index >= len(argv):
+        return None
+    if Path(argv[index]).name != "uv":
+        return CommandPosition(index)
+    if argv[index + 1 : index + 2] != ["run"]:
         return None
     value_flags = {
         "--python",
@@ -895,7 +1022,7 @@ def command_position(argv: list[str]) -> CommandPosition | None:
         "--all-groups",
         "--active",
     }
-    index = 2
+    index += 2
     python_script = False
     while index < len(argv) and argv[index].startswith("-"):
         flag, equal, value = argv[index].partition("=")
@@ -948,12 +1075,8 @@ def reads_program_stdin(argv: list[str], consumer: str) -> bool:
     )
 
 
-def accepts_claim_data(argv: list[str]) -> bool:
-    position = command_position(argv)
-    if position is None:
-        return False
-    name = Path(argv[position.index]).name if position.index < len(argv) else ""
-    if name in {
+DATA_COMMANDS = frozenset(
+    {
         "rg",
         "grep",
         "git",
@@ -993,8 +1116,553 @@ def accepts_claim_data(argv: list[str]) -> bool:
         "pytest",
         "gh-issue",
         "gh-comment",
-    }:
+    }
+)
+SAFE_GIT_CONFIG = frozenset(
+    {
+        "user.name",
+        "user.email",
+        "commit.gpgsign",
+        "tag.gpgsign",
+        "core.quotepath",
+        "core.autocrlf",
+        "core.filemode",
+        "init.defaultbranch",
+        "safe.directory",
+        "pull.rebase",
+        "pull.ff",
+        "push.default",
+        "push.autosetupremote",
+        "merge.conflictstyle",
+        "rebase.autosquash",
+        "rebase.autostash",
+        "log.showsignature",
+        "status.showuntrackedfiles",
+    }
+)
+GIT_GLOBAL_VALUE_OPTIONS = frozenset({"-C", "--git-dir", "--work-tree", "--namespace"})
+GIT_GLOBAL_FLAGS = frozenset({"--version", "--help", "--no-pager", "-P", "--no-optional-locks", "--bare", "--literal-pathspecs", "--no-replace-objects"})
+GIT_DATA_COMMANDS = frozenset(
+    {
+        "add",
+        "am",
+        "apply",
+        "bisect",
+        "blame",
+        "branch",
+        "cat-file",
+        "check-ignore",
+        "checkout",
+        "cherry",
+        "cherry-pick",
+        "clean",
+        "clone",
+        "commit",
+        "config",
+        "count-objects",
+        "describe",
+        "diff",
+        "diff-files",
+        "diff-index",
+        "diff-tree",
+        "fetch",
+        "for-each-ref",
+        "format-patch",
+        "fsck",
+        "gc",
+        "grep",
+        "hash-object",
+        "init",
+        "log",
+        "ls-files",
+        "ls-remote",
+        "ls-tree",
+        "merge",
+        "merge-base",
+        "mv",
+        "name-rev",
+        "notes",
+        "pull",
+        "push",
+        "range-diff",
+        "rebase",
+        "reflog",
+        "remote",
+        "reset",
+        "restore",
+        "rev-list",
+        "rev-parse",
+        "revert",
+        "rm",
+        "shortlog",
+        "show",
+        "show-ref",
+        "sparse-checkout",
+        "stash",
+        "status",
+        "submodule",
+        "switch",
+        "symbolic-ref",
+        "tag",
+        "update-index",
+        "update-ref",
+        "var",
+        "version",
+        "worktree",
+    }
+)
+GIT_EXECUTING_OPTIONS = {
+    "rebase": ("--exec", "-x"),
+    "grep": ("--open-files-in-pager", "-O"),
+    "clone": ("--upload-pack", "-u", "--config", "-c"),
+    "fetch": ("--upload-pack",),
+    "pull": ("--upload-pack",),
+    "ls-remote": ("--upload-pack", "-u"),
+    "push": ("--receive-pack", "--exec"),
+}
+GIT_EXECUTING_ACTIONS = {"bisect": "run", "submodule": "foreach"}
+GIT_COMMAND_VALUE_OPTIONS = {"grep": frozenset({"-e", "-f", "-m", "--max-count", "-A", "-B", "-C", "--max-depth"})}
+GIT_CONFIG_VALUE_OPTIONS = frozenset({"-f", "--file", "--blob", "--type", "--default", "--comment", "--value"})
+GIT_COMMAND_SETTINGS = frozenset({"core.pager", "core.editor", "sequence.editor"})
+INERT_COMMANDS = frozenset({"", "cat", "true", "false", ":"})
+GIT_CONFIG_READ_OPTIONS = frozenset(
+    {"--get", "--get-all", "--get-regexp", "--get-urlmatch", "-l", "--list", "--unset", "--unset-all", "--remove-section", "--rename-section"}
+)
+GH_DATA_COMMANDS = frozenset(
+    {
+        "api",
+        "auth",
+        "browse",
+        "cache",
+        "co",
+        "completion",
+        "gist",
+        "help",
+        "issue",
+        "label",
+        "org",
+        "pr",
+        "project",
+        "release",
+        "repo",
+        "ruleset",
+        "run",
+        "search",
+        "secret",
+        "ssh-key",
+        "gpg-key",
+        "status",
+        "variable",
+        "version",
+        "workflow",
+        "alias",
+        "config",
+        "extension",
+        "ext",
+        "extensions",
+    }
+)
+GH_VALUE_OPTIONS = frozenset({"-R", "--repo", "-h", "--host", "--hostname"})
+SED_LONG_OPTIONS = (
+    "--debug",
+    "--expression",
+    "--file",
+    "--follow-symlinks",
+    "--help",
+    "--in-place",
+    "--line-length",
+    "--null-data",
+    "--posix",
+    "--quiet",
+    "--regexp-extended",
+    "--sandbox",
+    "--separate",
+    "--silent",
+    "--unbuffered",
+    "--version",
+    "--zero-terminated",
+)
+SEARCH_VALUE_OPTIONS = frozenset({"-e", "--regexp", "-f", "--file", "-g", "--glob", "-t", "--type", "-T", "--type-not"})
+COMMAND_ENVIRONMENT = re.compile(
+    r"GIT_(?:PAGER|EDITOR|SEQUENCE_EDITOR|EXTERNAL_DIFF|SSH|SSH_COMMAND|ASKPASS|PROXY_COMMAND)"
+    r"|GH_(?:PAGER|EDITOR|BROWSER)|PAGER|EDITOR|VISUAL|BROWSER|LESSOPEN|LESSCLOSE"
+)
+CONFIGURATION_ENVIRONMENT = re.compile(
+    r"GIT_CONFIG(?!_NOSYSTEM$)\w*|GIT_EXEC_PATH|GIT_TEMPLATE_DIR|GH_CONFIG_DIR|RIPGREP_CONFIG_PATH"
+    r"|PYTHONPATH|PYTEST_\w+|BASH_ENV|ENV|LESSKEY\w*"
+)
+LESS_DATA_START = re.compile(r"\+\+?(?:\d*[gGF]?|/.*|\?.*)")
+READ_VALUE_OPTIONS = frozenset({"-p", "-d", "-n", "-N", "-t", "-u", "-i"})
+SORT_VALUE_OPTIONS = frozenset({"-o", "--output", "-k", "--key", "-t", "-T", "-S"})
+
+
+def long_option(argument: str, option: str, options: tuple[str, ...] = ()) -> bool:
+    flag = argument.partition("=")[0]
+    if flag == option:
         return True
+    return (
+        len(flag) > 3
+        and option.startswith(flag)
+        and not any(other != option and other.startswith(flag) for other in options)
+    )
+
+
+def short_option(argument: str, letter: str) -> bool:
+    return re.match(rf"-[A-Za-z0-9]*{letter}", argument) is not None and not argument.startswith("--")
+
+
+def option_words(arguments: list[str], value_options: frozenset[str]) -> Iterator[str]:
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "--":
+            return
+        if argument.startswith("-"):
+            yield argument
+            index += 2 if argument in value_options else 1
+            continue
+        index += 1
+
+
+def operands(arguments: list[str], value_options: frozenset[str]) -> list[str]:
+    words: list[str] = []
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "--":
+            return words + arguments[index + 1 :]
+        if argument.startswith("-") and argument != "-":
+            index += 2 if argument in value_options else 1
+            continue
+        words.append(argument)
+        index += 1
+    return words
+
+
+def safe_git_config(setting: str, value: str | None = None) -> bool:
+    key, equal, assigned = setting.partition("=")
+    key = key.lower()
+    value = assigned if equal else value
+    return (
+        key in SAFE_GIT_CONFIG
+        or key.startswith(("advice.", "color."))
+        or (key == "core.hookspath" and value == "/dev/null")
+        or ((key in GIT_COMMAND_SETTINGS or key.startswith("pager.")) and value in INERT_COMMANDS)
+    )
+
+
+def git_config_is_data(arguments: list[str]) -> bool:
+    flags = list(option_words(arguments, GIT_CONFIG_VALUE_OPTIONS))
+    if any(flag == "-e" or long_option(flag, "--edit") for flag in flags):
+        return False
+    if any(flag.partition("=")[0] in GIT_CONFIG_READ_OPTIONS for flag in flags):
+        return True
+    words = operands(arguments, GIT_CONFIG_VALUE_OPTIONS)
+    if words[:1] in (["get"], ["list"], ["unset"], ["remove-section"], ["rename-section"]):
+        return True
+    if words[:1] == ["edit"]:
+        return False
+    if words[:1] == ["set"]:
+        words = words[1:]
+    return len(words) < 2 or safe_git_config(words[0], words[1])
+
+
+def git_is_data(arguments: list[str]) -> bool:
+    index = 0
+    while index < len(arguments) and arguments[index].startswith("-"):
+        argument = arguments[index]
+        if argument == "-c":
+            if index + 1 >= len(arguments) or not safe_git_config(arguments[index + 1]):
+                return False
+            index += 2
+        elif argument in GIT_GLOBAL_VALUE_OPTIONS:
+            index += 2
+        elif argument in GIT_GLOBAL_FLAGS or argument.partition("=")[0] in GIT_GLOBAL_VALUE_OPTIONS:
+            index += 1
+        else:
+            return False
+    if index >= len(arguments):
+        return True
+    command, rest = arguments[index], arguments[index + 1 :]
+    if command not in GIT_DATA_COMMANDS:
+        return False
+    if command == "config":
+        return git_config_is_data(rest)
+    if command in GIT_EXECUTING_ACTIONS:
+        return GIT_EXECUTING_ACTIONS[command] not in operands(rest, frozenset())
+    return not any(
+        long_option(argument, option) if option.startswith("--") else short_option(argument, option[1])
+        for option in GIT_EXECUTING_OPTIONS.get(command, ())
+        for argument in option_words(rest, GIT_COMMAND_VALUE_OPTIONS.get(command, frozenset()))
+    )
+
+
+def gh_is_data(arguments: list[str]) -> bool:
+    words = operands(arguments, GH_VALUE_OPTIONS)
+    if not words:
+        return True
+    command, action = words[0], words[1] if len(words) > 1 else ""
+    if command not in GH_DATA_COMMANDS:
+        return False
+    if command == "alias":
+        return action not in {"set", "import"}
+    if command in {"ext", "extension", "extensions"}:
+        return action != "exec"
+    if command == "config":
+        return action != "set" or words[2:3] not in (["editor"], ["pager"], ["browser"])
+    if command == "repo":
+        return action != "clone" or "--" not in arguments
+    return True
+
+
+def sed_scripts(arguments: list[str]) -> list[str] | None:
+    scripts: list[str] = []
+    positionals: list[str] = []
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        index += 1
+        if argument == "--":
+            positionals.extend(arguments[index:])
+            break
+        if argument.startswith("--"):
+            if long_option(argument, "--sandbox", SED_LONG_OPTIONS):
+                return []
+            if long_option(argument, "--file", SED_LONG_OPTIONS):
+                return None
+            if long_option(argument, "--expression", SED_LONG_OPTIONS):
+                if "=" in argument:
+                    scripts.append(argument.partition("=")[2])
+                elif index < len(arguments):
+                    scripts.append(arguments[index])
+                    index += 1
+                else:
+                    return None
+            elif long_option(argument, "--line-length", SED_LONG_OPTIONS) and "=" not in argument:
+                index += 1
+            elif not any(long_option(argument, option, SED_LONG_OPTIONS) for option in SED_LONG_OPTIONS):
+                return None
+            continue
+        if not argument.startswith("-") or argument == "-":
+            positionals.append(argument)
+            continue
+        for offset, letter in enumerate(argument[1:], 2):
+            if letter == "f":
+                return None
+            if letter == "i":
+                break
+            if letter in "el":
+                value = argument[offset:]
+                if not value:
+                    if index >= len(arguments):
+                        return None
+                    value = arguments[index]
+                    index += 1
+                if letter == "e":
+                    scripts.append(value)
+                break
+            if letter not in {"n", "r", "E", "s", "u", "z"}:
+                return None
+    if not scripts:
+        if not positionals:
+            return None
+        scripts.append(positionals[0])
+    return scripts
+
+
+def sed_bracket_end(script: str, index: int) -> int | None:
+    index += 1
+    if index < len(script) and script[index] == "^":
+        index += 1
+    if index < len(script) and script[index] == "]":
+        index += 1
+    while index < len(script) and script[index] != "]":
+        if script[index] == "[" and index + 1 < len(script) and script[index + 1] in ":.=":
+            close = script.find(script[index + 1] + "]", index + 2)
+            if close < 0:
+                return None
+            index = close + 2
+            continue
+        index += 1
+    return index + 1 if index < len(script) else None
+
+
+def sed_delimited(script: str, index: int, delimiter: str, regex_parts: int, parts: int) -> int | None:
+    for part in range(parts):
+        while index < len(script) and script[index] != delimiter:
+            if script[index] == "\\":
+                index += 2
+                continue
+            if script[index] == "\n":
+                return None
+            if part < regex_parts and script[index] == "[":
+                end = sed_bracket_end(script, index)
+                if end is None:
+                    return None
+                index = end
+                continue
+            index += 1
+        if index >= len(script):
+            return None
+        index += 1
+    return index
+
+
+def sed_line_end(script: str, index: int) -> int:
+    while index < len(script) and script[index] != "\n":
+        index += 2 if script[index] == "\\" else 1
+    return index
+
+
+def sed_address(script: str, index: int) -> int | None:
+    while index < len(script):
+        character = script[index]
+        if character.isdigit() or character in "$,~+ \t!":
+            index += 1
+        elif character in "/\\":
+            if character == "\\":
+                if index + 1 >= len(script):
+                    return None
+                index += 1
+            end = sed_delimited(script, index + 1, script[index], 1, 1)
+            if end is None:
+                return None
+            index = end
+            while index < len(script) and script[index] in "IM":
+                index += 1
+        else:
+            return index
+    return index
+
+
+def sed_executes(script: str) -> bool:
+    index = 0
+    while index < len(script):
+        if script[index] in " \t\n;{}":
+            index += 1
+            continue
+        address_end = sed_address(script, index)
+        if address_end is None:
+            return True
+        if address_end >= len(script):
+            return False
+        index = address_end
+        command = script[index]
+        index += 1
+        if command in {"{", "}"}:
+            continue
+        if command == "e":
+            return True
+        if command in {"s", "y"}:
+            if index >= len(script):
+                return True
+            end = sed_delimited(script, index + 1, script[index], 1 if command == "s" else 0, 2)
+            if end is None:
+                return True
+            index = end
+            if command == "s":
+                while index < len(script) and script[index] not in " \t\n;}":
+                    if script[index] == "e":
+                        return True
+                    if script[index] in {"w", "W"}:
+                        index = sed_line_end(script, index)
+                        break
+                    if not (script[index].isdigit() or script[index] in {"g", "p", "i", "I", "m", "M"}):
+                        return True
+                    index += 1
+            continue
+        if command in {"a", "i", "c", "r", "R", "w", "W", "#"}:
+            index = sed_line_end(script, index)
+        elif command in {":", "b", "t", "T", "v", "l", "L", "q", "Q"}:
+            while index < len(script) and script[index] not in "\n;}":
+                index += 1
+        elif command not in {"=", "d", "D", "g", "G", "h", "H", "n", "N", "p", "P", "x", "z", "F"}:
+            return True
+    return False
+
+
+def sed_is_data(arguments: list[str]) -> bool:
+    scripts = sed_scripts(arguments)
+    return scripts is not None and not any(sed_executes(script) for script in scripts)
+
+
+def less_is_data(arguments: list[str]) -> bool:
+    options = arguments[: arguments.index("--")] if "--" in arguments else arguments
+    return not any(
+        (argument.startswith("+") and LESS_DATA_START.fullmatch(argument) is None)
+        or argument.startswith("--lesskey")
+        or re.match(r"-[^-+]*k", argument) is not None
+        for argument in options
+    )
+
+
+def subscript_is_data(arguments: list[str], name: str) -> bool:
+    if name == "read":
+        names = operands(arguments, READ_VALUE_OPTIONS)
+        names += [argument[2:] for argument in arguments if argument.startswith("-a") and len(argument) > 2]
+        return not any("[" in word for word in names)
+    if name == "printf":
+        first = arguments[0] if arguments else ""
+        destination = first[2:] or (arguments[1] if len(arguments) > 1 else "") if first.startswith("-v") else ""
+        return "[" not in destination
+    return not any(
+        argument in {"-v", "-R"} and index + 1 < len(arguments) and "[" in arguments[index + 1]
+        for index, argument in enumerate(arguments)
+    )
+
+
+def data_command_executes(argv: list[str]) -> bool:
+    position = command_position(argv)
+    if position is None or position.index >= len(argv):
+        return False
+    name = Path(argv[position.index]).name
+    arguments = argv[position.index + 1 :]
+    if name == "git":
+        return not git_is_data(arguments)
+    if name == "gh":
+        return not gh_is_data(arguments)
+    if name == "sed":
+        return not sed_is_data(arguments)
+    if name == "rg":
+        return any(argument.partition("=")[0] == "--pre" for argument in option_words(arguments, SEARCH_VALUE_OPTIONS))
+    if name == "sort":
+        return any(long_option(argument, "--compress-program") for argument in option_words(arguments, SORT_VALUE_OPTIONS))
+    if name == "less":
+        return not less_is_data(arguments)
+    if name in {"read", "printf", "test", "["}:
+        return not subscript_is_data(arguments, name)
+    return False
+
+
+def loads_test_code(argv: list[str]) -> bool:
+    position = command_position(argv)
+    return position is not None and position.index < len(argv) and Path(argv[position.index]).name == "pytest"
+
+
+def claim_text_outside(root: Node, node: Node) -> bool:
+    source = root.text or b""
+    return has_claim_text((source[: node.start_byte] + source[node.end_byte :]).decode(errors="replace"))
+
+
+def environment_executes(assignment: Node) -> bool:
+    name_node = assignment.child_by_field_name("name")
+    value_node = assignment.child_by_field_name("value")
+    name = name_node.text.decode() if name_node is not None and name_node.text is not None else ""
+    value = shell_word(value_node) if value_node is not None else ""
+    if name == "LESS":
+        return not less_is_data(value.split())
+    if COMMAND_ENVIRONMENT.fullmatch(name):
+        return value not in INERT_COMMANDS
+    return CONFIGURATION_ENVIRONMENT.fullmatch(name) is not None
+
+
+def accepts_claim_data(argv: list[str]) -> bool:
+    position = command_position(argv)
+    if position is None:
+        return False
+    name = Path(argv[position.index]).name if position.index < len(argv) else ""
+    if name in DATA_COMMANDS:
+        return not data_command_executes(argv)
     if name.endswith(".py") and name != "gh-plan.py":
         return True
     consumer = script_consumer(argv)
@@ -1592,6 +2260,8 @@ def shell_claims(text: str, *, claim_related: bool = False) -> ShellClaims:
             "case_statement",
         }:
             discovery.receipt_pure = False
+        if node.type == "variable_assignment":
+            discovery.opaque = discovery.opaque or (related and environment_executes(node))
         programs = list(input_programs(node))
         if node.type == "command":
             argv = command_argv(node)
@@ -1610,6 +2280,9 @@ def shell_claims(text: str, *, claim_related: bool = False) -> ShellClaims:
                 )
             name = node.child_by_field_name("name")
             discovery.opaque = discovery.opaque or bool(name is not None and shell_generated(name) and related)
+            discovery.opaque = discovery.opaque or (
+                loads_test_code(argv) and (claim_related or claim_text_outside(root, node))
+            )
             programs.extend(command_sources)
         for program in programs:
             discovery.receipt_pure = False
@@ -1651,12 +2324,16 @@ def claim_arguments(argv: list[str]) -> list[str] | None:
 def has_opaque_claim_execution(argv: list[str], covered: set[int], *, generated: bool = False, claim_related: bool = False) -> bool:
     if not argv or accepts_claim_data(argv):
         return False
+    position = command_position(argv)
+    if claim_related and unwrap_timeouts(argv) is None:
+        return True
+    if claim_related and data_command_executes(argv):
+        return True
     helper = next((index for index, argument in enumerate(argv) if Path(argument).name == "gh-plan.py"), None)
     if helper is not None and "claim" in argv[helper + 1 :]:
         return True
     if "claim" in argv and any("$" in argument or "`" in argument for argument in argv[: argv.index("claim")]):
         return True
-    position = command_position(argv)
     offset = position.index + 1 if position is not None else 0
     interpreter = is_interpreter(script_consumer(argv))
     if claim_related and any(

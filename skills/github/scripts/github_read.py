@@ -20,6 +20,7 @@ import subprocess
 import time
 import urllib.parse
 from collections.abc import Callable
+from datetime import datetime
 from typing import Any, NoReturn, Optional
 
 import github_api as github_api_core
@@ -32,6 +33,8 @@ from github_plan_status.workflow_runs import current_workflow_runs, workflow_exe
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 DEFAULT_GH = os.environ.get("GITHUB_READ_GH") or str(SCRIPT_DIR / "gh-with-env-token")
 EXPECTED_ACTOR = github_identity.automation_login()
+WORKFLOW_SETTLEMENT_GRACE_SECONDS = 300
+FAILED_CHECK_CONCLUSIONS = {"failure", "timed_out", "cancelled", "action_required", "startup_failure"}
 MERGE_STATE_STATUS = {
     "behind": "BEHIND",
     "blocked": "BLOCKED",
@@ -938,6 +941,45 @@ def current_check_runs(
     return current, superseded, complete
 
 
+def settle_workflow_from_jobs(
+    reader: GitHubReader, repo: str, run: dict[str, Any], *, now: float,
+) -> dict[str, Any]:
+    if run.get("status") != "in_progress" or workflow_execution_identity(run) is None:
+        return run
+    run_id = run["id"]
+    jobs = reader.paged_json(
+        f"/repos/{repo}/actions/runs/{run_id}/jobs",
+        step_prefix=f"settle_run_{run_id}_jobs", params={"filter": "latest"}, collection_key="jobs",
+    )
+    if not jobs or not any(job.get("run_attempt") == run["run_attempt"] for job in jobs):
+        return run
+    completions: list[float] = []
+    for job in jobs:
+        attempt = job.get("run_attempt")
+        if (job.get("run_id") != run_id or job.get("head_sha") != run["head_sha"]
+                or not isinstance(attempt, int) or isinstance(attempt, bool) or not 0 < attempt <= run["run_attempt"]
+                or job.get("status") != "completed"
+                or job.get("conclusion") not in FAILED_CHECK_CONCLUSIONS | {"success", "neutral", "skipped"}):
+            return run
+        try:
+            completed = datetime.fromisoformat(job["completed_at"])
+        except (KeyError, TypeError, ValueError):
+            return run
+        if completed.tzinfo is None:
+            return run
+        completions.append(completed.timestamp())
+    if now - max(completions) < WORKFLOW_SETTLEMENT_GRACE_SECONDS:
+        return run
+    conclusion = next((job["conclusion"] for job in jobs if job["conclusion"] in FAILED_CHECK_CONCLUSIONS), "success")
+    return {
+        **run, "status": "completed", "conclusion": conclusion,
+        "jobLevelSettlement": {
+            "runId": run_id, "conclusion": conclusion,
+            "message": f"Workflow run {run_id} settled from completed jobs after the grace period; GitHub still reports in_progress.",
+        },
+    }
+
+
 def pull_request_checks(
     reader: GitHubReader, repo: str, number: int, *, head_sha: Optional[str] = None,
     workflow_runs: Optional[list[dict[str, Any]]] = None,
@@ -993,17 +1035,23 @@ def pull_request_checks(
     except (GitHubReadError, GitHubReadShapeError):
         availability["workflowSelection"] = False
     normalized_statuses = [normalize_status(item) for item in statuses]
-    failure_conclusions = {"failure", "timed_out", "cancelled", "action_required", "startup_failure"}
-    failing = [item for item in normalized_checks if item.get("conclusion") in failure_conclusions]
+    failing = [item for item in normalized_checks if item.get("conclusion") in FAILED_CHECK_CONCLUSIONS]
     pending = [item for item in normalized_checks if item.get("status") != "completed"]
     current_runs = current_workflow_runs(workflow_runs or [], sha)["current"]
+    try:
+        now = time.time()
+        pending_run_ids = {check.get("runId") for check in pending}
+        current_runs = [run if run.get("id") in pending_run_ids else settle_workflow_from_jobs(reader, repo, run, now=now)
+                        for run in current_runs]
+    except (GitHubReadError, GitHubReadShapeError):
+        availability["workflowSettlement"] = False
     unfinished_runs = [run for run in current_runs if run.get("status") != "completed"]
     pending_workflows_without_checks = sum(
         not any(check.get("runId") == run.get("id") for check in pending)
         for run in unfinished_runs
     )
     failed_workflows_without_checks = sum(
-        run.get("status") == "completed" and run.get("conclusion") in failure_conclusions
+        run.get("status") == "completed" and run.get("conclusion") in FAILED_CHECK_CONCLUSIONS
         and not any(check.get("runId") == run.get("id") for check in failing)
         for run in current_runs
     )
@@ -1024,6 +1072,7 @@ def pull_request_checks(
             "pendingCount": len(pending) + len(pending_statuses) + pending_workflows_without_checks,
             "pendingWorkflowRunCount": pending_workflows_without_checks,
             "unfinishedWorkflowRunCount": len(unfinished_runs),
+            "jobLevelSettlements": [run["jobLevelSettlement"] for run in current_runs if "jobLevelSettlement" in run],
             "countsComplete": counts_complete,
             "countsAreLowerBounds": not counts_complete,
             "combinedState": combined_state if normalized_statuses and availability["combinedStatus"] else None,

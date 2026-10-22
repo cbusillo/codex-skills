@@ -160,8 +160,10 @@ can still contain an incomplete review; it remains a failure without a retry.
 - Run `uv run scripts/review_with_model.py check --author-provider openai --repo <repo>` to see which
   providers can read the repository from this machine before spending a review.
 - Anthropic and Google diff scratch stays inside the authorized checkout and is
-  removed after the run. Anthropic permission failures report `denied_targets`
-  with the read tool and a bounded path when the CLI supplies one; search
+  removed after the run. That makes the review a writer in the worktree: let it
+  finish before an inspection of the same worktree starts, or start it after.
+  Anthropic permission failures report `denied_targets` with the read tool and
+  a bounded path when the CLI supplies one; search
   patterns and other tool inputs are omitted. A denied read remains a failure.
 - Google uses `read_file` (`view_file`) for file reads, including
   successive line ranges for large files. If a shell command is refused, the
