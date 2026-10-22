@@ -607,6 +607,8 @@ def test_user_scoped_read_runs_as_the_person_on_opt_in() -> None:
             ("api", "user/repos", "-i=false"),
             ("api", "user/repos", "--input="),
             ("api", "user/repos", "-X", ""),
+            ("api", "/users/contributor-login/settings/billing/usage?year=2026&month=10"),
+            ("api", "users/Contributor-Login/settings/billing/usage/summary"),
         ):
             result = run_wrapper(env_file, classifier, identity, *args, gh_command=fake_gh, extra_env=opt_in)
             assert result.returncode == 0, (args, result.stderr)
@@ -623,6 +625,8 @@ def test_user_scoped_read_runs_as_the_person_on_opt_in() -> None:
             ("api", "repos/energee/node-appletv-remote/contents/subscription"),
             ("api", "repos/energee/node-appletv-remote"),
             ("api", "user"),
+            ("api", "users/another-person/settings/billing/usage"),
+            ("api", "users/contributor-login/repos"),
         ):
             result = run_wrapper(env_file, classifier, identity, *args, gh_command=fake_gh, extra_env=opt_in)
             assert result.returncode == 0, (args, result.stderr)

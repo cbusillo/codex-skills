@@ -70,7 +70,7 @@ class FakeTrain:
         self.merge_after = merge_after or {}
         self.closed: set[int] = set()
         self.updates = 0
-        self.failing: list[dict[str, str]] = []
+        self.checks: list[dict[str, Any]] = []
         self.companions: list[int] = []
         self.clock = 0.0
         self.sleeps: list[float] = []
@@ -109,8 +109,8 @@ class FakeTrain:
         self.updates += 1
         return True
 
-    def failing_checks(self, _repository: str, _sha: str) -> list[dict[str, str]]:
-        return self.failing
+    def candidate_checks(self, _repository: str, _sha: str) -> list[dict[str, Any]]:
+        return self.checks
 
     def sleep(self, seconds: float) -> None:
         self.clock += seconds
@@ -126,7 +126,7 @@ class FakeTrain:
             observe_controller=self.observe_controller,
             pull_request=self.pull_request,
             update_branch=self.update_branch,
-            failing_checks=self.failing_checks,
+            candidate_checks=self.candidate_checks,
             merged_since=lambda _repository, _since: {"numbers": self.companions, "complete": True},
             reconcile=self.reconcile,
             now=lambda: self.clock,
@@ -380,7 +380,7 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
     def test_malformed_candidate_check_response_emits_error(self) -> None:
         train = FakeTrain([_response("candidate_failed", candidate={"candidate_sha": "abc"})])
         io = train.io()
-        io.failing_checks = lambda *_args: (_ for _ in ()).throw(train_drive.github_read.GitHubReadShapeError("missing check_runs"))
+        io.candidate_checks = lambda *_args: (_ for _ in ()).throw(train_drive.github_read.GitHubReadShapeError("missing check_runs"))
         events = []
         outcome = train_drive.drive(train_drive.DriveSettings(repository=REPO, number=7, deadline=10000), io,
                                     lambda event, payload: events.append((event, payload)))
@@ -594,10 +594,11 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
 
     def test_a_failed_candidate_names_its_failing_check(self) -> None:
         train = FakeTrain([_response("candidate_failed", candidate={"candidate_sha": "abc"})])
-        train.failing = [{"name": "ci-gate", "conclusion": "failure", "url": "https://example.test/run/1"}]
+        train.checks = [{"name": "ci-gate", "status": "completed", "conclusion": "failure", "url": "https://example.test/run/1"},
+                        {"name": "lint", "status": "completed", "conclusion": "success", "url": ""}]
         outcome, events = _drive(train)
         self.assertEqual(outcome, "failed")
-        self.assertEqual(events[-1][1]["failing_checks"], train.failing)
+        self.assertEqual(events[-1][1]["failing_checks"], train.checks[:1])
 
     def test_failed_snapshot_keeps_service_recovery_evidence(self) -> None:
         diagnosis = {"action": "candidate_failed", "reason_code": "candidate_check_retry_used", "source_failed_record_id": "failed-record", "next_actor": "repository_agent"}
@@ -622,6 +623,20 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
         )
         outcome, _ = _drive(train)
         self.assertEqual(outcome, "landed")
+
+    def test_a_failed_candidate_waits_while_a_check_rerun_is_running(self) -> None:
+        failed = _response("candidate_failed", candidate={"candidate_sha": "abc"})
+        train = FakeTrain([failed] * 7 + [_response("plan_candidate"), _response("land_batch")], merge_after={7: 9})
+        train.checks = [{"name": "simulator", "status": "in_progress", "conclusion": None, "url": ""}]
+        outcome, _ = _drive(train)
+        self.assertEqual((outcome, train.calls), ("landed", 9))
+
+    def test_a_failed_candidate_with_only_finished_passing_checks_stops_at_the_limit(self) -> None:
+        train = FakeTrain([_response("candidate_failed", candidate={"candidate_sha": "abc"})])
+        train.checks = [{"name": "simulator", "status": "completed", "conclusion": "success", "url": ""}]
+        outcome, events = _drive(train)
+        self.assertEqual((outcome, train.calls), ("failed", 5))
+        self.assertEqual(events[-1][1]["reason"], "candidate_failed without a failing check")
 
     def test_a_behind_branch_needs_the_owner_unless_updates_are_allowed(self) -> None:
         outcome, _ = _drive(FakeTrain([_response("update_branch")]))
@@ -1412,8 +1427,8 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
         train = FakeTrain([_response("candidate_failed", candidate={"candidate_sha": "abc"})])
         def slow_checks(_repository: str, _sha: str) -> list[dict[str, str]]:
             train.clock += 30
-            return [{"name": "ci", "conclusion": "failure", "url": ""}]
-        train.failing_checks = slow_checks
+            return [{"name": "ci", "status": "completed", "conclusion": "failure", "url": ""}]
+        train.candidate_checks = slow_checks
         events = []
         io = train.io()
         # Work outside any measured call, such as local processing, is not sleep or a read.
