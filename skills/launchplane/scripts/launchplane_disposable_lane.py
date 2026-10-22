@@ -119,6 +119,12 @@ RECOVERY = (
     "review its binding, then re-run this command explicitly if it is still needed. Never change identity "
     "or use a provider call."
 )
+PREPARATION_RECOVERY = (
+    "Preserve the original request and operation ID. Re-inspect the lane; if its binding is unchanged, "
+    "review and explicitly resubmit that same preparation request. Do not retry automatically. A refusal "
+    "of a later attempt does not establish whether an earlier capture exists. Inspect cannot read that "
+    "capture or prove historical effects absent."
+)
 
 
 def add_parser(subparsers: Any) -> None:
@@ -541,7 +547,7 @@ def _recommendation(mode: str, status: str, body: dict[str, Any]) -> str:
     if mode == "prepare-rebuild":
         if status != "accepted":
             return ("The service accepted preparation, but the lane binding could not be confirmed afterwards. "
-                    "Preserve the original request; do not retry automatically. Capture readback is unavailable.")
+                    + PREPARATION_RECOVERY)
         return ("The service accepted the retained testing preparation. Only the lane binding was rechecked; "
                 "the separate capture record has no readback through inspect. Historical effects remain unknown. "
                 "No rebuild, resource deletion or hold release was performed.")
@@ -570,9 +576,7 @@ def _outcome_unknown(h: Any, args: argparse.Namespace, request: dict[str, object
         if key in diagnostics:
             output["summary"][key] = diagnostics[key]
     output["summary"]["recommendation"] = (
-        "The retained testing preparation may or may not be stored. Preserve the original request and operation ID; "
-        "do not retry automatically or change identity. Inspect can recheck the lane binding, but cannot verify "
-        "the separate capture record or historical provider effects."
+        "The retained testing preparation may or may not be stored. " + PREPARATION_RECOVERY
         if preparation else
         "The observation may or may not have been cleared. Do not retry automatically. Run disposable-lane-inspect "
         "and review the current binding and report before another explicit clear. Never change identity or use a provider call."

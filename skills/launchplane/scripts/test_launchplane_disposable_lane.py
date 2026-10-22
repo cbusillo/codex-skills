@@ -583,6 +583,23 @@ def test_prepare_rebuild_requires_the_complete_service_receipt(field: str) -> No
     assert code != 0 and len(calls) == 1 and output["status"] == "outcome_unknown"
 
 
+@pytest.mark.parametrize("refused", [False, True])
+def test_prepare_rebuild_can_be_explicitly_resubmitted_after_an_unknown_exchange(refused: bool) -> None:
+    code, output, calls, _ = invoke("prepare-rebuild", responses=[TimeoutError("PRIVATE_SENTINEL")])
+    assert code != 0 and output["status"] == "outcome_unknown" and len(calls) == 1
+    responses = ([http_error(409, "disposable_observation_refused")] if refused else
+                 [receipt("prepare-rebuild"), receipt("inspect")])
+    retried_code, retried, retry_calls, _ = invoke("prepare-rebuild", responses=responses)
+    assert calls[0]["body"] == retry_calls[0]["body"]
+    if refused:
+        assert retried_code != 0 and len(retry_calls) == 1
+        assert not retried.get("result")
+    else:
+        assert retried_code == 0 and len(retry_calls) == 2
+        assert retried["result"]["historical_effects"] == "unknown"
+        assert retried["result"]["effect_readback"] == "unavailable"
+
+
 @pytest.mark.parametrize("mode", lane.MODES)
 @pytest.mark.parametrize("status,code", [(403, "authorization_denied"), (404, "disposable_lane_not_found"),
                                          (409, "disposable_observation_refused")])

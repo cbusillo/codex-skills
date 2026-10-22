@@ -93,7 +93,7 @@ For the producer's supported modes and requirements, read
 [the producer contract and caller bindings](agent-operator-contract.md).
 
 Each command requires `--payload-file /absolute/private/request.json` outside
-the repository. Its fields are `product`, `context`, `instance` and an optional
+the repository. Inspect, collect, record and clear use `product`, `context`, `instance` and an optional
 `preview_id`. Collect and record also accept `lifetime_seconds` (1 to 900,
 default 300). Record also accepts `usage` (`unknown`, `unused`, `in_use`),
 `data` (`unknown`, `reproducible`, `only_copy`), `production_resources`
@@ -139,6 +139,11 @@ lane, delete resources, resolve holds or attest to historical provider effects.
 The receipt must match the requested operation and reviewed binding, return
 `historical_effects=unknown` and state `provider_mutation=false`. There is no
 dry-run mode or idempotency key; inspect is the supported lane review step.
+The subsequent record form carrying `replaces_operation_id` is not installed;
+preparation alone does not install replacement allocation, evidence or
+supersession callers. Follow the producer's `docs/disposable-lanes.md` for
+that workflow; remaining catalog callers belong to
+[codex-skills#1308](https://github.com/cbusillo/codex-skills/issues/1308).
 
 Output never echoes the product, context, instance, preview ID, evidence
 references, replaced operation ID or the observing identity. The request shows only the mode, the
@@ -188,9 +193,13 @@ the operation ID is omitted. `effect_readback=unavailable` remains explicit:
 inspect cannot read the separate preparation record. A matching binding permits
 `accepted`, but does not verify that capture. A failed or changed binding gives
 `accepted_unverified`. A lost or malformed prepare exchange gives
-`outcome_unknown`; preserve the original request and operation ID, and do not
-retry automatically. Inspect cannot resolve that capture uncertainty or prove
-historical effects absent.
+`outcome_unknown`. Preserve the original request and operation ID. Re-inspect
+the lane; when its binding is unchanged, review and explicitly resubmit the same
+preparation request. The service preserves an existing capture instead of
+overwriting it. Do not retry automatically. A later refusal stops that attempt
+but does not establish whether an earlier capture exists, for example when the
+operation has since left `reconciliation_required`. Inspect cannot resolve
+that capture uncertainty or prove historical effects absent.
 
 Recording facts for a preview also requests a preview reconcile, reported as
 `reconcile_requested=true`.

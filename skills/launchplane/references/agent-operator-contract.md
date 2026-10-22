@@ -34,5 +34,5 @@ For private testing activation and transport planning, read the producer's
 `docs/private-testing-transport.md`. For
 installed disposable-lane inspect, collect, record, clear and prepare-rebuild commands, read the
 [disposable lane contract](write-action-helper-contract.md#disposable-lane-observations).
-Prepare-rebuild still needs its separate consumer implementation;
-source contract coverage alone does not install it.
+Subsequent replacement allocation and replacement-qualified record callers
+remain separate consumer work on [codex-skills#1308](https://github.com/cbusillo/codex-skills/issues/1308).
