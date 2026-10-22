@@ -501,14 +501,18 @@ class ClaimTests(unittest.TestCase):
         self.assert_no_writes()
 
     def test_pr_only_source_release_skips_closed_canonical_references(self) -> None:
-        for references in ("Refs #43\nRefs #42", "Refs #42\nRefs #43"):
-            with self.subTest(references=references):
+        for references, released_owner in product(("Refs #43\nRefs #42", "Refs #42\nRefs #43"), (False, True)):
+            with self.subTest(references=references, released_owner=released_owner):
                 self.setUp()
                 self.released_issue_pr_fixture()
                 self.pulls[0]["body"] = references
                 self.targets["43"] = {**copy.deepcopy(self.targets["42"]), "number": 43,
                                       "state": "closed", "state_reason": "not_planned"}
                 self.target_comments["/repos/owner/repo/issues/43/comments"] = []
+                if released_owner:
+                    self.target_comments["/repos/owner/repo/issues/43/comments"] = [
+                        {"id": 20, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}, "created_at": OTHER["claimed_at"]},
+                        {"id": 21, "body": "Released claim 20", "user": {"login": TEST_BOT}, "created_at": "2026-10-02T00:00:00Z"}]
                 before = copy.deepcopy((self.inventory, self.pulls))
                 self.run_claim()
                 result = self.emitted.call_args.args[0]
@@ -517,7 +521,7 @@ class ClaimTests(unittest.TestCase):
                 self.assertEqual(result["claim"]["retained_handoff"], CLAIM.handoff_url("owner/repo", 42, self.handoff_id))
                 self.assertEqual((self.inventory, self.pulls), before)
 
-    def test_closed_pr_reference_preserves_unreleased_claims(self) -> None:
+    def test_closed_issue_reference_preserves_unreleased_claims(self) -> None:
         for retained_source in (False, True):
             with self.subTest(retained_source=retained_source):
                 self.setUp()
