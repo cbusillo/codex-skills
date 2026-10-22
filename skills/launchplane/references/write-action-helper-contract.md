@@ -1276,19 +1276,17 @@ with `status: "incomplete"` may still have a local token source; read the
 
 ## Response prose
 
-Output-only prose uses the same redaction for top-level and nested fields.
-This includes allowance reasons/evidence in changes and readback, sharing
-reasons/evidence, hold snapshots and rehearsal provenance, protected-artifact
-warnings, activity titles/summaries, and service diagnostic text. Credential
-assignments, tokens and URLs are redacted; a remaining denylist marker hides
-the entire field rather than rejecting an otherwise valid response. Type and
-length checks, structural allowlists, identifiers, timestamps, codes and
-review digests retain their existing validation. Read projections that refuse
-secret-shaped raw values still refuse them before projecting prose.
+Output-only prose is redacted at every nesting level. Person-written metadata
+also redacts long opaque words; service diagnostics preserve ordinary setting
+names and hashes. Credential assignments, tokens and URLs are redacted, and
+remaining denylist markers hide the entire field. Types, lengths, structural
+allowlists and raw secret-shape checks retain their existing validation.
+The context helper uses the same service-prose projection.
 
-Reasons used to compare a request with saved reviewed evidence (testing-hold,
-product Client and image repository) retain strict projection. A redacted
-field cannot substitute for that comparison or establish apply authority.
+Reasons compared with saved reviewed evidence (testing-hold, product Client
+and image repository), merge-train `ineligible_reasons` matched by downstream
+code, and structural fields retain strict validation. Lossy prose never
+establishes apply authority or substitutes for machine-matched protocol text.
 If an allowance apply receives HTTP success but its response cannot be
 projected, its result is `accepted_unverified`, with HTTP status, safe trace
 and a readback recommendation. It must not be retried as a failed write.

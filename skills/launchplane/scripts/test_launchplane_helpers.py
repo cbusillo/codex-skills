@@ -2733,8 +2733,8 @@ def test_integration_allowance_removal_with_credential_prose() -> None:
         for change in output["result"]["changes"]:
             for side in ("before", "after"):
                 if side in change:
-                    assert change[side]["reason"] == "[redacted]"
-                    assert change[side]["evidence"] == "[redacted]"
+                    assert isinstance(change[side]["reason"], str) and change[side]["reason"]
+                    assert isinstance(change[side]["evidence"], str) and change[side]["evidence"]
         assert "fixture-private-value" not in json.dumps(output)
         assert len(posts) == 1 and not reads
         assert posts[0]["body"] == {**request, "mode": "dry-run"}
@@ -2750,7 +2750,7 @@ def test_integration_allowance_removal_with_credential_prose() -> None:
         read_output = write_action.summarize_integration_allowances_read(
             request={}, provider_payload=read_response
         )
-        assert all(item["reason"] == "[redacted]" for item in read_output["result"]["allowances"])
+        assert all(isinstance(item["reason"], str) and item["reason"] for item in read_output["result"]["allowances"])
         assert "fixture-private-value" not in json.dumps(read_output)
         evidence_file = _write_json(directory, "review.json", output)
         applied = copy.deepcopy(response)
@@ -4349,7 +4349,7 @@ def test_reconcile_requests_read_keeps_a_summary_that_lists_many_keys() -> None:
 
     assert status == 0
     (request,) = payload["result"]["requests"]
-    assert request["last_plan"]["last_failed_error_summary"] == write_action.public_operator_text(summary, max_length=1500)
+    assert request["last_plan"]["last_failed_error_summary"] == summary
 
 
 def test_reconcile_requests_read_keeps_testing_operation_ids() -> None:
@@ -11135,7 +11135,7 @@ def test_simple_apply_unreadable_receipts_keep_projection_recovery(operation, bo
 
 @pytest.mark.parametrize("prose", [
     "Existing testing credentials for the development store.",
-    "cookie Abc.Def9", "password=fixture-private-value", "ghp_" + "a" * 36,
+    "cookie Abc.Def9", "password=fixture-private-value", "ghp_" + "a" * 36, "credentials:",
 ])
 def test_nested_operator_prose_redacts_without_rejecting(prose: str) -> None:
     sharing = write_action._project_sharing_reason({
@@ -11148,12 +11148,13 @@ def test_nested_operator_prose_redacts_without_rejecting(prose: str) -> None:
         },
     })
     warning = write_action._protected_artifact_warning(prose)
-    assert sharing == {"kind": "read_only_source", "reason": "[redacted]", "evidence": "[redacted]"}
-    assert hold["reason"] == "[redacted]"
-    assert hold["rehearsal"]["target_updated_at"] == "[redacted]"
-    assert hold["rehearsal"]["target_source_label"] == "[redacted]"
-    assert warning == "[redacted]"
-    write_action.assert_public_safe_shape({"sharing": sharing, "hold": hold, "warning": warning})
+    for value in (sharing["reason"], sharing["evidence"], hold["reason"],
+                  hold["rehearsal"]["target_updated_at"], hold["rehearsal"]["target_source_label"], warning):
+        assert isinstance(value, str) and value
+    result = {"sharing": sharing, "hold": hold, "warning": warning}
+    for private in ("Abc.Def9", "fixture-private-value", "ghp_" + "a" * 36):
+        assert private not in json.dumps(result)
+    write_action.assert_public_safe_shape(result)
 
 
 @pytest.mark.parametrize("prose", ["Waiting for credentials to be removed.", "cookie Abc.Def9"])
@@ -11163,7 +11164,45 @@ def test_nested_service_prose_redacts_without_rejecting(prose: str) -> None:
     event = write_action._project_product_activity_event({
         "event_id": "event-1", "event_type": "testing.updated", "title": prose, "summary": prose,
     }, drops)
-    assert blocked == {"code": "not_ready", "message": "[redacted]"}
-    assert event["title"] == "[redacted]" and event["summary"] == "[redacted]"
+    assert blocked["message"] and event["title"] and event["summary"]
+    assert "Abc.Def9" not in json.dumps({"blocked": blocked, "event": event})
     assert not drops.paths
     write_action.assert_public_safe_shape({"blocked": blocked, "event": event})
+
+
+@pytest.mark.parametrize("prose", [
+    "Launchplane rejected the request: lane busy",
+    "The required value:",
+    "Observed OPW_ODOO_19_DATABASE_NAME and GA4_MEASUREMENT_ID_PRIMARY",
+])
+def test_service_prose_preserves_diagnostic_identifiers_and_ordinary_colons(prose: str) -> None:
+    result = write_action._project_merge_train_blocking_reason({"code": "not_ready", "message": prose})
+    assert result["message"] == prose
+
+
+def test_service_prose_with_a_denied_word_and_empty_assignment_still_projects() -> None:
+    result = write_action._project_merge_train_blocking_reason({
+        "code": "not_ready", "message": "Check credentials; the required value:",
+    })
+    assert isinstance(result["message"], str) and result["message"]
+    write_action.assert_public_safe_shape(result)
+
+
+def test_context_prose_with_credentials_still_projects() -> None:
+    graph = context_helper._project_work_graph_item({
+        "next_action": "Add the Shopify credentials to the testing lane.",
+        "why_now": "Testing credentials were rotated.",
+    })
+    preview = context_helper._project_preview_item({"detail": "Testing credentials were rotated."})
+    assert graph["next_action"] and graph["why_now"] and preview["detail"]
+    write_action.assert_public_safe_shape({"graph": graph, "preview": preview})
+
+
+def test_merge_train_protocol_reasons_preserve_machine_matched_labels() -> None:
+    reasons = ["missing queue-for-testing-2026 label"]
+    projected = write_action._project_merge_train_queue_entry({
+        "number": 17, "head_sha": "a" * 40, "actor_role": "agent", "mergeable": "MERGEABLE",
+        "required_checks_status": "pass", "eligible": False, "branch_update_required": False,
+        "ineligible_reasons": reasons,
+    })
+    assert projected["ineligible_reasons"] == reasons
