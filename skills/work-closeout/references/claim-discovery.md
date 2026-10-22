@@ -37,8 +37,12 @@ execution and goes through claim discovery and canonical release checks. Map
 arrays and parameters must have no other code references; direct `eval` stays
 conditional. Command objects with duplicate command fields, spreads, computed
 keys or accessors also stay conditional. Other statements before the call,
-mutations, unknown values, escaped literals or templates, inexact numeric values
-and shell syntax in values keep the invocation conditional. This is literal
+mutations, additional template substitutions, escaped identifiers, escaped keys,
+escaped array values or templates, inexact numeric values and shell syntax in
+values keep the invocation conditional. Quoted commands support only escapes
+shared by JavaScript and Python, including quoted newlines and hexadecimal or
+four-digit Unicode escapes. Use a plain command key and keep unrelated template
+substitutions in a separate code cell. This is literal
 decoding, never JavaScript execution.
 
 A shell variable assigned once to a literal value at the top level, and a `for`

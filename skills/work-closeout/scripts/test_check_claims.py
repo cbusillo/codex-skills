@@ -1490,6 +1490,43 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.assertEqual(len(report["blocked"]), 2)
         self.assertEqual(report["unresolved_invocations"], [])
 
+    def test_javascript_hidden_mutations_and_unshared_escapes_remain_conditional(self) -> None:
+        mapped = "const xs=[1,2]; await Promise.all(xs.map(n=>tools.exec_command({%s})));"
+        command = "cmd:`uv run gh-plan.py --repo test/a claim ${n}`"
+        sources = [
+            mapped % (command + ",workdir:`${xs[1]=3}`"),
+            mapped % ("workdir:`${n=3}`," + command),
+            mapped % (command + ',workdir:`${eval("xs[1]=3")}`'),
+            mapped % command + "text(`${xs[1]=3}`);",
+            mapped % (command + r",max_output_tokens:(\u0078s[1]=3)"),
+            mapped % (r"workdir:(\u006e=3)," + command),
+            r"text(await tools.exec_command({cmd:`echo ok\nuv run gh-plan.py --repo test/a claim 7`}));",
+            r'text(await tools.exec_command({cmd:"uv run gh-plan.py --repo test/a cl\aim 7"}));',
+            r'text(await tools.exec_command({cmd:"uv run gh-plan.py --repo test/a claim 1","\cmd":"uv run gh-plan.py --repo test/a claim 2"}));',
+        ]
+        for source in sources:
+            rows = [{"payload": {"type": "custom_tool_call", "name": "exec", "call_id": "hidden", "input": source}}]
+            with self.subTest(source=source):
+                self.assertTrue(helper.history.literal_targets(rows, SESSION)["unresolved_invocations"])
+
+    def test_shared_javascript_string_escapes_and_template_newlines_preserve_targets(self) -> None:
+        commands = [
+            ('"echo ok\\nuv run gh-plan.py --repo test/a claim 7"', 7),
+            ("\"cat <<'EOF'\\nuv run gh-plan.py --repo test/a claim 7\\nEOF\\nuv run gh-plan.py --repo test/a claim 8\"", 8),
+            (r'"uv run gh-plan.py --repo test/a cl\x61im 7"', 7),
+            (r'"uv run gh-plan.py --repo test/a cl\u0061im 7"', 7),
+            ("`echo ok\nuv run gh-plan.py --repo test/a claim 7`", 7),
+            ("`echo ok\ruv run gh-plan.py --repo test/a claim 7`", 7),
+            ("`echo ok\r\nuv run gh-plan.py --repo test/a claim 7`", 7),
+        ]
+        for command, number in commands:
+            source = "text(await tools.exec_command({cmd:" + command + "}));"
+            rows = [{"payload": {"type": "custom_tool_call", "name": "exec", "call_id": "literal", "input": source}}]
+            with self.subTest(command=command):
+                self.assertEqual(
+                    helper.history.literal_targets(rows, SESSION), {"targets": {(REPO, number)}, "unresolved_invocations": []}
+                )
+
     def test_poll_binding_work_grows_with_native_input_size(self) -> None:
         rows = []
         for process in range(40):

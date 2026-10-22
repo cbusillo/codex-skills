@@ -425,6 +425,8 @@ def command_literal(text: str, start: int, literal: str) -> list[str] | None:
             continue
         key = field[0]
         if re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", key) is None:
+            if "\\" in key:
+                return None
             try:
                 key = ast.literal_eval(key)
             except (SyntaxError, ValueError):
@@ -439,10 +441,12 @@ def command_literal(text: str, start: int, literal: str) -> list[str] | None:
             return None
         value = field[2]
         if value.startswith("`"):
-            command = literal_template(text, start, value) if "${" in value else [value[1:-1]]
+            command = literal_template(text, start, value)
             if command is None:
                 return None
             continue
+        if re.fullmatch(r"(?:[^\\]|\\(?:[\\\"'nrtbfv]|x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}))*", value) is None:
+            return None
         try:
             command = [ast.literal_eval(value)]
         except (ValueError, SyntaxError):
@@ -456,6 +460,13 @@ JAVASCRIPT_PATCH = re.compile(r"\btools\.apply_patch\s*\(\s*(?:" + JAVASCRIPT_LI
 
 
 def literal_template(text: str, start: int, template: str) -> list[str] | None:
+    if "\\" in template:
+        return None
+    body = template[1:-1].replace("\r\n", "\n").replace("\r", "\n")
+    if "${" not in body:
+        return [body]
+    if text.count("${") != template.count("${"):
+        return None
     tokens = re.findall(JAVASCRIPT_LITERAL + r"|//[^\n]*|/\*.*?\*/|[A-Za-z_$][A-Za-z0-9_$]*|[0-9]+|[^\s]", text[:start], re.DOTALL)
     code = " ".join(token for token in tokens if not token.startswith(("//", "/*")))
     binding = r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)"
@@ -472,9 +483,11 @@ def literal_template(text: str, start: int, template: str) -> list[str] | None:
             + call,
             code,
         )
-    if match is None or "\\" in template or "\\" in match["values"]:
+    if match is None or "\\" in match["values"]:
         return None
-    names = re.findall(JAVASCRIPT_LITERAL + r"|//[^\n]*|/\*.*?\*/|(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)", text, re.DOTALL)
+    names = re.findall(JAVASCRIPT_LITERAL + r"|//[^\n]*|/\*.*?\*/|(?P<name>[A-Za-z_$][A-Za-z0-9_$]*|\\)", text, re.DOTALL)
+    if "\\" in names:
+        return None
     if "eval" in names or ("array" in match.re.groupindex and (names.count(match["array"]) != 2 or names.count(match["name"]) != 1)):
         return None
     try:
@@ -491,7 +504,6 @@ def literal_template(text: str, start: int, template: str) -> list[str] | None:
     ):
         return None
     marker = "${" + match["name"] + "}"
-    body = template[1:-1]
     if "${" in body.replace(marker, ""):
         return None
     commands = [body.replace(marker, str(value)) for value in values]
