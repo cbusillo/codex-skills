@@ -6,10 +6,12 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import tempfile
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import github_plan_release as release
@@ -24,7 +26,8 @@ class HistoricalTerminationTests(fixtures.ReleaseHarness):
         self.directory = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
         self.native = "e5bd6d9f-d638-4a78-a6d1-ae9f8944beca"
         self.transcript = self.directory / f"{self.native}.jsonl"
-        self.observer = self.directory / "observer.jsonl"
+        self.observer = self.directory / "sessions" / "observer.jsonl"
+        self.observer.parent.mkdir()
         self.exit_row = json.loads((Path(__file__).parent / "fixtures/native-exit-command.json").read_text())
         self.exit_row["timestamp"] = "2026-10-01T00:10:01Z"
         self.exit_row["payload"].update(
@@ -84,6 +87,9 @@ class HistoricalTerminationTests(fixtures.ReleaseHarness):
         ]
         self.path = self.directory / "termination.json"
         self.args.termination_record = self.path
+        self.original_native_check = ended.verify_native_inventory
+        self.native_check = self.enterContext(patch.object(ended, "verify_native_inventory"))
+        self.enterContext(patch.object(ended.sessions, "configured_homes", return_value=[self.directory]))
         self.enterContext(patch.object(ended, "configured_roots", return_value={self.directory}))
         self.enterContext(patch.object(ended.termination, "inventory", return_value=[]))
         self.enterContext(patch.object(ended.termination.socket, "gethostname", return_value="source-host"))
@@ -149,7 +155,7 @@ class HistoricalTerminationTests(fixtures.ReleaseHarness):
                 self.save()
         self.f.assert_no_writes()
 
-    def test_second_account_copy_and_canonical_resume_veto_exit(self) -> None:
+    def test_source_copy_and_canonical_resume_veto_exit(self) -> None:
         second = self.directory / "second"
         second.mkdir()
         copy = second / self.transcript.name
@@ -229,7 +235,7 @@ class HistoricalTerminationTests(fixtures.ReleaseHarness):
         self.assertIsNotNone(release.receipt_for({"body": body}))
         self.f.assert_no_writes()
 
-    def test_subagent_and_partial_source_copy_only_veto_later_activity(self) -> None:
+    def test_subagent_only_vetoes_later_activity(self) -> None:
         child = self.directory / self.native / "subagents" / "agent-example.jsonl"
         child.parent.mkdir(parents=True)
         child.write_text(
@@ -268,6 +274,52 @@ class HistoricalTerminationTests(fixtures.ReleaseHarness):
             patch.object(shared, "process_started_at", return_value=release.stamp("2026-10-01T00:20:00Z")),
         ):
             self.attest()
+
+    def test_native_source_inventory_vetoes_an_explicit_other_launch(self) -> None:
+        self.native_check.side_effect = self.original_native_check
+        account = {"provider": "anthropic", "env": {}}
+        with (
+            patch.object(ended, "source_accounts", return_value=[account]),
+            patch.object(ended.subprocess, "run", return_value=SimpleNamespace(stdout=json.dumps([{"sessionId": self.native}]))),
+            self.assertRaises(ValueError),
+        ):
+            self.test_explicit_other_process_started_after_exit_can_keep_working()
+
+    def test_native_source_can_appear_between_process_checks(self) -> None:
+        self.native_check.side_effect = [None, ValueError("Source native session is active")]
+        with self.assertRaises(ValueError):
+            self.attest()
+
+    def test_renamed_source_copy_in_another_project_vetoes_later_activity(self) -> None:
+        folder = self.directory / "second-project"
+        folder.mkdir()
+        path = folder / "renamed.jsonl"
+        path.write_text(
+            self.transcript.read_text()
+            + json.dumps(
+                {"sessionId": self.native, "timestamp": "2026-10-01T00:20:00Z", "type": "user", "message": {"content": "resumed"}}
+            )
+            + "\n"
+        )
+        os.utime(path, (1759276800, 1759276800))
+        with self.assertRaises(ValueError):
+            self.attest()
+
+    def test_original_source_and_observer_must_remain_in_covered_roots(self) -> None:
+        with patch.object(ended, "configured_roots", return_value={self.directory / "sessions"}), self.assertRaises(ValueError):
+            self.attest()
+        with (
+            patch.object(ended.sessions, "configured_homes", return_value=[self.directory / "elsewhere"]),
+            self.assertRaises(ValueError),
+        ):
+            self.attest()
+
+    def test_direct_argv_exit_is_supported_and_last_activity_is_the_transcript_time(self) -> None:
+        self.exit_row["payload"]["item"]["command"] = ["claude", "--session-id", self.native]
+        self.save()
+        data = ended.termination.verify(self.record, self.record["claim_session"])
+        self.assertEqual(release.stamp(data["last_activity_at"]), release.stamp(self.rows[-1]["timestamp"]))
+        self.assertLess(release.stamp(data["last_activity_at"]), release.stamp(data["ended_at"]))
 
     def test_native_claim_also_requires_unique_receipt_and_fresh_source_binding(self) -> None:
         claim = {**self.record["claim"], "session": self.native}
@@ -352,6 +404,8 @@ class HistoricalTerminationTests(fixtures.ReleaseHarness):
         other = "claude --resume f5bd6d9f-d638-4a78-a6d1-ae9f8944beca"
         for command, bounded, born in (
             ("claude", True, "2026-10-01T00:20:00Z"),
+            ("claude --session-id f5bd6d9f-d638-4a78-a6d1-ae9f8944beca", True, "2026-10-01T00:20:00Z"),
+            ("claude --unknown-option", True, "2026-10-01T00:20:00Z"),
             (other, False, "2026-10-01T00:20:00Z"),
             (other, True, "2026-09-30T00:00:00Z"),
         ):
@@ -456,10 +510,12 @@ class ClaimReceiptBoundaryTests(unittest.TestCase):
     def test_real_native_completion_fixture_supplies_original_exit(self) -> None:
         row = json.loads((Path(__file__).parent / "fixtures/native-exit-command.json").read_text())
         with tempfile.TemporaryDirectory() as folder:
-            path = Path(folder) / "observer.jsonl"
+            path = Path(folder) / "sessions" / "observer.jsonl"
+            path.parent.mkdir()
             identity = row["payload"]["thread_id"]
             path.write_text(json.dumps({"type": "session_meta", "payload": {"id": identity}}) + "\n" + json.dumps(row) + "\n")
-            source = "673145b1-3867-476f-993c-d484352a8004"
+            argv = shlex.split(row["payload"]["item"]["command"][2])
+            source = argv[argv.index("--session-id") + 1]
             record = {
                 "session_id": source,
                 "exit_record": {
@@ -469,12 +525,40 @@ class ClaimReceiptBoundaryTests(unittest.TestCase):
                     "execution_id": row["payload"]["item"]["id"],
                 },
             }
-            evidence = ended.original_exit(record)
+            with patch.object(ended.sessions, "configured_homes", return_value=[Path(folder)]):
+                evidence = ended.original_exit(record)
             self.assertLess(evidence.started_at, evidence.ended_at)
             self.assertLessEqual(evidence.ended_at, release.stamp(row["timestamp"]))
 
 
 class HistoryCoverageTests(unittest.TestCase):
+    def test_native_inventory_is_negative_only_and_every_account_must_answer(self) -> None:
+        fixture = json.loads((Path(__file__).parent / "fixtures/native-session-inventory.json").read_text())
+        accounts = [{"provider": "anthropic", "env": {}}, {"provider": "anthropic", "env": {"CLAUDE_CONFIG_DIR": "/second"}}]
+        source = "e5bd6d9f-d638-4a78-a6d1-ae9f8944beca"
+        with patch.object(ended, "source_accounts", return_value=accounts):
+            with patch.object(ended.subprocess, "run", return_value=SimpleNamespace(stdout=json.dumps(fixture["rows"]))):
+                ended.verify_native_inventory({"session_id": source})
+                for row in fixture["rows"]:
+                    with self.subTest(row=row), self.assertRaises(ValueError):
+                        ended.verify_native_inventory({"session_id": row["sessionId"]})
+            for result in ({}, [{"sessionId": None}], "invalid-json"):
+                with (
+                    self.subTest(result=result),
+                    patch.object(
+                        ended.subprocess,
+                        "run",
+                        side_effect=[
+                            SimpleNamespace(stdout=json.dumps(fixture["rows"])),
+                            SimpleNamespace(stdout=json.dumps(result)),
+                        ],
+                    ),
+                    self.assertRaises((ValueError, TypeError)),
+                ):
+                    ended.verify_native_inventory({"session_id": source})
+            with patch.object(ended.subprocess, "run", side_effect=OSError("account unavailable")), self.assertRaises(OSError):
+                ended.verify_native_inventory({"session_id": source})
+
     def test_configured_accounts_are_required_and_unreadable_accounts_refuse(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

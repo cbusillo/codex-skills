@@ -4,6 +4,8 @@
 # dependencies = [
 #     "PyYAML==6.0.3",
 #     "aiohttp==3.14.5",
+#     "tree-sitter==0.26.0",
+#     "tree-sitter-bash==0.25.1",
 # ]
 # ///
 """Compact GitHub issue planning helper for Codex skills."""

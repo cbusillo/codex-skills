@@ -1,12 +1,13 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = ["tree-sitter==0.26.0", "tree-sitter-bash==0.25.1"]
 # ///
 from __future__ import annotations
 
 import json
 import os
 import re
+import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -16,6 +17,30 @@ from typing import Any
 import github_plan_closure as closure
 import github_plan_sessions as sessions
 import github_plan_termination as termination
+
+
+def source_accounts() -> list[dict[str, Any]]:
+    config = sessions.native_helpers()[0].load_config(path=closure.closed_log().with_name("supervisor.toml"))
+    accounts = [account for account in config["accounts"] if account["provider"] == "anthropic"]
+    if not accounts:
+        raise ValueError("Configured source account coverage is unavailable")
+    return accounts
+
+
+def verify_native_inventory(record: dict[str, Any]) -> None:
+    for account in source_accounts():
+        env = {key: value for key, value in os.environ.items() if key != "CLAUDE_CONFIG_DIR"}
+        env.update({key: os.path.expanduser(value) for key, value in account["env"].items()})
+        result = subprocess.run(["claude", "agents", "--json"], env=env, check=True, capture_output=True, text=True, timeout=10)
+        agents = json.loads(result.stdout)
+        if not isinstance(agents, list):
+            raise TypeError("Native session inventory is uncertain; preserve claims")
+        for agent in agents:
+            identity = sessions.process_liveness().native_uuid(agent.get("sessionId")) if isinstance(agent, dict) else None
+            if identity is None:
+                raise ValueError("Native session inventory identity is uncertain; preserve claims")
+            if identity == record["session_id"]:
+                raise ValueError("Source native session remains in the native inventory; preserve claims")
 
 
 def claim_write(text: str) -> bool:
@@ -75,19 +100,14 @@ def original_claim_output(records: list[dict[str, Any]], url: str, record: dict[
 
 def configured_roots(record: dict[str, Any]) -> set[Path]:
     roots = termination._transcript_roots(record)
-    config = sessions.native_helpers()[0].load_config(path=closure.closed_log().with_name("supervisor.toml"))
-    accounts = [account for account in config["accounts"] if account["provider"] == "anthropic"]
-    if not accounts:
-        raise ValueError("Configured source account coverage is unavailable")
-    for account in accounts:
+    for account in source_accounts():
         home = Path(account["env"].get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude"))).expanduser()
         if not home.is_dir():
             raise ValueError("Configured source account home is unavailable")
-        for name in ("projects",):
-            path = home / name
-            if path.exists():
-                with os.scandir(path):
-                    roots.add(path.resolve(strict=True))
+        path = home / "projects"
+        if path.exists():
+            with os.scandir(path):
+                roots.add(path.resolve(strict=True))
     return roots
 
 
@@ -97,10 +117,7 @@ def transcript_paths(record: dict[str, Any], roots: set[Path]) -> set[Path]:
     for root in roots:
         paths.update(path.resolve() for path in root.rglob(f"*{session}*.jsonl"))
         paths.update(path.resolve() for path in root.glob(f"**/{session}/subagents/*.jsonl"))
-        project = root / Path(record["transcript"]).parent.name
-        if not project.is_dir():
-            continue
-        for path in project.rglob("*.jsonl"):
+        for path in root.rglob("*.jsonl"):
             if session.encode() in path.read_bytes() and any(row.get("sessionId") == session for row in candidate_rows(path)):
                 paths.add(path.resolve())
     return paths
@@ -174,6 +191,13 @@ def original_exit(record: dict[str, Any]) -> OriginalExit:
     path = Path(evidence["transcript"])
     if not path.is_absolute():
         raise ValueError("Original exit requires its absolute native observing transcript")
+    path = path.resolve(strict=True)
+    if not any(
+        path.is_relative_to(home.resolve() / name)
+        for home in sessions.configured_homes(strict=True)
+        for name in ("sessions", "archived_sessions")
+    ):
+        raise ValueError("Original observer transcript is outside configured native homes")
     rows = own_records(observer, path, termination.transcript_snapshot(observer, path)[0])
     events = [row for row in rows if command_helpers().execution_item(row).get("id") == evidence["execution_id"]]
     if len(events) != 1:
@@ -218,6 +242,8 @@ def verify(record: dict[str, Any], session: str) -> dict[str, Any]:
     paths = transcript_paths(record, roots)
     snapshots = {path: termination.transcript_snapshot(record, path) for path in paths}
     original = Path(record["transcript"]).resolve(strict=True)
+    if not any(original.is_relative_to(root) for root in roots):
+        raise ValueError("Original source transcript is outside configured or declared roots")
     rows = own_records(record, original, snapshots[original][0])
     exit_evidence = original_exit(record)
     ended = exit_evidence.ended_at
@@ -228,10 +254,11 @@ def verify(record: dict[str, Any], session: str) -> dict[str, Any]:
     if ended > now:
         raise ValueError("Original exit is in the future")
     verify_processes(record, ended)
-    last = ended
+    activities = []
     for snapshot in snapshots.values():
         times = [termination.stamp(row["timestamp"]) for row in snapshot[0] if row.get("timestamp")]
-        last = max(last, termination._transcript_activity(times, snapshot[1], snapshot[3], now, ended))
+        activities.append(termination._transcript_activity(times, snapshot[1], snapshot[3], now, ended))
+    last = max(activities)
     source = record.get("claim")
     url = record.get("claim_url")
     if not isinstance(source, dict) or source.get("session") != record.get("claim_session", identity) or not isinstance(url, str):
@@ -272,6 +299,7 @@ def verify(record: dict[str, Any], session: str) -> dict[str, Any]:
 
 
 def verify_processes(record: dict[str, Any], ended: datetime) -> None:
+    verify_native_inventory(record)
     shared = sessions.process_liveness()
     shared.verify_process_exit(
         {**record, "_inventory": True, "_historical_exit": True},
@@ -295,17 +323,4 @@ def refuse_duplicate_receipt(record: dict[str, Any], roots: set[Path]) -> None:
 
 def candidate_rows(path: Path) -> list[dict[str, Any]]:
     lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
-    rows = []
-    for index, line in enumerate(lines):
-        if not line.strip():
-            continue
-        try:
-            row = json.loads(line)
-        except ValueError:
-            if index == len(lines) - 1 and not line.endswith(("\n", "\r")):
-                break
-            raise
-        if not isinstance(row, dict):
-            raise TypeError("Native transcript candidate is not an object")
-        rows.append(row)
-    return rows
+    return termination.transcript_records({"harness": "claude"}, lines, require_identity=False)[0]

@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = ["tree-sitter==0.26.0", "tree-sitter-bash==0.25.1"]
 # ///
 """Read-only source-host checks for claims interrupted by a host/terminal crash."""
 from __future__ import annotations
@@ -132,7 +132,7 @@ def transcript_snapshot(record, path):
     return records, after.st_mtime_ns, after.st_size, truncated
 
 
-def transcript_records(record, lines):
+def transcript_records(record, lines, *, require_identity: bool = True):
     reader, _ = native_helpers()
     records, truncated = [], False
     for index, line in enumerate(lines):
@@ -152,7 +152,7 @@ def transcript_records(record, lines):
     identities = ({row.get("payload", {}).get("id") for row in records if row.get("type") == "session_meta"}
                   if record["harness"] == "codex" else
                   {row["sessionId"] for row in records if row.get("sessionId")})
-    if identities != {record["session_id"]}:
+    if require_identity and identities != {record["session_id"]}:
         raise ValueError("Source transcript identity is uncertain")
     return records, truncated
 

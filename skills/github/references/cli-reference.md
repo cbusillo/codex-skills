@@ -1287,7 +1287,9 @@ applying. These flags cannot release or reinterpret a structured source.
 Use the existing `--termination-record` procedure when the original native exit
 completed without a safe-exit verdict. Do not add a closure-log row or rewrite
 the original verdict. The private record keeps the native UUID, harness,
-source host, transcript, transcript roots, cause and retained artifacts.
+source host, transcript, transcript roots, cause and retained artifacts. The
+source must resolve under a configured or declared root; the original observer
+rollout must remain under a configured Codex home's sessions or archived_sessions.
 A historical Claude record may name an original Codex harness completion event:
 
 ```json
@@ -1326,8 +1328,9 @@ owners. A canonical closure row, if present, is a resume veto only. Missing
 closure rows supply no exit proof and require no shared-log write. A historical
 source refuses while a same-family process lacks a bounded, exact other-session
 resume operand, or predates the original exit. Process birth checks allow for
-one second of native timestamp rounding. Registry entries never establish that
-a process is independent. Unresolved resume targets also refuse on the existing
+one second of native timestamp rounding. The documented `claude agents --json` inventory is checked on every configured
+account: a source UUID or unavailable identity coverage refuses. Registry rows
+never establish independence; another launch UUID cannot clear an in-app resume. Unresolved resume targets also refuse on the existing
 inventory backfill route; unrelated plain processes keep that route's existing
 behavior. The crash route keeps its PID, TTY and nonce-bearing tmux checks.
 The release repeats verification after its pending write, pins the original
