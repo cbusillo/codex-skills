@@ -495,8 +495,9 @@ including non-dim text, establishes neither its author nor approval.
    for deciding what reaches the Director and presenting the queue. The Director
    answers in chat, Discord, or on GitHub. The
    Supervisor records the answer as a `Director decision:` comment on that issue,
-   quoting the Director's words, saying where they were said, linking the
-   question comment it answers, and points
+   quoting the Director's words, giving the date and where they were said,
+   with no clock time; the GitHub comment's timestamp records when. It links
+   the question comment it answers and points
    the session at it. It records only what the Director said. Briefs accept a decision recorded by the
    Supervisor or a direction session, not only one posted from the Director's
    own login. On an escalation, it leaves the `direction` label in place; the
@@ -912,7 +913,9 @@ issue while pending. There is no local rule list.
   released session's process or thread is doing. An unreleased claim refuses a
   successor until its holder's lease expires
   ([Q621](https://github.com/cbusillo/codex-skills/issues/2453)).
-- Take every time you write from `date`, never from memory or a summary.
+- Read the current time from `date`. Take expiry, deadline and reported event
+  times from their source, never from memory or a summary. Director decision
+  records use the date and where it was said, with no clock time.
 - Recorded pilot compactions preserved briefs and issues on both harnesses;
   keep recording degradation during the experiment above. The previous 450k
   close-out rule lacked evidence.
