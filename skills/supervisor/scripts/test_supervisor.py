@@ -2491,6 +2491,29 @@ class TerminalTests(unittest.TestCase):
                 self.assertEqual(autocompact(iterm_tab.append_brief(f"claude {option}", "brief")), ["500k"])
         self.assertNotIn("--autocompact", iterm_tab.append_brief("codex --remote unix://", "brief"))
 
+    def test_every_claude_account_home_launches_without_the_question_picker(self):
+        default_home = ACCOUNTS_TOML.replace('env = { CLAUDE_CONFIG_DIR = "~/claude-main" }', 'env = {}')
+        homes = [(text, name) for text in (ACCOUNTS_TOML, default_home) for name in ("main", "spare")]
+        with tempfile.TemporaryDirectory() as folder:
+            fake_claude = Path(folder) / "claude"
+            fake_claude.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
+            fake_claude.chmod(0o700)
+            launch = f"cd / && exec {shlex.quote(str(fake_claude))}"
+            commands = [iterm_tab.append_brief(launch, "brief")]
+            for text, name in homes:
+                choice = account_choice.choose("anthropic", accounts_config(text), AccountChoiceTests().snapshot(), None, name=name)
+                commands.append(iterm_tab.with_account(launch, choice, "brief"))
+            for command in commands:
+                with self.subTest(command=command):
+                    args = subprocess.run(["/bin/sh", "-c", command], capture_output=True, text=True, check=True).stdout.splitlines()
+                    separator = args.index("--")
+                    parser = argparse.ArgumentParser(add_help=False)
+                    parser.add_argument("--disallowedTools", action="append")
+                    options, _ = parser.parse_known_args(args[:separator])
+                    self.assertEqual(options.disallowedTools, [iterm_tab.CLAUDE_QUESTION_TOOL])
+                    self.assertEqual(args[separator + 1:], ["brief"])
+        self.assertNotIn(iterm_tab.CLAUDE_QUESTION_TOOL, iterm_tab.append_brief("codex --remote unix://", "brief"))
+
     def test_claude_launch_preserves_existing_settings_and_overrides_suggestions(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
