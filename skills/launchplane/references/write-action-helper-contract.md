@@ -1937,8 +1937,8 @@ permissions because it also runs pre-apply and read-back dry runs. It grants
 nothing and never switches identity.
 
 Repeat `--key NAME` to select exactly those existing managed keys. Use the
-same selection on dry-run, apply and readback. Duplicate names are rejected;
-the service refuses missing, unknown or retired names. Selected sync applies
+same selection on dry-run, apply and readback. Duplicate and malformed names
+are rejected before any request. Selected sync applies
 no retirement and preserves unselected provider values and stored retirement
 intent. Its readback verifies only the selected keys, so unrelated drift can
 remain. Omitting `--key` keeps the full-lane sync behavior. The helper requires

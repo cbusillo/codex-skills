@@ -8970,13 +8970,20 @@ def test_runtime_sync_selected_keys_bind_review_apply_and_readback() -> None:
              "--key", "EXAMPLE_API_TOKEN"]
 
     def response(*, mode: str = "dry-run", changed: bool = True) -> dict[str, Any]:
-        result = _runtime_sync_response(mode=mode, changed=changed)
-        result["result"]["selected_keys"] = ["EXAMPLE_API_TOKEN"]
-        result["result"]["runtime_environment"]["desired_key_count"] = 1
-        result["result"]["runtime_environment"]["unchanged_key_count"] = 0 if changed else 1
-        result["result"]["private_value"] = "SECRET_SENTINEL"
-        return result
+        service_response = _runtime_sync_response(mode=mode, changed=changed)
+        service_response["result"]["selected_keys"] = ["EXAMPLE_API_TOKEN"]
+        service_response["result"]["runtime_environment"]["desired_key_count"] = 1
+        service_response["result"]["runtime_environment"]["unchanged_key_count"] = 0 if changed else 1
+        service_response["result"]["private_value"] = "SECRET_SENTINEL"
+        return service_response
 
+    for invalid_names in (["EXAMPLE_API_TOKEN", "EXAMPLE_API_TOKEN"], ["BAD-KEY"], ["9X"]):
+        invalid_argv = ["live-target-runtime-sync-dry-run", *flags[:-2]]
+        for name in invalid_names:
+            invalid_argv.extend(["--key", name])
+        code, invalid, transport = _run_runtime_sync(invalid_argv, [])
+        assert code == 2 and transport.call_count == 0
+        assert invalid["warnings"][0]["code"] == "invalid_runtime_key_selection"
     code, evidence, transport = _run_runtime_sync(["live-target-runtime-sync-dry-run", *flags], [response()])
     assert code == 0
     assert evidence["request"]["selected_keys"] == ["EXAMPLE_API_TOKEN"]
@@ -8991,10 +8998,9 @@ def test_runtime_sync_selected_keys_bind_review_apply_and_readback() -> None:
         assert code == 0 and result["result"]["read_back_matches"] is True
         assert "SECRET_SENTINEL" not in json.dumps(result)
         assert all(call.kwargs["body"]["selected_keys"] == ["EXAMPLE_API_TOKEN"] for call in transport.call_args_list)
-        for suffix in (["--key", "OTHER_KEY"], ["--key", "EXAMPLE_API_TOKEN"]):
-            code, _, transport = _run_runtime_sync([*argv, *suffix], [])
-            assert code == 2 and transport.call_count == 0
-        for invalid in ("missing_selection", "wrong_selection", "unselected_change", "retirement"):
+        code, _, transport = _run_runtime_sync([*argv, "--key", "OTHER_KEY"], [])
+        assert code == 2 and transport.call_count == 0
+        for invalid in ("missing_selection", "wrong_selection", "unselected_change", "retirement", "wrong_count"):
             unsafe = response()
             if invalid == "missing_selection":
                 del unsafe["result"]["selected_keys"]
@@ -9003,9 +9009,10 @@ def test_runtime_sync_selected_keys_bind_review_apply_and_readback() -> None:
             elif invalid == "unselected_change":
                 unsafe["result"]["runtime_environment"]["different_keys"].append("OTHER_KEY")
                 unsafe["result"]["runtime_environment"]["changed_keys"].append("OTHER_KEY")
+            elif invalid == "retirement":
+                unsafe["result"]["runtime_environment"]["retired_keys_present"] = ["EXAMPLE_API_TOKEN"]
             else:
-                unsafe["result"]["runtime_environment"]["retired_keys_present"] = ["OLD_KEY"]
-                unsafe["result"]["runtime_environment"]["changed_keys"].append("OLD_KEY")
+                unsafe["result"]["runtime_environment"]["desired_key_count"] += 1
             code, _, transport = _run_runtime_sync(argv, [unsafe])
             assert code == 1 and transport.call_count == 1
         code, result, transport = _run_runtime_sync(argv, [response(), response(mode="apply"), response()])

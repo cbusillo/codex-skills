@@ -6805,7 +6805,10 @@ def execute_runtime_sync(args: argparse.Namespace) -> int:
         "instance": public_identifier(args.instance),
         "payload_source": "operator_argument",
     }
-    selected_keys = sorted(_public_env_key(key) for key in args.key) if args.key else None
+    try:
+        selected_keys = sorted(_public_env_key(key) for key in args.key) if args.key else None
+    except LaunchplaneSafetyError as error:
+        raise ValueError("invalid_runtime_key_selection") from error
     if selected_keys is not None:
         if len(set(selected_keys)) != len(selected_keys):
             raise ValueError("invalid_runtime_key_selection")
