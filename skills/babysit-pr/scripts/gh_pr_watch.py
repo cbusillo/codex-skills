@@ -695,6 +695,7 @@ def summarize_checks(checks, expected_head_sha):
     known_total = nonnegative_int(check_count) + nonnegative_int(status_count)
     pending_workflow_count = nonnegative_int(summary.get("pendingWorkflowRunCount"))
     failed_workflow_count = nonnegative_int(summary.get("failedWorkflowRunCount"))
+    unfinished_workflow_count = nonnegative_int(summary.get("unfinishedWorkflowRunCount"))
     passed_count = max(known_total - pending_count - failed_count + pending_workflow_count + failed_workflow_count, 0)
     unavailable = summary.get("unavailableComponents")
     if not isinstance(unavailable, list):
@@ -714,27 +715,13 @@ def summarize_checks(checks, expected_head_sha):
         "pending_count": pending_count,
         "failed_count": failed_count,
         "passed_count": passed_count,
-        "all_terminal": evidence_complete and pending_count == 0,
+        "all_terminal": evidence_complete and pending_count == 0 and unfinished_workflow_count == 0,
+        "unfinished_workflow_run_count": unfinished_workflow_count,
+        "job_level_settlements": summary.get("jobLevelSettlements", []),
         "evidence_complete": evidence_complete,
         "counts_are_lower_bounds": counts_are_lower_bounds,
         "unavailable_components": [str(item) for item in unavailable],
         "head_matches": head_matches,
-    }
-
-
-def apply_unfinished_workflow_runs(checks_summary, runs, head_sha):
-    # A queued run has no check runs yet, so the check counts alone cannot see it.
-    unfinished = sum(
-        1
-        for run in github_read.current_workflow_runs(runs, head_sha)["current"]
-        if isinstance(run, dict)
-        and str(run.get("head_sha") or "") == head_sha
-        and str(run.get("status") or "") != "completed"
-    )
-    return {
-        **checks_summary,
-        "unfinished_workflow_run_count": unfinished,
-        "all_terminal": checks_summary["all_terminal"] and unfinished == 0,
     }
 
 
@@ -1612,7 +1599,6 @@ def collect_locked_snapshot(args, pr, pr_diagnostic, state_path):
     if getattr(args, "batch_read", False):
         checks_diagnostic["batch_read"]=reader.batch_diagnostic
     checks_summary = summarize_checks(checks, expected_head_sha=pr["head_sha"])
-    checks_summary = apply_unfinished_workflow_runs(checks_summary, workflow_runs, pr["head_sha"])
     failed_runs = failed_runs_from_workflow_runs(workflow_runs, pr["head_sha"])
     failed_jobs = failed_jobs_from_workflow_runs(pr["repo"], workflow_runs, pr["head_sha"], reader=reader)
     pending_reruns = reconcile_pending_reruns(state, pr["head_sha"], workflow_runs)

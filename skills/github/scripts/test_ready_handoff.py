@@ -13,6 +13,7 @@ import json
 import subprocess
 import sys
 import unittest
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -39,6 +40,7 @@ class Reader:
         self.checks: list[dict[str, Any]] = [{"id": 1, "name": "unit", "status": "completed", "conclusion": "success"}]
         self.statuses = []
         self.runs = []
+        self.jobs = []
         self.comments: list[dict[str, Any]] = []
         self.config = None
         self.files = [{"filename": "src/tool.py"}]
@@ -72,6 +74,8 @@ class Reader:
             return self.statuses
         if path.endswith("/actions/runs"):
             return self.runs
+        if path.endswith("/jobs"):
+            return self.jobs
         if path.endswith("/issues/1/comments"):
             return self.comments
         if path.endswith("/pulls/1/files"):
@@ -225,6 +229,52 @@ class ReadyTests(unittest.TestCase):
             with self.subTest(status=status):
                 self.reader.runs = [{"id": 3, "workflow_id": 2, "head_sha": SHA, "event": "pull_request", "status": status, "conclusion": conclusion}]
                 self.refuse()
+
+    def test_stuck_workflow_settles_from_aged_completed_jobs(self) -> None:
+        self.reader.runs = [{
+            "id": 3, "workflow_id": 2, "run_number": 1, "run_attempt": 2,
+            "check_suite_id": 4, "head_repository": {"id": 5}, "head_branch": "feature",
+            "head_sha": SHA, "event": "pull_request", "status": "in_progress",
+        }]
+        job = {
+            "id": 6, "run_id": 3, "run_attempt": 2, "head_sha": SHA,
+            "status": "completed", "conclusion": "success", "completed_at": "2026-10-22T19:00:00Z",
+        }
+        now = datetime.fromisoformat(job["completed_at"]).timestamp() + helper.github_read_core.WORKFLOW_SETTLEMENT_GRACE_SECONDS
+        with patch.object(helper.github_read_core.time, "time", return_value=now):
+            for conclusion in ("success", "neutral", "skipped"):
+                with self.subTest(conclusion=conclusion):
+                    self.reader.jobs = [{**job, "conclusion": conclusion}]
+                    result, _ = self.post()
+                    self.assertEqual(result["summary"]["unfinishedWorkflowRunCount"], 0)
+                    settlement = result["summary"]["jobLevelSettlements"][0]
+                    self.assertEqual(settlement["runId"], 3)
+
+    def test_stuck_workflow_never_hides_unsettled_or_failed_jobs(self) -> None:
+        self.reader.runs = [{
+            "id": 3, "workflow_id": 2, "run_number": 1, "run_attempt": 2,
+            "check_suite_id": 4, "head_repository": {"id": 5}, "head_branch": "feature",
+            "head_sha": SHA, "event": "pull_request", "status": "in_progress",
+        }]
+        job = {
+            "id": 6, "run_id": 3, "run_attempt": 2, "head_sha": SHA,
+            "status": "completed", "conclusion": "success", "completed_at": "2026-10-22T19:00:00Z",
+        }
+        now = datetime.fromisoformat(job["completed_at"]).timestamp() + helper.github_read_core.WORKFLOW_SETTLEMENT_GRACE_SECONDS
+        recent = datetime.fromtimestamp(now, tz=datetime.fromisoformat(job["completed_at"]).tzinfo).isoformat()
+        inventories = [
+            [], [{**job, "status": "in_progress"}], [{**job, "conclusion": "failure"}],
+            [{**job, "conclusion": None}], [{**job, "completed_at": recent}],
+            [{**job, "completed_at": None}], [{**job, "completed_at": "invalid"}],
+            [{**job, "completed_at": "2026-10-22T19:00:00"}],
+            [{**job, "run_attempt": 1}], [{**job, "run_id": 99}], [{**job, "head_sha": "other"}],
+            [job, {**job, "id": 7, "status": "queued"}],
+        ]
+        with patch.object(helper.github_read_core.time, "time", return_value=now):
+            for jobs in inventories:
+                with self.subTest(jobs=jobs):
+                    self.reader.jobs = jobs
+                    self.refuse()
 
     def test_incomplete_reads_refuse(self):
         self.reader.unavailable = True
