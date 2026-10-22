@@ -66,7 +66,7 @@ def codex_children(records: list[dict]) -> set[str]:
         and row["payload"].get("type") == "item_completed"
         and isinstance(item := row["payload"].get("item"), dict)
         and item.get("type") == "SubAgentActivity"
-        and item.get("kind") == "started"
+        and item.get("kind") != "interacted"
         and isinstance(item.get("agent_thread_id"), str)
     }
 
@@ -109,15 +109,17 @@ def codex_entries(root: dict, supplied: dict[str, set[Path]]) -> list[dict]:
     root_identity = metadata(read_records(root_path)).get("session_id", root_id)
     expanded = []
     pending = [(root_id, None, ())]
-    visited = set()
+    parents = {}
     with claim_history.native_databases(root_path) as databases:
         while pending:
             native, parent, ancestors = pending.pop()
-            if native in visited:
+            if native in parents:
+                if parents[native] != parent:
+                    raise ValueError(f"native child {native} has contradictory parent edges")
                 continue
-            if len(visited) >= 4096:
+            if len(parents) >= 4096:
                 raise ValueError("native session lineage exceeds its coverage bound")
-            visited.add(native)
+            parents[native] = parent
             paths = supplied.get(native) or indexed_paths(databases, native)
             if not paths:
                 raise ValueError(f"missing native transcript for child {native}; restore it or pass --session and --transcript")
@@ -413,7 +415,7 @@ def command_literal(text: str, start: int, literal: str) -> str | None:
             return None
         value = tail[0]
         if value.startswith("`"):
-            return value[1:-1] if "${" not in value else None
+            return literal_template(text[:start], value) if "${" in value else value[1:-1]
         try:
             return ast.literal_eval(value)
         except (ValueError, SyntaxError):
@@ -424,6 +426,41 @@ def command_literal(text: str, start: int, literal: str) -> str | None:
 JAVASCRIPT_LITERAL = r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|`(?:\\.|[^`\\])*`'
 CLAIM_WORD = re.compile(r"""(?:^|[\s'"`])claim(?:$|[\s'"`])""")
 JAVASCRIPT_PATCH = re.compile(r"\btools\.apply_patch\s*\(\s*(?:" + JAVASCRIPT_LITERAL + r")\s*\)", re.DOTALL)
+
+
+def literal_template(prefix: str, template: str) -> str | None:
+    tokens = re.findall(JAVASCRIPT_LITERAL + r"|//[^\n]*|/\*.*?\*/|[A-Za-z_$][A-Za-z0-9_$]*|[0-9]+|[^\s]", prefix, re.DOTALL)
+    code = " ".join(token for token in tokens if not token.startswith(("//", "/*")))
+    binding = r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)"
+    array = r"\[ (?P<values>.+?) \]"
+    call = r"tools \. (?:exec_command|shell_command|shell) \("
+    match = re.fullmatch(r"for \( const " + binding + r" of " + array + r" \) \{ (?:const \w+ = )?(?:text \( )?await " + call, code)
+    if match is None:
+        match = re.fullmatch(
+            r"const (?P<array>[A-Za-z_]\w*) = "
+            + array
+            + r" ; (?:const \w+ = )?(?:text \( )?await Promise \. (?:all|allSettled) \( (?P=array) \. (?:map|forEach) \( "
+            + binding
+            + r" = > "
+            + call,
+            code,
+        )
+    if match is None or "\\" in template:
+        return None
+    try:
+        values = ast.literal_eval("[" + match["values"] + "]")
+    except (SyntaxError, ValueError):
+        return None
+    if not isinstance(values, list) or not 0 < len(values) <= LITERAL_LOOP_VALUES:
+        return None
+    if any(type(value) not in {str, int} or not LITERAL_SHELL_VALUE.fullmatch(str(value)) for value in values):
+        return None
+    marker = "${" + match["name"] + "}"
+    body = template[1:-1]
+    if "${" in body.replace(marker, ""):
+        return None
+    commands = "\n".join(body.replace(marker, str(value)) for value in values)
+    return commands if len(commands.encode()) <= LITERAL_EXPANSION_BYTES else None
 
 
 def without_patch_text(text: str) -> str:

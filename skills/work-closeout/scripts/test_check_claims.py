@@ -616,23 +616,51 @@ class ClaimCloseoutTests(unittest.TestCase):
 
     def test_peer_activity_does_not_reparent_an_indexed_sibling(self) -> None:
         root = self.entry()
+        helper.claim_log.record(SESSION, REPO, 1)
         children = [self.receipt_entry(name, records=((REPO, 1),)) for name in ("first", "second")]
         for child in children:
             native = child["session_id"]
             path = Path(child["transcript"])
             rows = [json.loads(line) for line in path.read_text().splitlines()]
             rows[0]["payload"].update(session_id=SESSION, source={"subagent": {"thread_spawn": {"parent_thread_id": SESSION}}})
-            rows.append({"type": "event_msg", "payload": {"type": "item_completed", "thread_id": native,
-                "item": {"type": "SubAgentActivity", "kind": "interacted", "agent_thread_id": "first" if native == "second" else "second"}}})
+            rows.append(
+                {
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "item_completed",
+                        "thread_id": native,
+                        "item": {
+                            "type": "SubAgentActivity",
+                            "kind": "interacted",
+                            "agent_thread_id": "first" if native == "second" else "second",
+                        },
+                    },
+                }
+            )
             path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
             self.native_index.execute("INSERT INTO threads VALUES(?,?)", (native, str(path)))
             self.native_index.execute("INSERT INTO thread_spawn_edges VALUES(?,?)", (SESSION, native))
         for released in (False, True):
             self.comments = [self.source, self.release] if released else [self.source]
-            with self.subTest(released=released):
+            with self.subTest(released=released), patch.object(helper, "check_record", wraps=helper.check_record) as check:
                 report = helper.check([root])
                 self.assertEqual(report["claims_clear"], released)
-                self.assertEqual(set(report["coverage"]["session_ids"]), {SESSION, "first", "second"})
+                self.assertEqual({call.args[3] for call in check.call_args_list}, {SESSION, "first", "second"})
+        self.native_index.execute("DELETE FROM thread_spawn_edges")
+        self.native_index.executemany(
+            "INSERT INTO thread_spawn_edges VALUES(?,?)", [(SESSION, "second"), (SESSION, "first"), ("second", "first")]
+        )
+        with self.assertRaises(ValueError):
+            helper.check([root])
+
+        self.native_index.execute("DELETE FROM thread_spawn_edges")
+        self.native_index.executemany("INSERT INTO thread_spawn_edges VALUES(?,?)", [(SESSION, "first"), (SESSION, "second")])
+        path = Path(children[0]["transcript"])
+        rows = [json.loads(line) for line in path.read_text().splitlines()]
+        rows[-1]["payload"]["item"].update(kind="unknown", agent_thread_id="missing")
+        path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+        with self.assertRaises(ValueError):
+            helper.check([root])
 
     def test_real_claude_result_requires_its_subagent_transcript(self) -> None:
         entry = self.entry()
@@ -770,6 +798,7 @@ class ClaimCloseoutTests(unittest.TestCase):
             'git commit -m "gh-plan.py claim 1"',
             "cat <<EOF\ngh-plan.py claim 1\nEOF",
             "cat <<'EOF'\n$(uv run gh-plan.py claim 1)\nEOF",
+            "G=/catalog/skills/github; uv run $G/scripts/gh-plan.py claim --help 2>&1 | head -60",
         ]
         for command in commands:
             rows = [{"message": {"content": [{"type": "tool_use", "name": "Bash", "id": "read", "input": {"command": command}}]}}]
@@ -1393,21 +1422,38 @@ class ClaimCloseoutTests(unittest.TestCase):
             'const charts=["app.processes","app.memory"]; '
             'const out=await Promise.allSettled(charts.map(chart=>tools.exec_command({cmd:`ssh host "curl -fsS https://metrics.invalid/?chart=${chart}"`}))); '
             'out.forEach(text); text(await tools.exec_command({cmd:"uv run gh-plan.py --repo test/a show 1 --full"}));',
-            'for (const n of [1,2]) { const r=await tools.exec_command({cmd:`uv run gh-plan.py --repo test/a show ${n} --full`}); text(r); }',
+            "for (const n of [1,2]) { const r=await tools.exec_command({cmd:`uv run gh-plan.py --repo test/a show ${n} --full`}); text(r); }",
         ]
         for source in reads:
             rows = [{"payload": {"type": "custom_tool_call", "name": "exec", "call_id": "read", "input": source}}]
             with self.subTest(source=source):
                 self.assertEqual(helper.history.literal_targets(rows, SESSION), {"targets": set(), "unresolved_invocations": []})
         for source in (
-            'for (const n of issueNumbers()) { const r=await tools.exec_command({cmd:`uv run gh-plan.py --repo test/a show ${n} --full`}); text(r); }',
-            'for (const n of [1,2]) { const r=await tools.exec_command({cmd:`uv run gh-plan.py --repo test/a ${verb} ${n}`}); text(r); }',
-            'for (const n of [1,2]) { const r=await tools.exec_command({cmd:`uv run gh-plan.py --repo test/a claim ${n}`}); text(r); }',
+            "for (const n of issueNumbers()) { const r=await tools.exec_command({cmd:`uv run gh-plan.py --repo test/a show ${n} --full`}); text(r); }",
+            "for (const n of [1,2]) { const r=await tools.exec_command({cmd:`uv run gh-plan.py --repo test/a ${verb} ${n}`}); text(r); }",
+            "for (const n of [1,2]) { const r=await tools.exec_command({cmd:`uv run gh-plan.py claim ${n}`}); text(r); }",
             'const c=load("command"); text(await tools.exec_command({cmd:c})); text(await tools.exec_command({cmd:"uv run gh-plan.py --repo test/a show 1"}));',
+            'for (const n of ["1;$(cat f)"]) { const r=await tools.exec_command({cmd:`uv run gh-plan.py --repo test/a show ${n}`}); }',
+            "const xs=[1]; xs.push(value); await Promise.all(xs.map(n=>tools.exec_command({cmd:`uv run gh-plan.py --repo test/a show ${n}`})));",
+            "Array.prototype.map=callback; const xs=[1]; await Promise.all(xs.map(n=>tools.exec_command({cmd:`uv run gh-plan.py --repo test/a show ${n}`})));",
+            "// for (const n of [1,2]) {\nconst r=await tools.exec_command({cmd:`uv run gh-plan.py --repo test/a show ${n}`});",
+            "for (const n of [1,2]) { const n=value; const r=await tools.exec_command({cmd:`uv run gh-plan.py --repo test/a show ${n}`}); }",
         ):
             rows = [{"payload": {"type": "custom_tool_call", "name": "exec", "call_id": "write", "input": source}}]
             with self.subTest(source=source):
                 self.assertTrue(helper.history.literal_targets(rows, SESSION)["unresolved_invocations"])
+
+        root = self.entry()
+        source = "for (const n of [1,2]) { const r=await tools.exec_command({cmd:`uv run gh-plan.py --repo test/a claim ${n}`}); text(r); }"
+        with Path(root["transcript"]).open("a") as stream:
+            stream.write(
+                json.dumps({"payload": {"type": "custom_tool_call", "name": "exec", "call_id": "claims", "input": source}}) + "\n"
+            )
+        report = helper.check([root])
+        self.assertFalse(report["claims_clear"])
+        self.assertEqual(report["coverage"]["repositories"], [REPO])
+        self.assertEqual(len(report["blocked"]), 2)
+        self.assertEqual(report["unresolved_invocations"], [])
 
     def test_python_fixture_data_is_distinct_from_process_execution(self) -> None:
         data = "rows=[{'cmd':'uv run gh-plan.py claim 5'}]; print(history.literal_targets(rows,SESSION))"
