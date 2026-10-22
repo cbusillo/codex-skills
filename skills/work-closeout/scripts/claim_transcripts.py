@@ -596,6 +596,9 @@ def has_executable_claim_source(text: str, consumer: str, *, claim_related: bool
     return False
 
 
+NON_EXECUTING_COMMANDS = frozenset({"cat", "cut", "echo", "head", "ls", "nl", "printf", "tail", "tr", "uniq", "wc", "zstd"})
+
+
 def python_data_argv(call: ast.Call, command: ast.AST | None) -> bool:
     return (
         not any(item.arg in {None, "executable", "shell"} for item in call.keywords)
@@ -603,7 +606,7 @@ def python_data_argv(call: ast.Call, command: ast.AST | None) -> bool:
         and bool(command.elts)
         and isinstance(executable := command.elts[0], ast.Constant)
         and isinstance(executable.value, str)
-        and Path(executable.value).name in DATA_COMMANDS
+        and Path(executable.value).name in NON_EXECUTING_COMMANDS
     )
 
 
@@ -944,8 +947,12 @@ def reads_program_stdin(argv: list[str], consumer: str) -> bool:
     )
 
 
-DATA_COMMANDS = frozenset(
-    {
+def accepts_claim_data(argv: list[str]) -> bool:
+    position = command_position(argv)
+    if position is None:
+        return False
+    name = Path(argv[position.index]).name if position.index < len(argv) else ""
+    if name in {
         "rg",
         "grep",
         "git",
@@ -985,17 +992,7 @@ DATA_COMMANDS = frozenset(
         "pytest",
         "gh-issue",
         "gh-comment",
-        "zstd",
-    }
-)
-
-
-def accepts_claim_data(argv: list[str]) -> bool:
-    position = command_position(argv)
-    if position is None:
-        return False
-    name = Path(argv[position.index]).name if position.index < len(argv) else ""
-    if name in DATA_COMMANDS:
+    }:
         return True
     if name.endswith(".py") and name != "gh-plan.py":
         return True
@@ -1183,6 +1180,64 @@ SHELL_VARIABLE_WRITERS = frozenset(
     }
 )
 SHELL_VARIABLE_WRITER_FLAGS = {"printf": "v", "print": "v", "wait": "p", "set": "A"}
+SHELL_MANAGED_NAMES = frozenset(
+    {
+        "ARGC",
+        "CDPATH",
+        "COLUMNS",
+        "COPROC",
+        "DIRSTACK",
+        "EPOCHREALTIME",
+        "EPOCHSECONDS",
+        "ERRNO",
+        "EUID",
+        "FPATH",
+        "FUNCNAME",
+        "GROUPS",
+        "HISTCMD",
+        "HOSTNAME",
+        "LINENO",
+        "LINES",
+        "MAILPATH",
+        "MANPATH",
+        "MAPFILE",
+        "MATCH",
+        "MBEGIN",
+        "MEND",
+        "MODULE_PATH",
+        "OLDPWD",
+        "OPTARG",
+        "OPTIND",
+        "PATH",
+        "PIPESTATUS",
+        "PPID",
+        "PSVAR",
+        "PWD",
+        "RANDOM",
+        "REPLY",
+        "SECONDS",
+        "SHELLOPTS",
+        "SHLVL",
+        "SRANDOM",
+        "TTYIDLE",
+        "UID",
+        "argv",
+        "cdpath",
+        "epochtime",
+        "fpath",
+        "mailpath",
+        "manpath",
+        "match",
+        "mbegin",
+        "mend",
+        "module_path",
+        "path",
+        "pipestatus",
+        "psvar",
+        "reply",
+        "status",
+    }
+)
 LITERAL_SHELL_VALUE = re.compile(r"[A-Za-z0-9_./@:+,%-][A-Za-z0-9_./@:+,%#-]*")
 LITERAL_EXPANSION_PASSES = 64
 LITERAL_EXPANSION_BYTES = 1 << 20
@@ -1253,6 +1308,15 @@ def shell_names(root: Node) -> ShellNames:
     return names
 
 
+def assigned_once(name: str, names: ShellNames) -> bool:
+    return (
+        name not in names.unsafe
+        and name not in SHELL_MANAGED_NAMES
+        and not name.startswith(("BASH", "COMP_", "READLINE_", "TRY_BLOCK_", "ZSH_"))
+        and len(names.assignments.get(name, [])) == 1
+    )
+
+
 def runs_unconditionally(node: Node) -> bool:
     while node.parent is not None and node.parent.type == "list":
         if node.parent.named_children[0] != node:
@@ -1307,7 +1371,7 @@ def bound_variable_edits(root: Node, source: bytes, names: ShellNames) -> list[t
     uses = []
     for name, assignments in names.assignments.items():
         assignment = assignments[0]
-        if name in names.unsafe or len(assignments) != 1 or assignment.type != "variable_assignment":
+        if not assigned_once(name, names) or assignment.type != "variable_assignment":
             continue
         value = literal_shell_value(assignment.child_by_field_name("value"))
         if value is None or not runs_unconditionally(assignment):
@@ -1332,7 +1396,7 @@ def literal_loop(loop: Node, names: ShellNames) -> LiteralLoop | None:
     if variable is None or body is None or body.type != "do_group":
         return None
     name = variable.text.decode()
-    if name in names.unsafe or len(names.assignments.get(name, [])) != 1:
+    if not assigned_once(name, names):
         return None
     words = loop.children_by_field_name("value")
     values = [value for word in words if (value := literal_shell_value(word)) is not None]

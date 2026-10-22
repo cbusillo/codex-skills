@@ -807,6 +807,11 @@ class ClaimCloseoutTests(unittest.TestCase):
             "for i in 1; do uv run gh-plan.py --repo test/a claim $i; done;"
             " python3 -c 'from invoke import run; import sys; run(sys.argv[1])' \"$CMD\"",
             "python3 - <<'PY'\nimport subprocess\nsubprocess.run(['uv', 'run', path, 'claim'])  # gh-plan\nPY",
+            "python3 - <<'PY'\nimport subprocess\nverb = 'claim'\n"
+            "subprocess.run(['git', '-c', 'alias.claim=!uv run gh-plan.py --repo test/a claim 2', verb])\nPY",
+            "SECONDS=2; sleep 2; uv run gh-plan.py --repo test/a claim $SECONDS",
+            "for RANDOM in 1 2; do uv run gh-plan.py --repo test/a claim $RANDOM; done",
+            "for BASH_ARGV0 in 1; do uv run gh-plan.py --repo test/a claim $BASH_ARGV0; done",
         ]
         for command in commands:
             with self.subTest(command=command):
