@@ -897,8 +897,9 @@ exact-author release and closed-session attestation rules below. Its result
 identifies `record_kind: pr` and `current_status_location: claim_comment`;
 it preserves the PR body and labels and creates no tracking issue. Put recovery
 status in a `## Current Status` comment; the latest such comment and the body
-status are checked for holds. When a PR links a canonical implementation issue,
-claim that issue instead. PR-scoped claims require a same-repository head and
+status are checked for holds. Closed issue references are excluded from canonical
+claim targets; their unreleased claims still refuse. When a PR links an open
+canonical implementation issue, claim that issue instead. PR-scoped claims require a same-repository head and
 base; forks use a canonical planning issue. The PR's remote source head is its
 work record; local source branches/worktrees and live peers remain competing
 evidence unless owned or covered by an exact authored release. `--resume-from`
@@ -911,7 +912,7 @@ timestamp-proved release and a qualified handoff naming this PR. The helper
 reuses retained-handoff provenance, checks claims on the source family and
 retained PRs on both readbacks, and preserves every artifact and product hold.
 This route permits a PR-only claim when that released source is also its
-canonical implementation issue; other canonical issues still require their
+canonical implementation issue; other open canonical issues still require their
 own claim. Use a new task branch separate from every retained source branch.
 The source-family checks cover every qualified retained sibling, so process
 these PR-only claims sequentially. Release preserves that inherited custody;
