@@ -336,6 +336,9 @@ Receipt JSON in tool inputs or conversation prose is data. Merged output from
 other executable commands cannot resolve a bare claim's repository. Shell
 syntax that the maintained parser cannot decode also stays conditional; use
 the explicit literal target form above and restore its complete native output.
+Interactive input and command strings passed to unclassified launchers cannot
+prove complete claim coverage. Their known receipts are still checked. Keep
+the claiming host's journal and complete native lineage when using remote shells.
 
 The check reads only those issues and PRs, including closed records. It never
 inventories App installations or scans other repositories. It verifies every

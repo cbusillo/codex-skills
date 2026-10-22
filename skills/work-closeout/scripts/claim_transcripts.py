@@ -404,7 +404,7 @@ def command_literal(text: str, start: int, literal: str) -> str | None:
             depth -= 1
             if depth == 0:
                 break
-        if depth != 1 or token.strip("\"'") not in {"cmd", "command"} or tokens[index + 1 : index + 2] != [":"]:
+        if depth != 1 or token.strip("\"'") not in {"cmd", "command", "chars"} or tokens[index + 1 : index + 2] != [":"]:
             continue
         tail = tokens[index + 2 : index + 4]
         if len(tail) != 2 or tail[1] not in {",", "}"} or not re.fullmatch(literal, tail[0], re.DOTALL):
@@ -433,20 +433,34 @@ def javascript_names(text: str) -> set[str]:
     return names
 
 
-def shell_texts(text: str, javascript: bool) -> tuple[list[str], bool]:
+@dataclass
+class ShellCommand:
+    text: str
+    interactive: bool = False
+
+
+@dataclass
+class ShellTexts:
+    commands: list[ShellCommand]
+    opaque: bool = False
+    interactive_opaque: bool = False
+
+
+def shell_texts(text: str, javascript: bool) -> ShellTexts:
     if not javascript:
         try:
             decoded = json.loads(text)
         except ValueError:
             decoded = None
         if isinstance(decoded, dict):
-            command = decoded.get("cmd", decoded.get("command"))
-            return ([command_text(command)], False) if command is not None else ([], False)
-        return [text], False
+            command = decoded.get("cmd", decoded.get("command", decoded.get("chars")))
+            commands = [ShellCommand(command_text(command), "chars" in decoded)] if command is not None else []
+            return ShellTexts(commands)
+        return ShellTexts([ShellCommand(text)])
     literal = JAVASCRIPT_LITERAL
-    reference = r"\btools\s*\[\s*['\"](?:exec_command|shell_command|shell)['\"]\s*\]|\b(?:exec_command|shell_command)\b|\btools\.shell\b|\bshell\s*\("
+    reference = r"\btools\s*\[\s*['\"](?:exec_command|shell_command|shell|write_stdin)['\"]\s*\]|\b(?:exec_command|shell_command|write_stdin)\b|\btools\.shell\b|\bshell\s*\("
     site = re.compile(
-        r"(?P<call>\btools\.(?:exec_command|shell_command|shell)\s*\()|(?P<reference>"
+        r"(?P<call>\btools\.(?:exec_command|shell_command|shell|write_stdin)\s*\()|(?P<reference>"
         + reference
         + r")|(?:"
         + literal
@@ -455,18 +469,22 @@ def shell_texts(text: str, javascript: bool) -> tuple[list[str], bool]:
     )
     commands = []
     opaque = False
+    interactive_opaque = False
     for match in site.finditer(text):
         if match["reference"] is not None:
             opaque = True
+            interactive_opaque = interactive_opaque or "write_stdin" in match[0]
         elif match["call"] is not None:
             command = command_literal(text, match.end(), literal)
             if command is None:
                 opaque = True
+                interactive_opaque = interactive_opaque or "write_stdin" in match[0]
             else:
-                commands.append(command)
+                commands.append(ShellCommand(command, "write_stdin" in match[0]))
         elif match[0].startswith("`") and "${" in match[0] and re.search(reference, match[0]):
             opaque = True
-    return commands, opaque
+            interactive_opaque = interactive_opaque or "write_stdin" in match[0]
+    return ShellTexts(commands, opaque, interactive_opaque)
 
 
 SHELL_NAMES = {"sh", "bash", "zsh", "dash", "ksh", "fish"}
@@ -492,26 +510,30 @@ def has_executable_claim_source(text: str, consumer: str, *, claim_related: bool
     except SyntaxError:
         return True
     pattern = re.compile(
-        r"(?:run|call|check_\w+|[Pp]open\w*|system|getoutput|getstatusoutput|exec\w*|spawn\w*|posix_spawn\w*|create_subprocess_\w+|eval|shell_command)"
+        r"(?:run|run_path|run_module|call|check_\w+|[Pp]open\w*|system|getoutput|getstatusoutput|exec\w*|spawn\w*|posix_spawn\w*|create_subprocess_\w+|eval|shell_command)"
     )
-    modules = {"subprocess", "os", "asyncio"}
-    launchers = {"exec", "eval"}
+    modules = {"subprocess", "os", "asyncio", "pty", "runpy"}
+    launchers = {"exec": "exec", "eval": "eval"}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             modules.update(item.asname or item.name for item in node.names if item.name in modules)
         if isinstance(node, ast.ImportFrom) and node.module in modules:
-            launchers.update(item.asname or item.name for item in node.names if pattern.fullmatch(item.name))
+            launchers.update({item.asname or item.name: item.name for item in node.names if pattern.fullmatch(item.name)})
         if isinstance(node, ast.Assign) and isinstance(node.value, (ast.Name, ast.Attribute)):
-            if is_python_launcher(node.value, modules, launchers, pattern):
-                launchers.update(target.id for target in node.targets if isinstance(target, ast.Name))
+            if (name := python_launcher_name(node.value, modules, launchers, pattern)) is not None:
+                launchers.update({target.id: name for target in node.targets if isinstance(target, ast.Name)})
     calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
     direct = {id(node.func) for node in calls}
-    if any(id(node) not in direct and is_python_launcher(node, modules, launchers, pattern) for node in ast.walk(tree)):
+    if any(
+        id(node) not in direct and python_launcher_name(node, modules, launchers, pattern) is not None for node in ast.walk(tree)
+    ):
         return True
     for node in calls:
-        name = node.func.id if isinstance(node.func, ast.Name) else node.func.attr if isinstance(node.func, ast.Attribute) else ""
-        if not is_python_launcher(node.func, modules, launchers, pattern):
+        name = python_launcher_name(node.func, modules, launchers, pattern)
+        if name is None:
             continue
+        if name == "*":
+            return True
         command = (
             node.args[0] if node.args else next((item.value for item in node.keywords if item.arg in {"args", "command"}), None)
         )
@@ -523,30 +545,27 @@ def has_executable_claim_source(text: str, consumer: str, *, claim_related: bool
             value = ast.literal_eval(command)
         except (ValueError, TypeError):
             return True
-        if "gh-plan" in str(value) and CLAIM_WORD.search(str(value)):
+        if "gh-plan" in str(value) and (CLAIM_WORD.search(str(value)) or name in {"run_path", "run_module"}):
             return True
     return False
 
 
-def is_python_launcher(node: ast.AST, modules: set[str], launchers: set[str], pattern: re.Pattern) -> bool:
+def python_launcher_name(node: ast.AST, modules: set[str], launchers: dict[str, str], pattern: re.Pattern) -> str | None:
     if isinstance(node, ast.Name):
-        return isinstance(node.ctx, ast.Load) and node.id in launchers
+        return launchers.get(node.id) if isinstance(node.ctx, ast.Load) else None
     if isinstance(node, ast.Attribute) and pattern.fullmatch(node.attr):
         root = node.value
         while isinstance(root, ast.Attribute):
             root = root.value
-        return isinstance(root, ast.Name) and root.id in modules
+        return node.attr if isinstance(root, ast.Name) and root.id in modules else None
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "getattr" and len(node.args) >= 2:
         receiver, member = node.args[:2]
-        return (
-            isinstance(receiver, ast.Name)
-            and receiver.id in modules
-            and (
-                not isinstance(member, ast.Constant)
-                or (isinstance(member.value, str) and pattern.fullmatch(member.value) is not None)
-            )
-        )
-    return False
+        if isinstance(receiver, ast.Name) and receiver.id in modules:
+            if not isinstance(member, ast.Constant):
+                return "*"
+            if isinstance(member.value, str) and pattern.fullmatch(member.value):
+                return member.value
+    return None
 
 
 @dataclass
@@ -770,14 +789,18 @@ def claim_arguments(argv: list[str]) -> list[str] | None:
 
 
 def has_opaque_claim_execution(argv: list[str]) -> bool:
-    if not argv or Path(argv[0]).name in {"rg", "grep", "git", "cat", "tee", "echo", "printf"}:
+    if not argv or Path(argv[0]).name in {"rg", "grep", "git", "gh", "cat", "tee", "echo", "printf", "sed", "jq", "pytest"}:
         return False
     helper = next((index for index, argument in enumerate(argv) if Path(argument).name == "gh-plan.py"), None)
     if helper is not None and "claim" in argv[helper + 1 :]:
         return True
     if "claim" in argv and any("$" in argument or "`" in argument for argument in argv[: argv.index("claim")]):
         return True
-    return False
+    if Path(argv[0]).name == "uv" and "run" in argv:
+        launched = argv[argv.index("run") + 1 :]
+        if launched and (launched[0].endswith(".py") or Path(launched[0]).name == "pytest"):
+            return False
+    return not script_consumer(argv) and any("gh-plan" in argument and CLAIM_WORD.search(argument) for argument in argv)
 
 
 def is_evaluator_flag(argument: str, consumer: str) -> bool:
@@ -930,6 +953,7 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
             for identifier in orphan_artifacts(records, session, directory)
         )
     claim_may_be_stored = False
+    claim_may_be_interactive = False
     for identifier, text, javascript in tool_inputs(records):
         if identifier in denied:
             continue
@@ -942,11 +966,33 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
         decode_failed = False
         receipt_pure = not javascript
         try:
-            shells, opaque = shell_texts(text, javascript)
+            sources = shell_texts(text, javascript)
+            opaque = sources.opaque
+            claim_may_be_interactive = (
+                claim_may_be_interactive
+                or (
+                    claim_related_here
+                    and (
+                        sources.interactive_opaque
+                        or any(
+                            type(value.get("session_id")) is int for block in outputs.get(identifier, []) for value in values(block)
+                        )
+                    )
+                )
+                or any(
+                    source.interactive and ("gh-plan" in source.text or CLAIM_WORD.search(source.text))
+                    for source in sources.commands
+                )
+            )
             unclassified = opaque
-            opaque = opaque and (claim_related_here or (claim_may_be_stored and "load" in names))
-            for shell in shells:
-                discovery = shell_claims(shell)
+            opaque = opaque and (
+                claim_related_here
+                or (claim_may_be_stored and "load" in names)
+                or (sources.interactive_opaque and claim_may_be_interactive)
+            )
+            for source in sources.commands:
+                receipt_pure = receipt_pure and not source.interactive
+                discovery = shell_claims(source.text, claim_related=source.interactive and claim_may_be_interactive)
                 invocations.extend(discovery.arguments)
                 opaque = opaque or discovery.opaque
                 receipt_pure = receipt_pure and discovery.receipt_pure

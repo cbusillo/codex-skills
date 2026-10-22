@@ -1451,6 +1451,153 @@ class ClaimCloseoutTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertTrue(helper.history.literal_targets(rows, SESSION)["unresolved_invocations"])
 
+    def test_unclassified_launcher_program_strings_remain_conditional(self) -> None:
+        claim = "uv run gh-plan.py claim 5"
+        commands = [
+            f"awk 'BEGIN{{system(\"{claim}\")}}'",
+            f"ssh host '{claim}'",
+            f"su -c '{claim}' user",
+            f"runuser -c '{claim}' user",
+            f"flock lock -c '{claim}'",
+            f"script -c '{claim}'",
+            f"watch '{claim}'",
+            f"tmux send-keys -t pane '{claim}' Enter",
+            f"tmux new-window '{claim}'",
+            f"screen -X stuff '{claim}\\n'",
+            f"parallel ::: '{claim}'",
+            f"osascript -e 'do shell script \"{claim}\"'",
+            f"php -r 'system(\"{claim}\");'",
+            f"lua -e 'os.execute(\"{claim}\")'",
+            f"pwsh -c '{claim}'",
+            f"Rscript -e 'system(\"{claim}\")'",
+        ]
+        for command in commands:
+            rows = [
+                {
+                    "payload": {
+                        "type": "function_call",
+                        "name": "exec_command",
+                        "call_id": "launcher",
+                        "arguments": json.dumps({"cmd": command}),
+                    }
+                }
+            ]
+            with self.subTest(command=command):
+                self.assertTrue(helper.history.literal_targets(rows, SESSION)["unresolved_invocations"])
+
+    def test_interactive_input_preserves_targets_and_bare_count_uncertainty(self) -> None:
+        receipt = {"claim": SOURCE, "issue": {"repo": "first/a", "number": 5}}
+        for command, unresolved in (
+            ("uv run gh-plan.py claim 5\n", True),
+            ("uv run gh-plan.py --repo first/a claim 5\n", False),
+            ("", False),
+        ):
+            for javascript in (False, True):
+                payload = (
+                    {
+                        "type": "custom_tool_call",
+                        "name": "exec",
+                        "call_id": "input",
+                        "input": "text(await tools.write_stdin({session_id:41,chars:" + json.dumps(command) + "}));",
+                    }
+                    if javascript
+                    else {
+                        "type": "function_call",
+                        "name": "write_stdin",
+                        "call_id": "input",
+                        "arguments": json.dumps({"session_id": 41, "chars": command}),
+                    }
+                )
+                rows = [
+                    {"payload": payload},
+                    {"payload": {"type": "function_call_output", "call_id": "input", "output": json.dumps(receipt)}},
+                ]
+                with self.subTest(command=command, javascript=javascript):
+                    report = helper.history.literal_targets(rows, SESSION)
+                    self.assertEqual(report["targets"], {("first/a", 5)})
+                    self.assertEqual(bool(report["unresolved_invocations"]), unresolved)
+
+    def test_python_terminal_and_in_process_helpers_remain_conditional(self) -> None:
+        sources = [
+            "import pty; pty.spawn(['uv', 'run', 'gh-plan.py', 'claim', '5'])",
+            "from pty import spawn as launch; launch(['uv', 'run', 'gh-plan.py', 'claim', '5'])",
+            "import runpy, sys; sys.argv=['gh-plan.py', 'claim', '5']; runpy.run_path('gh-plan.py', run_name='__main__')",
+            "from runpy import run_path as launch; import sys; sys.argv=['gh-plan.py', 'claim', '5']; launch('gh-plan.py')",
+            "from os import execv as launch; launch('uv', ['uv', 'run', 'gh-plan.py', 'claim', '5'])",
+            "import os; launch=os.execv; launch('uv', ['uv', 'run', 'gh-plan.py', 'claim', '5'])",
+            "from os import posix_spawn as launch; launch('uv', ['uv', 'run', 'gh-plan.py', 'claim', '5'], {})",
+        ]
+        for source in sources:
+            command = "python - <<'PY'\n" + source + "\nPY"
+            rows = [
+                {
+                    "payload": {
+                        "type": "function_call",
+                        "name": "exec_command",
+                        "call_id": "python",
+                        "arguments": json.dumps({"cmd": command}),
+                    }
+                }
+            ]
+            with self.subTest(source=source):
+                self.assertTrue(helper.history.literal_targets(rows, SESSION)["unresolved_invocations"])
+
+    def test_interactive_program_context_survives_until_later_input(self) -> None:
+        for javascript in (False, True):
+            rows = []
+            for index, chars in enumerate(("CMD='uv run gh-plan.py claim 5'\n", "$CMD\n")):
+                payload = (
+                    {
+                        "type": "custom_tool_call",
+                        "name": "exec",
+                        "call_id": str(index),
+                        "input": "text(await tools.write_stdin({session_id:41,chars:" + json.dumps(chars) + "}));",
+                    }
+                    if javascript
+                    else {
+                        "type": "function_call",
+                        "name": "write_stdin",
+                        "call_id": str(index),
+                        "arguments": json.dumps({"session_id": 41, "chars": chars}),
+                    }
+                )
+                rows.append({"payload": payload})
+            with self.subTest(javascript=javascript):
+                self.assertTrue(helper.history.literal_targets(rows, SESSION)["unresolved_invocations"])
+        rows = [
+            {
+                "payload": {
+                    "type": "function_call",
+                    "name": "exec_command",
+                    "call_id": "start",
+                    "arguments": json.dumps({"cmd": "export CMD='uv run gh-plan.py claim 5'; bash", "tty": True}),
+                }
+            },
+            {"payload": {"type": "function_call_output", "call_id": "start", "output": json.dumps({"session_id": 41})}},
+            {
+                "payload": {
+                    "type": "function_call",
+                    "name": "write_stdin",
+                    "call_id": "input",
+                    "arguments": json.dumps({"session_id": 41, "chars": "$CMD\n"}),
+                }
+            },
+        ]
+        self.assertTrue(helper.history.literal_targets(rows, SESSION)["unresolved_invocations"])
+
+    def test_interactive_context_does_not_taint_independent_shells_or_empty_polls(self) -> None:
+        prefix = "text(await tools.write_stdin({session_id:41,chars:\"CMD=\\'uv run gh-plan.py claim 5\\'\\n\"}));"
+        for source in (
+            'const paths=["validator.py"]; await Promise.all(paths.map(path=>tools.exec_command({cmd:"uv run "+path}))); text(await tools.write_stdin({session_id:41,chars:""}));',
+            'text(await tools.exec_command({cmd:"$UNRELATED"})); text(await tools.write_stdin({session_id:41,chars:""}));',
+        ):
+            rows = [
+                {"payload": {"type": "custom_tool_call", "name": "exec", "call_id": str(index), "input": text}}
+                for index, text in enumerate((prefix, source))
+            ]
+            with self.subTest(source=source):
+                self.assertEqual(helper.history.literal_targets(rows, SESSION), {"targets": set(), "unresolved_invocations": []})
+
     def test_sibling_output_cannot_discharge_a_bare_claim(self) -> None:
         receipt = {"claim": SOURCE, "issue": {"repo": "first/a", "number": 5}}
         rejection = {"operation": "github.plan.claim", "ok": False, "write_outcome": "not_started"}
