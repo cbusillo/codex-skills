@@ -1605,8 +1605,14 @@ digest on apply. A reference does not grant recovery authority.
 Reference recovery also accepts the service's `close_out_observed` plan when
 the outcome is `absent` and `retry_safe` is false: the provider operation's
 deployment record is absent, while separate runtime evidence proves the exact
-running artifact. It closes the reservation without retrying it. Unknown or
-uninspected outcomes stay held. A denied runtime sync remains denied; obtaining
+running artifact. It closes the reservation without retrying it. Testing
+recovery accepts `settle_testing_failure` only with `present` and
+`retry_safe: false`. Reference recovery accepts `abandon_testing_original`
+only for testing with `unknown` and `retry_safe: false`. This archives the
+unknown original without claiming fixture cleanup or qualification. Re-run the
+same reference dry-run for completed abandonment readback; retain its saved
+digest. All other unknown or uninspected outcomes stay held.
+A denied runtime sync remains denied; obtaining
 a recovery reference does not deliver runtime values or enable a deployment.
 For `adopt_observed`, the outcome must be `present`; it need not be retry-safe
 because adoption does not retry. `retry_original_operation` requires `absent`

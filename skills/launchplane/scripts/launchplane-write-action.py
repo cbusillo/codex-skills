@@ -4844,11 +4844,25 @@ def _require_apply_eligible_recovery_dry_run(
         and outcome in {"present", "absent"}
         and retry_safe is True
     )
+    testing_settlement = (
+        expected_instance == "testing"
+        and action == "settle_testing_failure"
+        and outcome == "present"
+        and retry_safe is False
+    )
+    actionable = actionable or testing_settlement
     if expected_request_sha256 is not None:
         actionable = (
             (action == "adopt_observed" and outcome == "present" and isinstance(retry_safe, bool))
             or (action == "retry_original_operation" and outcome == "absent" and retry_safe is True)
             or (action == "close_out_observed" and outcome == "absent" and retry_safe is False)
+            or testing_settlement
+            or (
+                expected_instance == "testing"
+                and action == "abandon_testing_original"
+                and outcome == "unknown"
+                and retry_safe is False
+            )
         )
     if (
         evidence.get("operation") != "generic-web-deploy-recovery-dry-run"
