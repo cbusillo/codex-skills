@@ -384,6 +384,8 @@ def tool_outputs(records: list[dict]) -> dict[str, list[object]]:
     inputs = {identifier: text for identifier, text, _ in tool_inputs(records)}
     for blocks in list(outputs.values()):
         yielded = {item["session_id"] for block in blocks for item in values(block) if type(item.get("session_id")) is int}
+        if not yielded:
+            continue
         for followup, text in inputs.items():
             if any(re.search(rf"session_id[\"']?\s*:\s*{process}(?!\d)", text) for process in yielded):
                 blocks.extend(outputs.get(followup, []))
@@ -591,6 +593,8 @@ def command_words(node: Node) -> list[Node]:
     parent = node.parent
     if parent is not None and parent.type == "redirected_statement" and parent.child_by_field_name("body") == node:
         for redirect in parent.children_by_field_name("redirect"):
+            if words and words[-1].type == "number" and words[-1].end_byte == redirect.start_byte:
+                words.pop()
             if redirect.type == "file_redirect":
                 words.extend(redirect.children_by_field_name("destination")[1:])
     return sorted(words, key=lambda word: word.start_byte)
@@ -733,7 +737,7 @@ def shell_claims(text: str, *, claim_related: bool = False) -> ShellClaims:
             if program.generated:
                 discovery.opaque = discovery.opaque or related
             elif program.produced:
-                discovery.opaque = discovery.opaque or related
+                discovery.opaque = discovery.opaque or ("gh-plan" in program.text and CLAIM_WORD.search(program.text) is not None)
             elif Path(program.consumer).name in SHELL_NAMES | {"eval"}:
                 nested = shell_claims(program.text, claim_related=related)
                 discovery.arguments.extend(nested.arguments)

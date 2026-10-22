@@ -1405,6 +1405,26 @@ class ClaimCloseoutTests(unittest.TestCase):
                 with self.subTest(command=command):
                     self.assertEqual(helper.history.literal_targets(rows, SESSION), {"targets": set(), "unresolved_invocations": []})
 
+    def test_unrelated_literal_program_paths_and_input_do_not_inherit_fixture_data(self) -> None:
+        commands = [
+            "printf '%s' 'gh-plan.py claim 5'; python -m compileall -q gh-plan.py",
+            "cat >fixture.txt <<'EOF'\ngh-plan.py claim 5\nEOF\nuv run python patch.py",
+            "printf '%s' 'gh-plan.py claim 5'; printf unrelated | bash",
+        ]
+        for command in commands:
+            rows = [
+                {
+                    "payload": {
+                        "type": "function_call",
+                        "name": "exec_command",
+                        "call_id": "fixture",
+                        "arguments": json.dumps({"cmd": command}),
+                    }
+                }
+            ]
+            with self.subTest(command=command):
+                self.assertEqual(helper.history.literal_targets(rows, SESSION), {"targets": set(), "unresolved_invocations": []})
+
     def test_generated_and_process_substitution_program_channels_remain_conditional(self) -> None:
         claim = "uv run gh-plan.py claim 5"
         commands = [
