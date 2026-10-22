@@ -3,16 +3,6 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""Package, validate and report a PEP 723 updater proposal as data.
-
-`package` runs in the unprivileged calculation job right after the updater
-rewrites pins. `prepare` runs in the submit job, the only job that can request
-OIDC: it reads the candidate artifact as JSON data, re-derives every changed
-file with the shared standard-library renderer and writes the request for
-Launchplane's updater route. `summary` reports the route's answer. Nothing here
-imports a third-party package or executes candidate code.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -54,8 +44,7 @@ DIGEST = re.compile(r"^[0-9a-f]{64}$")
 REPOSITORY_NAME = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 RUN_NUMBER = re.compile(r"^[1-9][0-9]*$")
 UPDATER_BRANCH = re.compile(r"^launchplane/updater/[0-9a-f]{64}/[0-9a-f]{64}$")
-# packaging renders a stable, non-local version exactly in this form:
-# optional nonzero epoch, integer release segments, optional post-release.
+# https://packaging.python.org/en/latest/specifications/version-specifiers/#normalization
 CANONICAL_STABLE_VERSION = (
     r"(?:[1-9][0-9]*!)?(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*))*(?:\.post(?:0|[1-9][0-9]*))?"
 )
@@ -76,7 +65,7 @@ DISPOSITION_RESULTS = {
 
 
 class ProposalRefused(ValueError):
-    """Raised when a candidate or response cannot cross the trusted boundary."""
+    pass
 
 
 @dataclass(frozen=True)
@@ -97,8 +86,6 @@ class RunContext:
 
 @dataclass(frozen=True)
 class BaseSnapshot:
-    """Tracked regular Python files of the exact base commit, read from Git objects."""
-
     modes: Mapping[str, str]
     sources: Mapping[str, str]
 
@@ -191,7 +178,6 @@ def read_base_snapshot(base_sha: str, cwd: Path) -> BaseSnapshot:
 
 
 def _pins(script: ScriptMetadata, label: str) -> dict[str, tuple[str, str]]:
-    """Map each normalized package to its display name and version."""
     pins: dict[str, tuple[str, str]] = {}
     for value in script.dependencies:
         match = EXACT_PIN.fullmatch(value)
@@ -211,7 +197,6 @@ def _parse_metadata(path: str, source: str, label: str) -> ScriptMetadata | None
 
 
 def _validated_file(path: str, base_source: str, content: str) -> tuple[ScriptMetadata, str]:
-    """Return the candidate metadata after proving only dependency pins changed."""
     base = _parse_metadata(path, base_source, f"base {path}")
     require(
         base is not None and base.has_dependencies_key,
@@ -380,7 +365,6 @@ def _workspace_changes(base: BaseSnapshot, cwd: Path) -> dict[str, str]:
 
 
 def package_candidate(context: RunContext, output_directory: Path, cwd: Path) -> str | None:
-    """Write the run-bound candidate and return its digest, or None when nothing changed."""
     _require_checkout_at(context.base_sha, cwd)
     base = read_base_snapshot(context.base_sha, cwd)
     files = _workspace_changes(base, cwd)
@@ -505,7 +489,6 @@ def summarize_response(
     outputs: Mapping[str, str],
     request_digest: str,
 ) -> tuple[bool, str]:
-    """Return whether the route confirmed an outcome, and the report text."""
     identity = f"Request sha256: `{request_digest}`\n"
     if outcome != "success" or re.fullmatch(r"2[0-9][0-9]", status) is None:
         label = f"HTTP {status}" if re.fullmatch(r"[0-9]{3}", status) else "no HTTP status"
@@ -557,7 +540,9 @@ def _append(path: str, text: str) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description="Package, validate and report a PEP 723 updater proposal as data."
+    )
     commands = parser.add_subparsers(dest="command", required=True)
     package = commands.add_parser("package", help="Package the updater's workspace change")
     package.add_argument("output_directory", type=Path)

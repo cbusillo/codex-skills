@@ -1,10 +1,3 @@
-"""Parse and render PEP 723 script metadata with the standard library only.
-
-The updater and the trusted proposal job share these semantics. The proposal
-job runs without installed dependencies, so nothing here may import a
-third-party package.
-"""
-
 from __future__ import annotations
 
 import json
@@ -20,7 +13,7 @@ BLOCK_END_MARKER = "# ///"
 UV_SCRIPT_SHEBANG = "#!/usr/bin/env -S uv run --script"
 PACKAGE_NAME_PATTERN = r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?"
 DEPENDENCIES_ASSIGNMENT = re.compile(r"(?m)^[ \t]*dependencies[ \t]*=")
-# PEP 503 name normalization, as packaging.utils.canonicalize_name documents.
+# https://peps.python.org/pep-0503/#normalized-names
 NAME_SEPARATORS = re.compile(r"[-_.]+")
 
 

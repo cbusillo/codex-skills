@@ -386,6 +386,16 @@ def resolve_latest_versions(
 Resolver = Callable[[Mapping[str, Sequence[str]]], dict[str, str]]
 
 
+def _pins_already_current(
+    requirements: Sequence[DirectRequirement], resolved_versions: Mapping[str, str]
+) -> bool:
+    return all(
+        requirement.operator == "=="
+        and requirement.version == resolved_versions[requirement.normalized_name]
+        for requirement in requirements
+    )
+
+
 def proposed_updates(
     scripts: Sequence[ScriptMetadata], resolver: Resolver
 ) -> tuple[dict[Path, str], dict[str, str]]:
@@ -394,13 +404,7 @@ def proposed_updates(
     changes: dict[Path, str] = {}
     for script in scripts:
         requirements = [parse_requirement(value, require_pin=False) for value in script.dependencies]
-        # Leave a script alone unless a pin changes, so order alone never adds
-        # a file to a size-limited proposal.
-        if all(
-            requirement.operator == "=="
-            and requirement.version == resolved_versions[requirement.normalized_name]
-            for requirement in requirements
-        ):
+        if _pins_already_current(requirements, resolved_versions):
             continue
         updated_dependencies = [
             f"{requirement.name}=={resolved_versions[requirement.normalized_name]}"

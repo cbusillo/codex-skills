@@ -30,7 +30,6 @@ ReferenceFileKind = Literal["workflow", "action"]
 class ActionClassification:
     trust: str
     privilege: str
-    # An untagged first-party action names itself instead of a release tag.
     untagged_provenance: str | None = None
 
 

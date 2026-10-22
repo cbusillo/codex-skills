@@ -5,8 +5,6 @@
 #     "packaging==26.3",
 # ]
 # ///
-"""Run the PEP 723 proposal boundary against real Git repositories offline."""
-
 from __future__ import annotations
 
 import hashlib
@@ -192,9 +190,17 @@ class ProposalBoundaryTests(unittest.TestCase):
         self.trusted_checkout()
 
         request_file = self.temporary / "request.json"
-        # -S removes site-packages, so prepare must succeed with the standard library alone.
+        without_site_packages = "-S"
         result = subprocess.run(
-            [sys.executable, "-E", "-S", str(SCRIPT), "prepare", str(directory), str(request_file)],
+            [
+                sys.executable,
+                "-E",
+                without_site_packages,
+                str(SCRIPT),
+                "prepare",
+                str(directory),
+                str(request_file),
+            ],
             cwd=self.root,
             env=self.submit_environment(EXPECTED_DIGEST=digest),
             capture_output=True,
@@ -438,8 +444,7 @@ class ProposalBoundaryTests(unittest.TestCase):
             self.root,
         )
 
-    def assert_oversize_refused(self, fragment: str) -> None:
-        """Refuse when packaging, and again when a hand-built artifact skips packaging."""
+    def assert_refused_when_packaged_and_when_hand_built(self, fragment: str) -> None:
         changed = self.run_updater()
         self.assert_refused(
             partial(
@@ -460,7 +465,6 @@ class ProposalBoundaryTests(unittest.TestCase):
         self.assert_refused(partial(self.prepare, candidate), fragment)
 
     def test_large_scripts_fit_until_the_route_limits(self) -> None:
-        # About the size of the catalog's largest PEP 723 script.
         filler = "".join(f"value_{index:06d} = {index}\n" for index in range(18_000))
         self.write("tools/large.py", script_source(["PyYAML==6.0.2"], filler))
         self.base_sha = self.commit("large script")
@@ -471,20 +475,22 @@ class ProposalBoundaryTests(unittest.TestCase):
         self.assertEqual(prepared.changed_files, 3)
         self.assertLessEqual(len(prepared.payload), proposal.ROUTE_BODY_LIMIT)
 
-        # JSON doubles every byte of these lines, so the body limit binds first.
         self.git("rm", "-q", "tools/large.py")
-        escaped = '"\\\\"\n' * 54_000
+        json_doubles_these_lines = '"\\\\"\n' * 54_000
         for index in range(2):
-            self.write(f"tools/quoted_{index}.py", script_source(["PyYAML==6.0.2"], escaped))
+            self.write(
+                f"tools/quoted_{index}.py",
+                script_source(["PyYAML==6.0.2"], json_doubles_these_lines),
+            )
         self.base_sha = self.commit("escaped scripts")
         self.context = proposal.RunContext("fixture/catalog", self.base_sha, "41", "2")
-        self.assert_oversize_refused("The request is")
+        self.assert_refused_when_packaged_and_when_hand_built("The request is")
 
         for index in range(3):
             self.write(f"tools/quoted_{index}.py", script_source(["PyYAML==6.0.2"], "x" * 360_000))
         self.base_sha = self.commit("wide scripts")
         self.context = proposal.RunContext("fixture/catalog", self.base_sha, "41", "2")
-        self.assert_oversize_refused("old-plus-new bytes")
+        self.assert_refused_when_packaged_and_when_hand_built("old-plus-new bytes")
 
     def test_more_files_than_the_route_accepts_are_refused(self) -> None:
         for index in range(32):
