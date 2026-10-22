@@ -1978,7 +1978,7 @@ class SharedCooldownStore:
             published_ready_at = max(ready_at, existing_ready_at)
             published_cause = (
                 str(existing.get("cause") or cause)
-                if existing is not None and existing_ready_at > ready_at
+                if existing is not None and existing_ready_at > ready_at and existing.get("cause") != "post_cooldown_drain"
                 else cause
             )
             self._write_state(

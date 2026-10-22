@@ -3077,6 +3077,30 @@ def test_cooldown_claim_releases_lease_after_state_read_error() -> None:
         assert coordinated is False
 
 
+def test_secondary_throttle_during_drain_restores_exclusive_lease() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        state_dir = Path(temp_dir)
+        policy = retry_policy(state_dir, drain_seconds=2.0)
+        store = _api.SharedCooldownStore(state_dir)
+        key = _api._cooldown_key("github.com", "fixture-automation", "rest_core")
+        store.publish(key, ready_at=1001.0, cause="secondary_rate_limited", now=1000.0, policy=policy)
+        lease, target, coordinated = store.claim(key, now=1001.0, policy=policy)
+        assert lease is not None, (target, coordinated)
+        store.finish(now=1001.0, policy=policy, lease=lease)
+        store.publish(key, ready_at=1002.0, cause="secondary_rate_limited", now=1001.0, policy=policy)
+        lease, target, coordinated = store.claim(key, now=1002.0, policy=policy)
+        assert lease is None
+        assert target == 1001.0 + policy.drain_seconds, target
+        assert coordinated
+        lease, target, coordinated = store.claim(key, now=1001.0 + policy.drain_seconds, policy=policy)
+        try:
+            assert lease is not None, "fresh secondary throttle lost its exclusive retry lease"
+            assert target is None, target
+            assert coordinated
+        finally:
+            store.release(lease)
+
+
 def test_unavailable_cooldown_storage_fails_closed_before_repeat() -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         blocked = Path(temp_dir) / "not-a-directory"
@@ -3311,6 +3335,7 @@ def main() -> None:
         test_cooldown_publication_honors_deadline_when_lock_is_busy,
         test_cooldown_publication_never_shortens_existing_reset,
         test_cooldown_claim_releases_lease_after_state_read_error,
+        test_secondary_throttle_during_drain_restores_exclusive_lease,
         test_unavailable_cooldown_storage_fails_closed_before_repeat,
         test_stale_cooldown_state_is_ignored,
         test_malformed_cooldown_state_is_removed,
