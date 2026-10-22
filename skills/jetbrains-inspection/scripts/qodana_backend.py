@@ -36,6 +36,7 @@ IMAGE_RE = re.compile(r"jetbrains/qodana-(python|jvm)-community@sha256:[0-9a-f]{
 BOUNDARY_RE = re.compile(r"(?:start(?:ing|ed)?|activat(?:e[ds]?|ing|ion)|obtain(?:ing|ed)?|issu(?:e[ds]?|ing))\b.{0,100}\btrial|\btrial\b.{0,100}\b(?:start(?:ing|ed)?|activat(?:e[ds]?|ing|ion)|obtain(?:ing|ed)?|issu(?:e[ds]?|ing))|purchas|buy.{0,30}licen", re.I)
 LOAD_LIMIT = 64
 FINDING_LIMIT = 25
+DRIFT_PATH_LIMIT = 25
 RUN_LABEL = "codex-skills.qodana.run"
 # Engine state lives in the container's own layer under WORK, copied in and
 # out through the Docker API. Docker Desktop's file sharing keeps host handles
@@ -900,6 +901,10 @@ def envelope(host, receipt, findings, reason, gaps, artifact, uncovered=()):
         action = ("Owner question: use an independently Director-activated headless profile; "
                   "never copy credentials. See jetbrains-inspection/references/qodana-backend.md#director-activation. "
                   "The Director activates it through the product UI using existing entitlements.")
+    elif reason in {"qodana_source_inputs_changed", "qodana_source_selection_changed"}:
+        action = ("Await every writer in this worktree, including a running Anthropic or Google model review, whose "
+                  "`.model-review-*` scratch lives in the checkout until it finishes; check that the paths in "
+                  "diagnostic.qodana.source_input_drift are stable, then run one fresh assessment.")
     elif reason == "qodana_credential_input_refused":
         action = ("Remove the refused input from the snapshot or public plugin package; "
                   "keep credentials outside project inputs or ignored by Git. "
@@ -924,6 +929,24 @@ def envelope(host, receipt, findings, reason, gaps, artifact, uncovered=()):
             "identity": {"helper_revision": receipt["helper_revision"], "qodana_backend_revision": receipt["backend_revision"],
                          "inspection_run_id": receipt["run_id"], "qodana_image": receipt.get("image")},
             "diagnostic": {"error_reason": reason, "qodana": receipt}}
+
+
+def bounded_paths(paths):
+    paths = sorted(paths)
+    return {"paths": paths[:DRIFT_PATH_LIMIT], "count": len(paths), "omitted_count": max(0, len(paths) - DRIFT_PATH_LIMIT)}
+
+
+def source_input_drift(repo, hashes, selected, current_selected):
+    """Relative paths and counts only: what differs from the snapshot, never file contents or the writer."""
+    missing = [f for f in hashes if not (repo / f).is_file()]
+    changed = [f for f, h in hashes.items() if (repo / f).is_file() and digest(repo / f) != h]
+    added, removed = current_selected - selected, selected - current_selected
+    if not (missing or changed or added or removed):
+        return None
+    drift = {"kind": "inputs" if missing or changed else "selection", "attribution": "unattributed",
+             "changed_inputs": bounded_paths(changed), "missing_inputs": bounded_paths(missing),
+             "selection_added": bounded_paths(added), "selection_removed": bounded_paths(removed)}
+    return {key: value for key, value in drift.items() if not isinstance(value, dict) or value["count"]}
 
 
 def requested_python_version(config):
@@ -1165,14 +1188,14 @@ def run(args, host):
         # engine saw; files the run added, such as canaries, are allowed.
         changed = sorted(f for f, h in hashes.items() if seen.get(f) != h and f not in ENGINE_WRITTEN)
         if changed:
-            receipt["changed_inputs"] = changed[:25]
+            receipt["changed_inputs"] = changed[:DRIFT_PATH_LIMIT]
             receipt["changed_input_count"] = len(changed)
+            receipt["changed_input_omitted_count"] = max(0, len(changed) - DRIFT_PATH_LIMIT)
             raise Blocked("qodana_snapshot_inputs_changed")
-        after_paths = host.inspection_scope_paths(args, repo, scope)
-        after_selected = {p.relative_to(repo).as_posix() for raw in after_paths
-                          if (p := host.normalize_inspection_lane_path(raw, repo)).is_file()}
-        if after_selected != selected or any(not (repo / f).is_file() or digest(repo / f) != h for f, h in hashes.items()):
-            raise Blocked("qodana_source_inputs_changed")
+        drift = source_input_drift(repo, hashes, selected, scope_selection(args, host)[3])
+        if drift:
+            receipt["source_input_drift"] = drift
+            raise Blocked("qodana_source_inputs_changed" if drift["kind"] == "inputs" else "qodana_source_selection_changed")
         if digest(profile) != receipt["profile_sha256"]:
             raise Blocked("qodana_profile_inputs_changed")
         reason = "qodana_completed" if findings or not gaps else "qodana_coverage_unproven"

@@ -19,6 +19,18 @@ when outside the requested file set. The source worktree is never mounted in
 the container. Before accepting findings, source and selected snapshot hashes
 must still match. Symlinks fail closed rather than pulling in external data.
 
+When they do not, `qodana_source_inputs_changed` means a snapshotted input
+changed or disappeared, and `qodana_source_selection_changed` means the scope
+now selects different files. `diagnostic.qodana.source_input_drift` keeps the
+relative paths and counts for each kind, at most 25 paths per kind with an
+`omitted_count`, and never file contents. It is marked `unattributed`: the
+comparison shows what changed, not which process changed it. Unignored scratch
+in the worktree is snapshotted like any other input. Anthropic and Google
+reviews from `model-review` write `.model-review-*` scratch in the checkout and
+remove it when they finish, so a review running beside an inspection of the
+same worktree invalidates it. Let the review finish first, check that the named
+paths are stable, then run one fresh assessment.
+
 The profile must be a populated XML profile in the worktree, selected through
 `--profile` (its name or relative path), or `qualityGate.inspection.profile`.
 With neither, exactly one populated project profile must exist. Empty or
