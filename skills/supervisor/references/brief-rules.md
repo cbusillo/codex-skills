@@ -51,7 +51,7 @@ Rules for this brief (every Supervisor brief carries them):
   Follow the repository's
   [executing loop](../../references/executing-loop.md), opening each step's
   owning SKILL.md before the step.
-- Recheck ownership, then claim with `gh-plan.py claim` (admission: the kind
+- Recheck ownership, then claim with `gh-plan.py --repo OWNER/REPO claim` (admission: the kind
   named at the top of the brief) before any worktree. The installed
   `gh-plan.py claim --help` and
   [Planning: Claim](../../github/references/cli-reference.md#planning-claim)

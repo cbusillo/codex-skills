@@ -18,7 +18,7 @@ commands:
     purpose: Reads every open issue and full discussion and reports missing or malformed wait records without clearing them.
   - name: github-plan-claim
     source: repo
-    example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "claim", "<issue>", "--worker", "<worker>", "--session", "<session-id>", "--branch", "work/issue-<number>", "--next-action", "<action>"]
+    example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "--repo", "OWNER/REPO", "claim", "<issue>", "--worker", "<worker>", "--session", "<session-id>", "--branch", "work/issue-<number>", "--next-action", "<action>"]
     purpose: Rechecks ownership, records and reads back the claim, and activates planning state before a task worktree is created.
   - name: github-plan-release
     source: repo
@@ -251,7 +251,7 @@ active issue labels and continuing background jobs do not lift a hold.
    while recommending independent work.
 5. For `next`, report the selected issue, why it fits the plan, and recorded
    waits, then stop without changing planning state. On authorized `go`, run
-   `gh-plan.py claim <issue> --worker <worker> --session <session-id>
+   `gh-plan.py --repo OWNER/REPO claim <issue> --worker <worker> --session <session-id>
    --branch <task-branch> --next-action "<action>"` before creating a
    branch or worktree, adding `--admission <kind>` when the overall Order
    admits the work: live-site breakage, a named `milestone` item (linked into
