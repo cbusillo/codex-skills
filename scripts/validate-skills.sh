@@ -41,6 +41,7 @@ scripts/run-python-helper.sh skills/skill-creator/scripts/validate-command-polic
 scripts/run-python-helper.sh scripts/validate-public-safety.py --self-test
 scripts/run-python-helper.sh scripts/validate-public-safety.py
 scripts/lint-tls.sh
+scripts/typecheck.sh
 scripts/run-python-helper.sh skills/launchplane/scripts/check-agent-operator-contract.py
 scripts/run-python-helper.sh scripts/update_pep723_dependencies.py --check
 scripts/run-python-helper.sh skills/skill-creator/scripts/quick_validate.py --self-test
