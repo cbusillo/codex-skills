@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import http.client
 import re
 import urllib.error
@@ -14,11 +15,9 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 PREFIX = "disposable-lane-"
-# This consumer installs only these three modes; other producer modes need
-# their own consumer implementation.
-MODES = ("inspect", "collect", "record")
+MODES = ("inspect", "collect", "record", "clear")
 COMMANDS = frozenset(PREFIX + mode for mode in MODES)
-TIMEOUTS = {PREFIX + "collect": 240.0, PREFIX + "inspect": 30.0, PREFIX + "record": 30.0}
+TIMEOUTS = {PREFIX + mode: 240.0 if mode == "collect" else 30.0 for mode in MODES}
 SCOPE = ("product", "context", "instance")
 FACTS = {
     "usage": ({"unknown", "unused", "in_use"}, "usage_evidence"),
@@ -30,7 +29,9 @@ INPUT_FIELDS = {
     "inspect": {*SCOPE, "preview_id"},
     "collect": {*SCOPE, "preview_id", "lifetime_seconds"},
     "record": {*SCOPE, "preview_id", "lifetime_seconds", *FACTS, *EVIDENCE},
+    "clear": {*SCOPE, "preview_id"},
 }
+EMPTY_OBSERVATION_SHA256 = hashlib.sha256(b"null").hexdigest()
 MAX_LIFETIME_SECONDS = 900
 DEFAULT_LIFETIME_SECONDS = 300
 CLOCK_SKEW_SECONDS = 5
@@ -109,6 +110,7 @@ RESULT_FIELDS = {
                 "expires_at", "provider_mutation", "automatic_fact_collection", "source_coverage"},
     "record": {"mode", "binding_sha256", "observed_by", "observer_kind", *FACTS, "provider_mutation",
                "automatic_fact_collection", "source_coverage", "reconcile_requested"},
+    "clear": {"mode", "binding_sha256", "observation_sha256", "provider_mutation"},
 }
 RECOVERY = (
     "The observation may or may not be stored. Do not retry automatically. Run disposable-lane-inspect, "
@@ -119,13 +121,15 @@ RECOVERY = (
 
 def add_parser(subparsers: Any) -> None:
     for mode in MODES:
-        parser = subparsers.add_parser(PREFIX + mode, help="Inspect, collect or record one disposable lane observation.")
+        parser = subparsers.add_parser(PREFIX + mode, help="Inspect, collect, record or clear one disposable lane observation.")
         parser.add_argument("--payload-file", required=True, help="Private request JSON outside the repository.")
         if mode != "inspect":
             parser.add_argument("--expected-binding-sha256", required=True)
             parser.add_argument("--inspect-evidence-file", required=True,
                                 help="Saved output of a prior disposable-lane-inspect for the same lane.")
             parser.add_argument("--reviewed-inspect", action="store_true")
+        if mode == "clear":
+            parser.add_argument("--expected-observation-sha256", required=True)
 
 
 def _scope_value(h: Any, body: dict[str, Any], field: str) -> str:
@@ -190,8 +194,10 @@ def scope_of(body: dict[str, Any]) -> dict[str, str]:
     return {field: body[field] for field in (*SCOPE, "preview_id") if field in body}
 
 
-def review_binding(h: Any, scope: dict[str, str], digest: str, service: str) -> str:
-    return h.metadata_review_digest({"scope": scope, "binding_sha256": digest, "service_fingerprint": service})
+def review_binding(h: Any, scope: dict[str, str], digest: str, service: str,
+                   observation_digest: str, observation: dict[str, str] | None) -> str:
+    return h.metadata_review_digest({"scope": scope, "binding_sha256": digest, "service_fingerprint": service,
+                                     "observation_sha256": observation_digest, "observation": observation})
 
 
 def require_review(h: Any, args: argparse.Namespace, scope: dict[str, str]) -> tuple[str, str]:
@@ -207,8 +213,23 @@ def require_review(h: Any, args: argparse.Namespace, scope: dict[str, str]) -> t
         or not isinstance(result, dict) or result.get("mode") != "inspect"
         or result.get("binding_sha256") != digest
         or not isinstance(result.get("service_fingerprint"), str)
-        or result.get("review_binding_sha256") != review_binding(h, scope, digest, result["service_fingerprint"])):
+        or not isinstance(result.get("observation_sha256"), str)
+        or not DIGEST_RE.fullmatch(result["observation_sha256"])
+        or "observation" not in result):
         raise ValueError("reviewed_inspect_not_eligible")
+    try:
+        observation = _stored_observation(h, result["observation"])
+    except h.LaunchplaneSafetyError:
+        raise ValueError("reviewed_inspect_not_eligible") from None
+    if result.get("review_binding_sha256") != review_binding(
+            h, scope, digest, result["service_fingerprint"], result["observation_sha256"], observation):
+        raise ValueError("reviewed_inspect_not_eligible")
+    if args.command == PREFIX + "clear":
+        expected = args.expected_observation_sha256.strip()
+        if not DIGEST_RE.fullmatch(expected):
+            raise ValueError("invalid_expected_observation_sha256")
+        if expected != result["observation_sha256"]:
+            raise ValueError("reviewed_inspect_observation_changed")
     return digest, result["service_fingerprint"]
 
 
@@ -320,7 +341,8 @@ def _collect_checks(h: Any, source: dict[str, Any], facts: dict[str, str]) -> tu
             "never_served_qualification": qualification}, reason
 
 
-def project(h: Any, response: dict[str, Any], mode: str, body: dict[str, Any], digest: str) -> dict[str, object]:
+def project(h: Any, response: dict[str, Any], mode: str, body: dict[str, Any], digest: str,
+            observation_digest: str = "") -> dict[str, object]:
     """Fail closed on any unexpected receipt; never synthesize a positive fact."""
     source = h._require_dict(response.get("result"))
     if (response.get("status") != "accepted" or source.get("mode") != mode
@@ -333,6 +355,14 @@ def project(h: Any, response: dict[str, Any], mode: str, body: dict[str, Any], d
     binding = _digest(h, source.get("binding_sha256"))
     if mode != "inspect" and binding != digest:
         raise h.LaunchplaneSafetyError("invalid_response")
+    if mode == "clear":
+        observation = _digest(h, source.get("observation_sha256"))
+        if observation != observation_digest:
+            raise h.LaunchplaneSafetyError("invalid_response")
+        result = {"mode": mode, "binding_sha256": binding, "observation_sha256": observation,
+                  "provider_mutation": False}
+        h.assert_public_safe_shape(result)
+        return result
     facts = {fact: source.get(fact) for fact in FACTS}
     if any(facts[fact] not in allowed for fact, (allowed, _ref) in FACTS.items()):
         raise h.LaunchplaneSafetyError("invalid_response")
@@ -393,6 +423,13 @@ def _readback(h: Any, call: Any, body: dict[str, Any], mode: str, digest: str,
         return "accepted_unverified", h.service_response_diagnostics(error)
     diagnostics = h.service_response_diagnostics(readback)
     result["binding_readback_matches"] = observed["binding_sha256"] == digest
+    if mode == "clear":
+        result["observation_readback_matches"] = (
+            observed["observation"] is None and observed["observation_sha256"] == EMPTY_OBSERVATION_SHA256)
+        confirmed = result["binding_readback_matches"] and result["observation_readback_matches"]
+        if confirmed:
+            result["effect_readback"] = "verified"
+        return ("accepted" if confirmed else "accepted_unverified"), diagnostics
     return ("accepted" if result["binding_readback_matches"] else "accepted_unverified"), diagnostics
 
 
@@ -414,6 +451,9 @@ def execute(h: Any, args: argparse.Namespace) -> int:
     if mode != "inspect":
         # The service rechecks this binding before storing anything.
         payload["expected_binding_sha256"] = digest
+    observation_digest = args.expected_observation_sha256.strip() if mode == "clear" else ""
+    if mode == "clear":
+        payload["expected_observation_sha256"] = observation_digest
 
     def call(sent: dict[str, Any]) -> dict[str, Any]:
         return h.request_launchplane(service_url=settings["service_url"], path=path, settings=settings,
@@ -421,8 +461,9 @@ def execute(h: Any, args: argparse.Namespace) -> int:
 
     response: dict[str, Any] | None = None
     try:
-        response = call(payload)
-        result = project(h, response, mode, body, digest)
+        received = call(payload)
+        response = received
+        result = project(h, received, mode, body, digest, observation_digest)
     except urllib.error.HTTPError as error:
         error_payload = h._ServiceResponse({}, error.code)
         try:
@@ -464,7 +505,9 @@ def execute(h: Any, args: argparse.Namespace) -> int:
     readback: dict[str, object] = {}
     if mode == "inspect":
         result["service_fingerprint"] = service
-        result["review_binding_sha256"] = review_binding(h, scope, str(result["binding_sha256"]), service)
+        result["review_binding_sha256"] = review_binding(
+            h, scope, _digest(h, result["binding_sha256"]), service, _digest(h, result["observation_sha256"]),
+            _stored_observation(h, result["observation"]))
     else:
         status, readback = _readback(h, call, body, mode, digest, result)
     output = h.base_payload(status=status, operation=args.command, request=request)
@@ -479,9 +522,15 @@ def execute(h: Any, args: argparse.Namespace) -> int:
 
 def _recommendation(mode: str, status: str, body: dict[str, Any]) -> str:
     if mode == "inspect":
-        return ("Save this output privately and review the binding. It is required evidence for collect "
-                "and record. Fresh facts stay unknown until the service collects them. Stored observations "
+        return ("Save this output privately and review the binding and stored report. It is required evidence "
+                "for collect, record and clear. Fresh facts stay unknown until the service collects them. Stored observations "
                 "have unverified freshness and binding; they do not establish current disposal eligibility.")
+    if mode == "clear":
+        if status != "accepted":
+            return ("The service accepted the clear request, but removal of the reviewed observation could not "
+                    "be confirmed. Inspect again before relying on it; do not retry automatically.")
+        return ("The reviewed observation is absent on readback. Clearing it does not resolve holds or "
+                "establish disposal eligibility.")
     if status != "accepted":
         return ("The service accepted the request, but the lane binding could not be confirmed afterwards. "
                 "Inspect again before relying on it; do not retry automatically.")
@@ -498,7 +547,10 @@ def _outcome_unknown(h: Any, args: argparse.Namespace, request: dict[str, object
     for key in ("trace_id", "error_code", "http_status"):
         if key in diagnostics:
             output["summary"][key] = diagnostics[key]
-    output["summary"]["recommendation"] = RECOVERY
+    output["summary"]["recommendation"] = (
+        "The observation may or may not have been cleared. Do not retry automatically. Run disposable-lane-inspect "
+        "and review the current binding and report before another explicit clear. Never change identity or use a provider call."
+        if args.command == PREFIX + "clear" else RECOVERY)
     output["warnings"] = [h.warning("outcome_unknown", "Do not retry automatically; inspect the lane first.")]
     if invalid:
         # The receipt failed its checks after the service accepted the call; no fact is reported.
