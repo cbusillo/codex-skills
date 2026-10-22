@@ -2555,6 +2555,7 @@ def shell_claims(text: str, *, claim_related: bool = False) -> ShellClaims:
             elif Path(program.consumer).name in SHELL_NAMES | {"eval"}:
                 nested = shell_claims(program.text, claim_related=related)
                 discovery.arguments.extend(nested.arguments)
+                discovery.asynchronous = discovery.asynchronous or nested.asynchronous
                 discovery.opaque = discovery.opaque or nested.opaque
                 discovery.decode_failed = discovery.decode_failed or nested.decode_failed
             else:
@@ -2686,8 +2687,6 @@ def resolve_invocations(
         and (target := claim_target(item, item["claim"]["session"])) is not None
     ]
     targets = {target for native, target in completed if native == session}
-    if any(item.get("foreign_native_output") for item in results):
-        return targets, False
     rejected = [
         item
         for item in results

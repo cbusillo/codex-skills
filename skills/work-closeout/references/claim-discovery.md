@@ -122,7 +122,7 @@ asynchronous shell claim stays conditional even when its repository is known.
 A bound canonical helper outcome ends that helper attempt; an unknown write
 outcome still requires checking its known target on GitHub. A terminal result
 belongs only to a whole native result, not printed stdout or a projected exit
-field. Later empty polls can finish their originating process only while its
+field. Later polls can finish their originating process only while its
 process generation remains unambiguous. Earlier polls, reused IDs and partially
 printed intervening launches cannot supply that proof.
 

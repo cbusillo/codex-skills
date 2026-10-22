@@ -48,7 +48,7 @@ def native_terminal_result(identifier: str, output: str = "", *, javascript: boo
         "payload": {
             "type": "custom_tool_call_output" if javascript else "function_call_output",
             "call_id": identifier,
-            "output": json.dumps({"exit_code": 0, "output": output}),
+            "output": (json.dumps({"exit_code": 0, "output": output}) if javascript else f"Chunk ID: fixture\nWall time: 0.1 seconds\nProcess exited with code 0\nOutput:\n{output}"),
         }
     }
 

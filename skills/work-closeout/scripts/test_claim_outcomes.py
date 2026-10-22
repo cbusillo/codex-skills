@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from pathlib import Path
 
 import check_claims
 
@@ -47,6 +48,9 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
             (COMMAND, {"exit_code": 0, "output": ""}, True),
             (COMMAND, {"exit_code": None, "session_id": 123, "output": ""}, False),
             (COMMAND + " &", {"exit_code": 0, "output": ""}, False),
+            ("bash -c '" + COMMAND + " >receipt.json 2>&1 &'", {"exit_code": 0, "output": ""}, False),
+            ("eval '" + COMMAND + " >receipt.json 2>&1 &'", {"exit_code": 0, "output": ""}, False),
+            ("bash <<'EOF'\n" + COMMAND + " >receipt.json 2>&1 &\nEOF", {"exit_code": 0, "output": ""}, False),
             (COMMAND, {"exit_code": 0, "session_id": 123, "output": ""}, False),
         ):
             with self.subTest(command=command, output=output):
@@ -161,6 +165,84 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
                 report = check_claims.history.literal_targets(rows, SESSION)
                 self.assertEqual(report["targets"], {("test/a", 5)})
                 self.assertEqual(not report["unresolved_invocations"], not request and not result)
+
+    def test_nested_background_argv_and_terminal_events_stay_unfinished(self) -> None:
+        command = ["bash", "-lc", COMMAND + " >receipt.json 2>&1 &"]
+        rows = [
+            {
+                "payload": {
+                    "type": "function_call",
+                    "name": "shell",
+                    "call_id": "shell",
+                    "arguments": json.dumps({"command": command}),
+                }
+            },
+            {"payload": {"type": "function_call_output", "call_id": "shell", "output": ""}},
+        ]
+        event = {
+            "type": "event_msg",
+            "payload": {
+                "type": "item_completed",
+                "item": {"type": "CommandExecution", "id": "command", "command": command, "status": "completed", "exit_code": 0},
+            },
+        }
+        for records in (rows, [event]):
+            with self.subTest(records=records):
+                report = check_claims.history.literal_targets(records, SESSION)
+                self.assertEqual(report["targets"], {("test/a", 5)})
+                self.assertTrue(report["unresolved_invocations"])
+
+    def test_foreign_saved_output_cannot_finish_an_own_session_attempt(self) -> None:
+        rows = [
+            {
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "claim",
+                            "name": "Bash",
+                            "input": {"command": COMMAND, "run_in_background": True},
+                        }
+                    ]
+                }
+            },
+            {
+                "toolUseResult": {"backgroundTaskId": "task"},
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "claim",
+                            "content": "<persisted-output>\nFull output saved to: /recorded/foreign/tool-results/result.txt\npreview",
+                        }
+                    ]
+                },
+            },
+        ]
+        for directory in (None, Path("/recorded/native-session/tool-results")):
+            with self.subTest(directory=directory):
+                report = check_claims.history.literal_targets(rows, SESSION, directory=directory)
+                self.assertEqual(report["targets"], {("test/a", 5)})
+                self.assertTrue(report["unresolved_invocations"])
+
+    def test_native_plain_text_polls_preserve_process_generation(self) -> None:
+        def native(name: str, identifier: str, arguments: dict, output: str) -> list[dict]:
+            return [
+                {"payload": {"type": "function_call", "name": name, "call_id": identifier, "arguments": json.dumps(arguments)}},
+                {"payload": {"type": "function_call_output", "call_id": identifier, "output": output}},
+            ]
+
+        pending = "Chunk ID: launch\nWall time: 1 seconds\nProcess running with session ID 123\nOutput:\n"
+        completed = "Chunk ID: poll\nWall time: 0.1 seconds\nProcess exited with code 0\nOutput:\n"
+        for reuse in (False, True):
+            with self.subTest(reuse=reuse):
+                rows = native("exec_command", "claim", {"cmd": COMMAND}, pending)
+                if reuse:
+                    rows.extend(native("exec_command", "new", {"cmd": "sleep 10"}, pending))
+                rows.extend(native("write_stdin", "poll", {"session_id": 123, "chars": ""}, completed))
+                report = check_claims.history.literal_targets(rows, SESSION)
+                self.assertEqual(report["targets"], {("test/a", 5)})
+                self.assertEqual(bool(report["unresolved_invocations"]), reuse)
 
     def test_old_runtime_unprinted_non_tty_launches_keep_input_context(self) -> None:
         boundary = check_claims.history.CLOSED_STDIN_SINCE
