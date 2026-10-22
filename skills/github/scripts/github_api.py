@@ -1926,6 +1926,9 @@ class SharedCooldownStore:
         if ready_at > now:
             self.release(lease)
             return None, ready_at, True
+        if state.get("cause") == "post_cooldown_drain":
+            self.release(lease)
+            return None, None, False
         return lease, None, True
 
     def publish(

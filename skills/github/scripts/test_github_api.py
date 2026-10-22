@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import multiprocessing
 import os
 import subprocess
 import sys
@@ -2874,6 +2875,76 @@ def test_shared_cooldown_suppresses_remote_call_when_deadline_is_shorter() -> No
         assert payload["retry_exhausted_reason"] == "deadline_exceeded", payload
 
 
+def test_post_cooldown_drain_ends_and_allows_concurrent_processes() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        state_dir = Path(temp_dir)
+        policy = retry_policy(state_dir, drain_seconds=2.0)
+        store = _api.SharedCooldownStore(state_dir)
+        key = _api._cooldown_key("github.com", "fixture-automation", "rest_core")
+        store.publish(
+            key,
+            ready_at=1001.0,
+            cause="secondary_rate_limited",
+            now=1000.0,
+            policy=policy,
+        )
+        lease, target, coordinated = store.claim(key, now=1001.0, policy=policy)
+        assert lease is not None, (target, coordinated)
+        store.finish(now=1001.0, policy=policy, lease=lease)
+        lease, target, coordinated = store.claim(key, now=1001.0, policy=policy)
+        assert lease is None
+        assert target == 1001.0 + policy.drain_seconds, target
+        assert coordinated
+
+        context = multiprocessing.get_context("fork")
+        release = context.Event()
+        entered = [context.Event(), context.Event()]
+
+        def caller(index: int) -> None:
+            def attempt() -> Any:
+                entered[index].set()
+                assert release.wait(timeout=10), "concurrent callers never released"
+                return retry_success()
+
+            result = _api.run_with_retry(
+                attempt,
+                operation="github.read.repository",
+                is_write=False,
+                actor="fixture-automation",
+                bucket="rest_core",
+                retry_policy=policy,
+                retry_runtime=retry_runtime(FakeRetryClock(1001.0 + policy.drain_seconds)),
+            )
+            assert result.ok, result.as_dict()
+
+        processes = [context.Process(target=caller, args=(index,)) for index in range(len(entered))]
+        try:
+            processes[0].start()
+            first_entered = entered[0].wait(timeout=5)
+            processes[1].start()
+            concurrent = entered[1].wait(timeout=5) and first_entered
+        finally:
+            release.set()
+            for process in processes:
+                process.join(timeout=10)
+                if process.is_alive():
+                    process.terminate()
+                    process.join(timeout=5)
+        assert concurrent, "post-cooldown drain serialized ordinary requests"
+        assert all(process.exitcode == 0 for process in processes)
+        lease, target, coordinated = store.claim(
+            key,
+            now=1001.0 + policy.drain_seconds,
+            policy=policy,
+        )
+        try:
+            assert lease is None, "a caller re-armed the drain"
+            assert target is None, target
+            assert not coordinated
+        finally:
+            store.release(lease)
+
+
 def test_shared_cooldown_reaching_deadline_blocks_first_remote_call() -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         state_dir = Path(temp_dir)
@@ -3233,6 +3304,7 @@ def main() -> None:
         test_unknown_non_idempotent_write_fails_closed_after_no_match,
         test_rejected_non_idempotent_write_can_retry_without_reconciliation,
         test_shared_cooldown_blocks_second_process_before_remote_call,
+        test_post_cooldown_drain_ends_and_allows_concurrent_processes,
         test_shared_cooldown_suppresses_remote_call_when_deadline_is_shorter,
         test_shared_cooldown_reaching_deadline_blocks_first_remote_call,
         test_shared_cooldown_keys_do_not_block_other_buckets,
