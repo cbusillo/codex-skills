@@ -6154,6 +6154,16 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(len(self.comments), 3)
         self.assertIn("post", self.events)
 
+    def test_same_session_reclaims_a_new_branch_in_one_call_after_its_exact_release(self):
+        self.issue["body"] += CLAIM.marker(OWNER) + "\n"
+        self.comments = [{"id": 1, "body": CLAIM.marker(OWNER), "user": {"login": TEST_BOT},
+                          "created_at": "2026-10-01T00:00:05Z"},
+                         {"id": 2, "body": "Released claim 1", "user": {"login": TEST_BOT},
+                          "created_at": "2026-10-01T01:00:00Z"}]
+        self.args.branch = "work/issue-42-next"
+        self.run_claim()
+        self.assertEqual(CLAIM.records(self.comments[-1]["body"])[0]["branch"], "work/issue-42-next")
+
     def test_mid_sentence_closing_reference_refuses(self):
         self.pulls = [{"number": 99, "body": "This change fixes #42 by repairing it", "head": {"ref": "work/repair"}}]
         with self.assertRaises(PLAN.ClassifiedPlanError):
