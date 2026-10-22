@@ -1393,27 +1393,42 @@ def literal_shell_value(node: Node | None) -> str | None:
     return value if LITERAL_SHELL_VALUE.fullmatch(value) else None
 
 
-def variables_keep_assigned_values(root: Node) -> bool:
-    return b"IFS" not in root.text and all(simple_shell_node(node) for node in shell_nodes(root))
+def shell_code_nodes(node: Node) -> Iterator[Node]:
+    yield node
+    if node.type == "heredoc_body" and quoted_heredoc(node):
+        return
+    for child in node.named_children:
+        yield from shell_code_nodes(child)
 
 
-def simple_shell_node(node: Node) -> bool:
+def quoted_heredoc(body: Node) -> bool:
+    start = next((child for child in body.parent.named_children if child.type == "heredoc_start"), None) if body.parent else None
+    return start is not None and any(character in start.text for character in b"'\"\\")
+
+
+def variables_keep_assigned_values(root: Node, *, names_resolved: bool = True) -> bool:
+    return all(simple_shell_node(node, names_resolved=names_resolved) for node in shell_code_nodes(root))
+
+
+def simple_shell_node(node: Node, *, names_resolved: bool = True) -> bool:
     if node.type not in SIMPLE_SHELL_NODES:
         return False
     if node.type == "expansion":
         return PLAIN_EXPANSION.fullmatch(node.text.decode()) is not None
-    if node.type in {"compound_statement", "for_statement"}:
-        return node.children[0].type in {"{", "for"}
+    if node.type == "compound_statement":
+        return node.children[0].type == "{"
+    if node.type == "for_statement":
+        return node.children[0].type == "for" and node.child_by_field_name("variable").text != b"IFS"
     if node.type == "variable_assignment":
-        return node.children[1].type == "="
+        return node.children[1].type == "=" and node.children[0].text != b"IFS"
     if node.type != "command":
         return True
     name = node.child_by_field_name("name")
-    return (
-        name is not None
-        and not shell_generated(name)
-        and (shell_word(name) in VARIABLE_PRESERVING_BUILTINS or shell_word(name) not in SHELL_BUILTINS)
-    )
+    if name is None:
+        return False
+    if shell_generated(name):
+        return not names_resolved
+    return shell_word(name) in VARIABLE_PRESERVING_BUILTINS or shell_word(name) not in SHELL_BUILTINS
 
 
 def plain_expansion(node: Node, name: str) -> bool:
@@ -1422,7 +1437,7 @@ def plain_expansion(node: Node, name: str) -> bool:
 
 def shell_assignments(root: Node) -> dict[str, list[Node]]:
     assignments: dict[str, list[Node]] = {}
-    for node in shell_nodes(root):
+    for node in shell_code_nodes(root):
         if node.type in {"variable_assignment", "for_statement"}:
             name = node.child_by_field_name("name" if node.type == "variable_assignment" else "variable")
             if name is not None:
@@ -1532,7 +1547,7 @@ def unrolled_loop(root: Node, source: bytes, loop: LiteralLoop) -> bytes:
 
 
 def expanded_once(root: Node, source: bytes) -> bytes | None:
-    if not variables_keep_assigned_values(root):
+    if not variables_keep_assigned_values(root, names_resolved=False):
         return None
     assignments = shell_assignments(root)
     edits = bound_variable_edits(root, source, assignments)
@@ -1547,7 +1562,7 @@ def with_literal_values(root: Node, source: bytes) -> Node:
     for _ in range(LITERAL_EXPANSION_PASSES):
         following = expanded_once(expanded, source)
         if following is None:
-            return expanded
+            return expanded if variables_keep_assigned_values(expanded) else root
         expanded = parse_shell(following)
         source = following
         if len(source) > LITERAL_EXPANSION_BYTES or expanded.has_error:

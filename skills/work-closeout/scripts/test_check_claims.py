@@ -797,6 +797,9 @@ class ClaimCloseoutTests(unittest.TestCase):
             f"R=test/a; export R=other/repo; {claim}",
             f"R=test/a; : ${{R:=other/repo}}; {claim}",
             f"R=test/a; IFS=/; {claim}",
+            f"R=test/a; for IFS in /; do {claim}; done",
+            f"R=test/a; C=read; $C R <<< other/repo; {claim}",
+            f'R=test/a; "$CMD" R; {claim}',
             f"R=~/a; {claim}",
             f"R='test/a other/b'; {claim}",
             'R=test/b; uv run gh-plan.py --repo "${R}${SUFFIX}" claim 2',
@@ -838,6 +841,10 @@ class ClaimCloseoutTests(unittest.TestCase):
             "path.write_text(path.read_text().replace('old', 'uv run gh-plan.py --repo test/a claim 2'))\nEOF",
             "python3 - <<'PY'\nimport subprocess\np = '/x.jsonl.zst'\ns = subprocess.Popen(['zstd', '-dc', p], stdout=subprocess.PIPE, text=True)\n"
             "for line in s.stdout:\n    if 'claim ' in line and 'gh-plan' in line:\n        print(line)\nPY",
+            "SP=/tmp/s; cat > $SP/p.md <<'EOF'\nWhy `read R` and IFS=/ keep gh-plan.py claim 2 computed.\nEOF\n"
+            "cd /m && timeout 9 uv run scripts/review.py --prompt-file $SP/p.md > $SP/r.json;"
+            " python3 -c 'import json;print(json.load(open(\"'$SP'/r.json\")))'",
+            "G=/s/gh-with-env-token; $G pr list --json number; uv run /s/gh-plan.py search 'claim transcripts' | head -c 9",
         ]
         for command in commands:
             with self.subTest(command=command):

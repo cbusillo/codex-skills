@@ -34,9 +34,10 @@ loop over literal words, expand into exact claim targets, so
 only when the whole command uses plain commands, lists, pipelines, redirects,
 heredocs, `{ }` groups, literal `for` loops and plain `$NAME` or `${NAME}`
 expansions, and every command is an external program or `cd`, `echo`, `true`,
-`false`, `pwd`, `exit` or `:`. Any other shell builtin, function, test,
-arithmetic, array, modified expansion, `+=`, `IFS` change or computed command
-name keeps every call in it computed, as do a second assignment, a use before
+`false`, `pwd`, `exit` or `:` once its own name is expanded. A quoted heredoc
+body is data and does not count. Any other shell builtin, function, test,
+arithmetic, array, modified expansion, `+=`, `IFS` change or command name that
+stays computed keeps every call in it computed, as do a second assignment, a use before
 the assignment, a conditional or background assignment, and shell-managed names
 such as `SECONDS`, `RANDOM`, `PATH` and `_`. Values with spaces, quotes, glob
 or tilde characters, uses inside a heredoc, and zsh modifiers such as `$NAME:h`
