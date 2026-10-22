@@ -307,10 +307,15 @@ def projected_release_target(value: dict, session: str) -> tuple[str, int] | Non
         return None
     if (
         arguments[7] != session
-        or any(re.fullmatch(r"[1-9]\d*", arguments[index]) is None for index in (3, 5))
+        or any(re.fullmatch(r"[1-9][0-9]*", arguments[index]) is None for index in (3, 5))
         or arguments[9] != "<handoff.md>"
     ):
         return None
+    receipt = value.get("claim_comment")
+    if isinstance(receipt, dict):
+        comment = receipt.get("comment", receipt)
+        if isinstance(comment, dict) and "id" in comment and comment["id"] != int(arguments[5]):
+            raise ValueError("recorded claim comment IDs disagree")
     return claim_log.target({"session": session, "repository": arguments[1], "record": int(arguments[3])}, session)
 
 
@@ -323,14 +328,16 @@ def claim_target(value: dict, session: str) -> tuple[str, int] | None:
     if not isinstance(record, dict) or not isinstance(receipt, dict):
         raise ValueError("recorded claim result has an invalid target")
     projected = projected_release_target(value, session)
+    if projected is not None and (
+        (record.get("repo") is not None and record["repo"] != projected[0])
+        or (record.get("number") is not None and record["number"] != projected[1])
+    ):
+        raise ValueError("recorded claim targets disagree")
     if record.get("repo") and record.get("number"):
-        target = claim_log.target({"session": session, "repository": record["repo"], "record": record["number"]}, session)
-        if projected is not None and projected != target:
-            raise ValueError("recorded claim targets disagree")
-        return target
-    if receipt or "post_claim" in value.get("completed_steps", []):
-        if projected is not None:
-            return projected
+        return claim_log.target({"session": session, "repository": record["repo"], "record": record["number"]}, session)
+    if projected is not None:
+        return projected
+    if receipt or "post_claim" in value.get("completed_steps", []) or "release_command" in value:
         raise ValueError("recorded claim write lacks its repository and record number")
     return None
 

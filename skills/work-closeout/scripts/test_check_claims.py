@@ -339,11 +339,9 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.assertEqual(helper.recorded_targets(entry)["targets"], {(REPO, 1)})
 
     def test_projected_receipt_binds_its_canonical_release_target(self) -> None:
-        command = (
-            f"uv run /catalog/gh-plan.py --repo {REPO} release 1 "
-            f"--claim-comment {self.source['id']} --session {SESSION} --handoff-file '<handoff.md>'"
-        )
+        command = helper.claim_log.release_command(Path("/catalog/gh-plan.py"), REPO, 1, self.source["id"], SESSION)
         projection = {"claim": SOURCE, "completed_steps": ["post_claim"], "release_command": command}
+        self.assertEqual(helper.history.claim_target({"claim": SOURCE, "release_command": command}, SESSION), (REPO, 1))
         entry = self.entry()
         rows = [
             {"payload": {"type": "custom_tool_call", "name": "exec", "call_id": "projection", "input": 'text(load("receipt"));'}},
@@ -367,6 +365,13 @@ class ClaimCloseoutTests(unittest.TestCase):
                 helper.history.claim_target({**projection, "release_command": changed}, SESSION)
         with self.assertRaises(ValueError):
             helper.history.claim_target({**projection, "issue": {"repo": "another/repository", "number": 2}}, SESSION)
+        for partial in (
+            {"claim_comment": {"comment": {"id": self.source["id"] + 1}}},
+            {"issue": {"repo": "another/repository"}},
+            {"issue": {"number": 2}},
+        ):
+            with self.subTest(partial=partial), self.assertRaises(ValueError):
+                helper.history.claim_target({**projection, **partial}, SESSION)
 
     def test_recorded_claim_targets_include_closed_and_pr_only_work_across_sessions(self) -> None:
         records = ((REPO, 1), ("second/b", 5), ("second/b", 6))
