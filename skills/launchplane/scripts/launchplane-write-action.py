@@ -7018,6 +7018,8 @@ def trusted_automation_proposal_body(
     targets = policy.get("policies")
     if provider_payload.get("status") != "ok" or record.get("status") != "active" or not isinstance(targets, list):
         raise LaunchplaneSafetyError("invalid_response")
+    if args.expected_active_record_id and record.get("record_id") != args.expected_active_record_id:
+        raise ValueError("active_policy_changed")
     requested = {repository.casefold() for repository in cast(list[str], request["repositories"])}
     matched: set[str] = set()
     changed_target_count = 0
@@ -10497,8 +10499,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     trusted_proposal.add_argument("--repo", action="append", required=True, help="Enrolled OWNER/REPO; repeat per repository.")
     trusted_proposal.add_argument("--reason", required=True)
     trusted_proposal.add_argument("--related-issue", default="")
-    trusted_proposal.add_argument("--source-event-id", required=True, help="Stable id; reuse with the reported updated_at to replay.")
-    trusted_proposal.add_argument("--updated-at", default="", help="Candidate timestamp to replay an uncertain submission.")
+    trusted_proposal.add_argument("--source-event-id", required=True, help="Stable id; reuse it to replay an uncertain submission.")
+    trusted_proposal.add_argument("--updated-at", default="", help="Reported updated_at, to replay an uncertain submission.")
+    trusted_proposal.add_argument("--expected-active-record-id", default="", help="Reported active_record_id; refuses if the active policy changed since.")
     trusted_proposal.set_defaults(idempotency_key="")
 
     merge_train_policy_dry_run = subparsers.add_parser(

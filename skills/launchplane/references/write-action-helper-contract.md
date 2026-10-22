@@ -2163,9 +2163,12 @@ disk. The candidate's `policy_sha256` is left for the service to compute, and
 its `record_id` is `merge-train-policy-<updated_at>-proposal`. The request in the
 output names the repositories, the active record id and digest, the changed
 target count and `updated_at`. To replay an uncertain submission, rerun with the
-same source event and `--updated-at`. An unenrolled repository
-(`repository_not_enrolled`) or a change that alters nothing (`policy_unchanged`)
-stops before any write.
+same source event, `--updated-at` and `--expected-active-record-id` set to the
+reported `active_record_id`; that rebuilds the identical envelope. If the replay
+stops with `active_policy_changed` or `policy_unchanged`, the policy moved or the
+plan already ran: read the plan's persisted review instead of resubmitting. An
+unenrolled repository (`repository_not_enrolled`) or a change that alters nothing
+(`policy_unchanged`) stops before any write.
 
 On a timeout, HTTP 5xx or response-verification failure, retain the same envelope and
 source event for reconciliation/replay. Never substitute a new identity or a new

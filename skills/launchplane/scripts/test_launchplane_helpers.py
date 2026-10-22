@@ -11419,3 +11419,16 @@ def test_trusted_automation_proposal_replays_the_identical_envelope() -> None:
     ]
 
     assert bodies[0] == bodies[1]
+
+
+def test_trusted_automation_proposal_replay_refuses_a_changed_active_policy() -> None:
+    drifted = _active_merge_train_policy_read({"owner/alpha": []})
+    cast(dict[str, Any], drifted["record"])["record_id"] = "merge-train-policy-20261022T180000Z-" + "f" * 12
+    argv = _trusted_automation_argv("add", "owner/alpha") + [
+        "--expected-active-record-id",
+        "merge-train-policy-20261019T162850Z-" + "e" * 12,
+    ]
+
+    exit_code, output, posted = _run_trusted_automation_proposal(argv, drifted)
+
+    assert (exit_code, output["warnings"][0]["code"], posted) == (2, "active_policy_changed", [])
