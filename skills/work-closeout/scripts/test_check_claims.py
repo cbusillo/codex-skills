@@ -830,6 +830,64 @@ class ClaimCloseoutTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertTrue(helper.history.literal_targets(bash_call(command), SESSION)["unresolved_invocations"])
 
+    def test_claims_run_through_a_data_commands_execution_feature_stay_computed(self) -> None:
+        claim = "uv run gh-plan.py --repo test/a claim 5"
+        script = f"import subprocess\nsubprocess.run({claim.split()!r})"
+        commands = [
+            f"git -c 'alias.x=!{claim}' x",
+            f"C='!{claim}'; git -c \"alias.x=$C\" x",
+            f"git -c \"alias.x=$(printf '!{claim}')\" x",
+            f"git --config-env=alias.x=C x; echo '{claim}'",
+            f"git config alias.x '!{claim}' && git x",
+            f"git rebase --exec '{claim}' main",
+            f"git bisect run sh -c '{claim}'",
+            f"git submodule foreach '{claim}'",
+            f"GIT_PAGER='sh -c \"{claim}\"' git log",
+            f"gh alias set c '!{claim}' && gh c",
+            f"gh plan-runner '{claim}'",
+            f"gh extension exec runner '{claim}'",
+            f"sed -n '1e {claim}' notes.txt",
+            f"echo '{claim}' | sed 's/^//e'",
+            f"sed -e 1d -e 's/.*/{claim.replace('/', r'\/')}/e' notes.txt",
+            f"cat > test_claim.py <<'EOF'\n{script}\nEOF\nuv run pytest test_claim.py",
+            f"cat <<'EOF' > run.sh\n{claim}\nEOF",
+            f"printf '#!/bin/sh\\n{claim}\\n' > run; chmod +x run",
+            f"cat <<'EOF' > c\n{claim}\nEOF\nchmod +x c; rg --pre ./c pattern .",
+            f"printf '{claim}\\n' > c; chmod +x c; sort --compress-program=./c big.txt",
+            f"printf '{claim}\\n' > c; chmod +x c; sort --compress-p ./c big.txt",
+            f"less '+!{claim}' notes.txt",
+            f"read 'a[$({claim})]' <<< x",
+            f"printf -v 'a[$({claim})]' %s x",
+            f"test -v 'a[$({claim})]'",
+        ]
+        for command in commands:
+            with self.subTest(command=command):
+                self.assertTrue(helper.history.literal_targets(bash_call(command), SESSION)["unresolved_invocations"])
+
+    def test_plain_data_uses_of_execution_capable_commands_stay_data(self) -> None:
+        mention = "gh-plan.py claim 2"
+        commands = [
+            "git status",
+            f"git log --grep '{mention}'",
+            f"git -c user.name=bot commit -m '{mention}'",
+            f"git config user.email bot@example.com; git commit -m '{mention}'",
+            f"gh issue comment 5 --body '{mention}'",
+            f"gh pr view 5; rg '{mention}' .",
+            f"sed -n 1p notes.txt; rg '{mention}' .",
+            f"sed -i 's/old/{mention}/' notes.txt",
+            f"sed -e 's/a/b/g;/x/d' -e '$a\\\\\n{mention}' notes.txt",
+            f"cat > test_claim.py <<'EOF'\ndef test_text():\n    assert '{mention}'\nEOF\nuv run pytest test_claim.py",
+            f"sort -u notes.txt | less; rg '{mention}' .",
+            f"read -r line <<< '{mention}'",
+            f"printf -v line %s '{mention}'",
+            f"test -n '{mention}'",
+        ]
+        for command in commands:
+            with self.subTest(command=command):
+                self.assertEqual(
+                    helper.history.literal_targets(bash_call(command), SESSION), {"targets": set(), "unresolved_invocations": []}
+                )
+
     def test_scripts_and_patches_that_only_mention_claims_are_data(self) -> None:
         commands = [
             "cd /w && cat > /tmp/probe.py <<'EOF'\nfor cmd in ['S=gh-plan.py; uv run $S --repo test/a claim 2']:\n    print(cmd)\nEOF\n"
