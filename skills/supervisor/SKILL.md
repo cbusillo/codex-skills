@@ -175,7 +175,7 @@ policy:
         shell_regex: >-
           (?x)^\s*(?:\S*/)?codex\s+
           (?:(?:(?:--(?:remote|cd|config|profile|model|sandbox|ask-for-approval|enable|disable|add-dir|image)|-[cCpmsai])
-          (?:=(?:"[^"]*"|'[^']*'|\S+)|\s+(?:"[^"]*"|'[^']*'|\S+))|--[\w-]+|exec)\s+)*
+          (?:=(?:"[^"]*"|'[^']*'|\S+)|\s+(?:"[^"]*"|'[^']*'|\S+))|--(?!help(?:\s|$))[\w-]+|exec)\s+)*
           (?:resume\b(?!(?:\s+(?:"[^"]*"|'[^']*'|(?!--(?:\s|$))[^\s"']\S*))*?\s+(?:-h|--help)(?:\s|$))
           |queue\b(?=[^\n]*\s--message(?:[ =-]|$)))
       action: require_preferred
