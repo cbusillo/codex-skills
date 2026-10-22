@@ -1325,7 +1325,7 @@ No recovered identity changes the source claim.
 
 The generator and release preflight check configured account roots, every source
 copy, pending actions, canonical resume records and live or uncertain process
-owners. A canonical closure row, if present, is a resume veto only. Missing
+identities. A canonical closure row, if present, is a resume veto only. Missing
 closure rows supply no exit proof and require no shared-log write. A historical
 source refuses while any recognized Claude executable is live, including
 Claude Desktop, editor extensions, another UUID, noninteractive launches or
