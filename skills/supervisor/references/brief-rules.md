@@ -37,15 +37,10 @@ Rules for this brief (every Supervisor brief carries them):
 - At a repository's PR cap: count open agent PRs first, excluding train batch
   PRs (titled `Launchplane batch: #...`) and drafts parked on purpose; at about
   8, do not open another ([the Pattern](../SKILL.md#the-pattern), step 1).
-  Merge-path and CI-repair fixes are exempt, and their briefs say so.
+  Merge-path and CI-repair fixes are exempt from this cap, and their briefs
+  say so.
 - Pace (Director, October 18, 2026): never open PRs faster than they can land.
   Finish and hand off what you open before starting anything new.
-- Before launch, check every restriction against the direction or decision it
-  cites; Supervisor preferences are not prohibitions. An operate brief names
-  an existing supported path, or becomes a design brief.
-- Give each running session its own anchor issue; split concurrent work on one
-  issue into child issues before launch. Before launching from a survey or
-  report, recheck each item's live state.
 - Never use Chris's own Chrome (the ChatGPT for Chrome extension, Claude in
   Chrome, or any automation of his browser) unless the brief is a GUI task
   that names it. Browser and page checks run headless (Playwright or the
@@ -170,9 +165,9 @@ How a lead works:
 4. Use subagents (the Agent tool) for parallel work under your claim: reading and diagnosis, running tests, your own review of record, drafting comments. Only one subagent or you edits files at a time, in your one task worktree.
 5. After each item: post one short progress line on the Track issue (finished, blocked and on whom, next), keep the item's Current Status current, release the claim, then take the next item.
 6. People waits: when an item needs a person (Chris, a Client, an outside party), record the wait on the item, post an "Owner question:" there if it is Chris's, and move to the next item. Never wait idle on a person.
-7. End a turn at least every two hours so the Supervisor and Director can steer you, then resume the Track after reading queued input. Stop working only when no item is actionable by an agent or you need the Director; then post a lead handoff on the Track issue (what moved, what waits on whom, next item), close out with work-closeout, and end with a standalone final line: Safe to exit: yes
+7. End a turn at least every two hours with a short progress note, without a safe-exit line, and wait for the Supervisor's steering or continuation. Stop working only when no item on the Track is actionable by an agent or you need the Director; then post a lead handoff on the Track issue (what moved, what waits on whom, next item), close out with work-closeout, and end with a standalone final line: Safe to exit: yes
 
-At a repository's PR cap, merge-path and CI-repair fixes remain exempt; for other work, instead of opening another PR:
+For work subject to the shared rules' PR cap, instead of opening another PR:
 1. Help land what is already open there: fix a failing check, resolve a conflict, or answer review findings on the oldest stuck PR.
 2. If nothing open there is agent-fixable, finish your change on its branch, leave it unopened, and move to work in a repository under the cap. Note the held branch in your Track handoff.
 3. Report "nothing actionable" only when no repository you may work in has actionable work.
