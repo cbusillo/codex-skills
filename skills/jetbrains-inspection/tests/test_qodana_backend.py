@@ -446,7 +446,7 @@ class QodanaTests(unittest.TestCase):
         self.assertNotIn("fixed", json.dumps(result))
 
     def test_vanished_review_scratch_names_the_missing_inputs_with_bounded_counts(self):
-        # A model review's unignored scratch is snapshotted, then removed while the engine runs.
+        # A model review's unignored scratch is copied into the snapshot, then removed while the engine runs.
         scratch = self.repo / ".model-review-abc"
         scratch.mkdir()
         for index in range(backend.DRIFT_PATH_LIMIT + 2):

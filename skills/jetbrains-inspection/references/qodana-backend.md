@@ -25,7 +25,7 @@ now selects different files. `diagnostic.qodana.source_input_drift` keeps the
 relative paths and counts for each kind, at most 25 paths per kind with an
 `omitted_count`, and never file contents. It is marked `unattributed`: the
 comparison shows what changed, not which process changed it. Unignored scratch
-in the worktree is snapshotted like any other input. Anthropic and Google
+in the worktree is copied into the snapshot like any other input. Anthropic and Google
 reviews from `model-review` write `.model-review-*` scratch in the checkout and
 remove it when they finish, so a review running beside an inspection of the
 same worktree invalidates it. Let the review finish first, check that the named
