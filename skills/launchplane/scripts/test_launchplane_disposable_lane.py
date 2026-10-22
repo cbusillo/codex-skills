@@ -9,7 +9,7 @@ import hashlib
 import io
 import json
 import urllib.error
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import UTC, datetime, timedelta
 from email.message import Message
@@ -87,7 +87,7 @@ def invoke(mode: str = "inspect", *, body: dict[str, Any] | None = None,
            edit_evidence: Callable[[dict[str, Any]], object] | None = None,
            service: str = SERVICE, reviewed: bool = True, expected: str = BINDING,
            inspect_response: dict[str, Any] | None = None,
-           expected_observation: str | None = EVIDENCE_HASH) -> tuple[int, dict[str, Any], list[dict[str, Any]], int]:
+           expected_observation: str | None = EVIDENCE_HASH) -> tuple[int, dict[str, Any], list[Mapping[str, Any]], int]:
     output = io.StringIO()
     with TemporaryDirectory() as directory:
         root = Path(directory)

@@ -461,8 +461,9 @@ def execute(h: Any, args: argparse.Namespace) -> int:
 
     response: dict[str, Any] | None = None
     try:
-        response = call(payload)
-        result = project(h, response, mode, body, digest, observation_digest)
+        received = call(payload)
+        response = received
+        result = project(h, received, mode, body, digest, observation_digest)
     except urllib.error.HTTPError as error:
         error_payload = h._ServiceResponse({}, error.code)
         try:
@@ -505,7 +506,7 @@ def execute(h: Any, args: argparse.Namespace) -> int:
     if mode == "inspect":
         result["service_fingerprint"] = service
         result["review_binding_sha256"] = review_binding(
-            h, scope, str(result["binding_sha256"]), service, str(result["observation_sha256"]),
+            h, scope, _digest(h, result["binding_sha256"]), service, _digest(h, result["observation_sha256"]),
             _stored_observation(h, result["observation"]))
     else:
         status, readback = _readback(h, call, body, mode, digest, result)
