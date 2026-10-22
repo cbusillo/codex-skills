@@ -93,6 +93,11 @@ uncertainty at an unknown callable. Tokenized shlex output also preserves
 uncertainty when passed to an unknown callable.
 For `uv run`, recognized option arities locate the command; interpreter-looking
 option values do not become consumers, and unknown options stay conditional.
+For `timeout`, literal durations and recognized `--kill-after`/`-k`,
+`--signal`/`-s`, `--preserve-status`, `--foreground` and `--verbose`/`-v`
+options locate the inner command before applying those same rules. A trailing
+pipe does not hide its claim targets. Unparsed timeout forms in claim-related
+context stay conditional; wrapping a command does not grant it data-command trust.
 In claim-related context, unexamined interpreter, evaluator and source-shaped
 arguments also stay conditional, including behind unknown wrappers and in
 unsupported attached evaluator forms. They indicate possible execution without
