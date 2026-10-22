@@ -167,7 +167,8 @@ result or any shutdown verification.
 
 The verdict reader does not read claims. Closing a session needs its posted
 releases and a verified process exit. Before sending `/exit` or `/quit`, run the
-GitHub-only check for that session:
+session-scoped check on its claiming host, using its local claim journal and
+native root and child transcripts:
 
 ```bash
 uv run skills/work-closeout/scripts/check_claims.py --owner OWNER \

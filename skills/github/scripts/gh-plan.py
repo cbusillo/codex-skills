@@ -53,6 +53,7 @@ import github_next_reads
 import github_plan_claim
 import github_plan_closure
 import github_plan_lease
+import github_plan_claim_log
 import github_plan_wait
 import github_plan_trigger
 import github_plan_release
@@ -3405,6 +3406,7 @@ def claim_once(args: argparse.Namespace) -> None:
         )
         # Freeze the source before any external claim write. If publication
         # fails, the closed source stays frozen for supported claim recovery.
+        github_plan_claim_log.record(claim["session"], issue_repo, number)
         admit_observed_sources()
         if not comment_recorded:
             claim_comment = github_comment_core.comment(

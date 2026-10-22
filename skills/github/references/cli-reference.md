@@ -867,10 +867,16 @@ Before an authorized `go` creates a branch or worktree, run from a checkout of
 the target repository:
 
 ```bash
-uv run <skill-dir>/scripts/gh-plan.py claim <issue> \
+uv run <skill-dir>/scripts/gh-plan.py --repo OWNER/REPO claim <issue> \
   --worker <worker-token> --session <session-id> \
   --branch work/<task-slug> --next-action "<action>"
 ```
+
+Keep the repository and record literal in JavaScript tool wrappers or repeated
+shell commands. A qualified `OWNER/REPO#N` record also works. Closeout checks
+every known target, but a bare or computed command with uncertain
+execution count remains conditional even when one receipt is present. A
+journaled receipt alone does not prove every execution used a journaling helper.
 
 `--session` is the running session's native ID: `$CLAUDE_CODE_SESSION_ID` on
 Claude Code, the root `$CODEX_SESSION_ID` on Codex. A Codex child thread claims
@@ -1023,6 +1029,17 @@ native blockers, registered worktrees, local branches, live remote heads and
 open PRs. It reads no process, session registry or daemon: ownership lives in
 the claim comments and their exact releases
 ([Q621](https://github.com/cbusillo/codex-skills/issues/2453)).
+
+After target preflight and before posting, `claim` records its session ID, exact
+repository and issue or PR number under `~/.code/skill-data/claim-log/<session-hash>/`.
+Each target is an atomically published JSON file. Concurrent children cannot
+interleave rows, and interrupted writes cannot corrupt earlier targets. The
+private journal is synced before any claim write; a journal failure refuses
+before posting. Root and child agents using the same session ID share it.
+Closeout reads this journal plus recorded transcript claim results, then checks
+only those targets on GitHub. Keep the journal on the claiming host with the
+session, including interrupted attempts; it is discovery evidence, never proof
+of ownership or release. See [claim disposition](../../work-closeout/SKILL.md#claim-disposition).
 
 Each claim carries a host-local lease, renewed without a GitHub write: by the
 catalog's `PreToolUse` hook on shell commands on both harnesses, on Claude Code
@@ -1371,7 +1388,7 @@ For an authorized **ordinary successor** whose next step precedes PR refresh,
 use the canonical open planning issue in the PRs' repository:
 
 ```bash
-uv run <skill-dir>/scripts/gh-plan.py claim <canonical-issue> \
+uv run <skill-dir>/scripts/gh-plan.py --repo OWNER/REPO claim <canonical-issue> \
   --worker <worker-token> --session <native-session-id> \
   --branch work/<new-task-slug> --next-action "<authorized next step>" \
   --resume-from <released-claim-comment-id> \

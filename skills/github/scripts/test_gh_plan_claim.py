@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["aiohttp==3.14.5"]
+# dependencies = ["aiohttp==3.14.5", "tree-sitter==0.26.0", "tree-sitter-bash==0.25.1"]
 # ///
 """Behavioral tests for claim ownership, races, and partial recovery."""
 
@@ -204,6 +204,42 @@ class ClaimTests(unittest.TestCase):
                        "head": {"ref": "dependabot/python" if author == "dependabot[bot]" else "work/tool-repair",
                                 "repo": {"full_name": "owner/repo"}},
                        "base": {"repo": {"full_name": "owner/repo"}}}]
+
+    def test_failed_initial_target_read_does_not_poison_the_journal(self) -> None:
+        with patch.object(PLAN, "claim_snapshot", side_effect=PLAN.PlanError("not found")):
+            with self.assertRaises(PLAN.PlanError):
+                self.run_claim()
+        self.assertEqual(PLAN.github_plan_claim_log.read(OWNER["session"]), set())
+
+    def test_journal_failure_refuses_before_any_claim_write(self) -> None:
+        with patch.object(PLAN.github_plan_claim_log, "record", side_effect=OSError("journal unavailable")):
+            with self.assertRaises(PLAN.PlanError) as failure:
+                self.run_claim()
+        self.assert_no_writes()
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "work-closeout/scripts"))
+        import check_claims as closeout
+
+        with (
+            patch.multiple(PLAN, CURRENT_IS_WRITE=True, CURRENT_OPERATION="github.plan.claim"),
+            patch.object(PLAN.github_api_core, "emit_terminal") as emit,
+        ):
+            with self.assertRaises(SystemExit):
+                PLAN.die(str(failure.exception), failure=failure.exception.failure, extra_payload=failure.exception.payload)
+        envelope = emit.call_args.args[0]
+        _, unresolved = closeout.history.resolve_invocations([["claim", "42"]], [envelope], OWNER["session"])
+        self.assertFalse(unresolved)
+
+    def test_claim_target_is_journaled_before_the_post_even_when_readback_fails(self) -> None:
+        def post_then_interrupt() -> None:
+            import github_plan_claim_log
+
+            self.assertIn(("owner/repo", 42), github_plan_claim_log.read(OWNER["session"]))
+            raise OSError("connection lost after posting")
+
+        self.after_post = post_then_interrupt
+        with self.assertRaises((OSError, PLAN.PlanError)):
+            self.run_claim()
+        self.assertTrue(self.comments)
 
     def test_dependabot_pr_can_be_claimed_without_a_tracking_issue(self):
         self.pr_fixture("dependabot[bot]")
