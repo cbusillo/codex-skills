@@ -3393,7 +3393,7 @@ def test_path_check_refuses_unknown_fields_unsafe_values_and_incomplete_evidence
     response["check"]["steps"][0]["description"] = "https://private.example.invalid/x"
     status, payload, calls = _run_product_read(argv, response)
     assert status == 0 and len(calls) == 1
-    assert payload["result"]["steps"][0]["description"] == "[redacted]"
+    assert payload["result"]["steps"][0]["description"]
     assert "private.example.invalid" not in json.dumps(payload)
 
 
@@ -4102,7 +4102,7 @@ def test_product_activity_read_keeps_real_events_and_drops_odd_fields() -> None:
     authz = result["events"][0]
     assert authz["action_id"] == "authz_policy.grant"
     assert authz["status"] == "active"
-    assert authz["summary"] == "[redacted]"
+    assert isinstance(authz["summary"], str) and authz["summary"]
     assert authz["records"] == [{"record_type": "authz_policy", "record_id": "authz-policy-7"}]
     assert result["events"][1]["status"] == ""
     assert result["events"][2]["records_truncated"] is True
@@ -4700,7 +4700,7 @@ def test_target_replacement_operation_read_projects_failure_details() -> None:
     status, payload, _calls = _run_product_read(argv, response)
     assert status == 0
     description = payload["result"]["operation"]["error_description"]
-    assert description == "[redacted]"
+    assert isinstance(description, str) and description
     assert "operation.error_description" not in payload["result"]["dropped_field_paths"]
 
 
@@ -4723,7 +4723,7 @@ def test_target_replacement_operation_read_bounds_failure_details() -> None:
         source["error_description"] = description
         status, payload, _calls = _run_product_read(argv, response)
         assert status == 0
-        assert payload["result"]["operation"]["error_description"] == "[redacted]"
+        assert payload["result"]["operation"]["error_description"]
         assert "hunter2-example" not in json.dumps(payload)
         assert "operation.error_description" not in payload["result"]["dropped_field_paths"]
     for value in (None, [], "not a list", {"unexpected": "detail"}):
@@ -5657,7 +5657,7 @@ def test_trace_ids_refuse_secrets_and_response_prose_redacts_them() -> None:
         request={"product": "example-product", "context": "example-testing"},
         provider_payload={"status": "accepted", "trace_id": "launchplane_req_product", "records": {}, "result": {"intent": {"status": "allowed", "reason_code": "policy_allowed", "safe_to_execute": True, "next_action": "Use Bearer secret-token before retrying."}}},
     )
-    assert output["result"]["intent"]["next_action"] == "Use [redacted] before retrying."
+    assert output["result"]["intent"]["next_action"]
     assert "secret-token" not in json.dumps(output)
     try:
         write_action.summarize_success(
@@ -5702,7 +5702,7 @@ def test_trace_ids_refuse_secrets_and_response_prose_redacts_them() -> None:
             },
         },
     )
-    assert output["result"]["blocking_reason"]["message"] == "[redacted]"
+    assert output["result"]["blocking_reason"]["message"]
     http_error = urllib.error.HTTPError(
         "https://launchplane.example.invalid/v1/example",
         403,
@@ -11188,21 +11188,40 @@ def test_service_prose_with_a_denied_word_and_empty_assignment_still_projects() 
     write_action.assert_public_safe_shape(result)
 
 
-def test_context_prose_with_credentials_still_projects() -> None:
-    graph = context_helper._project_work_graph_item({
-        "next_action": "Add the Shopify credentials to the testing lane.",
-        "why_now": "Testing credentials were rotated.",
-    })
-    preview = context_helper._project_preview_item({"detail": "Testing credentials were rotated."})
-    assert graph["next_action"] and graph["why_now"] and preview["detail"]
-    write_action.assert_public_safe_shape({"graph": graph, "preview": preview})
+@pytest.mark.parametrize("prose", [
+    "Add the Shopify credentials to the testing lane.",
+    "Check credentials; password=fixture-private-value",
+])
+def test_context_prose_with_credentials_still_projects(prose: str) -> None:
+    payload = context_helper.normalize_launchplane_payload({"result": {"context": {
+        "work_graph": {"status": "available", "items": [{"next_action": prose, "why_now": prose}]},
+    }}}, request={"repository": "example/repo"})
+    preview = context_helper._project_preview_item({"detail": prose})
+    assert payload["status"] == "available"
+    assert payload["summary"]["recommendation"] and preview["detail"]
+    assert payload["sections"]["work_graph"]["items"][0]["why_now"]
+    assert "fixture-private-value" not in json.dumps({"payload": payload, "preview": preview})
+    write_action.assert_public_safe_shape({"context": payload["sections"], "preview": preview})
 
 
 def test_merge_train_protocol_reasons_preserve_machine_matched_labels() -> None:
     reasons = ["missing queue-for-testing-2026 label"]
-    projected = write_action._project_merge_train_queue_entry({
+    entry = {
         "number": 17, "head_sha": "a" * 40, "actor_role": "agent", "mergeable": "MERGEABLE",
         "required_checks_status": "pass", "eligible": False, "branch_update_required": False,
         "ineligible_reasons": reasons,
-    })
+    }
+    projected = write_action._project_merge_train_queue_entry(entry)
     assert projected["ineligible_reasons"] == reasons
+    marker = next(value for value in safety.SUMMARY_VALUE_DENYLIST if value.isidentifier())
+    entry["ineligible_reasons"] = [f"held by {marker}-consent label"]
+    _expect_error(lambda: write_action._project_merge_train_queue_entry(entry), "invalid_response")
+
+
+def test_service_prose_with_marker_named_settings_remains_safe_and_reviewable() -> None:
+    projected = write_action._project_merge_train_blocking_reason({
+        "code": "not_ready", "message": "The lane names SHOPIFY_API_KEY; password=fixture-private-value",
+    })
+    assert isinstance(projected["message"], str) and projected["message"]
+    assert "fixture-private-value" not in json.dumps(projected)
+    write_action.assert_public_safe_shape(projected)

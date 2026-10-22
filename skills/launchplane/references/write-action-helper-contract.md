@@ -1277,8 +1277,8 @@ with `status: "incomplete"` may still have a local token source; read the
 ## Response prose
 
 Output-only prose is redacted at every nesting level. Person-written metadata
-also redacts long opaque words; service diagnostics preserve ordinary setting
-names and hashes. Credential assignments, tokens and URLs are redacted, and
+also redacts long opaque words; service diagnostics preserve long identifiers
+subject to credential-marker redaction. Credential assignments, tokens and URLs are redacted, and
 remaining denylist markers hide the entire field. Types, lengths, structural
 allowlists and raw secret-shape checks retain their existing validation.
 The context helper uses the same service-prose projection.
