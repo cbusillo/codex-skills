@@ -141,17 +141,20 @@ class TranscriptMeasureTests(unittest.TestCase):
         self.assertEqual(skills["github-plan"]["sessions"], 1)
 
     def test_a_one_off_checks_read_is_a_github_step_and_watching_is_babysitting(self) -> None:
-        self.write(self.claude / "proj" / "s9.jsonl", [
-            claude_prompt("check CI on PR 4"),
-            claude_call("Skill", skill="github"),
-            claude_call("Bash", command="uv run scripts/gh-pr.py --repo o/r checks 4"),
-            claude_call("Bash", command="uv run scripts/github-ci-diagnose.py --repo o/r --pr 4"),
-            claude_call("Bash", command="gh pr checks 4 --watch"),
-        ])
-        report, _ = self.run_measure()
-        skills = report["skills"]["claude"]
-        self.assertEqual((skills["github"]["sessions"], skills["github"]["before"]), (1, 1))
-        self.assertEqual((skills["babysit-pr"]["sessions"], skills["babysit-pr"]["before"]), (1, 0))
+        owners = {
+            "uv run scripts/gh-pr.py --repo o/r checks 4": {"github"},
+            "uv run scripts/github-ci-diagnose.py --repo o/r --pr 4": {"github"},
+            "gh pr checks 4": {"github"},
+            "gh pr checks 4 --watch=false": {"github"},
+            "gh pr checks 4 --watch": {"babysit-pr"},
+            "gh pr checks 4 -w": {"babysit-pr"},
+            "gh pr checks --watch=true 4": {"babysit-pr"},
+            "gh run watch 9": {"babysit-pr"},
+        }
+        for command, expected in owners.items():
+            with self.subTest(command=command):
+                steps = {event[1] for event in measure.command_events(command, False) if event[0] == "step"}
+                self.assertEqual(steps, expected)
 
     def test_a_skill_helper_run_by_relative_path_is_not_a_uv_step(self) -> None:
         self.write(self.claude / "proj" / "s10.jsonl", [
