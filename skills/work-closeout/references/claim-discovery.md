@@ -39,12 +39,18 @@ conditional when claim text is present. The reader does not inspect script
 files, propagate arbitrary Python values beyond one-hop literal claim-text
 bindings or reconstruct preloaded callable identities. Those bindings include
 literal fragments in formatted strings and containers, augmented assignments
-to the same name and unpacked targets. A claim hidden behind those boundaries needs its journal entry or
-complete native helper receipt. Preserve those records rather than relying on
-arbitrary program reconstruction.
+to the same name and unpacked targets. Fragments accumulate across assignments
+without execution-order or lexical-scope emulation, so disjoint assignments
+can conservatively add uncertainty. A claim hidden beyond these boundaries
+needs its journal entry or complete native helper receipt. Preserve those
+records rather than relying on arbitrary program reconstruction.
 For `uv run`, recognized option arities locate the command; interpreter-looking
 option values do not become consumers, and unknown options stay conditional.
 In claim-related context, unexamined interpreter, evaluator and source-shaped
 arguments also stay conditional, including behind unknown wrappers and in
 unsupported attached evaluator forms. They indicate possible execution without
-selecting a consumer or proving a target.
+selecting a consumer or proving a target. Ordinary option clusters alone do
+not identify programs. Unknown commands need explicit long evaluator flags or
+short evaluator flags with program-shaped payloads; arbitrary attached runtime
+names cannot be distinguished from data option values. Shell evaluator payloads
+skip recognized option operands and terminators; ambiguous options stay conditional.

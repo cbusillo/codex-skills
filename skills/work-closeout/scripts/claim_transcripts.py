@@ -526,9 +526,7 @@ def has_executable_claim_source(text: str, consumer: str, *, claim_related: bool
         targets = node.targets if isinstance(node, ast.Assign) else [node.target]
         for target in targets:
             for name in python_binding_names(target):
-                text = python_literal_text(node.value)
-                if isinstance(node, ast.AugAssign):
-                    text = binding_texts.get(name, "") + text
+                text = f"{binding_texts.get(name, '')} {python_literal_text(node.value)}"
                 binding_texts[name] = text
                 if has_claim_text(text):
                     claim_names.add(name)
@@ -619,6 +617,10 @@ def python_data_call(function: ast.AST) -> bool:
             "repr",
             "str",
             "bytes",
+            "bool",
+            "int",
+            "float",
+            "complex",
             "dict",
             "list",
             "tuple",
@@ -925,6 +927,9 @@ def accepts_claim_data(argv: list[str]) -> bool:
         "pushd",
         "popd",
         "pwd",
+        "set",
+        "ps",
+        "kill",
         "ls",
         "mkdir",
         "test",
@@ -977,6 +982,26 @@ def node_program(node: Node, consumer: str, *, produced: bool = False) -> Progra
     return ProgramSource(text, consumer, shell_generated(node), produced)
 
 
+def shell_evaluator_payload(argv: list[str], start: int) -> int | None:
+    index = start
+    while index < len(argv) and argv[index].startswith(("-", "+")):
+        option = argv[index]
+        if option == "--":
+            return index + 1 if index + 1 < len(argv) else None
+        if re.fullmatch(r"[+-][A-Za-z]*[oO]", option) or option in {"--rcfile", "--init-file"}:
+            if index + 1 >= len(argv) or argv[index + 1].startswith(("-", "+")):
+                return None
+            index += 2
+            continue
+        if option in {"--norc", "--noprofile", "--posix", "--login"}:
+            index += 1
+            continue
+        if re.fullmatch(r"[+-][A-Za-z]+", option) is None or any(letter in option[1:] for letter in "oO"):
+            return None
+        index += 1
+    return index if index < len(argv) else None
+
+
 def command_programs(node: Node) -> Iterator[ProgramSource]:
     words = command_words(node)
     argv = [shell_word(word) for word in words]
@@ -998,8 +1023,12 @@ def command_programs(node: Node) -> Iterator[ProgramSource]:
     for index in range(offset, len(argv) - 1):
         argument = argv[index]
         if is_evaluator_flag(argument, consumer):
-            program = node_program(words[index + 1], consumer)
-            program.argument_indexes = tuple(range(offset, index + 2))
+            payload = shell_evaluator_payload(argv, index + 1) if Path(consumer).name in SHELL_NAMES else index + 1
+            if payload is None:
+                yield ProgramSource("", consumer, generated=True)
+                return
+            program = node_program(words[payload], consumer)
+            program.argument_indexes = tuple(range(offset, payload + 1))
             yield program
             return
     script = next((word for word, value in zip(words[offset:], argv[offset:], strict=True) if not value.startswith("-")), None)
@@ -1134,19 +1163,26 @@ def has_opaque_claim_execution(argv: list[str], covered: set[int], *, generated:
         return True
     position = command_position(argv)
     offset = position.index + 1 if position is not None else 0
+    interpreter = is_interpreter(script_consumer(argv))
     if claim_related and any(
-        index not in covered and is_program_indicator(argument) for index, argument in enumerate(argv) if index >= offset
+        index not in covered
+        and is_program_indicator(argument, argv[index + 1] if index + 1 < len(argv) else "", interpreter=interpreter)
+        for index, argument in enumerate(argv)
+        if index >= offset
     ):
         return True
     return generated or any(index not in covered and has_claim_text(argument) for index, argument in enumerate(argv))
 
 
-def is_program_indicator(argument: str) -> bool:
-    return (
-        is_interpreter(argument)
-        or argument in {"eval", "source", "."}
-        or re.match(r"--(?:eval|print)(?:=|$)|-[A-Za-z]*[ceE]", argument) is not None
-    )
+def is_program_indicator(argument: str, following: str = "", *, interpreter: bool = False) -> bool:
+    if is_interpreter(argument) or argument in {"eval", "source"} or re.match(r"--(?:eval|print)(?:=|$)", argument):
+        return True
+    if argument == ".":
+        return following in {"-", "/dev/stdin", "/dev/fd/0"}
+    if interpreter:
+        return re.match(r"-[A-Za-z]*[ceE]", argument) is not None
+    flag = re.fullmatch(r"-[ceE](.*)", argument, re.S)
+    return flag is not None and any(marker in (flag[1] or following) for marker in "$`();{}\n")
 
 
 def is_evaluator_flag(argument: str, consumer: str) -> bool:

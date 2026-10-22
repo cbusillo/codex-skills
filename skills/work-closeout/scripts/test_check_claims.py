@@ -1241,6 +1241,7 @@ class ClaimCloseoutTests(unittest.TestCase):
         cases = [
             (data, False),
             (data + "; print(sorted(history.literal_targets(rows,SESSION)))", False),
+            (data + "; print(bool(history.literal_targets(rows,SESSION)))", False),
             (data + "; call = 'fixture'; exec_commands = []; print(call, exec_commands)", False),
             (data + "; subprocess.run(['git', 'status'])", False),
             (data + "; subprocess.run(command)", True),
@@ -1574,6 +1575,11 @@ class ClaimCloseoutTests(unittest.TestCase):
                 """custom-runner -c'run(CMD)' """,
                 "python3 -cprint ignored",
                 "perl -esystem ignored",
+                "bash -c -e '$CMD'",
+                "bash -c -x '$CMD'",
+                "bash -c -o pipefail '$CMD'",
+                "bash -c -- '$CMD'",
+                "bash -c --unknown-option value '$CMD'",
             )
         )
         for command in commands:
@@ -1650,6 +1656,11 @@ class ClaimCloseoutTests(unittest.TestCase):
             ("command=['uv', 'run', 'gh-plan.py', 'claim', '5']; pexpect.spawn(command[0], command[1:])", True),
             ("command={'argv': ['uv', 'run', 'gh-plan.py', 'claim', '5']}; launch(command['argv'])", True),
             ("command='uv run gh-plan.py'; command += ' claim 5'; import invoke; invoke.run(command)", True),
+            (
+                "command='uv run gh-plan.py'\nif True:\n command += ' claim 5'\n import invoke\n invoke.run(command)\ncommand='other'",
+                True,
+            ),
+            ("command='uv run gh-plan.py'\nif True:\n command += ' claim 5'\n print(command)\ncommand='other'", False),
             (f"command=''; command += {claim!r}; launch(command)", True),
             (f"(command, other)=({claim!r}, None); launch(command)", True),
             (f"[other, *command]=[None, {claim!r}]; launch(command)", True),
@@ -1672,6 +1683,8 @@ class ClaimCloseoutTests(unittest.TestCase):
             "rg -n 'gh-plan.py claim' skills | sort | uniq -c | tr a-z A-Z | nl | column -t | less",
             "rg -n 'gh-plan.py claim' skills | pbcopy",
             "rg -n 'gh-plan.py claim' skills | diff - fixture",
+            "ps -ef | grep 'gh-plan.py claim'",
+            "ps -eo pid,command | grep 'gh-plan.py claim'",
         ]
         for command in commands:
             rows = [{"message": {"content": [{"type": "tool_use", "name": "Bash", "id": "text", "input": {"command": command}}]}}]
@@ -1685,6 +1698,23 @@ class ClaimCloseoutTests(unittest.TestCase):
             'cd "$(git rev-parse --show-toplevel)" && uv run gh-plan.py --repo first/a claim 5',
             'uv run -q --directory "$WT" --project "$WT" --env-file config.env --extra test --group test gh-plan.py --repo first/a claim 5',
         ]
+        commands.extend(
+            prefix + "; uv run gh-plan.py --repo first/a claim 5"
+            for prefix in (
+                "set -euo pipefail",
+                "tar -czf archive path",
+                "curl -c jar https://example.invalid",
+                "stat -c %s file",
+                'kill -TERM "$PID"',
+                "docker run -e FOO=bar image",
+                "xcodebuild -scheme test",
+                "find . -name '*.py'",
+            )
+        )
+        commands.extend(
+            f"bash {options} 'uv run gh-plan.py --repo first/a claim 5'"
+            for options in ("-c -e", "-c -x", "-c -o pipefail", "-c +o pipefail", "-c -O extglob", "-c --")
+        )
         for command in commands:
             rows = [
                 {"message": {"content": [{"type": "tool_use", "name": "Bash", "id": "qualified", "input": {"command": command}}]}}
