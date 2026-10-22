@@ -1240,6 +1240,7 @@ class ClaimCloseoutTests(unittest.TestCase):
         data = "rows=[{'cmd':'uv run gh-plan.py claim 5'}]; print(history.literal_targets(rows,SESSION))"
         cases = [
             (data, False),
+            (data + "; print(sorted(history.literal_targets(rows,SESSION)))", False),
             (data + "; call = 'fixture'; exec_commands = []; print(call, exec_commands)", False),
             (data + "; subprocess.run(['git', 'status'])", False),
             (data + "; subprocess.run(command)", True),
@@ -1547,6 +1548,34 @@ class ClaimCloseoutTests(unittest.TestCase):
             f"sh -c 'cat | sh' <<'EOF'\n{claim}\nEOF",
             f'''export CMD='{claim}'; node -e "require('child_process').execSync(process.env.CMD)"''',
         ]
+        for prefix in ("timeout 60", "env -i", "nohup", "nice -n 5", "exec", "command", "sudo -E -u user", "custom-runner"):
+            commands.extend(
+                f"export CMD='{claim}'; {prefix} {program}"
+                for program in (
+                    '''node -e "require('child_process').execSync(process.env.CMD)"''',
+                    '''python3 -c "import os; os.system(os.environ['CMD'])"''',
+                    "bash -c '$CMD'",
+                    "bash <<'EOF'\n$CMD\nEOF",
+                    "python3 - <<'PY'\nimport os; os.system(os.environ['CMD'])\nPY",
+                    "eval '$CMD'",
+                    "source /dev/stdin <<'EOF'\n$CMD\nEOF",
+                    ". /dev/fd/0 <<<'$CMD'",
+                )
+            )
+        commands.extend(
+            f"export CMD='{claim}'; {program}"
+            for program in (
+                '''deno eval "new Deno.Command('sh', {args: ['-c', Deno.env.get('CMD')]}).outputSync()"''',
+                '''node --eval="require('child_process').execSync(process.env.CMD)"''',
+                '''node --print="require('child_process').execSync(process.env.CMD)"''',
+                '''python3 -c"import os; os.system(os.environ['CMD'])"''',
+                """perl -e'system($ENV{CMD})' """,
+                '''custom-runner --eval="run(process.env.CMD)"''',
+                """custom-runner -c'run(CMD)' """,
+                "python3 -cprint ignored",
+                "perl -esystem ignored",
+            )
+        )
         for command in commands:
             rows = [{"message": {"content": [{"type": "tool_use", "name": "Bash", "id": "channel", "input": {"command": command}}]}}]
             with self.subTest(command=command):
@@ -1614,6 +1643,20 @@ class ClaimCloseoutTests(unittest.TestCase):
             (f"command={claim!r}; getattr(__import__('os'), 'system')(command)", True),
             (f"source={claim!r}; print(history.has_executable_claim_source(source, 'python'))", False),
             (f"source={claim!r}; print(history.shell_groups(source))", False),
+            ("n=5; command=f'uv run gh-plan.py claim {n}'; import invoke; invoke.run(command)", True),
+            ("command='uv run gh-plan.py ' + 'claim 5'; import invoke; invoke.run(command)", True),
+            ("n=5; command='uv run gh-plan.py claim {}'.format(n); import invoke; invoke.run(command)", True),
+            ("n=5; command='uv run gh-plan.py claim %s' % n; import invoke; invoke.run(command)", True),
+            ("command=['uv', 'run', 'gh-plan.py', 'claim', '5']; pexpect.spawn(command[0], command[1:])", True),
+            ("command={'argv': ['uv', 'run', 'gh-plan.py', 'claim', '5']}; launch(command['argv'])", True),
+            ("command='uv run gh-plan.py'; command += ' claim 5'; import invoke; invoke.run(command)", True),
+            (f"command=''; command += {claim!r}; launch(command)", True),
+            (f"(command, other)=({claim!r}, None); launch(command)", True),
+            (f"[other, *command]=[None, {claim!r}]; launch(command)", True),
+            (f"launch(command := [{claim!r}])", True),
+            (f"command: list[str]=[{claim!r}]; launch(command)", True),
+            (f"rows=[{claim!r}]; print(rows); rows.append({claim!r})", False),
+            (f"rows=[{claim!r}]; print(history.literal_targets(rows, 'session'))", False),
         ]
         for source, unresolved in cases:
             command = "python - <<'PY'\n" + source + "\nPY"
