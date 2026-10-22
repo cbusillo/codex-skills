@@ -15,9 +15,6 @@ from typing import Any
 
 import github_plan_claim as claim
 import github_plan_termination as termination
-import github_plan_ended
-
-verify_ended = github_plan_ended.verify
 
 COMMENT_URL = re.compile(r"https://github\.com/([^/\s]+/[^/\s]+)/(?:issues|pull)/([1-9]\d*)#issuecomment-([1-9]\d*)")
 RELEASE_MARKER = "github-plan:abandoned-release "
@@ -171,9 +168,10 @@ def parse_release(source: dict[str, Any], evidence: dict[str, Any], *, actor: st
     if (evidence.get("user") or {}).get("login") != actor:
         raise ValueError("Session-ended evidence must be authored by the configured automation identity")
     text = evidence.get("body") or ""
-    terminated = termination.evidence(text, record["session"]) if not legacy else None
-    if terminated is None and (text.splitlines()[:1] != [evidence_header(source["id"], record)] or
-                              "Safe to exit: yes" not in text.splitlines() and github_plan_ended.session(text) is None):
+    terminated = termination.evidence(text, record["session"])
+    if terminated is not None and terminated["session_id"] == releaser_session:
+        raise ValueError("Abandoned release requires a distinct native source session")
+    if terminated is None and (text.splitlines()[:1] != [evidence_header(source["id"], record)] or "Safe to exit: yes" not in text.splitlines()):
         raise ValueError("Evidence must be a closed-session attestation naming the exact native session and Safe to exit: yes")
     if legacy and (f"Worker: {record['worker']}" not in text.splitlines()
                    or f"Source branch: {record['branch']}" not in text.splitlines()
@@ -271,8 +269,6 @@ def render_release(facts: ReleaseFacts, *, evidence_url: str, retained_prs: list
                "related_ids": [c["id"] for c in related]}
     if terminated is not None:
         receipt["termination"] = terminated
-    if (identity := github_plan_ended.session(evidence.get("body") or "")) is not None:
-        receipt["ended_session"] = identity
     return (f"Released claim {source['id']}\n\n"
             f"The {role} reconciles the next action on the work record.\n"
             f"[Session-ended evidence]({evidence_url})\n"
@@ -370,15 +366,12 @@ def validate_evidence(receipt: dict[str, Any], evidence: dict[str, Any], author:
             f"Native session unavailable: {record['legacy_reason']}")):
         raise ValueError("Legacy evidence no longer attests this source identity")
     ended = re.findall(r"(?m)^Ended at: (\S+)$", text)
-    terminated = termination.evidence(text, record["session"], apply_policy=False) if "legacy_reason" not in record else None
-    ended_session = github_plan_ended.session(text)
-    if ended_session != receipt.get("ended_session"):
-        raise ValueError("Ended source identity no longer matches the release")
+    terminated = termination.evidence(text, record["session"], apply_policy=False)
     if terminated != receipt.get("termination"):
         raise ValueError("Termination evidence no longer matches the release")
     if ((evidence.get("user") or {}).get("login") != author
             or (terminated is None and (text.splitlines()[:1] != [evidence_header(receipt["source_id"], receipt["source"])]
-                                       or "Safe to exit: yes" not in text.splitlines() and ended_session is None))
+                                       or "Safe to exit: yes" not in text.splitlines()))
             or len(ended) != 1 or stamp(ended[0]) != stamp(receipt["evidence_at"])
             or stamp(evidence.get("updated_at") or evidence.get("created_at")) != stamp(receipt["evidence_updated_at"])):
         raise ValueError("Closed-session evidence changed or no longer attests this release")

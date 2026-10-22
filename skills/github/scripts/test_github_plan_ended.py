@@ -6,326 +6,227 @@ from __future__ import annotations
 
 import json
 import os
-import socket
 import tempfile
 import unittest
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-import github_plan_ended as ended
 import github_plan_release as release
+import github_plan_termination_history as ended
 import test_gh_plan_release as fixtures
 
 
-class EndedClaimTests(fixtures.ReleaseHarness):
+class HistoricalTerminationTests(fixtures.ReleaseHarness):
     def setUp(self) -> None:
         super().setUp()
         self.addCleanup(self.f.doCleanups)
         self.directory = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
-        self.native = "01a0fcce-ef3c-74e3-af74-6721809e4990"
+        self.native = "e5bd6d9f-d638-4a78-a6d1-ae9f8944beca"
         self.transcript = self.directory / f"{self.native}.jsonl"
-        self.rows = [
-            {"type": "session_meta", "payload": {"id": self.native}, "timestamp": "2026-10-01T00:00:00Z"},
-            {
-                "type": "response_item",
-                "timestamp": "2026-10-01T00:00:30Z",
-                "payload": {
-                    "type": "function_call",
-                    "call_id": "claim",
-                    "name": "exec_command",
-                    "arguments": "gh-plan.py claim 42 --worker trial-b --session session-b",
-                },
-            },
-            {
-                "type": "response_item",
-                "timestamp": "2026-10-01T00:01:00Z",
-                "payload": {
-                    "type": "function_call_output",
-                    "call_id": "claim",
-                    "output": json.dumps(
-                        {
-                            "ok": True,
-                            "claim": fixtures.fixtures.OTHER,
-                            "claim_comment": {"comment": {"id": 1, "url": "https://github.com/owner/repo/issues/42#issuecomment-1"}},
-                        }
-                    ),
-                },
-            },
-        ]
-        self.transcript.write_text("".join(json.dumps(row) + "\n" for row in self.rows))
-        os.utime(self.transcript, (1759276800, 1759276800))
-        self.log = self.directory / "closed-sessions.json"
-        self.entry = {
+        self.record = {
             "session_id": self.native,
-            "harness": "codex",
+            "claim_session": "session-b",
+            "harness": "claude",
+            "host": "source-host",
             "transcript": str(self.transcript),
             "transcript_roots": [str(self.directory)],
-            "codex_home": str(self.directory),
-            "pid": 123456,
-            "tty": "ttys001",
-            "host": socket.gethostname(),
-            "ended_at": "2026-10-02T00:00:00Z",
-            "process_exit_verified": True,
+            "cause": "native local exit completed",
+            "retained_artifacts": [],
+            "exit_record": {"kind": "claude_local_exit"},
+            "claim": fixtures.fixtures.OTHER,
+            "claim_url": "https://github.com/owner/repo/issues/42#issuecomment-1",
+            "claim_created_at": self.f.comments[0]["created_at"],
         }
-        self.save_log()
-        self.args.closed_log = self.log
-        self.evidence["body"] = self.evidence["body"].replace("Safe to exit: yes", self.closure_lines())
-        self.enterContext(patch.object(ended, "process_rows", return_value=[]))
-        self.enterContext(patch.object(ended.sessions, "observation_homes", return_value=[self.directory]))
-        self.enterContext(patch.object(ended.closure, "source_records", side_effect=lambda _ids: {self.native: dict(self.entry)}))
+
+        def user(text: str, at: str, **extra: object) -> dict:
+            return {"sessionId": self.native, "timestamp": at, "type": "user", "message": {"content": text}, **extra}
+
+        receipt = {
+            "ok": True,
+            "claim": fixtures.fixtures.OTHER,
+            "claim_comment": {"comment": {"id": 1, "url": self.record["claim_url"]}},
+        }
+        self.rows = [
+            {
+                "sessionId": self.native,
+                "timestamp": "2026-09-30T23:59:59Z",
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "claim",
+                            "name": "Bash",
+                            "input": {
+                                "command": "uv run gh-plan.py claim 42 --session session-b --worker trial-b --branch work/other-42"
+                            },
+                        }
+                    ]
+                },
+            },
+            {
+                "sessionId": self.native,
+                "timestamp": "2026-10-01T00:00:01Z",
+                "type": "user",
+                "message": {"content": [{"type": "tool_result", "tool_use_id": "claim", "content": json.dumps(receipt)}]},
+            },
+            user("<local-command-caveat>Local command output</local-command-caveat>", "2026-10-01T00:09:59Z", isMeta=True),
+            user(
+                "<command-name>/quit</command-name>\n<command-message>quit</command-message>\n<command-args></command-args>",
+                "2026-10-01T00:10:00Z",
+            ),
+            user("<local-command-stdout></local-command-stdout>", "2026-10-01T00:10:01Z"),
+        ]
+        self.path = self.directory / "termination.json"
+        self.args.termination_record = self.path
         self.native_check = self.enterContext(patch.object(ended, "verify_native", return_value=None))
+        self.enterContext(patch.object(ended, "configured_roots", return_value={self.directory}))
+        self.enterContext(patch.object(ended.termination, "inventory", return_value=[]))
+        self.enterContext(patch.object(ended.termination.socket, "gethostname", return_value="source-host"))
+        self.enterContext(patch.object(ended.closure, "closed_log", return_value=self.directory / "closed-sessions.json"))
+        self.enterContext(patch.object(ended.closure, "action_pending", return_value=False))
 
-    def closure_lines(self) -> str:
-        return (
-            f"Ownership release only: yes\nNative session: {self.native}\n"
-            "Original claim: https://github.com/owner/repo/issues/42#issuecomment-1"
-        )
+        class Clock(datetime):
+            @classmethod
+            def now(cls, tz: object = None) -> datetime:
+                return datetime(2026, 10, 2, 0, 30, tzinfo=UTC)
 
-    def save_log(self) -> None:
-        self.log.write_text(json.dumps([self.entry]))
-        self.log.chmod(0o600)
+        self.enterContext(patch.object(ended.termination, "datetime", Clock))
+        self.save()
+        self.attest()
 
-    def test_ended_alias_releases_without_rewriting_source_or_original_verdict(self) -> None:
+    def save(self) -> None:
+        self.transcript.write_text("".join(json.dumps(row) + "\n" for row in self.rows))
+        os.utime(self.transcript, (1759276800, 1759276800))
+        self.path.write_text(json.dumps(self.record))
+
+    def attest(self) -> None:
+        self.evidence["body"] = ended.termination.body(ended.termination.verify(self.record, "session-b"))
+
+    def test_original_alias_exit_round_trips_and_releases_only_original_claim(self) -> None:
+        original = dict(self.f.comments[0])
         self.run_release()
         receipt = release.receipt_for(self.f.comments[-1])
         self.assertEqual(receipt["source"], fixtures.fixtures.OTHER)
-        self.assertEqual(receipt["ended_session"], self.native)
-        canonical = release.verified_comments(self.f.comments, lambda *_: self.evidence)
-        conflicts, _ = fixtures.CLAIM.discussion_evidence("", canonical, fixtures.fixtures.OWNER)
-        self.assertFalse(conflicts)
-        self.assertGreaterEqual(self.native_check.call_count, 2)
+        self.assertEqual(receipt["termination"]["session_id"], self.native)
+        self.assertEqual(self.f.comments[0], original)
+        self.assertEqual(release.termination.evidence(self.evidence["body"], "session-b"), receipt["termination"])
 
-    def test_live_or_uncertain_process_refuses_without_release_write(self) -> None:
-        for rows in ([(self.entry["pid"], "ttys001", "codex")], [(123457, "ttys001", "codex")]):
-            with (
-                self.subTest(rows=rows),
-                patch.object(ended, "process_rows", return_value=rows),
-                patch.object(ended, "process_started_at", side_effect=ValueError("uncertain source")),
-            ):
-                with self.assertRaises(fixtures.PLAN.PlanError):
-                    self.run_release()
-                self.f.assert_no_writes()
+    def test_incomplete_exit_copied_receipt_wrong_alias_and_future_activity_refuse(self) -> None:
+        for mutation in ("typed_only", "copy", "alias", "time", "resumed", "spawned"):
+            with self.subTest(mutation=mutation):
+                rows = json.loads(json.dumps(self.rows))
+                record = dict(self.record)
+                if mutation == "typed_only":
+                    rows.pop()
+                if mutation == "copy":
+                    block = rows[1]["message"]["content"][0]
+                    block["content"] = json.dumps({"nested": json.loads(block["content"])})
+                if mutation == "alias":
+                    record["claim_session"] = "different-alias"
+                if mutation == "time":
+                    record["ended_at"] = "2026-10-01T00:10:02Z"
+                if mutation == "resumed":
+                    rows.append({**rows[-1], "timestamp": "2026-10-01T00:10:02Z"})
+                if mutation == "spawned":
+                    rows[0]["isSidechain"] = True
+                self.transcript.write_text("".join(json.dumps(row) + "\n" for row in rows))
+                os.utime(self.transcript, (1759276800, 1759276800))
+                with self.assertRaises(ValueError):
+                    ended.termination.verify(record, "session-b")
+        self.f.assert_no_writes()
 
-    def test_incomplete_or_resumed_closure_refuses_without_write(self) -> None:
-        for changes in (
-            {"process_exit_verified": False},
-            {"resumed_at": "2026-10-03T00:00:00Z"},
-            {"session_id": "different"},
-            {"host": "other-host"},
-        ):
-            with self.subTest(changes=changes):
-                with patch.dict(self.entry, changes):
-                    self.save_log()
-                    with self.assertRaises(fixtures.PLAN.PlanError):
-                        self.run_release()
-                    self.f.assert_no_writes()
-
-    def test_native_activity_refuses_even_after_original_process_exit(self) -> None:
-        self.native_check.side_effect = ValueError("native queued work remains")
+    def test_second_account_copy_and_canonical_resume_veto_exit(self) -> None:
+        second = self.directory / "second"
+        second.mkdir()
+        copy = second / self.transcript.name
+        copy.write_text(self.transcript.read_text() + json.dumps({**self.rows[-1], "timestamp": "2026-10-01T00:11:00Z"}) + "\n")
+        os.utime(copy, (1759276800, 1759276800))
+        with self.assertRaises(fixtures.PLAN.PlanError):
+            self.run_release()
+        copy.unlink()
+        (self.directory / "closed-sessions.json").write_text(
+            json.dumps([{"session_id": self.native, "transcript": str(self.transcript), "resumed_at": "2026-10-01T00:12:00Z"}])
+        )
         with self.assertRaises(fixtures.PLAN.PlanError):
             self.run_release()
         self.f.assert_no_writes()
 
-    def test_live_owner_on_readback_leaves_only_a_pending_record(self) -> None:
-        self.race = lambda: setattr(self.native_check, "side_effect", ValueError("source resumed"))
+    def test_live_and_uncertain_owner_and_pending_action_refuse(self) -> None:
+        shared = ended.sessions.process_liveness()
+        for command in ("claude --resume " + self.native, "claude --continue", "claude -r", "claude"):
+            with (
+                self.subTest(command=command),
+                patch.object(ended.termination, "inventory", return_value=[(123, "ttys002", command)]),
+                patch.object(shared, "process_arguments", return_value=(command.split(), True)),
+                patch.object(shared, "process_started_at", return_value=release.stamp("2026-09-30T00:00:00Z")),
+                self.assertRaises(fixtures.PLAN.PlanError),
+            ):
+                self.run_release()
+        with patch.object(ended.closure, "action_pending", return_value=True), self.assertRaises(fixtures.PLAN.PlanError):
+            self.run_release()
+        self.f.assert_no_writes()
+
+    def test_original_exit_and_claim_are_pinned_across_pending_write(self) -> None:
+        def change() -> None:
+            self.rows[-1]["timestamp"] = "2026-10-01T00:10:02Z"
+            self.save()
+
+        self.race = change
         with self.assertRaises(fixtures.PLAN.PlanError):
             self.run_release()
-        self.assertIsNotNone(release.pending_receipt_for(self.f.comments[-1]))
-        self.assertIsNone(release.receipt_for(self.f.comments[-1]))
+        self.assertFalse(any(release.receipt_for(comment) for comment in self.f.comments))
+        self.assertNotIn("confirm_release", self.f.events)
 
-    def test_ended_legacy_claim_does_not_adopt_later_successor_branch_commits(self) -> None:
+    def test_recovered_legacy_uses_original_receipt_and_preserves_pr_proof(self) -> None:
         self.f.comments[0]["body"] = "Claimed by legacy-worker"
         self.args.legacy = True
-        self.args.legacy_branch = "work/original"
-        self.entry["branch"] = self.args.legacy_branch
-        self.save_log()
-        self.args.legacy_reason = "Original bare claim; native identity recovered from its receipt"
-        self.rows[1]["payload"]["arguments"] = "gh-comment issue 42 --body 'Claimed by legacy-worker'"
-        self.rows[2]["payload"]["output"] = json.dumps(
-            {
-                "ok": True,
-                "comment_action": "created",
-                "comment": {"id": 1, "url": "https://github.com/owner/repo/issues/42#issuecomment-1"},
-            }
+        self.args.legacy_branch = fixtures.fixtures.OTHER["branch"]
+        self.args.legacy_reason = "Original claim recorded no native session ID"
+        claim = release.source_record(
+            self.f.comments[0], legacy=True, legacy_branch=self.args.legacy_branch, legacy_reason=self.args.legacy_reason
         )
-        self.transcript.write_text("".join(json.dumps(row) + "\n" for row in self.rows))
-        os.utime(self.transcript, (1759276800, 1759276800))
-        self.evidence["body"] = (
-            f"Closed legacy claim 1\nWorker: legacy-worker\nSource branch: {self.args.legacy_branch}\n"
-            f"Native session unavailable: {self.args.legacy_reason}\n"
-            f"Ended at: {self.entry['ended_at']}\n{self.closure_lines()}"
+        self.record.update(
+            claim_session=claim["session"], claim=claim, retained_artifacts=[{"branch": self.args.legacy_branch, "worktree": None}]
         )
-        self.source_branch_date = "2026-10-03T00:00:00Z"
-        self.run_release()
-        self.assertEqual(release.receipt_for(self.f.comments[-1])["ended_session"], self.native)
-
-    def test_transcript_without_original_receipt_or_with_new_activity_refuses(self) -> None:
-        original = self.transcript.read_text()
-        for text in (
-            original.replace("issuecomment-1", "issuecomment-2"),
-            original.replace("2026-10-01T00:01:00Z", "2026-10-03T00:01:00Z"),
-        ):
-            with self.subTest(text=text):
-                self.transcript.write_text(text)
-                os.utime(self.transcript, (1759276800, 1759276800))
-                with self.assertRaises(fixtures.PLAN.PlanError):
-                    self.run_release()
-                self.f.assert_no_writes()
-
-    def test_missing_log_or_original_claim_binding_refuses(self) -> None:
-        for mode in ("missing_log", "unbound"):
-            with self.subTest(mode=mode):
-                self.args.closed_log = None if mode == "missing_log" else self.log
-                if mode == "unbound":
-                    self.evidence["body"] = self.evidence["body"].replace("issuecomment-1", "issuecomment-2")
-                with self.assertRaises(fixtures.PLAN.PlanError):
-                    self.run_release()
-                self.f.assert_no_writes()
-
-    def test_verified_historical_exit_does_not_need_missing_terminal_coordinates(self) -> None:
-        self.entry.pop("pid")
-        self.entry.pop("tty")
-        self.save_log()
-        self.run_release()
-        self.assertEqual(release.receipt_for(self.f.comments[-1])["ended_session"], self.native)
-
-    def test_copied_log_cannot_hide_a_canonical_resume(self) -> None:
-        resumed = {**self.entry, "resumed_at": "2026-10-03T00:00:00Z"}
-        with patch.object(ended.closure, "source_records", return_value={self.native: resumed}):
-            with self.assertRaises(fixtures.PLAN.PlanError):
-                self.run_release()
-        self.f.assert_no_writes()
-
-    def test_native_claim_receipts_bind_writes_rather_than_reads_or_quoted_examples(self) -> None:
-        url = "https://github.com/owner/repo/issues/42#issuecomment-1"
-        for kind in ("function_call", "custom_tool_call"):
-            for command in ("gh-plan.py claim 42", "gh-plan.py --repo owner/repo claim 42"):
-                with self.subTest(kind=kind, command=command):
-                    rows = [
-                        {"payload": {"type": kind, "call_id": "write", "input": command}},
-                        {
-                            "payload": {
-                                "type": kind + "_output",
-                                "call_id": "write",
-                                "output": json.dumps(
-                                    {
-                                        "ok": True,
-                                        "claim": fixtures.fixtures.OTHER,
-                                        "claim_comment": {"comment": {"id": 1, "url": url}},
-                                    }
-                                ),
-                            }
-                        },
-                    ]
-                    self.assertTrue(ended.original_claim_output(rows, url, fixtures.fixtures.OTHER))
-                    rows[0]["payload"]["input"] = "gh-plan.py show 42"
-                    self.assertFalse(ended.original_claim_output(rows, url, fixtures.fixtures.OTHER))
-
-    def test_refused_claim_output_cannot_bind_the_real_holders_comment(self) -> None:
-        url = "https://github.com/owner/repo/issues/42#issuecomment-1"
-        rows = [
-            {"payload": {"type": "function_call", "call_id": "refused", "input": "gh-plan.py claim 42"}},
-            {
-                "payload": {
-                    "type": "function_call_output",
-                    "call_id": "refused",
-                    "output": json.dumps({"ok": False, "coordination": [{"claim_url": url}]}),
-                }
-            },
-        ]
-        self.assertFalse(ended.original_claim_output(rows, url, fixtures.fixtures.OTHER))
-
-    def test_claude_receipts_require_the_exact_successful_post(self) -> None:
-        url = "https://github.com/owner/repo/issues/42#issuecomment-1"
-        result = {"ok": True, "claim": fixtures.fixtures.OTHER, "claim_comment": {"comment": {"id": 1, "url": url}}}
-        rows = [
-            {"message": {"content": [{"type": "tool_use", "id": "write", "input": {"command": "gh-plan.py claim 42"}}]}},
-            {"message": {"content": [{"type": "tool_result", "tool_use_id": "write", "content": json.dumps(result)}]}},
-        ]
-        self.assertTrue(ended.original_claim_output(rows, url, fixtures.fixtures.OTHER))
-        for invalid in (
-            {"ok": False, "coordination": [{"claim_url": url}]},
-            {**result, "claim_comment": {"comment": {"id": 12, "url": url + "2"}}},
-        ):
-            rows[1]["message"]["content"][0]["content"] = json.dumps(invalid)
-            self.assertFalse(ended.original_claim_output(rows, url, fixtures.fixtures.OTHER))
-
-    def test_canonical_native_execution_binds_when_formatted_output_was_truncated(self) -> None:
-        url = "https://github.com/owner/repo/issues/42#issuecomment-1"
-        result = {"ok": True, "claim": fixtures.fixtures.OTHER, "claim_comment": {"comment": {"id": 1, "url": url}}}
-        item = {
-            "type": "CommandExecution",
-            "command": ["sh", "-c", "gh-plan.py claim 42"],
-            "status": "completed",
-            "exit_code": 0,
-            "stdout": json.dumps(result),
-        }
-        rows = [{"payload": {"item": item}}]
-        self.assertTrue(ended.original_claim_output(rows, url, fixtures.fixtures.OTHER))
-        item["exit_code"] = 1
-        self.assertFalse(ended.original_claim_output(rows, url, fixtures.fixtures.OTHER))
-
-    def test_legacy_success_projection_requires_exact_identity_target_and_creation_interval(self) -> None:
-        url = "https://github.com/owner/repo/issues/42#issuecomment-1"
-        command = "P=/skills/gh-plan.py; uv run $P claim 42 --session session-b --worker trial-b --branch work/other-42"
-        rows = [
-            {
-                "timestamp": "2026-09-30T23:59:59Z",
-                "message": {
-                    "content": [{"type": "tool_use", "id": "write", "input": {"command": command, "description": "claim #42"}}]
-                },
-            },
-            {
-                "timestamp": "2026-10-01T00:00:10Z",
-                "message": {"content": [{"type": "tool_result", "tool_use_id": "write", "content": "42 True None"}]},
-            },
-        ]
-        self.assertTrue(ended.original_claim_output(rows, url, fixtures.fixtures.OTHER, created_at="2026-10-01T00:00:00Z"))
-        rows[1]["message"]["content"][0]["content"] = "True None"
-        self.assertTrue(ended.original_claim_output(rows, url, fixtures.fixtures.OTHER, created_at="2026-10-01T00:00:00Z"))
-        self.assertFalse(ended.original_claim_output(rows, url, fixtures.fixtures.OTHER, created_at="2026-10-02T00:00:00Z"))
-        for output in ("42 False claim_conflict", "41 True None"):
-            rows[1]["message"]["content"][0]["content"] = output
-            self.assertFalse(ended.original_claim_output(rows, url, fixtures.fixtures.OTHER, created_at="2026-10-01T00:00:00Z"))
-        rows[1]["message"]["content"][0]["content"] = "42 True None"
-        rows[0]["message"]["content"][0]["input"]["command"] = command.replace("claim 42", "claim 41")
-        self.assertFalse(ended.original_claim_output(rows, url, fixtures.fixtures.OTHER, created_at="2026-10-01T00:00:00Z"))
-
-    def test_native_recorded_claim_uses_the_same_verified_exit_route(self) -> None:
-        record = {**fixtures.fixtures.OTHER, "session": self.native}
-        self.f.comments[0]["body"] = fixtures.CLAIM.marker(record)
-        self.rows[2]["payload"]["output"] = json.dumps(
-            {
-                "ok": True,
-                "claim": record,
-                "claim_comment": {"comment": {"id": 1, "url": "https://github.com/owner/repo/issues/42#issuecomment-1"}},
-            }
+        self.rows[0]["message"]["content"][0]["input"]["command"] = "gh-comment issue 42 --body-file claim.md"
+        self.rows[1]["message"]["content"][0]["content"] = json.dumps(
+            {"ok": True, "comment_action": "created", "comment": {"id": 1, "url": self.record["claim_url"]}}
         )
-        self.transcript.write_text("".join(json.dumps(row) + "\n" for row in self.rows))
-        os.utime(self.transcript, (1759276800, 1759276800))
-        self.evidence["body"] = self.evidence["body"].replace("Closed session session-b", f"Closed session {self.native}")
-        self.run_release()
-        self.assertEqual(release.receipt_for(self.f.comments[-1])["source"], record)
-
-    def test_ownership_only_cannot_adopt_retained_prs(self) -> None:
-        self.args.retained_pr = ["https://github.com/owner/repo/pull/99"]
+        self.save()
+        self.evidence["body"] = ended.termination.body(ended.termination.verify(self.record, claim["session"]))
+        self.args.dry_run = True
         with self.assertRaises(fixtures.PLAN.PlanError):
             self.run_release()
         self.f.assert_no_writes()
+        self.f.pulls = [
+            {
+                "number": 99,
+                "state": "open",
+                "user": {"login": fixtures.BOT},
+                "body": "Refs #42",
+                "head": {"ref": self.args.legacy_branch, "sha": "legacy-head", "repo": {"full_name": "owner/repo"}},
+                "base": {"repo": {"full_name": "owner/repo"}},
+            }
+        ]
+        self.commit_date = "2026-10-01T00:05:00Z"
+        self.run_release()
+        body = self.f.emitted.call_args.args[0]["release_body"]
+        self.assertIsNotNone(release.receipt_for({"body": body}))
+        self.f.assert_no_writes()
 
-    def test_archived_source_uses_its_native_logical_path(self) -> None:
-        original = self.transcript.read_text()
-        archived = self.transcript.with_suffix(".jsonl.zst")
-        self.transcript.rename(archived)
-        self.entry["transcript"] = str(archived)
-        self.save_log()
-        with patch.object(ended.subprocess, "run", return_value=SimpleNamespace(stdout=original)):
+    def test_codex_without_original_exit_and_changed_exit_receipt_refuse(self) -> None:
+        record = {**self.record, "harness": "codex"}
+        with self.assertRaises(ValueError):
+            ended.termination.verify(record, "session-b")
+        self.evidence["body"] = self.evidence["body"].replace('"exit_digest": "', '"exit_digest": "changed')
+        with self.assertRaises(fixtures.PLAN.PlanError):
             self.run_release()
-        snapshots = self.native_check.call_args.args[1]
-        self.assertIn(str(self.transcript), snapshots)
+        self.f.assert_no_writes()
 
 
 class ClaimReceiptBoundaryTests(unittest.TestCase):
@@ -368,11 +269,14 @@ class ClaimReceiptBoundaryTests(unittest.TestCase):
         commands = {"codex": ("codex resume --last", "codex resume"), "claude": ("claude --continue", "claude -r")}
         for harness, invocations in commands.items():
             for command in invocations:
-                with self.subTest(command=command), patch.object(shared, "process_arguments", return_value=(command.split(), True)):
-                    with self.assertRaises(ValueError):
-                        shared.verify_process_exit(
-                            {**source, "harness": harness, "_historical_exit": True}, rows=[(1234, "ttys002", command)]
-                        )
+                with (
+                    self.subTest(command=command),
+                    patch.object(shared, "process_arguments", return_value=(command.split(), True)),
+                    self.assertRaises(ValueError),
+                ):
+                    shared.verify_process_exit(
+                        {**source, "harness": harness, "_historical_exit": True}, rows=[(1234, "ttys002", command)]
+                    )
 
 
 class NativeEndedTests(unittest.IsolatedAsyncioTestCase):
@@ -401,9 +305,8 @@ class NativeEndedTests(unittest.IsolatedAsyncioTestCase):
         self.read = self.enterContext(patch.object(ended.native, "read_thread_facts", new_callable=AsyncMock))
         self.read.return_value = self.facts
 
-    async def test_current_native_absence_accepts_a_qualified_source_verdict(self) -> None:
+    async def test_native_absence_permits_the_independent_exit_check(self) -> None:
         await ended.verify_native(self.entry, self.snapshots)
-        self.assertEqual(self.read.await_count, 2)
 
     async def test_loaded_idle_codex_refuses_even_with_quiet_completed_history(self) -> None:
         self.facts.update(state="idle", turns=[{"id": "turn", "status": "completed"}])
@@ -430,7 +333,6 @@ class NativeEndedTests(unittest.IsolatedAsyncioTestCase):
     async def test_account_without_authenticated_source_does_not_receive_thread_reads(self) -> None:
         with patch.object(ended.sessions, "observation_homes", return_value=[Path("/account"), Path("/unrelated")]):
             await ended.verify_native(self.entry, self.snapshots)
-        self.assertEqual(self.read.await_count, 2)
 
     async def test_claude_idle_process_and_unavailable_inventory_refuse(self) -> None:
         account = {"provider": "anthropic", "env": {}}
@@ -440,9 +342,9 @@ class NativeEndedTests(unittest.IsolatedAsyncioTestCase):
                 with (
                     self.subTest(agents=agents),
                     patch.object(ended.subprocess, "run", return_value=SimpleNamespace(stdout=json.dumps(agents))),
+                    self.assertRaises(ValueError),
                 ):
-                    with self.assertRaises(ValueError):
-                        await ended.verify_native(self.entry, self.snapshots)
+                    await ended.verify_native(self.entry, self.snapshots)
             with patch.object(ended.subprocess, "run", return_value=SimpleNamespace(stdout="[]")):
                 await ended.verify_native(self.entry, self.snapshots)
 

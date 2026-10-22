@@ -206,7 +206,7 @@ def strip_claude_exit_tail(records: list[dict]) -> list[dict]:
     caveat, command, output = records[-3:]
     text = text_content(command.get("message", {}).get("content"))
     exit_command = re.fullmatch(
-        r"<command-name>/exit</command-name>\s*<command-message>exit</command-message>"
+        r"<command-name>/(?P<exit_command>exit|quit)</command-name>\s*<command-message>(?P=exit_command)</command-message>"
         r"\s*<command-args></command-args>",
         text.strip(),
     )

@@ -1282,57 +1282,39 @@ Edited or unavailable evidence and renewed source ownership invalidate the
 legacy receipt just as they do a structured release. Inspect `--dry-run` before
 applying. These flags cannot release or reinterpret a structured source.
 
-#### Verified exit without a safe-exit verdict
+#### Historical original exit evidence
 
-When the holder actually ended but wrote no unqualified safe-exit verdict,
-the Supervisor or direction session may release ownership using the existing
-closed-session log and `release-claim --closed-log /absolute/private/log.json`.
-Keep the original verdict and source claim unchanged. This route accepts a
-structured native claim, a recovered historical alias or a bare `--legacy` claim; it does not fabricate
-a native identity or declare the source work complete.
+Use the existing `--termination-record` procedure when the original native exit
+completed without a safe-exit verdict. Do not add a closure-log row or rewrite
+the original verdict. The private record keeps the native UUID, harness,
+source host, transcript, transcript roots, cause and retained artifacts.
+A historical Claude record may use `"exit_record": {"kind": "claude_local_exit"}`
+instead of PID, TTY and tmux fields. The generator derives the exit time from
+the completed native `/exit` or `/quit` sequence, pins that original evidence,
+and refuses a conflicting supplied `ended_at`. Typed input and history entries
+alone are insufficient. Codex without original terminal exit proof refuses.
 
-Verify the actual exit from the original Supervisor/native evidence first.
-The selected log row identifies `session_id` (the canonical native UUID),
-`harness`, `transcript`, `host`, `ended_at`, `process_exit_verified: true`, and
-`transcript_roots` (every known native transcript root). Codex also records
-`codex_home`; legacy sources also record the verified original `branch`.
-Preserve original `pid` and `tty` when known; a historical
-verified exit can lack both. Keep its original exit evidence with the private
-log. The row must already exist in the canonical Supervisor closed-session
-log (`~/.code/skill-data/supervisor-closed-sessions.json`); a private copy must
-match that row exactly. Canonical resume changes veto an old copy. Never
-create an exit record from age, an absent process, a merged PR,
-`notLoaded`, or a qualified verdict alone. Use the existing log or its private
-evidence copy, owned by this user with mode 0600. A resumed generation refuses.
+For a recovered alias, also supply `claim_session` (the original recorded
+Session field), `claim` (the exact original structured claim), `claim_url`,
+and `claim_created_at` from GitHub. The source root must contain the direct
+creation receipt, inside the original creation interval. Quoted output, copied
+history, forks and spawned children cannot establish that identity. Bare legacy
+claims retain `--legacy`, branch and reason and their independent PR proof;
+they can use a termination record only with the same exact native receipt
+binding and original exit proof. No recovered identity changes the source claim.
 
-Post the usual exact `Closed session <claim-recorded-session>` attestation,
-or the existing per-ID legacy attestation with its worker, branch and reason.
-Replace the `Safe to exit: yes` line with these three lines:
-
-```text
-Ownership release only: yes
-Native session: <verified-native-UUID>
-Original claim: https://github.com/OWNER/REPO/issues/N#issuecomment-ID
-```
-
-Keep the verified original `Ended at:` timestamp. The attestation binds that
-exact claim to the recovered native source. Its native transcript must contain
-the original claim's tool receipt. The helper rereads every known source copy,
-including `.jsonl.zst` archives through the local `zstd` executable, checks
-source-host processes, and reads Claude's configured native accounts plus
-each Codex account with authenticated source copies. Every such Codex thread
-must be `notLoaded`; a loaded idle thread refuses. Live,
-queued, uncertain or newly resumed ownership refuses, including an idle
-Claude process. It repeats these checks after the pending write before making
-the release operative. Missing log, transcript or native coverage refuses.
-
-Use the existing release command with `--closed-log`, inspect `--dry-run`,
-then repeat without it. Bare legacy sources keep `--legacy`, `--legacy-branch`
-and `--legacy-reason`. Verified native ownership replaces the legacy PR-link
-corroboration for this route. It does not infer source activity from later
-branch commits or adopt retained PRs; `--retained-pr` refuses. Every branch,
-worktree, PR, wait and native blocker stays intact and subject to the next
-claim's independent checks. Other claims need their own exact releases.
+The generator and release preflight check configured account roots, every source
+copy, pending actions, native loaded/queued state and live or uncertain process
+owners. A canonical closure row, if present, is a resume veto only. Missing
+closure rows supply no exit proof and require no shared-log write. A historical
+source refuses while a same-family process may predate its exit or has no
+independent native identity. The existing crash route keeps its PID, TTY and
+nonce-bearing tmux checks. The release repeats verification after its pending
+write, preserves artifacts, and keeps branch, PR, wait and blocker checks.
+Generate the attestation with `github_plan_termination.py --record FILE`, inspect
+it, post it through `gh-comment`, then inspect the ordinary release dry run with
+`--termination-record FILE`. Never invent an attestation URL or release a claim
+when the generator refuses.
 
 For retained PRs, pass each verified same-repository PR URL with repeatable
 `--retained-pr`. Each PR must independently link the canonical issue and belong

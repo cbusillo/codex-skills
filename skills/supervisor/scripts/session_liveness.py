@@ -5,7 +5,7 @@
 """Shared process and transcript facts; callers retain closure and terminal authority."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 import os
 from pathlib import Path
 import shlex
@@ -490,6 +490,12 @@ def verify_process_exit(entry, *, rows=None, ended_at=None, started_at=None,
             resumed, command_kind, exact_resume = invocation(argv, bounded=bounded)
             if source in [native_uuid(value) or value for value in resumed]:
                 raise ValueError("source native session is visible in a resumed harness process")
+            if entry.get("_inventory") and argv and harness_family(argv[0]) == entry.get("harness"):
+                if (command_kind != "exec" and native_uuid(exact_resume) is None
+                        or not bounded or versioned_claude(argv[0])):
+                    raise ValueError("Unresolved native process may own the historical source; preserve claims")
+                if ended_at is None or not ended_at < started_at(pid) <= datetime.now(UTC):
+                    raise ValueError("Native process may predate the original exit; preserve claims")
         if process_tty != tty or idle_terminal_command(command):
             continue
         if not entry.get("_backfill"):
