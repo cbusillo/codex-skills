@@ -464,9 +464,12 @@ def shell_texts(text: str, javascript: bool) -> tuple[list[str], bool]:
     return commands, opaque
 
 
+SHELL_NAMES = {"sh", "bash", "zsh", "dash", "ksh", "fish"}
+
+
 def is_interpreter(consumer: str) -> bool:
     return (
-        Path(consumer).name in {"sh", "bash", "zsh", "dash", "ksh", "fish", "node", "nodejs", "deno", "bun", "perl", "ruby"}
+        Path(consumer).name in SHELL_NAMES | {"node", "nodejs", "deno", "bun", "perl", "ruby"}
         or re.fullmatch(r"python(?:[0-9]+(?:\.[0-9]+)*)?", Path(consumer).name) is not None
     )
 
@@ -475,7 +478,7 @@ def has_executable_claim_source(text: str, consumer: str) -> bool:
     if "gh-plan" not in text or CLAIM_WORD.search(text) is None:
         return False
     if not re.fullmatch(r"python(?:[0-9]+(?:\.[0-9]+)*)?", Path(consumer).name):
-        if Path(consumer).name in {"sh", "bash", "zsh", "dash", "ksh", "fish", "eval", "source", "."}:
+        if Path(consumer).name in SHELL_NAMES | {"eval", "source", "."}:
             try:
                 for argv in shell_argv(text):
                     arguments = claim_arguments(argv)
@@ -570,6 +573,8 @@ def script_consumer(argv: list[str]) -> str:
 
 
 SHELL_OPERATORS = (
+    "<(",
+    ">(",
     ";;&",
     "<<<",
     "<<-",
@@ -593,8 +598,20 @@ SHELL_OPERATORS = (
     ">",
     "\n",
 )
+SHELL_PROCESSES = {"<(", ">("}
+SHELL_REDIRECTIONS = {
+    operator for operator in SHELL_OPERATORS if ("<" in operator or ">" in operator) and operator not in SHELL_PROCESSES
+}
+SHELL_CONTROLS = set(SHELL_OPERATORS) - SHELL_REDIRECTIONS
+REDIRECTION = re.compile(
+    r"\d*(?:" + "|".join(re.escape(operator) for operator in SHELL_OPERATORS if operator in SHELL_REDIRECTIONS) + r")(?!\()"
+)
 SHELL_TOKEN = re.compile(
-    "|".join(re.escape(operator) for operator in SHELL_OPERATORS)
+    "|".join(re.escape(operator) for operator in SHELL_OPERATORS if operator in SHELL_PROCESSES)
+    + "|"
+    + REDIRECTION.pattern
+    + "|"
+    + "|".join(re.escape(operator) for operator in SHELL_OPERATORS)
     + r"""|(?:'[^']*'|"(?:\\.|[^"\\])*"|`(?:\\.|[^`\\])*`|\\[^\n]|[^\s;&|()<>\x27"`\\])+"""
 )
 
@@ -624,7 +641,7 @@ def substitution_end(text: str, start: int) -> int:
     raise ValueError("incomplete command substitution")
 
 
-def substitution_sources(word: str) -> Iterator[str]:
+def shell_expansions(word: str, *, heredoc: bool = False) -> Iterator[tuple[str, str]]:
     quote = ""
     index = 0
     while index < len(word):
@@ -632,13 +649,13 @@ def substitution_sources(word: str) -> Iterator[str]:
         if character == "\\" and quote != "'":
             index += 2
             continue
-        if character == "'" and quote != '"':
+        if not heredoc and character == "'" and quote != '"':
             quote = "" if quote else "'"
-        elif character == '"' and quote != "'":
+        elif not heredoc and character == '"' and quote != "'":
             quote = "" if quote else '"'
         elif quote != "'" and word.startswith("$(", index):
             end = substitution_end(word, index + 2)
-            yield word[index + 2 : end]
+            yield "command", word[index + 2 : end]
             index = end
         elif quote != "'" and character == "`":
             end = index + 1
@@ -651,9 +668,38 @@ def substitution_sources(word: str) -> Iterator[str]:
                 end += 1
             if end == len(word):
                 raise ValueError("incomplete backtick substitution")
-            yield word[index + 1 : end]
+            yield "command", word[index + 1 : end]
             index = end
+        elif quote != "'" and character == "$" and index + 1 < len(word) and re.match(r"[A-Za-z_0-9{*#@?$!-]", word[index + 1]):
+            yield "parameter", ""
         index += 1
+
+
+def substitution_sources(word: str, *, heredoc: bool = False) -> Iterator[str]:
+    for kind, source in shell_expansions(word, heredoc=heredoc):
+        if kind == "command":
+            yield source
+
+
+def has_generated_execution(group: list[str], text: str) -> bool:
+    if "gh-plan" not in text or CLAIM_WORD.search(text) is None:
+        return False
+    argv = shlex.split(" ".join(group))
+    command = shell_command_arguments(argv)
+    if not command:
+        return False
+    if "$" in command[0] or "`" in command[0]:
+        return True
+    offset = len(argv) - len(command)
+    if command[0] in {"eval", "source", "."}:
+        programs = group[offset + 1 :]
+    else:
+        programs = [
+            group[index + 1]
+            for index, argument in enumerate(argv[:-1])
+            if is_evaluator_flag(argument, script_consumer(argv[:index]))
+        ]
+    return any(any(True for _ in shell_expansions(program)) for program in programs)
 
 
 def shell_tokens(text: str) -> list[str]:
@@ -676,12 +722,26 @@ def shell_tokens(text: str) -> list[str]:
     return tokens
 
 
+def without_redirections(tokens: list[str]) -> list[str]:
+    words = []
+    operand = False
+    for token in tokens:
+        if operand:
+            operand = False
+            continue
+        if REDIRECTION.fullmatch(token):
+            operand = True
+        else:
+            words.append(token)
+    return words
+
+
 def pipeline_sources(tokens: list[str]) -> list[tuple[str, str]]:
     sources = []
     start = 0
     depth = 0
     for index, token in enumerate(tokens):
-        if token in {"(", "{"}:
+        if token in {"(", "{"} | SHELL_PROCESSES:
             depth += 1
         elif token in {")", "}"}:
             depth = max(0, depth - 1)
@@ -689,8 +749,8 @@ def pipeline_sources(tokens: list[str]) -> list[tuple[str, str]]:
             if depth == 0 and token in {";", "&&", "||", "\n"}:
                 start = index + 1
             continue
-        end = next((item for item in range(index + 1, len(tokens)) if tokens[item] in SHELL_OPERATORS), len(tokens))
-        argv = shlex.split(" ".join(tokens[index + 1 : end]))
+        end = next((item for item in range(index + 1, len(tokens)) if tokens[item] in SHELL_CONTROLS), len(tokens))
+        argv = shlex.split(" ".join(without_redirections(tokens[index + 1 : end])))
         consumer = script_consumer(argv)
         if is_interpreter(consumer):
             offset = next((item for item, value in enumerate(argv) if value == consumer), -1)
@@ -698,7 +758,7 @@ def pipeline_sources(tokens: list[str]) -> list[tuple[str, str]]:
             stdin_script = any(argument in {"-", "-s", "/dev/stdin"} for argument in arguments) or all(
                 argument.startswith("-") for argument in arguments
             )
-            if stdin_script and not any(is_evaluator_flag(argument) for argument in arguments):
+            if stdin_script and not any(is_evaluator_flag(argument, consumer) for argument in arguments):
                 sources.append((" ".join(tokens[start:index]), consumer))
     return sources
 
@@ -718,7 +778,7 @@ def shell_groups(text: str) -> Iterator[list[str]]:
                 if is_interpreter(source["consumer"]):
                     executable_bodies.append((source["consumer"], script))
                 if source["expands"] and ("$(" in script or "`" in script):
-                    executable_bodies.append(("sh", script))
+                    executable_bodies.extend(("sh", substitution) for substitution in substitution_sources(script, heredoc=True))
                 body = []
             else:
                 body.append(line)
@@ -737,41 +797,56 @@ def shell_groups(text: str) -> Iterator[list[str]]:
                 command_start = index + 1
             if token in {";", "&&", "||", "|", "|&", "\n"}:
                 stage = []
-            if token not in {"<<", "<<-", "<<<"}:
+            operator = token.lstrip("0123456789") if REDIRECTION.fullmatch(token) else token
+            if operator not in {"<<", "<<-", "<<<"}:
                 stage.append(token)
                 continue
             end = next((item for item in range(index + 1, len(tokens)) if tokens[item] in {";", "&&", "||", "\n"}), len(tokens))
             pipelines = pipeline_sources(tokens[command_start:end])
-            consumer = pipelines[-1][1] if pipelines else script_consumer(shlex.split(" ".join(stage)))
+            consumer = pipelines[-1][1] if pipelines else script_consumer(shlex.split(" ".join(without_redirections(stage))))
             raw = tokens[index + 1]
             decoded = shlex.split(raw)
             if len(decoded) != 1:
                 raise ValueError("invalid shell input word")
-            if token == "<<<":
+            stage.append(token)
+            if operator == "<<<":
                 executable_bodies.append((consumer, decoded[0]))
                 continue
             pending.append(
                 {
                     "delimiter": decoded[0],
-                    "strip_tabs": token == "<<-",
+                    "strip_tabs": operator == "<<-",
                     "consumer": consumer,
                     "expands": raw == decoded[0],
                 }
             )
     group = []
+    generated = False
+    operand = False
     try:
         for token in headers:
-            if token not in SHELL_OPERATORS:
+            if token not in SHELL_CONTROLS and REDIRECTION.fullmatch(token) is None:
                 for source in substitution_sources(token):
                     yield from shell_argv(source)
-            if token in SHELL_OPERATORS:
+            if operand:
+                operand = False
+                if token not in SHELL_PROCESSES:
+                    continue
+            if REDIRECTION.fullmatch(token):
+                operand = True
+                continue
+            if token in SHELL_CONTROLS:
                 if group:
+                    generated = generated or has_generated_execution(group, text)
                     yield shlex.split(" ".join(group))
                     group = []
             else:
                 group.append(token)
         if group:
+            generated = generated or has_generated_execution(group, text)
             yield shlex.split(" ".join(group))
+        if generated:
+            raise ValueError("generated executable claim source")
         if (header or pending) and "gh-plan" in text and CLAIM_WORD.search(text):
             raise ValueError("incomplete shell source")
         if any("gh-plan" in source and CLAIM_WORD.search(source) for source, _ in pipeline_sources(headers)):
@@ -787,7 +862,7 @@ def shell_argv(text: str) -> Iterator[list[str]]:
     for argv in shell_groups(text):
         argv = shell_command_arguments(argv)
         shell_flag = next((index for index, argument in enumerate(argv[1:], 1) if re.fullmatch(r"-[a-z]*c[a-z]*", argument)), None)
-        if argv and Path(argv[0]).name in {"bash", "sh", "zsh"} and shell_flag is not None:
+        if argv and Path(argv[0]).name in SHELL_NAMES and shell_flag is not None:
             index = shell_flag + 1
             if index < len(argv):
                 yield from shell_argv(argv[index])
@@ -829,12 +904,19 @@ def has_opaque_claim_execution(argv: list[str]) -> bool:
     return any(
         has_executable_claim_source(argv[index + 1], consumer)
         for index, argument in enumerate(argv[:-1])
-        if is_evaluator_flag(argument)
+        if is_evaluator_flag(argument, consumer)
     )
 
 
-def is_evaluator_flag(argument: str) -> bool:
-    return argument == "--eval" or re.fullmatch(r"-[A-Za-z]*[ce][A-Za-z]*", argument) is not None
+def is_evaluator_flag(argument: str, consumer: str) -> bool:
+    name = Path(consumer).name
+    if name in SHELL_NAMES or re.fullmatch(r"python(?:[0-9]+(?:\.[0-9]+)*)?", name):
+        letters = "c"
+    elif name in {"node", "nodejs", "deno", "bun", "perl", "ruby"}:
+        letters = "eE" if name == "perl" else "e"
+    else:
+        return False
+    return argument == "--eval" or re.fullmatch(rf"-[A-Za-z]*[{letters}][A-Za-z]*", argument) is not None
 
 
 def invocation_target(arguments: list[str], session: str) -> dict | None:
