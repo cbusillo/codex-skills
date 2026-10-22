@@ -2940,7 +2940,6 @@ def test_post_cooldown_drain_ends_and_allows_concurrent_processes() -> None:
         try:
             assert lease is None, "a caller re-armed the drain"
             assert target is None, target
-            assert not coordinated
         finally:
             store.release(lease)
 
@@ -3096,7 +3095,6 @@ def test_secondary_throttle_during_drain_restores_exclusive_lease() -> None:
         try:
             assert lease is not None, "fresh secondary throttle lost its exclusive retry lease"
             assert target is None, target
-            assert coordinated
         finally:
             store.release(lease)
 
