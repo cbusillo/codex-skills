@@ -166,9 +166,67 @@ class CommandPolicyHookTests(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertEqual(bash(line).returncode, 2)
 
+    def test_native_resume_and_queue_options_use_coordinated_helpers(self) -> None:
+        short_values = {
+            "-c": "model=example", "-C": "/repo's path", "-p": "example",
+            "-m": "example", "-s": "read-only", "-a": "never", "-i": "/image path.png",
+        }
+        prefixes = ["", "exec ", "e ", "-C/repo e ", "e -C/repo "]
+        for prefix in prefixes:
+            for option, value in short_values.items():
+                if prefix and option == "-a":
+                    continue
+                for argument in (f"{option} {shlex.quote(value)}", f"{option}={shlex.quote(value)}",
+                                 shlex.quote(f"{option}{value}")):
+                    operations = ["resume --last"]
+                    if not prefix:
+                        operations.append("queue --thread example --message continue")
+                    for operation in operations:
+                        line = f"codex {prefix}{argument} {operation}"
+                        with self.subTest(line=line):
+                            self.assertEqual(bash(line).returncode, 2)
+        for option, value in (
+            ("--remote-auth-token-env", "EXAMPLE_TOKEN"), ("--local-provider", "ollama"),
+            ("--output-schema", "/schema path.json"), ("--color", "never"),
+            ("--thread-source", "example"), ("--cyber-access-program", "standard"),
+            ("--output-last-message", "/output path.txt"), ("-o", "/output path.txt"),
+        ):
+            for argument in (f"{option} {shlex.quote(value)}", shlex.quote(f"{option}={value}")):
+                prefix = "" if option == "--remote-auth-token-env" else "e "
+                line = f"codex {prefix}{argument} resume --last continue"
+                with self.subTest(line=line):
+                    self.assertEqual(bash(line).returncode, 2)
+        for option in (
+            "--strict-config", "--oss", "--approve-for-me", "--worktree", "--search",
+            "--no-alt-screen", "--no-daemon", "--skip-git-repo-check", "--ephemeral",
+            "--ignore-user-config", "--ignore-rules", "--json",
+            "--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust",
+        ):
+            prefix = "e " if option in {
+                "--skip-git-repo-check", "--ephemeral", "--ignore-user-config", "--ignore-rules", "--json",
+            } else ""
+            line = f"codex {prefix}{option} resume --last continue"
+            with self.subTest(line=line):
+                self.assertEqual(bash(line).returncode, 2)
+        for line in ("codex e resume --last continue", "codex exec -o/output resume --last",
+                     "timeout 60 codex -C/repo e resume --last", "codex -C/repo exec resume --last",
+                     "codex --cd=\"/repo's path\" resume --last",
+                     "codex queue --thread example --message='continue working'",
+                     "timeout 60 '/Applications/Codex CLI/codex' e resume --last"):
+            with self.subTest(line=line):
+                self.assertEqual(bash(line).returncode, 2)
+        for line in ("codex -m resume", "codex --model resume", "codex -C'/repo resume' exec 'new work'",
+                     "printf '%s' 'codex e resume --last'", "codex help e resume", "codex --version resume"):
+            with self.subTest(line=line):
+                self.assertEqual(bash(line).returncode, 0)
+
     def test_native_resume_help_is_not_routed_to_resume_mutations(self) -> None:
         for line in ("codex exec resume --help", "codex resume -h", "codex e resume --last --help",
-                     "codex --help resume", "codex exec --help resume"):
+                     "codex --help resume", "codex exec --help resume",
+                     "codex -C/repo e resume -h", "codex e -o/out resume --help",
+                     "codex --local-provider ollama resume --help",
+                     "codex resume -C\"/repo's path\" --help",
+                     "codex queue --thread example --message='continue working' --help"):
             with self.subTest(line=line):
                 self.assertEqual(bash(line).returncode, 0)
         for line in ("codex resume example -- --help", "codex exec resume example 'read --help output'",
