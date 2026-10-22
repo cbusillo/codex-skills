@@ -491,13 +491,11 @@ including non-dim text, establishes neither its author nor approval.
    parked on purpose.
 2. **Director questions live on the item's issue**, as a comment that starts
    `Director question:`. Follow the shared
-   [question queue rules](../references/talking-with-the-director.md#decisions-holds-and-work-state)
+   [question and decision-record rules](../references/talking-with-the-director.md#decisions-holds-and-work-state)
    for deciding what reaches the Director and presenting the queue. The Director
    answers in chat, Discord, or on GitHub. The
-   Supervisor records the answer as a `Director decision:` comment on that issue,
-   quoting the Director's words, giving the date and where they were said,
-   with no clock time; the GitHub comment's timestamp records when. It links
-   the question comment it answers and points
+   Supervisor records the answer as a `Director decision:` comment on that issue
+   under those shared rules and points
    the session at it. It records only what the Director said. Briefs accept a decision recorded by the
    Supervisor or a direction session, not only one posted from the Director's
    own login. On an escalation, it leaves the `direction` label in place; the
@@ -914,8 +912,7 @@ issue while pending. There is no local rule list.
   successor until its holder's lease expires
   ([Q621](https://github.com/cbusillo/codex-skills/issues/2453)).
 - Read the current time from `date`. Take expiry, deadline and reported event
-  times from their source, never from memory or a summary. Director decision
-  records use the date and where it was said, with no clock time.
+  times from their source, never from memory or a summary.
 - Recorded pilot compactions preserved briefs and issues on both harnesses;
   keep recording degradation during the experiment above. The previous 450k
   close-out rule lacked evidence.
