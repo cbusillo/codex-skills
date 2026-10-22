@@ -631,6 +631,18 @@ with module.local_driver(module.DriveSettings(repository="EXAMPLE/App", number=8
         outcome, _ = _drive(train)
         self.assertEqual((outcome, train.calls), ("landed", 9))
 
+    def test_a_failed_candidate_waits_for_running_checks_before_naming_a_failure(self) -> None:
+        train = FakeTrain([_response("candidate_failed", candidate={"candidate_sha": "abc"})])
+        failure = {"name": "ui-tests", "status": "completed", "conclusion": "failure", "url": ""}
+        rerun = {"name": "simulator", "status": "queued", "conclusion": None, "url": ""}
+
+        def checks_with_rerun_until_third_pass(_repository: str, _sha: str) -> list[dict[str, Any]]:
+            return [failure] if train.calls >= 3 else [failure, rerun]
+
+        train.candidate_checks = checks_with_rerun_until_third_pass
+        outcome, events = _drive(train)
+        self.assertEqual((outcome, train.calls, events[-1][1]["failing_checks"]), ("failed", 3, [failure]))
+
     def test_a_failed_candidate_with_only_finished_passing_checks_stops_at_the_limit(self) -> None:
         train = FakeTrain([_response("candidate_failed", candidate={"candidate_sha": "abc"})])
         train.checks = [{"name": "simulator", "status": "completed", "conclusion": "success", "url": ""}]

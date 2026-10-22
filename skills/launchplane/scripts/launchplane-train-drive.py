@@ -583,11 +583,11 @@ def _judge(
         candidate = result.get("candidate") or {}
         candidate_sha = str(candidate.get("candidate_sha") or result.get("candidate_sha") or "")
         checks = (io.candidate_checks(settings.repository, candidate_sha) if candidate_sha else None) or []
+        if _any_check_running(checks):
+            return None
         failing = [run for run in checks if run.get("conclusion") in FAILING_CONCLUSIONS]
         if failing:
             return "failed", {"reason": "candidate_failed", "candidate_sha": candidate_sha, "failing_checks": failing}
-        if _any_check_running(checks):
-            return None
         # A candidate made stale by a queue change is discarded and rebuilt.
         state.empty_candidate_failures += 1
         if state.empty_candidate_failures >= settings.empty_candidate_failures:
