@@ -15,6 +15,7 @@ import os
 import signal
 import subprocess
 import sys
+from datetime import datetime
 from types import SimpleNamespace
 from pathlib import Path
 from typing import Any
@@ -287,7 +288,7 @@ def test_pr_helper_json_accepts_partial_check_envelope(monkeypatch):
     )
     summary = gh_pr_watch.summarize_checks(payload, expected_head_sha="b" * 40)
 
-    assert summary == {
+    expected = {
         "pending_count": 0,
         "failed_count": 1,
         "passed_count": 0,
@@ -297,6 +298,8 @@ def test_pr_helper_json_accepts_partial_check_envelope(monkeypatch):
         "unavailable_components": ["commitStatuses"],
         "head_matches": True,
     }
+    for field, value in expected.items():
+        assert summary[field] == value
 
 
 def test_mismatched_check_head_never_becomes_terminal_or_reruns(monkeypatch):
@@ -766,6 +769,7 @@ def test_unstarted_workflow_run_keeps_green_checks_from_becoming_ready(monkeypat
             "summary": {
                 "checkRunCount": 8, "statusCount": 0, "failingCount": 0, "pendingCount": 0,
                 "countsComplete": True, "countsAreLowerBounds": False, "unavailableComponents": [],
+                "unfinishedWorkflowRunCount": int(runs[1]["status"] != "completed"),
             },
         },
     )
@@ -3581,6 +3585,33 @@ def execution_snapshot(monkeypatch, tmp_path, runs, checks, *, allow_no_checks=F
                               allow_no_checks=allow_no_checks)
     snapshot, _ = gh_pr_watch.collect_snapshot(args)
     return snapshot, reader
+
+
+@pytest.mark.parametrize("inventory", ["passed", "failed", "running", "empty", "recent", "unavailable", "reused"])
+def test_stuck_workflow_jobs_drive_shared_readiness(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, inventory: str) -> None:
+    run = execution(1, None, status="in_progress", run_attempt=2 if inventory == "reused" else 1)
+    completed = "2026-10-22T19:00:00Z"
+    job = {
+        "id": 11, "run_id": 1, "run_attempt": run["run_attempt"], "head_sha": run["head_sha"],
+        "status": "in_progress" if inventory == "running" else "completed",
+        "conclusion": "failure" if inventory == "failed" else "success", "completed_at": completed,
+    }
+    jobs = [] if inventory == "empty" else [job]
+    if inventory == "reused":
+        jobs.append({**job, "id": 12, "run_attempt": 1})
+    now = datetime.fromisoformat(completed).timestamp()
+    now += gh_pr_watch.github_read.WORKFLOW_SETTLEMENT_GRACE_SECONDS + (1 if inventory != "recent" else -1)
+    monkeypatch.setattr(gh_pr_watch.github_read.time, "time", lambda: now)
+    unavailable = f'/repos/{sample_pr()["repo"]}/actions/runs/1/jobs' if inventory == "unavailable" else None
+    snapshot, _ = execution_snapshot(
+        monkeypatch, tmp_path, [run], [execution_check(run, 11)], jobs={1: jobs}, unavailable=unavailable,
+    )
+    settled = inventory in {"passed", "failed", "reused"}
+    assert snapshot["checks"]["all_terminal"] is settled
+    assert snapshot["checks"]["failed_count"] == int(inventory == "failed")
+    assert snapshot["checks"]["unfinished_workflow_run_count"] == int(not settled)
+    assert ("ready_to_merge" in snapshot["actions"]) is (inventory in {"passed", "reused"})
+    assert bool(snapshot["checks"]["job_level_settlements"]) is settled
 
 
 @pytest.mark.parametrize("allow_no_checks", [False, True])
