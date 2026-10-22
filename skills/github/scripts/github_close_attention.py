@@ -25,7 +25,8 @@ from github_read import GitHubReader, GitHubReadError, GitHubReadShapeError
 
 HELPER = Path(__file__).resolve().parents[2] / "github-work-rollup/scripts/github_unanswered_comments.py"
 HELPER_TIMEOUT_SECONDS = 600
-HELPER_EXIT_CODES = (0, 2)  # clear, attention; anything else is degraded coverage
+HELPER_CLEAR_OR_ATTENTION_EXITS = (0, 2)
+HELPER_DEGRADED_EXIT = 3
 DECISION_PREFIXES = ("Director decision:", "Owner decision:")
 THREAD_URL = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/(?:issues|pull)/(\d+)(?![\w/])", re.IGNORECASE)
 API_ISSUE_URL = re.compile(r"/repos/([\w.-]+/[\w.-]+)/issues/(\d+)$", re.IGNORECASE)
@@ -62,6 +63,30 @@ def body_references(repo: str, body: str) -> list[tuple[str, int]]:
     return refs
 
 
+def same_owner_body_references(repo: str, issue: dict[str, Any]) -> list[tuple[str, int]]:
+    owner = repo.split("/", 1)[0].casefold()
+    return [ref for ref in body_references(repo, str(issue.get("body") or ""))
+            if ref[0].split("/", 1)[0].casefold() == owner]
+
+
+def missing_body_references(reader: GitHubReader, repo: str, issue: dict[str, Any]) -> list[str]:
+    missing: list[str] = []
+    for ref_repo, ref_number in dict.fromkeys(same_owner_body_references(repo, issue)):
+        try:
+            reader.get_json(f"repos/{ref_repo}/issues/{ref_number}", step="close_attention_reference")
+        except GitHubReadError as error:
+            if error.result.status == 404:
+                missing.append(thread_ref(ref_repo, ref_number))
+    return missing
+
+
+def describe_missing(repo: str, ref: str) -> str:
+    ref_repo, ref_number = ref.split("#")
+    if ref_repo.casefold() == repo.casefold():
+        return f"- #{ref_number} does not exist in {repo}; write it as owner/repo#{ref_number} or a full link."
+    return f"- {ref} does not exist; correct it to the intended owner/repo#{ref_number} or a full link."
+
+
 def linked_threads(reader: GitHubReader, repo: str, number: int, issue: dict[str, Any]) -> list[str]:
     """The issue's native relationships, in any account, and same-owner references in its body."""
     native: list[tuple[str, int]] = []
@@ -75,12 +100,9 @@ def linked_threads(reader: GitHubReader, repo: str, number: int, issue: dict[str
     parent = API_ISSUE_URL.search(str(issue.get("parent_issue_url") or ""))
     if parent:
         native.append((parent[1], int(parent[2])))
-    owner = repo.split("/", 1)[0].casefold()
-    referenced = [ref for ref in body_references(repo, str(issue.get("body") or ""))
-                  if ref[0].split("/", 1)[0].casefold() == owner]
     threads: list[str] = []
     seen = {(repo.casefold(), number)}
-    for linked_repo, linked_number in native + referenced:
+    for linked_repo, linked_number in native + same_owner_body_references(repo, issue):
         key = (linked_repo.casefold(), linked_number)
         if key in seen:
             continue
@@ -104,7 +126,9 @@ def run_radar(threads: list[str], gh_cmd: str | None = None,
         payload = json.loads(result.stdout or "null")
     except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as error:
         return {"status": "degraded", "error": f"comment check did not finish: {error}"}
-    if not isinstance(payload, dict) or result.returncode not in HELPER_EXIT_CODES:
+    if isinstance(payload, dict) and result.returncode == HELPER_DEGRADED_EXIT and payload.get("coverage"):
+        return {**payload, "status": "degraded"}
+    if not isinstance(payload, dict) or result.returncode not in HELPER_CLEAR_OR_ATTENTION_EXITS:
         detail = payload.get("error") if isinstance(payload, dict) else None
         return {"status": "degraded",
                 "error": str(detail or (result.stderr or "").strip()[-500:] or f"exit {result.returncode}")}
@@ -206,6 +230,13 @@ def check(repo: str, number: int, *, issue: dict[str, Any] | None = None, decisi
             raise CloseAttentionError(f"Cannot close {thread_ref(repo, number)}: {error}",
                                       cause="decision_unverified", payload=result) from error
         return {"result": "director_decision", "decision": decision, **result}
+    missing = missing_body_references(client, repo, issue) if gaps and isinstance(issue, dict) else []
+    if missing:
+        lines = [f"Cannot close {thread_ref(repo, number)}: its body cites issues that do not exist:",
+                 *(describe_missing(repo, ref) for ref in missing),
+                 "Correct each reference in the body, then rerun the close."]
+        raise CloseAttentionError("\n".join(lines), cause="missing_references",
+                                  payload={**result, "missing_references": missing})
     lines = [f"Cannot close {thread_ref(repo, number)}:"]
     if rows:
         lines.append("these comments from outside people have no reply since they were posted:")

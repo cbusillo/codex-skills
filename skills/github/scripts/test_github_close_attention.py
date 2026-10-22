@@ -7,17 +7,20 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
 import unittest
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 os.environ["CODEX_SKILLS_ENV_FILE"] = "/definitely/missing/codex-skills-test.env"
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import github_close_attention as gate
+from github_api import ApiResult
+from github_read import GitHubReader, GitHubReadError
 
 REPO = "director/project"
 ISSUE_URL = f"https://github.com/{REPO}/issues/7"
@@ -25,19 +28,25 @@ ISSUE_URL = f"https://github.com/{REPO}/issues/7"
 
 class FakeReader:
     def __init__(self, *, issue: dict[str, Any] | None = None, pages: dict[str, list[dict[str, Any]]] | None = None,
-                 objects: dict[str, dict[str, Any]] | None = None) -> None:
+                 objects: dict[str, dict[str, Any]] | None = None, missing: tuple[str, ...] = ()) -> None:
         self.issue = issue or {"state": "open", "body": ""}
         self.pages = pages or {}
         self.objects = objects or {}
-        self.paths: list[str] = []
+        self.missing = missing
 
     def get_json(self, path: str, **_kwargs: Any) -> dict[str, Any]:
-        self.paths.append(path)
-        return self.issue if path == f"repos/{REPO}/issues/7" else self.objects[path]
+        if path in self.missing:
+            raise GitHubReadError("Not Found", result=ApiResult(ok=False, status=404, body=None), diagnostics={})
+        if path == f"repos/{REPO}/issues/7":
+            return self.issue
+        return self.objects.get(path, {"state": "open"})
 
     def paged_json(self, path: str, **_kwargs: Any) -> list[dict[str, Any]]:
-        self.paths.append(path)
         return self.pages.get(path, [])
+
+
+def fake_reader(**kwargs: Any) -> GitHubReader:
+    return cast(GitHubReader, cast(object, FakeReader(**kwargs)))
 
 
 def row(number: int = 7, *, author: str = "client", author_class: str = "person", addressed: bool = False,
@@ -57,16 +66,28 @@ def radar(*rows: dict[str, Any], status: str = "attention", seen: list[list[str]
     return run
 
 
+def degraded_thread(thread: str):
+    repo, number = thread.split("#")
+    error = {"repo": repo, "lane": "thread",
+             "error": f"GitHub command failed: gh api repos/{repo}/issues/{number}\nHTTP 404"}
+    output = json.dumps({"status": "degraded", "attention": [], "handled": [], "coverage": {"errors": [error]}})
+
+    def run(threads: list[str], gh_cmd: str | None = None) -> dict[str, Any]:
+        return gate.run_radar(threads, gh_cmd, lambda command, **_kwargs: subprocess.CompletedProcess(
+            command, 3, output, ""))
+    return run
+
+
 class CloseAttentionTests(unittest.TestCase):
     def test_refuses_over_an_unanswered_comment_on_the_issue(self) -> None:
         with self.assertRaises(gate.CloseAttentionError) as refused:
-            gate.check(REPO, 7, reader=FakeReader(), radar=radar(row()))
+            gate.check(REPO, 7, reader=fake_reader(), radar=radar(row()))
         self.assertEqual(refused.exception.cause, "unanswered_comments")
         self.assertIn(row()["comment_url"], str(refused.exception))
         self.assertIn("Can I send a corrected sheet?", str(refused.exception))
 
     def test_refuses_over_an_unanswered_comment_on_a_linked_issue(self) -> None:
-        reader = FakeReader(
+        reader = fake_reader(
             issue={"state": "open", "body": "Builds on #9 and https://github.com/other/repo/issues/3.",
                    "parent_issue_url": f"https://api.github.com/repos/{REPO}/issues/2"},
             pages={f"repos/{REPO}/issues/7/sub_issues": [{"html_url": f"https://github.com/{REPO}/issues/10"}],
@@ -81,7 +102,7 @@ class CloseAttentionTests(unittest.TestCase):
         self.assertIn(f"client on {REPO}#9", str(refused.exception))
 
     def test_closing_a_linked_thread_does_not_answer_its_comment(self) -> None:
-        reader = FakeReader(pages={f"repos/{REPO}/issues/7/sub_issues": [{"html_url": f"https://github.com/{REPO}/issues/9"}]})
+        reader = fake_reader(pages={f"repos/{REPO}/issues/7/sub_issues": [{"html_url": f"https://github.com/{REPO}/issues/9"}]})
         with self.assertRaises(gate.CloseAttentionError) as refused:
             gate.check(REPO, 7, reader=reader, radar=radar(status="clear", handled=(row(9),)))
         self.assertIn(f"client on {REPO}#9", str(refused.exception))
@@ -90,7 +111,7 @@ class CloseAttentionTests(unittest.TestCase):
         self.assertEqual(answered["result"], "passed")
 
     def test_replied_and_automation_comments_pass(self) -> None:
-        result = gate.check(REPO, 7, reader=FakeReader(), radar=radar(
+        result = gate.check(REPO, 7, reader=fake_reader(), radar=radar(
             row(later_reply="https://github.com/director/project/issues/7#issuecomment-800"),
             row(author="deploy-bot", author_class="automation")))
         self.assertEqual(result["result"], "passed")
@@ -98,16 +119,37 @@ class CloseAttentionTests(unittest.TestCase):
     def test_a_targeted_response_without_a_later_posted_reply_refuses(self) -> None:
         # The radar's targeted response follows edit time, so an edited older comment can be one.
         with self.assertRaises(gate.CloseAttentionError):
-            gate.check(REPO, 7, reader=FakeReader(), radar=radar(row(addressed=True)))
+            gate.check(REPO, 7, reader=fake_reader(), radar=radar(row(addressed=True)))
 
     def test_incomplete_coverage_refuses(self) -> None:
         def degraded(_threads: list[str], _gh_cmd: str | None = None) -> dict[str, Any]:
             return {"status": "degraded", "attention": [],
                     "coverage": {"errors": [{"repo": REPO, "lane": "issue_comments", "error": "HTTP 502"}]}}
         with self.assertRaises(gate.CloseAttentionError) as refused:
-            gate.check(REPO, 7, reader=FakeReader(), radar=degraded)
+            gate.check(REPO, 7, reader=fake_reader(), radar=degraded)
         self.assertEqual(refused.exception.cause, "coverage_unknown")
         self.assertIn("HTTP 502", str(refused.exception))
+
+    def test_missing_body_reference_refuses_with_its_fix_until_corrected(self) -> None:
+        missing = fake_reader(issue={"state": "open", "body": "Done in #471 and #9."},
+                             missing=(f"repos/{REPO}/issues/471",))
+        with self.assertRaises(gate.CloseAttentionError) as refused:
+            gate.check(REPO, 7, reader=missing, radar=degraded_thread(f"{REPO}#471"))
+        self.assertEqual(refused.exception.cause, "missing_references")
+        self.assertEqual(refused.exception.payload["missing_references"], [f"{REPO}#471"])
+        self.assertIn("#471", str(refused.exception))
+        self.assertNotIn(f"{REPO}#9", str(refused.exception))
+        self.assertNotIn("--unanswered-decision", str(refused.exception))
+        corrected = fake_reader(issue={"state": "open", "body": "Done in director/other#471 and #9."})
+        self.assertEqual(gate.check(REPO, 7, reader=corrected, radar=radar(status="clear"))["result"], "passed")
+
+    def test_existing_unreadable_thread_names_it_and_keeps_the_director_route(self) -> None:
+        reader = fake_reader(issue={"state": "open", "body": "Done in #9."})
+        with self.assertRaises(gate.CloseAttentionError) as refused:
+            gate.check(REPO, 7, reader=reader, radar=degraded_thread(f"{REPO}#9"))
+        self.assertEqual(refused.exception.cause, "coverage_unknown")
+        self.assertIn(f"repos/{REPO}/issues/9", str(refused.exception))
+        self.assertIn("--unanswered-decision", str(refused.exception))
 
     def test_closed_issue_is_not_checked(self) -> None:
         def never(_threads: list[str], _gh_cmd: str | None = None) -> dict[str, Any]:
@@ -118,7 +160,7 @@ class CloseAttentionTests(unittest.TestCase):
     @staticmethod
     def decide(comment: dict[str, Any], reactions: list[dict[str, Any]] | None = None,
                url: str = f"{ISSUE_URL}#issuecomment-55") -> dict[str, Any]:
-        reader = FakeReader(objects={f"repos/{REPO}/issues/comments/55": comment},
+        reader = fake_reader(objects={f"repos/{REPO}/issues/comments/55": comment},
                             pages={f"repos/{REPO}/issues/comments/55/reactions": reactions or []})
         return gate.check(REPO, 7, reader=reader, radar=radar(row()), decision_url=url)
 
