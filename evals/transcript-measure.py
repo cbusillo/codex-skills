@@ -29,11 +29,11 @@ from pathlib import Path
 # Patterns match the start of a shell segment, either as written or with its helper path
 # reduced to the program name ("uv run /x/gh-pr.py merge 3" also as "gh-pr.py merge 3").
 STEPS = {
-    "github": r"gh pr (create|merge|ready|edit|comment|view|update-branch)|git push"
-    r"|gh-pr(\.py)? (--repo \S+ )?(create|merge|ready|edit|comment|view|update-branch|supersede)"
+    "github": r"gh pr (create|merge|ready|edit|comment|view|update-branch)|gh pr checks(?!.*--watch)|git push"
+    r"|gh-pr(\.py)? (--repo \S+ )?(create|merge|ready|edit|comment|view|update-branch|supersede|checks)"
     r"|git-(commit|push)-as-bot|reconcile-runtime-checkout|gh api|gh-with-env-token (api|pr|issue)|github_api(\.py)?"
-    r"|gh issue (create|edit|close|comment|view)|gh-issue|gh-comment",
-    "babysit-pr": r"gh pr checks|gh run watch|gh_pr_watch|github_workflow_babysit|gh-pr(\.py)? (--repo \S+ )?checks|github-ci-diagnose",
+    r"|gh issue (create|edit|close|comment|view)|gh-issue|gh-comment|github-ci-diagnose",
+    "babysit-pr": r"gh pr checks.*--watch|gh run watch|gh_pr_watch|github_workflow_babysit",
     "github-plan": r"gh issue list|gh search issues|gh project|gh-plan(\.py)?",
     "python-uv-workflow": r"uv (sync|add|lock|remove)|pytest|pip3? install|python3? -m (pytest|pip|venv)"
     r"|uv run (--quiet )?(?!--quiet)(?!--with)(?!--no-project)(?!python3? -c)(?!\S*skills/)(?!\$)\S+",
@@ -137,8 +137,10 @@ def command_events(command: str, edited_code: bool) -> list[tuple]:
         if segment.startswith(READ_ONLY):
             continue
         forms = (segment, program(segment))
-        events.extend(("step", skill, forms[1]) for skill, rx in STEP_PATTERNS.items()
-                      if any(rx.match(form) for form in forms))
+        owners = [skill for skill, rx in STEP_PATTERNS.items() if any(rx.match(form) for form in forms)]
+        if len(owners) > 1 and "python-uv-workflow" in owners:
+            owners.remove("python-uv-workflow")
+        events.extend(("step", skill, forms[1]) for skill in owners)
         if edited_code and COMMIT.match(forms[1]):
             events.append(("step", "jetbrains-inspection", "commit after code edits: " + forms[1]))
     return events
