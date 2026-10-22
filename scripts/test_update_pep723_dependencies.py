@@ -223,6 +223,20 @@ def test_proposed_updates_pin_and_sort_all_supported_dependencies() -> None:
         MODULE.validate_scripts([reparsed], require_pins=True)
 
 
+def test_reorder_alone_never_rewrites_a_script() -> None:
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        root = Path(temporary_directory)
+        unsorted = write_script(root, "unsorted.py", script_source('["PyYAML==6.0.2", "aiohttp==1.0"]'))
+        current = write_script(root, "current.py", script_source('["pytest==9.1.1", "aiohttp==1.0"]'))
+        scripts = [MODULE.parse_script(path) for path in (unsorted, current)]
+        assert all(script is not None for script in scripts)
+        changes, _ = MODULE.proposed_updates(
+            scripts, lambda _: {"pytest": "9.1.1", "pyyaml": "6.0.3", "aiohttp": "1.0"}
+        )
+        assert set(changes) == {unsorted}
+        assert changes[unsorted].index("aiohttp==1.0") < changes[unsorted].index("PyYAML==6.0.3")
+
+
 def test_uv_resolution_is_pypi_only_direct_and_stable() -> None:
     captured_command: list[str] = []
 
