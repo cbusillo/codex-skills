@@ -256,27 +256,51 @@ uv run scripts/update_pep723_dependencies.py --update
 ```
 
 The weekly and manually dispatchable `Update PEP 723 Dependencies` workflow
-runs the full repository gate before replacing the automation-owned
-`automation/pep723-dependencies` branch. It then dispatches `Validate Skills`
-against the pushed commit and creates or refreshes the PR only after that run
-passes. Manual runs are accepted only from `main`. Repository Actions defaults
-remain read-only; the repository setting permitting Actions-created PRs is
-enabled, and this workflow is the only workflow granted the write permissions
-needed for that branch and PR. Checkout credentials are not persisted while
-repository code runs. Existing automation branches and PRs must retain the bot
-commit trailer, same-repository head/base identity, marker, and validated SHA
-before the workflow will replace or edit them.
+runs only from `main` and has two jobs. Neither stores an App key or holds a
+repository write token, and neither dispatches another workflow.
 
-`uv run scripts/test_pep723_publication.py` exercises the publication step
-offline with real Bash/jq and fixture GitHub/Git responses.
+- `calculate` has read-only contents and no OIDC. It runs the updater, then
+  `scripts/pep723_proposal.py package` records the changed tracked Python files
+  as a candidate bound to this run, its attempt and the exact run commit, and
+  outputs the candidate's SHA-256 before the new pins execute. The full
+  repository gate then runs on the candidate, which is uploaded as an artifact.
+- `submit` is the only job that can request OIDC. It checks out the run commit,
+  downloads the artifact outside the checkout and runs
+  `scripts/pep723_proposal.py prepare` with the runner's Python and the
+  standard library only. It accepts the candidate only when its digest, run
+  and commit match and every changed file is an existing tracked regular Python
+  file whose new content is exactly what `scripts/pep723_metadata.py` renders
+  from the base file with new exact stable pins for the same packages. Repository
+  pins must stay consistent, and the request must fit Launchplane's
+  [updater route limits](https://github.com/cbusillo/launchplane/blob/main/docs/service-boundary.md#updater-source-proposals):
+  32 files, 2 MiB of old-plus-new content and a 1 MiB JSON body. A candidate
+  that breaks any rule stops before the credential-bearing call. The pinned
+  `launchplane-request` action then sends the request, and Launchplane opens a
+  new PR as its App.
 
-If automation fails, inspect the resolver or validation error before rerunning
-it. Unsupported extras, markers, URLs, or compound constraints require a
-deliberate policy change rather than an automatic rewrite. A failed run can
-leave an unreviewed automation branch without creating a PR; the next successful
-run safely replaces that branch with a newly validated commit. Direct pins can
-also be updated locally with the command above and submitted through a normal
-task branch if workflow recovery is not immediate.
+The run summary reports the route's answer. `created` and `replayed` link the
+returned PR and head; `replayed` covers an identical proposal that already
+exists, open or closed. `pending` means this run's candidate was not applied and
+the existing proposal needs ordinary review first. A refusal, conflict,
+malformed response or unconfirmed effect fails the run, prints the request's
+SHA-256 and keeps the exact request and response as an artifact. The proposal
+body has no run-specific text, so running the workflow again from the same
+`main` sends the identical request, which reconciles it. Do not publish the
+change another way.
+
+Launchplane must allow-list this workflow before a submission can succeed;
+that access change belongs to
+[Launchplane#3404](https://github.com/cbusillo/launchplane/issues/3404).
+
+`uv run scripts/test_pep723_proposal.py` exercises packaging, validation and
+response reporting offline against real Git repositories.
+
+If automation fails, inspect the resolver, validation or proposal error before
+rerunning it. Unsupported extras, markers, URLs, or compound constraints require
+a deliberate policy change rather than an automatic rewrite. An update that
+exceeds the route limits is refused rather than split or truncated. Direct pins
+can also be updated locally with the command above and submitted through a
+normal task branch if workflow recovery is not immediate.
 
 ## Automation Command Diagnosis
 

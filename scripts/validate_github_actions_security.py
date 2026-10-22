@@ -30,6 +30,8 @@ ReferenceFileKind = Literal["workflow", "action"]
 class ActionClassification:
     trust: str
     privilege: str
+    # An untagged first-party action names itself instead of a release tag.
+    untagged_provenance: str | None = None
 
 
 @dataclass(frozen=True)
@@ -46,11 +48,20 @@ class ActionReference:
 
 APPROVED_REMOTE_ACTIONS: Mapping[str, ActionClassification] = {
     "actions/checkout": ActionClassification("GitHub-maintained", "repository checkout"),
+    "actions/download-artifact": ActionClassification(
+        "GitHub-maintained", "same-run artifact download"
+    ),
+    "actions/upload-artifact": ActionClassification("GitHub-maintained", "run artifact upload"),
     "astral-sh/setup-uv": ActionClassification(
         "Approved third-party publisher", "Python tool bootstrap"
     ),
     "github/codeql-action/init": ActionClassification("GitHub-maintained", "code scanning"),
     "github/codeql-action/analyze": ActionClassification("GitHub-maintained", "code scanning upload"),
+    "cbusillo/launchplane/.github/actions/launchplane-request": ActionClassification(
+        "First-party Launchplane",
+        "OIDC request to Launchplane",
+        untagged_provenance="launchplane-request",
+    ),
 }
 
 
@@ -263,10 +274,17 @@ def validate_repository(root: Path = ROOT, *, require_exact_sources: bool = True
             violations.append(
                 f"{action.location}: remote action {source!r} must use a 40-character SHA."
             )
+        untagged_provenance = classification.untagged_provenance if classification else None
         if action.provenance is None:
             violations.append(
                 f"{action.location}: remote action {source!r} must document its release tag."
             )
+        elif untagged_provenance is not None:
+            if action.provenance != untagged_provenance:
+                violations.append(
+                    f"{action.location}: untagged action {source!r} must be marked "
+                    f"{untagged_provenance!r}, not {action.provenance!r}."
+                )
         elif VERSION_PROVENANCE_PATTERN.fullmatch(action.provenance) is None:
             violations.append(
                 f"{action.location}: release provenance must be a version tag, not "
