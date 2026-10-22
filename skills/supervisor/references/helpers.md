@@ -1221,10 +1221,7 @@ uv run skills/supervisor/scripts/codex-session.py resume --session-id <native-id
 uv run skills/supervisor/scripts/codex-session.py status --session-id <native-id>
 ```
 
-The command policy routes interactive `codex resume`, `codex exec resume`
-and its `e` alias, and native `queue --message` mutations through these helpers.
-Value options before the subcommand accept separate, equals, and attached short
-values, including shell-quoted values. Native `--help` and `-h` remain read-only.
+Native resume and queue mutations are routed through these helpers by command policy.
 
 Queue submission reports success only after its acknowledgement and connection
 and ownership cleanup complete. Once submission may have started, any failure,

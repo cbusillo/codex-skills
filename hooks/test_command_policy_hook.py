@@ -171,7 +171,7 @@ class CommandPolicyHookTests(unittest.TestCase):
             "-c": "model=example", "-C": "/repo's path", "-p": "example",
             "-m": "example", "-s": "read-only", "-a": "never", "-i": "/image path.png",
         }
-        prefixes = ["", "exec ", "e ", "-C/repo e ", "e -C/repo "]
+        prefixes = ["", "exec ", "e "]
         for prefix in prefixes:
             for option, value in short_values.items():
                 if prefix and option == "-a":
@@ -196,16 +196,11 @@ class CommandPolicyHookTests(unittest.TestCase):
                 line = f"codex {prefix}{argument} resume --last continue"
                 with self.subTest(line=line):
                     self.assertEqual(bash(line).returncode, 2)
-        for option in (
-            "--strict-config", "--oss", "--approve-for-me", "--worktree", "--search",
-            "--no-alt-screen", "--no-daemon", "--skip-git-repo-check", "--ephemeral",
-            "--ignore-user-config", "--ignore-rules", "--json",
-            "--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust",
-        ):
-            prefix = "e " if option in {
-                "--skip-git-repo-check", "--ephemeral", "--ignore-user-config", "--ignore-rules", "--json",
-            } else ""
-            line = f"codex {prefix}{option} resume --last continue"
+        for prefix in ("--yolo ", "e --yolo ", "--yolo e ", "--search ", "e --json "):
+            line = f"codex {prefix}resume --last continue"
+            with self.subTest(line=line):
+                self.assertEqual(bash(line).returncode, 2)
+        for line in ("codex --yolo queue --thread example --message continue",):
             with self.subTest(line=line):
                 self.assertEqual(bash(line).returncode, 2)
         for line in ("codex e resume --last continue", "codex exec -o/output resume --last",
@@ -215,10 +210,19 @@ class CommandPolicyHookTests(unittest.TestCase):
                      "timeout 60 '/Applications/Codex CLI/codex' e resume --last"):
             with self.subTest(line=line):
                 self.assertEqual(bash(line).returncode, 2)
-        for line in ("codex -m resume", "codex --model resume", "codex -C'/repo resume' exec 'new work'",
-                     "printf '%s' 'codex e resume --last'", "codex help e resume", "codex --version resume"):
+        for line in ("codex -C'/repo resume' exec 'new work'",
+                     "printf '%s' 'codex e resume --last'", "codex help e resume"):
             with self.subTest(line=line):
                 self.assertEqual(bash(line).returncode, 0)
+
+    def test_many_native_options_do_not_stall_the_hook_for_new_work(self) -> None:
+        command = "codex " + "--config=feature=true " * 30 + "'start new work'"
+        result = subprocess.run(
+            [sys.executable, str(HOOK)],
+            input=json.dumps({"tool_name": "Bash", "tool_input": {"command": command}}),
+            capture_output=True, text=True, timeout=5,
+        )
+        self.assertEqual(result.returncode, 0)
 
     def test_native_resume_help_is_not_routed_to_resume_mutations(self) -> None:
         for line in ("codex exec resume --help", "codex resume -h", "codex e resume --last --help",

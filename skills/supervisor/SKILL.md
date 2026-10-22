@@ -174,9 +174,9 @@ policy:
       match:
         shell_regex: >-
           (?x)^\s*(?:(?:\S*/)?codex|"[^"]*/codex"|'[^']*/codex')\s+
-          (?:(?:exec|e|--(?:strict-config|oss|approve-for-me|dangerously-[\w-]+|worktree|search|no-[\w-]+|skip-git-repo-check|ephemeral|ignore-[\w-]+|json|full-auto)
-          |(?:--(?!help\b)[\w-]+|-[cCpmsaio])(?:=|\s+)(?:"[^"]*"|'[^']*'|[^\s"'])+
-          |(?=['"]?(?:--[\w-]+=|-[cCpmsaio][^\s]))(?:"[^"]*"|'[^']*'|[^\s"'])+)\s+)*
+          (?:(?:exec|e|--(?!help\b)[\w-]+
+          |(?:--(?!help\b)[\w-]+|-[cCpmsaio])(?:=|\s+(?!-))(?:"[^"]*"|'[^']*'|[^\s"'])+
+          |(?=['"](?:--[\w-]+=|-[cCpmsaio])|-[cCpmsaio][^=\s])(?:"[^"]*"|'[^']*'|[^\s"'])+)\s+)*
           (?:resume\b|queue\b(?=[^\n]*\s['"]?--message(?:[ =-]|$)))
           (?!(?:\s+(?!--(?:\s|$))(?:"[^"]*"|'[^']*'|[^\s"'])+)*?\s+(?:-h|--help)(?:\s|$))
       action: require_preferred
