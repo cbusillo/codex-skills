@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import http.client
 import json
@@ -6987,6 +6988,119 @@ def privileged_policy_proposal_body(args: argparse.Namespace) -> dict[str, objec
     return body
 
 
+def trusted_automation_proposal_request(args: argparse.Namespace) -> dict[str, object]:
+    repositories = sorted({repository.removesuffix(".git") for repository in args.repo}, key=str.casefold)
+    if not repositories or any(
+        re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository) is None for repository in repositories
+    ):
+        raise ValueError("repository_unresolved")
+    if args.github_user_id <= 0:
+        raise ValueError("invalid_github_user_id")
+    updated_at = args.updated_at or datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", updated_at) is None:
+        raise ValueError("invalid_updated_at")
+    return {
+        "mode": "propose",
+        "descriptor_id": "managed-merge-train-policy-import",
+        "change": args.change,
+        "github_user_id": args.github_user_id,
+        "repositories": [public_identifier(repository) for repository in repositories],
+        "updated_at": updated_at,
+        "candidate_record_id": f"merge-train-policy-{updated_at.replace('-', '').replace(':', '')}-proposal",
+    }
+
+
+def trusted_automation_proposal_body(
+    *, args: argparse.Namespace, request: dict[str, object], provider_payload: dict[str, Any]
+) -> dict[str, object]:
+    record = _require_dict(provider_payload.get("record"))
+    policy = copy.deepcopy(_require_dict(record.get("policy")))
+    targets = policy.get("policies")
+    if provider_payload.get("status") != "ok" or record.get("status") != "active" or not isinstance(targets, list):
+        raise LaunchplaneSafetyError("invalid_response")
+    if args.expected_active_record_id and record.get("record_id") != args.expected_active_record_id:
+        raise ValueError("active_policy_changed")
+    requested = {repository.casefold() for repository in cast(list[str], request["repositories"])}
+    matched: set[str] = set()
+    changed_target_count = 0
+    for value in targets:
+        target = _require_dict(value)
+        repository = target.get("repository")
+        if not isinstance(repository, str) or repository.casefold() not in requested:
+            continue
+        matched.add(repository.casefold())
+        enqueue = _require_dict(target.get("enqueue"))
+        current = enqueue.get("trusted_automation_github_user_ids") or []
+        if not isinstance(current, list) or not all(isinstance(user_id, int) for user_id in current):
+            raise LaunchplaneSafetyError("invalid_response")
+        user_id = int(str(request["github_user_id"]))
+        candidate = sorted({*current, user_id}) if request["change"] == "add" else [entry for entry in current if entry != user_id]
+        if candidate != current:
+            enqueue["trusted_automation_github_user_ids"] = candidate
+            changed_target_count += 1
+    if requested - matched:
+        raise ValueError("repository_not_enrolled")
+    if not changed_target_count:
+        raise ValueError("policy_unchanged")
+    request["active_record_id"] = public_identifier(record.get("record_id"))
+    request["active_policy_sha256"] = _project_sha256(record.get("policy_sha256"))
+    request["changed_target_count"] = changed_target_count
+    return {
+        "schema_version": 1,
+        "descriptor_id": "managed-merge-train-policy-import",
+        "source_event_id": args.source_event_id,
+        "request": {
+            "record": {
+                "schema_version": 1,
+                "record_id": request["candidate_record_id"],
+                "status": "active",
+                "source": "privileged-policy-proposal",
+                "updated_at": request["updated_at"],
+                "policy": policy,
+            },
+            "reason": args.reason,
+            "related_issue": args.related_issue,
+        },
+    }
+
+
+def execute_trusted_automation_proposal(args: argparse.Namespace) -> int:
+    request = trusted_automation_proposal_request(args)
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", args.source_event_id) is None:
+        raise ValueError("invalid_proposal_source_event")
+    if not args.reason.strip() or len(args.reason) > 240:
+        raise ValueError("invalid_proposal_reason")
+    settings = prepare_operator_settings(args=args, operation=args.command, request=request)
+    if settings is None:
+        return 2
+    provider_payload = None
+    try:
+        provider_payload = request_launchplane_read(
+            service_url=settings["service_url"],
+            path=helper_command_path("merge-train-policy-read"),
+            settings=settings,
+            query={},
+            timeout=args.timeout,
+        )
+        body = trusted_automation_proposal_body(args=args, request=request, provider_payload=provider_payload)
+    except urllib.error.HTTPError as exc:
+        emit_http_error_payload(operation=args.command, request=request, exc=exc)
+        return 1
+    except LaunchplaneSafetyError as exc:
+        emit_safety_error_payload(operation=args.command, request=request, exc=exc, provider_payload=provider_payload)
+        return 1
+    except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException) as exc:
+        emit_read_transport_error(operation=args.command, request=request, timeout=args.timeout, exc=exc)
+        return 1
+    return execute_post(
+        args=args,
+        operation="privileged-policy-propose",
+        path=helper_command_path("privileged-policy-propose"),
+        request=request,
+        body=body,
+    )
+
+
 def summarize_privileged_policy_proposal(
     *, request: dict[str, object], provider_payload: dict[str, object], service_url: str
 ) -> dict[str, object]:
@@ -10376,6 +10490,19 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     proposal = subparsers.add_parser("privileged-policy-propose", help="Submit an inert policy plan for signed-in Director review; never approve or apply.")
     proposal.add_argument("--payload-file", required=True, help="Private local JSON envelope with a stable source_event_id for retries.")
     proposal.set_defaults(idempotency_key="")
+    trusted_proposal = subparsers.add_parser(
+        "merge-train-trusted-automation-propose",
+        help="Propose adding or removing one trusted automation id on named enrolled repositories; never approve or apply.",
+    )
+    trusted_proposal.add_argument("--change", choices=("add", "remove"), required=True)
+    trusted_proposal.add_argument("--github-user-id", type=int, required=True, help="Immutable GitHub numeric user id.")
+    trusted_proposal.add_argument("--repo", action="append", required=True, help="Enrolled OWNER/REPO; repeat per repository.")
+    trusted_proposal.add_argument("--reason", required=True)
+    trusted_proposal.add_argument("--related-issue", default="")
+    trusted_proposal.add_argument("--source-event-id", required=True, help="Stable id; reuse it to replay an uncertain submission.")
+    trusted_proposal.add_argument("--updated-at", default="", help="Reported updated_at, to replay an uncertain submission.")
+    trusted_proposal.add_argument("--expected-active-record-id", default="", help="Reported active_record_id; refuses if the active policy changed since.")
+    trusted_proposal.set_defaults(idempotency_key="")
 
     merge_train_policy_dry_run = subparsers.add_parser(
         "merge-train-policy-import-dry-run",
@@ -11278,6 +11405,8 @@ def main(argv: list[str]) -> int:
             payload["summary"] = diagnostic
             emit(payload)
             return 0
+        if args.command == "merge-train-trusted-automation-propose":
+            return execute_trusted_automation_proposal(args)
         if args.command == "privileged-policy-propose":
             body = privileged_policy_proposal_body(args)
             request = {"mode": "propose", "payload_source": "private_file", "descriptor_id": body["descriptor_id"]}

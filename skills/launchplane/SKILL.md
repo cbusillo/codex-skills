@@ -73,6 +73,11 @@ commands:
     resource_path: scripts/launchplane-write-action.py
     example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "privileged-policy-propose", "--payload-file", "<private-envelope>"]
     purpose: Creates an inert pending policy plan and returns its full Director UI review URL without approval or apply.
+  - name: launchplane-merge-train-trusted-automation-propose
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "merge-train-trusted-automation-propose", "--change", "add", "--github-user-id", "<id>", "--repo", "OWNER/REPO", "--reason", "<reason>", "--source-event-id", "<stable-id>"]
+    purpose: Proposes one trusted automation id change on named enrolled repositories from the active policy, keeping the record in memory, and returns the review URL without approval or apply.
   - name: launchplane-live-target-runtime-sync-dry-run
     source: skill
     resource_path: scripts/launchplane-write-action.py
@@ -811,7 +816,10 @@ proposer grant for the configured `local_operator`; the Director approves it
 separately through the Access policy card. Backup proposals reuse existing
 exact-lane backup planning authority and open the product's production Actions
 card. Submit no proposal until the service supports its descriptor and the caller
-has the required authority. Source delivery grants no access.
+has the required authority. Source delivery grants no access. To add or remove
+one trusted automation id on named enrolled repositories, use
+`merge-train-trusted-automation-propose` instead of hand-building a merge-train
+record; it keeps the active record in memory only.
 
 Creation is pending and inert. Director questions and handoffs that send the
 Director to a page include a full clickable URL, never a bare UI path. Use the
