@@ -26,7 +26,7 @@ from iterm_tab import codex_daemon_endpoint
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "github/scripts"))
 import github_plan_closure
-from github_plan_native import queue_input
+from github_plan_native import QueueNotSent, queue_input
 
 BACKOFF_SECONDS = (60, 180, 600)
 
@@ -196,12 +196,14 @@ def resume(entry: dict, status: dict, state: dict, path: Path, now: float) -> di
     try:
         queue_continue(entry, home, endpoint, status)
         row["phase"] = "confirmed" if readback_continue(entry, status["size"]) else "uncertain"
-    except github_plan_closure.LeaseBusy:
+    except (github_plan_closure.LeaseBusy, QueueNotSent) as error:
         if previous is None:
             state.pop(native_id, None)
         else:
             state[native_id] = previous
         save_state(path, state)
+        if isinstance(error, QueueNotSent):
+            raise
         return {"attempts": summary["attempts"], "state": "ownership_busy"}
     except (OSError, ValueError, TypeError, subprocess.SubprocessError):
         row["phase"] = "uncertain"

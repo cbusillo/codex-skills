@@ -267,8 +267,11 @@ def _queue_outcome(operation):
         raise ValueError(f"queue {operation} is uncertain; preserve state and do not replay") from error
 
 
+class QueueNotSent(ValueError):
+    pass
+
+
 async def require_loaded_thread(request, session, home):
-    """Only the daemon that has the thread loaded delivers queued input to it."""
     if (await read_thread(request, session))["state"] == "notLoaded":
         raise ValueError(f"thread {session} is not loaded by the CODEX_HOME={home} daemon; "
                          "queue through the home whose daemon runs it, or resume it first")
@@ -280,26 +283,30 @@ async def queue_input(home: Path, session: str, text: str, *, transcript: Path |
     native_helpers()
     from codex_session_proxy import source_endpoint
     source_endpoint(session, home, transcript=transcript)
-    # Account homes may share one sessions directory, so a transcript cannot
-    # say which daemon owns the thread. Ask the daemon before taking the lease.
-    async with connection(home) as request:
-        await require_loaded_thread(request, session, home)
     client_id = str(uuid.uuid4())
     params = {"threadId": session, "clientUserMessageId": client_id,
               "input": [{"type": "text", "text": text, "text_elements": []}]}
     # Native echoes the full input. Escaped/multibyte valid text can exceed the
     # observer's fixed cap; bound this acknowledgement to the actual request.
     allowance = max(1024 * 1024, len(json.dumps(params, ensure_ascii=True).encode()) + 65536)
-    with _queue_outcome("submission") as mark_sent:
-        with closure.resume_guard(session, method="thread/queue/add", home=home):
+    leased = False
+    try:
+        with _queue_outcome("submission") as mark_sent:
             async with connection(home, max_msg_size=allowance) as request:
-                mark_sent()
-                result = await request("thread/queue/add", params)
-                entry = result.get("queuedSubmission") if isinstance(result, dict) else None
-                if (not isinstance(entry, dict) or not isinstance(entry.get("id"), str) or not entry["id"]
-                        or entry.get("clientUserMessageId") != client_id or entry.get("input") != params["input"]):
-                    raise ValueError("native queue acknowledgement is unavailable")
-                receipt = {"queuedSubmissionId": entry["id"], "clientUserMessageId": client_id}
+                await require_loaded_thread(request, session, home)
+                leased = True
+                with closure.resume_guard(session, method="thread/queue/add", home=home):
+                    mark_sent()
+                    result = await request("thread/queue/add", params)
+                    entry = result.get("queuedSubmission") if isinstance(result, dict) else None
+                    if (not isinstance(entry, dict) or not isinstance(entry.get("id"), str) or not entry["id"]
+                            or entry.get("clientUserMessageId") != client_id or entry.get("input") != params["input"]):
+                        raise ValueError("native queue acknowledgement is unavailable")
+                    receipt = {"queuedSubmissionId": entry["id"], "clientUserMessageId": client_id}
+    except (OSError, ValueError) as error:
+        if leased:
+            raise
+        raise QueueNotSent(str(error)) from error
     return receipt
 
 
