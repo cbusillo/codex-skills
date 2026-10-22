@@ -6,11 +6,9 @@ from __future__ import annotations
 
 import ast
 import json
-import os
 import re
 import shlex
 import sqlite3
-import subprocess
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -628,22 +626,14 @@ def native_javascript_parse_failure(text: str, blocks: list[object]) -> bool:
         for item in block
         if isinstance(item, dict) and item.get("type") == "input_text" and isinstance(item.get("text"), str)
     ]
-    if len(messages) != 2 or not re.fullmatch(r"Script failed\nWall time [0-9.]+ seconds\nOutput:\n", messages[0]):
+    if len(messages) != 2 or messages[0] != "Script failed\nWall time 0.0 seconds\nOutput:\n":
         return False
-    if not messages[1].startswith("Script error:\nSyntaxError:"):
+    if messages[1] != "Script error:\nSyntaxError: Invalid or unexpected token" or not single_javascript_shell(text):
         return False
-    try:
-        result = subprocess.run(
-            ["node", "--check", "--input-type=module"],
-            input=text,
-            capture_output=True,
-            text=True,
-            timeout=5,
-            env={key: value for key, value in os.environ.items() if key not in {"NODE_OPTIONS", "NODE_PATH"}},
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    return result.returncode == 1 and "SyntaxError:" in result.stderr
+    return any(
+        token.startswith(('"', "'")) and re.search(r"[\r\n]", re.sub(r"\\(?:\r\n|\r|\n)", "", token)) is not None
+        for token in javascript_tokens(text)
+    )
 
 
 @dataclass
@@ -681,7 +671,17 @@ def shell_texts(text: str, javascript: bool) -> ShellTexts:
         re.DOTALL,
     )
     commands = []
-    opaque = False
+    tokens = javascript_tokens(text)
+    opaque = bool(javascript_names(text) & {"eval", "Function", "globalThis", "import"}) or any(
+        token == "tools"
+        and (
+            tokens[index + 1 : index + 2] != ["."]
+            or index + 3 >= len(tokens)
+            or re.fullmatch(r"[A-Za-z_]\w*", tokens[index + 2]) is None
+            or tokens[index + 3] != "("
+        )
+        for index, token in enumerate(tokens)
+    )
     interactive_opaque = False
     for match in site.finditer(text):
         if match["reference"] is not None:
@@ -2600,8 +2600,7 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
     for identifier, text, javascript in tool_inputs(records):
         if identifier in denied:
             continue
-        if javascript and native_javascript_parse_failure(text, outputs.get(identifier, [])):
-            continue
+        unexecuted = javascript and native_javascript_parse_failure(text, outputs.get(identifier, []))
         names = javascript_names(text) if javascript else set()
         executable_text = without_patch_text(text) if javascript else text
         claim_related_here = "gh-plan" in executable_text or CLAIM_WORD.search(executable_text) is not None
@@ -2672,7 +2671,7 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
                 targets.update(found)
             except (OSError, ValueError) as error:
                 reason = "missing_output: " + str(error)
-        if unknown or opaque or decode_failed:
+        if (unknown or opaque or decode_failed) and not unexecuted:
             errors.append(
                 {
                     "call_id": identifier,

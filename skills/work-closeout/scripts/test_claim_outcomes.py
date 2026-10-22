@@ -7,8 +7,6 @@ from __future__ import annotations
 
 import json
 import unittest
-from subprocess import CompletedProcess
-from unittest.mock import patch
 
 import check_claims
 
@@ -98,13 +96,18 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
             {"type": "input_text", "text": "Script failed\nWall time 0.0 seconds\nOutput:\n"},
             {"type": "input_text", "text": "Script error:\nSyntaxError: Invalid or unexpected token"},
         ]
-        with patch.object(check_claims.history.subprocess, "run", return_value=CompletedProcess([], 1, "", "SyntaxError: invalid")):
-            self.assertEqual(
-                check_claims.history.literal_targets(invocation(source, output), SESSION),
-                {"targets": set(), "unresolved_invocations": []},
-            )
-        with patch.object(check_claims.history.subprocess, "run", side_effect=OSError("parser unavailable")):
-            self.assertTrue(check_claims.history.literal_targets(invocation(source, output), SESSION)["unresolved_invocations"])
+        self.assertEqual(
+            check_claims.history.literal_targets(invocation(source, output), SESSION),
+            {"targets": set(), "unresolved_invocations": []},
+        )
+        source_with_target = "text(await tools.exec_command({cmd:" + json.dumps(COMMAND) + ',workdir:"broken\npath"}));'
+        self.assertEqual(
+            check_claims.history.literal_targets(invocation(source_with_target, output), SESSION),
+            {"targets": {("test/a", 5)}, "unresolved_invocations": []},
+        )
+        for continuation in ("\\\n", "\\\r\n"):
+            valid = source.replace("status\nEOF", "status" + continuation + "EOF")
+            self.assertTrue(check_claims.history.literal_targets(invocation(valid, output), SESSION)["unresolved_invocations"])
 
     def test_runtime_syntax_errors_cannot_erase_a_prior_claim(self) -> None:
         source = 'text(await tools.exec_command({cmd:"uv run gh-plan.py claim 5"})); eval("invalid(");'
@@ -112,8 +115,28 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
             {"type": "input_text", "text": "Script failed\nWall time 0.0 seconds\nOutput:\n"},
             {"type": "input_text", "text": "Script error:\nSyntaxError: Invalid or unexpected token"},
         ]
-        with patch.object(check_claims.history.subprocess, "run", return_value=CompletedProcess([], 0, "", "")):
-            self.assertTrue(check_claims.history.literal_targets(invocation(source, output), SESSION)["unresolved_invocations"])
+        sources = [
+            source,
+            source + "return;",
+            source.replace("claim 5", r"claim 5 && sed 's/x/\1/' f"),
+            source + "const regexp=/(?i:x)/;",
+        ]
+        for cell in sources:
+            with self.subTest(cell=cell):
+                self.assertTrue(check_claims.history.literal_targets(invocation(cell, output), SESSION)["unresolved_invocations"])
+
+    def test_dynamic_dispatch_does_not_hide_sibling_claims(self) -> None:
+        sources = [
+            'const run=tools[load("method")]; await run({cmd:load("claim")});',
+            'Function("return tools.exec_comm"+"and")()({cmd:"gh-plan.py claim 5"});',
+            'globalThis["tools"]["exec_"+"command"]({cmd:"gh-plan.py claim 5"});',
+        ]
+        for source in sources:
+            for prefix in ("", f"for(const cmd of [{json.dumps(COMMAND)}]) {{await tools.exec_command({{cmd}});}} "):
+                with self.subTest(source=source, prefix=prefix):
+                    self.assertTrue(
+                        check_claims.history.literal_targets(invocation(prefix + source), SESSION)["unresolved_invocations"]
+                    )
 
 
 if __name__ == "__main__":

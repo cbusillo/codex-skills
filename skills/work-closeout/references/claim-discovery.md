@@ -34,11 +34,13 @@ Interactive input and command strings passed to unclassified launchers cannot
 prove complete claim coverage. Their known receipts are still checked. Keep
 the claiming host's journal and complete native lineage when using remote shells.
 
-A native code-mode `Script failed` result reporting `SyntaxError` proves no
-execution only when Node's syntax-only module check also rejects the complete
-recorded cell. The reader removes Node startup overrides for that check and
-never evaluates the cell. A runtime `eval` error, absent parser, timeout or
-unrecognized failure output stays conditional.
+The exact native zero-time `Script failed` / `SyntaxError: Invalid or unexpected
+token` result proves no execution only for a single literal shell-call wrapper
+with an unescaped physical newline inside an ordinary quoted string. That
+string cannot parse in either a script or module. Template newlines and escaped
+line continuations do not supply that proof. Other failures, runtime `eval`
+errors and differences between JavaScript engines stay conditional. Known
+receipt targets are still checked; no recorded JavaScript is executed.
 
 Code-mode templates can expand a leading literal `for (const n of [1,2])` loop's
 first shell call, or a leading constant literal array passed immediately through
@@ -51,11 +53,11 @@ Only directly bound names may be interpolated, and every interpolated value
 must be a plain shell word under the same
 bounds as literal shell loops. Each expanded command stays a separate shell
 execution and goes through claim discovery and canonical release checks. Map
-arrays and parameters must have no other references during the callback; direct `eval` stays
+arrays and parameters must have no other references during the callback; dynamic tool dispatch, `eval`, `Function` and global-object dispatch stay
 conditional. Command objects with duplicate command fields, spreads, computed
 keys or accessors also stay conditional. Other statements before the call,
 mutations, additional template substitutions, escaped identifiers, escaped keys,
-escaped array values or templates, inexact numeric values and shell syntax in
+unshared string escapes or escaped templates, inexact numeric values and shell syntax in
 values keep the invocation conditional. Quoted commands support only escapes
 shared by JavaScript and Python, including quoted newlines and hexadecimal or
 four-digit Unicode escapes. Use a plain command key and keep unrelated template
