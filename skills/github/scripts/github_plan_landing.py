@@ -181,6 +181,16 @@ def comment_attention(repo: str, number: int) -> bool:
     return False
 
 
+# https://github.com/cbusillo/codex-skills/issues/2333
+RELATIONSHIP_DERIVED_ISSUE_FIELDS = frozenset(
+    {"updated_at", "issue_dependencies_summary", "sub_issues_summary", "parent_issue_url"})
+
+
+def changed_issue_fields(before: dict[str, Any], after: dict[str, Any]) -> list[str]:
+    return sorted(key for key in before.keys() | after.keys()
+                  if key not in RELATIONSHIP_DERIVED_ISSUE_FIELDS and before.get(key) != after.get(key))
+
+
 def reconcile_related(plan: Any, repo: str, number: int, *, apply: bool, entry: dict[str, Any]) -> None:
     discovery: dict[str, Any] = {}
     checkout = entry.get("planning_checkout")
@@ -234,9 +244,15 @@ def reconcile_related(plan: Any, repo: str, number: int, *, apply: bool, entry: 
     # Re-run the observation immediately before a label write; never edit wait records or prose.
     fresh, fresh_config, fresh_wait = snapshot(plan, repo, number, checkout=checkout)
     _, fresh_relationships = plan.read_issue_relationships(repo, number, include_blocking=False)
-    if (fresh != issue or not github_plan_status.same_wait_projection(issue, fresh_wait, wait)
-            or fresh_relationships != relationships or fresh_config != config):
-        raise ValueError("Related planning state changed before reconciliation")
+    changed = changed_issue_fields(issue, fresh)
+    if not github_plan_status.same_wait_projection(issue, fresh_wait, wait):
+        changed.append("wait")
+    if fresh_relationships != relationships:
+        changed.append("relationships")
+    if fresh_config != config:
+        changed.append("planning_config")
+    if changed:
+        raise ValueError("Related planning state changed before reconciliation: " + ", ".join(changed))
     _, gh_cmd, expected = plan.comment_route()
     entry["writes_started"] = True
     try:
