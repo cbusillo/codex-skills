@@ -512,8 +512,8 @@ including non-dim text, establishes neither its author nor approval.
    including landings completed by the service after a local driver stopped.
    Nudge a stalled session with exact facts: the comment,
    the failing check, the time it last moved. When a lead ends its scheduled
-   progress-only turn for steering, send queued guidance or "continue" at the
-   verified idle prompt. Check each session's context
+   progress turn saying the Track remains actionable, send queued guidance or
+   "continue" at the verified idle prompt. Check each session's context
    size. Let automatic compaction proceed; a routine idle check alone is not
    a reason to compact. When a session needs manual compaction, use the
    harness's built-in mechanism at a safe point with Keep instructions naming
