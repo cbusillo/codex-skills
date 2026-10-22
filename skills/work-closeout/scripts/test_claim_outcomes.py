@@ -91,6 +91,37 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
             with self.subTest(source=source):
                 self.assertTrue(check_claims.history.literal_targets(invocation(source), SESSION)["unresolved_invocations"])
 
+    def test_native_output_string_reads_remain_bounded(self) -> None:
+        for operation in ("trim()", "slice(0,100)", 'split("\\n")'):
+            source = (
+                'const r=await tools.exec_command({cmd:"uv run gh-plan.py --repo test/a show 5"});text(r.output.' + operation + ");"
+            )
+            with self.subTest(operation=operation):
+                self.assertEqual(
+                    check_claims.history.literal_targets(invocation(source), SESSION),
+                    {"targets": set(), "unresolved_invocations": []},
+                )
+
+    def test_mutation_and_shadowing_cannot_hide_execution(self) -> None:
+        sources = [
+            'for(const cmd of ["x"]){function build(cmd){return cmd.includes("return eval");} function invoke(cmd){return cmd.includes("tools.exec_command({cmd:\'uv run gh-plan.py claim 5\'})");} invoke({includes:build({includes:build({includes:[].filter.constructor})})});}',
+            '<!-- function run(){}\nrun(load("claim"));',
+            "<!-- '\nawait tools.exec_command({cmd:\"uv run gh-plan.py claim 5\"});\n//'",
+        ]
+        for operator in ("++", "--", "<<=1", ">>=1", ">>>=1"):
+            sources.append(
+                'const s=[["a",1],["a",2]]; await Promise.all(s.map(([repo,n])=>tools.exec_command({'
+                "cmd:`uv run gh-plan.py --repo test/${repo} claim ${n}`,max_output_tokens:bump()})));"
+                "function bump(){s[1][1]" + operator + ";return 1000;}"
+            )
+        for source in sources:
+            for prefix in ("", f"text(await tools.exec_command({{cmd:{json.dumps(COMMAND)}}}));"):
+                with self.subTest(source=source, prefix=prefix):
+                    report = check_claims.history.literal_targets(invocation(prefix + source), SESSION)
+                    self.assertTrue(report["unresolved_invocations"])
+                    if prefix:
+                        self.assertIn(("test/a", 5), report["targets"])
+
     def test_native_parse_failure_proves_the_cell_did_not_execute(self) -> None:
         source = 'text(await tools.exec_command({cmd:"cat <<EOF\\ngh-plan.py claim status\nEOF"}));'
         output = [
@@ -141,7 +172,6 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
             "\\u0065val('tools.exec_command({cmd:\"uv run gh-plan.py claim 5\"})');",
             "await (async()=>{}).constructor('return tools.exec_command({cmd:\"uv run gh-plan.py claim 5\"})')()();",
             'await (async()=>{}).constructor(load("claim"))()();',
-            'const xs=[{text:eval}]; await Promise.all(xs.map(({text})=>text(load("claim"))));',
             'for(const cmd of [{includes:eval}]){text(cmd.includes("claim"));}',
             'const run=tools[load("method")]; await run({cmd:load("claim")});',
             'Function("return tools.exec_comm"+"and")()({cmd:"gh-plan.py claim 5"});',

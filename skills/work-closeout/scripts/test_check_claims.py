@@ -2421,7 +2421,6 @@ print(root)"""
             self.assertEqual(report["targets"], {("first/a", 5)})
             self.assertEqual(bool(report["unresolved_invocations"]), qualified_unknown)
 
-
     def test_single_wrapped_claim_reads_its_saved_receipt_target(self) -> None:
         rows = [
             {

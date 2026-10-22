@@ -514,8 +514,9 @@ def javascript_calls_are_bounded(text: str) -> bool:
     catches = set(re.findall(r"\bcatch \( ([A-Za-z_]\w*) \)", syntax))
     if catches & (globals_ | functions):
         return False
-    locals_ = set(bindings) | functions | catches
-    locals_.update(name for parameter in parameters for name in re.findall(r"[A-Za-z_]\w*", parameter))
+    binding_names = bindings + list(functions) + list(catches)
+    binding_names.extend(name for parameter in parameters for name in re.findall(r"[A-Za-z_]\w*", parameter))
+    locals_ = set(binding_names)
     keywords = {
         "const",
         "let",
@@ -550,7 +551,20 @@ def javascript_calls_are_bounded(text: str) -> bool:
         "new",
     }
     for index, token in enumerate(tokens):
-        if token in {"\\", "/"}:
+        if token in {"\\", "/"} or tokens[index : index + 4] == ["<", "!", "-", "-"]:
+            return False
+        if token.startswith(('"', "'")) and re.search(r"[\r\n]", re.sub(r"\\(?:\r\n|\r|\n)", "", token)):
+            return False
+        if token in {"+", "-"} and tokens[index + 1 : index + 2] == [token]:
+            counter = tokens[index - 1] if index else ""
+            if (
+                index < 2
+                or tokens[index - 2] == "."
+                or binding_names.count(counter) != 1
+                or re.search(r"\blet " + re.escape(counter) + r" = [0-9]+(?: ;| ,| \))", syntax) is None
+            ):
+                return False
+        if token == "=" and tokens[index - 2 : index] in (["<", "<"], [">", ">"]):
             return False
         if token.startswith("`"):
             if "${" in re.sub(r"\$\{[A-Za-z_]\w*\}", "", token):
@@ -603,11 +617,24 @@ def javascript_calls_are_bounded(text: str) -> bool:
                 continue
             if receiver == "Promise" and previous in {"all", "allSettled"}:
                 continue
+            if index >= 5 and tokens[index - 3 : index - 1] == ["output", "."] and previous in {"trim", "slice", "split"}:
+                result = tokens[index - 5]
+                if (
+                    tokens[index - 4] == "."
+                    and binding_names.count(result) == 1
+                    and re.search(r"\bconst " + re.escape(result) + r" = await tools \. exec_command \(", syntax)
+                    and end is not None
+                    and all(
+                        item in {",", "-"} or item.isdecimal() or re.fullmatch(JAVASCRIPT_LITERAL, item, re.DOTALL)
+                        for item in tokens[index + 1 : index + end]
+                    )
+                ):
+                    continue
             if previous == "includes" and re.search(r"for \( const " + re.escape(receiver) + r" of \[", code):
                 loop = re.match(r"for \( const " + re.escape(receiver) + r" of (\[ .+? \]) \) \{", code)
                 if (
                     loop is not None
-                    and bindings.count(receiver) == 1
+                    and binding_names.count(receiver) == 1
                     and re.fullmatch(JAVASCRIPT_LITERAL, tokens[index + 1]) is not None
                 ):
                     try:
@@ -617,21 +644,32 @@ def javascript_calls_are_bounded(text: str) -> bool:
                     if isinstance(items, list) and all(isinstance(item, str) for item in items):
                         continue
             if previous == "map":
+                callback = tokens[index + 1 :]
+                if callback[:1] == ["async"]:
+                    callback = callback[1:]
+                parameter_end = javascript_object_end(callback) if callback[:1] == ["("] else 0
+                if parameter_end is None or callback[parameter_end + 1 : parameter_end + 3] != ["=", ">"]:
+                    return False
                 prefix = syntax_tokens[:index]
-                if re.search(
-                    r"const "
-                    + re.escape(receiver)
-                    + r" = \[ .+? \] ; .*Promise \. (?:all|allSettled) \( "
-                    + re.escape(receiver)
-                    + r" \. map$",
-                    " ".join(prefix),
-                ):
-                    continue
+                if receiver != "]" and binding_names.count(receiver) == 1:
+                    declaration = re.search(r"\bconst " + re.escape(receiver) + r" = ", syntax)
+                    if declaration is not None:
+                        initializer = syntax[declaration.end() :].split()
+                        array_end = javascript_object_end(initializer)
+                        if (
+                            initializer[:1] == ["["]
+                            and array_end is not None
+                            and initializer[array_end + 1 : array_end + 2] == [";"]
+                            and re.search(r"Promise \. (?:all|allSettled) \( " + re.escape(receiver) + r" \. map$", " ".join(prefix))
+                        ):
+                            continue
                 array = re.search(r"Promise \. (?:all|allSettled) \( (\[ .+? \]) \. map$", " ".join(prefix))
-                if array is not None:
+                if array is not None and javascript_object_end(array[1].split()) == len(array[1].split()) - 1:
                     continue
             if previous == "forEach" and tokens[index + 1 : index + 3] == ["text", ")"]:
-                if re.search(r"const " + re.escape(receiver) + r" = await Promise \. (?:all|allSettled) \(", code):
+                if binding_names.count(receiver) == 1 and re.search(
+                    r"const " + re.escape(receiver) + r" = await Promise \. (?:all|allSettled) \(", code
+                ):
                     continue
         return False
     return True

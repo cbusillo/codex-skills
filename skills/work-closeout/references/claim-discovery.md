@@ -68,10 +68,11 @@ In claim-related cells, call coverage uses a positive grammar. It accepts
 literal shell calls, the three output wrappers above, literal-array mapping,
 plain loops and conditions, and their `text`, `store`, `load` and early `exit`
 calls. A command string from a literal `for` loop may use `includes`; native
-result arrays may use `forEach(text)`. Simple locally declared functions keep
+result arrays may use `forEach(text)`. A uniquely bound native command result
+may read its output with `trim`, `slice` or `split` using literal arguments. Simple locally declared functions keep
 their bodies under the same checks. Data values come from declared local bindings and the supported native
-results. Global capabilities cannot be shadowed, properties cannot be
-assigned, and array callbacks cannot hide additional executable options.
+results. Method receivers must have one binding across declarations and parameters. Global capabilities cannot be shadowed, properties cannot be
+assigned or incremented, and array callbacks cannot hide additional executable options.
 Unknown calls, computed dispatch, escaped identifiers, tagged or executable
 templates, module/class declarations and unclassified regex/division syntax
 keep coverage conditional. Use direct literal shell calls and `text(result)`
