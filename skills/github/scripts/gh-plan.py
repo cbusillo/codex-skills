@@ -3151,7 +3151,10 @@ def claim_once(args: argparse.Namespace) -> None:
                                                             local_references=linked_repo.casefold() == issue_repo.casefold()):
                     continue
                 _, linked = get_issue(str(linked_number), linked_repo)
-                if "pull_request" not in linked:
+                if "pull_request" not in linked and linked.get("state") == "closed":
+                    linked, linked_status, linked_comments, _ = read_record(linked_number, linked_repo, allow_closed=True)
+                    phase_peers.append((linked_repo, linked_number, linked_status, linked_comments))
+                if "pull_request" not in linked and linked.get("state") != "closed":
                     canonical_url = f"https://github.com/{linked_repo}/issues/{linked_number}"
                     if canonical_url.casefold() not in {url.casefold() for url in phase["canonical_issues"]}:
                         phase["canonical_issues"].append(canonical_url)
