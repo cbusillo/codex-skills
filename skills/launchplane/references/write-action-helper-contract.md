@@ -106,11 +106,11 @@ lane. The service collects testing facts itself and would store them as
 `unknown`.
 
 Run inspect first and save its JSON output privately. It returns the lane's
-`binding_sha256`, with every fresh fact `unknown`. Current producers also return
-`observation_sha256` and a nullable `observation` containing the stored report's
-usage, data and production-resource enums. The helper validates and projects
-these together; older producers may omit both. Stored reports do not establish
-current disposal eligibility or replace the fresh facts. Collect and record each require
+`binding_sha256`, with every fresh fact `unknown`, plus `observation_sha256`
+and a nullable `observation` holding the stored report's usage, data and
+production-resource values. A response missing either is invalid. Stored
+reports do not establish current disposal eligibility or replace the fresh
+facts. Collect and record each require
 `--expected-binding-sha256` (that value), `--inspect-evidence-file` (the saved
 output) and `--reviewed-inspect`. The evidence must match the private request
 scope, the configured service and the digest. The helper never runs inspect

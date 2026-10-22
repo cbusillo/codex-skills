@@ -45,7 +45,6 @@ def scope(preview=False, **updates):
 
 
 def receipt(kind, **updates):
-    # Producer record_disposable_lane_safety results, including reviewed observation metadata.
     # Keep these independent of the consumer's field allowlists.
     result = {
         "inspect": {"mode": "inspect", "binding_sha256": BINDING, "usage": "unknown", "data": "unknown",
@@ -169,21 +168,14 @@ def test_inspect_keeps_stored_observation_separate_from_fresh_unknown_facts(obse
     assert all(output["result"][fact] == "unknown" for fact in lane.FACTS)
 
 
-@pytest.mark.parametrize("removed", [("observation_sha256", "observation"),
-                                    ("observation_sha256",), ("observation",)])
-def test_inspect_observation_metadata_is_absent_or_a_complete_pair(removed):
+@pytest.mark.parametrize("removed", [("observation_sha256",), ("observation",), ("observation_sha256", "observation")])
+def test_inspect_without_stored_observation_metadata_is_invalid(removed):
     response = receipt("inspect")
     for field in removed:
         response["result"].pop(field)
     code, output, calls, _ = invoke(responses=[response])
-    assert len(calls) == 1
-    if len(removed) == 1:
-        assert code != 0 and output["status"] == "invalid"
-        assert output["result"] == {}
-        return
-    assert code == 0
-    assert "observation" not in output["result"]
-    assert "observation_sha256" not in output["result"]
+    assert code != 0 and len(calls) == 1
+    assert output["status"] == "invalid" and output["result"] == {}
 
 
 @pytest.mark.parametrize("mode,body", [

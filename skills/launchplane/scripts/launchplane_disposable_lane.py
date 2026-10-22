@@ -218,6 +218,15 @@ def _digest(h: Any, value: object) -> str:
     return value
 
 
+def _stored_observation(h: Any, value: object) -> dict[str, str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict) or value.keys() != FACTS.keys() or any(
+            not isinstance(value[fact], str) or value[fact] not in allowed for fact, (allowed, _ref) in FACTS.items()):
+        raise h.LaunchplaneSafetyError("invalid_response")
+    return value
+
+
 def _coverage(h: Any, value: object) -> list[str]:
     # The producer client requires exactly the producer's coverage sources.
     if (not isinstance(value, dict) or value.keys() != COVERAGE_SOURCES
@@ -333,21 +342,11 @@ def project(h: Any, response: dict[str, Any], mode: str, body: dict[str, Any], d
     if mode == "inspect":
         if any(value != "unknown" for value in facts.values()) or automatic != "limited_service_records":
             raise h.LaunchplaneSafetyError("invalid_response")
-        # Older producers omit both fields. Stored reports are not fresh disposal facts.
-        observation_fields = {"observation_sha256", "observation"}
-        if source.keys() & observation_fields:
-            if not observation_fields <= source.keys():
-                raise h.LaunchplaneSafetyError("invalid_response")
-            observation_digest = _digest(h, source["observation_sha256"])
-            observation = source["observation"]
-            if observation is not None:
-                if not isinstance(observation, dict) or observation.keys() != FACTS.keys():
-                    raise h.LaunchplaneSafetyError("invalid_response")
-                if any(not isinstance(value, str) or value not in FACTS[fact][0]
-                       for fact, value in observation.items()):
-                    raise h.LaunchplaneSafetyError("invalid_response")
-            result.update(observation_sha256=observation_digest, observation=observation)
-        result["automatic_fact_collection"] = automatic
+        if "observation" not in source:
+            raise h.LaunchplaneSafetyError("invalid_response")
+        result.update(observation_sha256=_digest(h, source.get("observation_sha256")),
+                      observation=_stored_observation(h, source["observation"]),
+                      automatic_fact_collection=automatic)
         h.assert_public_safe_shape(result)
         return result
     preview = "preview_id" in body
@@ -375,7 +374,6 @@ def project(h: Any, response: dict[str, Any], mode: str, body: dict[str, Any], d
 
 def _readback(h: Any, call: Any, body: dict[str, Any], mode: str, digest: str,
               result: dict[str, object]) -> tuple[str, dict[str, object]]:
-    """Separate inspect POST; verify binding, without attesting the submitted effect."""
     result["effect_readback"] = "unavailable"
     try:
         readback = call({**scope_of(body), "mode": "inspect"})
