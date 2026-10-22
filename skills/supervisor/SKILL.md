@@ -356,9 +356,10 @@ answers, for example a computer-use session, tell the Director at launch that
 you will relay: bring each question to chat as a numbered Q and send the reply
 with `iterm_tab.py send` at a verified idle prompt.
 
-The shared launcher disables Claude Code prompt suggestions with
-`--settings '{"promptSuggestionEnabled": false}'` on both backends. Keep that
-setting on Supervisor launches; existing sessions may still show suggestions.
+The shared launcher disables Claude Code prompt suggestions and auto memory
+with `--settings '{"promptSuggestionEnabled": false, "autoMemoryEnabled": false}'`
+on both backends. Keep those settings on Supervisor launches; existing sessions
+may still show suggestions.
 It also passes `--autocompact auto` unless the launch file sets
 `--autocompact`, which keeps Claude Code's tuned window and stops the "Want to
 autocompact at … instead?" offer that an unattended session cannot answer

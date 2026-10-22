@@ -8,11 +8,16 @@ iTerm controls
 require macOS, iTerm2's Python API enabled and the session's existing authority;
 API connection failure is a stop, not a reason to change personal settings.
 
-The shared launcher passes Claude Code `--settings '{"promptSuggestionEnabled": false}'`
+The shared launcher passes Claude Code
+`--settings '{"promptSuggestionEnabled": false, "autoMemoryEnabled": false}'`
 before its brief on either backend, including when the command file has other
-settings. A launch-file inline `--settings` object is merged with this override,
-preserving its other keys. For `--settings file.json`, set
-`"promptSuggestionEnabled": false` in that file first: the launcher checks it
+settings. Auto memory is off because a worker's findings belong on the item's
+issue, and a write to the memory folder outside the working directory stops
+the worker at a permission prompt nobody can answer
+([memory settings](https://code.claude.com/docs/en/memory#enable-or-disable-auto-memory)).
+A launch-file inline `--settings` object is merged with this override,
+preserving its other keys. For `--settings file.json`, set both to `false` in
+that file first: the launcher checks them
 before launch and preserves the file argument, private values and relative
 permission-rule base. It never rewrites that file or inlines its contents.
 Use literal JSON or a readable file path; relative files resolve under the command's `cd` directory.

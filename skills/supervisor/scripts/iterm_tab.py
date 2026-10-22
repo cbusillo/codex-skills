@@ -29,6 +29,8 @@ import agent_tools
 import gui_launch
 
 CLAUDE_SUGGESTION_SETTING = "promptSuggestionEnabled"
+CLAUDE_AUTO_MEMORY_SETTING = "autoMemoryEnabled"
+CLAUDE_UNATTENDED_SETTINGS = (CLAUDE_SUGGESTION_SETTING, CLAUDE_AUTO_MEMORY_SETTING)
 CLAUDE_SUGGESTION_ENV = "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION"
 CLAUDE_AUTOCOMPACT_OPTION = "--autocompact"
 CLAUDE_QUESTION_TOOL = "AskUserQuestion"
@@ -367,7 +369,6 @@ def launch_agent(command_text):
 
 
 def claude_settings(command_text, words):
-    """Keep the CLI's last settings object, overriding only prompt suggestions."""
     source = None
     for index, word in enumerate(words[1:], 1):
         if word == "--settings":
@@ -394,16 +395,16 @@ def claude_settings(command_text, words):
                 settings = json.loads(path.read_text(encoding="utf-8"))
                 # Keep file settings in the file: inlining exposes private values
                 # and changes the base for relative permission rules.
-                if isinstance(settings, dict) and settings.get(CLAUDE_SUGGESTION_SETTING) is False:
+                if isinstance(settings, dict) and all(settings.get(key) is False for key in CLAUDE_UNATTENDED_SETTINGS):
                     return None
-                raise ValueError("Set promptSuggestionEnabled to false in the supplied settings file")
+                raise ValueError()
             if not isinstance(settings, dict):
                 raise ValueError()
         except (ValueError, OSError):
             raise ValueError("Claude --settings must be a readable literal JSON object or file; "
-                             "file settings must set promptSuggestionEnabled to false; "
+                             f"file settings must set {' and '.join(CLAUDE_UNATTENDED_SETTINGS)} to false; "
                              "use an absolute file path for shell-expanded paths") from None
-    return {**settings, CLAUDE_SUGGESTION_SETTING: False}
+    return {**settings, **dict.fromkeys(CLAUDE_UNATTENDED_SETTINGS, False)}
 
 
 def append_brief(command_text, brief):

@@ -2547,7 +2547,7 @@ class TerminalTests(unittest.TestCase):
                 self.assertEqual(autocompact(iterm_tab.append_brief(f"claude {option}", "brief")), ["500k"])
         self.assertNotIn("--autocompact", iterm_tab.append_brief("codex --remote unix://", "brief"))
 
-    def test_every_claude_account_home_launches_without_the_question_picker(self):
+    def test_every_claude_account_home_launches_without_the_question_picker_or_auto_memory(self):
         default_home = ACCOUNTS_TOML.replace('env = { CLAUDE_CONFIG_DIR = "~/claude-main" }', 'env = {}')
         homes = [(text, name) for text in (ACCOUNTS_TOML, default_home) for name in ("main", "spare")]
         with tempfile.TemporaryDirectory() as folder:
@@ -2565,16 +2565,18 @@ class TerminalTests(unittest.TestCase):
                     separator = args.index("--")
                     parser = argparse.ArgumentParser(add_help=False)
                     parser.add_argument("--disallowedTools", action="append")
+                    parser.add_argument("--settings")
                     options, _ = parser.parse_known_args(args[:separator])
                     self.assertEqual(options.disallowedTools, [iterm_tab.CLAUDE_QUESTION_TOOL])
+                    self.assertIs(json.loads(options.settings)[iterm_tab.CLAUDE_AUTO_MEMORY_SETTING], False)
                     self.assertEqual(args[separator + 1:], ["brief"])
         self.assertNotIn(iterm_tab.CLAUDE_QUESTION_TOOL, iterm_tab.append_brief("codex --remote unix://", "brief"))
 
-    def test_claude_launch_preserves_existing_settings_and_overrides_suggestions(self):
+    def test_claude_launch_preserves_existing_settings_and_overrides_unattended_settings(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             settings = {"model": "fixture-model", "permissions": {"allow": ["Read"]},
-                        iterm_tab.CLAUDE_SUGGESTION_SETTING: True}
+                        iterm_tab.CLAUDE_SUGGESTION_SETTING: True, iterm_tab.CLAUDE_AUTO_MEMORY_SETTING: True}
             path = root / "settings.json"
             path.write_text(json.dumps(settings))
             for option in ("--settings " + shlex.quote(json.dumps(settings)),
@@ -2587,12 +2589,17 @@ class TerminalTests(unittest.TestCase):
                     received = json.loads(args[index + 1])
                     self.assertEqual(received["model"], settings["model"])
                     self.assertEqual(received["permissions"], settings["permissions"])
-                    self.assertFalse(received[iterm_tab.CLAUDE_SUGGESTION_SETTING])
+                    self.assertIs(received[iterm_tab.CLAUDE_SUGGESTION_SETTING], False)
+                    self.assertIs(received[iterm_tab.CLAUDE_AUTO_MEMORY_SETTING], False)
                     self.assertEqual(args[-1], "brief")
 
             with self.assertRaises(ValueError):
                 iterm_tab.append_brief(f"cd {shlex.quote(str(root))} && exec claude --settings settings.json", "brief")
             settings[iterm_tab.CLAUDE_SUGGESTION_SETTING] = False
+            path.write_text(json.dumps(settings))
+            with self.assertRaises(ValueError):
+                iterm_tab.append_brief(f"cd {shlex.quote(str(root))} && exec claude --settings settings.json", "brief")
+            settings[iterm_tab.CLAUDE_AUTO_MEMORY_SETTING] = False
             settings["env"] = {"FIXTURE_PRIVATE_VALUE": "opaque-fixture-value"}
             path.write_text(json.dumps(settings))
             command = iterm_tab.append_brief(f"cd {shlex.quote(str(root))} && exec claude --settings settings.json", "brief")
@@ -2611,7 +2618,7 @@ class TerminalTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             path = root / "settings.json"
-            path.write_text(json.dumps({iterm_tab.CLAUDE_SUGGESTION_SETTING: False}))
+            path.write_text(json.dumps(dict.fromkeys(iterm_tab.CLAUDE_UNATTENDED_SETTINGS, False)))
             with self.assertRaises(ValueError):
                 iterm_tab.append_brief("claude --settings settings.json", "brief")
             with self.assertRaises(ValueError):
