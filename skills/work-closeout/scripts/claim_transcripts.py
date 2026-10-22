@@ -400,73 +400,6 @@ def tool_outputs(records: list[dict]) -> dict[str, list[object]]:
     return outputs
 
 
-def command_literal(text: str, start: int, literal: str) -> list[str] | None:
-    tokens = [match[0] for match in re.finditer(literal + r"|[A-Za-z_$][A-Za-z0-9_$]*|[^\s]", text[start:])]
-    if not tokens or tokens[0] != "{":
-        return None
-    depth = 0
-    field_start = 1
-    fields = []
-    for index, token in enumerate(tokens):
-        if token in {"{", "[", "("}:
-            depth += 1
-        elif token in {"}", "]", ")"}:
-            depth -= 1
-            if depth == 0:
-                fields.append(tokens[field_start:index])
-                break
-        if depth == 1 and token == ",":
-            fields.append(tokens[field_start:index])
-            field_start = index + 1
-    else:
-        return None
-    command = None
-    for field in fields:
-        if not field:
-            continue
-        key = field[0]
-        if re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", key) is None:
-            if "\\" in key:
-                return None
-            try:
-                key = ast.literal_eval(key)
-            except (SyntaxError, ValueError):
-                return None
-        if len(field) == 1 and key not in {"cmd", "command", "chars"}:
-            continue
-        if len(field) == 1 and key in {"cmd", "command", "chars"}:
-            field = [key, ":", key]
-        if field[1:2] != [":"]:
-            return None
-        if key not in {"cmd", "command", "chars"}:
-            continue
-        if command is not None or len(field) != 3:
-            return None
-        value = field[2]
-        if re.fullmatch(literal, value, re.DOTALL) is None:
-            bindings = literal_bindings(text, start, command_reference=value)
-            if bindings is None or set(bindings[0]) != {value}:
-                return None
-            command = [binding[value] for binding in bindings]
-            if not all(isinstance(item, str) for item in command):
-                return None
-            if sum(len(item.encode()) for item in command) > LITERAL_EXPANSION_BYTES:
-                return None
-            continue
-        if value.startswith("`"):
-            command = literal_template(text, start, value)
-            if command is None:
-                return None
-            continue
-        if re.fullmatch(r"(?:[^\\]|\\(?:[\\\"'nrtbfv]|x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}))*", value) is None:
-            return None
-        try:
-            command = [ast.literal_eval(value)]
-        except (ValueError, SyntaxError):
-            return None
-    return command
-
-
 JAVASCRIPT_LITERAL = r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|`(?:\\.|[^`\\])*`'
 JAVASCRIPT_COMMENT = r"//[^\r\n\u2028\u2029]*|/\*.*?\*/|#![^\r\n\u2028\u2029]*"
 
@@ -494,69 +427,6 @@ def javascript_object_end(tokens: list[str]) -> int | None:
             if depth == 0:
                 return index
     return None
-
-
-def literal_bindings(text: str, start: int, *, command_reference: str | None = None) -> list[dict[str, str | int]] | None:
-    code = " ".join(javascript_tokens(text[:start]))
-    literal = r"""(?:"[^"\\]*"|'[^'\\]*')"""
-    code = re.sub(r"^store \( " + literal + r" , " + literal + r" \) ; ", "", code)
-    binding = r"(?P<name>[A-Za-z_][A-Za-z0-9_]*|\[ [A-Za-z_]\w*(?: , [A-Za-z_]\w*)* \])"
-    array = r"\[ (?P<values>.+?) \]"
-    call = r"tools \. (?:exec_command|shell_command|shell) \("
-    match = re.fullmatch(r"for \( const " + binding + r" of " + array + r" \) \{ (?:const \w+ = )?(?:text \( )?await " + call, code)
-    if match is None:
-        match = re.fullmatch(
-            r"const (?P<array>[A-Za-z_]\w*) = "
-            + array
-            + r" ; (?:const \w+ = |for \( const \w+ of )?(?:text \( )?await Promise \. (?:all|allSettled) \( (?P=array) \. map \( (?:\( )?"
-            + binding
-            + r"(?: \))? = > "
-            + call,
-            code,
-        )
-    if match is None:
-        return None
-    parameters = re.findall(r"[A-Za-z_]\w*", match["name"])
-    if len(set(parameters)) != len(parameters):
-        return None
-    if re.search(r"\\(?![\\\"'nrtbfv]|x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4})", match["values"]):
-        return None
-    try:
-        values = ast.literal_eval("[" + match["values"] + "]")
-    except (SyntaxError, ValueError):
-        return None
-    if not isinstance(values, list) or not 0 < len(values) <= LITERAL_LOOP_VALUES:
-        return None
-    rows = values if match["name"].startswith("[") else [[value] for value in values]
-    if any(not isinstance(row, list) or len(row) != len(parameters) for row in rows):
-        return None
-    if any(type(value) not in {str, int} or (type(value) is int and abs(value) > (1 << 53) - 1) for row in rows for value in row):
-        return None
-    return [dict(zip(parameters, row, strict=True)) for row in rows]
-
-
-def literal_template(text: str, start: int, template: str) -> list[str] | None:
-    if "\\" in template:
-        return None
-    body = template[1:-1].replace("\r\n", "\n").replace("\r", "\n")
-    if "${" not in body:
-        return [body]
-    if text.count("${") != template.count("${"):
-        return None
-    bindings = literal_bindings(text, start)
-    if bindings is None:
-        return None
-    commands = []
-    for binding in bindings:
-        command = body
-        for name, value in binding.items():
-            if not LITERAL_SHELL_VALUE.fullmatch(str(value)):
-                return None
-            command = command.replace("${" + name + "}", str(value))
-        if "${" in command:
-            return None
-        commands.append(command)
-    return commands if sum(len(command.encode()) for command in commands) <= LITERAL_EXPANSION_BYTES else None
 
 
 def without_patch_text(text: str) -> str:
@@ -588,11 +458,25 @@ def single_javascript_shell(text: str) -> bool:
     return any(
         re.fullmatch(prefix + call + suffix, code) is not None
         for prefix, suffix in (
-            (r"text \( await ", r" \) ;?"),
-            (r"text \( \( await ", r" \) \. output \) ;?"),
-            (r"const (?P<result>[A-Za-z_]\w*) = await ", r" ; text \( (?P=result)(?: \. output)? \) ;?"),
+            (r"text \( await ", r" \)(?: ;)?"),
+            (r"text \( \( await ", r" \) \. output \)(?: ;)?"),
+            (r"const (?P<result>[A-Za-z_]\w*) = await ", r" ; text \( (?P=result)(?: \. output)? \)(?: ;)?"),
         )
     )
+
+
+def literal_javascript_shell_sequence(text: str) -> bool:
+    tokens = javascript_tokens(text)
+    while tokens:
+        if tokens[:2] != ["text", "("]:
+            return False
+        end = javascript_object_end(tokens[1:])
+        if end is None or not single_javascript_shell(" ".join(tokens[: end + 2])):
+            return False
+        tokens = tokens[end + 2 :]
+        if tokens[:1] == [";"]:
+            tokens = tokens[1:]
+    return True
 
 
 def native_javascript_parse_failure(text: str, blocks: list[object]) -> bool:
@@ -605,7 +489,9 @@ def native_javascript_parse_failure(text: str, blocks: list[object]) -> bool:
     ]
     if len(messages) != 2 or messages[0] != "Script failed\nWall time 0.0 seconds\nOutput:\n":
         return False
-    if messages[1] != "Script error:\nSyntaxError: Invalid or unexpected token" or not single_javascript_shell(text):
+    if messages[1] != "Script error:\nSyntaxError: Invalid or unexpected token" or not (
+        single_javascript_shell(text) or literal_javascript_shell_sequence(text)
+    ):
         return False
     return any(
         token.startswith(('"', "'")) and re.search(r"[\r\n]", re.sub(r"\\(?:\r\n|\r|\n)", "", token)) is not None
@@ -652,11 +538,19 @@ def shell_texts(text: str, javascript: bool) -> ShellTexts:
     bounded, sites = claim_javascript.analyse(text)
     commands = []
     opaque = not bounded
-    interactive_opaque = False
-    if not bounded:
-        sites.extend((match.end(), "write_stdin" in match[0]) for match in site.finditer(text) if match["call"] is not None)
-    for start, interactive in sorted(set(sites)):
-        decoded = command_literal(text, start, literal)
+    tokens = javascript_tokens(text)
+    interactive_opaque = not bounded and (
+        any(
+            token == "tools" and tokens[index + 1 : index + 2] == ["["]
+            for index, token in enumerate(tokens)
+        )
+        or any(
+            "write_stdin" in match[0] and (match["reference"] is not None or (match[0].startswith("`") and "${" in match[0]))
+            for match in site.finditer(text)
+        )
+    )
+    for arguments, interactive in sites:
+        decoded = claim_javascript.literal_commands(arguments, LITERAL_SHELL_VALUE, LITERAL_LOOP_VALUES, LITERAL_EXPANSION_BYTES)
         if decoded is None:
             opaque = True
             interactive_opaque = interactive_opaque or interactive

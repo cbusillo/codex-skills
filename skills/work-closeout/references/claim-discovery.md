@@ -35,52 +35,46 @@ prove complete claim coverage. Their known receipts are still checked. Keep
 the claiming host's journal and complete native lineage when using remote shells.
 
 The exact native zero-time `Script failed` / `SyntaxError: Invalid or unexpected
-token` result proves no execution only for a single literal shell-call wrapper
-with an unescaped physical newline inside an ordinary quoted string. That
+token` result proves no execution only for one supported literal shell-call
+wrapper, or a complete sequence of text-wrapped literal shell calls, with an
+unescaped physical newline inside an ordinary quoted string. That
 string cannot parse in either a script or module. Template newlines and escaped
 line continuations do not supply that proof. Other failures, runtime `eval`
 errors and differences between JavaScript engines stay conditional. Known
 receipt targets are still checked; no recorded JavaScript is executed.
 
-Code-mode templates can expand a leading literal `for (const n of [1,2])` loop's
-first shell call, or a leading constant literal array passed immediately through
-`Promise.all` or `Promise.allSettled` to `map`. Literal command-string arrays
-also support a shorthand `cmd` field, and literal tuple arrays support
-destructured map parameters such as `([repo, number])`. One leading `store`
-of two plain literal strings is allowed. A map's command call must close the
-callback immediately; later output may read the array after the awaited map.
-Only directly bound names may be interpolated, and every interpolated value
-must be a plain shell word under the same
-bounds as literal shell loops. Each expanded command stays a separate shell
-execution and goes through claim discovery and canonical release checks. Map
-arrays and parameters must have no other references during the callback; unsupported execution stays
-conditional. Command objects with duplicate command fields, spreads, computed
-keys or accessors also stay conditional. Other statements before the call,
-mutations, additional template substitutions, escaped identifiers, escaped keys,
-unshared string escapes or escaped templates, inexact numeric values and shell syntax in
-values keep the invocation conditional. Quoted commands support only escapes
-shared by JavaScript and Python, including quoted newlines and hexadecimal or
-four-digit Unicode escapes. Use a plain command key and keep unrelated template
-substitutions in a separate code cell. This is literal
-decoding, never JavaScript execution.
+Command fields and their literal bindings use the same syntax tree. The reader
+expands immutable constant strings/arrays, literal `for-of` loops, and maps of
+literal arrays, including destructured tuple parameters and numeric map indices.
+Template substitutions support plain string/integer bindings and exact integer
+addition, under the existing literal shell word and expansion bounds. Workdir
+or output templates do not change the command's bindings. Each expanded command
+goes through shell discovery and canonical release checks. Unknown bindings,
+inexact integers, expansion overflow, unshared string escapes and escaped
+templates stay conditional. Duplicate command fields, spreads, computed keys
+and accessors also stay conditional. Quoted command strings support only escapes
+shared by JavaScript and Python. This is literal decoding, never execution.
 
 In claim-related code-mode cells, a Tree-sitter JavaScript syntax tree checks
 that every effect belongs to a bounded data language. It accepts direct native
 shell/output calls, literal arrays, plain loops and conditions, and immutable
 native or JSON data reads. Read-only string/array methods support the recorded
 JSON parsing, filtering, mapping and output-formatting shapes. Inline callbacks
-are checked under their own data bindings; functions cannot be stored in data or
-passed by name, except `forEach(text)`. Only numeric `let` counters may be
-incremented. Properties, loop assignment targets and mapped input arrays cannot
-be mutated. Prototype/constructor access, capability aliases, unknown calls,
+are checked under their own data bindings. Calls are limited to supported
+non-constructor builtins and checked inline callbacks; callback references stay
+conditional except `forEach(text)`. Function literals cannot enter data directly.
+Only numeric `let` counters may be incremented. Explicit property writes,
+mutating method names and loop assignment targets stay conditional. Literal
+arrays used to decode targets remain immutable. Prototype/constructor access, capability aliases, unknown calls,
 named functions, executable options, computed callees, regex/division syntax,
 identifier escapes and unsupported syntax keep coverage conditional. A parse
 error alone never proves nonexecution. The reader assumes native results,
 `load` values and tool metadata obey the harness's serializable-data contract;
 the existing stored-claim check still covers later `load` cells. Use direct
 literal shell calls and `text(result)` outside this subset. Known shell calls
-come from syntax-tree locations, with conservative literal recovery for
-unbounded cells. Every decoded target remains subject to release verification
+and their argument objects come from syntax-tree locations, including recovered
+nodes in unbounded cells. Aliased or computed input capabilities retain pending
+interactive claim uncertainty. Every decoded target remains subject to release verification
 even when the surrounding cell is conditional.
 
 A shell variable assigned once to a literal value at the top level, and a `for`

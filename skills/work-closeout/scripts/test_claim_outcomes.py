@@ -146,6 +146,72 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
                         {"targets": {("test/a", 5)} if prefix else set(), "unresolved_invocations": []},
                     )
 
+    def test_recorded_command_pairs_and_map_indices_are_bounded(self) -> None:
+        pairs = json.dumps([["read", "uv run gh-plan.py --repo test/a wait --help"], ["claim", COMMAND]])
+        sources = [
+            f"for(const [name,cmd] of {pairs}){{text({{name,...await tools.exec_command({{cmd,max_output_tokens:7500}})}});}}",
+            'const roots=["first","second"];const results=await Promise.allSettled(roots.map((root,index)=>tools.exec_command({'
+            "cmd:`uv run gh-plan.py --repo test/a claim ${index+1} > /private/log-${index+1}.json`,"
+            "workdir:`/private/${root}`})));results.forEach((r,i)=>text({name:roots[i],...r}));",
+        ]
+        for source, targets in zip(sources, ({("test/a", 5)}, {("test/a", 1), ("test/a", 2)}), strict=True):
+            with self.subTest(source=source):
+                self.assertEqual(
+                    check_claims.history.literal_targets(invocation(source), SESSION),
+                    {"targets": targets, "unresolved_invocations": []},
+                )
+
+    def test_structural_command_fields_cannot_be_replaced_by_decoys(self) -> None:
+        sources = [
+            'text(await tools.exec_command({a:1 /*, cmd:"echo ok", b:"*/, cmd:"uv run gh-plan.py --repo test/a claim 5", c:"x"}));',
+            'text(await tools.exec_command({a:`${"`"}`,b:"`, cmd:\'echo ok\'}",cmd:"uv run gh-plan.py --repo test/a claim 5"}));',
+        ]
+        for source in sources:
+            with self.subTest(source=source):
+                for prefix in ("", 'text(await tools.exec_command({cmd:"uv run gh-plan.py --repo test/b claim 9"}));'):
+                    report = check_claims.history.literal_targets(invocation(prefix + source), SESSION)
+                    self.assertEqual(report["targets"], {("test/a", 5), ("test/b", 9)} if prefix else {("test/a", 5)})
+
+    def test_literal_decoding_respects_lexical_shadows_and_overflow(self) -> None:
+        sources = [
+            f'for(const [,cmd] of [["echo ok",{json.dumps(COMMAND)}]]){{text(await tools.exec_command({{cmd}}));}}',
+            f'const cmd={json.dumps(COMMAND)};try{{throw "uv run gh-plan.py --repo test/a claim 6";}}catch(cmd){{text(await tools.exec_command({{cmd}}));}}',
+            "const n=5;for(let n=0;n<2;n++){text(await tools.exec_command({cmd:`uv run gh-plan.py --repo test/a claim ${n}`}));}",
+            f'const cmd={json.dumps(COMMAND)};{{text(await tools.exec_command({{cmd}}));const cmd=load("other");}}',
+            'const o={"0":"","1":"constructor","2":"constructor",length:3,map:[].reduce};const factory=o.map((acc,key)=>acc[key]);'
+            'const f={includes:factory}.includes("return eval");const evaluate={includes:f}.includes("ignored");'
+            "text({\"tools.exec_command({cmd:'uv run gh-plan.py claim 5'})\":{toJSON:evaluate}});",
+        ]
+        for source in sources:
+            with self.subTest(source=source):
+                self.assertTrue(check_claims.history.literal_targets(invocation(source), SESSION)["unresolved_invocations"])
+        values = json.dumps(list(range(check_claims.history.LITERAL_LOOP_VALUES)))
+        source = f"for(const a of {values}){{for(const b of {values}){{text(await tools.exec_command({{cmd:`uv run gh-plan.py --repo test/a claim ${{a}}${{b}}`}}));}}}}"
+        self.assertTrue(check_claims.history.literal_targets(invocation(source), SESSION)["unresolved_invocations"])
+
+    def test_interactive_capability_aliases_keep_the_pending_claim_context(self) -> None:
+        initial = 'text(await tools.write_stdin({session_id:41,chars:"CMD=\\"uv run gh-plan.py claim 5\\"\\n"}));'
+        for source in (
+            'const w=tools["write_stdin"];await w({session_id:41,chars:"$CMD\\n"});',
+            'const w=tools.write_stdin;await w({session_id:41,chars:"$CMD\\n"});',
+            'const w=tools[load("method")];await w({session_id:41,chars:"$CMD\\n"});',
+        ):
+            with self.subTest(source=source):
+                rows = invocation(initial)
+                rows.extend({"payload": {**row["payload"], "call_id": "followup"}} for row in invocation(source))
+                report = check_claims.history.literal_targets(rows, SESSION)
+                self.assertTrue(any(item["call_id"] == "followup" for item in report["unresolved_invocations"]))
+
+    def test_comment_line_endings_and_invalid_keys_do_not_hide_claims(self) -> None:
+        source = "// comment\rtext(await tools.exec_command({cmd:" + json.dumps(COMMAND) + "}));"
+        self.assertIn(("test/a", 5), check_claims.history.literal_targets(invocation(source), SESSION)["targets"])
+        for source in (
+            'let i=0;i /*\n*/--> `\ntext(await tools.exec_command({cmd:"uv run gh-plan.py claim 5"}));\n//`;',
+            'text(await tools.exec_command({"\x00":1,cmd:"uv run gh-plan.py claim 5"}));',
+        ):
+            with self.subTest(source=source):
+                self.assertTrue(check_claims.history.literal_targets(invocation(source), SESSION)["unresolved_invocations"])
+
     def test_native_parse_failure_proves_the_cell_did_not_execute(self) -> None:
         source = 'text(await tools.exec_command({cmd:"cat <<EOF\\ngh-plan.py claim status\nEOF"}));'
         output = [
@@ -160,6 +226,11 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
         self.assertEqual(
             check_claims.history.literal_targets(invocation(source_with_target, output), SESSION),
             {"targets": {("test/a", 5)}, "unresolved_invocations": []},
+        )
+        sequence = source + 'text(await tools.exec_command({cmd:"git status --short"}));'
+        self.assertEqual(
+            check_claims.history.literal_targets(invocation(sequence, output), SESSION),
+            {"targets": set(), "unresolved_invocations": []},
         )
         for continuation in ("\\\n", "\\\r\n"):
             valid = source.replace("status\nEOF", "status" + continuation + "EOF")
@@ -183,6 +254,13 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
 
     def test_dynamic_dispatch_does_not_hide_sibling_claims(self) -> None:
         sources = [
+            'const box={includes:[].map.constructor};const f=box.includes("return eval");'
+            'const evaluate={includes:f}.includes("ignored");'
+            "text({\"tools.exec_command({cmd:'uv run gh-plan.py claim 5'})\":{toJSON:evaluate}});",
+            'const o={"0":"","1":"constructor","2":"constructor",length:3,map:[].reduce};'
+            'const factory=o.map((acc,key)=>acc[key]);const f={includes:factory}.includes("return eval");'
+            'const evaluate={includes:f}.includes("ignored");'
+            "text({\"tools.exec_command({cmd:'uv run gh-plan.py claim 5'})\":{toJSON:evaluate}});",
             'text({note:"gh-plan.py claim",eval});',
             'text({note:"gh-plan.py claim",toJSON});',
             'text({toJSON:()=>tools.exec_command({cmd:"uv run gh-plan.py claim 5"})});',
