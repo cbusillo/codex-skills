@@ -80,6 +80,11 @@ def missing_body_references(reader: GitHubReader, repo: str, issue: dict[str, An
     return missing
 
 
+def names_thread(gap: str, ref: str) -> bool:
+    ref_repo, ref_number = ref.split("#")
+    return re.search(rf"repos/{re.escape(ref_repo)}/issues/{ref_number}(?!\d)", gap, re.IGNORECASE) is not None
+
+
 def describe_missing(repo: str, ref: str) -> str:
     ref_repo, ref_number = ref.split("#")
     if ref_repo.casefold() == repo.casefold():
@@ -231,22 +236,22 @@ def check(repo: str, number: int, *, issue: dict[str, Any] | None = None, decisi
                                       cause="decision_unverified", payload=result) from error
         return {"result": "director_decision", "decision": decision, **result}
     missing = missing_body_references(client, repo, issue) if gaps and isinstance(issue, dict) else []
-    if missing:
-        lines = [f"Cannot close {thread_ref(repo, number)}: its body cites issues that do not exist:",
-                 *(describe_missing(repo, ref) for ref in missing),
-                 "Correct each reference in the body, then rerun the close."]
-        raise CloseAttentionError("\n".join(lines), cause="missing_references",
-                                  payload={**result, "missing_references": missing})
+    gaps = [gap for gap in gaps if not any(names_thread(gap, ref) for ref in missing)]
     lines = [f"Cannot close {thread_ref(repo, number)}:"]
+    if missing:
+        lines.append("its body cites issues that do not exist; correct each reference in the body, then rerun:")
+        lines += [describe_missing(repo, ref) for ref in missing]
     if rows:
         lines.append("these comments from outside people have no reply since they were posted:")
         lines += [describe(row) for row in rows]
     if gaps:
         lines.append("comments could not be fully checked on these threads:")
         lines += [f"- {gap}" for gap in gaps]
-    lines.append("Read and answer each comment with a new reply on its thread (editing an older comment does not "
-                 "count), or rerun once the threads are readable. Only the Director can close over them: rerun "
-                 "with --unanswered-decision linking the Director's comment on this issue, or a "
-                 "\"Director decision:\" record the Director approved with a thumbs-up. Do not close it another way.")
-    raise CloseAttentionError("\n".join(lines), cause="unanswered_comments" if rows else "coverage_unknown",
-                              payload=result)
+    if rows or gaps:
+        lines.append("Read and answer each comment with a new reply on its thread (editing an older comment does "
+                     "not count), or rerun once the threads are readable. Only the Director can close over them: "
+                     "rerun with --unanswered-decision linking the Director's comment on this issue, or a "
+                     "\"Director decision:\" record the Director approved with a thumbs-up. Do not close it another "
+                     "way.")
+    cause = "unanswered_comments" if rows else "coverage_unknown" if gaps else "missing_references"
+    raise CloseAttentionError("\n".join(lines), cause=cause, payload={**result, "missing_references": missing})

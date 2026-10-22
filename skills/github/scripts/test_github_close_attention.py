@@ -143,6 +143,25 @@ class CloseAttentionTests(unittest.TestCase):
         corrected = fake_reader(issue={"state": "open", "body": "Done in director/other#471 and #9."})
         self.assertEqual(gate.check(REPO, 7, reader=corrected, radar=radar(status="clear"))["result"], "passed")
 
+    def test_missing_reference_keeps_other_blockers_and_their_route(self) -> None:
+        missing = fake_reader(issue={"state": "open", "body": "Done in #471 and #9."},
+                              missing=(f"repos/{REPO}/issues/471",))
+        unreadable = degraded_thread(f"{REPO}#471")
+
+        def blocked(threads: list[str], gh_cmd: str | None = None) -> dict[str, Any]:
+            payload = unreadable(threads, gh_cmd)
+            payload["attention"] = [row(9)]
+            payload["coverage"]["errors"].append(
+                {"repo": REPO, "lane": "issue_comments", "error": f"gh api repos/{REPO}/issues/9/comments: HTTP 502"})
+            return payload
+        with self.assertRaises(gate.CloseAttentionError) as refused:
+            gate.check(REPO, 7, reader=missing, radar=blocked)
+        self.assertEqual(refused.exception.cause, "unanswered_comments")
+        self.assertEqual(refused.exception.payload["missing_references"], [f"{REPO}#471"])
+        self.assertIn(f"client on {REPO}#9", str(refused.exception))
+        self.assertIn("HTTP 502", str(refused.exception))
+        self.assertIn("--unanswered-decision", str(refused.exception))
+
     def test_existing_unreadable_thread_names_it_and_keeps_the_director_route(self) -> None:
         reader = fake_reader(issue={"state": "open", "body": "Done in #9."})
         with self.assertRaises(gate.CloseAttentionError) as refused:
