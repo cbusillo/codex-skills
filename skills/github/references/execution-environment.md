@@ -9,7 +9,7 @@ they are updated, and what validation prevents silent drift.
 
 | Surface | Selection and mutability | Update path | Validation |
 | --- | --- | --- | --- |
-| Remote GitHub Actions | Approved sources are GitHub-maintained `actions/checkout` and trusted `astral-sh/setup-uv`; adding another source edits `APPROVED_REMOTE_ACTIONS`. Publisher trust controls the allowlist, not immutability: every remote executable reference uses a full commit SHA with a release-tag comment. Local actions are exempt because they execute the checked-out commit. | Weekly Dependabot `github-actions` PRs. | `scripts/validate_github_actions_security.py` checks sources, SHAs, and release-tag provenance comments. `.github/dependabot.yml` is not validated. |
+| Remote GitHub Actions | Approved sources are GitHub-maintained `actions/checkout` and trusted `astral-sh/setup-uv`; adding another source edits `APPROVED_REMOTE_ACTIONS`. Publisher trust controls the allowlist, not immutability: every remote executable reference uses a full commit SHA with a release-tag comment. Local actions are exempt because they execute the checked-out commit. | Weekly Renovate GitHub Actions PRs. | `scripts/validate_github_actions_security.py` checks sources, SHAs, and release-tag provenance comments. `renovate.json` is not validated. |
 | PEP 723 direct dependencies | Exact repository-consistent pins. Transitive dependencies remain uv-resolved at execution time. | Weekly/manual `Update PEP 723 Dependencies` PR workflow. | `scripts/update_pep723_dependencies.py --check` plus the full repository gate. |
 | Closeout shell syntax reader | MIT Tree-sitter Python bindings and Bash grammar, reviewed against their [official Python documentation](https://tree-sitter.github.io/py-tree-sitter/) and [Bash package release](https://pypi.org/project/tree-sitter-bash/) on October 21, 2026. PEP 723 metadata owns exact pins. Parse errors keep legacy claim coverage incomplete. | The existing PEP 723 update workflow maintains both pins. | Native shell and program-channel fixtures and importing entrypoint tests run in Python 3.12 and 3.14; the dependency checker enforces agreement among declared pins. |
 | Agent activity Unix websocket client | `aiohttp` stable 3.x, confirmed from PyPI on October 11, 2026; the PEP 723 metadata owns the exact pin. | The existing PEP 723 update workflow maintains the pin. | The activity helper's real Unix-websocket fixtures run in both Python validation lanes. |
@@ -88,7 +88,7 @@ runtime-major decisions.
 - [uv `required-version` setting](https://docs.astral.sh/uv/reference/settings/#required-version)
 - [Python version support status](https://devguide.python.org/versions/)
 - [GitHub-hosted runner image labels and migration policy](https://github.com/actions/runner-images#available-images)
-- [Dependabot configuration options](https://docs.github.com/en/code-security/dependabot/working-with-dependabot/dependabot-options-reference)
+- [Renovate configuration options](https://docs.renovatebot.com/configuration-options/)
 
 GitHub shell bootstraps use `github/scripts/github-python`: it asks uv for the
 native user-configured cache path, exports that route, and runs stdlib Python
