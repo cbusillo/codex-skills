@@ -6,6 +6,8 @@
 """Exercise pilot parsers and terminal behavior with disposable transcripts/adapters."""
 
 import argparse
+import contextlib
+import io
 import asyncio
 import errno
 import json
@@ -850,6 +852,60 @@ class LedgerTests(unittest.TestCase):
         notices = codex_idle_watch.poll(self.ledger, seen, 90, 1201)
         self.assertEqual(len(notices), 1)
         self.assertIsNotNone(notices[0]["closeout_request"])
+
+    def watch_args(self, **overrides) -> SimpleNamespace:
+        return SimpleNamespace(**{
+            "ledger": self.ledger, "idle_seconds": 90, "interval": 45, "deadline_seconds": 1800,
+            "once": False, "capacity_state": None, "resume_capacity": False, "harness": "codex",
+            "delivered_state": self.root / "delivered.json", **overrides})
+
+    def test_watch_exits_on_closeout_request_so_background_caller_wakes(self):
+        self.write([event("agent_message", message="Still working."), event("task_started")])
+        sleeps = []
+
+        def worker_finishes_between_polls(seconds: float) -> None:
+            sleeps.append(seconds)
+            self.assertEqual(len(sleeps), 1, "watch kept polling after a closeout request")
+            self.write([event("agent_message", message="Safe to exit: yes"), event("task_complete")])
+
+        output = io.StringIO()
+        with patch.object(codex_idle_watch.time, "sleep", side_effect=worker_finishes_between_polls), \
+                contextlib.redirect_stdout(output):
+            self.assertEqual(codex_idle_watch.watch(self.watch_args(), None), 0)
+        notices = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertEqual(notices[-1]["closeout_request"]["session_id"], self.entry["session_id"])
+
+    def run_watch_to_deadline(self) -> tuple[int, list[float], list[dict]]:
+        clock = iter(range(0, 10_000, 45))
+        sleeps = []
+        output = io.StringIO()
+        with patch.object(codex_idle_watch.time, "monotonic", side_effect=lambda: next(clock)), \
+                patch.object(codex_idle_watch.time, "sleep", side_effect=sleeps.append), \
+                contextlib.redirect_stdout(output):
+            result = codex_idle_watch.watch(self.watch_args(deadline_seconds=180), None)
+        return result, sleeps, [json.loads(line) for line in output.getvalue().splitlines()]
+
+    def test_watch_wakes_once_per_closeout_request_across_rearms(self):
+        result, sleeps, notices = self.run_watch_to_deadline()
+        self.assertEqual((result, sleeps), (0, []))
+        self.assertIsNotNone(notices[0]["closeout_request"])
+        result, sleeps, notices = self.run_watch_to_deadline()
+        self.assertEqual(result, 0)
+        self.assertGreater(len(sleeps), 1)
+        self.assertEqual(len(notices), 1)
+        self.write([event("agent_message", message="Safe to exit: yes"),
+                    {**event("task_complete"), "timestamp": "2026-10-03T00:05:00Z"}])
+        _, sleeps, _ = self.run_watch_to_deadline()
+        self.assertEqual(sleeps, [])
+
+    def test_watch_selects_claude_sessions_for_closeout(self):
+        self.entry["harness"] = "claude"
+        self.transcript.write_text(json.dumps(
+            {**claude("Safe to exit: yes"), "sessionId": self.entry["session_id"]}) + "\n")
+        self.ledger.write_text(json.dumps([self.entry]))
+        self.assertTrue(codex_idle_watch.poll(self.ledger, {}, 90, 1001)[0]["skipped"])
+        notice = codex_idle_watch.poll(self.ledger, {}, 90, 1001, harness="claude")[0]
+        self.assertEqual(notice["closeout_request"]["harness"], "claude")
 
     def test_claude_native_notice_uses_exact_session_and_shared_route(self):
         self.entry["harness"] = "claude"

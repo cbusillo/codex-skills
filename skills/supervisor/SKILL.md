@@ -668,9 +668,12 @@ for recovery or repeat them as fact.
    before you rely on a background driver or watcher the handoff says is
    running.
 5. Recreate the ~23-minute check and morning digest with the harness's own
-   scheduling feature. Arm Claude Code turn-end notices (`notify_when_idle`)
-   and the bounded `skills/supervisor/scripts/codex_idle_watch.py` watch for
-   Codex turn ends. On either notice, immediately run
+   scheduling feature. Start the bounded
+   `skills/supervisor/scripts/codex_idle_watch.py` watch as a background job
+   once per harness (`--harness codex` and `--harness claude`), each with its
+   own `--delivered-state` file. A background job wakes you only when it
+   exits, so the watch exits on each `closeout_request` it has not delivered.
+   On that exit, or another turn-end notice, immediately run
    [finished-session verification](#close-finished-sessions-on-every-notice-and-check)
    for that exact session; do not defer it to the ~23-minute check. A notice
    prompts verification, never a completion verdict.
@@ -732,8 +735,9 @@ and its terminal, transcript and account readbacks before sending input.
 
 ## Close Finished Sessions On Every Notice And Check
 
-Handle turn-end notices as they arrive. For a Codex notice with
-`closeout_request`, start this procedure immediately. For a Claude
+Handle turn-end notices as they arrive. For a watch notice with
+`closeout_request`, start this procedure immediately and re-arm that
+harness's watch with the same `--delivered-state` file. For a Claude
 `notify_when_idle` notice, resolve its exact native session in the ledger and
 run `finished_map.py --ledger <private-ledger.json> --session-id <native-id>`;
 its `closeout_request` enters the same procedure. Re-read the transcript even
