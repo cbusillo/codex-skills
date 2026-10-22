@@ -147,8 +147,8 @@ class TranscriptMeasureTests(unittest.TestCase):
             "gh pr checks 4": {"github"},
             "gh pr checks 4 --watch=false": {"github"},
             "gh pr checks 4 --watch": {"babysit-pr"},
-            "gh pr checks 4 -w": {"babysit-pr"},
-            "gh pr checks --watch=true 4": {"babysit-pr"},
+            "gh pr checks 4 -w": {"github"},
+            "gh pr checks 4 --watch --interval 30 2>&1": {"babysit-pr"},
             "gh run watch 9": {"babysit-pr"},
         }
         for command, expected in owners.items():

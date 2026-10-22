@@ -29,11 +29,11 @@ from pathlib import Path
 # Patterns match the start of a shell segment, either as written or with its helper path
 # reduced to the program name ("uv run /x/gh-pr.py merge 3" also as "gh-pr.py merge 3").
 STEPS = {
-    "github": r"gh pr (create|merge|ready|edit|comment|view|update-branch)|gh pr checks(?!.*\s(--watch|-w)(=true)?(\s|$))|git push"
+    "github": r"gh pr (create|merge|ready|edit|comment|view|update-branch)|gh pr checks(?!.*\s--watch(\s|$))|git push"
     r"|gh-pr(\.py)? (--repo \S+ )?(create|merge|ready|edit|comment|view|update-branch|supersede|checks)"
     r"|git-(commit|push)-as-bot|reconcile-runtime-checkout|gh api|gh-with-env-token (api|pr|issue)|github_api(\.py)?"
     r"|gh issue (create|edit|close|comment|view)|gh-issue|gh-comment|github-ci-diagnose",
-    "babysit-pr": r"gh pr checks.*\s(--watch|-w)(=true)?(\s|$)|gh run watch|gh_pr_watch|github_workflow_babysit",
+    "babysit-pr": r"gh pr checks.*\s--watch(\s|$)|gh run watch|gh_pr_watch|github_workflow_babysit",
     "github-plan": r"gh issue list|gh search issues|gh project|gh-plan(\.py)?",
     "python-uv-workflow": r"uv (sync|add|lock|remove)|pytest|pip3? install|python3? -m (pytest|pip|venv)"
     r"|uv run (--quiet )?(?!--quiet)(?!--with)(?!--no-project)(?!python3? -c)(?!\S*skills/)(?!\$)\S+",
