@@ -426,8 +426,9 @@ preferred IDE and must clean it up afterward when it owns the open.
 
 A linked worktree isolates Git checkout state; it does not serialize processes
 inside that worktree or stop IDE VFS refreshes, indexing, and project-model
-updates. Before inspection, await builds, installs, generators, formatters, and
-other same-worktree writers, then avoid new writes until lifecycle cleanup
+updates. Before inspection, await builds, installs, generators, formatters,
+Anthropic or Google model reviews (their `.model-review-*` scratch lives in the
+checkout), and other same-worktree writers, then avoid new writes until lifecycle cleanup
 finishes. The helper's readiness barrier observes IDE status only; it cannot
 identify arbitrary writers or prove that ignored files are quiet.
 
