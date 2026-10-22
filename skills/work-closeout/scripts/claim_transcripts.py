@@ -382,13 +382,14 @@ def tool_outputs(records: list[dict]) -> dict[str, list[object]]:
                 if isinstance(block, dict) and block.get("type") == "tool_result":
                     outputs.setdefault(str(block.get("tool_use_id", "")), []).append(block.get("content"))
     inputs = {identifier: text for identifier, text, _ in tool_inputs(records)}
-    for blocks in list(outputs.values()):
+    recorded = {identifier: list(blocks) for identifier, blocks in outputs.items()}
+    for identifier, blocks in recorded.items():
         yielded = {item["session_id"] for block in blocks for item in values(block) if type(item.get("session_id")) is int}
         if not yielded:
             continue
         for followup, text in inputs.items():
-            if any(re.search(rf"session_id[\"']?\s*:\s*{process}(?!\d)", text) for process in yielded):
-                blocks.extend(outputs.get(followup, []))
+            if followup != identifier and any(re.search(rf"session_id[\"']?\s*:\s*{process}(?!\d)", text) for process in yielded):
+                outputs[identifier].extend(recorded.get(followup, []))
     return outputs
 
 

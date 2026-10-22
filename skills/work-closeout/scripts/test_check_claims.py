@@ -540,6 +540,17 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.comments.append(self.release)
         self.assertTrue(helper.check([root])["claims_clear"])
 
+    def test_polling_one_process_many_times_links_each_poll_output_once(self) -> None:
+        polls = 12
+        rows = [{"type": "custom_tool_call_output", "call_id": "start", "output": json.dumps({"session_id": 41})}]
+        poll_input = 'text(await tools.write_stdin({session_id:41,chars:""}));'
+        for poll in range(polls):
+            rows.append({"type": "custom_tool_call", "name": "exec", "call_id": f"poll-{poll}", "input": poll_input})
+            rows.append({"type": "custom_tool_call_output", "call_id": f"poll-{poll}", "output": json.dumps({"session_id": 41})})
+        outputs = helper.history.tool_outputs([{"payload": row} for row in rows])
+        self.assertEqual(len(outputs["start"]), 1 + polls)
+        self.assertLessEqual(sum(map(len, outputs.values())), (1 + polls) ** 2)
+
     def test_literal_repository_target_survives_a_truncated_claim_result(self) -> None:
         root = self.entry()
         with Path(root["transcript"]).open("a") as stream:
