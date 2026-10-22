@@ -125,7 +125,10 @@ class JavascriptData:
                 for child in children(node)
                 if child.type not in {"string_fragment", "escape_sequence", "comment"}
             ]
-            if kind in {"parenthesized_expression", "unary_expression"} and results == ["number"]:
+            if results == ["number"] and (
+                kind == "parenthesized_expression"
+                or (kind == "unary_expression" and source(node.child_by_field_name("operator")) in {"+", "-", "~"})
+            ):
                 return "number"
             return "data"
         raise ValueError(kind)
