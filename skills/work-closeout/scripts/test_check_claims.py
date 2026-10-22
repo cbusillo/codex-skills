@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["tree-sitter==0.26.0", "tree-sitter-bash==0.25.1"]
+# dependencies = ["tree-sitter==0.26.0", "tree-sitter-bash==0.25.1", "tree-sitter-javascript==0.25.0"]
 # ///
 """Exercise native-session closeout against disposable GitHub and transcript records."""
 import contextlib
@@ -2390,7 +2390,7 @@ print(root)"""
             (f'for (const workdir of ["/a", "/b"]) text(await {command});', False),
             (f"while (next()) text(await {command});", True),
             (f'await Promise.all(["/a", "/b"].map(async workdir => {command}));', False),
-            (f'async function run(workdir) {{ return {command}; }} text(await run("/a")); text(await run("/b"));', False),
+            (f'async function run(workdir) {{ return {command}; }} text(await run("/a")); text(await run("/b"));', True),
             (f"text(await {command});", True),
         ]
         receipts = [{"claim": SOURCE, "issue": {"repo": repo, "number": 5}} for repo in ("first/a", "second/b")]

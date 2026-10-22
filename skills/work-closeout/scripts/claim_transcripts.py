@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["tree-sitter==0.26.0", "tree-sitter-bash==0.25.1"]
+# dependencies = ["tree-sitter==0.26.0", "tree-sitter-bash==0.25.1", "tree-sitter-javascript==0.25.0"]
 # ///
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import claim_history
+import claim_javascript
 import github_plan_claim_log as claim_log
 import tree_sitter_bash
 from tree_sitter import Language, Node, Parser
@@ -495,186 +496,6 @@ def javascript_object_end(tokens: list[str]) -> int | None:
     return None
 
 
-def javascript_calls_are_bounded(text: str) -> bool:
-    tokens = javascript_tokens(text)
-    globals_ = {"tools", "text", "store", "load", "exit", "Promise", "ALL_TOOLS"}
-    code = " ".join(tokens)
-    syntax_tokens = ["literal" if re.fullmatch(JAVASCRIPT_LITERAL, token, re.DOTALL) else token for token in tokens]
-    syntax = " ".join(syntax_tokens)
-    functions = set(re.findall(r"\bfunction ([A-Za-z_]\w*) \(", syntax))
-    bindings = re.findall(r"\b(?:const|let|var) ([A-Za-z_]\w*)", syntax)
-    if globals_ & (set(bindings) | functions) or functions & set(bindings):
-        return False
-    parameters = re.findall(r"\bfunction [A-Za-z_]\w* \( ([^)]*) \)", syntax)
-    if any(re.fullmatch(r"(?:[A-Za-z_]\w*(?: , [A-Za-z_]\w*)*)?", parameter.strip()) is None for parameter in parameters):
-        return False
-    parameters.extend(re.findall(r"([A-Za-z_]\w*|\( [A-Za-z_][\w ,]* \)|\( \[ [\w ,]+ \] \)) = >", syntax))
-    if any((globals_ | functions) & set(re.findall(r"[A-Za-z_]\w*", parameter)) for parameter in parameters):
-        return False
-    catches = set(re.findall(r"\bcatch \( ([A-Za-z_]\w*) \)", syntax))
-    if catches & (globals_ | functions):
-        return False
-    binding_names = bindings + list(functions) + list(catches)
-    binding_names.extend(name for parameter in parameters for name in re.findall(r"[A-Za-z_]\w*", parameter))
-    locals_ = set(binding_names)
-    keywords = {
-        "const",
-        "let",
-        "var",
-        "async",
-        "await",
-        "function",
-        "return",
-        "for",
-        "of",
-        "if",
-        "else",
-        "while",
-        "switch",
-        "case",
-        "default",
-        "break",
-        "continue",
-        "try",
-        "catch",
-        "finally",
-        "throw",
-        "true",
-        "false",
-        "null",
-        "undefined",
-        "typeof",
-        "void",
-        "in",
-        "instanceof",
-        "do",
-        "new",
-    }
-    for index, token in enumerate(tokens):
-        if token in {"\\", "/"} or tokens[index : index + 4] == ["<", "!", "-", "-"]:
-            return False
-        if token.startswith(('"', "'")) and re.search(r"[\r\n]", re.sub(r"\\(?:\r\n|\r|\n)", "", token)):
-            return False
-        if token in {"+", "-"} and tokens[index + 1 : index + 2] == [token]:
-            counter = tokens[index - 1] if index else ""
-            if (
-                index < 2
-                or tokens[index - 2] == "."
-                or binding_names.count(counter) != 1
-                or re.search(r"\blet " + re.escape(counter) + r" = [0-9]+(?: ;| ,| \))", syntax) is None
-            ):
-                return False
-        if token == "=" and tokens[index - 2 : index] in (["<", "<"], [">", ">"]):
-            return False
-        if token.startswith("`"):
-            if "${" in re.sub(r"\$\{[A-Za-z_]\w*\}", "", token):
-                return False
-            if index and tokens[index - 1] not in {"(", "=", ":", ",", "[", "return", "await"}:
-                return False
-        if (
-            token in {"class", "import", "export"}
-            and tokens[index + 1 : index + 2] != [":"]
-            and (index == 0 or tokens[index - 1] != ".")
-        ):
-            return False
-        if token in {"const", "let", "var"} and (
-            index + 1 >= len(tokens) or re.fullmatch(r"[A-Za-z_]\w*", tokens[index + 1]) is None
-        ):
-            return False
-        if (
-            re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", token)
-            and token not in globals_ | locals_ | keywords
-            and (index == 0 or tokens[index - 1] != ".")
-            and tokens[index + 1 : index + 2] != [":"]
-        ):
-            return False
-        if token == "=" and tokens[index + 1 : index + 2] not in ([">"], ["="]) and tokens[index - 1] not in {"=", "!", "<", ">"}:
-            if index < 2 or tokens[index - 2] not in {"const", "let", "var"}:
-                return False
-        if token != "(":
-            continue
-        previous = tokens[index - 1] if index else ""
-        end = javascript_object_end(tokens[index:])
-        if end is not None and tokens[index + end + 1 : index + end + 3] == ["=", ">"]:
-            parameter_text = " ".join(tokens[index + 1 : index + end])
-            if re.fullmatch(r"(?:[A-Za-z_]\w*(?: , [A-Za-z_]\w*)*|\[ [A-Za-z_]\w*(?: , [A-Za-z_]\w*)* \])?", parameter_text) is None:
-                return False
-            if globals_ & set(re.findall(r"[A-Za-z_]\w*", parameter_text)):
-                return False
-        if previous in {"if", "for", "while", "switch", "catch"}:
-            if previous == "catch" and end is not None and globals_ & set(tokens[index + 1 : index + end]):
-                return False
-            continue
-        if index == 0 or previous in {"(", "=", ">", ":", ",", "return", "await", "!", ";", "{"}:
-            continue
-        if previous in {"text", "store", "load", "exit"} and (index < 2 or tokens[index - 2] != "."):
-            continue
-        if previous in functions and (index < 2 or tokens[index - 2] != "."):
-            continue
-        if index >= 3 and tokens[index - 2] == ".":
-            receiver = tokens[index - 3]
-            if receiver == "tools" and previous in {"exec_command", "shell_command", "shell", "write_stdin", "apply_patch"}:
-                continue
-            if receiver == "Promise" and previous in {"all", "allSettled"}:
-                continue
-            if index >= 5 and tokens[index - 3 : index - 1] == ["output", "."] and previous in {"trim", "slice", "split"}:
-                result = tokens[index - 5]
-                if (
-                    tokens[index - 4] == "."
-                    and binding_names.count(result) == 1
-                    and re.search(r"\bconst " + re.escape(result) + r" = await tools \. exec_command \(", syntax)
-                    and end is not None
-                    and all(
-                        item in {",", "-"} or item.isdecimal() or re.fullmatch(JAVASCRIPT_LITERAL, item, re.DOTALL)
-                        for item in tokens[index + 1 : index + end]
-                    )
-                ):
-                    continue
-            if previous == "includes" and re.search(r"for \( const " + re.escape(receiver) + r" of \[", code):
-                loop = re.match(r"for \( const " + re.escape(receiver) + r" of (\[ .+? \]) \) \{", code)
-                if (
-                    loop is not None
-                    and binding_names.count(receiver) == 1
-                    and re.fullmatch(JAVASCRIPT_LITERAL, tokens[index + 1]) is not None
-                ):
-                    try:
-                        items = ast.literal_eval(loop[1])
-                    except (SyntaxError, ValueError):
-                        return False
-                    if isinstance(items, list) and all(isinstance(item, str) for item in items):
-                        continue
-            if previous == "map":
-                callback = tokens[index + 1 :]
-                if callback[:1] == ["async"]:
-                    callback = callback[1:]
-                parameter_end = javascript_object_end(callback) if callback[:1] == ["("] else 0
-                if parameter_end is None or callback[parameter_end + 1 : parameter_end + 3] != ["=", ">"]:
-                    return False
-                prefix = syntax_tokens[:index]
-                if receiver != "]" and binding_names.count(receiver) == 1:
-                    declaration = re.search(r"\bconst " + re.escape(receiver) + r" = ", syntax)
-                    if declaration is not None:
-                        initializer = syntax[declaration.end() :].split()
-                        array_end = javascript_object_end(initializer)
-                        if (
-                            initializer[:1] == ["["]
-                            and array_end is not None
-                            and initializer[array_end + 1 : array_end + 2] == [";"]
-                            and re.search(r"Promise \. (?:all|allSettled) \( " + re.escape(receiver) + r" \. map$", " ".join(prefix))
-                        ):
-                            continue
-                array = re.search(r"Promise \. (?:all|allSettled) \( (\[ .+? \]) \. map$", " ".join(prefix))
-                if array is not None and javascript_object_end(array[1].split()) == len(array[1].split()) - 1:
-                    continue
-            if previous == "forEach" and tokens[index + 1 : index + 3] == ["text", ")"]:
-                if binding_names.count(receiver) == 1 and re.search(
-                    r"const " + re.escape(receiver) + r" = await Promise \. (?:all|allSettled) \(", code
-                ):
-                    continue
-        return False
-    return True
-
-
 def literal_bindings(text: str, start: int, *, command_reference: str | None = None) -> list[dict[str, str | int]] | None:
     code = " ".join(javascript_tokens(text[:start]))
     literal = r"""(?:"[^"\\]*"|'[^'\\]*')"""
@@ -695,39 +516,9 @@ def literal_bindings(text: str, start: int, *, command_reference: str | None = N
         )
     if match is None:
         return None
-    names = re.findall(JAVASCRIPT_LITERAL + "|" + JAVASCRIPT_COMMENT + r"|(?P<name>[A-Za-z_$][A-Za-z0-9_$]*|\\)", text, re.DOTALL)
-    if "\\" in names:
-        return None
     parameters = re.findall(r"[A-Za-z_]\w*", match["name"])
     if len(set(parameters)) != len(parameters):
         return None
-    if "array" in match.re.groupindex:
-        tail_tokens = javascript_tokens(text[start:])
-        close = javascript_object_end(tail_tokens)
-        if close is None or tail_tokens[close + 1 : close + 4] != [")", ")", ")"]:
-            return None
-        tail = " ".join(tail_tokens)
-        active_tokens = javascript_tokens(text[:start]) + tail_tokens[: close + 4]
-        if active_tokens.count(match["array"]) != 2:
-            return None
-        if command_reference is not None:
-            reference = re.escape(command_reference)
-            tail_without_command = re.sub(
-                r"(?P<boundary>\{ |, )(?:cmd|command|chars) : " + reference + r"(?= ,| \})",
-                r"\g<boundary>placeholder : literal",
-                tail,
-                count=1,
-            )
-            if command_reference in {"cmd", "command", "chars"}:
-                tail_without_command = re.sub(
-                    r"(?P<boundary>\{ |, )" + reference + r"(?= ,| \})",
-                    r"\g<boundary>placeholder : literal",
-                    tail_without_command,
-                    count=1,
-                )
-            names = javascript_tokens(text[:start] + tail_without_command)
-        if any(names.count(parameter) != 1 for parameter in parameters):
-            return None
     if re.search(r"\\(?![\\\"'nrtbfv]|x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4})", match["values"]):
         return None
     try:
@@ -858,33 +649,19 @@ def shell_texts(text: str, javascript: bool) -> ShellTexts:
         + ")",
         re.DOTALL,
     )
+    bounded, sites = claim_javascript.analyse(text)
     commands = []
-    tokens = javascript_tokens(text)
-    opaque = not javascript_calls_are_bounded(text) or any(
-        token == "tools"
-        and (
-            tokens[index + 1 : index + 2] != ["."]
-            or index + 3 >= len(tokens)
-            or re.fullmatch(r"[A-Za-z_]\w*", tokens[index + 2]) is None
-            or tokens[index + 3] != "("
-        )
-        for index, token in enumerate(tokens)
-    )
+    opaque = not bounded
     interactive_opaque = False
-    for match in site.finditer(text):
-        if match["reference"] is not None:
+    if not bounded:
+        sites.extend((match.end(), "write_stdin" in match[0]) for match in site.finditer(text) if match["call"] is not None)
+    for start, interactive in sorted(set(sites)):
+        decoded = command_literal(text, start, literal)
+        if decoded is None:
             opaque = True
-            interactive_opaque = interactive_opaque or "write_stdin" in match[0]
-        elif match["call"] is not None:
-            decoded = command_literal(text, match.end(), literal)
-            if decoded is None:
-                opaque = True
-                interactive_opaque = interactive_opaque or "write_stdin" in match[0]
-            else:
-                commands.extend(ShellCommand(command, "write_stdin" in match[0]) for command in decoded)
-        elif match[0].startswith("`") and "${" in match[0] and re.search(reference, match[0]):
-            opaque = True
-            interactive_opaque = interactive_opaque or "write_stdin" in match[0]
+            interactive_opaque = interactive_opaque or interactive
+        else:
+            commands.extend(ShellCommand(command, interactive) for command in decoded)
     return ShellTexts(commands, opaque, interactive_opaque)
 
 

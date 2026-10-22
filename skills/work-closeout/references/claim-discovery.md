@@ -64,20 +64,24 @@ four-digit Unicode escapes. Use a plain command key and keep unrelated template
 substitutions in a separate code cell. This is literal
 decoding, never JavaScript execution.
 
-In claim-related cells, call coverage uses a positive grammar. It accepts
-literal shell calls, the three output wrappers above, literal-array mapping,
-plain loops and conditions, and their `text`, `store`, `load` and early `exit`
-calls. A command string from a literal `for` loop may use `includes`; native
-result arrays may use `forEach(text)`. A uniquely bound native command result
-may read its output with `trim`, `slice` or `split` using literal arguments. Simple locally declared functions keep
-their bodies under the same checks. Data values come from declared local bindings and the supported native
-results. Method receivers must have one binding across declarations and parameters. Global capabilities cannot be shadowed, properties cannot be
-assigned or incremented, and array callbacks cannot hide additional executable options.
-Unknown calls, computed dispatch, escaped identifiers, tagged or executable
-templates, module/class declarations and unclassified regex/division syntax
-keep coverage conditional. Use direct literal shell calls and `text(result)`
-when orchestration falls outside this subset. Every decoded target remains
-subject to release verification even when the surrounding cell is conditional.
+In claim-related code-mode cells, a Tree-sitter JavaScript syntax tree checks
+that every effect belongs to a bounded data language. It accepts direct native
+shell/output calls, literal arrays, plain loops and conditions, and immutable
+native or JSON data reads. Read-only string/array methods support the recorded
+JSON parsing, filtering, mapping and output-formatting shapes. Inline callbacks
+are checked under their own data bindings; functions cannot be stored in data or
+passed by name, except `forEach(text)`. Only numeric `let` counters may be
+incremented. Properties, loop assignment targets and mapped input arrays cannot
+be mutated. Prototype/constructor access, capability aliases, unknown calls,
+named functions, executable options, computed callees, regex/division syntax,
+identifier escapes and unsupported syntax keep coverage conditional. A parse
+error alone never proves nonexecution. The reader assumes native results,
+`load` values and tool metadata obey the harness's serializable-data contract;
+the existing stored-claim check still covers later `load` cells. Use direct
+literal shell calls and `text(result)` outside this subset. Known shell calls
+come from syntax-tree locations, with conservative literal recovery for
+unbounded cells. Every decoded target remains subject to release verification
+even when the surrounding cell is conditional.
 
 A shell variable assigned once to a literal value at the top level, and a `for`
 loop over literal words, expand into exact claim targets, so

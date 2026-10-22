@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["tree-sitter==0.26.0", "tree-sitter-bash==0.25.1"]
+# dependencies = ["tree-sitter==0.26.0", "tree-sitter-bash==0.25.1", "tree-sitter-javascript==0.25.0"]
 # ///
 """Read-only source-host checks for claims interrupted by a host/terminal crash."""
 from __future__ import annotations

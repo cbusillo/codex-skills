@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["tree-sitter==0.26.0", "tree-sitter-bash==0.25.1"]
+# dependencies = ["tree-sitter==0.26.0", "tree-sitter-bash==0.25.1", "tree-sitter-javascript==0.25.0"]
 # ///
 from __future__ import annotations
 
@@ -114,6 +114,13 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
                 "cmd:`uv run gh-plan.py --repo test/${repo} claim ${n}`,max_output_tokens:bump()})));"
                 "function bump(){s[1][1]" + operator + ";return 1000;}"
             )
+        for assignment in ("for(s[1][1] of [3]);", "for(s[1][1] in {3:0});", "for([s[1][1]] of [[3]]);"):
+            sources.append(
+                'const s=[["a",1],["a",2]]; await Promise.all(s.map(([repo,n])=>tools.exec_command({'
+                "cmd:`uv run gh-plan.py --repo test/${repo} claim ${n}`,max_output_tokens:bump()})));"
+                "function bump(){" + assignment + "return 1000;}"
+            )
+        sources.append("text({\"tools.exec_command({cmd:'uv run gh-plan.py claim 5'})\":{toJSON:1?eval:0}});")
         for source in sources:
             for prefix in ("", f"text(await tools.exec_command({{cmd:{json.dumps(COMMAND)}}}));"):
                 with self.subTest(source=source, prefix=prefix):
@@ -121,6 +128,23 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
                     self.assertTrue(report["unresolved_invocations"])
                     if prefix:
                         self.assertIn(("test/a", 5), report["targets"])
+
+    def test_native_json_data_chains_remain_bounded(self) -> None:
+        sources = [
+            'const r=await tools.exec_command({cmd:"uv run gh-plan.py --repo test/a show 5"});const j=JSON.parse(r.output);'
+            "text({keys:Object.keys(j),comments:j.comments?.map(x=>({body:x.body})),last:j.comments.slice(-1),"
+            'selected:j.items.filter(x=>x.name.toLowerCase().includes("claim")).map(x=>x.name)});',
+            'const results=await Promise.allSettled([tools.exec_command({cmd:"uv run gh-plan.py --repo test/a show 5"})]);'
+            "for(let i=0;i<results.length;i++){const r=results[i];try{const j=JSON.parse(r.value.output);text(j);}catch{text(r);}}",
+            'const r=load("receipt");const j=JSON.parse(r.value.output);text({keys:Object.keys(j),issues:j.issues});',
+        ]
+        for source in sources:
+            for prefix in ("", f"text(await tools.exec_command({{cmd:{json.dumps(COMMAND)}}}));"):
+                with self.subTest(source=source, prefix=prefix):
+                    self.assertEqual(
+                        check_claims.history.literal_targets(invocation(prefix + source), SESSION),
+                        {"targets": {("test/a", 5)} if prefix else set(), "unresolved_invocations": []},
+                    )
 
     def test_native_parse_failure_proves_the_cell_did_not_execute(self) -> None:
         source = 'text(await tools.exec_command({cmd:"cat <<EOF\\ngh-plan.py claim status\nEOF"}));'
@@ -159,6 +183,16 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
 
     def test_dynamic_dispatch_does_not_hide_sibling_claims(self) -> None:
         sources = [
+            'text({note:"gh-plan.py claim",eval});',
+            'text({note:"gh-plan.py claim",toJSON});',
+            'text({toJSON:()=>tools.exec_command({cmd:"uv run gh-plan.py claim 5"})});',
+            'store("claim",()=>tools.exec_command({cmd:"uv run gh-plan.py claim 5"}));',
+            'const xs=[1]; await Promise.all(xs.map(x=>()=>tools.exec_command({cmd:"uv run gh-plan.py claim 5"})));',
+            'const r=load("claim");text(JSON.parse(r.output,r.reviver));',
+            'const r=load("claim");r["constructor"](r.output);',
+            'const r=load("claim");r["constr"+"uctor"](r.output);',
+            'const r=load("claim");r.map?.(x=>text(x));',
+            'with(load("claim")){text(value);}',
             '#!function run()\nrun(load("claim"));',
             '// data\u2028eval(load("claim"));',
             'function run(){}; var run=[].filter.constructor; var run=run("return eval"); var run=run(); run(load("claim"));',
