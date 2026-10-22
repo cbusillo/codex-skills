@@ -484,7 +484,9 @@ including non-dim text, establishes neither its author nor approval.
    Before a launch batch, compare PRs merged with PRs opened in each
    repository over the last few hours. If merges are behind and no merge-path
    fix is available, launch only finishing work. Keep each repository under
-   about 8 open agent PRs.
+   about 8 open agent PRs, not counting the merge train's batch PRs (titled
+   `Launchplane batch: #...`), which bundle PRs already counted, or drafts
+   parked on purpose.
 2. **Director questions live on the item's issue**, as a comment that starts
    `Director question:`. Follow the shared
    [question queue rules](../references/talking-with-the-director.md#decisions-holds-and-work-state)
