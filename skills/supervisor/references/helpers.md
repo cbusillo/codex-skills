@@ -26,6 +26,11 @@ command file already passes `--autocompact` or `--autocompact=VALUE`, which it
 keeps. Claude Code skips its autocompact offer dialog when the window comes
 from a launch flag, and `auto` keeps the window it tunes for the model, so
 nothing is saved to the account's settings.
+Claude launches also get `--disallowedTools AskUserQuestion`, which removes the
+question picker from the session
+([CLI reference](https://code.claude.com/docs/en/cli-reference)), so a worker
+asks its question on the item, as the brief rules say, instead of waiting on a
+picker nobody can answer.
 Existing sessions may still draw dim suggestions. `read` retains the
 plain `screen` and adds `input_line` with the last visible `❯`, `›` or `>`
 prompt's text, line index and style (`dim`, `non_dim`, `mixed`, `empty`, or
