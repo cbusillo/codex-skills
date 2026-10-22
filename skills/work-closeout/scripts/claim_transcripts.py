@@ -970,14 +970,19 @@ def timeout_command_index(argv: list[str]) -> int | None:
     return index + 1
 
 
-def command_position(argv: list[str]) -> CommandPosition | None:
+def unwrap_timeouts(argv: list[str]) -> int | None:
     index = 0
     while index < len(argv) and Path(argv[index]).name == "timeout":
         offset = timeout_command_index(argv[index:])
         if offset is None:
             return None
         index += offset
-    if index >= len(argv):
+    return index
+
+
+def command_position(argv: list[str]) -> CommandPosition | None:
+    index = unwrap_timeouts(argv)
+    if index is None or index >= len(argv):
         return None
     if Path(argv[index]).name != "uv":
         return CommandPosition(index)
@@ -2320,7 +2325,7 @@ def has_opaque_claim_execution(argv: list[str], covered: set[int], *, generated:
     if not argv or accepts_claim_data(argv):
         return False
     position = command_position(argv)
-    if claim_related and Path(argv[0]).name == "timeout" and position is None:
+    if claim_related and unwrap_timeouts(argv) is None:
         return True
     if claim_related and data_command_executes(argv):
         return True

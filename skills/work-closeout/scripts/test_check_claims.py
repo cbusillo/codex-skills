@@ -2229,7 +2229,7 @@ class ClaimCloseoutTests(unittest.TestCase):
                         self.assertEqual(actual, expected)
 
     def test_timeout_non_claim_subcommand_ignores_surrounding_claim_data(self) -> None:
-        command = "uv run gh-plan.py --repo first/a update-section 5 --section 'Current Status' --body-file status.md"
+        command = "uv run gh-plan.py --repo first/a update-section 5 'Current Status' --body-file status.md"
         data = "cat >status.md <<'EOF'\nReleased gh-plan.py claim 5\nEOF\n"
         for suffix in ("", " | tail -40", " 2>&1 | tail -40"):
             for prefix in ("timeout 400", "timeout -k 10 --signal=TERM 400"):
@@ -2248,6 +2248,7 @@ class ClaimCloseoutTests(unittest.TestCase):
             "timeout",
             "timeout $DURATION",
             "timeout invalid",
+            "timeout 300 timeout --unknown 200",
         )
         for prefix in prefixes:
             for arguments in ("claim 5", "show 5"):
@@ -2256,6 +2257,17 @@ class ClaimCloseoutTests(unittest.TestCase):
                     result = helper.history.literal_targets(bash_call(command), SESSION)
                     self.assertTrue(result["unresolved_invocations"])
                     self.assertEqual(result["targets"], set())
+
+    def test_timeout_preserves_unrecognized_inner_uv_commands(self) -> None:
+        for command in ("uv sync", "uv build", "uv pip install package", "uv run --exact pytest", "uv run --python"):
+            source = f"echo 'gh-plan.py claim 5'; {command}"
+            for prefix in ("timeout 600", "timeout 600 timeout -v 300"):
+                with self.subTest(command=command, prefix=prefix):
+                    wrapped = f"echo 'gh-plan.py claim 5'; {prefix} {command}"
+                    self.assertEqual(
+                        helper.history.literal_targets(bash_call(wrapped), SESSION),
+                        helper.history.literal_targets(bash_call(source), SESSION),
+                    )
 
     def test_timeout_does_not_trust_data_command_execution_channels(self) -> None:
         commands = (
