@@ -447,8 +447,8 @@ also include the shared `api_result` diagnostics envelope.
   Head workflows are read even before their first job check exists; unfinished
   or failed runs count as pending or failed evidence. Unavailable Actions
   reads report incomplete counts rather than a complete empty inventory.
-  An `in_progress` run settles from its latest jobs when every job completed
-  at least five minutes ago with a known conclusion and the inventory matches
+  An `in_progress` run settles from its latest jobs when every job has been
+  completed for `WORKFLOW_SETTLEMENT_GRACE_SECONDS` with a known conclusion and the inventory matches
   the current run, head and attempt. Empty, running or uncertain inventories
   still block; failed jobs remain failures. `summary.jobLevelSettlements`
   names each affected run and explains the fallback. The ready handoff and

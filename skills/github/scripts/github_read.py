@@ -34,7 +34,7 @@ SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 DEFAULT_GH = os.environ.get("GITHUB_READ_GH") or str(SCRIPT_DIR / "gh-with-env-token")
 EXPECTED_ACTOR = github_identity.automation_login()
 WORKFLOW_SETTLEMENT_GRACE_SECONDS = 300
-FAILED_CHECK_CONCLUSIONS = {"failure", "timed_out", "cancelled", "action_required", "startup_failure", "stale"}
+FAILED_CHECK_CONCLUSIONS = {"failure", "timed_out", "cancelled", "action_required", "startup_failure"}
 MERGE_STATE_STATUS = {
     "behind": "BEHIND",
     "blocked": "BLOCKED",
@@ -1035,8 +1035,7 @@ def pull_request_checks(
     except (GitHubReadError, GitHubReadShapeError):
         availability["workflowSelection"] = False
     normalized_statuses = [normalize_status(item) for item in statuses]
-    failure_conclusions = FAILED_CHECK_CONCLUSIONS
-    failing = [item for item in normalized_checks if item.get("conclusion") in failure_conclusions]
+    failing = [item for item in normalized_checks if item.get("conclusion") in FAILED_CHECK_CONCLUSIONS]
     pending = [item for item in normalized_checks if item.get("status") != "completed"]
     current_runs = current_workflow_runs(workflow_runs or [], sha)["current"]
     try:
@@ -1052,7 +1051,7 @@ def pull_request_checks(
         for run in unfinished_runs
     )
     failed_workflows_without_checks = sum(
-        run.get("status") == "completed" and run.get("conclusion") in failure_conclusions
+        run.get("status") == "completed" and run.get("conclusion") in FAILED_CHECK_CONCLUSIONS
         and not any(check.get("runId") == run.get("id") for check in failing)
         for run in current_runs
     )

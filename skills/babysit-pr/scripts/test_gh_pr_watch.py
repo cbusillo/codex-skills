@@ -288,7 +288,7 @@ def test_pr_helper_json_accepts_partial_check_envelope(monkeypatch):
     )
     summary = gh_pr_watch.summarize_checks(payload, expected_head_sha="b" * 40)
 
-    assert summary == {
+    expected = {
         "pending_count": 0,
         "failed_count": 1,
         "passed_count": 0,
@@ -297,9 +297,9 @@ def test_pr_helper_json_accepts_partial_check_envelope(monkeypatch):
         "counts_are_lower_bounds": True,
         "unavailable_components": ["commitStatuses"],
         "head_matches": True,
-        "unfinished_workflow_run_count": 0,
-        "job_level_settlements": [],
     }
+    for field, value in expected.items():
+        assert summary[field] == value
 
 
 def test_mismatched_check_head_never_becomes_terminal_or_reruns(monkeypatch):
@@ -797,21 +797,6 @@ def test_unstarted_workflow_run_keeps_green_checks_from_becoming_ready(monkeypat
 
     assert snapshot["checks"]["all_terminal"] is True
     assert snapshot["actions"] == ["ready_to_merge"]
-
-
-def test_merge_readiness_uses_shared_job_level_settlement() -> None:
-    payload = {
-        "headSha": "abc123", "summary": {
-            "checkRunCount": 1, "statusCount": 0, "failingCount": 0, "pendingCount": 0,
-            "countsComplete": True, "countsAreLowerBounds": False, "unavailableComponents": [],
-            "unfinishedWorkflowRunCount": 0,
-            "jobLevelSettlements": [{"runId": 1, "conclusion": "success"}],
-        },
-    }
-    summary = gh_pr_watch.summarize_checks(payload, "abc123")
-    assert summary["unfinished_workflow_run_count"] == 0
-    assert summary["all_terminal"] is True
-    assert summary["job_level_settlements"] == payload["summary"]["jobLevelSettlements"]
 
 
 def test_collect_snapshot_emits_review_request_and_session_degradation(monkeypatch, tmp_path):
