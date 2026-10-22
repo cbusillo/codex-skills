@@ -1157,6 +1157,10 @@ class ClaimCloseoutTests(unittest.TestCase):
             "python3 - <<'PY'\nimport subprocess\nsubprocess.run('uv run gh-plan.py claim 5', shell=True)\nPY",
             "printf 5 | xargs -I{} uv run gh-plan.py claim {}",
             "cat <<EOF\n$(uv run gh-plan.py claim 5)\nEOF",
+            "cat <<EOF\n$(\nuv run gh-plan.py claim 5\n)\nEOF",
+            "echo 'uv run gh-plan.py claim 5' | bash",
+            "printf '%s' 'uv run gh-plan.py claim 5' | sh",
+            "cat <<'EOF' | bash\nuv run gh-plan.py claim 5\nEOF",
         ]
         for command in commands:
             rows = [{"message": {"content": [{"type": "tool_use", "name": "Bash", "id": "wrapped", "input": {"command": command}}]}}]
@@ -1184,12 +1188,46 @@ class ClaimCloseoutTests(unittest.TestCase):
                 "python3 -c " + json.dumps(source),
                 "uv run --python 3.13 python3 - <<'PY'\n" + source + "\nPY",
                 "uv run --script - <<'PY'\n" + source + "\nPY",
+                "PYTHONDONTWRITEBYTECODE=1 uv run --offline --no-project python - <<'PY'\n" + source + "\nPY",
             ):
                 rows = [
                     {"message": {"content": [{"type": "tool_use", "name": "Bash", "id": "python", "input": {"command": command}}]}}
                 ]
                 with self.subTest(source=source, command=command):
                     self.assertEqual(bool(helper.history.literal_targets(rows, SESSION)["unresolved_invocations"]), unresolved)
+
+    def test_handoff_bodies_and_text_filters_are_data(self) -> None:
+        commands = [
+            "scripts/gh-issue create Follow-up --repo test/a <<'EOF'\nResume with gh-plan.py claim 5\nEOF",
+            'gh pr create --body "Resume with gh-plan.py claim 5"',
+            'uv run skills/github/scripts/gh-pr.py comment 5 --body "gh-plan.py claim 5"',
+            "sed -n '/gh-plan.py claim/p' file",
+            'jq -r ".claim" <<\'EOF\'\n{"claim":"gh-plan.py claim 5"}\nEOF',
+            'uv run pytest -k "gh-plan.py claim"',
+            "echo 'gh-plan.py claim 5' | python -c 'import sys; print(sys.stdin.read())'",
+        ]
+        for command in commands:
+            rows = [{"message": {"content": [{"type": "tool_use", "name": "Bash", "id": "body", "input": {"command": command}}]}}]
+            with self.subTest(command=command):
+                self.assertEqual(helper.history.literal_targets(rows, SESSION), {"targets": set(), "unresolved_invocations": []})
+
+    def test_python_process_launcher_families_keep_unknown_claims_conditional(self) -> None:
+        calls = [
+            'subprocess.getoutput("uv run gh-plan.py claim 5")',
+            'subprocess.getstatusoutput("uv run gh-plan.py claim 5")',
+            'asyncio.create_subprocess_shell("uv run gh-plan.py claim 5")',
+            'asyncio.create_subprocess_exec("uv", "run", "gh-plan.py", "claim", "5")',
+            'os.execv("uv", ["uv", "run", "gh-plan.py", "claim", "5"])',
+            'os.execl("uv", "uv", "run", "gh-plan.py", "claim", "5")',
+            'os.spawnv(os.P_WAIT, "uv", ["uv", "run", "gh-plan.py", "claim", "5"])',
+            'os.posix_spawn("uv", ["uv", "run", "gh-plan.py", "claim", "5"], {})',
+            'from subprocess import run as launch; commands=["uv run gh-plan.py claim 5"]; pool.map(launch, commands)',
+        ]
+        for source in calls:
+            command = "python3 - <<'PY'\n" + source + "\nPY"
+            rows = [{"message": {"content": [{"type": "tool_use", "name": "Bash", "id": "launch", "input": {"command": command}}]}}]
+            with self.subTest(source=source):
+                self.assertTrue(helper.history.literal_targets(rows, SESSION)["unresolved_invocations"])
 
     def test_raw_javascript_does_not_prove_bare_claim_execution_count(self) -> None:
         command = 'tools.exec_command({cmd:"uv run gh-plan.py claim 5",workdir})'

@@ -18,7 +18,7 @@ commands:
     purpose: Reads every open issue and full discussion and reports missing or malformed wait records without clearing them.
   - name: github-plan-claim
     source: repo
-    example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "claim", "<issue>", "--worker", "<worker>", "--session", "<session-id>", "--branch", "work/issue-<number>", "--next-action", "<action>"]
+    example_argv: ["uv", "run", "../github/scripts/gh-plan.py", "--repo", "OWNER/REPO", "claim", "<issue>", "--worker", "<worker>", "--session", "<session-id>", "--branch", "work/issue-<number>", "--next-action", "<action>"]
     purpose: Rechecks ownership, records and reads back the claim, and activates planning state before a task worktree is created.
   - name: github-plan-release
     source: repo

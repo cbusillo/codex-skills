@@ -450,39 +450,45 @@ def shell_texts(text: str, javascript: bool) -> tuple[list[str], bool]:
     return commands, opaque
 
 
+def is_interpreter(consumer: str) -> bool:
+    return (
+        Path(consumer).name
+        in {"sh", "bash", "zsh", "dash", "ksh", "fish", "node", "nodejs", "deno", "bun", "perl", "ruby", "eval", "source", "."}
+        or re.fullmatch(r"python(?:[0-9]+(?:\.[0-9]+)*)?", Path(consumer).name) is not None
+    )
+
+
 def has_executable_claim_source(text: str, consumer: str) -> bool:
     if "gh-plan" not in text or re.search(r"\bclaim\b", text) is None:
         return False
     if not re.fullmatch(r"python(?:[0-9]+(?:\.[0-9]+)*)?", Path(consumer).name):
-        return True
+        return is_interpreter(consumer)
     try:
         tree = ast.parse(text)
     except SyntaxError:
         return True
-    launchers = {
-        "run",
-        "call",
-        "Popen",
-        "check_call",
-        "check_output",
-        "system",
-        "popen",
-        "exec",
-        "eval",
-        "spawn",
-        "exec_command",
-        "shell_command",
-    }
+    pattern = re.compile(
+        r"(?:run|call|check_\w+|[Pp]open\w*|system|getoutput|getstatusoutput|exec\w*|spawn\w*|posix_spawn\w*|create_subprocess_\w+|eval|shell_command)"
+    )
+    launchers = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name) and pattern.fullmatch(node.id)}
+    launchers.update(node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute) and pattern.fullmatch(node.attr))
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
-            launchers.update(item.asname or item.name for item in node.names if item.name in launchers)
+            launchers.update(item.asname or item.name for item in node.names if pattern.fullmatch(item.name))
         if isinstance(node, ast.Assign) and isinstance(node.value, (ast.Name, ast.Attribute)):
             name = node.value.id if isinstance(node.value, ast.Name) else node.value.attr
             if name in launchers:
                 launchers.update(target.id for target in node.targets if isinstance(target, ast.Name))
     calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
     direct = {id(node.func) for node in calls}
-    if any(id(node) not in direct and isinstance(node, ast.Attribute) and node.attr in launchers for node in ast.walk(tree)):
+    if any(
+        id(node) not in direct
+        and (
+            (isinstance(node, ast.Attribute) and node.attr in launchers)
+            or (isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id in launchers)
+        )
+        for node in ast.walk(tree)
+    ):
         return True
     for node in calls:
         name = node.func.id if isinstance(node.func, ast.Name) else node.func.attr if isinstance(node.func, ast.Attribute) else ""
@@ -491,6 +497,10 @@ def has_executable_claim_source(text: str, consumer: str) -> bool:
         command = (
             node.args[0] if node.args else next((item.value for item in node.keywords if item.arg in {"args", "command"}), None)
         )
+        if name.startswith(("execl", "spawnl", "create_subprocess_exec")):
+            command = ast.Tuple(elts=node.args, ctx=ast.Load())
+        elif name.startswith(("execv", "spawnv", "posix_spawn")) and len(node.args) > 1:
+            command = node.args[2] if name.startswith("spawnv") and len(node.args) > 2 else node.args[1]
         try:
             value = ast.literal_eval(command)
         except (ValueError, TypeError):
@@ -500,7 +510,18 @@ def has_executable_claim_source(text: str, consumer: str) -> bool:
     return False
 
 
+def shell_command_arguments(argv: list[str]) -> list[str]:
+    while argv and (
+        Path(argv[0]).name in {"env", "command", "exec", "if", "then", "do"} or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", argv[0])
+    ):
+        argv = argv[1:]
+    return argv
+
+
 def script_consumer(argv: list[str]) -> str:
+    separator = max((index for index, argument in enumerate(argv) if argument in {";", "&&", "||", "|"}), default=-1)
+    argv = argv[separator + 1 :]
+    argv = shell_command_arguments(argv)
     if argv and Path(argv[0]).name == "uv" and "run" in argv:
         if "--script" in argv:
             return "python"
@@ -515,6 +536,25 @@ def script_consumer(argv: list[str]) -> str:
     return argv[0] if argv else ""
 
 
+def piped_interpreter(text: str) -> str | None:
+    lexer = shlex.shlex(text, posix=False, punctuation_chars=";&|()<>\n")
+    lexer.whitespace_split = True
+    tokens = list(lexer)
+    for index, token in enumerate(tokens[:-1]):
+        if token != "|" or not is_interpreter(tokens[index + 1]):
+            continue
+        arguments = []
+        for argument in tokens[index + 2 :]:
+            if argument in {";", "&&", "||", "|", "<<", "<", ">", "\n"}:
+                break
+            arguments.append(argument)
+        if all(argument.startswith("-") for argument in arguments) and not any(
+            argument in {"-c", "-e", "--eval"} for argument in arguments
+        ):
+            return tokens[index + 1]
+    return None
+
+
 def shell_groups(text: str) -> Iterator[list[str]]:
     pending = []
     lines = []
@@ -527,15 +567,17 @@ def shell_groups(text: str) -> Iterator[list[str]]:
         if pending:
             if line.lstrip("\t") == pending[0]:
                 pending.pop(0)
-                executable_bodies.append((consumer, "\n".join(body)))
+                script = "\n".join(body)
+                if consumes_script or (expands_body and ("$(" in script or "`" in script)):
+                    executable_bodies.append((consumer if consumes_script else "sh", script))
                 body = []
-            elif consumes_script or (expands_body and ("$(" in line or "`" in line)):
+            else:
                 body.append(line)
             continue
         pending.extend(match[1] for match in re.finditer(r"<<-?\s*['\"]?([A-Za-z_][A-Za-z0-9_]*)['\"]?", line))
         if pending:
-            consumer = script_consumer(shlex.split(line))
-            consumes_script = Path(consumer).name not in {"cat", "tee"}
+            consumer = piped_interpreter(line) or script_consumer(shlex.split(line))
+            consumes_script = is_interpreter(consumer)
             expands_body = re.search(r"<<-?\s*[A-Za-z_]", line) is not None
         lines.append(line)
     lexer = shlex.shlex("\n".join(lines), posix=False, punctuation_chars=";&|()<>\n")
@@ -552,8 +594,8 @@ def shell_groups(text: str) -> Iterator[list[str]]:
                 group.append(token)
         if group:
             yield shlex.split(" ".join(group))
-        if body:
-            executable_bodies.append((consumer, "\n".join(body)))
+        if body and (consumes_script or (expands_body and ("$(" in "\n".join(body) or "`" in "\n".join(body)))):
+            executable_bodies.append((consumer if consumes_script else "sh", "\n".join(body)))
         if any(has_executable_claim_source(script, consumer) for consumer, script in executable_bodies):
             raise ValueError("unsupported executable claim heredoc")
     except ValueError as error:
@@ -573,10 +615,7 @@ def shell_argv(text: str) -> Iterator[list[str]]:
 
 
 def claim_arguments(argv: list[str]) -> list[str] | None:
-    while argv and (
-        argv[0] in {"env", "command", "exec", "if", "then", "do"} or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", argv[0])
-    ):
-        argv = argv[1:]
+    argv = shell_command_arguments(argv)
     if not argv:
         return None
     executable = Path(argv[0]).name
@@ -603,7 +642,14 @@ def has_opaque_claim_execution(argv: list[str]) -> bool:
         return True
     if "claim" in argv and any("$" in argument or "`" in argument for argument in argv[: argv.index("claim")]):
         return True
-    return any(has_executable_claim_source(argument, script_consumer(argv)) for argument in argv[1:])
+    consumer = script_consumer(argv)
+    if consumer in {"eval", "source", "."}:
+        return has_executable_claim_source(" ".join(argv[1:]), consumer)
+    return any(
+        has_executable_claim_source(argv[index + 1], consumer)
+        for index, argument in enumerate(argv[:-1])
+        if argument in {"-c", "-e", "--eval"}
+    )
 
 
 def invocation_target(arguments: list[str], session: str) -> dict | None:
@@ -753,6 +799,8 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
             shells, opaque = shell_texts(text, javascript)
             opaque = opaque and seen_claim_source
             for shell in shells:
+                consumer = piped_interpreter(shell)
+                opaque = opaque or (consumer is not None and has_executable_claim_source(shell, "sh"))
                 repeated = repeated or re.search(r"(?:^|[;\n])\s*[A-Za-z_]\w*\s*\(\s*\)\s*\{", shell) is not None
                 for argv in shell_argv(shell):
                     repeated = repeated or bool(argv and argv[0] in {"for", "while", "until", "function"})

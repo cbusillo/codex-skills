@@ -867,10 +867,16 @@ Before an authorized `go` creates a branch or worktree, run from a checkout of
 the target repository:
 
 ```bash
-uv run <skill-dir>/scripts/gh-plan.py claim <issue> \
+uv run <skill-dir>/scripts/gh-plan.py --repo OWNER/REPO claim <issue> \
   --worker <worker-token> --session <session-id> \
   --branch work/<task-slug> --next-action "<action>"
 ```
+
+Keep the repository and record literal in JavaScript tool wrappers or repeated
+shell commands. A qualified `OWNER/REPO#N` record also works. Closeout checks
+every known target, but a bare or computed legacy command with uncertain
+execution count remains conditional even when one receipt is present. A
+journaled receipt alone does not prove every execution used a journaling helper.
 
 `--session` is the running session's native ID: `$CLAUDE_CODE_SESSION_ID` on
 Claude Code, the root `$CODEX_SESSION_ID` on Codex. A Codex child thread claims
