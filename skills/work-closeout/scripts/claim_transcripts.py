@@ -386,41 +386,68 @@ def tool_outputs(records: list[dict]) -> dict[str, list[object]]:
                     outputs.setdefault(str(block.get("tool_use_id", "")), []).append(block.get("content"))
     inputs = {identifier: text for identifier, text, _ in tool_inputs(records)}
     recorded = {identifier: list(blocks) for identifier, blocks in outputs.items()}
+    followups: dict[str, list[tuple[int, str]]] = {}
+    for order, (identifier, text) in enumerate(inputs.items()):
+        for match in re.finditer(r"session_id[\"']?\s*:\s*(-?\d+)(?!\d)", text):
+            followups.setdefault(match[1], []).append((order, identifier))
     for identifier, blocks in recorded.items():
         yielded = {item["session_id"] for block in blocks for item in values(block) if type(item.get("session_id")) is int}
-        if not yielded:
-            continue
-        for followup, text in inputs.items():
-            if followup != identifier and any(re.search(rf"session_id[\"']?\s*:\s*{process}(?!\d)", text) for process in yielded):
+        polls = {poll for process in yielded for poll in followups.get(str(process), [])}
+        for _, followup in sorted(polls):
+            if followup != identifier:
                 outputs[identifier].extend(recorded.get(followup, []))
     return outputs
 
 
-def command_literal(text: str, start: int, literal: str) -> str | None:
+def command_literal(text: str, start: int, literal: str) -> list[str] | None:
     tokens = [match[0] for match in re.finditer(literal + r"|[A-Za-z_$][A-Za-z0-9_$]*|[^\s]", text[start:])]
     if not tokens or tokens[0] != "{":
         return None
     depth = 0
+    field_start = 1
+    fields = []
     for index, token in enumerate(tokens):
         if token in {"{", "[", "("}:
             depth += 1
         elif token in {"}", "]", ")"}:
             depth -= 1
             if depth == 0:
+                fields.append(tokens[field_start:index])
                 break
-        if depth != 1 or token.strip("\"'") not in {"cmd", "command", "chars"} or tokens[index + 1 : index + 2] != [":"]:
+        if depth == 1 and token == ",":
+            fields.append(tokens[field_start:index])
+            field_start = index + 1
+    else:
+        return None
+    command = None
+    for field in fields:
+        if not field:
             continue
-        tail = tokens[index + 2 : index + 4]
-        if len(tail) != 2 or tail[1] not in {",", "}"} or not re.fullmatch(literal, tail[0], re.DOTALL):
+        key = field[0]
+        if re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", key) is None:
+            try:
+                key = ast.literal_eval(key)
+            except (SyntaxError, ValueError):
+                return None
+        if len(field) == 1 and key not in {"cmd", "command", "chars"}:
+            continue
+        if field[1:2] != [":"]:
             return None
-        value = tail[0]
+        if key not in {"cmd", "command", "chars"}:
+            continue
+        if command is not None or len(field) != 3 or re.fullmatch(literal, field[2], re.DOTALL) is None:
+            return None
+        value = field[2]
         if value.startswith("`"):
-            return literal_template(text[:start], value) if "${" in value else value[1:-1]
+            command = literal_template(text, start, value) if "${" in value else [value[1:-1]]
+            if command is None:
+                return None
+            continue
         try:
-            return ast.literal_eval(value)
+            command = [ast.literal_eval(value)]
         except (ValueError, SyntaxError):
             return None
-    return None
+    return command
 
 
 JAVASCRIPT_LITERAL = r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|`(?:\\.|[^`\\])*`'
@@ -428,8 +455,8 @@ CLAIM_WORD = re.compile(r"""(?:^|[\s'"`])claim(?:$|[\s'"`])""")
 JAVASCRIPT_PATCH = re.compile(r"\btools\.apply_patch\s*\(\s*(?:" + JAVASCRIPT_LITERAL + r")\s*\)", re.DOTALL)
 
 
-def literal_template(prefix: str, template: str) -> str | None:
-    tokens = re.findall(JAVASCRIPT_LITERAL + r"|//[^\n]*|/\*.*?\*/|[A-Za-z_$][A-Za-z0-9_$]*|[0-9]+|[^\s]", prefix, re.DOTALL)
+def literal_template(text: str, start: int, template: str) -> list[str] | None:
+    tokens = re.findall(JAVASCRIPT_LITERAL + r"|//[^\n]*|/\*.*?\*/|[A-Za-z_$][A-Za-z0-9_$]*|[0-9]+|[^\s]", text[:start], re.DOTALL)
     code = " ".join(token for token in tokens if not token.startswith(("//", "/*")))
     binding = r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)"
     array = r"\[ (?P<values>.+?) \]"
@@ -439,13 +466,16 @@ def literal_template(prefix: str, template: str) -> str | None:
         match = re.fullmatch(
             r"const (?P<array>[A-Za-z_]\w*) = "
             + array
-            + r" ; (?:const \w+ = )?(?:text \( )?await Promise \. (?:all|allSettled) \( (?P=array) \. (?:map|forEach) \( "
+            + r" ; (?:const \w+ = )?(?:text \( )?await Promise \. (?:all|allSettled) \( (?P=array) \. map \( "
             + binding
             + r" = > "
             + call,
             code,
         )
-    if match is None or "\\" in template:
+    if match is None or "\\" in template or "\\" in match["values"]:
+        return None
+    names = re.findall(JAVASCRIPT_LITERAL + r"|//[^\n]*|/\*.*?\*/|(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)", text, re.DOTALL)
+    if "eval" in names or ("array" in match.re.groupindex and (names.count(match["array"]) != 2 or names.count(match["name"]) != 1)):
         return None
     try:
         values = ast.literal_eval("[" + match["values"] + "]")
@@ -453,14 +483,19 @@ def literal_template(prefix: str, template: str) -> str | None:
         return None
     if not isinstance(values, list) or not 0 < len(values) <= LITERAL_LOOP_VALUES:
         return None
-    if any(type(value) not in {str, int} or not LITERAL_SHELL_VALUE.fullmatch(str(value)) for value in values):
+    if any(
+        type(value) not in {str, int}
+        or (type(value) is int and abs(value) > (1 << 53) - 1)
+        or not LITERAL_SHELL_VALUE.fullmatch(str(value))
+        for value in values
+    ):
         return None
     marker = "${" + match["name"] + "}"
     body = template[1:-1]
     if "${" in body.replace(marker, ""):
         return None
-    commands = "\n".join(body.replace(marker, str(value)) for value in values)
-    return commands if len(commands.encode()) <= LITERAL_EXPANSION_BYTES else None
+    commands = [body.replace(marker, str(value)) for value in values]
+    return commands if sum(len(command.encode()) for command in commands) <= LITERAL_EXPANSION_BYTES else None
 
 
 def without_patch_text(text: str) -> str:
@@ -519,12 +554,12 @@ def shell_texts(text: str, javascript: bool) -> ShellTexts:
             opaque = True
             interactive_opaque = interactive_opaque or "write_stdin" in match[0]
         elif match["call"] is not None:
-            command = command_literal(text, match.end(), literal)
-            if command is None:
+            decoded = command_literal(text, match.end(), literal)
+            if decoded is None:
                 opaque = True
                 interactive_opaque = interactive_opaque or "write_stdin" in match[0]
             else:
-                commands.append(ShellCommand(command, "write_stdin" in match[0]))
+                commands.extend(ShellCommand(command, "write_stdin" in match[0]) for command in decoded)
         elif match[0].startswith("`") and "${" in match[0] and re.search(reference, match[0]):
             opaque = True
             interactive_opaque = interactive_opaque or "write_stdin" in match[0]

@@ -32,10 +32,14 @@ Code-mode templates can expand a leading literal `for (const n of [1,2])` loop's
 first shell call, or a leading constant literal array passed immediately through
 `Promise.all` or `Promise.allSettled` to `map`. Only the directly bound name may
 be interpolated, and every value must be a plain shell word under the same
-bounds as literal shell loops. Each expanded command still goes through claim
-discovery and canonical release checks. Other statements before the call,
-mutations, unknown values, escaped templates and shell syntax in values keep
-the invocation conditional. This is literal decoding, never JavaScript execution.
+bounds as literal shell loops. Each expanded command stays a separate shell
+execution and goes through claim discovery and canonical release checks. Map
+arrays and parameters must have no other code references; direct `eval` stays
+conditional. Command objects with duplicate command fields, spreads, computed
+keys or accessors also stay conditional. Other statements before the call,
+mutations, unknown values, escaped literals or templates, inexact numeric values
+and shell syntax in values keep the invocation conditional. This is literal
+decoding, never JavaScript execution.
 
 A shell variable assigned once to a literal value at the top level, and a `for`
 loop over literal words, expand into exact claim targets, so
