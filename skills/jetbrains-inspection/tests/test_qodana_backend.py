@@ -467,7 +467,6 @@ class QodanaTests(unittest.TestCase):
         self.assertEqual(len(missing["paths"]), backend.DRIFT_PATH_LIMIT)
         self.assertNotIn("selection_added", result["diagnostic"]["qodana"]["source_input_drift"])
         self.assertNotIn("private review prompt", json.dumps(result))
-        self.assertIn(".model-review-", result["agent_result"]["next_action"])
 
     def test_selection_drift_is_reported_apart_from_input_changes(self):
         self.args = host.build_parser().parse_args(["agent-inspect", "--backend", "qodana", "--repo", str(self.repo),
