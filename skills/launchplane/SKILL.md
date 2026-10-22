@@ -440,6 +440,24 @@ commands:
         "--reviewed-inspect",
       ]
     purpose: Clears only the reviewed observation for an unchanged lane binding and verifies its absence; never deletes lane resources.
+  - name: launchplane-disposable-lane-prepare-rebuild
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/launchplane-write-action.py",
+        "disposable-lane-prepare-rebuild",
+        "--payload-file",
+        "<private-file>",
+        "--expected-binding-sha256",
+        "<binding-sha256>",
+        "--inspect-evidence-file",
+        "<private-inspect-output>",
+        "--reviewed-inspect",
+      ]
+    purpose: Requests the service's retained testing-operation capture for a reviewed lane binding; never rebuilds or proves historical effects absent.
   - name: launchplane-merge-train-policy-import-dry-run
     source: skill
     resource_path: scripts/launchplane-write-action.py
@@ -1135,7 +1153,7 @@ reviewed-inspect procedure and verify the situation.
   [private ingress caller contract](references/write-action-helper-contract.md#application-testing-private-ingress)
   before use, including private files, review, original-key recovery, redaction
   and readback limits.
-- `disposable-lane-inspect` / `-collect` / `-record` / `-clear` wrap the producer's
+- `disposable-lane-inspect` / `-collect` / `-record` / `-clear` / `-prepare-rebuild` wrap the producer's
   disposable lane observation operation. Read the
   [disposable lane contract](references/write-action-helper-contract.md#disposable-lane-observations)
   before use, including the reviewed binding and observation digests, testing
