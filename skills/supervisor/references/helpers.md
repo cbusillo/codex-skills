@@ -1544,6 +1544,16 @@ Successful launch output reports environment variable names, without their
 private path values. A daemon refusal includes the selected home in its recovery
 diagnostic; keep that diagnostic out of public comments.
 
+`remaining_fraction` is Context Panel's headline for whichever window limits
+the account now, named by `limiting_window_label`; it is not a weekly figure.
+When reporting capacity, read `window_capacity.five_hour` and
+`window_capacity.weekly` instead: each lists that period's windows with their
+own remaining fraction, reset and burn. For weekly pacing or banked-reset burn,
+use the weekly entries' `burn_units_per_hour`, never changes in the headline.
+Snapshots older than
+[context-panel#961](https://github.com/cbusillo/context-panel/pull/961) carry
+no periods, so both are `null` (unknown) and the label is `null`.
+
 For source work on Codex's shared app server, launch with `codex --remote unix:// -C /absolute/repository`: the empty
 Unix endpoint resolves through the selected `CODEX_HOME`, so each account uses
 its own daemon. A fixed socket or WebSocket endpoint attaches to that server's

@@ -206,7 +206,43 @@ def resolve_choice(provider, config, snapshot, account_id, source, reason):
         raise ValueError(f"Context Panel {provider} choice matches no single configured account")
     row = matched[0]
     return decision(configured[0], source, reason, account_id=account_id,
-                    remaining=row.get("remainingFraction"), **snapshot_notices(snapshot))
+                    remaining=row.get("remainingFraction"), **window_report(row), **snapshot_notices(snapshot))
+
+
+REPORTED_PERIODS = {"fiveHour": "five_hour", "weekly": "weekly"}
+
+
+def number_or_none(value):
+    return value if isinstance(value, int | float) and not isinstance(value, bool) else None
+
+
+# https://github.com/cbusillo/codex-skills/issues/2478
+def window_report(row):
+    label = row.get("limitingWindowLabel")
+    windows = row.get("windows")
+    windows = [w for w in windows if isinstance(w, dict)] if isinstance(windows, list) else []
+    capacity = dict.fromkeys(REPORTED_PERIODS.values())
+    if any("period" in w for w in windows):
+        capacity = {key: [] for key in REPORTED_PERIODS.values()}
+        for window in windows:
+            period = window.get("period")
+            key = REPORTED_PERIODS.get(period) if isinstance(period, str) else None
+            if key is not None:
+                capacity[key].append(period_window(window))
+    return {"limiting_window_label": label if isinstance(label, str) and label else None,
+            "window_capacity": capacity}
+
+
+def period_window(window):
+    burn = window.get("burn")
+    rate = number_or_none(burn.get("unitsPerHour")) if isinstance(burn, dict) else None
+    samples = burn.get("sampleCount") if isinstance(burn, dict) else None
+    reset = window.get("naturalResetAt")
+    return {"label": window.get("label") if isinstance(window.get("label"), str) else None,
+            "remaining_fraction": number_or_none(window.get("remainingFraction")),
+            "natural_reset_at": reset if isinstance(reset, str) else None,
+            "burn_units_per_hour": rate,
+            "burn_sample_count": samples if isinstance(samples, int) and not isinstance(samples, bool) else None}
 
 
 def choose_batch(provider, config, snapshot, unavailable_reason, count=1, now=None, name=None):
@@ -285,11 +321,13 @@ def choose(provider, config, snapshot, unavailable_reason, now=None, name=None):
     return choose_batch(provider, config, snapshot, unavailable_reason, now=now, name=name)[0]
 
 
-def decision(account, source, reason, account_id=None, remaining=None,
-             configuration_errors=(), reset_prompts=()):
+def decision(account, source, reason, account_id=None, remaining=None, limiting_window_label=None,
+             window_capacity=None, configuration_errors=(), reset_prompts=()):
     binding = {"account_binding": GOOGLE_ACCOUNT_BINDING} if account["provider"] == "google" else {}
     return {**binding, "name": account["name"], "provider": account["provider"], "source": source,
             "reason": reason, "account_id": account_id, "remaining_fraction": remaining,
+            "limiting_window_label": limiting_window_label,
+            "window_capacity": window_capacity or dict.fromkeys(REPORTED_PERIODS.values()),
             "env": account["env"], "configuration_errors": list(configuration_errors),
             "reset_prompts": list(reset_prompts)}
 
