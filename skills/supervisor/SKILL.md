@@ -484,7 +484,9 @@ including non-dim text, establishes neither its author nor approval.
    Before a launch batch, compare PRs merged with PRs opened in each
    repository over the last few hours. If merges are behind and no merge-path
    fix is available, launch only finishing work. Keep each repository under
-   about 8 open agent PRs.
+   about 8 open agent PRs, not counting the merge train's batch PRs (titled
+   `Launchplane batch: #...`), which bundle PRs already counted, or drafts
+   parked on purpose.
 2. **Director questions live on the item's issue**, as a comment that starts
    `Director question:`. Follow the shared
    [question queue rules](../references/talking-with-the-director.md#decisions-holds-and-work-state)
@@ -569,11 +571,15 @@ for products a Client runs business on.
   [launchplane](../launchplane/SKILL.md) for that routing.
 - Open a Client-visible PR as soon as its work is ready; it gets one preview
   request whenever it opens, so holding it only delays the Client.
-- Land each Client-accepted PR first, or in the same train batch as other
-  PRs for that product, so a branch update cannot void the acceptance
-  ([launchplane#3234](https://github.com/cbusillo/launchplane/issues/3234)).
-  [codex-skills#1612](https://github.com/cbusillo/codex-skills/issues/1612)
-  replaces this hand ordering once Launchplane's automatic batch flow ships.
+- Unless the product is `director_standing`, each Client-visible PR needs
+  the Client's own Accept before it lands, and the release needs a separate
+  Accept. Hand the PR off with
+  `--waiting-for-client` until then. The train
+  [lands a product's ready accepted features together](https://github.com/cbusillo/launchplane/blob/main/docs/merge-train-policy.md)
+  and the release invitation names each one. A base update that leaves the
+  change unchanged
+  [keeps its acceptance](https://github.com/cbusillo/launchplane/blob/main/docs/owner-acceptance.md#carried-acceptance),
+  so there is no landing order to track.
 - Green engineering PRs route to the train as soon as they are ready, under
   [Q312](https://github.com/cbusillo/launchplane/issues/3327#issuecomment-6182485308).
   A merge deploys testing; engineering-only changes do not open a release
