@@ -2231,7 +2231,7 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
         github_plan_release.termination.verify_attestation(
             getattr(args, "termination_record", None), evidence.get("body") or "",
             facts.record["session"], source=source,
-            source_url=f"https://github.com/{source_issue['repo']}/{'pull' if 'pull_request' in source_issue else 'issues'}/{source_issue['number']}#issuecomment-{args.claim_comment}")
+            source_url=source.get("html_url"))
         # Check source identity, closure and native peers before a retained-PR
         # refusal can be classified as independent issue work.
         checked_paths = github_plan_release.validate_source_release(facts, source_comments, source_inventory,

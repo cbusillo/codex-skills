@@ -5,7 +5,7 @@
 """Shared process and transcript facts; callers retain closure and terminal authority."""
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import datetime, timezone
 import os
 from pathlib import Path
 import shlex
@@ -494,14 +494,7 @@ def verify_process_exit(entry, *, rows=None, ended_at=None, started_at=None,
                 if command_kind == "resume" and native_uuid(exact_resume) is None:
                     raise ValueError("Unresolved native process may own the source; preserve claims")
                 if entry.get("_historical_exit"):
-                    if not bounded or versioned_claude(argv[0]) or native_uuid(exact_resume) is None:
-                        raise ValueError("Unresolved native process may own the historical source; preserve claims")
-                    try:
-                        born = started_at(pid)
-                    except (OSError, ValueError, TypeError, subprocess.SubprocessError) as error:
-                        raise ValueError("Native process birth is unavailable; preserve claims") from error
-                    if ended_at is None or born <= ended_at + timedelta(seconds=1) or born > datetime.now(UTC):
-                        raise ValueError("Native process predates the original exit; preserve claims")
+                    raise ValueError("Live source-family process remains; preserve historical claims")
         if process_tty != tty or idle_terminal_command(command):
             continue
         if not entry.get("_backfill"):

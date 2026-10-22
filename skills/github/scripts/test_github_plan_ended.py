@@ -90,6 +90,7 @@ class HistoricalTerminationTests(fixtures.ReleaseHarness):
         self.original_native_check = ended.verify_native_inventory
         self.native_check = self.enterContext(patch.object(ended, "verify_native_inventory"))
         self.enterContext(patch.object(ended.sessions, "configured_homes", return_value=[self.directory]))
+        self.account_roots = self.enterContext(patch.object(ended, "account_roots", return_value={self.directory}))
         self.enterContext(patch.object(ended, "configured_roots", return_value={self.directory}))
         self.enterContext(patch.object(ended.termination, "inventory", return_value=[]))
         self.enterContext(patch.object(ended.termination.socket, "gethostname", return_value="source-host"))
@@ -265,17 +266,50 @@ class HistoricalTerminationTests(fixtures.ReleaseHarness):
         with self.assertRaises(ValueError):
             self.attest()
 
-    def test_explicit_other_process_started_after_exit_can_keep_working(self) -> None:
+    def test_every_live_source_family_process_refuses_without_birth_or_inventory_authority(self) -> None:
         shared = ended.sessions.process_liveness()
-        command = "claude --resume f5bd6d9f-d638-4a78-a6d1-ae9f8944beca"
+        other = "f5bd6d9f-d638-4a78-a6d1-ae9f8944beca"
+        commands = (
+            "claude",
+            "claude --resume " + other,
+            "claude --session-id " + other,
+            "claude --continue",
+            "claude -r",
+            "claude -p hello",
+            "/Users/test/.local/share/claude/versions/2.0.0 --resume " + other,
+            "node /bin/claude --resume " + other,
+        )
+        for command in commands:
+            for bounded in (True, False):
+                with (
+                    self.subTest(command=command, bounded=bounded),
+                    patch.object(ended.termination, "inventory", return_value=[(123, "ttys002", command)]),
+                    patch.object(shared, "process_arguments", return_value=(shared.harness_arguments(command), bounded)),
+                    patch.object(
+                        shared, "process_started_at", side_effect=AssertionError("Birth cannot grant historical authority")
+                    ),
+                    self.assertRaises(ValueError),
+                ):
+                    self.attest()
+
+    def test_codex_supervisor_can_verify_when_no_claude_process_remains(self) -> None:
+        shared = ended.sessions.process_liveness()
         with (
-            patch.object(ended.termination, "inventory", return_value=[(123, "ttys002", command)]),
-            patch.object(shared, "process_arguments", return_value=(command.split(), True)),
-            patch.object(shared, "process_started_at", return_value=release.stamp("2026-10-01T00:20:00Z")),
+            patch.object(ended.termination, "inventory", return_value=[(123, "ttys002", "codex")]),
+            patch.object(shared, "process_arguments", return_value=(["codex"], True)),
         ):
             self.attest()
 
-    def test_native_source_inventory_vetoes_an_explicit_other_launch(self) -> None:
+    def test_source_family_appearing_on_the_final_process_check_refuses(self) -> None:
+        shared = ended.sessions.process_liveness()
+        with (
+            patch.object(ended.termination, "inventory", side_effect=[[], [(123, "ttys002", "claude")]]),
+            patch.object(shared, "process_arguments", return_value=(["claude"], True)),
+            self.assertRaises(ValueError),
+        ):
+            self.attest()
+
+    def test_native_source_inventory_vetoes_without_a_visible_process(self) -> None:
         self.native_check.side_effect = self.original_native_check
         account = {"provider": "anthropic", "env": {}}
         with (
@@ -283,7 +317,7 @@ class HistoricalTerminationTests(fixtures.ReleaseHarness):
             patch.object(ended.subprocess, "run", return_value=SimpleNamespace(stdout=json.dumps([{"sessionId": self.native}]))),
             self.assertRaises(ValueError),
         ):
-            self.test_explicit_other_process_started_after_exit_can_keep_working()
+            self.attest()
 
     def test_native_source_can_appear_between_process_checks(self) -> None:
         self.native_check.side_effect = [None, ValueError("Source native session is active")]
@@ -306,13 +340,38 @@ class HistoricalTerminationTests(fixtures.ReleaseHarness):
             self.attest()
 
     def test_original_source_and_observer_must_remain_in_covered_roots(self) -> None:
-        with patch.object(ended, "configured_roots", return_value={self.directory / "sessions"}), self.assertRaises(ValueError):
+        with patch.object(ended, "account_roots", return_value={self.directory / "sessions"}), self.assertRaises(ValueError):
             self.attest()
         with (
             patch.object(ended.sessions, "configured_homes", return_value=[self.directory / "elsewhere"]),
             self.assertRaises(ValueError),
         ):
             self.attest()
+
+    def test_configured_observer_session_symlinks_preserve_original_exit_proof(self) -> None:
+        store = self.directory / "shared-sessions"
+        store.mkdir()
+        path = store / "observer.jsonl"
+        path.write_text(self.observer.read_text())
+        home = self.directory / "configured-home"
+        home.mkdir()
+        self.record["exit_record"]["transcript"] = str(path)
+        for name in ("sessions", "archived_sessions"):
+            (home / name).symlink_to(store, target_is_directory=True)
+            with self.subTest(name=name), patch.object(ended.sessions, "configured_homes", return_value=[home]):
+                self.attest()
+            (home / name).unlink()
+
+    def test_account_roots_are_rechecked_even_when_declared_roots_stay_the_same(self) -> None:
+        self.account_roots.side_effect = [{self.directory}, {self.directory / "changed"}]
+        with self.assertRaises(ValueError):
+            self.attest()
+
+    def test_fetched_canonical_comment_url_allows_different_reference_case(self) -> None:
+        self.args.issue = "OWNER/REPO#42"
+        self.args.dry_run = True
+        self.run_release()
+        self.f.assert_no_writes()
 
     def test_direct_argv_exit_is_supported_and_last_activity_is_the_transcript_time(self) -> None:
         self.exit_row["payload"]["item"]["command"] = ["claude", "--session-id", self.native]

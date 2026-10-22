@@ -1288,8 +1288,9 @@ Use the existing `--termination-record` procedure when the original native exit
 completed without a safe-exit verdict. Do not add a closure-log row or rewrite
 the original verdict. The private record keeps the native UUID, harness,
 source host, transcript, transcript roots, cause and retained artifacts. The
-source must resolve under a configured or declared root; the original observer
-rollout must remain under a configured Codex home's sessions or archived_sessions.
+source must resolve under a configured account root; declared roots add copies
+to scan and cannot establish the original. The observer rollout must remain
+under a configured Codex home's resolved sessions or archived_sessions directory.
 A historical Claude record may name an original Codex harness completion event:
 
 ```json
@@ -1326,13 +1327,14 @@ The generator and release preflight check configured account roots, every source
 copy, pending actions, canonical resume records and live or uncertain process
 owners. A canonical closure row, if present, is a resume veto only. Missing
 closure rows supply no exit proof and require no shared-log write. A historical
-source refuses while a same-family process lacks a bounded, exact other-session
-resume operand, or predates the original exit. Process birth checks allow for
-one second of native timestamp rounding. The documented `claude agents --json` inventory is checked on every configured
-account: a source UUID or unavailable identity coverage refuses. Registry rows
-never establish independence; another launch UUID cannot clear an in-app resume. Unresolved resume targets also refuse on the existing
-inventory backfill route; unrelated plain processes keep that route's existing
-behavior. The crash route keeps its PID, TTY and nonce-bearing tmux checks.
+source refuses while any Claude-family process is live, including another UUID,
+a noninteractive launch or uncertain argv. The native session inventory is an
+additional refusal-only check on every configured account. No registry row or
+launch operand grants independence. Run this historical procedure from a Codex
+Supervisor after Claude sessions finish normally. Otherwise keep the claims and let the live sessions finish.
+Unresolved resume targets also refuse on the existing inventory backfill route;
+unrelated plain processes keep that route's existing behavior. The crash route
+keeps its PID, TTY and nonce-bearing tmux checks.
 The release repeats verification after its pending write, pins the original
 exit, preserves artifacts, and keeps branch, PR, wait and blocker checks.
 Generate the attestation with `github_plan_termination.py --record FILE`, inspect

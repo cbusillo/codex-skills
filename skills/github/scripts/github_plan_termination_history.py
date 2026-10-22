@@ -98,8 +98,8 @@ def original_claim_output(records: list[dict[str, Any]], url: str, record: dict[
     return False
 
 
-def configured_roots(record: dict[str, Any]) -> set[Path]:
-    roots = termination._transcript_roots(record)
+def account_roots() -> set[Path]:
+    roots = set()
     for account in source_accounts():
         home = Path(account["env"].get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude"))).expanduser()
         if not home.is_dir():
@@ -109,6 +109,10 @@ def configured_roots(record: dict[str, Any]) -> set[Path]:
             with os.scandir(path):
                 roots.add(path.resolve(strict=True))
     return roots
+
+
+def configured_roots(record: dict[str, Any]) -> set[Path]:
+    return termination._transcript_roots(record) | account_roots()
 
 
 def transcript_paths(record: dict[str, Any], roots: set[Path]) -> set[Path]:
@@ -193,7 +197,7 @@ def original_exit(record: dict[str, Any]) -> OriginalExit:
         raise ValueError("Original exit requires its absolute native observing transcript")
     path = path.resolve(strict=True)
     if not any(
-        path.is_relative_to(home.resolve() / name)
+        path.is_relative_to((home / name).resolve())
         for home in sessions.configured_homes(strict=True)
         for name in ("sessions", "archived_sessions")
     ):
@@ -238,12 +242,13 @@ def verify(record: dict[str, Any], session: str) -> dict[str, Any]:
     canonical = closure.source_records({identity}).get(identity)
     if closure.action_pending(identity) or canonical and (canonical.get("resumed_at") or canonical.get("resumed_generation")):
         raise ValueError("Source has resumed or has a pending action; preserve claims")
+    native_roots = account_roots()
     roots = configured_roots(record)
     paths = transcript_paths(record, roots)
     snapshots = {path: termination.transcript_snapshot(record, path) for path in paths}
     original = Path(record["transcript"]).resolve(strict=True)
-    if not any(original.is_relative_to(root) for root in roots):
-        raise ValueError("Original source transcript is outside configured or declared roots")
+    if not any(original.is_relative_to(root) for root in native_roots):
+        raise ValueError("Original source transcript is outside configured account roots")
     rows = own_records(record, original, snapshots[original][0])
     exit_evidence = original_exit(record)
     ended = exit_evidence.ended_at
@@ -269,11 +274,11 @@ def verify(record: dict[str, Any], session: str) -> dict[str, Any]:
     if not original_claim_output(rows, url, source, created_at=created):
         raise ValueError("Native root lacks the original claim's direct creation receipt")
     refuse_duplicate_receipt(record, roots)
-    verify_processes(record, ended)
     if (
         any(termination.transcript_snapshot(record, path) != snapshot for path, snapshot in snapshots.items())
         or transcript_paths(record, roots) != paths
         or configured_roots(record) != roots
+        or account_roots() != native_roots
         or closure.source_records({identity}).get(identity) != canonical
         or closure.action_pending(identity)
         or original_exit(record) != exit_evidence
@@ -295,6 +300,7 @@ def verify(record: dict[str, Any], session: str) -> dict[str, Any]:
     )
     termination.validate(data, session)
     termination._verify_artifacts(data["retained_artifacts"])
+    verify_processes(record, ended)
     return data
 
 
