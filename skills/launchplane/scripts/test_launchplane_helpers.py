@@ -8965,6 +8965,53 @@ def test_runtime_sync_review_persistence_and_boundaries() -> None:
         assert code == 1 and result["status"] == "accepted_unverified"
 
 
+def test_runtime_sync_selected_keys_bind_review_apply_and_readback() -> None:
+    flags = ["--product", "example-site", "--context", "example-context", "--instance", "testing",
+             "--key", "EXAMPLE_API_TOKEN"]
+
+    def response(*, mode: str = "dry-run", changed: bool = True) -> dict[str, Any]:
+        result = _runtime_sync_response(mode=mode, changed=changed)
+        result["result"]["selected_keys"] = ["EXAMPLE_API_TOKEN"]
+        result["result"]["runtime_environment"]["desired_key_count"] = 1
+        result["result"]["runtime_environment"]["unchanged_key_count"] = 0 if changed else 1
+        result["result"]["private_value"] = "SECRET_SENTINEL"
+        return result
+
+    code, evidence, transport = _run_runtime_sync(["live-target-runtime-sync-dry-run", *flags], [response()])
+    assert code == 0
+    assert evidence["request"]["selected_keys"] == ["EXAMPLE_API_TOKEN"]
+    assert transport.call_args.kwargs["body"]["selected_keys"] == ["EXAMPLE_API_TOKEN"]
+    assert "SECRET_SENTINEL" not in json.dumps(evidence)
+    with TemporaryDirectory() as temporary:
+        path = Path(temporary) / "review.json"
+        path.write_text(json.dumps(evidence))
+        argv = ["live-target-runtime-sync-apply", *flags, "--idempotency-key", "selected-sync", "--reviewed-dry-run",
+                "--expected-plan-digest", evidence["result"]["plan_sha256"], "--dry-run-evidence-file", str(path)]
+        code, result, transport = _run_runtime_sync(argv, [response(), response(mode="apply"), response(changed=False)])
+        assert code == 0 and result["result"]["read_back_matches"] is True
+        assert "SECRET_SENTINEL" not in json.dumps(result)
+        assert all(call.kwargs["body"]["selected_keys"] == ["EXAMPLE_API_TOKEN"] for call in transport.call_args_list)
+        for suffix in (["--key", "OTHER_KEY"], ["--key", "EXAMPLE_API_TOKEN"]):
+            code, _, transport = _run_runtime_sync([*argv, *suffix], [])
+            assert code == 2 and transport.call_count == 0
+        for invalid in ("missing_selection", "wrong_selection", "unselected_change", "retirement"):
+            unsafe = response()
+            if invalid == "missing_selection":
+                del unsafe["result"]["selected_keys"]
+            elif invalid == "wrong_selection":
+                unsafe["result"]["selected_keys"] = ["OTHER_KEY"]
+            elif invalid == "unselected_change":
+                unsafe["result"]["runtime_environment"]["different_keys"].append("OTHER_KEY")
+                unsafe["result"]["runtime_environment"]["changed_keys"].append("OTHER_KEY")
+            else:
+                unsafe["result"]["runtime_environment"]["retired_keys_present"] = ["OLD_KEY"]
+                unsafe["result"]["runtime_environment"]["changed_keys"].append("OLD_KEY")
+            code, _, transport = _run_runtime_sync(argv, [unsafe])
+            assert code == 1 and transport.call_count == 1
+        code, result, transport = _run_runtime_sync(argv, [response(), response(mode="apply"), response()])
+        assert code == 1 and result["status"] == "accepted_unverified" and transport.call_count == 3
+
+
 def test_runtime_sync_denial_and_unsafe_output() -> None:
     argv = ["live-target-runtime-sync-dry-run", "--product", "example-site", "--context", "example-context", "--instance", "testing"]
     error = urllib.error.HTTPError("https://example.invalid", 403, "Forbidden", Message(), io.BytesIO(json.dumps({
