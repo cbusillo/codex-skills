@@ -275,6 +275,23 @@ class DeliveryTests(unittest.TestCase):
         self.assertTrue(report["complete"])
         self.assertEqual([q["url"] for q in report["questions"]], [self.questions[1]["url"]])
 
+    def test_explicit_question_read_ignores_an_unhealthy_registered_peer(self):
+        self.run_queue(register=True)
+        target, peer = self.questions[0], self.questions[1]
+        unnumbered = [{**peer, "body": next(q for q in self.fixture["questions"] if q["url"] == peer["url"])["body"]}]
+        for case, peer_source in (("unavailable", None), ("unnumbered", unnumbered)):
+            with self.subTest(peer=case):
+                self.sources.pop(delivery.source_item(peer["url"]), None)
+                if peer_source:
+                    self.sources[delivery.source_item(peer["url"])] = peer_source
+                scoped = self.run_queue(items=[target["url"]])
+                self.assertEqual([q["url"] for q in scoped["questions"]], [target["url"]])
+                self.assertTrue(scoped["complete"])
+                self.assertEqual(scoped["source_errors"], [])
+                whole = self.run_queue(items=[])
+                self.assertFalse(whole["complete"])
+                self.assertIn(peer["url"], {q["url"] for q in whole["questions"]})
+
     def test_real_decision_words_are_not_deferrals_and_plain_replies_are_candidates(self):
         self.run_queue(register=True)
         target = self.questions[0]["url"]
