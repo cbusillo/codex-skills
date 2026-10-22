@@ -1140,46 +1140,181 @@ def redirect_programs(node: Node, consumer: str) -> Iterator[ProgramSource]:
             yield program
 
 
-SHELL_VARIABLE_WRITERS = frozenset(
+SIMPLE_SHELL_NODES = frozenset(
     {
-        ".",
-        "-",
-        "alias",
-        "builtin",
         "command",
+        "command_name",
+        "command_substitution",
+        "comment",
+        "compound_statement",
+        "concatenation",
+        "do_group",
+        "expansion",
+        "file_descriptor",
+        "file_redirect",
+        "for_statement",
+        "heredoc_body",
+        "heredoc_end",
+        "heredoc_redirect",
+        "heredoc_start",
+        "herestring_redirect",
+        "list",
+        "number",
+        "pipeline",
+        "program",
+        "raw_string",
+        "redirected_statement",
+        "simple_expansion",
+        "special_variable_name",
+        "string",
+        "string_content",
+        "variable_assignment",
+        "variable_name",
+        "word",
+    }
+)
+SHELL_BUILTINS = frozenset(
+    {
+        "-",
+        ".",
+        ":",
+        "[",
+        "[[",
+        "alias",
+        "autoload",
+        "bg",
+        "bind",
+        "bindkey",
+        "break",
+        "builtin",
+        "bye",
+        "caller",
+        "cap",
+        "cd",
+        "chdir",
+        "clone",
+        "command",
+        "comparguments",
+        "compcall",
+        "compctl",
+        "compdescribe",
+        "compfiles",
+        "compgen",
+        "compgroups",
+        "complete",
+        "compopt",
+        "compquote",
+        "comptags",
+        "comptry",
+        "compvalues",
+        "continue",
         "coproc",
         "declare",
+        "dirs",
+        "disable",
+        "disown",
+        "echo",
+        "emulate",
         "enable",
         "eval",
         "exec",
+        "exit",
         "export",
+        "false",
+        "fc",
+        "fg",
+        "float",
+        "function",
+        "functions",
+        "getcap",
         "getln",
         "getopts",
+        "hash",
+        "hashinfo",
+        "help",
+        "history",
+        "integer",
+        "jobs",
+        "kill",
         "let",
+        "limit",
         "local",
+        "log",
+        "logout",
         "mapfile",
         "nocorrect",
         "noglob",
+        "popd",
+        "print",
+        "printf",
+        "private",
+        "pushd",
+        "pushln",
+        "pwd",
+        "r",
         "read",
         "readarray",
         "readonly",
+        "rehash",
+        "repeat",
+        "return",
         "sched",
+        "select",
+        "set",
+        "setcap",
+        "setopt",
+        "shift",
+        "shopt",
         "source",
+        "stat",
         "strftime",
+        "suspend",
+        "syserror",
+        "sysopen",
         "sysread",
+        "sysseek",
+        "syswrite",
+        "tcp_open",
+        "test",
         "time",
+        "times",
         "trap",
+        "true",
+        "ttyctl",
+        "type",
         "typeset",
+        "ulimit",
+        "umask",
+        "unalias",
+        "unfunction",
+        "unhash",
+        "unlimit",
         "unset",
+        "unsetopt",
         "vared",
+        "wait",
+        "whence",
+        "where",
+        "which",
+        "zcompile",
+        "zcurses",
         "zformat",
+        "zftp",
+        "zle",
         "zmodload",
         "zparseopts",
+        "zprof",
+        "zpty",
         "zregexparse",
+        "zselect",
+        "zsocket",
+        "zstat",
         "zstyle",
+        "zsystem",
+        "ztcp",
     }
 )
-SHELL_VARIABLE_WRITER_FLAGS = {"printf": "v", "print": "v", "wait": "p", "set": "A"}
+VARIABLE_PRESERVING_BUILTINS = frozenset({":", "cd", "echo", "exit", "false", "pwd", "true"})
 SHELL_MANAGED_NAMES = frozenset(
     {
         "ARGC",
@@ -1221,6 +1356,7 @@ SHELL_MANAGED_NAMES = frozenset(
         "SRANDOM",
         "TTYIDLE",
         "UID",
+        "_",
         "argv",
         "cdpath",
         "epochtime",
@@ -1238,6 +1374,7 @@ SHELL_MANAGED_NAMES = frozenset(
         "status",
     }
 )
+PLAIN_EXPANSION = re.compile(r"\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})")
 LITERAL_SHELL_VALUE = re.compile(r"[A-Za-z0-9_./@:+,%-][A-Za-z0-9_./@:+,%#-]*")
 LITERAL_EXPANSION_PASSES = 64
 LITERAL_EXPANSION_BYTES = 1 << 20
@@ -1255,65 +1392,48 @@ def literal_shell_value(node: Node | None) -> str | None:
     return value if LITERAL_SHELL_VALUE.fullmatch(value) else None
 
 
-def writes_unknown_variables(root: Node) -> bool:
-    for node in shell_nodes(root):
-        if node.type in {"declaration_command", "unset_command", "arithmetic_expansion", "c_style_for_statement"}:
-            return True
-        if node.type == "compound_statement" and node.children[0].type == "((":
-            return True
-        if (node.type == "for_statement" and node.children[0].type != "for") or (node.type == "expansion" and b"=" in node.text):
-            return True
-        if node.type != "command":
-            continue
-        name = node.child_by_field_name("name")
-        if name is None or shell_generated(name):
-            return True
-        argv = command_argv(node)
-        flags = SHELL_VARIABLE_WRITER_FLAGS.get(argv[0])
-        if argv[0] in SHELL_VARIABLE_WRITERS or (
-            flags and any(re.fullmatch(rf"[-+][A-Za-z]*[{flags}][A-Za-z]*", argument) for argument in argv[1:])
-        ):
-            return True
-    return b"IFS" in root.text
+def variables_keep_assigned_values(root: Node) -> bool:
+    return b"IFS" not in root.text and all(simple_shell_node(node) for node in shell_nodes(root))
+
+
+def simple_shell_node(node: Node) -> bool:
+    if node.type not in SIMPLE_SHELL_NODES:
+        return False
+    if node.type == "expansion":
+        return PLAIN_EXPANSION.fullmatch(node.text.decode()) is not None
+    if node.type in {"compound_statement", "for_statement"}:
+        return node.children[0].type in {"{", "for"}
+    if node.type == "variable_assignment":
+        return node.children[1].type == "="
+    if node.type != "command":
+        return True
+    name = node.child_by_field_name("name")
+    return (
+        name is not None
+        and not shell_generated(name)
+        and (shell_word(name) in VARIABLE_PRESERVING_BUILTINS or shell_word(name) not in SHELL_BUILTINS)
+    )
 
 
 def plain_expansion(node: Node, name: str) -> bool:
     return node.type in {"simple_expansion", "expansion"} and node.text.decode() in {f"${name}", f"${{{name}}}"}
 
 
-def expected_name_position(node: Node) -> bool:
-    parent = node.parent
-    if parent is None:
-        return False
-    if parent.type in {"variable_assignment", "for_statement"}:
-        return parent.child_by_field_name("name" if parent.type == "variable_assignment" else "variable") == node
-    return plain_expansion(parent, node.text.decode())
-
-
-@dataclass
-class ShellNames:
-    assignments: dict[str, list[Node]] = field(default_factory=dict)
-    unsafe: set[str] = field(default_factory=set)
-
-
-def shell_names(root: Node) -> ShellNames:
-    names = ShellNames()
+def shell_assignments(root: Node) -> dict[str, list[Node]]:
+    assignments: dict[str, list[Node]] = {}
     for node in shell_nodes(root):
         if node.type in {"variable_assignment", "for_statement"}:
             name = node.child_by_field_name("name" if node.type == "variable_assignment" else "variable")
             if name is not None:
-                names.assignments.setdefault(name.text.decode(), []).append(node)
-        elif node.type == "word" or (node.type == "variable_name" and not expected_name_position(node)):
-            names.unsafe.add(node.text.decode())
-    return names
+                assignments.setdefault(name.text.decode(), []).append(node)
+    return assignments
 
 
-def assigned_once(name: str, names: ShellNames) -> bool:
+def assigned_once(name: str, assignments: dict[str, list[Node]]) -> bool:
     return (
-        name not in names.unsafe
-        and name not in SHELL_MANAGED_NAMES
+        name not in SHELL_MANAGED_NAMES
         and not name.startswith(("BASH", "COMP_", "READLINE_", "TRY_BLOCK_", "ZSH_"))
-        and len(names.assignments.get(name, [])) == 1
+        and len(assignments.get(name, [])) == 1
     )
 
 
@@ -1367,11 +1487,11 @@ def substitution_edits(uses: list[tuple[Node, str]]) -> list[tuple[int, int, byt
     return edits
 
 
-def bound_variable_edits(root: Node, source: bytes, names: ShellNames) -> list[tuple[int, int, bytes]]:
+def bound_variable_edits(root: Node, source: bytes, assignments: dict[str, list[Node]]) -> list[tuple[int, int, bytes]]:
     uses = []
-    for name, assignments in names.assignments.items():
-        assignment = assignments[0]
-        if not assigned_once(name, names) or assignment.type != "variable_assignment":
+    for name, nodes in assignments.items():
+        assignment = nodes[0]
+        if not assigned_once(name, assignments) or assignment.type != "variable_assignment":
             continue
         value = literal_shell_value(assignment.child_by_field_name("value"))
         if value is None or not runs_unconditionally(assignment):
@@ -1388,7 +1508,7 @@ class LiteralLoop:
     values: list[str]
 
 
-def literal_loop(loop: Node, names: ShellNames) -> LiteralLoop | None:
+def literal_loop(loop: Node, assignments: dict[str, list[Node]]) -> LiteralLoop | None:
     if loop.type != "for_statement":
         return None
     variable = loop.child_by_field_name("variable")
@@ -1396,7 +1516,7 @@ def literal_loop(loop: Node, names: ShellNames) -> LiteralLoop | None:
     if variable is None or body is None or body.type != "do_group":
         return None
     name = variable.text.decode()
-    if not assigned_once(name, names):
+    if not assigned_once(name, assignments):
         return None
     words = loop.children_by_field_name("value")
     values = [value for word in words if (value := literal_shell_value(word)) is not None]
@@ -1411,13 +1531,13 @@ def unrolled_loop(root: Node, source: bytes, loop: LiteralLoop) -> bytes:
 
 
 def expanded_once(root: Node, source: bytes) -> bytes | None:
-    if writes_unknown_variables(root):
+    if not variables_keep_assigned_values(root):
         return None
-    names = shell_names(root)
-    edits = bound_variable_edits(root, source, names)
+    assignments = shell_assignments(root)
+    edits = bound_variable_edits(root, source, assignments)
     if edits:
         return replaced(source, edits)
-    loops = [loop for node in shell_nodes(root) if (loop := literal_loop(node, names)) is not None]
+    loops = [loop for node in shell_nodes(root) if (loop := literal_loop(node, assignments)) is not None]
     return unrolled_loop(root, source, loops[-1]) if loops else None
 
 

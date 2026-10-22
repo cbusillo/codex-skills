@@ -812,6 +812,14 @@ class ClaimCloseoutTests(unittest.TestCase):
             "SECONDS=2; sleep 2; uv run gh-plan.py --repo test/a claim $SECONDS",
             "for RANDOM in 1 2; do uv run gh-plan.py --repo test/a claim $RANDOM; done",
             "for BASH_ARGV0 in 1; do uv run gh-plan.py --repo test/a claim $BASH_ARGV0; done",
+            "for _ in 1; do printf '%s\\n' 2; uv run gh-plan.py --repo test/a claim $_; done",
+            'i=1; opt=-vi; printf "$opt" %s 2; uv run gh-plan.py --repo test/a claim $i',
+            'i=1; n="i"; printf -v"$n" %s 2; uv run gh-plan.py --repo test/a claim $i',
+            "i=1; [[ i++ -gt 0 ]]; uv run gh-plan.py --repo test/a claim $i",
+            "for i in 1; do [[ i++ -gt 0 ]]; uv run gh-plan.py --repo test/a claim $i; done",
+            'i=1; n="i++"; a=(1 2 3); echo "${a[$n]}"; uv run gh-plan.py --repo test/a claim $i',
+            'i=1; n="i++"; a[$n]=0; uv run gh-plan.py --repo test/a claim $i',
+            f"R+=test/a; {claim}",
         ]
         for command in commands:
             with self.subTest(command=command):

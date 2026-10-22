@@ -30,13 +30,17 @@ the claiming host's journal and complete native lineage when using remote shells
 
 A shell variable assigned once to a literal value at the top level, and a `for`
 loop over literal words, expand into exact claim targets, so
-`for i in 147 148; do ... claim $i; done` checks both records. Anything else
-that could change the value keeps the call computed: a second assignment, a use
-before the assignment, a conditional or background assignment, `read`,
-`printf -v`, `declare`, `export`, `unset`, `eval`, `source`, `builtin` or
-`command` wrappers, arithmetic, `${NAME:=...}`, an `IFS` change or a computed
-command name. Values with spaces, quotes, glob or tilde characters, uses inside
-a heredoc, and zsh modifiers such as `$NAME:h` stay computed too. Text passed
+`for i in 147 148; do ... claim $i; done` checks both records. This applies
+only when the whole command uses plain commands, lists, pipelines, redirects,
+heredocs, `{ }` groups, literal `for` loops and plain `$NAME` or `${NAME}`
+expansions, and every command is an external program or `cd`, `echo`, `true`,
+`false`, `pwd`, `exit` or `:`. Any other shell builtin, function, test,
+arithmetic, array, modified expansion, `+=`, `IFS` change or computed command
+name keeps every call in it computed, as do a second assignment, a use before
+the assignment, a conditional or background assignment, and shell-managed names
+such as `SECONDS`, `RANDOM`, `PATH` and `_`. Values with spaces, quotes, glob
+or tilde characters, uses inside a heredoc, and zsh modifiers such as `$NAME:h`
+stay computed too. Text passed
 to `apply_patch` in a JavaScript cell is file data and does not make the
 cell's computed commands claim-related.
 
