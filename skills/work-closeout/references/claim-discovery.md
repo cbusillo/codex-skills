@@ -105,15 +105,16 @@ uncertainty when every shell call has a plain argument object, known option
 names and absent or literal `tty:false`; empty `write_stdin` polls also cannot
 introduce claim input. Duplicates, spreads, escaped or computed keys, unknown
 TTY values, other shell APIs, borrowed `load` results and opaque code retain
-conservative coverage. Possible TTY launches seed uncertainty even if their
-process ID was not printed. Explicit claim input always remains subject to the
+conservative coverage. One-shot shell APIs keep their existing result rules.
+Possible TTY launches seed uncertainty even if their process ID was not printed
+or their runtime metadata is missing. Explicit claim input remains subject to the
 existing checks. This proof concerns native `write_stdin`, not files or sockets.
 
 A structurally terminal native `CommandExecution` event, or the supported native
 parse-failure proof, cannot initiate a new interactive context. Neither clears
 an earlier possible context. Printed exit codes never retire one. A non-PTY
-claim command still running without a conclusive receipt remains unresolved;
-closed stdin never proves that a claim was not written.
+claim with an unknown target still needs a conclusive receipt; known targets
+require GitHub verification. Closed stdin never proves that a claim was not written.
 
 A shell variable assigned once to a literal value at the top level, and a `for`
 loop over literal words, expand into exact claim targets, so

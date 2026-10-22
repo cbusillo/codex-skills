@@ -22,6 +22,54 @@ def invocation(source: str, output: object = "") -> list[dict]:
 
 
 class RecordedClaimOutcomeTests(unittest.TestCase):
+    def test_explicit_interactive_launches_do_not_require_printed_process_ids(self) -> None:
+        boundary = check_claims.history.CLOSED_STDIN_SINCE
+        versions = [None, ".".join(map(str, (boundary[0], boundary[1] - 1, boundary[2]))), ".".join(map(str, boundary))]
+        command = "CMD='uv run gh-plan.py claim 5'; bash"
+        later = 'const t=tools;const m=load("method");await t[m]({session_id:41,chars:"$CMD\\n"});'
+        for version in versions:
+            for javascript in (False, True):
+                for output in ("", "Process running with session ID 41"):
+                    with self.subTest(version=version, javascript=javascript, output=output):
+                        rows = [] if version is None else [{"type": "session_meta", "payload": {"cli_version": version}}]
+                        if javascript:
+                            rows.extend(
+                                invocation(f"text(await tools.exec_command({{cmd:{json.dumps(command)},tty:true}}));", output)
+                            )
+                        else:
+                            rows.extend(
+                                [
+                                    {
+                                        "payload": {
+                                            "type": "function_call",
+                                            "name": "exec_command",
+                                            "call_id": "call",
+                                            "arguments": json.dumps({"cmd": command, "tty": True}),
+                                        }
+                                    },
+                                    {"payload": {"type": "function_call_output", "call_id": "call", "output": output}},
+                                ]
+                            )
+                        rows.extend({"payload": {**row["payload"], "call_id": "later"}} for row in invocation(later))
+                        self.assertTrue(check_claims.history.literal_targets(rows, SESSION)["unresolved_invocations"])
+
+    def test_one_shot_shell_calls_do_not_create_an_input_channel(self) -> None:
+        for method in ("shell_command", "shell"):
+            with self.subTest(method=method):
+                rows = [
+                    {
+                        "type": "session_meta",
+                        "payload": {"cli_version": ".".join(map(str, check_claims.history.CLOSED_STDIN_SINCE))},
+                    }
+                ]
+                rows.extend(invocation(f'text(await tools.{method}({{command:"uv run gh-plan.py show 5"}}));'))
+                rows.extend(
+                    {"payload": {**row["payload"], "call_id": "later"}} for row in invocation('text(String(load("result")));')
+                )
+                self.assertEqual(
+                    check_claims.history.literal_targets(rows, SESSION), {"targets": set(), "unresolved_invocations": []}
+                )
+
     def test_noninteractive_helper_reads_do_not_taint_later_formatting(self) -> None:
         followup = 'text(String(load("result")).replace(/x/g,"y"));'
         command = '"uv run gh-plan.py --repo test/a show 5"'

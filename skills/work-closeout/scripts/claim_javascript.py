@@ -534,10 +534,13 @@ EXEC_OPTIONS = {
 }
 
 
+def shell_method(arguments: Node) -> str:
+    return property_name(arguments.parent.child_by_field_name("function").child_by_field_name("property"))
+
+
 def closed_stdin(arguments: Node) -> bool:
     try:
-        function = arguments.parent.child_by_field_name("function")
-        method = property_name(function.child_by_field_name("property"))
+        method = shell_method(arguments)
         if method not in {"exec_command", "write_stdin"}:
             return False
         objects = children(arguments)

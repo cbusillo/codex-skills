@@ -571,7 +571,7 @@ def shell_texts(text: str, javascript: bool) -> ShellTexts:
         if isinstance(decoded, dict):
             command = decoded.get("cmd", decoded.get("command", decoded.get("chars")))
             commands = [ShellCommand(command_text(command), "chars" in decoded)] if command is not None else []
-            return ShellTexts(commands)
+            return ShellTexts(commands, stdin_possible=decoded.get("tty") is True)
         return ShellTexts([ShellCommand(text)])
     bounded, sites = claim_javascript.analyse(text)
     commands = []
@@ -584,8 +584,16 @@ def shell_texts(text: str, javascript: bool) -> ShellTexts:
             interactive_opaque = interactive_opaque or interactive
         else:
             commands.extend(ShellCommand(command, interactive) for command in decoded)
-    stdin_possible = any(not claim_javascript.closed_stdin(arguments) for arguments, _ in sites)
-    stdin_closed = bounded and bool(sites) and "load" not in javascript_names(text) and not stdin_possible
+    stdin_possible = any(
+        claim_javascript.shell_method(arguments) in {"exec_command", "write_stdin"} and not claim_javascript.closed_stdin(arguments)
+        for arguments, _ in sites
+    )
+    stdin_closed = (
+        bounded
+        and bool(sites)
+        and "load" not in javascript_names(text)
+        and all(claim_javascript.closed_stdin(arguments) for arguments, _ in sites)
+    )
     return ShellTexts(commands, opaque, interactive_opaque, stdin_closed, bounded and stdin_possible)
 
 
@@ -2520,7 +2528,7 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
                         claim_related_here
                         and (
                             sources.interactive_opaque
-                            or (non_tty_stdin_closed and sources.stdin_possible)
+                            or sources.stdin_possible
                             or (
                                 not (non_tty_stdin_closed and sources.stdin_closed)
                                 and any(
