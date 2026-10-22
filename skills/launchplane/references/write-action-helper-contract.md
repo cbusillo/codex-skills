@@ -2152,6 +2152,21 @@ command does not override this: the service refuses `local_operator`/`terminal_a
 application, and approval stays in the signed-in Director card. Before use, verify that the service
 supports the descriptor; source delivery does not activate it or grant access.
 
+`merge-train-trusted-automation-propose --change add|remove --github-user-id ID
+--repo OWNER/REPO ... --reason TEXT --source-event-id ID` builds the
+`managed-merge-train-policy-import` envelope itself. It reads the active policy
+through the `merge-train-policy-read` route, changes only
+`enqueue.trusted_automation_github_user_ids` on the named repositories' targets,
+and submits the result through the same proposal route and output. The record,
+including credential-routing fields, stays in memory and is never written to
+disk. The candidate's `policy_sha256` is left for the service to compute, and
+its `record_id` is `merge-train-policy-<updated_at>-proposal`. The request in the
+output names the repositories, the active record id and digest, the changed
+target count and `updated_at`. To replay an uncertain submission, rerun with the
+same source event and `--updated-at`. An unenrolled repository
+(`repository_not_enrolled`) or a change that alters nothing (`policy_unchanged`)
+stops before any write.
+
 On a timeout, HTTP 5xx or response-verification failure, retain the same envelope and
 source event for reconciliation/replay. Never substitute a new identity or a new
 source event to force a duplicate proposal. A denial is not a missing token:

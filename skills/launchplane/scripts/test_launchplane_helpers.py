@@ -11279,3 +11279,143 @@ def test_service_prose_with_marker_named_settings_remains_safe_and_reviewable() 
     assert isinstance(projected["message"], str) and projected["message"]
     assert "fixture-private-value" not in json.dumps(projected)
     write_action.assert_public_safe_shape(projected)
+
+
+def _active_merge_train_policy_read(trusted: dict[str, list[int]]) -> dict[str, object]:
+    return {
+        "status": "ok",
+        "trace_id": "launchplane_req_" + "d" * 32,
+        "record": {
+            "schema_version": 1,
+            "record_id": "merge-train-policy-20261019T162850Z-" + "e" * 12,
+            "status": "active",
+            "source": "operator:private-policy-source",
+            "updated_at": "2026-10-19T16:28:50Z",
+            "policy_sha256": "e" * 64,
+            "policy": {
+                "schema_version": 1,
+                "policies": [
+                    {
+                        "repository": repository,
+                        "base_branch": "main",
+                        "github_token": {"env_var": "PRIVATE_GITHUB_TOKEN"},
+                        "enqueue": {"label_required": True, "trusted_automation_github_user_ids": ids},
+                    }
+                    for repository, ids in trusted.items()
+                ],
+            },
+        },
+    }
+
+
+def _run_trusted_automation_proposal(
+    argv: list[str], read_payload: dict[str, object]
+) -> tuple[int, dict[str, Any], list[dict[str, object]]]:
+    posted: list[dict[str, object]] = []
+
+    def post(**kwargs: Any) -> dict[str, object]:
+        assert kwargs["path"] == contract.helper_command_path("privileged-policy-propose")
+        posted.append(kwargs["body"])
+        return {
+            "status": "ok",
+            "trace_id": "launchplane_req_" + "b" * 32,
+            "write_status": "written",
+            "summary": {
+                "operation_id": "privileged-operation-" + "a" * 32,
+                "descriptor_id": "managed-merge-train-policy-import",
+                "status": "planned",
+                "result_status": "ok",
+                "active_target_count": 3,
+                "candidate_target_count": 3,
+                "unchanged_policy_key_count": 1,
+                "expires_at": "",
+            },
+        }
+
+    def read(**kwargs: Any) -> dict[str, object]:
+        assert kwargs["path"] == contract.helper_command_path("merge-train-policy-read")
+        return copy.deepcopy(read_payload)
+
+    output = io.StringIO()
+    with (
+        patch.object(
+            write_action,
+            "resolve_settings",
+            return_value={"service_url": "https://private.example.invalid", "token": "private-token"},
+        ),
+        patch.object(write_action, "request_launchplane", side_effect=post),
+        patch.object(write_action, "request_launchplane_read", side_effect=read),
+        redirect_stdout(output),
+    ):
+        exit_code = write_action.main(argv)
+    return exit_code, json.loads(output.getvalue()), posted
+
+
+def _trusted_automation_argv(change: str, *repositories: str) -> list[str]:
+    argv = [
+        "merge-train-trusted-automation-propose",
+        "--change", change,
+        "--github-user-id", "29139614",
+        "--reason", "Q662: admit Renovate pull requests",
+        "--related-issue", "https://github.com/example-owner/example/issues/1",
+        "--source-event-id", "test:trusted:one",
+        "--updated-at", "2026-10-22T17:30:00Z",
+    ]
+    for repository in repositories:
+        argv += ["--repo", repository]
+    return argv
+
+
+def test_trusted_automation_proposal_changes_only_named_targets_and_returns_review_metadata() -> None:
+    read_payload = _active_merge_train_policy_read(
+        {"owner/alpha": [49699333], "owner/beta": [], "owner/gamma": [49699333]}
+    )
+    exit_code, output, posted = _run_trusted_automation_proposal(
+        _trusted_automation_argv("add", "Owner/Alpha", "owner/beta"), read_payload
+    )
+
+    assert exit_code == 0
+    record = cast(dict[str, Any], posted[0]["request"])["record"]
+    trusted = {
+        target["repository"]: target["enqueue"]["trusted_automation_github_user_ids"]
+        for target in record["policy"]["policies"]
+    }
+    assert trusted == {"owner/alpha": [29139614, 49699333], "owner/beta": [29139614], "owner/gamma": [49699333]}
+    assert all(target["github_token"] == {"env_var": "PRIVATE_GITHUB_TOKEN"} for target in record["policy"]["policies"])
+    assert record["record_id"] == "merge-train-policy-20261022T173000Z-proposal"
+    assert "policy_sha256" not in record
+    assert output["result"]["review_url"].endswith("operation_id=privileged-operation-" + "a" * 32)
+    assert output["request"]["changed_target_count"] == 2
+    assert output["request"]["active_policy_sha256"] == "e" * 64
+    assert "PRIVATE_GITHUB_TOKEN" not in json.dumps(output)
+
+
+def test_trusted_automation_proposal_remove_drops_only_that_id() -> None:
+    _, _, posted = _run_trusted_automation_proposal(
+        _trusted_automation_argv("remove", "owner/alpha"),
+        _active_merge_train_policy_read({"owner/alpha": [29139614, 49699333]}),
+    )
+
+    record = cast(dict[str, Any], posted[0]["request"])["record"]
+    assert record["policy"]["policies"][0]["enqueue"]["trusted_automation_github_user_ids"] == [49699333]
+
+
+def test_trusted_automation_proposal_refuses_unknown_repository_and_no_op_without_posting() -> None:
+    for repositories, trusted, code in (
+        (("owner/alpha", "owner/missing"), {"owner/alpha": []}, "repository_not_enrolled"),
+        (("owner/alpha",), {"owner/alpha": [29139614]}, "policy_unchanged"),
+    ):
+        exit_code, output, posted = _run_trusted_automation_proposal(
+            _trusted_automation_argv("add", *repositories), _active_merge_train_policy_read(trusted)
+        )
+        assert (exit_code, output["warnings"][0]["code"], posted) == (2, code, [])
+
+
+def test_trusted_automation_proposal_replays_the_identical_envelope() -> None:
+    read_payload = _active_merge_train_policy_read({"owner/alpha": []})
+    bodies = [
+        _run_trusted_automation_proposal(_trusted_automation_argv("add", "owner/alpha"), read_payload)[2][0]
+        for _ in range(2)
+    ]
+
+    assert bodies[0] == bodies[1]
