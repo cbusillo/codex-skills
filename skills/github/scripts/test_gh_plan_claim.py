@@ -291,6 +291,7 @@ class ClaimTests(unittest.TestCase):
         self.targets["99"] = {**copy.deepcopy(self.issue), "number": 99}
         del self.targets["99"]["pull_request"]
         self.targets["98"] = {**copy.deepcopy(self.targets["99"]), "number": 98, "state": "closed"}
+        self.target_comments["/repos/owner/repo/issues/98/comments"] = []
         with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
             self.run_claim()
         self.assertEqual(caught.exception.code, "claim_issue_record_required")
@@ -507,6 +508,7 @@ class ClaimTests(unittest.TestCase):
                 self.pulls[0]["body"] = references
                 self.targets["43"] = {**copy.deepcopy(self.targets["42"]), "number": 43,
                                       "state": "closed", "state_reason": "not_planned"}
+                self.target_comments["/repos/owner/repo/issues/43/comments"] = []
                 before = copy.deepcopy((self.inventory, self.pulls))
                 self.run_claim()
                 result = self.emitted.call_args.args[0]
@@ -514,6 +516,24 @@ class ClaimTests(unittest.TestCase):
                 self.assertEqual(result["claim"]["resume_from"], "1")
                 self.assertEqual(result["claim"]["retained_handoff"], CLAIM.handoff_url("owner/repo", 42, self.handoff_id))
                 self.assertEqual((self.inventory, self.pulls), before)
+
+    def test_closed_pr_reference_preserves_unreleased_claims(self) -> None:
+        for retained_source in (False, True):
+            with self.subTest(retained_source=retained_source):
+                self.setUp()
+                if retained_source:
+                    self.released_issue_pr_fixture()
+                else:
+                    self.pr_fixture()
+                self.pulls[0]["body"] += "\nRefs #43"
+                self.targets["43"] = {**copy.deepcopy(self.issue), "number": 43, "state": "closed"}
+                self.targets["43"].pop("pull_request", None)
+                self.target_comments["/repos/owner/repo/issues/43/comments"] = [
+                    {"id": 20, "body": CLAIM.marker(OTHER), "user": {"login": TEST_BOT}}]
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.run_claim()
+                self.assertEqual(caught.exception.code, "claim_conflict")
+                self.assert_no_writes()
 
     def test_authorized_split_pr_refresh_claim_succeeds_with_release_and_handoff(self):
         self.refresh_fixture()

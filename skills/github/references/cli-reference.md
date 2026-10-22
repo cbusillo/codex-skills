@@ -896,8 +896,8 @@ identifies `record_kind: pr` and `current_status_location: claim_comment`;
 it preserves the PR body and labels and creates no tracking issue. Put recovery
 status in a `## Current Status` comment; the latest such comment and the body
 status are checked for holds. Closed issue references are excluded from canonical
-claim targets. When a PR links an open canonical implementation issue,
-claim that issue instead. PR-scoped claims require a same-repository head and
+claim targets; their unreleased owners still refuse. When a PR links an open
+canonical implementation issue, claim that issue instead. PR-scoped claims require a same-repository head and
 base; forks use a canonical planning issue. The PR's remote source head is its
 work record; local source branches/worktrees and live peers remain competing
 evidence unless owned or covered by an exact authored release. `--resume-from`
