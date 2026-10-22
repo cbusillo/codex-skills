@@ -282,7 +282,6 @@ async def queue_input(home: Path, session: str, text: str, *, transcript: Path |
     from github_plan_sessions import native_helpers
     native_helpers()
     from codex_session_proxy import source_endpoint
-    source_endpoint(session, home, transcript=transcript)
     client_id = str(uuid.uuid4())
     params = {"threadId": session, "clientUserMessageId": client_id,
               "input": [{"type": "text", "text": text, "text_elements": []}]}
@@ -291,6 +290,7 @@ async def queue_input(home: Path, session: str, text: str, *, transcript: Path |
     allowance = max(1024 * 1024, len(json.dumps(params, ensure_ascii=True).encode()) + 65536)
     leased = False
     try:
+        source_endpoint(session, home, transcript=transcript)
         with _queue_outcome("submission") as mark_sent:
             async with connection(home, max_msg_size=allowance) as request:
                 await require_loaded_thread(request, session, home)
