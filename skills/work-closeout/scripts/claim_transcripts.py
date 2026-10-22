@@ -1094,7 +1094,10 @@ GIT_EXECUTING_OPTIONS = {
     "push": ("--receive-pack", "--exec"),
 }
 GIT_EXECUTING_ACTIONS = {"bisect": "run", "submodule": "foreach"}
-GIT_VALUE_OPTIONS = frozenset({"-e", "--regexp", "-f", "--file", "-m", "--message", "-F", "-C", "-c", "--type", "--default"})
+GIT_COMMAND_VALUE_OPTIONS = {"grep": frozenset({"-e", "-f", "-m", "--max-count", "-A", "-B", "-C", "--max-depth"})}
+GIT_CONFIG_VALUE_OPTIONS = frozenset({"-f", "--file", "--blob", "--type", "--default", "--comment", "--value"})
+GIT_COMMAND_SETTINGS = frozenset({"core.pager", "core.editor", "sequence.editor"})
+INERT_COMMANDS = frozenset({"", "cat", "true", "false", ":"})
 GIT_CONFIG_READ_OPTIONS = frozenset(
     {"--get", "--get-all", "--get-regexp", "--get-urlmatch", "-l", "--list", "--unset", "--unset-all", "--remove-section", "--rename-section"}
 )
@@ -1153,13 +1156,17 @@ SED_LONG_OPTIONS = (
     "--zero-terminated",
 )
 SEARCH_VALUE_OPTIONS = frozenset({"-e", "--regexp", "-f", "--file", "-g", "--glob", "-t", "--type", "-T", "--type-not"})
-EXECUTING_ENVIRONMENT = re.compile(
-    r"GIT_(?:PAGER|EDITOR|SEQUENCE_EDITOR|EXTERNAL_DIFF|SSH|SSH_COMMAND|ASKPASS|CONFIG\w*|EXEC_PATH|PROXY_COMMAND|TEMPLATE_DIR)"
-    r"|GH_(?:PAGER|EDITOR|BROWSER|CONFIG_DIR)|PAGER|EDITOR|VISUAL|BROWSER|LESS\w*|PYTEST_\w+|PYTHONPATH|RIPGREP_CONFIG_PATH"
-    r"|BASH_ENV|ENV"
+COMMAND_ENVIRONMENT = re.compile(
+    r"GIT_(?:PAGER|EDITOR|SEQUENCE_EDITOR|EXTERNAL_DIFF|SSH|SSH_COMMAND|ASKPASS|PROXY_COMMAND)"
+    r"|GH_(?:PAGER|EDITOR|BROWSER)|PAGER|EDITOR|VISUAL|BROWSER|LESSOPEN|LESSCLOSE"
 )
+CONFIGURATION_ENVIRONMENT = re.compile(
+    r"GIT_CONFIG(?!_NOSYSTEM$)\w*|GIT_EXEC_PATH|GIT_TEMPLATE_DIR|GH_CONFIG_DIR|RIPGREP_CONFIG_PATH"
+    r"|PYTHONPATH|PYTEST_\w+|BASH_ENV|ENV|LESSKEY\w*"
+)
+LESS_DATA_START = re.compile(r"\+\+?(?:\d*[gGF]?|/.*|\?.*)")
+READ_VALUE_OPTIONS = frozenset({"-p", "-d", "-n", "-N", "-t", "-u", "-i"})
 SORT_VALUE_OPTIONS = frozenset({"-o", "--output", "-k", "--key", "-t", "-T", "-S"})
-INERT_ENVIRONMENT_VALUES = frozenset({"", "true", ":", "cat", "less", "0", "1"})
 
 
 def long_option(argument: str, option: str, options: tuple[str, ...] = ()) -> bool:
@@ -1213,15 +1220,17 @@ def safe_git_config(setting: str, value: str | None = None) -> bool:
         key in SAFE_GIT_CONFIG
         or key.startswith(("advice.", "color."))
         or (key == "core.hookspath" and value == "/dev/null")
+        or ((key in GIT_COMMAND_SETTINGS or key.startswith("pager.")) and value in INERT_COMMANDS)
     )
 
 
 def git_config_is_data(arguments: list[str]) -> bool:
-    if any(argument in {"-e", "--edit"} for argument in arguments):
+    flags = list(option_words(arguments, GIT_CONFIG_VALUE_OPTIONS))
+    if any(flag == "-e" or long_option(flag, "--edit") for flag in flags):
         return False
-    if any(argument.partition("=")[0] in GIT_CONFIG_READ_OPTIONS for argument in arguments):
+    if any(flag.partition("=")[0] in GIT_CONFIG_READ_OPTIONS for flag in flags):
         return True
-    words = operands(arguments, frozenset({"-f", "--file", "--blob", "--type", "--default", "--comment"}))
+    words = operands(arguments, GIT_CONFIG_VALUE_OPTIONS)
     if words[:1] in (["get"], ["list"], ["unset"], ["remove-section"], ["rename-section"]):
         return True
     if words[:1] == ["edit"]:
@@ -1253,11 +1262,11 @@ def git_is_data(arguments: list[str]) -> bool:
     if command == "config":
         return git_config_is_data(rest)
     if command in GIT_EXECUTING_ACTIONS:
-        return GIT_EXECUTING_ACTIONS[command] not in operands(rest, GIT_VALUE_OPTIONS)
+        return GIT_EXECUTING_ACTIONS[command] not in operands(rest, frozenset())
     return not any(
         long_option(argument, option) if option.startswith("--") else short_option(argument, option[1])
         for option in GIT_EXECUTING_OPTIONS.get(command, ())
-        for argument in option_words(rest, GIT_VALUE_OPTIONS)
+        for argument in option_words(rest, GIT_COMMAND_VALUE_OPTIONS.get(command, frozenset()))
     )
 
 
@@ -1453,7 +1462,7 @@ def sed_is_data(arguments: list[str]) -> bool:
 def less_is_data(arguments: list[str]) -> bool:
     options = arguments[: arguments.index("--")] if "--" in arguments else arguments
     return not any(
-        re.match(r"\+\+?\d*[!|]", argument) is not None
+        (argument.startswith("+") and LESS_DATA_START.fullmatch(argument) is None)
         or argument.startswith("--lesskey")
         or re.match(r"-[^-+]*k", argument) is not None
         for argument in options
@@ -1462,12 +1471,13 @@ def less_is_data(arguments: list[str]) -> bool:
 
 def subscript_is_data(arguments: list[str], name: str) -> bool:
     if name == "read":
-        return not any("[" in argument for argument in arguments)
+        names = operands(arguments, READ_VALUE_OPTIONS)
+        names += [argument[2:] for argument in arguments if argument.startswith("-a") and len(argument) > 2]
+        return not any("[" in word for word in names)
     if name == "printf":
-        return not any(
-            argument.startswith("-v") and "[" in (argument[2:] or (arguments[index + 1] if index + 1 < len(arguments) else ""))
-            for index, argument in enumerate(arguments)
-        )
+        first = arguments[0] if arguments else ""
+        destination = first[2:] or (arguments[1] if len(arguments) > 1 else "") if first.startswith("-v") else ""
+        return "[" not in destination
     return not any(
         argument in {"-v", "-R"} and index + 1 < len(arguments) and "[" in arguments[index + 1]
         for index, argument in enumerate(arguments)
@@ -1508,13 +1518,15 @@ def claim_text_outside(root: Node, node: Node) -> bool:
 
 
 def environment_executes(assignment: Node) -> bool:
-    name = assignment.child_by_field_name("name")
-    value = assignment.child_by_field_name("value")
-    return (
-        name is not None
-        and EXECUTING_ENVIRONMENT.fullmatch(name.text.decode()) is not None
-        and (shell_word(value) if value is not None else "") not in INERT_ENVIRONMENT_VALUES
-    )
+    name_node = assignment.child_by_field_name("name")
+    value_node = assignment.child_by_field_name("value")
+    name = name_node.text.decode() if name_node is not None and name_node.text is not None else ""
+    value = shell_word(value_node) if value_node is not None else ""
+    if name == "LESS":
+        return not less_is_data(value.split())
+    if COMMAND_ENVIRONMENT.fullmatch(name):
+        return value not in INERT_COMMANDS
+    return CONFIGURATION_ENVIRONMENT.fullmatch(name) is not None
 
 
 def accepts_claim_data(argv: list[str]) -> bool:
