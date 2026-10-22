@@ -6799,7 +6799,7 @@ def _runtime_sync_plan_digest(request: dict[str, object], result: dict[str, obje
 def execute_runtime_sync(args: argparse.Namespace) -> int:
     operation = args.command
     applying = operation.endswith("-apply")
-    request = {
+    request: dict[str, object] = {
         "product": public_identifier(args.product),
         "context": public_identifier(args.context),
         "instance": public_identifier(args.instance),
