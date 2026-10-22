@@ -1077,6 +1077,38 @@ class ClaimCloseoutTests(unittest.TestCase):
                 )
         self.assertFalse(helper.check([root])["claims_clear"])
 
+    def test_fresh_javascript_cells_do_not_inherit_earlier_local_command_values(self) -> None:
+        sources = [
+            'text(await tools.exec_command({cmd:"uv run gh-plan.py --repo first/a claim 5"})); // store("fixture", "data")',
+            'const paths=["validator.py"]; text(await tools.exec_command({cmd:"uv run "+paths[0],workdir:"/work/claim-budget"}));',
+            'text(await tools.exec_command({cmd:load("unrelated")}));',
+        ]
+        rows = [
+            {"payload": {"type": "custom_tool_call", "name": "exec", "call_id": str(index), "input": source}}
+            for index, source in enumerate(sources)
+        ]
+        self.assertEqual(helper.history.literal_targets(rows, SESSION), {"targets": {("first/a", 5)}, "unresolved_invocations": []})
+
+    def test_computed_cell_receipts_keep_unobserved_claim_executions_conditional(self) -> None:
+        rows = [
+            {
+                "payload": {
+                    "type": "custom_tool_call",
+                    "name": "exec",
+                    "call_id": "receipt",
+                    "input": "text(await tools.exec_command({cmd:commandFromData()}));",
+                }
+            },
+            {
+                "payload": {
+                    "type": "custom_tool_call_output",
+                    "call_id": "receipt",
+                    "output": json.dumps({"claim": SOURCE, "issue": {"repo": "first/a", "number": 5}}),
+                }
+            },
+        ]
+        self.assertTrue(helper.history.literal_targets(rows, SESSION)["unresolved_invocations"])
+
     def test_decode_failure_still_checks_a_known_held_claim(self) -> None:
         root = self.entry()
         helper.claim_log.record(SESSION, REPO, 1)
@@ -1176,6 +1208,7 @@ class ClaimCloseoutTests(unittest.TestCase):
         data = "rows=[{'cmd':'uv run gh-plan.py claim 5'}]; print(history.literal_targets(rows,SESSION))"
         cases = [
             (data, False),
+            (data + "; call = 'fixture'; exec_commands = []; print(call, exec_commands)", False),
             (data + "; subprocess.run(['git', 'status'])", False),
             (data + "; subprocess.run(command)", True),
             (data + "; from subprocess import run as launch; launch(command)", True),
@@ -1228,6 +1261,51 @@ class ClaimCloseoutTests(unittest.TestCase):
             rows = [{"message": {"content": [{"type": "tool_use", "name": "Bash", "id": "launch", "input": {"command": command}}]}}]
             with self.subTest(source=source):
                 self.assertTrue(helper.history.literal_targets(rows, SESSION)["unresolved_invocations"])
+
+    def test_shell_header_boundaries_preserve_executable_source_and_fixture_data(self) -> None:
+        claim = "uv run gh-plan.py claim 5"
+        qualified = "uv run gh-plan.py --repo first/a claim 5"
+        cases = [
+            (f"timeout 120 bash -c '{claim}'", True, set()),
+            (f"nohup sh -c '{claim}'", True, set()),
+            (f"sudo -u user bash -c '{claim}'", True, set()),
+            (f"env -i bash -c '{claim}'", True, set()),
+            (f"uv run bash -c '{claim}'", True, set()),
+            (f"xargs -I{{}} sh -c '{claim}'", True, set()),
+            (f"find . -exec sh -c '{claim}' \\;", True, set()),
+            (f"timeout 120 bash <<'EOF'\n{claim}\nEOF", True, set()),
+            (f"echo '{claim}' | timeout 5 bash", True, set()),
+            (f"bash <<< '{claim}'", True, set()),
+            (f'grep -q ok <<<"ok"\n{qualified}', False, {("first/a", 5)}),
+            (f"gh --body='cat <<EOF'\n{qualified}", False, {("first/a", 5)}),
+            (f'gh --body="cat <<EOF"\n{qualified}', False, {("first/a", 5)}),
+            (f"cat <<-'EOF'\n\t{claim}\n\tEOF", False, set()),
+            (f"cat <<'EOF'\nfixture's \"unfinished quote | bash {claim}\nEOF", False, set()),
+            (f"cat <<'EOF'; printf unrelated | bash\n{claim}\nEOF", False, set()),
+            ("python - <<'PY'\nfixture = \"fixture's unmatched quote | bash gh-plan.py claim 5\"\nprint(fixture)\nPY", False, set()),
+            ("timeout 60 python3 - <<'PY'\nsubprocess.run('uv run gh-plan.py claim 5', shell=True)\nPY", True, set()),
+        ]
+        for command, unresolved, targets in cases:
+            for javascript in (False, True):
+                payload = (
+                    {
+                        "type": "custom_tool_call",
+                        "name": "exec",
+                        "call_id": "boundary",
+                        "input": "text(await tools.exec_command({cmd:" + json.dumps(command) + "}));",
+                    }
+                    if javascript
+                    else {
+                        "type": "function_call",
+                        "name": "exec_command",
+                        "call_id": "boundary",
+                        "arguments": json.dumps({"cmd": command}),
+                    }
+                )
+                with self.subTest(command=command, javascript=javascript):
+                    report = helper.history.literal_targets([{"payload": payload}], SESSION)
+                    self.assertEqual(report["targets"], targets)
+                    self.assertEqual(bool(report["unresolved_invocations"]), unresolved)
 
     def test_raw_javascript_does_not_prove_bare_claim_execution_count(self) -> None:
         command = 'tools.exec_command({cmd:"uv run gh-plan.py claim 5",workdir})'

@@ -874,7 +874,7 @@ uv run <skill-dir>/scripts/gh-plan.py --repo OWNER/REPO claim <issue> \
 
 Keep the repository and record literal in JavaScript tool wrappers or repeated
 shell commands. A qualified `OWNER/REPO#N` record also works. Closeout checks
-every known target, but a bare or computed legacy command with uncertain
+every known target, but a bare or computed command with uncertain
 execution count remains conditional even when one receipt is present. A
 journaled receipt alone does not prove every execution used a journaling helper.
 

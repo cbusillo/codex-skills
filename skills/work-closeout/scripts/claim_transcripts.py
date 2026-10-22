@@ -414,6 +414,19 @@ def command_literal(text: str, start: int, literal: str) -> str | None:
     return None
 
 
+JAVASCRIPT_LITERAL = r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|`(?:\\.|[^`\\])*`'
+
+
+def javascript_names(text: str) -> set[str]:
+    names = set()
+    for match in re.finditer(JAVASCRIPT_LITERAL + r"|//[^\n]*|/\*.*?\*/|(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)", text, re.DOTALL):
+        if match["name"]:
+            names.add(match["name"])
+        elif match[0].startswith("`") and "${" in match[0]:
+            names.update(re.findall(r"\b(?:store|load)\b", match[0]))
+    return names
+
+
 def shell_texts(text: str, javascript: bool) -> tuple[list[str], bool]:
     if not javascript:
         try:
@@ -424,7 +437,7 @@ def shell_texts(text: str, javascript: bool) -> tuple[list[str], bool]:
             command = decoded.get("cmd", decoded.get("command"))
             return ([command_text(command)], False) if command is not None else ([], False)
         return [text], False
-    literal = r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|`(?:\\.|[^`\\])*`'
+    literal = JAVASCRIPT_LITERAL
     reference = r"\btools\s*\[\s*['\"](?:exec_command|shell_command|shell)['\"]\s*\]|\b(?:exec_command|shell_command)\b|\btools\.shell\b|\bshell\s*\("
     site = re.compile(
         r"(?P<call>\btools\.(?:exec_command|shell_command|shell)\s*\()|(?P<reference>"
@@ -470,29 +483,23 @@ def has_executable_claim_source(text: str, consumer: str) -> bool:
     pattern = re.compile(
         r"(?:run|call|check_\w+|[Pp]open\w*|system|getoutput|getstatusoutput|exec\w*|spawn\w*|posix_spawn\w*|create_subprocess_\w+|eval|shell_command)"
     )
-    launchers = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name) and pattern.fullmatch(node.id)}
-    launchers.update(node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute) and pattern.fullmatch(node.attr))
+    modules = {"subprocess", "os", "asyncio"}
+    launchers = {"exec", "eval"}
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom):
+        if isinstance(node, ast.Import):
+            modules.update(item.asname or item.name for item in node.names if item.name in modules)
+        if isinstance(node, ast.ImportFrom) and node.module in modules:
             launchers.update(item.asname or item.name for item in node.names if pattern.fullmatch(item.name))
         if isinstance(node, ast.Assign) and isinstance(node.value, (ast.Name, ast.Attribute)):
-            name = node.value.id if isinstance(node.value, ast.Name) else node.value.attr
-            if name in launchers:
+            if is_python_launcher(node.value, modules, launchers, pattern):
                 launchers.update(target.id for target in node.targets if isinstance(target, ast.Name))
     calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
     direct = {id(node.func) for node in calls}
-    if any(
-        id(node) not in direct
-        and (
-            (isinstance(node, ast.Attribute) and node.attr in launchers)
-            or (isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id in launchers)
-        )
-        for node in ast.walk(tree)
-    ):
+    if any(id(node) not in direct and is_python_launcher(node, modules, launchers, pattern) for node in ast.walk(tree)):
         return True
     for node in calls:
         name = node.func.id if isinstance(node.func, ast.Name) else node.func.attr if isinstance(node.func, ast.Attribute) else ""
-        if name not in launchers:
+        if not is_python_launcher(node.func, modules, launchers, pattern):
             continue
         command = (
             node.args[0] if node.args else next((item.value for item in node.keywords if item.arg in {"args", "command"}), None)
@@ -510,6 +517,27 @@ def has_executable_claim_source(text: str, consumer: str) -> bool:
     return False
 
 
+def is_python_launcher(node: ast.AST, modules: set[str], launchers: set[str], pattern: re.Pattern) -> bool:
+    if isinstance(node, ast.Name):
+        return isinstance(node.ctx, ast.Load) and node.id in launchers
+    if isinstance(node, ast.Attribute) and pattern.fullmatch(node.attr):
+        root = node.value
+        while isinstance(root, ast.Attribute):
+            root = root.value
+        return isinstance(root, ast.Name) and root.id in modules
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "getattr" and len(node.args) >= 2:
+        receiver, member = node.args[:2]
+        return (
+            isinstance(receiver, ast.Name)
+            and receiver.id in modules
+            and (
+                not isinstance(member, ast.Constant)
+                or (isinstance(member.value, str) and pattern.fullmatch(member.value) is not None)
+            )
+        )
+    return False
+
+
 def shell_command_arguments(argv: list[str]) -> list[str]:
     while argv and (
         Path(argv[0]).name in {"env", "command", "exec", "if", "then", "do"} or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", argv[0])
@@ -519,74 +547,146 @@ def shell_command_arguments(argv: list[str]) -> list[str]:
 
 
 def script_consumer(argv: list[str]) -> str:
-    separator = max((index for index, argument in enumerate(argv) if argument in {";", "&&", "||", "|"}), default=-1)
-    argv = argv[separator + 1 :]
     argv = shell_command_arguments(argv)
-    if argv and Path(argv[0]).name == "uv" and "run" in argv:
-        if "--script" in argv:
-            return "python"
-        return next(
-            (
-                argument
-                for argument in argv[argv.index("run") + 1 :]
-                if re.fullmatch(r"python(?:[0-9]+(?:\.[0-9]+)*)?", Path(argument).name)
-            ),
-            argv[0],
-        )
+    if argv and Path(argv[0]).name == "uv" and "run" in argv and "--script" in argv:
+        return "python"
+    for argument in argv:
+        if is_interpreter(argument):
+            return argument
     return argv[0] if argv else ""
 
 
-def piped_interpreter(text: str) -> str | None:
-    lexer = shlex.shlex(text, posix=False, punctuation_chars=";&|()<>\n")
-    lexer.whitespace_split = True
-    tokens = list(lexer)
-    for index, token in enumerate(tokens[:-1]):
-        if token != "|" or not is_interpreter(tokens[index + 1]):
+SHELL_OPERATORS = (
+    ";;&",
+    "<<<",
+    "<<-",
+    "&&",
+    "||",
+    "<<",
+    ">>",
+    ";;",
+    ";&",
+    "&>",
+    ">&",
+    "<&",
+    ">|",
+    "|&",
+    ";",
+    "&",
+    "|",
+    "(",
+    ")",
+    "<",
+    ">",
+    "\n",
+)
+SHELL_TOKEN = re.compile(
+    "|".join(re.escape(operator) for operator in SHELL_OPERATORS)
+    + r"""|(?:'[^']*'|"(?:\\.|[^"\\])*"|\\[^\n]|[^\s;&|()<>\x27"\\])+"""
+)
+
+
+def shell_tokens(text: str) -> list[str]:
+    tokens = []
+    position = 0
+    while position < len(text):
+        if text[position] in " \t\r":
+            position += 1
             continue
-        arguments = []
-        for argument in tokens[index + 2 :]:
-            if argument in {";", "&&", "||", "|", "<<", "<", ">", "\n"}:
+        if text[position] == "#":
+            position = text.find("\n", position)
+            if position < 0:
                 break
-            arguments.append(argument)
-        if all(argument.startswith("-") for argument in arguments) and not any(
-            argument in {"-c", "-e", "--eval"} for argument in arguments
-        ):
-            return tokens[index + 1]
-    return None
+            continue
+        match = SHELL_TOKEN.match(text, position)
+        if match is None:
+            raise ValueError("incomplete shell word")
+        tokens.append(match[0])
+        position = match.end()
+    return tokens
+
+
+def pipeline_sources(tokens: list[str]) -> list[tuple[str, str]]:
+    sources = []
+    start = 0
+    for index, token in enumerate(tokens):
+        if token not in {"|", "|&"}:
+            if token in {";", "&&", "||", "\n"}:
+                start = index + 1
+            continue
+        end = next((item for item in range(index + 1, len(tokens)) if tokens[item] in SHELL_OPERATORS), len(tokens))
+        argv = shlex.split(" ".join(tokens[index + 1 : end]))
+        consumer = script_consumer(argv)
+        if is_interpreter(consumer):
+            offset = next((item for item, value in enumerate(argv) if value == consumer), -1)
+            arguments = argv[offset + 1 :]
+            if all(argument.startswith("-") for argument in arguments) and not any(
+                argument in {"-c", "-e", "--eval"} for argument in arguments
+            ):
+                sources.append((" ".join(tokens[start:index]), consumer))
+        start = index + 1
+    return sources
 
 
 def shell_groups(text: str) -> Iterator[list[str]]:
     pending = []
-    lines = []
+    headers = []
+    header = ""
     executable_bodies = []
     body = []
-    consumer = ""
-    consumes_script = False
-    expands_body = False
     for line in text.replace("\\\n", "").splitlines():
         if pending:
-            if line.lstrip("\t") == pending[0]:
+            source = pending[0]
+            if (line.lstrip("\t") if source["strip_tabs"] else line) == source["delimiter"]:
                 pending.pop(0)
                 script = "\n".join(body)
-                if consumes_script or (expands_body and ("$(" in script or "`" in script)):
-                    executable_bodies.append((consumer if consumes_script else "sh", script))
+                if is_interpreter(source["consumer"]):
+                    executable_bodies.append((source["consumer"], script))
+                if source["expands"] and ("$(" in script or "`" in script):
+                    executable_bodies.append(("sh", script))
                 body = []
             else:
                 body.append(line)
             continue
-        pending.extend(match[1] for match in re.finditer(r"<<-?\s*['\"]?([A-Za-z_][A-Za-z0-9_]*)['\"]?", line))
-        if pending:
-            consumer = piped_interpreter(line) or script_consumer(shlex.split(line))
-            consumes_script = is_interpreter(consumer)
-            expands_body = re.search(r"<<-?\s*[A-Za-z_]", line) is not None
-        lines.append(line)
-    lexer = shlex.shlex("\n".join(lines), posix=False, punctuation_chars=";&|()<>\n")
-    lexer.whitespace = " \t\r"
-    lexer.whitespace_split = True
+        header += line + "\n"
+        try:
+            tokens = shell_tokens(header)
+        except ValueError:
+            continue
+        headers.extend(tokens)
+        header = ""
+        stage = []
+        command_start = 0
+        for index, token in enumerate(tokens[:-1]):
+            if token in {";", "&&", "||", "\n"}:
+                command_start = index + 1
+            if token in {";", "&&", "||", "|", "|&", "\n"}:
+                stage = []
+            if token not in {"<<", "<<-", "<<<"}:
+                stage.append(token)
+                continue
+            end = next((item for item in range(index + 1, len(tokens)) if tokens[item] in {";", "&&", "||", "\n"}), len(tokens))
+            pipelines = pipeline_sources(tokens[command_start:end])
+            consumer = pipelines[-1][1] if pipelines else script_consumer(shlex.split(" ".join(stage)))
+            raw = tokens[index + 1]
+            decoded = shlex.split(raw)
+            if len(decoded) != 1:
+                raise ValueError("invalid shell input word")
+            if token == "<<<":
+                executable_bodies.append((consumer, decoded[0]))
+                continue
+            pending.append(
+                {
+                    "delimiter": decoded[0],
+                    "strip_tabs": token == "<<-",
+                    "consumer": consumer,
+                    "expands": "'" not in raw and '"' not in raw,
+                }
+            )
     group = []
     try:
-        for token in lexer:
-            if token and all(character in ";&|()<>\n" for character in token):
+        for token in headers:
+            if token in SHELL_OPERATORS:
                 if group:
                     yield shlex.split(" ".join(group))
                     group = []
@@ -594,8 +694,10 @@ def shell_groups(text: str) -> Iterator[list[str]]:
                 group.append(token)
         if group:
             yield shlex.split(" ".join(group))
-        if body and (consumes_script or (expands_body and ("$(" in "\n".join(body) or "`" in "\n".join(body)))):
-            executable_bodies.append((consumer if consumes_script else "sh", "\n".join(body)))
+        if (header or pending) and "gh-plan" in text and re.search(r"\bclaim\b", text):
+            raise ValueError("incomplete shell source")
+        if any(has_executable_claim_source(source, "sh") for source, _ in pipeline_sources(headers)):
+            raise ValueError("unsupported piped claim source")
         if any(has_executable_claim_source(script, consumer) for consumer, script in executable_bodies):
             raise ValueError("unsupported executable claim heredoc")
     except ValueError as error:
@@ -784,23 +886,23 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
             }
             for identifier in orphan_artifacts(records, session, directory)
         )
-    seen_claim_source = False
+    claim_may_be_stored = False
     for identifier, text, javascript in tool_inputs(records):
         if identifier in denied:
             continue
-        if javascript:
-            seen_claim_source = seen_claim_source or "gh-plan" in text or re.search(r"\bclaim\b", text) is not None
+        names = javascript_names(text) if javascript else set()
+        claim_related_here = "gh-plan" in text or re.search(r"""(?:^|[\s'"`])claim(?:$|[\s'"`])""", text) is not None
         invocations = []
         opaque = False
+        unclassified = False
         reason = "missing_output"
         decode_failed = False
         repeated = False
         try:
             shells, opaque = shell_texts(text, javascript)
-            opaque = opaque and seen_claim_source
+            unclassified = opaque
+            opaque = opaque and (claim_related_here or (claim_may_be_stored and "load" in names))
             for shell in shells:
-                consumer = piped_interpreter(shell)
-                opaque = opaque or (consumer is not None and has_executable_claim_source(shell, "sh"))
                 repeated = repeated or re.search(r"(?:^|[;\n])\s*[A-Za-z_]\w*\s*\(\s*\)\s*\{", shell) is not None
                 for argv in shell_argv(shell):
                     repeated = repeated or bool(argv and argv[0] in {"for", "while", "until", "function"})
@@ -823,6 +925,9 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
         blocks = outputs.get(identifier, [])
         found, unknown = resolve_invocations(invocations, blocks, session)
         targets.update(found)
+        if javascript:
+            opaque = opaque or (unclassified and bool(found))
+            claim_may_be_stored = claim_may_be_stored or ("store" in names and (claim_related_here or bool(found)))
         if opaque:
             reason = "unproven_execution_count" if repeated or (javascript and invocations) else "computed"
         if (unknown or opaque) and directory is not None:
