@@ -1013,49 +1013,105 @@ SAFE_GIT_CONFIG = frozenset(
         "status.showuntrackedfiles",
     }
 )
-GIT_VALUE_OPTIONS = frozenset({"-C", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--attr-source"})
+GIT_GLOBAL_VALUE_OPTIONS = frozenset({"-C", "--git-dir", "--work-tree", "--namespace"})
+GIT_GLOBAL_FLAGS = frozenset({"--version", "--help", "--no-pager", "-P", "--no-optional-locks", "--bare", "--literal-pathspecs", "--no-replace-objects"})
+GIT_DATA_COMMANDS = frozenset(
+    {
+        "add",
+        "am",
+        "apply",
+        "bisect",
+        "blame",
+        "branch",
+        "cat-file",
+        "check-ignore",
+        "checkout",
+        "cherry",
+        "cherry-pick",
+        "clean",
+        "clone",
+        "commit",
+        "config",
+        "count-objects",
+        "describe",
+        "diff",
+        "diff-files",
+        "diff-index",
+        "diff-tree",
+        "fetch",
+        "for-each-ref",
+        "format-patch",
+        "fsck",
+        "gc",
+        "grep",
+        "hash-object",
+        "init",
+        "log",
+        "ls-files",
+        "ls-remote",
+        "ls-tree",
+        "merge",
+        "merge-base",
+        "mv",
+        "name-rev",
+        "notes",
+        "pull",
+        "push",
+        "range-diff",
+        "rebase",
+        "reflog",
+        "remote",
+        "reset",
+        "restore",
+        "rev-list",
+        "rev-parse",
+        "revert",
+        "rm",
+        "shortlog",
+        "show",
+        "show-ref",
+        "sparse-checkout",
+        "stash",
+        "status",
+        "submodule",
+        "switch",
+        "symbolic-ref",
+        "tag",
+        "update-index",
+        "update-ref",
+        "var",
+        "version",
+        "worktree",
+    }
+)
 GIT_EXECUTING_OPTIONS = {
     "rebase": ("--exec", "-x"),
-    "difftool": ("--extcmd", "-x"),
     "grep": ("--open-files-in-pager", "-O"),
     "clone": ("--upload-pack", "-u", "--config", "-c"),
     "fetch": ("--upload-pack",),
     "pull": ("--upload-pack",),
     "ls-remote": ("--upload-pack", "-u"),
-    "archive": ("--exec",),
     "push": ("--receive-pack", "--exec"),
-    "send-pack": ("--receive-pack", "--exec"),
-    "fetch-pack": ("--upload-pack", "--exec"),
-    "send-email": ("--to-cmd", "--cc-cmd", "--header-cmd", "--sendmail-cmd", "--smtp-server"),
 }
-GIT_EXECUTING_ACTIONS = {"bisect": {"run"}, "submodule": {"foreach"}}
-GIT_EXECUTING_COMMANDS = frozenset({"filter-branch", "instaweb", "mergetool"})
-GH_COMMANDS = frozenset(
+GIT_EXECUTING_ACTIONS = {"bisect": "run", "submodule": "foreach"}
+GIT_VALUE_OPTIONS = frozenset({"-e", "--regexp", "-f", "--file", "-m", "--message", "-F", "-C", "-c", "--type", "--default"})
+GIT_CONFIG_READ_OPTIONS = frozenset(
+    {"--get", "--get-all", "--get-regexp", "--get-urlmatch", "-l", "--list", "--unset", "--unset-all", "--remove-section", "--rename-section"}
+)
+GH_DATA_COMMANDS = frozenset(
     {
-        "accessibility",
-        "agent-task",
-        "alias",
         "api",
-        "attestation",
         "auth",
         "browse",
         "cache",
         "co",
-        "codespace",
         "completion",
-        "config",
-        "ext",
-        "extension",
-        "extensions",
         "gist",
-        "gpg-key",
         "help",
         "issue",
         "label",
-        "licenses",
         "org",
         "pr",
-        "preview",
         "project",
         "release",
         "repo",
@@ -1064,12 +1120,19 @@ GH_COMMANDS = frozenset(
         "search",
         "secret",
         "ssh-key",
+        "gpg-key",
         "status",
         "variable",
         "version",
         "workflow",
+        "alias",
+        "config",
+        "extension",
+        "ext",
+        "extensions",
     }
 )
+GH_VALUE_OPTIONS = frozenset({"-R", "--repo", "-h", "--host", "--hostname"})
 SED_LONG_OPTIONS = (
     "--debug",
     "--expression",
@@ -1089,22 +1152,14 @@ SED_LONG_OPTIONS = (
     "--version",
     "--zero-terminated",
 )
+SEARCH_VALUE_OPTIONS = frozenset({"-e", "--regexp", "-f", "--file", "-g", "--glob", "-t", "--type", "-T", "--type-not"})
 EXECUTING_ENVIRONMENT = re.compile(
     r"GIT_(?:PAGER|EDITOR|SEQUENCE_EDITOR|EXTERNAL_DIFF|SSH|SSH_COMMAND|ASKPASS|CONFIG\w*|EXEC_PATH|PROXY_COMMAND|TEMPLATE_DIR)"
     r"|GH_(?:PAGER|EDITOR|BROWSER|CONFIG_DIR)|PAGER|EDITOR|VISUAL|BROWSER|LESS\w*|PYTEST_\w+|PYTHONPATH|RIPGREP_CONFIG_PATH"
-    r"|BASH_ENV|ENV|SHELL"
+    r"|BASH_ENV|ENV"
 )
-WRITTEN_PROGRAM_SUFFIXES = {
-    ".py": "python",
-    ".sh": "bash",
-    ".bash": "bash",
-    ".zsh": "zsh",
-    ".js": "node",
-    ".mjs": "node",
-    ".cjs": "node",
-    ".rb": "ruby",
-    ".pl": "perl",
-}
+SORT_VALUE_OPTIONS = frozenset({"-o", "--output", "-k", "--key", "-t", "-T", "-S"})
+INERT_ENVIRONMENT_VALUES = frozenset({"", "true", ":", "cat", "less", "0", "1"})
 
 
 def long_option(argument: str, option: str, options: tuple[str, ...] = ()) -> bool:
@@ -1122,8 +1177,36 @@ def short_option(argument: str, letter: str) -> bool:
     return re.match(rf"-[A-Za-z0-9]*{letter}", argument) is not None and not argument.startswith("--")
 
 
-def safe_git_config(entry: str, value: str | None = None) -> bool:
-    key, equal, assigned = entry.partition("=")
+def option_words(arguments: list[str], value_options: frozenset[str]) -> Iterator[str]:
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "--":
+            return
+        if argument.startswith("-"):
+            yield argument
+            index += 2 if argument in value_options else 1
+            continue
+        index += 1
+
+
+def operands(arguments: list[str], value_options: frozenset[str]) -> list[str]:
+    words: list[str] = []
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "--":
+            return words + arguments[index + 1 :]
+        if argument.startswith("-") and argument != "-":
+            index += 2 if argument in value_options else 1
+            continue
+        words.append(argument)
+        index += 1
+    return words
+
+
+def safe_git_config(setting: str, value: str | None = None) -> bool:
+    key, equal, assigned = setting.partition("=")
     key = key.lower()
     value = assigned if equal else value
     return (
@@ -1133,69 +1216,67 @@ def safe_git_config(entry: str, value: str | None = None) -> bool:
     )
 
 
-def git_config_executes(arguments: list[str]) -> bool:
-    if any(argument in {"-e", "--edit", "edit"} for argument in arguments):
-        return True
-    positionals = [argument for argument in arguments if not argument.startswith("-")]
-    if positionals[:1] == ["set"]:
-        positionals = positionals[1:]
-    elif positionals[:1] and positionals[0] in {"get", "list", "unset", "remove-section", "rename-section"}:
+def git_config_is_data(arguments: list[str]) -> bool:
+    if any(argument in {"-e", "--edit"} for argument in arguments):
         return False
-    return len(positionals) >= 2 and not safe_git_config(positionals[0], positionals[1])
+    if any(argument.partition("=")[0] in GIT_CONFIG_READ_OPTIONS for argument in arguments):
+        return True
+    words = operands(arguments, frozenset({"-f", "--file", "--blob", "--type", "--default", "--comment"}))
+    if words[:1] in (["get"], ["list"], ["unset"], ["remove-section"], ["rename-section"]):
+        return True
+    if words[:1] == ["edit"]:
+        return False
+    if words[:1] == ["set"]:
+        words = words[1:]
+    return len(words) < 2 or safe_git_config(words[0], words[1])
 
 
-def git_executes(arguments: list[str]) -> bool:
+def git_is_data(arguments: list[str]) -> bool:
     index = 0
     while index < len(arguments) and arguments[index].startswith("-"):
         argument = arguments[index]
         if argument == "-c":
             if index + 1 >= len(arguments) or not safe_git_config(arguments[index + 1]):
-                return True
+                return False
             index += 2
-            continue
-        if argument.startswith("-c") or long_option(argument, "--exec-path"):
-            return True
-        if argument.partition("=")[0] == "--config-env":
-            entry = argument.partition("=")[2] or (arguments[index + 1] if index + 1 < len(arguments) else "")
-            if not safe_git_config(entry.partition("=")[0]):
-                return True
-            index += 1 if "=" in argument else 2
-            continue
-        index += 2 if argument in GIT_VALUE_OPTIONS else 1
+        elif argument in GIT_GLOBAL_VALUE_OPTIONS:
+            index += 2
+        elif argument in GIT_GLOBAL_FLAGS or argument.partition("=")[0] in GIT_GLOBAL_VALUE_OPTIONS:
+            index += 1
+        else:
+            return False
     if index >= len(arguments):
-        return False
-    command, rest = arguments[index], arguments[index + 1 :]
-    if command in GIT_EXECUTING_COMMANDS:
         return True
+    command, rest = arguments[index], arguments[index + 1 :]
+    if command not in GIT_DATA_COMMANDS:
+        return False
     if command == "config":
-        return git_config_executes(rest)
+        return git_config_is_data(rest)
     if command in GIT_EXECUTING_ACTIONS:
-        return any(argument in GIT_EXECUTING_ACTIONS[command] for argument in rest)
-    return any(
+        return GIT_EXECUTING_ACTIONS[command] not in operands(rest, GIT_VALUE_OPTIONS)
+    return not any(
         long_option(argument, option) if option.startswith("--") else short_option(argument, option[1])
         for option in GIT_EXECUTING_OPTIONS.get(command, ())
-        for argument in rest
+        for argument in option_words(rest, GIT_VALUE_OPTIONS)
     )
 
 
-def gh_executes(arguments: list[str]) -> bool:
-    positionals = [argument for argument in arguments if not argument.startswith("-")]
-    if not positionals:
-        return False
-    command, action = positionals[0], positionals[1] if len(positionals) > 1 else ""
-    if command not in GH_COMMANDS:
+def gh_is_data(arguments: list[str]) -> bool:
+    words = operands(arguments, GH_VALUE_OPTIONS)
+    if not words:
         return True
+    command, action = words[0], words[1] if len(words) > 1 else ""
+    if command not in GH_DATA_COMMANDS:
+        return False
     if command == "alias":
-        return action in {"set", "import"}
+        return action not in {"set", "import"}
     if command in {"ext", "extension", "extensions"}:
-        return action == "exec"
+        return action != "exec"
     if command == "config":
-        return action == "set" and positionals[2:3] in (["editor"], ["pager"], ["browser"])
-    if command == "codespace":
-        return action == "ssh"
+        return action != "set" or words[2:3] not in (["editor"], ["pager"], ["browser"])
     if command == "repo":
-        return action == "clone" and "--" in arguments
-    return False
+        return action != "clone" or "--" not in arguments
+    return True
 
 
 def sed_scripts(arguments: list[str]) -> list[str] | None:
@@ -1244,7 +1325,7 @@ def sed_scripts(arguments: list[str]) -> list[str] | None:
                 if letter == "e":
                     scripts.append(value)
                 break
-            if letter not in "nrEsuz":
+            if letter not in {"n", "r", "E", "s", "u", "z"}:
                 return None
     if not scripts:
         if not positionals:
@@ -1253,13 +1334,37 @@ def sed_scripts(arguments: list[str]) -> list[str] | None:
     return scripts
 
 
-def sed_delimited(script: str, index: int, delimiter: str, parts: int) -> int | None:
-    for _ in range(parts):
+def sed_bracket_end(script: str, index: int) -> int | None:
+    index += 1
+    if index < len(script) and script[index] == "^":
+        index += 1
+    if index < len(script) and script[index] == "]":
+        index += 1
+    while index < len(script) and script[index] != "]":
+        if script[index] == "[" and index + 1 < len(script) and script[index + 1] in ":.=":
+            close = script.find(script[index + 1] + "]", index + 2)
+            if close < 0:
+                return None
+            index = close + 2
+            continue
+        index += 1
+    return index + 1 if index < len(script) else None
+
+
+def sed_delimited(script: str, index: int, delimiter: str, regex_parts: int, parts: int) -> int | None:
+    for part in range(parts):
         while index < len(script) and script[index] != delimiter:
             if script[index] == "\\":
-                index += 1
-            elif script[index] == "\n" and delimiter != "\n":
+                index += 2
+                continue
+            if script[index] == "\n":
                 return None
+            if part < regex_parts and script[index] == "[":
+                end = sed_bracket_end(script, index)
+                if end is None:
+                    return None
+                index = end
+                continue
             index += 1
         if index >= len(script):
             return None
@@ -1283,7 +1388,7 @@ def sed_address(script: str, index: int) -> int | None:
                 if index + 1 >= len(script):
                     return None
                 index += 1
-            end = sed_delimited(script, index + 1, script[index], 1)
+            end = sed_delimited(script, index + 1, script[index], 1, 1)
             if end is None:
                 return None
             index = end
@@ -1301,17 +1406,21 @@ def sed_executes(script: str) -> bool:
             index += 1
             continue
         address_end = sed_address(script, index)
-        if address_end is None or address_end >= len(script):
-            return address_end is None
+        if address_end is None:
+            return True
+        if address_end >= len(script):
+            return False
         index = address_end
         command = script[index]
         index += 1
+        if command in {"{", "}"}:
+            continue
         if command == "e":
             return True
-        if command in "sy":
+        if command in {"s", "y"}:
             if index >= len(script):
                 return True
-            end = sed_delimited(script, index + 1, script[index], 2)
+            end = sed_delimited(script, index + 1, script[index], 1 if command == "s" else 0, 2)
             if end is None:
                 return True
             index = end
@@ -1319,46 +1428,47 @@ def sed_executes(script: str) -> bool:
                 while index < len(script) and script[index] not in " \t\n;}":
                     if script[index] == "e":
                         return True
-                    if script[index] in "wW":
+                    if script[index] in {"w", "W"}:
                         index = sed_line_end(script, index)
                         break
-                    if not (script[index].isdigit() or script[index] in "gpiImM"):
+                    if not (script[index].isdigit() or script[index] in {"g", "p", "i", "I", "m", "M"}):
                         return True
                     index += 1
             continue
-        if command in "aicrRwW#":
+        if command in {"a", "i", "c", "r", "R", "w", "W", "#"}:
             index = sed_line_end(script, index)
-        elif command in ":btTvlLqQ":
+        elif command in {":", "b", "t", "T", "v", "l", "L", "q", "Q"}:
             while index < len(script) and script[index] not in "\n;}":
                 index += 1
-        elif command not in "=dDgGhHnNpPxzF":
+        elif command not in {"=", "d", "D", "g", "G", "h", "H", "n", "N", "p", "P", "x", "z", "F"}:
             return True
     return False
 
 
-def sed_executes_program(arguments: list[str]) -> bool:
+def sed_is_data(arguments: list[str]) -> bool:
     scripts = sed_scripts(arguments)
-    return scripts is None or any(sed_executes(script) for script in scripts)
+    return scripts is not None and not any(sed_executes(script) for script in scripts)
 
 
-def less_executes(arguments: list[str]) -> bool:
-    return any(
-        (argument.startswith("+") and any(marker in argument for marker in "!|"))
+def less_is_data(arguments: list[str]) -> bool:
+    options = arguments[: arguments.index("--")] if "--" in arguments else arguments
+    return not any(
+        re.match(r"\+\+?\d*[!|]", argument) is not None
         or argument.startswith("--lesskey")
         or re.match(r"-[^-+]*k", argument) is not None
-        for argument in arguments
+        for argument in options
     )
 
 
-def evaluates_subscript(arguments: list[str], name: str) -> bool:
+def subscript_is_data(arguments: list[str], name: str) -> bool:
     if name == "read":
-        return any("[" in argument for argument in arguments)
+        return not any("[" in argument for argument in arguments)
     if name == "printf":
-        return any(
+        return not any(
             argument.startswith("-v") and "[" in (argument[2:] or (arguments[index + 1] if index + 1 < len(arguments) else ""))
             for index, argument in enumerate(arguments)
         )
-    return any(
+    return not any(
         argument in {"-v", "-R"} and index + 1 < len(arguments) and "[" in arguments[index + 1]
         for index, argument in enumerate(arguments)
     )
@@ -1371,82 +1481,40 @@ def data_command_executes(argv: list[str]) -> bool:
     name = Path(argv[position.index]).name
     arguments = argv[position.index + 1 :]
     if name == "git":
-        return git_executes(arguments)
+        return not git_is_data(arguments)
     if name == "gh":
-        return gh_executes(arguments)
+        return not gh_is_data(arguments)
     if name == "sed":
-        return sed_executes_program(arguments)
+        return not sed_is_data(arguments)
     if name == "rg":
-        return any(argument.partition("=")[0] == "--pre" for argument in arguments)
+        return any(argument.partition("=")[0] == "--pre" for argument in option_words(arguments, SEARCH_VALUE_OPTIONS))
     if name == "sort":
-        return any(long_option(argument, "--compress-program") for argument in arguments)
+        return any(long_option(argument, "--compress-program") for argument in option_words(arguments, SORT_VALUE_OPTIONS))
     if name == "less":
-        return less_executes(arguments)
+        return not less_is_data(arguments)
     if name in {"read", "printf", "test", "["}:
-        return evaluates_subscript(arguments, name)
+        return not subscript_is_data(arguments, name)
     return False
 
 
-def environment_executes(node: Node) -> bool:
-    for assignment in node.children:
-        if assignment.type != "variable_assignment":
-            continue
-        name = assignment.child_by_field_name("name")
-        value = assignment.child_by_field_name("value")
-        value_text = shell_word(value) if value is not None else ""
-        if has_claim_text(value_text):
-            return True
-        if (
-            name is not None
-            and EXECUTING_ENVIRONMENT.fullmatch(name.text.decode())
-            and value_text not in {"", "true", ":", "cat", "less"}
-        ):
-            return True
-    return False
+def loads_test_code(argv: list[str]) -> bool:
+    position = command_position(argv)
+    return position is not None and position.index < len(argv) and Path(argv[position.index]).name == "pytest"
 
 
-def written_consumer(path: str, content: str) -> str:
-    first_line = content.lstrip().partition("\n")[0]
-    if first_line.startswith("#!"):
-        words = first_line[2:].split()
-        program = Path(words[0]).name if words else ""
-        if program == "env":
-            program = next((Path(word).name for word in words[1:] if not word.startswith("-")), "")
-        if program == "uv":
-            return "python"
-        if is_interpreter(program):
-            return program
-    return WRITTEN_PROGRAM_SUFFIXES.get(Path(path).suffix, "")
+def claim_text_outside(root: Node, node: Node) -> bool:
+    source = root.text or b""
+    return has_claim_text((source[: node.start_byte] + source[node.end_byte :]).decode(errors="replace"))
 
 
-def written_programs(node: Node) -> Iterator[tuple[str, str]]:
-    body = node.child_by_field_name("body")
-    if body is None or body.type != "command":
-        return
-    redirects = node.children_by_field_name("redirect") + body.children_by_field_name("redirect")
-    nested = [child for redirect in redirects for child in redirect.children_by_field_name("redirect")]
-    paths = [
-        shell_word(destination)
-        for redirect in redirects + nested
-        if redirect.type == "file_redirect" and any(child.type in {">", ">>", ">|", "&>", "&>>"} for child in redirect.children)
-        for destination in redirect.children_by_field_name("destination")[:1]
-    ]
-    argv = command_argv(body)
-    name = Path(argv[0]).name if argv else ""
-    if name == "tee":
-        paths.extend(argument for argument in argv[1:] if not argument.startswith("-") and argument not in paths)
-    contents = [
-        child.text.decode() if child.type == "heredoc_body" else shell_word(child)
-        for redirect in redirects
-        if redirect.type in {"heredoc_redirect", "herestring_redirect"}
-        for child in redirect.named_children
-        if child.type == "heredoc_body" or redirect.type == "herestring_redirect"
-    ]
-    if name in {"echo", "printf"}:
-        contents.append("\n".join(argv[1:]).replace("\\n", "\n"))
-    for path in paths:
-        for content in contents:
-            yield path, content
+def environment_executes(assignment: Node) -> bool:
+    name = assignment.child_by_field_name("name")
+    value = assignment.child_by_field_name("value")
+    return (
+        name is not None
+        and EXECUTING_ENVIRONMENT.fullmatch(name.text.decode()) is not None
+        and (shell_word(value) if value is not None else "") not in INERT_ENVIRONMENT_VALUES
+    )
 
 
 def accepts_claim_data(argv: list[str]) -> bool:
@@ -2053,12 +2121,8 @@ def shell_claims(text: str, *, claim_related: bool = False) -> ShellClaims:
             "case_statement",
         }:
             discovery.receipt_pure = False
-        if node.type == "redirected_statement":
-            discovery.opaque = discovery.opaque or any(
-                has_executable_claim_source(content, consumer)
-                for path, content in written_programs(node)
-                if (consumer := written_consumer(path, content))
-            )
+        if node.type == "variable_assignment":
+            discovery.opaque = discovery.opaque or (related and environment_executes(node))
         programs = list(input_programs(node))
         if node.type == "command":
             argv = command_argv(node)
@@ -2077,7 +2141,9 @@ def shell_claims(text: str, *, claim_related: bool = False) -> ShellClaims:
                 )
             name = node.child_by_field_name("name")
             discovery.opaque = discovery.opaque or bool(name is not None and shell_generated(name) and related)
-            discovery.opaque = discovery.opaque or (related and accepts_claim_data(argv) and environment_executes(node))
+            discovery.opaque = discovery.opaque or (
+                loads_test_code(argv) and (claim_related or claim_text_outside(root, node))
+            )
             programs.extend(command_sources)
         for program in programs:
             discovery.receipt_pure = False
