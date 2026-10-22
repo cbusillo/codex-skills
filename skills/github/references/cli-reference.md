@@ -335,7 +335,9 @@ jitter when that reset is inside the effective deadline. Secondary throttling
 uses `Retry-After`, then reported reset metadata, then bounded increasing
 backoff. Shared cooldown state uses advisory locking and atomic replacement,
 is keyed by GitHub host, actor, and quota bucket, expires stale records, and
-briefly serializes post-reset calls to avoid a stampede. Subprocess execution,
+leases the first post-reset request, then delays callers for one bounded drain.
+Once that drain passes, ordinary requests run concurrently and do not re-arm it.
+A fresh provider throttle still publishes a shared cooldown. Subprocess execution,
 cooldown-lock acquisition, and any reconciliation reads share the same
 effective deadline; none starts a fresh retry window after the parent request
 expires or is cancelled.
