@@ -6721,7 +6721,7 @@ def prepare_operator_settings(
     return settings
 
 
-def _runtime_sync_result(source: object, *, mode: str) -> dict[str, object]:
+def _runtime_sync_result(source: object, *, mode: str, selected_keys: list[str] | None = None) -> dict[str, object]:
     result = _require_dict(source)
     if result.get("status") != "ok" or result.get("mode") != mode:
         raise LaunchplaneSafetyError("invalid_response")
@@ -6742,6 +6742,13 @@ def _runtime_sync_result(source: object, *, mode: str) -> dict[str, object]:
         cast(list[str], projected_delta["different_keys"])
     ) | set(cast(list[str], projected_delta["retired_keys_present"]))
     if changed != expected:
+        raise LaunchplaneSafetyError("invalid_response")
+    if selected_keys is not None and (
+        result.get("selected_keys") != selected_keys
+        or changed - set(selected_keys)
+        or projected_delta["retired_keys_present"]
+        or projected_delta["desired_key_count"] != len(selected_keys)
+    ):
         raise LaunchplaneSafetyError("invalid_response")
     target = _require_dict(result.get("tracked_target"))
     if not isinstance(target.get("target_id"), str) or not target["target_id"]:
@@ -6772,6 +6779,8 @@ def _runtime_sync_result(source: object, *, mode: str) -> dict[str, object]:
         "persistence_status": verification_status,
         "deploy_requested": False,
     }
+    if selected_keys is not None:
+        projected["selected_keys"] = selected_keys
     assert_public_safe_shape(projected)
     return projected
 
@@ -6788,12 +6797,20 @@ def _runtime_sync_plan_digest(request: dict[str, object], result: dict[str, obje
 def execute_runtime_sync(args: argparse.Namespace) -> int:
     operation = args.command
     applying = operation.endswith("-apply")
-    request = {
+    request: dict[str, object] = {
         "product": public_identifier(args.product),
         "context": public_identifier(args.context),
         "instance": public_identifier(args.instance),
         "payload_source": "operator_argument",
     }
+    try:
+        selected_keys = sorted(_public_env_key(key) for key in args.key) if args.key else None
+    except LaunchplaneSafetyError as error:
+        raise ValueError("invalid_runtime_key_selection") from error
+    if selected_keys is not None:
+        if len(set(selected_keys)) != len(selected_keys):
+            raise ValueError("invalid_runtime_key_selection")
+        request["selected_keys"] = selected_keys
     reviewed_digest = ""
     if applying:
         _require_idempotency(args)
@@ -6814,6 +6831,8 @@ def execute_runtime_sync(args: argparse.Namespace) -> int:
     current_phase = "preflight"
     current_diagnostics: dict[str, object] = {}
     body = {"schema_version": 1, **{key: request[key] for key in ("product", "context", "instance")}, "deploy": False}
+    if selected_keys is not None:
+        body["selected_keys"] = selected_keys
     path = helper_command_path(operation)
 
     def call(mode: str, *, phase: str) -> tuple[dict[str, object], dict[str, Any]]:
@@ -6835,7 +6854,7 @@ def execute_runtime_sync(args: argparse.Namespace) -> int:
             known_trace = public_trace_id(response.get("trace_id"))
         if response.get("status") != "accepted":
             raise LaunchplaneSafetyError("invalid_response")
-        projected = _runtime_sync_result(response.get("result"), mode=mode)
+        projected = _runtime_sync_result(response.get("result"), mode=mode, selected_keys=selected_keys)
         if projected["context"] != request["context"] or projected["instance"] != request["instance"]:
             raise LaunchplaneSafetyError("invalid_response")
         return projected, response
@@ -10878,6 +10897,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         sync = subparsers.add_parser(command, help="Sync managed runtime values without deployment; key names only.")
         for name in ("product", "context", "instance"):
             sync.add_argument(f"--{name}", required=True)
+        sync.add_argument("--key", action="append", default=[], help="Select one existing managed runtime key; repeat for an exact selection.")
         sync.add_argument("--idempotency-key", required=command.endswith("-apply"), default="")
         if command.endswith("-apply"):
             sync.add_argument("--reviewed-dry-run", action="store_true")

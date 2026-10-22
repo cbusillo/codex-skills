@@ -1953,6 +1953,15 @@ never CLI input. The service checks `live_target_runtime.plan` for dry runs and
 permissions because it also runs pre-apply and read-back dry runs. It grants
 nothing and never switches identity.
 
+Repeat `--key NAME` to select exactly those existing managed keys. Use the
+same selection on dry-run, apply and readback. Duplicate and malformed names
+are rejected before any request. Selected sync applies
+no retirement and preserves unselected provider values and stored retirement
+intent. Its readback verifies only the selected keys, so unrelated drift can
+remain. Omitting `--key` keeps the full-lane sync behavior. The helper requires
+the service to echo the selection and rejects changes outside it, including
+retirements. The selection is part of the reviewed plan digest.
+
 Save the dry-run output privately. Apply requires `--reviewed-dry-run`,
 `--expected-plan-digest` from `result.plan_sha256`, `--dry-run-evidence-file`, and
 `--idempotency-key`. Use a fresh stable key for each later intentional sync;
