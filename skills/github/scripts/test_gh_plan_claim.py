@@ -287,12 +287,15 @@ class ClaimTests(unittest.TestCase):
 
     def test_pr_with_canonical_issue_cannot_bypass_that_issues_claim(self):
         self.pr_fixture()
-        self.pulls[0]["body"] = "Closes #99"
+        self.pulls[0]["body"] = "Refs #98\nCloses #99"
         self.targets["99"] = {**copy.deepcopy(self.issue), "number": 99}
         del self.targets["99"]["pull_request"]
+        self.targets["98"] = {**copy.deepcopy(self.targets["99"]), "number": 98, "state": "closed"}
         with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
             self.run_claim()
         self.assertEqual(caught.exception.code, "claim_issue_record_required")
+        self.assertEqual(caught.exception.payload["canonical_issue"], "https://github.com/owner/repo/issues/99")
+        self.assertEqual(caught.exception.payload["canonical_issues"], ["https://github.com/owner/repo/issues/99"])
         self.assert_no_writes()
 
     def test_pr_source_worktree_appearing_on_readback_stops_with_release_receipt(self):
@@ -495,6 +498,22 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(set(caught.exception.payload["canonical_issues"]),
                          {"https://github.com/owner/repo/issues/42", "https://github.com/owner/repo/issues/43"})
         self.assert_no_writes()
+
+    def test_pr_only_source_release_skips_closed_canonical_references(self) -> None:
+        for references in ("Refs #43\nRefs #42", "Refs #42\nRefs #43"):
+            with self.subTest(references=references):
+                self.setUp()
+                self.released_issue_pr_fixture()
+                self.pulls[0]["body"] = references
+                self.targets["43"] = {**copy.deepcopy(self.targets["42"]), "number": 43,
+                                      "state": "closed", "state_reason": "not_planned"}
+                before = copy.deepcopy((self.inventory, self.pulls))
+                self.run_claim()
+                result = self.emitted.call_args.args[0]
+                self.assertTrue(result["ok"])
+                self.assertEqual(result["claim"]["resume_from"], "1")
+                self.assertEqual(result["claim"]["retained_handoff"], CLAIM.handoff_url("owner/repo", 42, self.handoff_id))
+                self.assertEqual((self.inventory, self.pulls), before)
 
     def test_authorized_split_pr_refresh_claim_succeeds_with_release_and_handoff(self):
         self.refresh_fixture()
