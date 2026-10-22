@@ -1,0 +1,29 @@
+{
+  "timestamp": "2026-10-22T14:55:07.152Z",
+  "ordinal": 1030,
+  "type": "event_msg",
+  "payload": {
+    "type": "item_completed",
+    "thread_id": "01a163d9-697c-7633-88a1-cd7d47c89b02",
+    "turn_id": "01a163d9-6ede-7e53-bcc3-dea39d80af33",
+    "item": {
+      "type": "CommandExecution",
+      "id": "exec-bf63efce-2b4a-4ea4-bfba-08f0ef066578",
+      "process_id": "38240",
+      "command": [
+        "/bin/zsh",
+        "-lc",
+        "claude --session-id 673145b1-3867-476f-993c-d484352a8004 --settings '{\"disableAllHooks\":true}' --strict-mcp-config --mcp-config '{\"mcpServers\":{}}'"
+      ],
+      "source": "unified_exec_startup",
+      "status": "completed",
+      "exit_code": 0,
+      "duration": {
+        "secs": 37,
+        "nanos": 395073625
+      }
+    },
+    "started_at_ms": 1792680869756,
+    "completed_at_ms": 1792680907151
+  }
+}

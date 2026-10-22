@@ -880,6 +880,85 @@ class ClaimCloseoutTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertTrue(helper.history.literal_targets(bash_call(command), SESSION)["unresolved_invocations"])
 
+    def test_claims_run_through_a_data_commands_execution_feature_stay_computed(self) -> None:
+        claim = "uv run gh-plan.py --repo test/a claim 5"
+        script = f"import subprocess\nsubprocess.run({claim.split()!r})"
+        commands = [
+            f"git -c 'alias.x=!{claim}' x",
+            f"C='!{claim}'; git -c \"alias.x=$C\" x",
+            f"git -c \"alias.x=$(printf '!{claim}')\" x",
+            f"git --config-env=alias.x=C x; echo '{claim}'",
+            f"git config alias.x '!{claim}' && git x",
+            f"git rebase --exec '{claim}' main",
+            f"git rebase -m --exec '{claim}' main",
+            f"git grep -F --open-files-in-pager='sh -c \"{claim}\" --' needle",
+            f"git config --comment --get core.editor 'sh -c \"{claim}\" --'; git commit --allow-empty",
+            f"cat > 1 <<'EOF'\n[core]\n editor = sh -c '{claim}' --\nEOF\nGIT_CONFIG_GLOBAL=1 git commit --allow-empty",
+            f"git bisect run sh -c '{claim}'",
+            f"git submodule foreach '{claim}'",
+            f"GIT_PAGER='sh -c \"{claim}\"' git log",
+            f"export GIT_EDITOR='sh -c \"{claim}\" --'; git commit --allow-empty",
+            f"cat >> .git/config <<'EOF'\n[alias]\n    c = !{claim}\nEOF\ngit c",
+            f"gh alias set c '!{claim}' && gh c",
+            f"gh plan-runner '{claim}'",
+            f"gh extension exec runner '{claim}'",
+            f"sed -n '1e {claim}' notes.txt",
+            f"echo '{claim}' | sed 's/^//e'",
+            f"sed -e 1d -e 's/.*/{claim.replace('/', r'\/')}/e' notes.txt",
+            f"sed 's|[|]|w|;e {claim}' notes.txt",
+            f"sed -n '/x/{{e {claim}\n}}' notes.txt",
+            f"cat > test_claim.py <<'EOF'\n{script}\nEOF\nuv run pytest test_claim.py",
+            f"cat <<'EOF' > c\n{claim}\nEOF\nchmod +x c; rg --pre ./c pattern .",
+            f"printf '{claim}\\n' > c; chmod +x c; sort --compress-program=./c big.txt",
+            f"printf '{claim}\\n' > c; chmod +x c; sort --compress-p ./c big.txt",
+            f"less '+!{claim}' notes.txt",
+            f"less '+#{claim}' notes.txt",
+            f"less '+G!{claim}' notes.txt",
+            f"read 'a[$({claim})]' <<< x",
+            f"printf -v 'a[$({claim})]' %s x",
+            f"test -v 'a[$({claim})]'",
+        ]
+        for command in commands:
+            with self.subTest(command=command):
+                self.assertTrue(helper.history.literal_targets(bash_call(command), SESSION)["unresolved_invocations"])
+
+    def test_plain_data_uses_of_execution_capable_commands_stay_data(self) -> None:
+        mention = "gh-plan.py claim 2"
+        commands = [
+            "git status",
+            f"git log --grep '{mention}'",
+            f"git -c user.name=bot commit -m '{mention}'",
+            f"git config user.email bot@example.com; git commit -m '{mention}'",
+            f"gh issue comment 5 --body '{mention}'",
+            f"GH_PAGER=cat gh pr view 5; rg '{mention}' .",
+            f"sed -n 1p notes.txt; rg '{mention}' .",
+            f"sed -i 's/old/{mention}/' notes.txt",
+            f"sed -e 's/a/b/g;/x/d' -e '$a\\\\\n{mention}' notes.txt",
+            f"gh -R test/a issue comment 5 --body '{mention}'",
+            f"git grep -e '-Only {mention}'",
+            f"rg -- '--pre' notes; echo '{mention}'",
+            f"sort -- --compress-program; echo '{mention}'",
+            f"git config --get-regexp 'gh-plan.py' claim",
+            f"sed -n '/{mention}/{{p;}}' notes.txt",
+            f"sed -n 's|[|]|e|p' notes.txt; echo '{mention}'",
+            f"NOTE='{mention}' git status",
+            f"less '+/{mention} |release' notes.txt",
+            f"sort -u notes.txt | less; rg '{mention}' .",
+            f"read -r line <<< '{mention}'",
+            f"read -p '[{mention}]' line",
+            f"printf %s '-v[{mention}]'",
+            f"git -c core.pager=cat log --grep '{mention}'",
+            f"git config --get --default --edit color.ui; echo '{mention}'",
+            f"LESS=-R rg '{mention}' .",
+            f"printf -v line %s '{mention}'",
+            f"test -n '{mention}'",
+        ]
+        for command in commands:
+            with self.subTest(command=command):
+                self.assertEqual(
+                    helper.history.literal_targets(bash_call(command), SESSION), {"targets": set(), "unresolved_invocations": []}
+                )
+
     def test_scripts_and_patches_that_only_mention_claims_are_data(self) -> None:
         commands = [
             "cd /w && cat > /tmp/probe.py <<'EOF'\nfor cmd in ['S=gh-plan.py; uv run $S --repo test/a claim 2']:\n    print(cmd)\nEOF\n"

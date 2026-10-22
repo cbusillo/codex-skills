@@ -45,7 +45,7 @@
             "scripts/install-catalog.py",
             "scripts/sync-global-instructions.py",
             "scripts/test_catalog_install.py",
-            "scripts/test_pep723_publication.py",
+            "scripts/test_pep723_proposal.py",
             "scripts/validate_execution_environment.py",
             "skills/github/scripts/test_github_work_evidence.py",
             "skills/supervisor/scripts/iterm_tab.py"

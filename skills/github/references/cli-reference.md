@@ -335,7 +335,9 @@ jitter when that reset is inside the effective deadline. Secondary throttling
 uses `Retry-After`, then reported reset metadata, then bounded increasing
 backoff. Shared cooldown state uses advisory locking and atomic replacement,
 is keyed by GitHub host, actor, and quota bucket, expires stale records, and
-briefly serializes post-reset calls to avoid a stampede. Subprocess execution,
+leases the first post-reset request, then delays callers for one bounded drain.
+Once that drain passes, ordinary requests run concurrently and do not re-arm it.
+A fresh provider throttle still publishes a shared cooldown. Subprocess execution,
 cooldown-lock acquisition, and any reconciliation reads share the same
 effective deadline; none starts a fresh retry window after the parent request
 expires or is cancelled.
@@ -1281,6 +1283,69 @@ claim preflight refuses reuse before writing. Normal successor claims still chec
 Edited or unavailable evidence and renewed source ownership invalidate the
 legacy receipt just as they do a structured release. Inspect `--dry-run` before
 applying. These flags cannot release or reinterpret a structured source.
+
+#### Historical original exit evidence
+
+Use the existing `--termination-record` procedure when the original native exit
+completed without a safe-exit verdict. Do not add a closure-log row or rewrite
+the original verdict. The private record keeps the native UUID, harness,
+source host, transcript, transcript roots, cause and retained artifacts. The
+source must resolve under a configured account root; declared roots add copies
+to scan and cannot establish the original. The observer rollout must remain
+under a configured Codex home's resolved sessions or archived_sessions directory.
+A historical Claude record may name an original Codex harness completion event:
+
+```json
+"exit_record": {
+  "kind": "codex_command",
+  "session_id": "<observing Codex UUID>",
+  "transcript": "/absolute/original/observer.jsonl",
+  "execution_id": "<original native execution ID>"
+}
+```
+
+This replaces PID, TTY and tmux fields only for this historical path. The native
+`item_completed` event must record a successful command with an explicit source
+UUID: `claude --session-id UUID` or `claude --resume UUID`. The supported argv may
+also contain `--settings VALUE`, `--mcp-config VALUE` and `--strict-mcp-config`.
+Only one literal foreground command, directly or through `/bin/sh`, `/bin/bash`
+or `/bin/zsh` with `-c` or `-lc`, qualifies. Wrappers, shell control syntax,
+background jobs, redirections, failed commands, typed `/exit` and history alone
+supply no exit proof. Other harness/evidence forms refuse. The original launch
+and completion times must enclose the source claim's creation. This proves the
+source was attached during that execution, rather than merely attempting a
+resume that never opened it. The generator derives `ended_at` and pins the
+original completion event's digest. It refuses a conflicting supplied end time.
+
+Every historical record also supplies `claim` (the exact original claim),
+`claim_url` and `claim_created_at` from GitHub. For an alias, supply `claim_session`
+(the original recorded Session field). The source root must contain its direct
+creation receipt inside the original creation interval. Quoted output, copied
+history, forks and spawned children cannot establish that identity. Bare legacy
+claims retain `--legacy`, branch and reason and their independent PR proof.
+No recovered identity changes the source claim.
+
+The generator and release preflight check configured account roots, every source
+copy, pending actions, canonical resume records and live or uncertain process
+identities. A canonical closure row, if present, is a resume veto only. Missing
+closure rows supply no exit proof and require no shared-log write. A historical
+source refuses while any recognized Claude executable is live, including
+Claude Desktop, editor extensions, another UUID, noninteractive launches or
+uncertain argv. The refusal identifies the blocking PID and executable. The native session inventory is an
+additional refusal-only check on every configured account. No registry row or
+launch operand grants independence. Run this historical procedure from a Codex
+Supervisor after those processes finish normally. Otherwise keep the claims
+and let the live work finish. This uses the maintained native-process classifier;
+it does not establish coverage of renamed binaries or SDK hosts.
+Unresolved resume targets also refuse on the existing inventory backfill route;
+unrelated plain processes keep that route's existing behavior. The crash route
+keeps its PID, TTY and nonce-bearing tmux checks.
+The release repeats verification after its pending write, pins the original
+exit, preserves artifacts, and keeps branch, PR, wait and blocker checks.
+Generate the attestation with `github_plan_termination.py --record FILE`, inspect
+it, post it through `gh-comment`, then inspect the ordinary release dry run with
+`--termination-record FILE`. Never invent an attestation URL or release a claim
+when the generator refuses.
 
 For retained PRs, pass each verified same-repository PR URL with repeatable
 `--retained-pr`. Each PR must independently link the canonical issue and belong
