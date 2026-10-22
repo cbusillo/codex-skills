@@ -225,7 +225,8 @@ def window_report(row):
     if any("period" in w for w in windows):
         capacity = {key: [] for key in REPORTED_PERIODS.values()}
         for window in windows:
-            key = REPORTED_PERIODS.get(window.get("period"))
+            period = window.get("period")
+            key = REPORTED_PERIODS.get(period) if isinstance(period, str) else None
             if key is not None:
                 capacity[key].append(period_window(window))
     return {"limiting_window_label": label if isinstance(label, str) and label else None,

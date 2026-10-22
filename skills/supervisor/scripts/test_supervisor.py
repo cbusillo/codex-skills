@@ -1302,6 +1302,9 @@ class AccountChoiceTests(unittest.TestCase):
         self.assertEqual((choice["name"], choice["remaining_fraction"]), ("spare", .04))
         self.assertIsNone(choice["limiting_window_label"])
         self.assertEqual(choice["window_capacity"], {"five_hour": None, "weekly": None})
+        snapshot["accounts"][1]["windows"] = [{"label": "Odd", "period": {}}, {"label": "Daily", "period": "daily"}]
+        choice = account_choice.choose("anthropic", accounts_config(), snapshot, None, now=NOW)
+        self.assertEqual((choice["name"], choice["window_capacity"]), ("spare", {"five_hour": [], "weekly": []}))
 
     def test_snapshot_read_failures_mean_unavailable(self):
         for stdout, code, reason in (("{", 0, "not JSON"), ('{"schemaVersion":2}', 0, "version 1"), ("", 1, "exited 1")):
