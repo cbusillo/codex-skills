@@ -5,7 +5,7 @@
 """Shared process and transcript facts; callers retain closure and terminal authority."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 import os
 from pathlib import Path
 import shlex
@@ -500,7 +500,7 @@ def verify_process_exit(entry, *, rows=None, ended_at=None, started_at=None,
                         born = started_at(pid)
                     except (OSError, ValueError, TypeError, subprocess.SubprocessError) as error:
                         raise ValueError("Native process birth is unavailable; preserve claims") from error
-                    if ended_at is None or born <= ended_at + timedelta(seconds=1) or born > datetime.now(timezone.utc):
+                    if ended_at is None or born <= ended_at + timedelta(seconds=1) or born > datetime.now(UTC):
                         raise ValueError("Native process predates the original exit; preserve claims")
         if process_tty != tty or idle_terminal_command(command):
             continue
