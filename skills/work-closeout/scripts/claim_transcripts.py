@@ -523,31 +523,11 @@ def shell_texts(text: str, javascript: bool) -> ShellTexts:
             commands = [ShellCommand(command_text(command), "chars" in decoded)] if command is not None else []
             return ShellTexts(commands)
         return ShellTexts([ShellCommand(text)])
-    literal = JAVASCRIPT_LITERAL
-    reference = r"\btools\s*\[\s*['\"](?:exec_command|shell_command|shell|write_stdin)['\"]\s*\]|\b(?:exec_command|shell_command|write_stdin)\b|\btools\.shell\b|\bshell\s*\("
-    site = re.compile(
-        r"(?P<call>\btools\.(?:exec_command|shell_command|shell|write_stdin)\s*\()|(?P<reference>"
-        + reference
-        + r")|(?:"
-        + literal
-        + r")|(?:"
-        + JAVASCRIPT_COMMENT
-        + ")",
-        re.DOTALL,
-    )
-    analysis = claim_javascript.analyse(text)
+    bounded, sites = claim_javascript.analyse(text)
     commands = []
-    opaque = not analysis.bounded
-    tokens = javascript_tokens(text)
-    interactive_opaque = not analysis.bounded and (
-        analysis.encoded_identifiers
-        or any(token == "tools" and tokens[index + 1 : index + 2] == ["["] for index, token in enumerate(tokens))
-        or any(
-            "write_stdin" in match[0] and (match["reference"] is not None or (match[0].startswith("`") and "${" in match[0]))
-            for match in site.finditer(text)
-        )
-    )
-    for arguments, interactive in analysis.sites:
+    opaque = not bounded
+    interactive_opaque = not bounded
+    for arguments, interactive in sites:
         decoded = claim_javascript.literal_commands(arguments, LITERAL_SHELL_VALUE, LITERAL_LOOP_VALUES, LITERAL_EXPANSION_BYTES)
         if decoded is None:
             opaque = True
@@ -2466,6 +2446,7 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
         unclassified = False
         reason = "missing_output"
         decode_failed = False
+        interactive_uncertain = False
         receipt_pure = not javascript or single_javascript_shell(text)
         try:
             sources = shell_texts(text, javascript)
@@ -2486,6 +2467,7 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
                     for source in sources.commands
                 )
             )
+            interactive_uncertain = opaque and sources.interactive_opaque and claim_may_be_interactive
             unclassified = opaque
             opaque = opaque and (
                 claim_related_here
@@ -2519,7 +2501,11 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
             opaque = opaque or (unclassified and bool(found))
             claim_may_be_stored = claim_may_be_stored or ("store" in names and (claim_related_here or bool(found)))
         if opaque:
-            reason = "unproven_execution_count" if invocations and not receipt_pure else "computed"
+            reason = (
+                "interactive_uncertain"
+                if interactive_uncertain
+                else ("unproven_execution_count" if invocations and not receipt_pure else "computed")
+            )
         if (unknown or opaque) and directory is not None:
             try:
                 saved = persisted_output(records, directory, session, identifier)
@@ -2533,7 +2519,14 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
                 {
                     "call_id": identifier,
                     "reason": reason,
-                    "recovery": "Restore this invocation's complete native command and output on the claiming host; keep unknown writes conditional. If evidence is irrecoverable, record the Director's decision on the owning issue.",
+                    "recovery": (
+                        "This code-mode cell is outside the bounded subset after possible interactive claim input. "
+                        "Preserve the originating command, process session ID and complete input/output evidence on the owning issue; "
+                        "keep coverage conditional. Use direct literal shell calls and text(result) for new cells. "
+                        "If the old evidence cannot establish coverage, record the Director's decision on the owning issue."
+                        if reason == "interactive_uncertain"
+                        else "Restore this invocation's complete native command and output on the claiming host; keep unknown writes conditional. If evidence is irrecoverable, record the Director's decision on the owning issue."
+                    ),
                 }
             )
     return {"targets": targets, "unresolved_invocations": errors}

@@ -73,9 +73,21 @@ error alone never proves nonexecution. The reader assumes native results,
 the existing stored-claim check still covers later `load` cells. Use direct
 literal shell calls and `text(result)` outside this subset. Known shell calls
 and their argument objects come from syntax-tree locations, including recovered
-nodes in unbounded cells. Aliased or computed input capabilities retain pending
-interactive claim uncertainty. Every decoded target remains subject to release verification
-even when the surrounding cell is conditional.
+nodes in unbounded cells. Any code-mode cell outside the bounded subset retains
+pending interactive claim uncertainty, including aliases, computed constructors
+and escaped shorthand keys. Every decoded target remains subject to release
+verification even when the surrounding cell is conditional.
+
+`interactive_uncertain` means a prior invocation could have left claim input in
+an interactive process and this later cell is outside that subset. Complete
+output alone does not resolve it. Preserve the originating command, process
+session ID and subsequent input/output on the owning issue; keep coverage
+conditional when that evidence cannot establish it. The existing Director-decision
+route applies to irrecoverable older evidence. For new cells, use the supported
+direct literal shell calls and `text(result)`; use `.includes` for plain string
+filters. The reader does not currently retire interactive uncertainty from an
+exit printed by code-mode output. A completed helper process may therefore leave
+conservative uncertainty in later unsupported cells.
 
 A shell variable assigned once to a literal value at the top level, and a `for`
 loop over literal words, expand into exact claim targets, so

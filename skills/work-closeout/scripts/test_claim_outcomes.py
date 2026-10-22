@@ -197,6 +197,12 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
             'const w=tools[load("method")];await w({session_id:41,chars:"$CMD\\n"});',
             r'text(await tools.wr\u0069te_stdin({session_id:41,chars:"$CMD\n"}));',
             r'text(await to\u006fls.write_stdin({session_id:41,chars:"$CMD\n"}));',
+            'const t=tools;const m=load("method");await t[m]({session_id:41,chars:"$CMD\\n"});',
+            'const m=load("method");await tools?.[m]({session_id:41,chars:"$CMD\\n"});',
+            'await Object.values(tools)[0]({session_id:41,chars:"$CMD\\n"});',
+            'await globalThis["to"+"ols"][load("method")]({session_id:41,chars:"$CMD\\n"});',
+            'const a=[];a["con"+"structor"]["con"+"structor"](load("code"))();',
+            r'const chars="$CMD\n";await tools.write_stdin({session_id:41,cmd:"echo ok",ch\u0061rs});',
         ):
             with self.subTest(source=source):
                 rows = invocation(initial)
