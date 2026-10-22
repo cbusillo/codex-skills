@@ -1327,11 +1327,14 @@ The generator and release preflight check configured account roots, every source
 copy, pending actions, canonical resume records and live or uncertain process
 owners. A canonical closure row, if present, is a resume veto only. Missing
 closure rows supply no exit proof and require no shared-log write. A historical
-source refuses while any Claude-family process is live, including another UUID,
-a noninteractive launch or uncertain argv. The native session inventory is an
+source refuses while any recognized Claude executable is live, including
+Claude Desktop, editor extensions, another UUID, noninteractive launches or
+uncertain argv. The refusal identifies the blocking PID and executable. The native session inventory is an
 additional refusal-only check on every configured account. No registry row or
 launch operand grants independence. Run this historical procedure from a Codex
-Supervisor after Claude sessions finish normally. Otherwise keep the claims and let the live sessions finish.
+Supervisor after those processes finish normally. Otherwise keep the claims
+and let the live work finish. This uses the maintained native-process classifier;
+it does not establish coverage of renamed binaries or SDK hosts.
 Unresolved resume targets also refuse on the existing inventory backfill route;
 unrelated plain processes keep that route's existing behavior. The crash route
 keeps its PID, TTY and nonce-bearing tmux checks.

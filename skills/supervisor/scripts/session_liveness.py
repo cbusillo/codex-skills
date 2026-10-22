@@ -494,7 +494,7 @@ def verify_process_exit(entry, *, rows=None, ended_at=None, started_at=None,
                 if command_kind == "resume" and native_uuid(exact_resume) is None:
                     raise ValueError("Unresolved native process may own the source; preserve claims")
                 if entry.get("_historical_exit"):
-                    raise ValueError("Live source-family process remains; preserve historical claims")
+                    raise ValueError(f"Live source-family process {pid} ({argv[0]}) remains; preserve historical claims")
         if process_tty != tty or idle_terminal_command(command):
             continue
         if not entry.get("_backfill"):
