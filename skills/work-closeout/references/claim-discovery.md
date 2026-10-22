@@ -17,7 +17,7 @@ Only structured native denials or explicit helper prewrite outcomes do that.
 Raw JavaScript does not prove how often a bare claim command executed. Use an
 explicit `--repo OWNER/REPO` or qualified record reference in literal commands;
 those targets remain bounded even inside loops. Bare or computed JavaScript
-claims, unsupported executable shell payloads and template interpolations stay
+claims, unsupported executable shell payloads and unresolved template interpolations stay
 conditional even when one helper receipt or rejection is present. Their known
 receipt targets are still checked, including receipts in advertised saved output.
 Receipt JSON in tool inputs or conversation prose is data. Merged output from
@@ -27,6 +27,23 @@ the explicit literal target form above and restore its complete native output.
 Interactive input and command strings passed to unclassified launchers cannot
 prove complete claim coverage. Their known receipts are still checked. Keep
 the claiming host's journal and complete native lineage when using remote shells.
+
+Code-mode templates can expand a leading literal `for (const n of [1,2])` loop's
+first shell call, or a leading constant literal array passed immediately through
+`Promise.all` or `Promise.allSettled` to `map`. Only the directly bound name may
+be interpolated, and every value must be a plain shell word under the same
+bounds as literal shell loops. Each expanded command stays a separate shell
+execution and goes through claim discovery and canonical release checks. Map
+arrays and parameters must have no other code references; direct `eval` stays
+conditional. Command objects with duplicate command fields, spreads, computed
+keys or accessors also stay conditional. Other statements before the call,
+mutations, additional template substitutions, escaped identifiers, escaped keys,
+escaped array values or templates, inexact numeric values and shell syntax in
+values keep the invocation conditional. Quoted commands support only escapes
+shared by JavaScript and Python, including quoted newlines and hexadecimal or
+four-digit Unicode escapes. Use a plain command key and keep unrelated template
+substitutions in a separate code cell. This is literal
+decoding, never JavaScript execution.
 
 A shell variable assigned once to a literal value at the top level, and a `for`
 loop over literal words, expand into exact claim targets, so

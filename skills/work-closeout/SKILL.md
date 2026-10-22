@@ -308,7 +308,8 @@ the same journal even when their output is absent from the root transcript.
 
 For older helpers and mixed sessions, the check reads linked local native child
 transcripts recursively: Claude's own `subagents` directory, Codex's existing
-native child index and `SubAgentActivity.agent_thread_id` events. It never
+native child index and non-interaction `SubAgentActivity.agent_thread_id` events. Peer
+interaction events do not establish parent edges. Contradictory parent edges refuse. It never
 scans rollout directories. A missing indexed or advertised child refuses;
 restore its transcript on the claiming host or pass that child's native
 `--session` and `--transcript`. Supplied child paths can restore moved evidence.
