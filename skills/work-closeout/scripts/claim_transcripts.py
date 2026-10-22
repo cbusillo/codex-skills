@@ -415,6 +415,7 @@ def command_literal(text: str, start: int, literal: str) -> str | None:
 
 
 JAVASCRIPT_LITERAL = r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|`(?:\\.|[^`\\])*`'
+CLAIM_WORD = re.compile(r"""(?:^|[\s'"`])claim(?:$|[\s'"`])""")
 
 
 def javascript_names(text: str) -> set[str]:
@@ -465,16 +466,26 @@ def shell_texts(text: str, javascript: bool) -> tuple[list[str], bool]:
 
 def is_interpreter(consumer: str) -> bool:
     return (
-        Path(consumer).name
-        in {"sh", "bash", "zsh", "dash", "ksh", "fish", "node", "nodejs", "deno", "bun", "perl", "ruby", "eval", "source", "."}
+        Path(consumer).name in {"sh", "bash", "zsh", "dash", "ksh", "fish", "node", "nodejs", "deno", "bun", "perl", "ruby"}
         or re.fullmatch(r"python(?:[0-9]+(?:\.[0-9]+)*)?", Path(consumer).name) is not None
     )
 
 
 def has_executable_claim_source(text: str, consumer: str) -> bool:
-    if "gh-plan" not in text or re.search(r"\bclaim\b", text) is None:
+    if "gh-plan" not in text or CLAIM_WORD.search(text) is None:
         return False
     if not re.fullmatch(r"python(?:[0-9]+(?:\.[0-9]+)*)?", Path(consumer).name):
+        if Path(consumer).name in {"sh", "bash", "zsh", "dash", "ksh", "fish", "eval", "source", "."}:
+            try:
+                for argv in shell_argv(text):
+                    arguments = claim_arguments(argv)
+                    if arguments is not None and invocation_target(arguments, "") is not None:
+                        return True
+                    if arguments is None and has_opaque_claim_execution(argv):
+                        return True
+                return False
+            except ValueError:
+                return True
         return is_interpreter(consumer)
     try:
         tree = ast.parse(text)
@@ -512,7 +523,7 @@ def has_executable_claim_source(text: str, consumer: str) -> bool:
             value = ast.literal_eval(command)
         except (ValueError, TypeError):
             return True
-        if "gh-plan" in str(value) and re.search(r"\bclaim\b", str(value)):
+        if "gh-plan" in str(value) and CLAIM_WORD.search(str(value)):
             return True
     return False
 
@@ -548,6 +559,8 @@ def shell_command_arguments(argv: list[str]) -> list[str]:
 
 def script_consumer(argv: list[str]) -> str:
     argv = shell_command_arguments(argv)
+    if argv and argv[0] in {"eval", "source", "."}:
+        return argv[0]
     if argv and Path(argv[0]).name == "uv" and "run" in argv and "--script" in argv:
         return "python"
     for argument in argv:
@@ -582,8 +595,65 @@ SHELL_OPERATORS = (
 )
 SHELL_TOKEN = re.compile(
     "|".join(re.escape(operator) for operator in SHELL_OPERATORS)
-    + r"""|(?:'[^']*'|"(?:\\.|[^"\\])*"|\\[^\n]|[^\s;&|()<>\x27"\\])+"""
+    + r"""|(?:'[^']*'|"(?:\\.|[^"\\])*"|`(?:\\.|[^`\\])*`|\\[^\n]|[^\s;&|()<>\x27"`\\])+"""
 )
+
+
+def substitution_end(text: str, start: int) -> int:
+    depth = 1
+    quote = ""
+    index = start
+    while index < len(text):
+        character = text[index]
+        if character == "\\" and quote != "'":
+            index += 2
+            continue
+        if character in {"'", '"'}:
+            if not quote:
+                quote = character
+            elif quote == character:
+                quote = ""
+        elif not quote:
+            if character == "(":
+                depth += 1
+            elif character == ")":
+                depth -= 1
+                if depth == 0:
+                    return index
+        index += 1
+    raise ValueError("incomplete command substitution")
+
+
+def substitution_sources(word: str) -> Iterator[str]:
+    quote = ""
+    index = 0
+    while index < len(word):
+        character = word[index]
+        if character == "\\" and quote != "'":
+            index += 2
+            continue
+        if character == "'" and quote != '"':
+            quote = "" if quote else "'"
+        elif character == '"' and quote != "'":
+            quote = "" if quote else '"'
+        elif quote != "'" and word.startswith("$(", index):
+            end = substitution_end(word, index + 2)
+            yield word[index + 2 : end]
+            index = end
+        elif quote != "'" and character == "`":
+            end = index + 1
+            while end < len(word):
+                if word[end] == "\\":
+                    end += 2
+                    continue
+                if word[end] == "`":
+                    break
+                end += 1
+            if end == len(word):
+                raise ValueError("incomplete backtick substitution")
+            yield word[index + 1 : end]
+            index = end
+        index += 1
 
 
 def shell_tokens(text: str) -> list[str]:
@@ -609,9 +679,14 @@ def shell_tokens(text: str) -> list[str]:
 def pipeline_sources(tokens: list[str]) -> list[tuple[str, str]]:
     sources = []
     start = 0
+    depth = 0
     for index, token in enumerate(tokens):
+        if token in {"(", "{"}:
+            depth += 1
+        elif token in {")", "}"}:
+            depth = max(0, depth - 1)
         if token not in {"|", "|&"}:
-            if token in {";", "&&", "||", "\n"}:
+            if depth == 0 and token in {";", "&&", "||", "\n"}:
                 start = index + 1
             continue
         end = next((item for item in range(index + 1, len(tokens)) if tokens[item] in SHELL_OPERATORS), len(tokens))
@@ -620,11 +695,11 @@ def pipeline_sources(tokens: list[str]) -> list[tuple[str, str]]:
         if is_interpreter(consumer):
             offset = next((item for item, value in enumerate(argv) if value == consumer), -1)
             arguments = argv[offset + 1 :]
-            if all(argument.startswith("-") for argument in arguments) and not any(
-                argument in {"-c", "-e", "--eval"} for argument in arguments
-            ):
+            stdin_script = any(argument in {"-", "-s", "/dev/stdin"} for argument in arguments) or all(
+                argument.startswith("-") for argument in arguments
+            )
+            if stdin_script and not any(is_evaluator_flag(argument) for argument in arguments):
                 sources.append((" ".join(tokens[start:index]), consumer))
-        start = index + 1
     return sources
 
 
@@ -680,12 +755,15 @@ def shell_groups(text: str) -> Iterator[list[str]]:
                     "delimiter": decoded[0],
                     "strip_tabs": token == "<<-",
                     "consumer": consumer,
-                    "expands": "'" not in raw and '"' not in raw,
+                    "expands": raw == decoded[0],
                 }
             )
     group = []
     try:
         for token in headers:
+            if token not in SHELL_OPERATORS:
+                for source in substitution_sources(token):
+                    yield from shell_argv(source)
             if token in SHELL_OPERATORS:
                 if group:
                     yield shlex.split(" ".join(group))
@@ -694,19 +772,20 @@ def shell_groups(text: str) -> Iterator[list[str]]:
                 group.append(token)
         if group:
             yield shlex.split(" ".join(group))
-        if (header or pending) and "gh-plan" in text and re.search(r"\bclaim\b", text):
+        if (header or pending) and "gh-plan" in text and CLAIM_WORD.search(text):
             raise ValueError("incomplete shell source")
-        if any(has_executable_claim_source(source, "sh") for source, _ in pipeline_sources(headers)):
+        if any("gh-plan" in source and CLAIM_WORD.search(source) for source, _ in pipeline_sources(headers)):
             raise ValueError("unsupported piped claim source")
         if any(has_executable_claim_source(script, consumer) for consumer, script in executable_bodies):
             raise ValueError("unsupported executable claim heredoc")
     except ValueError as error:
-        if "gh-plan.py" in text and "claim" in text:
+        if "gh-plan.py" in text and CLAIM_WORD.search(text):
             raise ValueError("native claim shell syntax cannot be decoded") from error
 
 
 def shell_argv(text: str) -> Iterator[list[str]]:
     for argv in shell_groups(text):
+        argv = shell_command_arguments(argv)
         shell_flag = next((index for index, argument in enumerate(argv[1:], 1) if re.fullmatch(r"-[a-z]*c[a-z]*", argument)), None)
         if argv and Path(argv[0]).name in {"bash", "sh", "zsh"} and shell_flag is not None:
             index = shell_flag + 1
@@ -750,8 +829,12 @@ def has_opaque_claim_execution(argv: list[str]) -> bool:
     return any(
         has_executable_claim_source(argv[index + 1], consumer)
         for index, argument in enumerate(argv[:-1])
-        if argument in {"-c", "-e", "--eval"}
+        if is_evaluator_flag(argument)
     )
+
+
+def is_evaluator_flag(argument: str) -> bool:
+    return argument == "--eval" or re.fullmatch(r"-[A-Za-z]*[ce][A-Za-z]*", argument) is not None
 
 
 def invocation_target(arguments: list[str], session: str) -> dict | None:
@@ -891,7 +974,7 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
         if identifier in denied:
             continue
         names = javascript_names(text) if javascript else set()
-        claim_related_here = "gh-plan" in text or re.search(r"""(?:^|[\s'"`])claim(?:$|[\s'"`])""", text) is not None
+        claim_related_here = "gh-plan" in text or CLAIM_WORD.search(text) is not None
         invocations = []
         opaque = False
         unclassified = False
