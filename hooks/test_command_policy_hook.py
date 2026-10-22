@@ -166,6 +166,16 @@ class CommandPolicyHookTests(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertEqual(bash(line).returncode, 2)
 
+    def test_native_resume_help_is_not_routed_to_resume_mutations(self) -> None:
+        for line in ("codex exec resume --help", "codex resume -h", "codex e resume --last --help",
+                     "codex --help resume", "codex exec --help resume"):
+            with self.subTest(line=line):
+                self.assertEqual(bash(line).returncode, 0)
+        for line in ("codex resume example -- --help", "codex exec resume example 'read --help output'",
+                     "codex exec resume --helpful example"):
+            with self.subTest(line=line):
+                self.assertEqual(bash(line).returncode, 2)
+
     def test_global_keyboard_synthesis_is_refused_without_sending_keys(self) -> None:
         apple = 'tell application "System Events" to tell process "Google Chrome"\nkeystroke "/path/proposal.json"\nkey code 36'
         commands = (

@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from skills.direction.scripts.question_id import counter_path, heading_id
 
 COMMENT_URL = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/(?:issues|pull)/([1-9][0-9]*)#issuecomment-([1-9][0-9]*)")
-MARKER = re.compile(r"<!-- director-question:delivery (\{[^\n]*\}) -->")
+MARKER = re.compile(r"<!-- director-question:delivery (\{[^\n]*}) -->")
 
 
 def source_item(url):
@@ -117,6 +117,11 @@ def settled(url, queue_comments, owner, decision_authors):
     return oq.questions([reference], owner, decision_authors, answers, recorded_decisions_only=True)[0]["status"] == "answered"
 
 
+def is_receipt(comment) -> bool:
+    lines = (comment.get("body") or "").strip().splitlines()
+    return bool(lines) and MARKER.fullmatch(lines[0]) is not None
+
+
 def inventory(source_comments, queue_comments, owner, decision_authors, now=None, *, question_urls=None) -> dict[str, Any]:
     """Read-only view; a delivery receipt never removes an unanswered question."""
     now = now or datetime.now(timezone.utc)
@@ -124,8 +129,7 @@ def inventory(source_comments, queue_comments, owner, decision_authors, now=None
     entries = records(queue_comments, trusted)
     untrusted_records = []
     for comment in queue_comments:
-        lines = (comment.get("body") or "").strip().splitlines()
-        if lines and MARKER.fullmatch(lines[0]) and (comment.get("author") or "").casefold() not in trusted:
+        if is_receipt(comment) and (comment.get("author") or "").casefold() not in trusted:
             untrusted_records.append({"url": comment["url"], "author": comment.get("author")})
     registrations, acknowledgements = {}, {}
     for record in entries:
@@ -133,16 +137,8 @@ def inventory(source_comments, queue_comments, owner, decision_authors, now=None
             registrations.setdefault(record["question_url"], record["record_url"])
         elif record["question_url"] in registrations:
             acknowledgements[record["question_url"]] = record
-    def without_receipts(comments):
-        result = []
-        for comment in comments:
-            lines = (comment.get("body") or "").strip().splitlines()
-            if not lines or not MARKER.fullmatch(lines[0]):
-                result.append(comment)
-        return result
-
-    source_comments = sorted(without_receipts(source_comments), key=lambda c: c.get("created_at") or "")
-    answers = without_receipts(queue_comments)
+    source_comments = sorted((c for c in source_comments if not is_receipt(c)), key=lambda c: c.get("created_at") or "")
+    answers = [c for c in queue_comments if not is_receipt(c)]
     rows = []
     # Source URL is immutable identity. A repeat presentation keeps its Q ID;
     # registration never allocates a second number from the shared counter.
@@ -178,7 +174,8 @@ def inventory(source_comments, queue_comments, owner, decision_authors, now=None
                      "resurface": receipt is None, "age_seconds": age})
     known = {row["url"] for row in found}
     missing = sorted(url for url in set(registrations) - known
-                     if not settled(url, queue_comments, owner, decision_authors))
+                     if (question_urls is None or url in question_urls)
+                     and not settled(url, queue_comments, owner, decision_authors))
     for url in missing:
         rows.append({"url": url, "status": "missing_source", "question": None,
                      "created_at": None, "question_id": None, "age_seconds": None,
@@ -215,11 +212,11 @@ def reconcile(args, fetch):
     targets = {value for value in args.items if COMMENT_URL.fullmatch(value)}
     if args.register and not targets:
         raise ValueError("registration requires exact original question URLs, not whole discussions")
-    active = {r["question_url"] for r in existing
-              if not settled(r["question_url"], queue_comments, args.owner, args.decision_author)}
+    registered = set() if targets else {r["question_url"] for r in existing}
+    active = {url for url in registered if not settled(url, queue_comments, args.owner, args.decision_author)}
     items = list(dict.fromkeys([*(source_item(value) if value in targets else value for value in args.items),
                                *(source_item(url) for url in sorted(active))]))
-    selected = {r["question_url"] for r in existing} | targets
+    selected = registered | targets
     explicit_discussions = set(args.items) - targets
     comments_by_url: dict[str, dict[str, Any]] = {}
     errors = []

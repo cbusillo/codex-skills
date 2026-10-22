@@ -175,8 +175,9 @@ policy:
         shell_regex: >-
           (?x)^\s*(?:\S*/)?codex\s+
           (?:(?:(?:--(?:remote|cd|config|profile|model|sandbox|ask-for-approval|enable|disable|add-dir|image)|-[cCpmsai])
-          (?:=(?:"[^"]*"|'[^']*'|\S+)|\s+(?:"[^"]*"|'[^']*'|\S+))|--[\w-]+|exec)\s+)*
-          (?:resume\b|queue\b(?=[^\n]*\s--message(?:[ =-]|$)))
+          (?:=(?:"[^"]*"|'[^']*'|\S+)|\s+(?:"[^"]*"|'[^']*'|\S+))|--(?!help(?:\s|$))[\w-]+|exec)\s+)*
+          (?:resume\b(?!(?:\s+(?:"[^"]*"|'[^']*'|(?!--(?:\s|$))[^\s"']\S*))*?\s+(?:-h|--help)(?:\s|$))
+          |queue\b(?=[^\n]*\s--message(?:[ =-]|$)))
       action: require_preferred
       message: Native resume and queue mutations must invalidate closure evidence under the same ownership lease as successor admission. Use the exact-thread helper with the source account home.
       preferred:
