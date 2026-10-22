@@ -1617,7 +1617,7 @@ completed`, `proposed_action: replay_completed`, and the saved `recovery_digest`
 A lost apply reply retains the request and review for that readback. All other unknown or uninspected outcomes stay held.
 A denied runtime sync remains denied; obtaining
 a recovery reference does not deliver runtime values or enable a deployment.
-For `adopt_observed`, the outcome must be `present`; it need not be retry-safe
+For reference `adopt_observed`, the outcome must be `present`; it need not be retry-safe
 because adoption does not retry. `retry_original_operation` requires `absent`
 and `retry_safe: true`.
 

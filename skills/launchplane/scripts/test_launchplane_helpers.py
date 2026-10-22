@@ -10570,21 +10570,35 @@ def test_explicit_recovery_settlement_preserves_testing_and_evidence_fences(
         assert receipt["warnings"][0]["code"] == "reviewed_dry_run_not_apply_eligible"
 
 
+@pytest.mark.parametrize("reference", [True, False])
 @pytest.mark.parametrize("changes", [
     {"recovery_action": "settle_testing_failure"}, {"recovery_digest": "f" * 64},
 ])
-def test_event_abandonment_apply_reply_must_match_review(changes: dict[str, object]) -> None:
+def test_recovery_apply_reply_must_match_review(reference: bool, changes: dict[str, object]) -> None:
     with TemporaryDirectory(dir=Path.home()) as directory:
-        payload, evidence, receipt = _event_recovery_review(
-            directory, proposed_action="abandon_testing_original", provider_outcome="unknown", retry_safe=False)
+        if reference:
+            payload, evidence, receipt = _event_recovery_review(
+                directory, proposed_action="abandon_testing_original", provider_outcome="unknown", retry_safe=False)
+        else:
+            private = _generic_web_deploy_recovery_payload()
+            private["instance"] = "testing"
+            private["original_deploy"]["deploy"]["instance"] = private["instance"]
+            payload = _write_json(directory, "original.json", private)
+            receipt = _generic_web_deploy_recovery_evidence(instance=private["instance"])
+            evidence = _write_json(directory, "review.json", receipt)
         result = {"schema_version": 1, "status": "accepted", "mode": "apply",
                   "trace_id": "launchplane_req_abandonment_apply", "product": "example-product",
                   "context": "example", "instance": "testing", "reservation_state": "completed",
                   "reservation_attempt": 2, "recovery_action": "abandon_testing_original",
                   "provider_outcome": "unknown", "retry_safe": False,
                   "recovery_digest": receipt["result"]["recovery_digest"], **changes}
-        status, applied, posts, reads = _run_main(
-            _event_recovery_apply_argv(payload, evidence, receipt["result"]["recovery_digest"]), post=result)
+        if not reference:
+            result.update({"recovery_action": "retry_original_operation", "provider_outcome": "absent",
+                           "retry_safe": True, **changes})
+        argv = _event_recovery_apply_argv(payload, evidence, receipt["result"]["recovery_digest"])
+        if not reference:
+            argv += ["--idempotency-key", "original-deploy-key-1"]
+        status, applied, posts, reads = _run_main(argv, post=result)
     assert status == 0 and len(posts) == 1 and not reads
     assert applied["status"] == "accepted_unverified"
     assert applied["warnings"][0]["code"] == "apply_response_unverified"
