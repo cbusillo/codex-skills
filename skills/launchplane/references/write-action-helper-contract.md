@@ -83,13 +83,13 @@ source and caller delivery.
 ## Disposable lane observations
 
 `disposable-lane-inspect`, `disposable-lane-collect`,
-`disposable-lane-record` and `disposable-lane-clear` call the producer's `record_disposable_lane_safety`
+`disposable-lane-record`, `disposable-lane-clear` and
+`disposable-lane-prepare-rebuild` call the producer's `record_disposable_lane_safety`
 service API with the existing Director-agent identity. They add no permission
 or provider fallback. An observation
 is short-lived safety evidence for one lane. It is never an access grant.
 
-Prepare-rebuild has no installed catalog command. For the producer's
-supported modes and requirements, read
+For the producer's supported modes and requirements, read
 [the producer contract and caller bindings](agent-operator-contract.md).
 
 Each command requires `--payload-file /absolute/private/request.json` outside
@@ -110,7 +110,7 @@ Run inspect first and save its JSON output privately. It returns the lane's
 and a nullable `observation` holding the stored report's usage, data and
 production-resource values. A response missing either is invalid. Stored
 reports do not establish current disposal eligibility or replace the fresh
-facts. Collect, record and clear each require
+facts. Collect, record, clear and prepare-rebuild each require
 `--expected-binding-sha256` (that value), `--inspect-evidence-file` (the saved
 output) and `--reviewed-inspect`. The evidence must match the private request
 scope, the configured service, the binding digest, the stored report digest
@@ -129,8 +129,19 @@ alter historical operation records. There is no clear dry-run mode; the supporte
 review step is inspect. Its receipt must echo both reviewed digests and
 `provider_mutation=false`.
 
+Prepare-rebuild takes only the lane scope and required `replaces_operation_id`
+in its private payload. It accepts only instance `testing`, without a
+`preview_id`, fact assertions, evidence references or lifetime. The service
+requires the operation to belong to that exact lane, be service-owned and held
+in `reconciliation_required`, and excludes its executor while capturing the
+retained target ID in a separate preparation record. It does not rebuild the
+lane, delete resources, resolve holds or attest to historical provider effects.
+The receipt must match the requested operation and reviewed binding, return
+`historical_effects=unknown` and state `provider_mutation=false`. There is no
+dry-run mode or idempotency key; inspect is the supported lane review step.
+
 Output never echoes the product, context, instance, preview ID, evidence
-references or the observing identity. The request shows only the mode, the
+references, replaced operation ID or the observing identity. The request shows only the mode, the
 payload source and, for record, the count of known facts. Collect reports each
 fact, the usage diagnostics and, for each evidence reference, only whether it is
 present and its source kind. Coverage sources, evidence kinds and usage
@@ -147,7 +158,7 @@ testing record, preview facts that differ from those submitted, collect usage
 evidence that contradicts itself, or a collect window that is not current. The
 window must have started no later than now (5 seconds of clock skew allowed),
 must not have expired, and must last no longer than the requested lifetime. For
-inspect this is `invalid`. For collect, record and clear the service has already
+inspect this is `invalid`. For collect, record, clear and prepare-rebuild the service has already
 answered, so it is `outcome_unknown` with the recovery below.
 
 There is no automatic retry and no `Idempotency-Key`. Transport loss, a
@@ -170,6 +181,16 @@ return `accepted` with `effect_readback=verified` and
 new observation returns `accepted_unverified`; an uncertain clear exchange
 returns `outcome_unknown`. Neither is retried. A successful nonempty clear
 changes the report digest, so replaying its original request is not idempotent.
+
+After accepted prepare-rebuild, one separate inspect checks the lane binding.
+`operation_id_matches=true` means the receipt agreed with the private request;
+the operation ID is omitted. `effect_readback=unavailable` remains explicit:
+inspect cannot read the separate preparation record. A matching binding permits
+`accepted`, but does not verify that capture. A failed or changed binding gives
+`accepted_unverified`. A lost or malformed prepare exchange gives
+`outcome_unknown`; preserve the original request and operation ID, and do not
+retry automatically. Inspect cannot resolve that capture uncertainty or prove
+historical effects absent.
 
 Recording facts for a preview also requests a preview reconcile, reported as
 `reconcile_requested=true`.

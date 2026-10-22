@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 PREFIX = "disposable-lane-"
-MODES = ("inspect", "collect", "record", "clear")
+MODES = ("inspect", "collect", "record", "clear", "prepare-rebuild")
 COMMANDS = frozenset(PREFIX + mode for mode in MODES)
 TIMEOUTS = {PREFIX + mode: 240.0 if mode == "collect" else 30.0 for mode in MODES}
 SCOPE = ("product", "context", "instance")
@@ -30,6 +30,7 @@ INPUT_FIELDS = {
     "collect": {*SCOPE, "preview_id", "lifetime_seconds"},
     "record": {*SCOPE, "preview_id", "lifetime_seconds", *FACTS, *EVIDENCE},
     "clear": {*SCOPE, "preview_id"},
+    "prepare-rebuild": {*SCOPE, "replaces_operation_id"},
 }
 EMPTY_OBSERVATION_SHA256 = hashlib.sha256(b"null").hexdigest()
 MAX_LIFETIME_SECONDS = 900
@@ -111,6 +112,7 @@ RESULT_FIELDS = {
     "record": {"mode", "binding_sha256", "observed_by", "observer_kind", *FACTS, "provider_mutation",
                "automatic_fact_collection", "source_coverage", "reconcile_requested"},
     "clear": {"mode", "binding_sha256", "observation_sha256", "provider_mutation"},
+    "prepare-rebuild": {"mode", "binding_sha256", "operation_id", "historical_effects", "provider_mutation"},
 }
 RECOVERY = (
     "The observation may or may not be stored. Do not retry automatically. Run disposable-lane-inspect, "
@@ -121,7 +123,7 @@ RECOVERY = (
 
 def add_parser(subparsers: Any) -> None:
     for mode in MODES:
-        parser = subparsers.add_parser(PREFIX + mode, help="Inspect, collect, record or clear one disposable lane observation.")
+        parser = subparsers.add_parser(PREFIX + mode, help="Inspect or change disposable-lane evidence; prepare a retained testing rebuild.")
         parser.add_argument("--payload-file", required=True, help="Private request JSON outside the repository.")
         if mode != "inspect":
             parser.add_argument("--expected-binding-sha256", required=True)
@@ -158,6 +160,10 @@ def intent(h: Any, mode: str, args: argparse.Namespace) -> tuple[dict[str, objec
         raise ValueError("disposable_lane_production_refused")
     if body["instance"] != "testing" and "preview_id" not in body:
         raise ValueError("disposable_lane_requires_testing_or_preview")
+    if mode == "prepare-rebuild":
+        if "replaces_operation_id" not in raw:
+            raise ValueError("disposable_lane_replaces_operation_required")
+        body["replaces_operation_id"] = _scope_value(h, raw, "replaces_operation_id")
     if "lifetime_seconds" in raw:
         lifetime = raw["lifetime_seconds"]
         if type(lifetime) is not int or not 0 < lifetime <= MAX_LIFETIME_SECONDS:
@@ -363,6 +369,13 @@ def project(h: Any, response: dict[str, Any], mode: str, body: dict[str, Any], d
                   "provider_mutation": False}
         h.assert_public_safe_shape(result)
         return result
+    if mode == "prepare-rebuild":
+        if source.get("operation_id") != body["replaces_operation_id"] or source.get("historical_effects") != "unknown":
+            raise h.LaunchplaneSafetyError("invalid_response")
+        result = {"mode": mode, "binding_sha256": binding, "operation_id_matches": True,
+                  "historical_effects": "unknown", "provider_mutation": False}
+        h.assert_public_safe_shape(result)
+        return result
     facts = {fact: source.get(fact) for fact in FACTS}
     if any(facts[fact] not in allowed for fact, (allowed, _ref) in FACTS.items()):
         raise h.LaunchplaneSafetyError("invalid_response")
@@ -523,8 +536,15 @@ def execute(h: Any, args: argparse.Namespace) -> int:
 def _recommendation(mode: str, status: str, body: dict[str, Any]) -> str:
     if mode == "inspect":
         return ("Save this output privately and review the binding and stored report. It is required evidence "
-                "for collect, record and clear. Fresh facts stay unknown until the service collects them. Stored observations "
+                "for collect, record, clear and prepare-rebuild. Fresh facts stay unknown until the service collects them. Stored observations "
                 "have unverified freshness and binding; they do not establish current disposal eligibility.")
+    if mode == "prepare-rebuild":
+        if status != "accepted":
+            return ("The service accepted preparation, but the lane binding could not be confirmed afterwards. "
+                    "Preserve the original request; do not retry automatically. Capture readback is unavailable.")
+        return ("The service accepted the retained testing preparation. Only the lane binding was rechecked; "
+                "the separate capture record has no readback through inspect. Historical effects remain unknown. "
+                "No rebuild, resource deletion or hold release was performed.")
     if mode == "clear":
         if status != "accepted":
             return ("The service accepted the clear request, but removal of the reviewed observation could not "
@@ -543,11 +563,17 @@ def _recommendation(mode: str, status: str, body: dict[str, Any]) -> str:
 
 def _outcome_unknown(h: Any, args: argparse.Namespace, request: dict[str, object],
                      diagnostics: dict[str, object], invalid: str = "") -> int:
-    output = h._apply_outcome_unknown(operation=args.command, request=request, label="disposable lane observation")
+    preparation = args.command == PREFIX + "prepare-rebuild"
+    output = h._apply_outcome_unknown(operation=args.command, request=request,
+                                    label="testing replacement preparation" if preparation else "disposable lane observation")
     for key in ("trace_id", "error_code", "http_status"):
         if key in diagnostics:
             output["summary"][key] = diagnostics[key]
     output["summary"]["recommendation"] = (
+        "The retained testing preparation may or may not be stored. Preserve the original request and operation ID; "
+        "do not retry automatically or change identity. Inspect can recheck the lane binding, but cannot verify "
+        "the separate capture record or historical provider effects."
+        if preparation else
         "The observation may or may not have been cleared. Do not retry automatically. Run disposable-lane-inspect "
         "and review the current binding and report before another explicit clear. Never change identity or use a provider call."
         if args.command == PREFIX + "clear" else RECOVERY)

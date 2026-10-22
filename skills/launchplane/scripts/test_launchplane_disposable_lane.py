@@ -30,6 +30,7 @@ ROUTE = contract.operation_path("record_disposable_lane_safety")
 EVIDENCE_HASH = "c" * 64
 EMPTY_OBSERVATION_HASH = hashlib.sha256(b"null").hexdigest()
 ACTOR = "PRIVATE_ACTOR_SENTINEL"
+REPLACED_OPERATION = "retained-operation-fixture"
 COVERAGE = {"usage": "staff_testing_hold", "data": "qualified_resettable_odoo_generation",
             "production_resources": "same_kind_production_target_alias", "historical_generations": "not_current"}
 
@@ -71,6 +72,8 @@ def receipt(kind: str, **updates: object) -> dict[str, Any]:
                    "reconcile_requested": False},
         "clear": {"mode": "clear", "binding_sha256": BINDING, "observation_sha256": EVIDENCE_HASH,
                   "provider_mutation": False},
+        "prepare-rebuild": {"mode": "prepare-rebuild", "operation_id": REPLACED_OPERATION,
+                            "binding_sha256": BINDING, "historical_effects": "unknown", "provider_mutation": False},
     }[kind]
     return {"status": "accepted", "trace_id": f"launchplane_req_{kind}", "records": {"product_profile": "example"},
             "result": {**result, **updates}}
@@ -110,7 +113,8 @@ def invoke(mode: str = "inspect", *, body: dict[str, Any] | None = None,
                 output.truncate()
                 post.reset_mock()
                 settings.reset_mock()
-            payload.write_text(json.dumps(body or scope()))
+            default_body = scope(replaces_operation_id=REPLACED_OPERATION) if mode == "prepare-rebuild" else scope()
+            payload.write_text(json.dumps(default_body if body is None else body))
             settings.return_value = {"service_url": service}
             readback = receipt("inspect", observation_sha256=(
                 EMPTY_OBSERVATION_HASH if mode == "clear" else EVIDENCE_HASH))
@@ -135,6 +139,8 @@ def http_error(status: int, code: str) -> urllib.error.HTTPError:
 @pytest.mark.parametrize("mode", lane.MODES)
 def test_each_mode_sends_its_exact_body_and_rechecks_the_binding(mode: str) -> None:
     body = scope(lifetime_seconds=120) if mode in {"collect", "record"} else scope()
+    if mode == "prepare-rebuild":
+        body["replaces_operation_id"] = REPLACED_OPERATION
     responses = [receipt(mode, **times(lifetime=120)), receipt("inspect")] if mode == "collect" else None
     code, output, calls, _ = invoke(mode, body=body, responses=responses)
     assert code == 0, output
@@ -240,7 +246,7 @@ def test_unsafe_or_unsupported_requests_refuse_before_configuration(mode: str, b
     lambda e: e["result"].pop("observation"),
     lambda e: e.update(result=None),
 ])
-@pytest.mark.parametrize("mode", ["collect", "record", "clear"])
+@pytest.mark.parametrize("mode", ["collect", "record", "clear", "prepare-rebuild"])
 def test_ineligible_inspect_evidence_never_reaches_transport(
         mode: str, change: Callable[[dict[str, Any]], object]) -> None:
     code, output, calls, settings = invoke(mode, edit_evidence=change)
@@ -248,13 +254,16 @@ def test_ineligible_inspect_evidence_never_reaches_transport(
     assert output["warnings"][0]["code"] == "reviewed_inspect_not_eligible"
 
 
-@pytest.mark.parametrize("mode", ["collect", "record", "clear"])
+@pytest.mark.parametrize("mode", ["collect", "record", "clear", "prepare-rebuild"])
 def test_review_acknowledgement_digest_scope_and_service_are_bound(mode: str) -> None:
     code, _, calls, settings = invoke(mode, reviewed=False)
     assert code != 0 and calls == [] and settings == 0
     code, _, calls, settings = invoke(mode, expected="b" * 64)
     assert code != 0 and calls == [] and settings == 0
-    code, _, calls, settings = invoke(mode, body=scope(context="other-testing"))
+    changed_scope = scope(context="other-testing")
+    if mode == "prepare-rebuild":
+        changed_scope["replaces_operation_id"] = REPLACED_OPERATION
+    code, _, calls, settings = invoke(mode, body=changed_scope)
     assert code != 0 and calls == [] and settings == 0
     code, _, calls, _ = invoke(mode, service="https://different.example.invalid")
     assert code != 0 and calls == []
@@ -469,7 +478,7 @@ def test_collect_projects_evidence_kind_only_and_omits_the_observer() -> None:
     assert EVIDENCE_HASH not in text and ACTOR not in text and "observed_by" not in text
 
 
-@pytest.mark.parametrize("mode", ["collect", "record", "clear"])
+@pytest.mark.parametrize("mode", ["collect", "record", "clear", "prepare-rebuild"])
 @pytest.mark.parametrize("failure", [TimeoutError("PRIVATE_SENTINEL"), ConnectionResetError("PRIVATE_SENTINEL"),
                                      h.ServiceResponseError({"http_status": 202}), http_error(503, "unavailable"),
                                      http_error(408, "request_timeout")])
@@ -486,7 +495,7 @@ def test_inspect_transport_loss_is_an_unavailable_read() -> None:
     assert output["status"] == "unavailable"
 
 
-@pytest.mark.parametrize("mode", ["collect", "record", "clear"])
+@pytest.mark.parametrize("mode", ["collect", "record", "clear", "prepare-rebuild"])
 @pytest.mark.parametrize("readback", [receipt("inspect", binding_sha256="b" * 64), TimeoutError("PRIVATE_SENTINEL"),
                                       receipt("inspect", usage="in_use"), http_error(404, "disposable_lane_not_found")])
 def test_unconfirmed_readback_leaves_the_write_accepted_unverified(
@@ -515,6 +524,63 @@ def test_clear_requires_both_the_empty_summary_and_canonical_absent_report_diges
     assert output["result"]["effect_readback"] != "verified"
     assert output["result"]["provider_mutation"] is False
     assert not output["result"].keys() & lane.FACTS.keys()
+
+
+def test_prepare_rebuild_binds_the_operation_but_does_not_claim_capture_readback() -> None:
+    code, output, calls, _ = invoke("prepare-rebuild")
+    assert code == 0, output
+    assert [call["body"] for call in calls] == [
+        {**scope(), "replaces_operation_id": REPLACED_OPERATION, "mode": "prepare-rebuild",
+         "expected_binding_sha256": BINDING},
+        {**scope(), "mode": "inspect"},
+    ]
+    assert all(call["path"] == ROUTE and "idempotency_key" not in call for call in calls)
+    assert output["result"]["operation_id_matches"] is True
+    assert output["result"]["historical_effects"] == "unknown"
+    assert output["result"]["provider_mutation"] is False
+    assert output["result"]["binding_readback_matches"] is True
+    assert output["result"]["effect_readback"] == "unavailable"
+    assert not output["result"].keys() & (lane.FACTS.keys() | {"observation", "operation_id"})
+    assert all(value not in json.dumps(output) for value in (REPLACED_OPERATION, "example-testing", ACTOR))
+
+
+@pytest.mark.parametrize("body", [
+    scope(), scope(replaces_operation_id=""), scope(replaces_operation_id=" "),
+    scope(replaces_operation_id=None), scope(replaces_operation_id=123),
+    scope(replaces_operation_id="../other"), scope(replaces_operation_id="op\nprivate"),
+    scope(instance="prod", replaces_operation_id=REPLACED_OPERATION),
+    scope(instance="staging", replaces_operation_id=REPLACED_OPERATION),
+    scope(preview=True, replaces_operation_id=REPLACED_OPERATION),
+    scope(preview_id="", replaces_operation_id=REPLACED_OPERATION),
+    scope(usage="unknown", replaces_operation_id=REPLACED_OPERATION),
+    scope(lifetime_seconds=120, replaces_operation_id=REPLACED_OPERATION),
+    scope(retained_target_id="PRIVATE_SENTINEL", replaces_operation_id=REPLACED_OPERATION),
+    scope(expected_binding_sha256=BINDING, replaces_operation_id=REPLACED_OPERATION),
+])
+def test_prepare_rebuild_refuses_unsupported_intent_before_configuration(body: dict[str, object]) -> None:
+    code, _, calls, settings = invoke("prepare-rebuild", body=body)
+    assert code != 0 and calls == [] and settings == 0
+
+
+@pytest.mark.parametrize("updates", [
+    {"operation_id": "another-operation"}, {"operation_id": None}, {"operation_id": []},
+    {"historical_effects": "none"}, {"historical_effects": None}, {"provider_mutation": True},
+    {"provider_mutation": 0}, {"binding_sha256": "b" * 64}, {"mode": "record"},
+    {"usage": "unused"}, {"retained_target_id": "PRIVATE_SENTINEL"}, {"extra": "PRIVATE_SENTINEL"},
+])
+def test_prepare_rebuild_refuses_a_mismatched_or_overclaiming_receipt(updates: dict[str, object]) -> None:
+    code, output, calls, _ = invoke("prepare-rebuild", responses=[receipt("prepare-rebuild", **updates)])
+    assert code != 0 and len(calls) == 1 and output["status"] == "outcome_unknown"
+    assert "result" not in output or output["result"] == {}
+    assert "PRIVATE_SENTINEL" not in json.dumps(output)
+
+
+@pytest.mark.parametrize("field", ["operation_id", "historical_effects", "provider_mutation", "binding_sha256"])
+def test_prepare_rebuild_requires_the_complete_service_receipt(field: str) -> None:
+    response = receipt("prepare-rebuild")
+    response["result"].pop(field)
+    code, output, calls, _ = invoke("prepare-rebuild", responses=[response])
+    assert code != 0 and len(calls) == 1 and output["status"] == "outcome_unknown"
 
 
 @pytest.mark.parametrize("mode", lane.MODES)
