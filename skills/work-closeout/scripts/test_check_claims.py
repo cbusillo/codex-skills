@@ -1537,6 +1537,15 @@ class ClaimCloseoutTests(unittest.TestCase):
             f"ssh -l perl host '{claim}'",
             f"CMD='{claim}'; timeout sh -c \"$CMD\"",
             f"CMD='{claim}'; ssh host \"$CMD\"",
+            f'''node -p "require('child_process').execSync('{claim}')"''',
+            f'''node --print "require('child_process').execSync('{claim}')"''',
+            f'''bun -p "require('child_process').execSync('{claim}')"''',
+            f'''deno eval "Deno.Command('sh', {{args: ['-c', '{claim}']}}).outputSync()"''',
+            f"source /dev/stdin <<'EOF'\n{claim}\nEOF",
+            f". /dev/fd/0 <<< '{claim}'",
+            f"bash -c 'bash' <<'EOF'\n{claim}\nEOF",
+            f"sh -c 'cat | sh' <<'EOF'\n{claim}\nEOF",
+            f'''export CMD='{claim}'; node -e "require('child_process').execSync(process.env.CMD)"''',
         ]
         for command in commands:
             rows = [{"message": {"content": [{"type": "tool_use", "name": "Bash", "id": "channel", "input": {"command": command}}]}}]
@@ -1583,6 +1592,28 @@ class ClaimCloseoutTests(unittest.TestCase):
             (f"import ast; ast.parse({claim!r})", False),
             (f"from subprocess import *; rows='{claim}'; print(rows)", False),
             (f"loader=__import__('os'); rows='{claim}'; print(rows)", False),
+            (f"with open('fixture', 'w') as stream: stream.write({claim!r})", False),
+            (f"import re; re.compile({claim!r}); re.search({claim!r}, 'text')", False),
+            (f"rows=[]; rows.append({{'command': {claim!r}}}); rows.extend([{claim!r}])", False),
+            (f"import textwrap; source=textwrap.dedent({claim!r}); source.startswith({claim!r})", False),
+            (f"self.assertIn({claim!r}, rows)", False),
+            (f"import logging; logging.info({claim!r})", False),
+            (f"import subprocess; subprocess.run(['rg', {claim!r}, 'skills'])", False),
+            (
+                f"from pathlib import Path; old=Path('file').read_text(); head=__import__('subprocess').check_output(['git','rev-parse','HEAD'],text=True).strip(); Path('out').write_text({claim!r})",
+                False,
+            ),
+            (
+                f"import importlib; module=importlib.import_module('subprocess'); module.run(['git','status']); print({claim!r})",
+                False,
+            ),
+            (f"command={claim!r}; import invoke; invoke.run(command)", True),
+            (f"command: str={claim!r}; from invoke import run; run(command)", True),
+            (f"command={claim!r}; pexpect.spawn(command)", True),
+            (f"command={claim!r}; __import__('subprocess').run(command,shell=True)", True),
+            (f"command={claim!r}; getattr(__import__('os'), 'system')(command)", True),
+            (f"source={claim!r}; print(history.has_executable_claim_source(source, 'python'))", False),
+            (f"source={claim!r}; print(history.shell_groups(source))", False),
         ]
         for source, unresolved in cases:
             command = "python - <<'PY'\n" + source + "\nPY"
@@ -1595,11 +1626,30 @@ class ClaimCloseoutTests(unittest.TestCase):
             r"rg -n 'gh-plan\.py claim (?:<|[0-9])' skills --glob '*.md' | head -35",
             "printf '%s' 'gh-plan.py claim 5' | sed -n '1p' | wc -l",
             "printf '%s' 'gh-plan.py claim 5' | tail -5 | cut -c1-20",
+            "rg -n 'gh-plan.py claim' skills | sort | uniq -c | tr a-z A-Z | nl | column -t | less",
+            "rg -n 'gh-plan.py claim' skills | pbcopy",
+            "rg -n 'gh-plan.py claim' skills | diff - fixture",
         ]
         for command in commands:
             rows = [{"message": {"content": [{"type": "tool_use", "name": "Bash", "id": "text", "input": {"command": command}}]}}]
             with self.subTest(command=command):
                 self.assertEqual(helper.history.literal_targets(rows, SESSION), {"targets": set(), "unresolved_invocations": []})
+
+    def test_nonexecuting_siblings_preserve_qualified_claim_targets(self) -> None:
+        commands = [
+            'cd "$WT" && uv run gh-plan.py --repo first/a claim 5',
+            'mkdir -p "$D"; test -f "$f"; ls "$D"; uv run gh-plan.py --repo first/a claim 5',
+            'cd "$(git rev-parse --show-toplevel)" && uv run gh-plan.py --repo first/a claim 5',
+            'uv run -q --directory "$WT" --project "$WT" --env-file config.env --extra test --group test gh-plan.py --repo first/a claim 5',
+        ]
+        for command in commands:
+            rows = [
+                {"message": {"content": [{"type": "tool_use", "name": "Bash", "id": "qualified", "input": {"command": command}}]}}
+            ]
+            with self.subTest(command=command):
+                self.assertEqual(
+                    helper.history.literal_targets(rows, SESSION), {"targets": {("first/a", 5)}, "unresolved_invocations": []}
+                )
 
     def test_uv_options_select_the_command_instead_of_interpreter_option_values(self) -> None:
         source = """from tree_sitter import Language,Parser

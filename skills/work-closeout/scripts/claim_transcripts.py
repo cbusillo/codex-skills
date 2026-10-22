@@ -518,6 +518,13 @@ def has_executable_claim_source(text: str, consumer: str, *, claim_related: bool
     )
     modules = {"subprocess", "os", "asyncio", "pty", "runpy"}
     launchers = {"exec": "exec", "eval": "eval"}
+    claim_names: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)) or node.value is None:
+            continue
+        if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str) and has_claim_text(node.value.value):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            claim_names.update(target.id for target in targets if isinstance(target, ast.Name))
     unknown_bindings = False
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -526,7 +533,7 @@ def has_executable_claim_source(text: str, consumer: str, *, claim_related: bool
             launchers.update({item.asname or item.name: item.name for item in node.names if pattern.fullmatch(item.name)})
         if isinstance(node, ast.ImportFrom) and any(item.name == "*" for item in node.names):
             unknown_bindings = True
-        if isinstance(node, ast.Call) and python_dynamic_import(node.func):
+        if isinstance(node, ast.Call) and python_dynamic_import(node.func) and not python_process_module(node, modules):
             unknown_bindings = True
         if (
             isinstance(node, ast.ImportFrom)
@@ -537,6 +544,8 @@ def has_executable_claim_source(text: str, consumer: str, *, claim_related: bool
         if isinstance(node, ast.Assign) and isinstance(node.value, (ast.Name, ast.Attribute)):
             if (name := python_launcher_name(node.value, modules, launchers, pattern)) is not None:
                 launchers.update({target.id: name for target in node.targets if isinstance(target, ast.Name)})
+        if isinstance(node, ast.Assign) and python_process_module(node.value, modules):
+            modules.update(target.id for target in node.targets if isinstance(target, ast.Name))
     calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
     direct = {id(node.func) for node in calls}
     if any(
@@ -549,7 +558,7 @@ def has_executable_claim_source(text: str, consumer: str, *, claim_related: bool
             if (
                 not python_dynamic_import(node.func)
                 and not python_data_call(node.func)
-                and (unknown_bindings or python_claim_arguments(node))
+                and (unknown_bindings or python_claim_arguments(node, claim_names))
             ):
                 return True
             continue
@@ -566,6 +575,12 @@ def has_executable_claim_source(text: str, consumer: str, *, claim_related: bool
             value = ast.literal_eval(command)
         except (ValueError, TypeError):
             return True
+        if (
+            isinstance(value, (list, tuple))
+            and all(isinstance(argument, str) for argument in value)
+            and accepts_claim_data(list(value))
+        ):
+            continue
         if "gh-plan" in str(value) and (CLAIM_WORD.search(str(value)) or name in {"run_path", "run_module"}):
             return True
     return False
@@ -577,42 +592,88 @@ def python_dynamic_import(function: ast.AST) -> bool:
     )
 
 
+def python_process_module(node: ast.AST, modules: set[str]) -> bool:
+    if isinstance(node, ast.Name):
+        return node.id in modules
+    return (
+        isinstance(node, ast.Call)
+        and python_dynamic_import(node.func)
+        and bool(node.args)
+        and isinstance(node.args[0], ast.Constant)
+        and isinstance(node.args[0].value, str)
+        and node.args[0].value in modules
+    )
+
+
 def python_data_call(function: ast.AST) -> bool:
     if isinstance(function, ast.Name):
         return function.id in {"print", "repr", "str", "bytes", "dict", "list", "tuple", "set", "frozenset", "Path", "len"}
-    return isinstance(function, ast.Attribute) and function.attr in {
-        "write_text",
-        "write_bytes",
-        "replace",
-        "join",
-        "index",
-        "find",
-        "split",
-        "splitlines",
-        "strip",
-        "lstrip",
-        "rstrip",
-        "encode",
-        "decode",
-        "format",
-        "dumps",
-        "dump",
-        "loads",
-        "load",
-        "parse",
-        "literal_eval",
-    }
+    return isinstance(function, ast.Attribute) and (
+        function.attr.startswith("assert")
+        or function.attr
+        in {
+            "read_text",
+            "read_bytes",
+            "write",
+            "writelines",
+            "append",
+            "extend",
+            "add",
+            "search",
+            "match",
+            "fullmatch",
+            "findall",
+            "compile",
+            "startswith",
+            "endswith",
+            "count",
+            "dedent",
+            "debug",
+            "info",
+            "warning",
+            "error",
+            "exception",
+            "critical",
+            "log",
+            "write_text",
+            "write_bytes",
+            "replace",
+            "join",
+            "index",
+            "find",
+            "split",
+            "splitlines",
+            "strip",
+            "lstrip",
+            "rstrip",
+            "encode",
+            "decode",
+            "format",
+            "dumps",
+            "dump",
+            "loads",
+            "load",
+            "parse",
+            "literal_eval",
+            "literal_targets",
+            "shell_claims",
+            "shell_groups",
+            "has_executable_claim_source",
+        }
+    )
 
 
-def python_claim_arguments(call: ast.Call) -> bool:
-    arguments = [*call.args, *(item.value for item in call.keywords)]
+def python_claim_text(node: ast.AST) -> bool:
     return has_claim_text(
-        " ".join(
-            node.value
-            for argument in arguments
-            for node in ast.walk(argument)
-            if isinstance(node, ast.Constant) and isinstance(node.value, str)
-        )
+        " ".join(item.value for item in ast.walk(node) if isinstance(item, ast.Constant) and isinstance(item.value, str))
+    )
+
+
+def python_claim_arguments(call: ast.Call, claim_names: set[str]) -> bool:
+    arguments = [*call.args, *(item.value for item in call.keywords)]
+    return any(
+        python_claim_text(argument) or any(isinstance(node, ast.Name) and node.id in claim_names for node in ast.walk(argument))
+        for argument in arguments
     )
 
 
@@ -623,10 +684,10 @@ def python_launcher_name(node: ast.AST, modules: set[str], launchers: dict[str, 
         root = node.value
         while isinstance(root, ast.Attribute):
             root = root.value
-        return node.attr if isinstance(root, ast.Name) and root.id in modules else None
+        return node.attr if python_process_module(root, modules) else None
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "getattr" and len(node.args) >= 2:
         receiver, member = node.args[:2]
-        if isinstance(receiver, ast.Name) and receiver.id in modules:
+        if python_process_module(receiver, modules):
             if not isinstance(member, ast.Constant):
                 return "*"
             if isinstance(member.value, str) and pattern.fullmatch(member.value):
@@ -703,8 +764,40 @@ def command_position(argv: list[str]) -> CommandPosition | None:
         return CommandPosition(0)
     if argv[1:2] != ["run"]:
         return None
-    value_flags = {"--python", "-p", "--with", "--with-requirements"}
-    boolean_flags = {"--no-project", "--no-config", "--offline", "--no-cache", "--frozen", "--locked", "--no-sync", "--isolated"}
+    value_flags = {
+        "--python",
+        "-p",
+        "--with",
+        "-w",
+        "--with-requirements",
+        "--directory",
+        "--project",
+        "--env-file",
+        "--extra",
+        "--group",
+        "--package",
+        "--config-file",
+    }
+    boolean_flags = {
+        "--no-project",
+        "--no-config",
+        "--offline",
+        "--no-cache",
+        "--frozen",
+        "--locked",
+        "--no-sync",
+        "--isolated",
+        "-q",
+        "--quiet",
+        "-v",
+        "--verbose",
+        "--no-progress",
+        "--no-env-file",
+        "--no-dev",
+        "--all-extras",
+        "--all-groups",
+        "--active",
+    }
     index = 2
     python_script = False
     while index < len(argv) and argv[index].startswith("-"):
@@ -779,6 +872,24 @@ def accepts_claim_data(argv: list[str]) -> bool:
         "tail",
         "cut",
         "wc",
+        "sort",
+        "uniq",
+        "tr",
+        "nl",
+        "column",
+        "less",
+        "pbcopy",
+        "diff",
+        "cd",
+        "pushd",
+        "popd",
+        "pwd",
+        "ls",
+        "mkdir",
+        "test",
+        "[",
+        "true",
+        "false",
         "pytest",
         "gh-issue",
         "gh-comment",
@@ -795,15 +906,19 @@ def accepts_claim_data(argv: list[str]) -> bool:
     ):
         return False
     script = next((argument for argument in arguments if not argument.startswith("-")), "")
-    return bool(script) and not any(marker in script for marker in ("$", "`", "<(", ">("))
+    return bool(re.fullmatch(r"[A-Za-z0-9_./@:+~-]+", script)) and ("/" in script or bool(Path(script).suffix))
 
 
 def input_consumer(argv: list[str]) -> str | None:
     if accepts_claim_data(argv):
         return None
     consumer = script_consumer(argv)
+    if consumer in {"source", "."} and interpreter_arguments(argv)[:1] in (["/dev/stdin"], ["/dev/fd/0"], ["-"]):
+        return "bash"
     if reads_program_stdin(argv, consumer):
         return consumer
+    if Path(consumer).name in SHELL_NAMES:
+        return ""
     if consumer:
         return None
     return ""
@@ -984,10 +1099,14 @@ def is_evaluator_flag(argument: str, consumer: str) -> bool:
     if name in SHELL_NAMES or re.fullmatch(r"python(?:[0-9]+(?:\.[0-9]+)*)?", name):
         letters = "c"
     elif name in {"node", "nodejs", "deno", "bun", "perl", "ruby"}:
-        letters = "eE" if name == "perl" else "e"
+        letters = "eE" if name == "perl" else "ep" if name in {"node", "nodejs", "bun"} else "e"
     else:
         return False
-    return argument == "--eval" or re.fullmatch(rf"-[A-Za-z]*[{letters}][A-Za-z]*", argument) is not None
+    return (
+        argument == "--eval"
+        or (argument == "--print" and "p" in letters)
+        or re.fullmatch(rf"-[A-Za-z]*[{letters}][A-Za-z]*", argument) is not None
+    )
 
 
 def invocation_target(arguments: list[str], session: str) -> dict | None:
