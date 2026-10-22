@@ -1518,9 +1518,9 @@ class ClaimCloseoutTests(unittest.TestCase):
         scanned = 0
 
         def meter(method: Callable[..., object]) -> Callable[..., object]:
-            def measured(pattern: str, text: str, *args: object, **kwargs: object) -> object:
+            def measured(pattern: object, text: str, *args: object, **kwargs: object) -> object:
                 nonlocal scanned
-                if "session_id" in pattern:
+                if "session_id" in getattr(pattern, "pattern", str(pattern)):
                     scanned += len(text)
                 return method(pattern, text, *args, **kwargs)
 
