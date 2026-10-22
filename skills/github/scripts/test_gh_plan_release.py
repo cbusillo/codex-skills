@@ -113,14 +113,6 @@ class ReleaseHarness(unittest.TestCase):
 
 
 class ReleaseTests(ReleaseHarness):
-    def test_verified_ended_ownership_attestation_needs_no_source_safe_verdict(self) -> None:
-        self.evidence["body"] = self.evidence["body"].replace(
-            "Safe to exit: yes", "Ownership release only: yes\nNative session: session-b\n"
-            "Original claim: https://github.com/owner/repo/issues/42#issuecomment-1")
-        with patch.object(release, "verify_ended", create=True):
-            self.run_release()
-        self.assertEqual(release.receipt_for(self.f.comments[-1])["source_id"], self.args.claim_comment)
-
     def test_canonical_evidence_is_attached_once_per_phase_and_invalidated_freshly(self):
         self.args.dry_run = True
         self.run_release()

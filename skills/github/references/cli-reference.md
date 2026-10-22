@@ -1288,16 +1288,20 @@ When the holder actually ended but wrote no unqualified safe-exit verdict,
 the Supervisor or direction session may release ownership using the existing
 closed-session log and `release-claim --closed-log /absolute/private/log.json`.
 Keep the original verdict and source claim unchanged. This route accepts a
-recovered historical alias or a bare `--legacy` claim; it does not fabricate
+structured native claim, a recovered historical alias or a bare `--legacy` claim; it does not fabricate
 a native identity or declare the source work complete.
 
 Verify the actual exit from the original Supervisor/native evidence first.
 The selected log row identifies `session_id` (the canonical native UUID),
 `harness`, `transcript`, `host`, `ended_at`, `process_exit_verified: true`, and
 `transcript_roots` (every known native transcript root). Codex also records
-`codex_home`. Preserve original `pid` and `tty` when known; a historical
+`codex_home`; legacy sources also record the verified original `branch`.
+Preserve original `pid` and `tty` when known; a historical
 verified exit can lack both. Keep its original exit evidence with the private
-log. Never create an exit record from age, an absent process, a merged PR,
+log. The row must already exist in the canonical Supervisor closed-session
+log (`~/.code/skill-data/supervisor-closed-sessions.json`); a private copy must
+match that row exactly. Canonical resume changes veto an old copy. Never
+create an exit record from age, an absent process, a merged PR,
 `notLoaded`, or a qualified verdict alone. Use the existing log or its private
 evidence copy, owned by this user with mode 0600. A resumed generation refuses.
 
@@ -1315,7 +1319,9 @@ Keep the verified original `Ended at:` timestamp. The attestation binds that
 exact claim to the recovered native source. Its native transcript must contain
 the original claim's tool receipt. The helper rereads every known source copy,
 including `.jsonl.zst` archives through the local `zstd` executable, checks
-source-host processes, and reads every configured native account. Live,
+source-host processes, and reads Claude's configured native accounts plus
+each Codex account with authenticated source copies. Every such Codex thread
+must be `notLoaded`; a loaded idle thread refuses. Live,
 queued, uncertain or newly resumed ownership refuses, including an idle
 Claude process. It repeats these checks after the pending write before making
 the release operative. Missing log, transcript or native coverage refuses.

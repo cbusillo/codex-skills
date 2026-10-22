@@ -2272,7 +2272,7 @@ def cmd_release_claim(args: argparse.Namespace) -> None:
                     bucket="rest_core", failed_step="release_claim_branch_commit")
                 if github_plan_release.stamp(source_commit["commit"]["committer"]["date"]) >= facts.cutoff:
                     raise PlanError("Claimed source branch has commit activity after the cited session-ended evidence")
-        checked_prs = list(dict.fromkeys([*args.retained_pr, *branch_prs, *([subject_url] if subject_pr else [])]))
+        checked_prs = list(dict.fromkeys([*args.retained_pr, *branch_prs, *([subject_url] if subject_pr and not ownership_only else [])]))
         retained_branches = set()
         for url in checked_prs:
             match = re.fullmatch(r"https://github\.com/([^/\s]+/[^/\s]+)/pull/([1-9]\d*)", url)
