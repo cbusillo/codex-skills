@@ -1600,7 +1600,9 @@ mixed reference/original-deploy payloads, binds the saved review to the exact
 reference and reason by `recovery_request_sha256`, and verifies response lane
 identity. A changed reference requires a fresh read and review, never guessing.
 The service rechecks the reservation and provider evidence against the reviewed
-digest on apply. A reference does not grant recovery authority.
+digest on apply. The helper compares the apply reply's action and recovery digest
+with the saved review; a mismatch is `accepted_unverified`. A reference does
+not grant recovery authority.
 
 Reference recovery also accepts the service's `close_out_observed` plan when
 the outcome is `absent` and `retry_safe` is false: the provider operation's
@@ -1610,8 +1612,9 @@ recovery accepts `settle_testing_failure` only with `present` and
 `retry_safe: false`. Reference recovery accepts `abandon_testing_original`
 only for testing with `unknown` and `retry_safe: false`. This archives the
 unknown original without claiming fixture cleanup or qualification. Re-run the
-same reference dry-run for completed abandonment readback; retain its saved
-digest. All other unknown or uninspected outcomes stay held.
+same reference dry-run for abandonment readback: require `reservation_state:
+completed`, `proposed_action: replay_completed`, and the saved `recovery_digest`.
+A lost apply reply retains the request and review for that readback. All other unknown or uninspected outcomes stay held.
 A denied runtime sync remains denied; obtaining
 a recovery reference does not deliver runtime values or enable a deployment.
 For `adopt_observed`, the outcome must be `present`; it need not be retry-safe

@@ -6349,7 +6349,12 @@ def test_generic_web_deploy_recovery_cli_dispatches_exact_routes() -> None:
         "/v1/admin/generic-web/deploy-recovery/apply",
     ]
     assert calls[0]["request"] == {"mode": "dry_run", "payload_source": "private_file"}
-    assert calls[1]["request"] == {"mode": "apply", "payload_source": "private_file"}
+    reviewed = _generic_web_deploy_recovery_evidence()["result"]
+    assert calls[1]["request"] == {
+        "mode": "apply", "payload_source": "private_file",
+        "expected_recovery_digest": reviewed["recovery_digest"],
+        "reviewed_recovery_action": reviewed["proposed_action"],
+    }
     assert calls[1]["body"]["expected_recovery_digest"] == "a" * 64
     assert "original_deploy" not in json.dumps(calls[0]["request"])
     assert "original_deploy" not in json.dumps(calls[1]["request"])
@@ -10532,6 +10537,8 @@ def test_event_recovery_apply_binds_review_without_caller_key(action: str, outco
     ("prod", "settle_testing_failure", "present", False, False),
     ("testing", "settle_testing_failure", "unknown", False, False),
     ("testing", "settle_testing_failure", "present", True, False),
+    ("testing", "adopt_observed", "absent", True, False),
+    ("testing", "retry_original_operation", "present", True, False),
     ("testing", "abandon_testing_original", "unknown", False, False),
     ("prod", "abandon_testing_original", "unknown", False, False),
 ])
@@ -10545,17 +10552,55 @@ def test_explicit_recovery_settlement_preserves_testing_and_evidence_fences(
         payload = _write_json(directory, "original.json", private)
         evidence = _write_json(directory, "review.json", _generic_web_deploy_recovery_evidence(
             instance=instance, proposed_action=action, provider_outcome=outcome, retry_safe=retry))
-        result = {**_event_recovery_response(), "status": "accepted", "mode": "apply",
-                  "instance": instance, "recovery_action": action, "provider_outcome": outcome,
+        result = {"schema_version": 1, "status": "accepted", "mode": "apply",
+                  "trace_id": "launchplane_req_explicit_apply", "product": "example-product",
+                  "context": "example", "instance": instance, "reservation_state": "completed",
+                  "reservation_attempt": 2, "recovery_action": action, "provider_outcome": outcome,
                   "retry_safe": retry, "recovery_digest": "a" * 64}
         status, receipt, posts, reads = _run_main(
             _event_recovery_apply_argv(payload, evidence, "a" * 64)
             + ["--idempotency-key", "original-deploy-key-1"], post=result)
     if allowed:
         assert status == 0, receipt
+        assert receipt["status"] == "accepted"
+        assert receipt["summary"]["recovery_action"] == action
         assert len(posts) == 1 and posts[0]["idempotency_key"] == "original-deploy-key-1"
     else:
         assert status == 2 and not posts and not reads
+        assert receipt["warnings"][0]["code"] == "reviewed_dry_run_not_apply_eligible"
+
+
+@pytest.mark.parametrize("changes", [
+    {"recovery_action": "settle_testing_failure"}, {"recovery_digest": "f" * 64},
+])
+def test_event_abandonment_apply_reply_must_match_review(changes: dict[str, object]) -> None:
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        payload, evidence, receipt = _event_recovery_review(
+            directory, proposed_action="abandon_testing_original", provider_outcome="unknown", retry_safe=False)
+        result = {"schema_version": 1, "status": "accepted", "mode": "apply",
+                  "trace_id": "launchplane_req_abandonment_apply", "product": "example-product",
+                  "context": "example", "instance": "testing", "reservation_state": "completed",
+                  "reservation_attempt": 2, "recovery_action": "abandon_testing_original",
+                  "provider_outcome": "unknown", "retry_safe": False,
+                  "recovery_digest": receipt["result"]["recovery_digest"], **changes}
+        status, applied, posts, reads = _run_main(
+            _event_recovery_apply_argv(payload, evidence, receipt["result"]["recovery_digest"]), post=result)
+    assert status == 0 and len(posts) == 1 and not reads
+    assert applied["status"] == "accepted_unverified"
+    assert applied["warnings"][0]["code"] == "apply_response_unverified"
+
+
+@pytest.mark.parametrize("http_status", [408, 502, 504])
+def test_event_abandonment_lost_http_reply_remains_unknown(http_status: int) -> None:
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        payload, evidence, receipt = _event_recovery_review(
+            directory, proposed_action="abandon_testing_original", provider_outcome="unknown", retry_safe=False)
+        failure = urllib.error.HTTPError("https://example.invalid", http_status, "Lost reply",
+                                        hdrs=Message(), fp=io.BytesIO(b"{}"))
+        status, applied, posts, reads = _run_main(
+            _event_recovery_apply_argv(payload, evidence, receipt["result"]["recovery_digest"]), post=failure)
+    assert status == 1 and len(posts) == 1 and not reads
+    assert applied["status"] == "outcome_unknown"
 
 
 @pytest.mark.parametrize("changes", [
