@@ -2769,11 +2769,10 @@ def test_integration_allowance_removal_with_credential_prose() -> None:
         }
         malformed = copy.deepcopy(applied)
         malformed["result"]["read_back"][0]["reason"] = None
-        status, unverified, posts, _reads = _run_main(
-            apply_argv, post=write_action._ServiceResponse(malformed, 202)
-        )
+        received = write_action._ServiceResponse(malformed, 202)
+        status, unverified, posts, _reads = _run_main(apply_argv, post=received)
         assert unverified["status"] == "accepted_unverified"
-        assert unverified["summary"]["http_status"] == 202
+        assert unverified["summary"]["http_status"] == received.http_status
         assert unverified["summary"]["trace_id"] == response["trace_id"]
         assert len(posts) == 1
         assert "fixture-private-value" not in json.dumps(unverified)
@@ -3389,6 +3388,13 @@ def test_path_check_refuses_unknown_fields_unsafe_values_and_incomplete_evidence
         assert payload["summary"]["trace_id"] == response["trace_id"]
         for value in ("private detail", "PRIVATE_SECRET", "abcdefghijklmnop", "private.example", "private-value"):
             assert value not in json.dumps(payload)
+
+    response = _path_check_response()
+    response["check"]["steps"][0]["description"] = "https://private.example.invalid/x"
+    status, payload, calls = _run_product_read(argv, response)
+    assert status == 0 and len(calls) == 1
+    assert payload["result"]["steps"][0]["description"] == "[redacted]"
+    assert "private.example.invalid" not in json.dumps(payload)
 
 
 @pytest.mark.parametrize("context", ["task", "helpdesk", "risk"])
@@ -5653,6 +5659,64 @@ def test_trace_ids_refuse_secrets_and_response_prose_redacts_them() -> None:
     )
     assert output["result"]["intent"]["next_action"] == "Use [redacted] before retrying."
     assert "secret-token" not in json.dumps(output)
+    try:
+        write_action.summarize_success(
+            operation="merge-train-controller-run-once",
+            request={"repository": "example/repo", "base_branch": "main", "mutate": True},
+            provider_payload={
+                "status": "accepted",
+                "trace_id": "launchplane_req_blocked_merge",
+                "records": {},
+                "result": {
+                    "repository": "example/repo",
+                    "base_branch": "main",
+                    "controller_action": "block",
+                    "blocking_reason": {
+                        "code": "merge_readiness_not_ready",
+                        "message": "Use Bearer secret-token before retrying.",
+                    },
+                    "merge_readiness": None,
+                },
+            },
+        )
+    except safety.LaunchplaneSafetyError as exc:
+        assert exc.code == "unsafe_response_shape"
+    else:
+        raise AssertionError("expected unsafe merge blocking reason to fail closed")
+    output = write_action.summarize_success(
+        operation="merge-train-controller-run-once",
+        request={"repository": "example/repo", "base_branch": "main", "mutate": True},
+        provider_payload={
+            "status": "accepted",
+            "trace_id": "launchplane_req_blocked_merge",
+            "records": {},
+            "result": {
+                "repository": "example/repo",
+                "base_branch": "main",
+                "controller_action": "block",
+                "blocking_reason": {
+                    "code": "merge_readiness_not_ready",
+                    "message": "Operator credential is unavailable.",
+                },
+                "merge_readiness": None,
+            },
+        },
+    )
+    assert output["result"]["blocking_reason"]["message"] == "[redacted]"
+    http_error = urllib.error.HTTPError(
+        "https://launchplane.example.invalid/v1/example",
+        403,
+        "Forbidden",
+        hdrs=Message(),
+        fp=io.BytesIO(json.dumps({"trace_id": "Bearer secret-token", "error": {"code": "authorization_denied", "message": "secret"}}).encode()),
+    )
+    projected_error = write_action.summarize_http_error(
+        operation="product-config-preflight", request={}, exc=http_error
+    )
+    assert not projected_error["summary"]["trace_id"]
+    assert projected_error["summary"]["http_status"] == http_error.code
+    assert projected_error["summary"]["error_code"] == "authorization_denied"
+    assert "Bearer secret-token" not in json.dumps(projected_error)
 
 
 def test_authorization_denial_keeps_denied_status() -> None:
