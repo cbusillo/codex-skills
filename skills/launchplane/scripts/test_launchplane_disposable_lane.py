@@ -13,6 +13,7 @@ from datetime import UTC, datetime, timedelta
 from email.message import Message
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -44,7 +45,7 @@ def scope(preview=False, **updates):
     return {**body, **updates}
 
 
-def receipt(kind, **updates):
+def receipt(kind: str, **updates: object) -> dict[str, Any]:
     # Keep these independent of the consumer's field allowlists.
     result = {
         "inspect": {"mode": "inspect", "binding_sha256": BINDING, "usage": "unknown", "data": "unknown",
