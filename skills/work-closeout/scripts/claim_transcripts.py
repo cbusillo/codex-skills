@@ -939,12 +939,54 @@ class CommandPosition:
     python_script: bool = False
 
 
-def command_position(argv: list[str]) -> CommandPosition | None:
-    if not argv:
+def timeout_command_index(argv: list[str]) -> int | None:
+    duration = r"(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?[smhd]?"
+    index = 1
+    while index < len(argv) and argv[index].startswith("-"):
+        option, equal, value = argv[index].partition("=")
+        if option == "--" and not equal:
+            index += 1
+            break
+        if option in {"--preserve-status", "--foreground", "-v", "--verbose"} and not equal:
+            index += 1
+            continue
+        if not equal and argv[index][:2] in {"-k", "-s"}:
+            option, value = argv[index][:2], argv[index][2:]
+        if option not in {"-k", "--kill-after", "-s", "--signal"}:
+            return None
+        if equal and option in {"-k", "-s"}:
+            return None
+        if not value and not equal:
+            index += 1
+            if index >= len(argv):
+                return None
+            value = argv[index]
+        pattern = duration if option in {"-k", "--kill-after"} else r"[A-Za-z0-9]+"
+        if re.fullmatch(pattern, value) is None:
+            return None
+        index += 1
+    if index + 1 >= len(argv) or re.fullmatch(duration, argv[index]) is None:
         return None
-    if Path(argv[0]).name != "uv":
-        return CommandPosition(0)
-    if argv[1:2] != ["run"]:
+    return index + 1
+
+
+def unwrap_timeouts(argv: list[str]) -> int | None:
+    index = 0
+    while index < len(argv) and Path(argv[index]).name == "timeout":
+        offset = timeout_command_index(argv[index:])
+        if offset is None:
+            return None
+        index += offset
+    return index
+
+
+def command_position(argv: list[str]) -> CommandPosition | None:
+    index = unwrap_timeouts(argv)
+    if index is None or index >= len(argv):
+        return None
+    if Path(argv[index]).name != "uv":
+        return CommandPosition(index)
+    if argv[index + 1 : index + 2] != ["run"]:
         return None
     value_flags = {
         "--python",
@@ -980,7 +1022,7 @@ def command_position(argv: list[str]) -> CommandPosition | None:
         "--all-groups",
         "--active",
     }
-    index = 2
+    index += 2
     python_script = False
     while index < len(argv) and argv[index].startswith("-"):
         flag, equal, value = argv[index].partition("=")
@@ -2282,6 +2324,9 @@ def claim_arguments(argv: list[str]) -> list[str] | None:
 def has_opaque_claim_execution(argv: list[str], covered: set[int], *, generated: bool = False, claim_related: bool = False) -> bool:
     if not argv or accepts_claim_data(argv):
         return False
+    position = command_position(argv)
+    if claim_related and unwrap_timeouts(argv) is None:
+        return True
     if claim_related and data_command_executes(argv):
         return True
     helper = next((index for index, argument in enumerate(argv) if Path(argument).name == "gh-plan.py"), None)
@@ -2289,7 +2334,6 @@ def has_opaque_claim_execution(argv: list[str], covered: set[int], *, generated:
         return True
     if "claim" in argv and any("$" in argument or "`" in argument for argument in argv[: argv.index("claim")]):
         return True
-    position = command_position(argv)
     offset = position.index + 1 if position is not None else 0
     interpreter = is_interpreter(script_consumer(argv))
     if claim_related and any(

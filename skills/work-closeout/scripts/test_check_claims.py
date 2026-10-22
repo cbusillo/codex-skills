@@ -2203,6 +2203,89 @@ class ClaimCloseoutTests(unittest.TestCase):
                     helper.history.literal_targets(rows, SESSION), {"targets": {("first/a", 5)}, "unresolved_invocations": []}
                 )
 
+    def test_timeout_preserves_inner_claim_targets_and_uncertainty(self) -> None:
+        prefixes = (
+            "timeout 300",
+            "/usr/bin/timeout --preserve-status --foreground --verbose 5m",
+            "timeout -v -k 2s -s TERM 0.5h",
+            "timeout --kill-after 1m --signal 9 1d",
+            "timeout --kill-after=2s --signal=TERM -- 300",
+            "timeout -k2s -sTERM 300",
+        )
+        commands = (
+            "uv run skills/github/scripts/gh-plan.py --repo first/a claim 5",
+            "uv run --no-project --python python3 gh-plan.py claim first/a#5",
+            "python3 gh-plan.py --repo first/a claim 5",
+            "gh-plan.py --repo first/a claim 5",
+            "uv run gh-plan.py claim 5",
+            "uv run gh-plan.py --repo first/a claim $TARGET",
+        )
+        for command in commands:
+            for suffix in ("", " | tail -40", " 2>&1 | tail -40"):
+                expected = helper.history.literal_targets(bash_call(command + suffix), SESSION)
+                for prefix in prefixes:
+                    with self.subTest(prefix=prefix, command=command, suffix=suffix):
+                        actual = helper.history.literal_targets(bash_call(f"{prefix} {command}{suffix}"), SESSION)
+                        self.assertEqual(actual, expected)
+
+    def test_timeout_non_claim_subcommand_ignores_surrounding_claim_data(self) -> None:
+        command = "uv run gh-plan.py --repo first/a update-section 5 'Current Status' --body-file status.md"
+        data = "cat >status.md <<'EOF'\nReleased gh-plan.py claim 5\nEOF\n"
+        for suffix in ("", " | tail -40", " 2>&1 | tail -40"):
+            for prefix in ("timeout 400", "timeout -k 10 --signal=TERM 400"):
+                with self.subTest(prefix=prefix, suffix=suffix):
+                    result = helper.history.literal_targets(bash_call(f"{data}{prefix} {command}{suffix}"), SESSION)
+                    self.assertEqual(result, {"targets": set(), "unresolved_invocations": []})
+
+    def test_unparsed_timeout_wrappers_remain_conditional(self) -> None:
+        prefixes = (
+            "timeout --unknown 300",
+            "timeout --signal= 300",
+            "timeout --kill-after= 300",
+            "timeout --foreground=yes 300",
+            "timeout -k invalid 300",
+            "timeout --signal",
+            "timeout",
+            "timeout $DURATION",
+            "timeout invalid",
+            "timeout 300 timeout --unknown 200",
+        )
+        for prefix in prefixes:
+            for arguments in ("claim 5", "show 5"):
+                command = f"echo 'gh-plan.py claim 5'; {prefix} uv run gh-plan.py --repo first/a {arguments}"
+                with self.subTest(prefix=prefix, arguments=arguments):
+                    result = helper.history.literal_targets(bash_call(command), SESSION)
+                    self.assertTrue(result["unresolved_invocations"])
+                    self.assertEqual(result["targets"], set())
+
+    def test_timeout_preserves_unrecognized_inner_uv_commands(self) -> None:
+        for command in ("uv sync", "uv build", "uv pip install package", "uv run --exact pytest", "uv run --python"):
+            source = f"echo 'gh-plan.py claim 5'; {command}"
+            for prefix in ("timeout 600", "timeout 600 timeout -v 300"):
+                with self.subTest(command=command, prefix=prefix):
+                    wrapped = f"echo 'gh-plan.py claim 5'; {prefix} {command}"
+                    self.assertEqual(
+                        helper.history.literal_targets(bash_call(wrapped), SESSION),
+                        helper.history.literal_targets(bash_call(source), SESSION),
+                    )
+
+    def test_timeout_does_not_trust_data_command_execution_channels(self) -> None:
+        commands = (
+            "git -c 'alias.x=!uv run gh-plan.py --repo first/a claim 5' x",
+            "rg --pre 'uv run gh-plan.py --repo first/a claim 5' pattern",
+            "sed 'e uv run gh-plan.py --repo first/a claim 5' file",
+            "python3 probe.py 'uv run gh-plan.py --repo first/a claim 5'",
+            "bash saved-program.sh",
+        )
+        for command in commands:
+            source = f"echo 'gh-plan.py claim 5'; {command}"
+            wrapped = f"echo 'gh-plan.py claim 5'; timeout 300 {command}"
+            with self.subTest(command=command):
+                self.assertEqual(
+                    helper.history.literal_targets(bash_call(wrapped), SESSION),
+                    helper.history.literal_targets(bash_call(source), SESSION),
+                )
+
     def test_uv_options_select_the_command_instead_of_interpreter_option_values(self) -> None:
         source = """from tree_sitter import Language,Parser
 import tree_sitter_bash
