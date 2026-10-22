@@ -234,6 +234,8 @@ def test_unsafe_or_unsupported_requests_refuse_before_configuration(mode: str, b
     lambda e: e["result"].update(observation_sha256="b" * 64),
     lambda e: e["result"].update(observation={"usage": "unused", "data": "reproducible",
                                           "production_resources": "isolated"}),
+    lambda e: e["result"].update(observation={"usage": "maybe", "data": "unknown",
+                                          "production_resources": "unknown"}),
     lambda e: e["result"].pop("observation_sha256"),
     lambda e: e["result"].pop("observation"),
     lambda e: e.update(result=None),
@@ -241,8 +243,9 @@ def test_unsafe_or_unsupported_requests_refuse_before_configuration(mode: str, b
 @pytest.mark.parametrize("mode", ["collect", "record", "clear"])
 def test_ineligible_inspect_evidence_never_reaches_transport(
         mode: str, change: Callable[[dict[str, Any]], object]) -> None:
-    code, _, calls, settings = invoke(mode, edit_evidence=change)
+    code, output, calls, settings = invoke(mode, edit_evidence=change)
     assert code != 0 and calls == [] and settings == 0
+    assert output["warnings"][0]["code"] == "reviewed_inspect_not_eligible"
 
 
 @pytest.mark.parametrize("mode", ["collect", "record", "clear"])

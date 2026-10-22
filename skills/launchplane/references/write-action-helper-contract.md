@@ -122,7 +122,7 @@ changed lane with a 409.
 Clear additionally requires `--expected-observation-sha256` from that saved
 inspect. Its private payload accepts only the lane scope. The service compares
 both reviewed digests transactionally before removing the observation. A changed
-report, binding or preview owner refuses without clearing it. Resolve the reason
+report or lane binding refuses without clearing it. Resolve the reason
 for any protective report before clearing it; absence is not proof of non-use,
 data custody or isolation. Clear does not delete lane resources, lift holds or
 alter historical operation records. There is no clear dry-run mode; the supported

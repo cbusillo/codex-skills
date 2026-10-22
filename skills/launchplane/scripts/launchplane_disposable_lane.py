@@ -217,7 +217,10 @@ def require_review(h: Any, args: argparse.Namespace, scope: dict[str, str]) -> t
         or not DIGEST_RE.fullmatch(result["observation_sha256"])
         or "observation" not in result):
         raise ValueError("reviewed_inspect_not_eligible")
-    observation = _stored_observation(h, result["observation"])
+    try:
+        observation = _stored_observation(h, result["observation"])
+    except h.LaunchplaneSafetyError:
+        raise ValueError("reviewed_inspect_not_eligible") from None
     if result.get("review_binding_sha256") != review_binding(
             h, scope, digest, result["service_fingerprint"], result["observation_sha256"], observation):
         raise ValueError("reviewed_inspect_not_eligible")
