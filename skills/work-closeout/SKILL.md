@@ -332,6 +332,10 @@ those targets remain bounded even inside loops. Bare or computed JavaScript
 claims, unsupported executable shell payloads and template interpolations stay
 conditional even when one helper receipt or rejection is present. Their known
 receipt targets are still checked, including receipts in advertised saved output.
+Receipt JSON in tool inputs or conversation prose is data. Merged output from
+other executable commands cannot resolve a bare claim's repository. Shell
+syntax that the maintained parser cannot decode also stays conditional; use
+the explicit literal target form above and restore its complete native output.
 
 The check reads only those issues and PRs, including closed records. It never
 inventories App installations or scans other repositories. It verifies every

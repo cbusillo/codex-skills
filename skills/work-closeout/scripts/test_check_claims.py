@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = ["tree-sitter==0.26.0", "tree-sitter-bash==0.25.1"]
 # ///
 """Exercise native-session closeout against disposable GitHub and transcript records."""
 import contextlib
@@ -300,6 +300,38 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.assertTrue(all(path.startswith(f"/repos/{REPO}/") for path in paths))
         self.assertFalse({f"/repos/{REPO}/issues", f"/repos/{REPO}/issues/comments"}.intersection(paths))
         self.assertEqual(report["coverage"]["repositories"], [REPO])
+
+    def test_input_and_prose_receipt_fixtures_are_not_recorded_claims(self) -> None:
+        receipt = {"claim": SOURCE, "issue": {"repo": "fixture/data", "number": 8}}
+        command = "cat <<'EOF'\n" + json.dumps(receipt) + "\nEOF"
+        rows = [
+            {
+                "payload": {
+                    "type": "function_call",
+                    "name": "exec_command",
+                    "call_id": "data",
+                    "arguments": json.dumps({"cmd": command}),
+                }
+            },
+            {"message": {"content": [{"type": "tool_use", "name": "Bash", "id": "fixture", "input": {"command": command}}]}},
+            {"type": "user", "message": {"content": json.dumps(receipt)}},
+            {"type": "assistant", "message": {"content": json.dumps(receipt)}},
+        ]
+        for row in rows:
+            entry = self.entry()
+            with Path(entry["transcript"]).open("a") as stream:
+                stream.write(json.dumps(row) + "\n")
+            with self.subTest(row=row), patch.object(helper, "repository_reader") as reader:
+                report = helper.check([entry])
+                self.assertTrue(report["claims_clear"], report)
+                self.assertEqual(report["coverage"]["repositories"], [])
+                reader.assert_not_called()
+
+    def test_direct_legacy_helper_receipts_remain_recorded(self) -> None:
+        entry = self.entry()
+        with Path(entry["transcript"]).open("a") as stream:
+            stream.write(json.dumps({"claim": SOURCE, "issue": {"repo": REPO, "number": 1}}) + "\n")
+        self.assertEqual(helper.recorded_targets(entry)["targets"], {(REPO, 1)})
 
     def test_recorded_claim_targets_include_closed_and_pr_only_work_across_sessions(self) -> None:
         records = ((REPO, 1), ("second/b", 5), ("second/b", 6))
@@ -1292,7 +1324,7 @@ class ClaimCloseoutTests(unittest.TestCase):
             (f'gh --body="cat <<EOF"\n{qualified}', False, {("first/a", 5)}),
             (f"cat <<-'EOF'\n\t{claim}\n\tEOF", False, set()),
             (f"cat <<'EOF'\nfixture's \"unfinished quote | bash {claim}\nEOF", False, set()),
-            (f"cat <<'EOF'; printf unrelated | bash\n{claim}\nEOF", False, set()),
+            (f"cat <<'EOF'; printf unrelated | bash\n{claim}\nEOF", True, set()),
             (f"cat <<\\EOF\n$({claim})\nEOF", False, set()),
             (f"cat <<'EOF' | bash -s -- 5\n{claim}\nEOF", True, set()),
             (f"echo '{claim}' | python3 - arg", True, set()),
@@ -1331,7 +1363,7 @@ class ClaimCloseoutTests(unittest.TestCase):
             (f"tee >({claim})", True, set()),
             (f"cat <({qualified})", False, {("first/a", 5)}),
             (f"read x < <({qualified})", False, {("first/a", 5)}),
-            (f"printf '%s' 2>({qualified})", False, {("first/a", 5)}),
+            (f"printf '%s' 2>({qualified})", True, set()),
             (f"printf '%s' '<({claim})'", False, set()),
             (f'''bash -c 'echo "{claim}"' ''', False, set()),
             (f"""printf '%s' '{claim}' """, False, set()),
@@ -1359,6 +1391,121 @@ class ClaimCloseoutTests(unittest.TestCase):
                     report = helper.history.literal_targets([{"payload": payload}], SESSION)
                     self.assertEqual(report["targets"], targets)
                     self.assertEqual(bool(report["unresolved_invocations"]), unresolved)
+
+    def test_nested_heredoc_handoff_bodies_are_data(self) -> None:
+        for body in (
+            "Resume with gh-plan.py claim 5. Don't merge yet.",
+            '1) "Resume" with gh-plan.py claim 5. $(uv run gh-plan.py --repo fixture/data claim 8)',
+        ):
+            for consumer in ("gh pr create --body", "git commit -m", "gh issue comment 5 --body"):
+                command = consumer + " \"$(cat <<'EOF'\n" + body + '\nEOF\n)"'
+                rows = [
+                    {"message": {"content": [{"type": "tool_use", "name": "Bash", "id": "body", "input": {"command": command}}]}}
+                ]
+                with self.subTest(command=command):
+                    self.assertEqual(helper.history.literal_targets(rows, SESSION), {"targets": set(), "unresolved_invocations": []})
+
+    def test_generated_and_process_substitution_program_channels_remain_conditional(self) -> None:
+        claim = "uv run gh-plan.py claim 5"
+        commands = [
+            f"CMD='{claim}'; echo \"$CMD\" | bash",
+            f"CMD='{claim}'; printf '%s\\n' \"$CMD\" | sh",
+            f"CMD='{claim}'; bash <<< \"$CMD\"",
+            f"CMD='{claim}'; bash <<EOF\n$CMD\nEOF",
+            f"source <(echo '{claim}')",
+            f"bash <(printf '%s' '{claim}')",
+            f"bash < <(echo '{claim}')",
+            f". <(cat <<'EOF'\n{claim}\nEOF\n)",
+            f"CMD='{claim}'; source <(echo \"$CMD\")",
+            f"CMD='{claim}'; bash < <(echo \"$CMD\")",
+            f"export CMD='{claim}'; bash <<'EOF'\n$CMD\nEOF",
+            f"export CMD='{claim}'; bash -c '$CMD'",
+            f"CMD='{claim}'; bash 0< <(echo \"$CMD\")",
+            f"CMD='{claim}'; eval '$CMD'",
+            f"export CMD='{claim}'; bash <<<'$CMD'",
+            f"export CMD='{claim}'; python -c 'import os; os.system(os.environ[\"CMD\"])'",
+            f"export CMD='{claim}'; python <<'PY'\nimport os\nos.system(os.environ['CMD'])\nPY",
+        ]
+        for command in commands:
+            rows = [{"message": {"content": [{"type": "tool_use", "name": "Bash", "id": "channel", "input": {"command": command}}]}}]
+            with self.subTest(command=command):
+                self.assertTrue(helper.history.literal_targets(rows, SESSION)["unresolved_invocations"])
+
+    def test_sibling_output_cannot_discharge_a_bare_claim(self) -> None:
+        receipt = {"claim": SOURCE, "issue": {"repo": "first/a", "number": 5}}
+        rejection = {"operation": "github.plan.claim", "ok": False, "write_outcome": "not_started"}
+        commands = [
+            "cat earlier-receipt.json; uv run gh-plan.py claim 5",
+            "uv run gh-plan.py claim 5; cat earlier-receipt.json",
+            "printf '%s' old-result; uv run gh-plan.py claim 5",
+            "out=$(cat earlier-receipt.json); uv run gh-plan.py claim 5",
+            "uv run gh-plan.py claim 5 | cat earlier-receipt.json",
+        ]
+        for command in commands:
+            for output in (receipt, rejection):
+                rows = [
+                    {
+                        "payload": {
+                            "type": "function_call",
+                            "name": "exec_command",
+                            "call_id": "mixed",
+                            "arguments": json.dumps({"cmd": command}),
+                        }
+                    },
+                    {"payload": {"type": "function_call_output", "call_id": "mixed", "output": json.dumps(output)}},
+                ]
+                with self.subTest(command=command, output=output):
+                    report = helper.history.literal_targets(rows, SESSION)
+                    self.assertTrue(report["unresolved_invocations"])
+                    self.assertEqual(report["targets"], {("first/a", 5)} if output is receipt else set())
+        rows[0]["payload"]["arguments"] = json.dumps({"cmd": "uv run gh-plan.py claim 5"})
+        self.assertFalse(helper.history.literal_targets(rows, SESSION)["unresolved_invocations"])
+
+    def test_parser_failure_keeps_receipts_without_using_recovered_commands(self) -> None:
+        command = "cat <<'EOF'; printf unrelated | bash\nuv run gh-plan.py --repo fixture/data claim 8\nEOF"
+        rows = [
+            {
+                "payload": {
+                    "type": "function_call",
+                    "name": "exec_command",
+                    "call_id": "syntax",
+                    "arguments": json.dumps({"cmd": command}),
+                }
+            },
+            {
+                "payload": {
+                    "type": "function_call_output",
+                    "call_id": "syntax",
+                    "output": json.dumps({"claim": SOURCE, "issue": {"repo": "first/a", "number": 5}}),
+                }
+            },
+        ]
+        report = helper.history.literal_targets(rows, SESSION)
+        self.assertTrue(report["unresolved_invocations"])
+        self.assertEqual(report["targets"], {("first/a", 5)})
+
+    def test_pure_claim_receipts_and_qualified_mixed_claims_keep_their_targets(self) -> None:
+        receipt = {"claim": SOURCE, "issue": {"repo": "first/a", "number": 5}}
+        for command, targets in (
+            ("uv run gh-plan.py claim 5", {("first/a", 5)}),
+            ("FOO=1; { uv run gh-plan.py claim 5; }", {("first/a", 5)}),
+            ("cat earlier-receipt.json; uv run gh-plan.py --repo second/b claim 5", {("first/a", 5), ("second/b", 5)}),
+            ("bash -c 'uv run gh-plan.py --repo second/b claim 5'", {("first/a", 5), ("second/b", 5)}),
+            ("bash <<'EOF'\nuv run gh-plan.py --repo second/b claim 5\nEOF", {("first/a", 5), ("second/b", 5)}),
+        ):
+            rows = [
+                {
+                    "payload": {
+                        "type": "function_call",
+                        "name": "exec_command",
+                        "call_id": "claim",
+                        "arguments": json.dumps({"cmd": command}),
+                    }
+                },
+                {"payload": {"type": "function_call_output", "call_id": "claim", "output": json.dumps(receipt)}},
+            ]
+            with self.subTest(command=command):
+                self.assertEqual(helper.history.literal_targets(rows, SESSION), {"targets": targets, "unresolved_invocations": []})
 
     def test_raw_javascript_does_not_prove_bare_claim_execution_count(self) -> None:
         command = 'tools.exec_command({cmd:"uv run gh-plan.py claim 5",workdir})'

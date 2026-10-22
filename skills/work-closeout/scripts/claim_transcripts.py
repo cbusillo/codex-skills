@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = ["tree-sitter==0.26.0", "tree-sitter-bash==0.25.1"]
 # ///
 from __future__ import annotations
 
@@ -10,10 +10,13 @@ import re
 import shlex
 import sqlite3
 from collections.abc import Iterator
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import claim_history
 import github_plan_claim_log as claim_log
+import tree_sitter_bash
+from tree_sitter import Language, Node, Parser
 
 
 def values(value: object) -> Iterator[dict]:
@@ -474,21 +477,13 @@ def is_interpreter(consumer: str) -> bool:
     )
 
 
-def has_executable_claim_source(text: str, consumer: str) -> bool:
-    if "gh-plan" not in text or CLAIM_WORD.search(text) is None:
+def has_executable_claim_source(text: str, consumer: str, *, claim_related: bool = False) -> bool:
+    if not claim_related and ("gh-plan" not in text or CLAIM_WORD.search(text) is None):
         return False
     if not re.fullmatch(r"python(?:[0-9]+(?:\.[0-9]+)*)?", Path(consumer).name):
         if Path(consumer).name in SHELL_NAMES | {"eval", "source", "."}:
-            try:
-                for argv in shell_argv(text):
-                    arguments = claim_arguments(argv)
-                    if arguments is not None and invocation_target(arguments, "") is not None:
-                        return True
-                    if arguments is None and has_opaque_claim_execution(argv):
-                        return True
-                return False
-            except ValueError:
-                return True
+            discovery = shell_claims(text, claim_related=claim_related)
+            return bool(discovery.arguments) or discovery.opaque or discovery.decode_failed
         return is_interpreter(consumer)
     try:
         tree = ast.parse(text)
@@ -552,326 +547,206 @@ def is_python_launcher(node: ast.AST, modules: set[str], launchers: set[str], pa
     return False
 
 
-def shell_command_arguments(argv: list[str]) -> list[str]:
-    while argv and (
-        Path(argv[0]).name in {"env", "command", "exec", "if", "then", "do"} or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", argv[0])
-    ):
-        argv = argv[1:]
-    return argv
+@dataclass
+class ShellClaims:
+    arguments: list[list[str]] = field(default_factory=list)
+    opaque: bool = False
+    receipt_pure: bool = True
+    decode_failed: bool = False
+
+
+@dataclass
+class ProgramSource:
+    text: str
+    consumer: str
+    generated: bool = False
+    produced: bool = False
+
+
+def shell_nodes(node: Node) -> Iterator[Node]:
+    yield node
+    for child in node.named_children:
+        yield from shell_nodes(child)
+
+
+def shell_generated(node: Node) -> bool:
+    return any(
+        child.type in {"simple_expansion", "expansion", "command_substitution", "process_substitution", "arithmetic_expansion"}
+        for child in shell_nodes(node)
+    )
+
+
+def shell_word(node: Node) -> str:
+    text = node.text.decode()
+    try:
+        words = shlex.split(text.replace("\\\n", ""))
+    except ValueError:
+        return text
+    return words[0] if len(words) == 1 else text
+
+
+def command_words(node: Node) -> list[Node]:
+    name = node.child_by_field_name("name")
+    words = ([name] if name is not None else []) + node.children_by_field_name("argument")
+    parent = node.parent
+    if parent is not None and parent.type == "redirected_statement" and parent.child_by_field_name("body") == node:
+        for redirect in parent.children_by_field_name("redirect"):
+            if redirect.type == "file_redirect":
+                words.extend(redirect.children_by_field_name("destination")[1:])
+    return sorted(words, key=lambda word: word.start_byte)
+
+
+def command_argv(node: Node) -> list[str]:
+    return [shell_word(word) for word in command_words(node)]
 
 
 def script_consumer(argv: list[str]) -> str:
-    argv = shell_command_arguments(argv)
     if argv and argv[0] in {"eval", "source", "."}:
         return argv[0]
     if argv and Path(argv[0]).name == "uv" and "run" in argv and "--script" in argv:
         return "python"
-    for argument in argv:
-        if is_interpreter(argument):
-            return argument
-    return argv[0] if argv else ""
+    return next((argument for argument in argv if is_interpreter(argument)), "")
 
 
-SHELL_OPERATORS = (
-    "<(",
-    ">(",
-    ";;&",
-    "<<<",
-    "<<-",
-    "&&",
-    "||",
-    "<<",
-    ">>",
-    ";;",
-    ";&",
-    "&>",
-    ">&",
-    "<&",
-    ">|",
-    "|&",
-    ";",
-    "&",
-    "|",
-    "(",
-    ")",
-    "<",
-    ">",
-    "\n",
-)
-SHELL_PROCESSES = {"<(", ">("}
-SHELL_REDIRECTIONS = {
-    operator for operator in SHELL_OPERATORS if ("<" in operator or ">" in operator) and operator not in SHELL_PROCESSES
-}
-SHELL_CONTROLS = set(SHELL_OPERATORS) - SHELL_REDIRECTIONS
-REDIRECTION = re.compile(
-    r"\d*(?:" + "|".join(re.escape(operator) for operator in SHELL_OPERATORS if operator in SHELL_REDIRECTIONS) + r")(?!\()"
-)
-SHELL_TOKEN = re.compile(
-    "|".join(re.escape(operator) for operator in SHELL_OPERATORS if operator in SHELL_PROCESSES)
-    + "|"
-    + REDIRECTION.pattern
-    + "|"
-    + "|".join(re.escape(operator) for operator in SHELL_OPERATORS)
-    + r"""|(?:'[^']*'|"(?:\\.|[^"\\])*"|`(?:\\.|[^`\\])*`|\\[^\n]|[^\s;&|()<>\x27"`\\])+"""
-)
+def interpreter_arguments(argv: list[str], consumer: str) -> list[str]:
+    if consumer in argv:
+        return argv[argv.index(consumer) + 1 :]
+    return argv[argv.index("--script") + 1 :] if "--script" in argv else []
 
 
-def substitution_end(text: str, start: int) -> int:
-    depth = 1
-    quote = ""
-    index = start
-    while index < len(text):
-        character = text[index]
-        if character == "\\" and quote != "'":
-            index += 2
-            continue
-        if character in {"'", '"'}:
-            if not quote:
-                quote = character
-            elif quote == character:
-                quote = ""
-        elif not quote:
-            if character == "(":
-                depth += 1
-            elif character == ")":
-                depth -= 1
-                if depth == 0:
-                    return index
-        index += 1
-    raise ValueError("incomplete command substitution")
-
-
-def shell_expansions(word: str, *, heredoc: bool = False) -> Iterator[tuple[str, str]]:
-    quote = ""
-    index = 0
-    while index < len(word):
-        character = word[index]
-        if character == "\\" and quote != "'":
-            index += 2
-            continue
-        if not heredoc and character == "'" and quote != '"':
-            quote = "" if quote else "'"
-        elif not heredoc and character == '"' and quote != "'":
-            quote = "" if quote else '"'
-        elif quote != "'" and word.startswith("$(", index):
-            end = substitution_end(word, index + 2)
-            yield "command", word[index + 2 : end]
-            index = end
-        elif quote != "'" and character == "`":
-            end = index + 1
-            while end < len(word):
-                if word[end] == "\\":
-                    end += 2
-                    continue
-                if word[end] == "`":
-                    break
-                end += 1
-            if end == len(word):
-                raise ValueError("incomplete backtick substitution")
-            yield "command", word[index + 1 : end]
-            index = end
-        elif quote != "'" and character == "$" and index + 1 < len(word) and re.match(r"[A-Za-z_0-9{*#@?$!-]", word[index + 1]):
-            yield "parameter", ""
-        index += 1
-
-
-def substitution_sources(word: str, *, heredoc: bool = False) -> Iterator[str]:
-    for kind, source in shell_expansions(word, heredoc=heredoc):
-        if kind == "command":
-            yield source
-
-
-def has_generated_execution(group: list[str], text: str) -> bool:
-    if "gh-plan" not in text or CLAIM_WORD.search(text) is None:
+def reads_program_stdin(argv: list[str], consumer: str) -> bool:
+    if not is_interpreter(consumer):
         return False
-    argv = shlex.split(" ".join(group))
-    command = shell_command_arguments(argv)
-    if not command:
-        return False
-    if "$" in command[0] or "`" in command[0]:
-        return True
-    offset = len(argv) - len(command)
-    if command[0] in {"eval", "source", "."}:
-        programs = group[offset + 1 :]
-    else:
-        programs = [
-            group[index + 1]
-            for index, argument in enumerate(argv[:-1])
-            if is_evaluator_flag(argument, script_consumer(argv[:index]))
-        ]
-    return any(any(True for _ in shell_expansions(program)) for program in programs)
+    arguments = interpreter_arguments(argv, consumer)
+    return not any(is_evaluator_flag(argument, consumer) for argument in arguments) and (
+        any(argument in {"-", "-s", "/dev/stdin"} for argument in arguments)
+        or any(re.fullmatch(r"-[a-z]*s[a-z]*", argument) for argument in arguments)
+        or all(argument.startswith("-") for argument in arguments)
+    )
 
 
-def shell_tokens(text: str) -> list[str]:
-    tokens = []
-    position = 0
-    while position < len(text):
-        if text[position] in " \t\r":
-            position += 1
-            continue
-        if text[position] == "#":
-            position = text.find("\n", position)
-            if position < 0:
-                break
-            continue
-        match = SHELL_TOKEN.match(text, position)
-        if match is None:
-            raise ValueError("incomplete shell word")
-        tokens.append(match[0])
-        position = match.end()
-    return tokens
+def statement_command(node: Node) -> Node | None:
+    if node.type == "command":
+        return node
+    body = node.child_by_field_name("body")
+    return statement_command(body) if body is not None else None
 
 
-def without_redirections(tokens: list[str]) -> list[str]:
-    words = []
-    operand = False
-    for token in tokens:
-        if operand:
-            operand = False
-            continue
-        if REDIRECTION.fullmatch(token):
-            operand = True
-        else:
-            words.append(token)
-    return words
+def node_program(node: Node, consumer: str, *, produced: bool = False) -> ProgramSource:
+    text = node.text.decode() if produced or node.type == "heredoc_body" else shell_word(node)
+    return ProgramSource(text, consumer, shell_generated(node), produced)
 
 
-def pipeline_sources(tokens: list[str]) -> list[tuple[str, str]]:
-    sources = []
-    start = 0
-    depth = 0
-    for index, token in enumerate(tokens):
-        if token in {"(", "{"} | SHELL_PROCESSES:
-            depth += 1
-        elif token in {")", "}"}:
-            depth = max(0, depth - 1)
-        if token not in {"|", "|&"}:
-            if depth == 0 and token in {";", "&&", "||", "\n"}:
-                start = index + 1
-            continue
-        end = next((item for item in range(index + 1, len(tokens)) if tokens[item] in SHELL_CONTROLS), len(tokens))
-        argv = shlex.split(" ".join(without_redirections(tokens[index + 1 : end])))
-        consumer = script_consumer(argv)
-        if is_interpreter(consumer):
-            offset = next((item for item, value in enumerate(argv) if value == consumer), -1)
-            arguments = argv[offset + 1 :]
-            stdin_script = any(argument in {"-", "-s", "/dev/stdin"} for argument in arguments) or all(
-                argument.startswith("-") for argument in arguments
-            )
-            if stdin_script and not any(is_evaluator_flag(argument, consumer) for argument in arguments):
-                sources.append((" ".join(tokens[start:index]), consumer))
-    return sources
+def command_programs(node: Node) -> Iterator[ProgramSource]:
+    words = command_words(node)
+    argv = [shell_word(word) for word in words]
+    if not argv or Path(argv[0]).name in {"rg", "grep", "git", "cat", "tee", "echo", "printf"}:
+        return
+    consumer = script_consumer(argv)
+    if consumer == "eval":
+        yield ProgramSource(" ".join(argv[1:]), consumer, any(shell_generated(word) for word in words[1:]))
+        return
+    offset = argv.index(consumer) + 1 if consumer in argv else len(argv)
+    for index in range(offset, len(argv) - 1):
+        argument = argv[index]
+        if is_evaluator_flag(argument, consumer):
+            yield node_program(words[index + 1], consumer)
+            return
+    script = next((word for word, value in zip(words[offset:], argv[offset:], strict=True) if not value.startswith("-")), None)
+    if script is not None and (consumer in {"source", "."} or is_interpreter(consumer)):
+        yield node_program(script, consumer, produced=True)
 
 
-def shell_groups(text: str) -> Iterator[list[str]]:
-    pending = []
-    headers = []
-    header = ""
-    executable_bodies = []
-    body = []
-    for line in text.replace("\\\n", "").splitlines():
-        if pending:
-            source = pending[0]
-            if (line.lstrip("\t") if source["strip_tabs"] else line) == source["delimiter"]:
-                pending.pop(0)
-                script = "\n".join(body)
-                if is_interpreter(source["consumer"]):
-                    executable_bodies.append((source["consumer"], script))
-                if source["expands"] and ("$(" in script or "`" in script):
-                    executable_bodies.extend(("sh", substitution) for substitution in substitution_sources(script, heredoc=True))
-                body = []
+def input_programs(node: Node) -> Iterator[ProgramSource]:
+    if node.type == "pipeline":
+        stages = node.named_children
+        for index, stage in enumerate(stages[1:], 1):
+            command = statement_command(stage)
+            argv = command_argv(command) if command is not None else []
+            consumer = script_consumer(argv)
+            if reads_program_stdin(argv, consumer):
+                yield ProgramSource(
+                    " | ".join(item.text.decode() for item in stages[:index]),
+                    consumer,
+                    any(shell_generated(item) for item in stages[:index]),
+                    True,
+                )
+        return
+    if node.type not in {"heredoc_redirect", "herestring_redirect", "file_redirect"} or node.parent is None:
+        return
+    command = statement_command(node.parent)
+    pipeline = next((child for child in node.named_children if child.type == "pipeline"), None)
+    if pipeline is not None:
+        command = statement_command(pipeline.named_children[-1])
+    argv = command_argv(command) if command is not None else []
+    consumer = script_consumer(argv)
+    if not reads_program_stdin(argv, consumer):
+        return
+    if node.type == "heredoc_redirect":
+        body = next((child for child in node.named_children if child.type == "heredoc_body"), None)
+        if body is not None:
+            yield node_program(body, consumer)
+    elif node.type == "herestring_redirect":
+        if node.named_children:
+            yield node_program(node.named_children[-1], consumer)
+    elif any(child.type == "<" for child in node.children):
+        destination = node.child_by_field_name("destination")
+        if destination is not None:
+            yield node_program(destination, consumer, produced=True)
+
+
+def shell_claims(text: str, *, claim_related: bool = False) -> ShellClaims:
+    discovery = ShellClaims()
+    related = claim_related or ("gh-plan" in text and CLAIM_WORD.search(text) is not None)
+    root = Parser(Language(tree_sitter_bash.language())).parse(text.encode()).root_node
+    if root.has_error:
+        discovery.receipt_pure = False
+        discovery.decode_failed = related
+        return discovery
+    for node in shell_nodes(root):
+        if node.type in {
+            "pipeline",
+            "command_substitution",
+            "process_substitution",
+            "for_statement",
+            "c_style_for_statement",
+            "while_statement",
+            "function_definition",
+            "if_statement",
+            "case_statement",
+        }:
+            discovery.receipt_pure = False
+        programs = list(input_programs(node))
+        if node.type == "command":
+            argv = command_argv(node)
+            arguments = claim_arguments(argv)
+            if arguments is not None and "claim" in arguments and "--help" not in arguments and "-h" not in arguments:
+                discovery.arguments.append(arguments)
             else:
-                body.append(line)
-            continue
-        header += line + "\n"
-        try:
-            tokens = shell_tokens(header)
-        except ValueError:
-            continue
-        headers.extend(tokens)
-        header = ""
-        stage = []
-        command_start = 0
-        for index, token in enumerate(tokens[:-1]):
-            if token in {";", "&&", "||", "\n"}:
-                command_start = index + 1
-            if token in {";", "&&", "||", "|", "|&", "\n"}:
-                stage = []
-            operator = token.lstrip("0123456789") if REDIRECTION.fullmatch(token) else token
-            if operator not in {"<<", "<<-", "<<<"}:
-                stage.append(token)
-                continue
-            end = next((item for item in range(index + 1, len(tokens)) if tokens[item] in {";", "&&", "||", "\n"}), len(tokens))
-            pipelines = pipeline_sources(tokens[command_start:end])
-            consumer = pipelines[-1][1] if pipelines else script_consumer(shlex.split(" ".join(without_redirections(stage))))
-            raw = tokens[index + 1]
-            decoded = shlex.split(raw)
-            if len(decoded) != 1:
-                raise ValueError("invalid shell input word")
-            stage.append(token)
-            if operator == "<<<":
-                executable_bodies.append((consumer, decoded[0]))
-                continue
-            pending.append(
-                {
-                    "delimiter": decoded[0],
-                    "strip_tabs": operator == "<<-",
-                    "consumer": consumer,
-                    "expands": raw == decoded[0],
-                }
-            )
-    group = []
-    generated = False
-    operand = False
-    try:
-        for token in headers:
-            if token not in SHELL_CONTROLS and REDIRECTION.fullmatch(token) is None:
-                for source in substitution_sources(token):
-                    yield from shell_argv(source)
-            if operand:
-                operand = False
-                if token not in SHELL_PROCESSES:
-                    continue
-            if REDIRECTION.fullmatch(token):
-                operand = True
-                continue
-            if token in SHELL_CONTROLS:
-                if group:
-                    generated = generated or has_generated_execution(group, text)
-                    yield shlex.split(" ".join(group))
-                    group = []
+                discovery.receipt_pure = False
+                discovery.opaque = discovery.opaque or (arguments is None and has_opaque_claim_execution(argv))
+            name = node.child_by_field_name("name")
+            discovery.opaque = discovery.opaque or bool(name is not None and shell_generated(name) and related)
+            programs.extend(command_programs(node))
+        for program in programs:
+            discovery.receipt_pure = False
+            if program.generated:
+                discovery.opaque = discovery.opaque or related
+            elif program.produced:
+                discovery.opaque = discovery.opaque or related
+            elif Path(program.consumer).name in SHELL_NAMES | {"eval"}:
+                nested = shell_claims(program.text, claim_related=related)
+                discovery.arguments.extend(nested.arguments)
+                discovery.opaque = discovery.opaque or nested.opaque
+                discovery.decode_failed = discovery.decode_failed or nested.decode_failed
             else:
-                group.append(token)
-        if group:
-            generated = generated or has_generated_execution(group, text)
-            yield shlex.split(" ".join(group))
-        if generated:
-            raise ValueError("generated executable claim source")
-        if (header or pending) and "gh-plan" in text and CLAIM_WORD.search(text):
-            raise ValueError("incomplete shell source")
-        if any("gh-plan" in source and CLAIM_WORD.search(source) for source, _ in pipeline_sources(headers)):
-            raise ValueError("unsupported piped claim source")
-        if any(has_executable_claim_source(script, consumer) for consumer, script in executable_bodies):
-            raise ValueError("unsupported executable claim heredoc")
-    except ValueError as error:
-        if "gh-plan.py" in text and CLAIM_WORD.search(text):
-            raise ValueError("native claim shell syntax cannot be decoded") from error
-
-
-def shell_argv(text: str) -> Iterator[list[str]]:
-    for argv in shell_groups(text):
-        argv = shell_command_arguments(argv)
-        shell_flag = next((index for index, argument in enumerate(argv[1:], 1) if re.fullmatch(r"-[a-z]*c[a-z]*", argument)), None)
-        if argv and Path(argv[0]).name in SHELL_NAMES and shell_flag is not None:
-            index = shell_flag + 1
-            if index < len(argv):
-                yield from shell_argv(argv[index])
-        else:
-            yield argv
+                discovery.opaque = discovery.opaque or has_executable_claim_source(
+                    program.text, program.consumer, claim_related=related
+                )
+    return discovery
 
 
 def claim_arguments(argv: list[str]) -> list[str] | None:
-    argv = shell_command_arguments(argv)
     if not argv:
         return None
     executable = Path(argv[0]).name
@@ -898,14 +773,7 @@ def has_opaque_claim_execution(argv: list[str]) -> bool:
         return True
     if "claim" in argv and any("$" in argument or "`" in argument for argument in argv[: argv.index("claim")]):
         return True
-    consumer = script_consumer(argv)
-    if consumer in {"eval", "source", "."}:
-        return has_executable_claim_source(" ".join(argv[1:]), consumer)
-    return any(
-        has_executable_claim_source(argv[index + 1], consumer)
-        for index, argument in enumerate(argv[:-1])
-        if is_evaluator_flag(argument, consumer)
-    )
+    return False
 
 
 def is_evaluator_flag(argument: str, consumer: str) -> bool:
@@ -956,7 +824,9 @@ def invocation_target(arguments: list[str], session: str) -> dict | None:
     }
 
 
-def resolve_invocations(arguments_list: list[list[str]], blocks: list[object], session: str) -> tuple[set[tuple[str, int]], bool]:
+def resolve_invocations(
+    arguments_list: list[list[str]], blocks: list[object], session: str, *, receipt_pure: bool = True
+) -> tuple[set[tuple[str, int]], bool]:
     results = list({json.dumps(item, sort_keys=True): item for block in blocks for item in values(block)}.values())
     completed = [
         (item["claim"]["session"], target)
@@ -980,7 +850,11 @@ def resolve_invocations(arguments_list: list[list[str]], blocks: list[object], s
     invocations = [item for arguments in arguments_list if (item := invocation_target(arguments, session)) is not None]
     invocations.sort(key=lambda item: not (item["known"] or item["foreign"]))
     missing = 0
+    unproven = False
     for item in invocations:
+        if not receipt_pure and not item["known"] and not item["foreign"]:
+            unproven = True
+            continue
         match = next(
             (
                 index
@@ -999,7 +873,7 @@ def resolve_invocations(arguments_list: list[list[str]], blocks: list[object], s
                 targets.add(item["known"])
         else:
             missing += 1
-    return targets, missing > len(rejected)
+    return targets, unproven or missing > len(rejected)
 
 
 def orphan_artifacts(records: list[dict], session: str, directory: Path) -> list[str]:
@@ -1062,25 +936,24 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
         unclassified = False
         reason = "missing_output"
         decode_failed = False
-        repeated = False
+        receipt_pure = not javascript
         try:
             shells, opaque = shell_texts(text, javascript)
             unclassified = opaque
             opaque = opaque and (claim_related_here or (claim_may_be_stored and "load" in names))
             for shell in shells:
-                repeated = repeated or re.search(r"(?:^|[;\n])\s*[A-Za-z_]\w*\s*\(\s*\)\s*\{", shell) is not None
-                for argv in shell_argv(shell):
-                    repeated = repeated or bool(argv and argv[0] in {"for", "while", "until", "function"})
-                    arguments = claim_arguments(argv)
-                    if arguments is not None and "claim" in arguments and "--help" not in arguments and "-h" not in arguments:
-                        invocations.append(arguments)
-                    elif arguments is None:
-                        opaque = opaque or has_opaque_claim_execution(argv)
+                discovery = shell_claims(shell)
+                invocations.extend(discovery.arguments)
+                opaque = opaque or discovery.opaque
+                receipt_pure = receipt_pure and discovery.receipt_pure
+                if discovery.decode_failed:
+                    decode_failed = True
+                    reason = "decode_failure: native claim shell syntax cannot be decoded"
         except ValueError as error:
             decode_failed = True
             reason = "decode_failure: " + str(error)
         opaque = opaque or (
-            (repeated or javascript)
+            not receipt_pure
             and any(
                 item is not None and item["known"] is None and not item["foreign"]
                 for arguments in invocations
@@ -1088,18 +961,18 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
             )
         )
         blocks = outputs.get(identifier, [])
-        found, unknown = resolve_invocations(invocations, blocks, session)
+        found, unknown = resolve_invocations(invocations, blocks, session, receipt_pure=receipt_pure)
         targets.update(found)
         if javascript:
             opaque = opaque or (unclassified and bool(found))
             claim_may_be_stored = claim_may_be_stored or ("store" in names and (claim_related_here or bool(found)))
         if opaque:
-            reason = "unproven_execution_count" if repeated or (javascript and invocations) else "computed"
+            reason = "unproven_execution_count" if invocations and not receipt_pure else "computed"
         if (unknown or opaque) and directory is not None:
             try:
                 saved = persisted_output(records, directory, session, identifier)
                 blocks = [*blocks, *tool_outputs(saved).get(identifier, [])]
-                found, unknown = resolve_invocations(invocations, blocks, session)
+                found, unknown = resolve_invocations(invocations, blocks, session, receipt_pure=receipt_pure)
                 targets.update(found)
             except (OSError, ValueError) as error:
                 reason = "missing_output: " + str(error)

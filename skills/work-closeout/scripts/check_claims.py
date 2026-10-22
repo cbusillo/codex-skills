@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = []
+# dependencies = ["tree-sitter==0.26.0", "tree-sitter-bash==0.25.1"]
 # ///
 from __future__ import annotations
 
@@ -152,8 +152,10 @@ def recorded_targets(entry: dict) -> dict:
     native = entry["session_id"]
     targets = claim_log.read(native)
     rows = entry.get("_transcript_records") or history.read_records(Path(entry["transcript"]))
-    for row in rows:
-        for value in transcript_values(row):
+    receipts = [row for row in rows if "claim" in row]
+    receipts.extend(block for blocks in history.tool_outputs(rows).values() for block in blocks)
+    for block in receipts:
+        for value in transcript_values(block):
             target = history.claim_target(value, native)
             if target is not None:
                 targets.add(target)
