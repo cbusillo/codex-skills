@@ -3,7 +3,6 @@
 # requires-python = ">=3.12"
 # dependencies = ["aiohttp==3.14.5"]
 # ///
-"""Emit turn-end notices for explicit Codex sessions; notices are not completion."""
 
 import argparse
 import json
@@ -17,12 +16,12 @@ from finished_map import closeout_request
 
 def poll(ledger: Path, seen: dict, idle_seconds: float, now: float,
          capacity_state: dict | None = None, state_path: Path | None = None,
-         resume_capacity: bool = False) -> list[dict]:
+         resume_capacity: bool = False, harness: str = "codex") -> list[dict]:
     if resume_capacity and state_path is None:
         raise ValueError("capacity resume requires a persistent state path")
     notices = []
     skipped = []
-    entries = load_ledger(ledger, harness="codex", skipped=skipped)
+    entries = load_ledger(ledger, harness=harness, skipped=skipped)
     for diagnostic in skipped:
         key = ("skipped", diagnostic["ledger_index"])
         value = json.dumps(diagnostic, sort_keys=True)
@@ -77,30 +76,50 @@ def poll(ledger: Path, seen: dict, idle_seconds: float, now: float,
     return notices
 
 
+def load_delivered(path: Path) -> set[str]:
+    return set(json.loads(path.read_text(encoding="utf-8"))) if path.exists() else set()
+
+
+def save_delivered(path: Path, delivered: set[str]) -> None:
+    pending = path.with_name(f"{path.name}.tmp")
+    pending.write_text(json.dumps(sorted(delivered)), encoding="utf-8")
+    pending.replace(path)
+
+
 def watch(args, state: dict | None) -> int:
     deadline = time.monotonic() + args.deadline_seconds
     seen = {}
+    delivered = load_delivered(args.delivered_state) if args.delivered_state else set()
     while True:
         try:
             notices = poll(args.ledger, seen, args.idle_seconds, time.time(),
-                           state, args.capacity_state, args.resume_capacity)
+                           state, args.capacity_state, args.resume_capacity, args.harness)
             for notice in notices:
                 print(json.dumps(notice), flush=True)
         except (OSError, ValueError, TypeError) as error:
             print(json.dumps({"error": str(error)}), flush=True)
             return 1
+        requests = {json.dumps(notice["closeout_request"], sort_keys=True)
+                    for notice in notices if notice.get("closeout_request")}
+        if args.delivered_state and requests - delivered:
+            save_delivered(args.delivered_state, delivered | requests)
+            return 0
         if args.once or time.monotonic() >= deadline:
             return 0
         time.sleep(min(args.interval, max(0, deadline - time.monotonic())))
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description="Emit turn-end notices for one harness, exiting on an undelivered closeout request.")
     parser.add_argument("--ledger", required=True, type=Path)
+    parser.add_argument("--harness", choices=("codex", "claude"), default="codex")
     parser.add_argument("--idle-seconds", type=float, default=90)
     parser.add_argument("--interval", type=float, default=45)
     parser.add_argument("--deadline-seconds", type=float, default=1800)
     parser.add_argument("--once", action="store_true")
+    parser.add_argument("--delivered-state", type=Path,
+                        help="closeout requests already delivered; the watch exits on any other")
     parser.add_argument("--capacity-state", type=Path,
                         help="persistent retry budget shared with checks and the digest")
     parser.add_argument("--resume-capacity", action="store_true",
@@ -108,6 +127,8 @@ def main() -> int:
     args = parser.parse_args()
     if min(args.idle_seconds, args.interval, args.deadline_seconds) <= 0:
         parser.error("timings must be positive")
+    if not args.once and not args.delivered_state:
+        parser.error("a continuous watch requires --delivered-state PATH, one private file per harness")
     if args.resume_capacity and not args.capacity_state:
         parser.error("--resume-capacity requires --capacity-state")
     try:

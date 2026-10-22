@@ -12,7 +12,7 @@ never redo it through another tool, agent, or identity.
 ```text
 Executing loop for this repository (from DIRECTION.md):
   next          report the next available ranked item and stop
-  go            start it: gh-plan.py claim, then linked worktree, bot commits, review by another model when the review reference says so
+  go            start it: gh-plan.py --repo OWNER/REPO claim, then linked worktree, bot commits, review by another model when the review reference says so
   go <milestone title>  work that milestone's issues in next order without stopping between them
   next and go   both
   escalate      a finding that retires, stops, or redirects work is an issue labeled direction, not a change
@@ -86,5 +86,9 @@ asynchronous question or issue update does not replace that handoff.
 Preserve unsafe or active worktrees and runtime checkouts under their owning
 skills rather than forcing cleanup. Preserve dirty or divergent default
 checkouts too; report when they cannot be safely fast-forwarded.
+Before a safe-exit all-clear, complete work-closeout's
+[claim disposition](../work-closeout/SKILL.md#claim-disposition): release this
+session's claims and verify retained PR handoffs, or report conditional/no.
+Keep ownership while an assigned review is pending and the session must resume.
 For a finding that would change `DIRECTION.md` itself, follow the
 [direction skill](../direction/SKILL.md) escalation procedure.

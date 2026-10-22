@@ -17,6 +17,9 @@ from typing import Mapping
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.agent_activity import hook_activity
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills/github/scripts"))
+from github_plan_lease import renew_from_hook
+
 
 def events_path(env: Mapping[str, str]) -> Path:
     # Host-specific CODEX_HOME/CLAUDE_CONFIG_DIR would split the shared stream.
@@ -80,6 +83,10 @@ def main() -> int:
     except (OSError, ValueError):
         # An unavailable alert stream must not block or restart the session.
         print("Session alert unavailable; supervisor must check session state.", file=sys.stderr)
+    try:
+        renew_from_hook(payload)
+    except (OSError, ValueError):
+        print("Claim lease renewal unavailable; claims still need their exact release.", file=sys.stderr)
     try:
         hook_activity(payload, dict(os.environ))
     except (OSError, ValueError, TypeError, KeyError):

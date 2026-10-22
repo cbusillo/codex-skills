@@ -6,9 +6,10 @@
 """Exercise pilot parsers and terminal behavior with disposable transcripts/adapters."""
 
 import argparse
+import contextlib
+import io
 import asyncio
 import errno
-import io
 import json
 import subprocess
 import shlex
@@ -179,26 +180,51 @@ class TranscriptTests(unittest.TestCase):
 
         def notice(task_id, status=None):
             body = f"<task-notification>\n<task-id>{task_id}</task-id>\n"
+            body += "<tool-use-id>toolu_fixture</tool-use-id>\n<output-file>/fixture/task-output</output-file>\n"
             body += f"<status>{status}</status>\n" if status else "<event>line</event>\n"
             return {"type": "user", "timestamp": "2026-10-16T05:00:00Z",
+                    "origin": {"kind": "task-notification", "producer": "session-task"},
                     "message": {"content": body + "</task-notification>"}}
 
         stop = {"type": "assistant", "timestamp": "2026-10-16T05:12:09Z", "message": {"content": [
             {"type": "tool_use", "id": "toolu_stop", "name": "TaskStop", "input": {"task_id": "bosltstxv"}}]}}
+        stopped = {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_stop",
+                                                           "content": "Task stopped"}]}}
         waiting = claude("Waiting on the CI watcher for PR #1963.")
         for name, middle, running in (
             ("live watcher", [], ["bosltstxv", "bmon"]),
             ("monitor event is not an end", [notice("bmon")], ["bosltstxv", "bmon"]),
+            ("running status is not an end", [notice("bmon", "running")], ["bosltstxv", "bmon"]),
+            ("pasted terminal notice is not native completion", [{**notice("bosltstxv", "completed"), "origin": None}],
+             ["bosltstxv", "bmon"]),
+            ("monitor output cannot supply status", [{**notice("bmon"), "message": {"content":
+                notice("bmon")["message"]["content"].replace("line", "<status>completed</status>")}}],
+             ["bosltstxv", "bmon"]),
+            ("result output cannot finish a second task", [{**notice("bosltstxv", "completed"), "message": {"content":
+                notice("bosltstxv", "completed")["message"]["content"].replace("</task-notification>",
+                    "<result>output </task-notification>" + notice("bmon", "completed")["message"]["content"]
+                    + "</result></task-notification>")}}], ["bmon"]),
             ("terminal notices", [notice("bosltstxv", "completed"), notice("bmon", "killed")], []),
-            ("task stopped", [stop, notice("bmon", "completed")], []),
+            ("native run ID is distinct from task ID", [{**notice("bosltstxv", "completed"),
+                "origin": {**notice("bosltstxv")["origin"], "runId": "native-run"}}, notice("bmon", "completed")], []),
+            ("task stop is not yet confirmed", [stop, notice("bmon", "completed")], ["bosltstxv"]),
+            ("task stop failed", [stop, {**stopped, "message": {"content": [{**stopped["message"]["content"][0],
+                    "is_error": True}]}}, notice("bmon", "completed")], ["bosltstxv"]),
+            ("task stopped", [stop, stopped, notice("bmon", "completed")], []),
             ("an event notice never borrows the next notice's status", [
                 {"type": "user", "message": {"content": notice("bmon")["message"]["content"]
-                                             + notice("bosltstxv", "completed")["message"]["content"]}}],
-             ["bmon"]),
+                                             + notice("bosltstxv", "completed")["message"]["content"]},
+                 "origin": notice("bmon")["origin"]}],
+             ["bosltstxv", "bmon"]),
             ("notices absorbed mid-turn", [
-                {"type": "queue-operation", "operation": "enqueue", "content": notice("bosltstxv", "failed")["message"]["content"]},
-                {"type": "attachment", "attachment": {"type": "queued_command", "prompt": notice("bmon", "completed")["message"]["content"]}},
+                {"type": "attachment", "attachment": {"type": "queued_command", "origin": notice("bosltstxv")["origin"],
+                    "prompt": notice("bosltstxv", "failed")["message"]["content"]}},
+                {"type": "attachment", "attachment": {"type": "queued_command", "origin": notice("bmon")["origin"],
+                    "prompt": notice("bmon", "completed")["message"]["content"]}},
             ], []),
+            ("unattributed queued text cannot complete a task", [
+                {"type": "queue-operation", "operation": "enqueue", "content": notice("bosltstxv", "completed")["message"]["content"]}],
+             ["bosltstxv", "bmon"]),
         ):
             with self.subTest(name):
                 summary = session_record.summarize(started + middle + [waiting], "claude")
@@ -344,8 +370,7 @@ class TranscriptTests(unittest.TestCase):
                 records[-1]["message"]["content"] = [{"type": "tool_use", "name": "Bash"}]
                 transcript.write_text("\n".join(json.dumps(r) for r in records))
                 self.assertFalse(finished_map.candidates(ledger)[0]["candidate"])
-                records.append(claude("Safe to exit: yes"))
-                transcript.write_text("\n".join(json.dumps(r) for r in records))
+                transcript.write_text(json.dumps({"sessionId": entry["session_id"], **claude("Safe to exit: yes")}))
                 self.assertTrue(finished_map.candidates(ledger)[0]["candidate"])
 
     def test_claude_missing_stop_reason_is_not_completion_evidence(self):
@@ -827,6 +852,60 @@ class LedgerTests(unittest.TestCase):
         notices = codex_idle_watch.poll(self.ledger, seen, 90, 1201)
         self.assertEqual(len(notices), 1)
         self.assertIsNotNone(notices[0]["closeout_request"])
+
+    def watch_args(self, **overrides) -> SimpleNamespace:
+        return SimpleNamespace(**{
+            "ledger": self.ledger, "idle_seconds": 90, "interval": 45, "deadline_seconds": 1800,
+            "once": False, "capacity_state": None, "resume_capacity": False, "harness": "codex",
+            "delivered_state": self.root / "delivered.json", **overrides})
+
+    def test_watch_exits_on_closeout_request_so_background_caller_wakes(self):
+        self.write([event("agent_message", message="Still working."), event("task_started")])
+        sleeps = []
+
+        def worker_finishes_between_polls(seconds: float) -> None:
+            sleeps.append(seconds)
+            self.assertEqual(len(sleeps), 1, "watch kept polling after a closeout request")
+            self.write([event("agent_message", message="Safe to exit: yes"), event("task_complete")])
+
+        output = io.StringIO()
+        with patch.object(codex_idle_watch.time, "sleep", side_effect=worker_finishes_between_polls), \
+                contextlib.redirect_stdout(output):
+            self.assertEqual(codex_idle_watch.watch(self.watch_args(), None), 0)
+        notices = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertEqual(notices[-1]["closeout_request"]["session_id"], self.entry["session_id"])
+
+    def run_watch_to_deadline(self) -> tuple[int, list[float], list[dict]]:
+        clock = iter(range(0, 10_000, 45))
+        sleeps = []
+        output = io.StringIO()
+        with patch.object(codex_idle_watch.time, "monotonic", side_effect=lambda: next(clock)), \
+                patch.object(codex_idle_watch.time, "sleep", side_effect=sleeps.append), \
+                contextlib.redirect_stdout(output):
+            result = codex_idle_watch.watch(self.watch_args(deadline_seconds=180), None)
+        return result, sleeps, [json.loads(line) for line in output.getvalue().splitlines()]
+
+    def test_watch_wakes_once_per_closeout_request_across_rearms(self):
+        result, sleeps, notices = self.run_watch_to_deadline()
+        self.assertEqual((result, sleeps), (0, []))
+        self.assertIsNotNone(notices[0]["closeout_request"])
+        result, sleeps, notices = self.run_watch_to_deadline()
+        self.assertEqual(result, 0)
+        self.assertGreater(len(sleeps), 1)
+        self.assertEqual(len(notices), 1)
+        self.write([event("agent_message", message="Safe to exit: yes"),
+                    {**event("task_complete"), "timestamp": "2026-10-03T00:05:00Z"}])
+        _, sleeps, _ = self.run_watch_to_deadline()
+        self.assertEqual(sleeps, [])
+
+    def test_watch_selects_claude_sessions_for_closeout(self):
+        self.entry["harness"] = "claude"
+        self.transcript.write_text(json.dumps(
+            {**claude("Safe to exit: yes"), "sessionId": self.entry["session_id"]}) + "\n")
+        self.ledger.write_text(json.dumps([self.entry]))
+        self.assertTrue(codex_idle_watch.poll(self.ledger, {}, 90, 1001)[0]["skipped"])
+        notice = codex_idle_watch.poll(self.ledger, {}, 90, 1001, harness="claude")[0]
+        self.assertEqual(notice["closeout_request"]["harness"], "claude")
 
     def test_claude_native_notice_uses_exact_session_and_shared_route(self):
         self.entry["harness"] = "claude"
@@ -1395,174 +1474,66 @@ class ProcessArgumentsTests(unittest.TestCase):
     def setUp(self):
         # Kernel existence is a fixture fact, never a host PID assumption.
         self.enterContext(patch.object(session_liveness.os, "kill", return_value=None))
-        github = str(Path(__file__).resolve().parents[2] / "github/scripts")
-        with patch.object(sys, "path", [github, *sys.path]):
-            import github_plan_sessions as sessions
-        self.enterContext(patch.object(sessions.github_plan_closure, "managed_launch", return_value=False))
 
-    def test_only_kernel_absence_clears_stale_process_coverage(self):
-        github = str(Path(__file__).resolve().parents[2] / "github/scripts")
-        with patch.object(sys, "path", [github, *sys.path]):
-            import github_plan_sessions as sessions
-        commands = [
-            "/git-core/git-remote-https origin https://github.com/owner/codex-skills.git",
-            "/bin/gh repo view owner/codex-skills",
-            "python3 /abs/tool.py view owner/codex-skills",
-            "codex exec -- short-lived-work",
-            "codex resume " + self.source,
-        ]
-        for platform, argv_error in (("darwin", OSError(errno.EINVAL, "argv unavailable")),
-                                     ("linux", FileNotFoundError(errno.ENOENT, "argv unavailable"))):
-            for command in commands:
-                for outcome, absent in ((ProcessLookupError(errno.ESRCH, "gone"), True),
-                                        (None, False),
-                                        (PermissionError(errno.EPERM, "denied"), False),
-                                        (OSError(errno.EIO, "unknown"), False)):
-                    with self.subTest(platform=platform, command=command, absent=absent, outcome=type(outcome)), \
-                            patch.object(session_liveness.sys, "platform", platform), \
-                            patch.object(session_liveness, "native_arguments", side_effect=argv_error), \
-                            patch.object(session_liveness.os, "kill", side_effect=outcome) as existence:
-                        self.assertEqual(sessions.process_absence_known("456 " + command), absent)
-        # Positive source identity is not erased by later kernel absence.
-        command = "456 codex resume " + self.source
-        with patch.object(session_liveness.sys, "platform", "darwin"), \
-                patch.object(session_liveness, "native_arguments", side_effect=ProcessLookupError), \
-                patch.object(session_liveness.os, "kill", side_effect=ProcessLookupError):
-            self.assertTrue(sessions.process_absence_known(command))
-            self.assertEqual([p["sessionId"] for p in sessions.process_sessions(command, {self.source})], [self.source])
-            with self.assertRaises(ValueError):
-                session_liveness.verify_process_exit({"pid": 123, "tty": "source-tty", "session_id": self.source},
-                    rows=[(456, "other-tty", command.split(" ", 1)[1])])
-        # A live replacement cannot erase an earlier candidate.
-        with patch.object(session_liveness, "native_arguments", return_value=["/usr/bin/true"]):
-            self.assertFalse(sessions.process_absence_known(command))
-        for platform, row in (("win32", command), ("darwin", "codex resume " + self.source),
-                              ("darwin", "0 codex resume " + self.source)):
-            with self.subTest(platform=platform, row=row), \
-                    patch.object(session_liveness.sys, "platform", platform), \
-                    patch.object(session_liveness, "native_arguments", side_effect=OSError), \
-                    patch.object(session_liveness.os, "kill", side_effect=ProcessLookupError) as existence:
-                self.assertFalse(sessions.process_absence_known(row))
-                existence.assert_not_called()
-
-    def test_disappearing_snapshot_row_keeps_prior_source_peer(self):
-        github = str(Path(__file__).resolve().parents[2] / "github/scripts")
-        with patch.object(sys, "path", [github, *sys.path]):
-            import github_plan_sessions as sessions
-        for command, source_visible in (("/bin/gh repo view owner/codex-skills", False),
-                                        ("codex resume " + self.source, True)):
-            for native_complete in (False, True):
-                async def read(*_args):
-                    return [], {self.source: {"state": "ended"}}, {
-                        "status": "available" if native_complete else "incomplete",
-                        "peer_complete": native_complete, "socket": "/fixture/socket"}
-                with self.subTest(command=command, native_complete=native_complete), \
-                        patch.object(sessions, "codex_homes", return_value=[Path("/fixture")]), \
-                        patch.object(sessions, "observe_home", side_effect=read), \
-                        patch.object(sessions.github_plan_closure, "inherit_observed_leases"), \
-                        patch.object(sessions.subprocess, "run", side_effect=[
-                            SimpleNamespace(returncode=0, stdout="456 " + command),
-                            SimpleNamespace(returncode=0, stdout="")]), \
-                        patch.object(session_liveness.sys, "platform", "darwin"), \
-                        patch.object(session_liveness, "native_arguments", side_effect=OSError(errno.EINVAL, "unavailable")), \
-                        patch.object(session_liveness.os, "kill", side_effect=ProcessLookupError):
-                    peers, states, coverage = sessions._observe({self.source})
-                self.assertEqual(coverage["process_coverage"], "complete")
-                self.assertEqual(coverage["peer_complete"], native_complete)
-                self.assertEqual(bool(peers), source_visible)
-                self.assertEqual(states.get(self.source, {}).get("state"),
-                                 "live" if source_visible else "ended" if native_complete else None)
-
-    def test_authoritative_non_harness_argv_clears_an_ambiguous_ps_candidate(self):
-        github = str(Path(__file__).resolve().parents[2] / "github/scripts")
-        with patch.object(sys, "path", [github, *sys.path]):
-            import github_plan_sessions as sessions
-        executable = "/Applications/Example.app/Contents/Frameworks/Codex Framework.framework/Helpers/report_helper"
-        command = f"456 {executable} --message resume {self.source}"
-        with patch.object(session_liveness, "native_arguments", return_value=[executable, "--message", "resume " + self.source]):
-            self.assertTrue(sessions.process_absence_known(command))
-            self.assertEqual(sessions.process_sessions(command, {self.source}), [])
-        with patch.object(session_liveness, "native_arguments", side_effect=OSError("argv unavailable")):
-            self.assertFalse(sessions.process_absence_known(command))
-        with patch.object(session_liveness, "native_arguments", return_value=["codex", "resume", self.source]):
-            self.assertFalse(sessions.process_absence_known(command))
-            self.assertEqual([peer["sessionId"] for peer in sessions.process_sessions(command, {self.source})], [self.source])
-        # A different process at the same PID cannot erase the earlier candidate.
-        with patch.object(session_liveness, "native_arguments", return_value=["/usr/bin/true"]):
-            self.assertFalse(sessions.process_absence_known(command))
-        for native in (["node"], ["node", "/tools/other.js"]):
-            with self.subTest(native=native), patch.object(session_liveness, "native_arguments", return_value=native):
-                self.assertFalse(sessions.process_absence_known("456 node /tools/codex.js resume " + self.source))
-        for native, earlier in ((["/tools/code"], "/tools/codex"),
-                                (["node", "/tools/code"], "node /tools/codex.js")):
-            with self.subTest(native=native), patch.object(session_liveness, "native_arguments", return_value=native):
-                self.assertFalse(sessions.process_absence_known("456 " + earlier + " resume " + self.source))
-        for argv in ([executable, "--message", "first line\nsecond line"],
-                     ["node", "/tools/worker.js", "codex", "first line\nsecond line"]):
-            with self.subTest(argv=argv), patch.object(session_liveness, "native_arguments", return_value=argv):
-                rendered = "456 " + " ".join(argv).replace("\n", "?")
-                self.assertTrue(sessions.process_absence_known(rendered))
-        argv = ["codex", "resume", self.source, "first line\nsecond line"]
-        with patch.object(session_liveness, "native_arguments", return_value=argv):
-            rendered = "456 " + " ".join(argv).replace("\n", "?")
-            self.assertFalse(sessions.process_absence_known(rendered))
-            self.assertEqual([peer["sessionId"] for peer in sessions.process_sessions(rendered, {self.source})], [self.source])
-
-    def test_framework_helpers_clear_only_with_bounded_matching_role_identity(self):
-        github = str(Path(__file__).resolve().parents[2] / "github/scripts")
-        with patch.object(sys, "path", [github, *sys.path]):
-            import github_plan_sessions as sessions
-        for prefix in ("/Applications/Example.app/Contents", "/Relocated Folder/Other.app/Contents"):
-            helper = prefix + "/Frameworks/Runtime.framework/Versions/Current/Helpers/Codex (Service).app/Contents/MacOS/Codex (Service)"
-            for role in ("gpu-process", "utility", "renderer"):
-                argv = [helper, "--type=" + role, "--service-argument"]
-                command = "456 " + " ".join(argv)
-                with self.subTest(prefix=prefix, role=role), patch.object(session_liveness, "native_arguments",
-                        side_effect=lambda pid: argv if pid == 456 else ["codex", "app-server"]):
-                    self.assertTrue(sessions.process_absence_known(command))
-                    self.assertEqual(sessions.process_sessions(command, {self.source}), [])
-                    self.assertFalse(sessions.process_absence_known(command + "\n789 codex app-server"))
-                with patch.object(session_liveness, "native_arguments", side_effect=OSError("argv unavailable")):
-                    self.assertFalse(sessions.process_absence_known(command))
-            for argv in ([helper, "--type=unknown"], [helper, "--type="],
-                         [helper, "--other", "--type=gpu-process"],
-                         [helper, "--type=gpu-process", "--type=renderer"],
-                         [prefix + "/Resources/CLI.app/Contents/MacOS/codex", "--type=gpu-process"],
-                         ["codexPreview", "resume", self.source],
-                         ["/tools/codex Preview", "resume", self.source],
-                         ["codex", "--config", "--type=gpu-process"],
-                         ["node", helper, "--type=gpu-process"]):
-                with self.subTest(argv=argv), patch.object(session_liveness, "native_arguments", return_value=argv):
-                    self.assertFalse(sessions.process_absence_known("456 " + " ".join(argv)))
+    def test_kernel_process_details_bind_executable_incarnation_and_owner(self):
+        import ctypes
+        import struct
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder).resolve()
+            executable = root / "native-bin"
+            executable.touch()
+            process = root / "proc" / "123"
+            process.mkdir(parents=True)
+            (process / "exe").symlink_to(executable)
+            (process / "stat").write_text("123 (native process) S 42 " + "0 " * 17 + "789")
+            with patch.object(session_liveness.sys, "platform", "linux"), \
+                    patch.object(session_liveness, "PROC_ROOT", root / "proc"):
+                observed = session_liveness.native_process_details(123)
+                self.assertEqual(observed["executable"], str(executable))
+                self.assertEqual(observed["ppid"], 42)
+                self.assertEqual(observed["identity"]["startTicks"], int((process / "stat").read_text().split()[-1]))
+                (process / "stat").write_text("123 (native process) Z 42 " + "0 " * 17 + "789")
+                with self.assertRaises(ValueError):
+                    session_liveness.native_process_details(123)
+            library = Mock()
+            path_bytes = os.fsencode(executable) + b"\0"
+            kernel_identity = struct.pack("=16sQQQQQ", b"", 789, 42, 0, 0, 0)
+            def path(_pid, output, _size):
+                ctypes.memmove(output, path_bytes, len(path_bytes))
+                return len(path_bytes)
+            def info(_pid, _flavor, _arg, output, size):
+                ctypes.memmove(output, kernel_identity, len(kernel_identity))
+                return len(kernel_identity) if size == len(kernel_identity) else 0
+            library.proc_pidpath.side_effect = path
+            library.proc_pidinfo.side_effect = info
+            with patch.object(session_liveness.sys, "platform", "darwin"), \
+                    patch.object(ctypes, "CDLL", return_value=library), \
+                    patch.object(session_liveness.subprocess, "run", return_value=SimpleNamespace(stdout=f"{os.getuid()} 42")) as process_read:
+                observed = session_liveness.native_process_details(123)
+                self.assertEqual(observed["executable"], str(executable))
+                self.assertEqual(observed["identity"]["uniqueId"], struct.unpack("=16sQQQQQ", kernel_identity)[1])
+                self.assertEqual(observed["ppid"], 42)
+                process_read.return_value.stdout = f"{os.getuid() + 1} 42"
+                with self.assertRaises(ValueError):
+                    session_liveness.native_process_details(123)
+                library.proc_pidinfo.return_value = 0
+                library.proc_pidinfo.side_effect = None
+                with self.assertRaises(OSError):
+                    session_liveness.native_process_details(123)
 
     def test_spaced_cli_paths_keep_native_resume_and_unavailable_argv_vetoes(self):
-        github = str(Path(__file__).resolve().parents[2] / "github/scripts")
-        with patch.object(sys, "path", [github, *sys.path]):
-            import github_plan_sessions as sessions
         for prefix in (["/Tools With Spaces/bin/codex"], ["node", "/Application Support/bin/codex.js"],
                        ["node", "--inspect", "/Application Support/bin/codex.js"]):
             argv = [*prefix, "resume", self.source]
-            command = "456 " + " ".join(argv)
             for available in (True, False):
                 kwargs = {"return_value": argv} if available else {"side_effect": OSError("argv unavailable")}
                 with self.subTest(prefix=prefix, available=available), patch.object(session_liveness, "native_arguments", **kwargs):
-                    self.assertFalse(sessions.process_absence_known(command))
-                    self.assertEqual([peer["sessionId"] for peer in sessions.process_sessions(command, {self.source})], [self.source])
                     with self.assertRaises(ValueError):
                         session_liveness.verify_process_exit(
                             {"session_id": self.source, "pid": 123, "tty": "source-tty"},
                             rows=[(456, "other", " ".join(argv))])
 
-        argv = ["/Tools With Spaces/bin/python3", "/Application Support/codex-session.py", "resume"]
-        for available in (True, False):
-            kwargs = {"return_value": argv} if available else {"side_effect": OSError("argv unavailable")}
-            with self.subTest(venv=available), patch.object(session_liveness, "native_arguments", **kwargs):
-                self.assertFalse(sessions.process_absence_known("456 " + " ".join(argv)))
-
     def test_command_data_never_supplies_native_harness_ownership(self):
-        github = str(Path(__file__).resolve().parents[2] / "github/scripts")
-        with patch.object(sys, "path", [github, *sys.path]):
-            import github_plan_sessions as sessions
         data = "resume " + self.source
         cases = (["git", "-C", "/repo/codex-skills", "status", data],
                  ["rg", "codex " + data, "fixture.log"],
@@ -1576,8 +1547,6 @@ class ProcessArgumentsTests(unittest.TestCase):
                 kwargs = {"return_value": argv} if available else {"side_effect": OSError("argv unavailable")}
                 with self.subTest(argv=argv, available=available), patch.object(session_liveness, "native_arguments", **kwargs):
                     command = " ".join(argv)
-                    self.assertTrue(sessions.process_absence_known("456 " + command))
-                    self.assertEqual(sessions.process_sessions("456 " + command, {self.source}), [])
                     session_liveness.verify_process_exit(
                         {"session_id": self.source, "pid": 123, "tty": "source-tty"},
                         rows=[(456, "other", command)])
@@ -1597,9 +1566,6 @@ class ProcessArgumentsTests(unittest.TestCase):
         self.probe([executable, "--resume", self.other], harness="claude", guarded=True)
 
     def test_node_preload_values_do_not_hide_or_supply_the_main_harness(self):
-        github = str(Path(__file__).resolve().parents[2] / "github/scripts")
-        with patch.object(sys, "path", [github, *sys.path]):
-            import github_plan_sessions as sessions
         for preload in (["-r", "bootstrap.js"], ["--require", "bootstrap.js"],
                         ["-rbootstrap.js"], ["--require=bootstrap.js"],
                         ["--import", "bootstrap.js"], ["--loader=bootstrap.js"],
@@ -1614,9 +1580,6 @@ class ProcessArgumentsTests(unittest.TestCase):
                             session_liveness.verify_process_exit(
                                 {"session_id": self.source, "pid": 123, "tty": "source-tty"},
                                 rows=[(456, "other", " ".join(argv))])
-            argv = ["node", *preload, "ordinary.js", "--repo", "codex-skills"]
-            with patch.object(session_liveness, "native_arguments", return_value=argv):
-                self.assertTrue(sessions.process_absence_known("456 " + " ".join(argv)))
 
     def probe(self, argv, *, tty="source-tty", scope="session", guarded=False, harness="codex"):
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
@@ -1663,9 +1626,6 @@ class ProcessArgumentsTests(unittest.TestCase):
                 session_liveness.verify_process_exit(entry, independent_harness=lambda *_args: True, **kwargs)
 
     def test_uncertain_resume_options_keep_source_operands_after_separator(self):
-        github = str(Path(__file__).resolve().parents[2] / "github/scripts")
-        with patch.object(sys, "path", [github, *sys.path]):
-            import github_plan_sessions as sessions
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
         entry = {"session_id": self.source, "harness": "codex", "pid": 123, "tty": "source-tty"}
         cases = ((["codex", "-m", "M", "resume", "--", self.source], False),
@@ -1679,13 +1639,6 @@ class ProcessArgumentsTests(unittest.TestCase):
                         session_liveness.verify_process_exit(entry, rows=[(456, tty, " ".join(argv))],
                             ended_at=cutoff, started_at=lambda _pid: cutoff + timedelta(seconds=1),
                             independent_harness=lambda *_args: True)
-                peers = sessions.process_sessions("456 " + " ".join(argv), {self.source})
-                self.assertEqual([peer["sessionId"] for peer in peers], [self.source])
-        with patch.object(session_liveness, "native_arguments", side_effect=OSError("argv unavailable")):
-            peers = sessions.process_sessions("456 codex -- please resume " + self.source, {self.source})
-            self.assertEqual([peer["sessionId"] for peer in peers], [self.source])
-        with patch.object(session_liveness, "native_arguments", return_value=["codex", "--", "please resume " + self.source]):
-            self.assertEqual(sessions.process_sessions("456 codex -- please resume " + self.source, {self.source}), [])
 
     def test_uncertain_delimiters_do_not_hide_source_veto_candidates(self):
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
@@ -1794,22 +1747,6 @@ class ProcessArgumentsTests(unittest.TestCase):
     def test_physical_scope_never_reads_argv_identity(self):
         _result, read = self.probe(["codex", "resume", self.source], scope="terminal")
         read.assert_not_called()
-
-    def test_observer_uses_actual_operands_and_keeps_unavailable_argv_unknown(self):
-        github = str(Path(__file__).resolve().parents[2] / "github/scripts")
-        with patch.object(sys, "path", [github, *sys.path]):
-            import github_plan_sessions as sessions
-        for argv, live in ((["codex", "resume", "--", self.source], True),
-                           (["codex", "exec", "resume", "--", self.source], True),
-                           (["codex", "resume " + self.source], False),
-                           (["codex", "exec", "--", "resume " + self.source], False),
-                           (["codex", "resume", "--last", self.source], False)):
-            with self.subTest(argv=argv), patch.object(session_liveness, "native_arguments", return_value=argv):
-                peers = sessions.process_sessions("456 " + " ".join(argv), {self.source})
-                self.assertEqual(bool(peers), live)
-        for command in ("codex exec -- fresh", "codex app-server --listen unix:///observed"):
-            with self.subTest(command=command), patch.object(session_liveness, "native_arguments", side_effect=OSError("argv unavailable")):
-                self.assertFalse(sessions.process_absence_known("456 " + command, {"/observed"}))
 
     def test_known_options_and_late_last_preserve_native_positional_roles(self):
         for prefix in (["codex", "--model", "model with spaces", "resume"],
@@ -2610,11 +2547,36 @@ class TerminalTests(unittest.TestCase):
                 self.assertEqual(autocompact(iterm_tab.append_brief(f"claude {option}", "brief")), ["500k"])
         self.assertNotIn("--autocompact", iterm_tab.append_brief("codex --remote unix://", "brief"))
 
-    def test_claude_launch_preserves_existing_settings_and_overrides_suggestions(self):
+    def test_every_claude_account_home_launches_without_the_question_picker_or_auto_memory(self):
+        default_home = ACCOUNTS_TOML.replace('env = { CLAUDE_CONFIG_DIR = "~/claude-main" }', 'env = {}')
+        homes = [(text, name) for text in (ACCOUNTS_TOML, default_home) for name in ("main", "spare")]
+        with tempfile.TemporaryDirectory() as folder:
+            fake_claude = Path(folder) / "claude"
+            fake_claude.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
+            fake_claude.chmod(0o700)
+            launch = f"cd / && exec {shlex.quote(str(fake_claude))}"
+            commands = [iterm_tab.append_brief(launch, "brief")]
+            for text, name in homes:
+                choice = account_choice.choose("anthropic", accounts_config(text), AccountChoiceTests().snapshot(), None, name=name)
+                commands.append(iterm_tab.with_account(launch, choice, "brief"))
+            for command in commands:
+                with self.subTest(command=command):
+                    args = subprocess.run(["/bin/sh", "-c", command], capture_output=True, text=True, check=True).stdout.splitlines()
+                    separator = args.index("--")
+                    parser = argparse.ArgumentParser(add_help=False)
+                    parser.add_argument("--disallowedTools", action="append")
+                    parser.add_argument("--settings")
+                    options, _ = parser.parse_known_args(args[:separator])
+                    self.assertEqual(options.disallowedTools, [iterm_tab.CLAUDE_QUESTION_TOOL])
+                    self.assertIs(json.loads(options.settings)[iterm_tab.CLAUDE_AUTO_MEMORY_SETTING], False)
+                    self.assertEqual(args[separator + 1:], ["brief"])
+        self.assertNotIn(iterm_tab.CLAUDE_QUESTION_TOOL, iterm_tab.append_brief("codex --remote unix://", "brief"))
+
+    def test_claude_launch_preserves_existing_settings_and_overrides_unattended_settings(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             settings = {"model": "fixture-model", "permissions": {"allow": ["Read"]},
-                        iterm_tab.CLAUDE_SUGGESTION_SETTING: True}
+                        iterm_tab.CLAUDE_SUGGESTION_SETTING: True, iterm_tab.CLAUDE_AUTO_MEMORY_SETTING: True}
             path = root / "settings.json"
             path.write_text(json.dumps(settings))
             for option in ("--settings " + shlex.quote(json.dumps(settings)),
@@ -2627,12 +2589,17 @@ class TerminalTests(unittest.TestCase):
                     received = json.loads(args[index + 1])
                     self.assertEqual(received["model"], settings["model"])
                     self.assertEqual(received["permissions"], settings["permissions"])
-                    self.assertFalse(received[iterm_tab.CLAUDE_SUGGESTION_SETTING])
+                    self.assertIs(received[iterm_tab.CLAUDE_SUGGESTION_SETTING], False)
+                    self.assertIs(received[iterm_tab.CLAUDE_AUTO_MEMORY_SETTING], False)
                     self.assertEqual(args[-1], "brief")
 
             with self.assertRaises(ValueError):
                 iterm_tab.append_brief(f"cd {shlex.quote(str(root))} && exec claude --settings settings.json", "brief")
             settings[iterm_tab.CLAUDE_SUGGESTION_SETTING] = False
+            path.write_text(json.dumps(settings))
+            with self.assertRaises(ValueError):
+                iterm_tab.append_brief(f"cd {shlex.quote(str(root))} && exec claude --settings settings.json", "brief")
+            settings[iterm_tab.CLAUDE_AUTO_MEMORY_SETTING] = False
             settings["env"] = {"FIXTURE_PRIVATE_VALUE": "opaque-fixture-value"}
             path.write_text(json.dumps(settings))
             command = iterm_tab.append_brief(f"cd {shlex.quote(str(root))} && exec claude --settings settings.json", "brief")
@@ -2651,7 +2618,7 @@ class TerminalTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             path = root / "settings.json"
-            path.write_text(json.dumps({iterm_tab.CLAUDE_SUGGESTION_SETTING: False}))
+            path.write_text(json.dumps(dict.fromkeys(iterm_tab.CLAUDE_UNATTENDED_SETTINGS, False)))
             with self.assertRaises(ValueError):
                 iterm_tab.append_brief("claude --settings settings.json", "brief")
             with self.assertRaises(ValueError):

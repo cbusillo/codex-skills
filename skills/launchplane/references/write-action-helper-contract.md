@@ -295,6 +295,27 @@ operation is `apply_odoo_addon_settings`, defined by the producer contract.
 - Apply changes the record, not the database. Check `read_back_matches`, then
   run Odoo post-deploy for the lane and verify the settings there.
 
+## Odoo website settings
+
+`odoo-website-settings-dry-run` and `odoo-website-settings-apply` call
+`POST /v1/product-config/odoo-website-settings/apply` to prepare a product's
+production website settings. The Launchplane operation is
+`apply_odoo_website_settings`, defined by the producer contract.
+
+- The private payload file holds `product`, `context`, `reason`, optional
+  `instance` (only `prod`), and `website_settings`: `artifact_id` naming the
+  product's current testing artifact plus `settings` with `website_id`,
+  `public_origin` (HTTPS), `public_indexing_enabled`, `google_analytics_key`,
+  `cookies_bar` and `block_third_party_domains`. Unknown fields, a non-HTTPS
+  origin and collection-only rollback are refused locally. Launchplane checks
+  the origin, artifact and analytics consent rules.
+- `website_settings: null` withdraws the pending intent.
+- Apply uses the same gates as addon settings: `--reviewed-dry-run`,
+  `--expected-plan-digest`, `--dry-run-evidence-file` for the same product and
+  context, and `--idempotency-key`.
+- Preparation writes inert intent and changes no Odoo database. The
+  Client-accepted release applies it.
+
 ## Integration allowances
 
 `integration-allowances-read`, `integration-allowances-dry-run` and
@@ -587,8 +608,8 @@ installed local helper bindings.
   The operation projection returns the operation's id, product,
   context, instance, status, phase, attempt, deployment record id, the
   requested artifact id, created, updated, started, heartbeat and finished
-  times, `error_code`, a bounded `error_description` using the existing
-  public-summary validator (the descriptive word `credential` is redacted),
+  times, `error_code`, a bounded `error_description` using the response-prose
+  redaction policy,
   and validated
   `error_detail_keys` (env-key names only); and, once a result exists, the deploy, post-deploy,
   health, canonical and logo statuses, the deployment and release tuple ids,
@@ -1258,12 +1279,29 @@ Global options such as `--url` must appear before the subcommand. A diagnostic
 with `status: "incomplete"` may still have a local token source; read the
 `classification` field before describing the failure.
 
+## Response prose
+
+Output-only prose is redacted at every nesting level. Person-written metadata
+also redacts long opaque words; service diagnostics preserve long identifiers
+subject to credential-marker redaction. Credential assignments, tokens and URLs are redacted, and
+remaining denylist markers hide the entire field. Types, lengths, structural
+allowlists and raw secret-shape checks retain their existing validation.
+The context helper uses the same service-prose projection.
+
+Reasons compared with saved reviewed evidence (testing-hold, product Client
+and image repository), merge-train `ineligible_reasons` matched by downstream
+code, and structural fields retain strict validation. Lossy prose never
+establishes apply authority or substitutes for machine-matched protocol text.
+If an allowance apply receives HTTP success but its response cannot be
+projected, its result is `accepted_unverified`, with HTTP status, safe trace
+and a readback recommendation. It must not be retried as a failed write.
+
 ## Exit Behavior
 
 - `0`: Launchplane accepted the request and the helper emitted a redacted
   summary. `status: "accepted_unverified"` exits 0 for the Odoo addon-settings,
-  integration-allowances, testing-hold, product-repository-identity,
-  generic-web deploy-recovery, repository-inventory,
+  Odoo website-settings, integration-allowances, testing-hold,
+  product-repository-identity, generic-web deploy-recovery, repository-inventory,
   product expected-config, and merge-train policy import applies; product-config
   apply does not emit it. It exits 1 for the reviewed lane-setup
   applies (product Client, product image repository, Dokploy target, production
@@ -1827,6 +1865,20 @@ operations, drop or list unknown fields instead. A Launchplane PR that adds a
 field to a strictly projected response lands the matching helper allowlist
 change first and says so in its PR body.
 
+For bounded GET reads, the top-level allowlists live in
+`BOUNDED_READ_RESPONSE_FIELDS` in `scripts/launchplane_contract.py`. A field
+Launchplane declares there but the read does not project, such as the
+environment read's `host_network_capacity_available` and
+`host_network_capacity`, is accepted and dropped; any other field still fails
+closed. `references/launchplane-read-response-fields.json` pins the top-level
+fields Launchplane's published OpenAPI declares for each of those routes, and
+the tests require every pinned field to be in its read's allowlist. Refresh the
+pin with `uv run scripts/sync-read-response-fields.py sync` from this skill
+directory, then add each new field to its read's allowlist, projecting it only
+when the read should emit it, and name the Launchplane commit in the commit
+message. The `Launchplane Read Response Fields` workflow fails on pull
+requests, on `main` and daily when the pin differs from Launchplane's `main`.
+
 The merge-train controller reply has no helper allowlist. Launchplane publishes
 its contract as `contracts/merge-train-controller-reply.schema.json` and tests
 every reply against it; this skill pins a byte-for-byte copy at
@@ -1905,6 +1957,15 @@ never CLI input. The service checks `live_target_runtime.plan` for dry runs and
 `.apply` for writes on product/context. The helper's apply command requires both
 permissions because it also runs pre-apply and read-back dry runs. It grants
 nothing and never switches identity.
+
+Repeat `--key NAME` to select exactly those existing managed keys. Use the
+same selection on dry-run, apply and readback. Duplicate and malformed names
+are rejected before any request. Selected sync applies
+no retirement and preserves unselected provider values and stored retirement
+intent. Its readback verifies only the selected keys, so unrelated drift can
+remain. Omitting `--key` keeps the full-lane sync behavior. The helper requires
+the service to echo the selection and rejects changes outside it, including
+retirements. The selection is part of the reviewed plan digest.
 
 Save the dry-run output privately. Apply requires `--reviewed-dry-run`,
 `--expected-plan-digest` from `result.plan_sha256`, `--dry-run-evidence-file`, and

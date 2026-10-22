@@ -26,7 +26,7 @@ import session_record
 import session_liveness
 import account_choice
 import backfill_inventory
-from session_liveness import idle_terminal_command, inventory
+from session_liveness import inventory
 
 GITHUB = Path(__file__).resolve().parents[2] / "github/scripts"
 sys.path.insert(0, str(GITHUB))
@@ -364,7 +364,8 @@ def _record_closure(path, entry, supervisor_session, *, persist=True, native=Non
 
 def scan_start(entries):
     timestamps = [release.stamp(r["timestamp"]) for e in entries
-                  for r in session_record.read_jsonl(Path(e["transcript"])) if r.get("timestamp")]
+                  for r in (e["_transcript_records"] if "_transcript_records" in e else
+                            session_record.read_jsonl(Path(e["transcript"]))) if r.get("timestamp")]
     if not timestamps:
         raise ValueError("transcripts have no timestamped history for discovery")
     return (min(timestamps) - timedelta(seconds=1)).isoformat()

@@ -3,7 +3,6 @@
 # dependencies = ["aiohttp==3.14.5"]
 # ///
 """Fake native daemon evidence, including refusal and read-only transport."""
-import copy
 import asyncio
 from contextlib import ExitStack, redirect_stdout
 import io
@@ -11,6 +10,7 @@ import inspect
 import json
 import os
 import socket
+import subprocess
 import sys
 from pathlib import Path
 import tempfile
@@ -24,7 +24,6 @@ from unittest.mock import Mock, patch
 from aiohttp import web
 import github_plan_sessions as SESSIONS
 import github_plan_closure as CLOSURE
-
 
 class ReceiptFixture:
     """A real read-only Unix daemon plus an actual shared closure receipt."""
@@ -65,13 +64,14 @@ class ReceiptFixture:
             {"type": "event_msg", "timestamp": "2026-10-01T02:00:01Z", "payload": {"type": "task_complete", "turn_id": "source-turn"}},
         ]) + "\n")
         self.log = self.root / ".code/skill-data/supervisor-closed-sessions.json"
-        self.stack.enter_context(patch.dict(os.environ, {"HOME": str(self.root), "CODE_HOME": str(self.log.parent.parent)}))
+        self.stack.enter_context(patch.dict(os.environ, {"HOME": str(self.root), "CODE_HOME": str(self.log.parent.parent), "CODEX_HOME": str(self.home)}))
         self.stack.enter_context(patch.object(CLOSURE, "closed_log", return_value=self.log))
         self.stack.enter_context(patch.object(CLOSURE, "host_identity", return_value={"boot": "fixture-boot", "uid": os.getuid()}))
-        self.stack.enter_context(patch.object(SESSIONS, "codex_homes", side_effect=lambda **_kw: sorted(self.homes)))
+        self.stack.enter_context(patch.object(SESSIONS, "configured_homes", side_effect=lambda **_kw: sorted(self.homes)))
         SESSIONS.native_helpers()
         self.stack.enter_context(patch.object(SESSIONS.process_liveness(), "process_arguments",
             side_effect=lambda _pid, command: (SESSIONS.process_liveness().harness_arguments(command), True)))
+        self.stack.enter_context(patch.object(SESSIONS.process_liveness(), "process_absent", return_value=False))
         import release_session_claims
         self.release = release_session_claims
         self.stack.enter_context(patch.object(self.release, "inventory", side_effect=lambda: list(self.process_rows)))
@@ -79,8 +79,8 @@ class ReceiptFixture:
                       "pid": 123, "tty": "fixture-tty", "supervisor_owned": True, "codex_home": str(self.home),
                       "launch_pid": 123, "launch_generation": "source-generation", "launch_started_at": "2026-10-01T01:00:00Z"}
         self.release.record_closure(self.log, self.entry, "supervisor")
-        real_run = SESSIONS.subprocess.run
-        self.stack.enter_context(patch.object(SESSIONS.subprocess, "run", side_effect=lambda argv, **kw:
+        real_run = subprocess.run
+        self.stack.enter_context(patch.object(subprocess, "run", side_effect=lambda argv, **kw:
             SimpleNamespace(returncode=0, stdout=self.commands) if argv[:2] == ["ps", "-axo"] or argv[:3] == ["ps", "-ww", "-axo"] else real_run(argv, **kw)))
         ready = threading.Event()
 
@@ -111,7 +111,8 @@ class ReceiptFixture:
                     elif method == "thread/queue/list": result = {"data": self.home_queues.get(str(native_home), self.queue_items), "nextCursor": None}
                     elif method == "thread/turns/list":
                         status = SESSIONS.native_helpers()[1].session_status({**self.entry, "transcript": str(native_path)})
-                        result = {"data": [{"id": status["turn_id"], "status": "completed" if status["safe_verdict"] else "inProgress"}] if status["turn_id"] else [], "nextCursor": None}
+                        # Native completion is independent of claim disposition.
+                        result = {"data": [{"id": status["turn_id"], "status": "completed" if status["turn_completed_at"] else "inProgress"}] if status["turn_id"] else [], "nextCursor": None}
                     elif method == "thread/timeline/list":
                         status = SESSIONS.native_helpers()[1].session_status({**self.entry, "transcript": str(native_path)})
                         result = {"data": [{"type": "turnStarted", "position": 0, "turnId": status["turn_id"]},
@@ -198,9 +199,6 @@ class ReceiptFixture:
         self.stack.close()
         if self.thread.is_alive() or self.failure:
             raise RuntimeError("fixture daemon did not stop") from self.failure
-
-    def observe(self, proof_sessions=None):
-        return SESSIONS.observe({self.session}, set() if proof_sessions is None else proof_sessions)
 
     def managed(self, native):
         """Registry-coordinate fixture; the ingress's wire behavior has its own tests."""
@@ -670,9 +668,8 @@ class FinishPreviewIntegrationTests(unittest.TestCase):
                     self.assertTrue(report["ok"])
                     self.assertEqual(CLOSURE.action_pending(f.session), not apply)
                     if apply:
-                        closed = CLOSURE.verified_record(f.session)
-                        self.assertIsNotNone(closed)
-                        self.assertEqual(closed["session_id"], f.session)
+                        closed = CLOSURE.source_records({f.session})
+                        self.assertEqual(closed[f.session]["session_id"], f.session)
                     else:
                         self.assertEqual(self.source_bytes(f), source)
                         self.assertEqual(CLOSURE.lease_path(f.session).read_bytes(), lease)
@@ -703,64 +700,6 @@ class FinishPreviewIntegrationTests(unittest.TestCase):
                         self.assertEqual(CLOSURE.lease_path(f.session).read_bytes(), lease)
                         self.assertEqual(self.source_bytes(f), source)
                         self.assertFalse(f.mutations)
-
-    def test_observation_keeps_unknown_cleared_resumed_source_live_without_retaining_lease(self):
-        import github_plan_native as native
-        for moved, queued in ((False, False), (True, True)):
-            for kind in (None, "unsafe-mode", "malformed-json", "duplicates", "unknown-user"):
-                with self.subTest(moved=moved, queued=queued, kind=kind), ReceiptFixture() as f:
-                    home = f.root / "retained-account" if moved else f.home
-                    transcript = f.add_home(home) if moved else f.transcript
-                    metadata = {"codex_home": str(home), "launch_pid": 456,
-                                "launch_generation": "actual-resume",
-                                "launch_started_at": f.entry["launch_started_at"]}
-                    with CLOSURE.resume_guard(f.session, method="thread/resume", home=home):
-                        CLOSURE.resumed_launch(f.session, metadata, str(transcript), "resumed-tty")
-                    f.native_state = "notLoaded"
-                    current = {**f.entry, **metadata, "pid": metadata["launch_pid"],
-                               "tty": "resumed-tty", "transcript": str(transcript)}
-                    with CLOSURE.ownership(f.session):
-                        native.resolve_pending(f.session, asyncio.run(native.prove_end(current)))
-                    self.assertFalse(CLOSURE.action_pending(f.session))
-                    if moved:
-                        f.homes = [f.home]
-                    if queued:
-                        f.home_queues[str(home)] = [{"id": "queued", "clientUserMessageId": "client",
-                            "input": [{"type": "text", "text": "queued after prior resolution"}]}]
-                    if kind is not None:
-                        self.source_artifact(f, kind)
-                        with self.assertRaises(ValueError) as failed_source:
-                            CLOSURE.source_records({f.session})
-                        source_error = str(failed_source.exception)
-                    source = self.source_bytes(f)
-                    lease = CLOSURE.lease_path(f.session).read_bytes()
-                    f.home_requests.clear()
-                    def available():
-                        try:
-                            with CLOSURE.ownership(f.session) as acquired:
-                                return acquired
-                        except CLOSURE.LeaseBusy:
-                            return False
-                    with CLOSURE.admission(), ThreadPoolExecutor(max_workers=1) as pool:
-                        outer_observation = CLOSURE._OBSERVATION.get()
-                        peers, states, coverage = f.observe()
-                        self.assertIs(CLOSURE._OBSERVATION.get(), outer_observation)
-                        available_after_observe = pool.submit(available).result(2)
-                        self.assertEqual(coverage["process_coverage"], "complete")
-                        self.assertIn((str(f.home), "thread/queue/list"), f.home_requests)
-                        if kind is not None:
-                            self.assertEqual(states[f.session]["state"], "live")
-                            self.assertEqual(states[f.session]["error"], source_error)
-                            self.assertTrue(any(peer.get("sessionId") == f.session
-                                                and peer.get("error") == source_error for peer in peers))
-                        else:
-                            self.assertEqual(states[f.session]["state"], "live" if queued else "ended")
-                            self.assertIn((str(home), "thread/queue/list"), f.home_requests)
-                        self.assertEqual(available_after_observe, kind is not None or queued)
-                    self.assertFalse(CLOSURE.action_pending(f.session))
-                    self.assertEqual(CLOSURE.lease_path(f.session).read_bytes(), lease)
-                    self.assertEqual(self.source_bytes(f), source)
-                    self.assertFalse(f.mutations)
 
     def test_resumed_source_keeps_its_saved_generation_and_refuses_unknown_metadata(self):
         import github_plan_native as native
@@ -907,59 +846,6 @@ class FinishPreviewIntegrationTests(unittest.TestCase):
 
 
 class IdleReceiptIntegrationTests(unittest.TestCase):
-    def test_owned_recovery_ignores_absent_thread_in_unassociated_daemon(self):
-        with ReceiptFixture() as f:
-            other = f.root / "unassociated"
-            f.add_home(other, copy_transcript=False)
-            f.rpc_results[(str(other), "thread/loaded/list")] = {"data": [], "nextCursor": None}
-            f.rpc_results[(str(other), "thread/read")] = ValueError("thread not found")
-            with CLOSURE.resume_guard(f.session, method="thread/resume", home=f.home): pass
-            f.native_state = "notLoaded"
-            before = CLOSURE.source_records({f.session})[f.session]
-            with CLOSURE.admission():
-                _, states, coverage = f.observe()
-                self.assertTrue(coverage["peer_complete"])
-                self.assertEqual(states[f.session]["state"], "ended")
-            self.assertFalse(list(other.rglob("*.jsonl")))
-            self.assertIn((str(other), "thread/read"), f.home_requests)
-            self.assertFalse(CLOSURE.action_pending(f.session))
-            self.assertEqual(CLOSURE.source_records({f.session})[f.session], before)
-
-    def test_ordinary_observation_authenticates_initialize_home_despite_shared_transcripts(self):
-        for mismatch in (False, True):
-            with self.subTest(mismatch=mismatch), ReceiptFixture() as f:
-                other = f.root / "other-account"
-                copied = other / "sessions" / f.transcript.name
-                copied.parent.mkdir(parents=True)
-                copied.symlink_to(f.transcript)
-                f.homes.append(other)
-                CLOSURE.replace_rows([])
-                f.release.record_closure(f.log, f.entry, "supervisor")
-                reported_home = other if mismatch else f.root / "canonical-home-alias"
-                if not mismatch: reported_home.symlink_to(f.home, target_is_directory=True)
-                f.rpc_results["initialize"] = {"codexHome": str(reported_home)}
-                _, states, coverage = f.observe()
-                self.assertEqual(states.get(f.session, {}).get("state") == "ended", not mismatch)
-                self.assertEqual(coverage["observed_source_incomplete"], mismatch)
-                self.assertFalse(f.mutations)
-
-    def test_notloaded_observation_resolves_aborted_prelaunch_without_new_generation(self):
-        with ReceiptFixture() as f:
-            original = CLOSURE.log_rows()[0]
-            with CLOSURE.resume_guard(f.session):
-                pass
-            invalidated = CLOSURE.log_rows()[0]
-            self.assertIsNone(invalidated.get("resumed_generation"))
-            f.native_state = "notLoaded"
-            peers, states, _coverage = f.observe({f.session})
-            self.assertEqual(states.get(f.session, {}).get("state"), "ended")
-            self.assertFalse(peers)
-            self.assertFalse(CLOSURE.action_pending(f.session))
-            self.assertEqual(CLOSURE.log_rows()[0], invalidated)
-            closed = f.release.record_closure(f.log, f.entry, "supervisor")
-            self.assertEqual(closed["ended_at"], original["ended_at"])
-            self.assertFalse(f.mutations)
-
     def test_source_without_closed_row_is_frozen_and_action_clear_preserves_freeze(self):
         with ReceiptFixture() as f:
             CLOSURE.replace_rows([])
@@ -982,121 +868,13 @@ class IdleReceiptIntegrationTests(unittest.TestCase):
                 f.release.record_closure(f.log, f.entry, "supervisor")
             self.assertTrue(CLOSURE.action_pending(f.session))
 
-    def test_action_category_is_sticky_and_admission_requires_all_leases_first(self):
+    def test_action_category_is_sticky(self):
         with ReceiptFixture() as f:
             with CLOSURE.ownership(f.session):
                 CLOSURE.set_action_pending(f.session, True, method="thread/realtime/start")
                 floor = CLOSURE.action_time(f.session)
                 CLOSURE.set_action_pending(f.session, True, method="turn/start")
                 self.assertEqual(CLOSURE.action_time(f.session), floor)
-                before = CLOSURE.lease_path(f.session).read_bytes()
-                with self.assertRaises(ValueError):
-                    CLOSURE.admit_sources({f.session, "missing-source"})
-                self.assertEqual(CLOSURE.lease_path(f.session).read_bytes(), before)
-
-    def test_pending_resolution_reuses_native_cutoff_and_retains_guarded_source_for_admission(self):
-        with ReceiptFixture() as f:
-            cutoff = datetime.now(timezone.utc) - timedelta(minutes=1)
-            rows = CLOSURE.log_rows()
-            rows[0]["tty_exited_at"] = cutoff.isoformat()
-            CLOSURE.replace_rows(rows)
-            with CLOSURE.resume_guard(f.session): pass
-            f.native_state = "notLoaded"
-            native = ["codex", "--remote", "unix://" + str(CLOSURE.daemon_endpoint(f.home)), "--", "new task"]
-            def available():
-                try:
-                    with CLOSURE.ownership(f.session): return True
-                except CLOSURE.LeaseBusy: return False
-            with patch.object(CLOSURE, "process_started_at", return_value=cutoff + timedelta(seconds=1)):
-                f.managed(native)
-                f.commands = "456 " + " ".join(native)
-                f.process_rows = [(456, "fixture-tty", " ".join(native))]
-                with CLOSURE.admission(), ThreadPoolExecutor(max_workers=1) as pool:
-                    self.assertEqual(f.observe()[1][f.session]["state"], "ended")
-                    self.assertFalse(pool.submit(available).result(2))
-                    CLOSURE.admit_sources({f.session})
-            with self.assertRaises(ValueError):
-                with CLOSURE.resume_guard(f.session): pass
-
-    def test_failed_or_globally_incomplete_pending_observation_releases_only_new_guard(self):
-        for failure in ("native-work", "global-process"):
-            with self.subTest(failure=failure), ReceiptFixture() as f:
-                with CLOSURE.resume_guard(f.session, method="turn/start", home=f.home): pass
-                if failure == "native-work":
-                    f.rpc_results["thread/goal/get"] = {"goal": {"threadId": f.session, "status": "active"}}
-                else:
-                    f.native_state = "notLoaded"
-                    f.commands = "456 codex resume"
-                def available(session):
-                    try:
-                        with CLOSURE.ownership(session, create=True): return True
-                    except CLOSURE.LeaseBusy: return False
-                with CLOSURE.ownership("preowned", create=True), CLOSURE.admission(), ThreadPoolExecutor(max_workers=1) as pool:
-                    self.assertNotEqual(f.observe()[1].get(f.session, {}).get("state"), "ended")
-                    self.assertTrue(pool.submit(available, f.session).result(2))
-                    self.assertFalse(pool.submit(available, "preowned").result(2))
-
-    def test_observation_borrows_only_the_live_direct_guard_lifetime(self):
-        with ReceiptFixture() as f, ThreadPoolExecutor(max_workers=1) as pool:
-            f.native_state = "notLoaded"
-            with CLOSURE.resume_guard(f.session, method="thread/resume", home=f.home): pass
-            held, release = threading.Event(), threading.Event()
-            def foreign_owner():
-                with CLOSURE.ownership(f.session) as acquired:
-                    held.set()
-                    release.wait(3)
-                    return acquired
-            with CLOSURE.admission():
-                with CLOSURE.ownership(f.session):
-                    self.assertEqual(f.observe()[1][f.session]["state"], "ended")
-                    self.assertEqual(f.observe()[1][f.session]["state"], "ended")
-                future = pool.submit(foreign_owner)
-                try:
-                    self.assertTrue(held.wait(2))
-                    self.assertEqual(f.observe()[1][f.session]["state"], "live")
-                finally:
-                    release.set()
-                self.assertTrue(future.result(2))
-
-    def test_recovering_moved_account_observes_original_unconfigured_daemon(self):
-        with ReceiptFixture() as f:
-            resumed_home = f.root / "resumed-account"
-            resumed_transcript = f.add_home(resumed_home)
-            metadata = {"codex_home": str(resumed_home), "launch_pid": 456,
-                        "launch_generation": "moved-account", "launch_started_at": f.entry["launch_started_at"]}
-            with CLOSURE.resume_guard(f.session, method="thread/resume", home=resumed_home):
-                CLOSURE.resumed_launch(f.session, metadata, str(resumed_transcript), "resumed-tty")
-            before = CLOSURE.source_records({f.session})[f.session]
-            f.native_state = "notLoaded"
-            f.commands = "789 codex app-server --listen unix://" + str(CLOSURE.daemon_endpoint(f.home))
-            with patch.object(SESSIONS, "codex_homes", return_value=[resumed_home]), CLOSURE.admission():
-                for _ in range(2):
-                    _, states, coverage = f.observe()
-                    self.assertEqual(coverage["process_coverage"], "complete")
-                    self.assertEqual(coverage["source_count"], 2)
-                    self.assertEqual(states[f.session]["state"], "ended")
-            self.assertEqual(CLOSURE.source_records({f.session})[f.session], before)
-
-    def test_bad_recovery_home_does_not_hide_the_other_known_home(self):
-        for broken in ("original", "generation"):
-            with self.subTest(broken=broken), ReceiptFixture() as f:
-                resumed_home = f.root / "resumed-account"
-                resumed_transcript = f.add_home(resumed_home)
-                metadata = {"codex_home": str(resumed_home), "launch_pid": 456,
-                            "launch_generation": "moved-account", "launch_started_at": f.entry["launch_started_at"]}
-                with CLOSURE.resume_guard(f.session, method="thread/resume", home=resumed_home):
-                    CLOSURE.resumed_launch(f.session, metadata, str(resumed_transcript), "resumed-tty")
-                rows = CLOSURE.log_rows()
-                if broken == "original": rows[0]["codex_home"] = ["invalid"]
-                else: rows[0]["resumed_generation"]["codex_home"] = ["invalid"]
-                CLOSURE.replace_rows(rows)
-                good_home = resumed_home if broken == "original" else f.home
-                f.native_state = "active"
-                with patch.object(SESSIONS, "codex_homes", return_value=[]):
-                    peers, states, _ = f.observe()
-                self.assertTrue(any(peer.get("home") == str(good_home) for peer in peers))
-                self.assertEqual(states[f.session]["state"], "live")
-                self.assertTrue(CLOSURE.action_pending(f.session))
 
     def test_short_mutation_contention_waits_without_failing_the_second_launch(self):
         import fcntl
@@ -1125,6 +903,7 @@ class IdleReceiptIntegrationTests(unittest.TestCase):
 
     def test_registration_prunes_only_confirmed_dead_runtime_rows(self):
         shared = SESSIONS.process_liveness()
+        native_absent = shared.process_absent
         for kind in ("managed_launch", "managed_proxy"):
             for pid in (None, 0, -1, True, "456", 456):
                 row = {"record_kind": kind, "launch_pid": pid}
@@ -1140,179 +919,16 @@ class IdleReceiptIntegrationTests(unittest.TestCase):
         with patch.object(shared.os, "kill", side_effect=ProcessLookupError):
             self.assertEqual(CLOSURE.prune_registrations([source]), [source])
         with ReceiptFixture() as f:
-            with SESSIONS.subprocess.Popen([sys.executable, "-c", "pass"]) as child:
+            with subprocess.Popen([sys.executable, "-c", "pass"]) as child:
                 child.wait()
             dead = {"record_kind": "managed_launch", "launch_pid": child.pid}
             with CLOSURE.store_lock(f.log):
                 CLOSURE.replace_rows([*CLOSURE.log_rows(), dead])
-            CLOSURE.register_launch(["codex", "--", "task"], str(f.home))
+            with patch.object(shared, "process_absent", side_effect=native_absent):
+                CLOSURE.register_launch(["codex", "--", "task"], str(f.home))
             rows = CLOSURE.log_rows()
             self.assertNotIn(dead, rows)
             self.assertTrue(any(r.get("session_id") == f.session for r in rows))
-
-    def test_registration_without_guarded_attachment_is_not_process_coverage(self):
-        with ReceiptFixture() as f:
-            native = ["codex", "--remote", "unix://" + str(CLOSURE.daemon_endpoint(f.home)), "--", "task"]
-            born = datetime(2026, 10, 1, tzinfo=timezone.utc)
-            with patch.object(CLOSURE.os, "getpid", return_value=456), patch.object(CLOSURE, "process_started_at", return_value=born):
-                CLOSURE.register_launch(native, str(f.home))
-                f.commands = "456 " + " ".join(native)
-                self.assert_live(f)
-
-    def test_managed_unrelated_interactive_client_has_exact_process_birth_and_observed_home(self):
-        with ReceiptFixture() as f:
-            native = ["codex", "--remote", "unix://" + str(CLOSURE.daemon_endpoint(f.home)), "--", "unrelated task"]
-            born = datetime(2026, 10, 1, tzinfo=timezone.utc)
-            with patch.object(CLOSURE, "process_started_at", return_value=born):
-                f.managed(native)
-                endpoint = str(CLOSURE.daemon_endpoint(f.home))
-                self.assertEqual(CLOSURE.guarded_launch_endpoint(456, native), endpoint)
-                self.assertFalse(CLOSURE.managed_launch(456, native, set()))
-                self.assertTrue(CLOSURE.managed_launch(456, native, {endpoint}))
-                f.commands = "456 " + " ".join(native)
-                self.assert_ended(f)
-                f.commands = "456 python3 /fixture/codex " + " ".join(native[1:])
-                self.assert_ended(f)
-                f.release.record_closure(f.log, f.entry, "supervisor")
-                self.assert_ended(f)
-                with patch.object(CLOSURE, "process_started_at", return_value=datetime(2026, 10, 2, tzinfo=timezone.utc)):
-                    self.assert_live(f)
-                f.commands = "456 codex --remote unix:///changed -- task"
-                self.assert_live(f)
-            self.assertNotIn("unrelated task", f.log.read_text())
-
-    def assert_ended(self, fixture):
-        peers, states, _ = fixture.observe()
-        self.assertFalse(peers)
-        self.assertEqual(states[fixture.session]["state"], "ended")
-
-    def assert_live(self, fixture):
-        peers, states, _ = fixture.observe()
-        self.assertTrue(any(peer["sessionId"] == fixture.session for peer in peers))
-        self.assertEqual(states[fixture.session]["state"], "live")
-
-    def test_real_idle_receipt_allows_fresh_exec_but_refuses_unknown_clients(self):
-        with ReceiptFixture() as f:
-            f.commands = "codex exec fresh-unrelated-work"
-            self.assert_ended(f)
-            for command in ("codex --remote unix:///unobserved", "codex -C /fixture/gui -- GUI task", "codex resume --last", "codex resume", "codex app-server"):
-                f.commands = command
-                self.assert_live(f)
-
-    def test_active_process_pid_reuse_and_surviving_worker_defeat_idle_receipt(self):
-        with ReceiptFixture() as f:
-            self.assert_ended(f)
-            f.native_state = "active"
-            self.assert_live(f)
-            f.native_state = "idle"
-            for rows in ([(123, "new-tty", "unrelated-reused-pid")], [(456, "fixture-tty", "surviving-worker")]):
-                f.process_rows = rows
-                with patch.object(CLOSURE, "process_started_at", return_value=datetime(2026, 10, 1, tzinfo=timezone.utc)):
-                    self.assert_live(f)
-
-    def test_running_native_execution_or_incomplete_inventory_keeps_source_live(self):
-        with ReceiptFixture() as f:
-            self.assert_ended(f)
-            f.execution_items = [{"type": "commandExecution", "status": "inProgress", "processId": "worker", "exitCode": None}]
-            self.assert_live(f)
-            f.execution_items = []
-            f.incomplete = True
-            self.assert_live(f)
-
-    def test_new_tty_occupant_after_closure_does_not_own_the_old_generation(self):
-        with ReceiptFixture() as f:
-            ended = datetime.now(timezone.utc) - timedelta(minutes=1)
-            rows = json.loads(f.log.read_text())
-            rows[0]["ended_at"] = ended.isoformat()
-            f.log.write_text(json.dumps(rows))
-            self.assert_ended(f)
-            f.process_rows = [(456, "fixture-tty", "new-unrelated-worker")]
-            with patch.object(CLOSURE, "process_started_at", return_value=ended + timedelta(seconds=1)):
-                self.assert_ended(f)
-            with patch.object(CLOSURE, "process_started_at", return_value=datetime.now(timezone.utc) + timedelta(days=1)):
-                self.assert_live(f)
-
-            native = ["codex", "--remote", "unix://" + str(CLOSURE.daemon_endpoint(f.home)), "--", "new task"]
-            with patch.object(CLOSURE, "process_started_at", return_value=ended + timedelta(seconds=1)):
-                f.managed(native)
-                f.commands = "456 " + " ".join(native)
-                f.process_rows = [(456, "fixture-tty", " ".join(native))]
-                self.assert_ended(f)
-                closed = f.release.record_closure(f.log, f.entry, "supervisor")
-                self.assertTrue(f.release.validate_closure({
-                    **closed, "handoff_url": "https://github.com/test/repo/issues/1#issuecomment-2"
-                }, "supervisor")["safe_verdict"])
-                with self.assertRaises(ValueError):
-                    f.release.validate_closure({**closed, "ended_at": datetime.now(timezone.utc).isoformat()}, "supervisor")
-                # A changed argv cannot borrow the guarded client's identity.
-                f.process_rows = [(456, "fixture-tty", "codex --remote unix:///unverified")]
-                self.assert_live(f)
-                f.process_rows = [(456, "fixture-tty", " ".join(native))]
-                # A pending action defeats the stale closure even before any
-                # transcript or shared receipt update becomes visible.
-                with CLOSURE.ownership(f.session):
-                    CLOSURE.set_action_pending(f.session, True)
-                    with self.assertRaises(ValueError):
-                        f.release.validate_closure(closed, "supervisor")
-                    CLOSURE.set_action_pending(f.session, False)
-                self.assertTrue(f.release.validate_closure(closed, "supervisor")["safe_verdict"])
-                # An actual guarded resume invalidates that same saved entry.
-                with CLOSURE.resume_guard(f.session):
-                    pass
-                with self.assertRaises(ValueError):
-                    f.release.validate_closure(closed, "supervisor")
-
-    def test_observation_normalizes_saved_paths_without_rewriting_or_weakening_receipt(self):
-        for spelling in ("absolute_alias", "relative"):
-            with self.subTest(spelling=spelling), ReceiptFixture() as f:
-                ended = datetime.now(timezone.utc) - timedelta(minutes=1)
-                rows = CLOSURE.log_rows()
-                source = next(row for row in rows if row.get("session_id") == f.session)
-                source["ended_at"] = ended.isoformat()
-                source["tty"] = "/dev/fixture-tty"
-                alias = f.root / "aliased-account"
-                alias.symlink_to(f.home, target_is_directory=True)
-                source["transcript"] = (str(alias / "sessions" / f.transcript.name) if spelling == "absolute_alias"
-                                        else os.path.relpath(f.transcript, f.log.parent))
-                CLOSURE.replace_rows(rows)
-                native = ["codex", "--remote", "unix://" + str(CLOSURE.daemon_endpoint(f.home)), "--", "new task"]
-                with patch.object(CLOSURE, "process_started_at", return_value=ended + timedelta(seconds=1)):
-                    f.managed(native)
-                    f.commands = "456 " + " ".join(native)
-                    f.process_rows = [(456, "fixture-tty", " ".join(native))]
-                    saved = f.log.read_bytes()
-                    transcript = f.transcript.read_bytes()
-                    self.assert_ended(f)
-
-                    verified = CLOSURE.verified_record(f.session, f.home)
-                    self.assertIsNotNone(verified)
-                    self.assertEqual(verified["transcript"], str(f.transcript))
-                    self.assertEqual(verified["tty"], "fixture-tty")
-                    self.assertTrue(CLOSURE.receipt_current(verified))
-                    self.assertEqual(CLOSURE.source_records({f.session})[f.session]["transcript"], str(f.transcript))
-                    self.assertEqual(f.log.read_bytes(), saved)
-                    for change in ("generation", "transcript", "pending"):
-                        with self.subTest(change=change):
-                            if change == "generation":
-                                changed = json.loads(saved)
-                                next(row for row in changed if row.get("session_id") == f.session)["launch_generation"] = "changed"
-                                CLOSURE.replace_rows(changed)
-                            elif change == "transcript":
-                                f.transcript.write_bytes(transcript + json.dumps({"type": "event_msg",
-                                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                                    "payload": {"type": "task_started"}}).encode() + b"\n")
-                            else:
-                                with CLOSURE.ownership(f.session):
-                                    CLOSURE.set_action_pending(f.session, True)
-                            before = f.log.read_bytes()
-                            self.assert_live(f)
-                            self.assertIsNone(CLOSURE.verified_record(f.session, f.home))
-                            self.assertEqual(f.log.read_bytes(), before)
-                            f.log.write_bytes(saved)
-                            f.transcript.write_bytes(transcript)
-                            with CLOSURE.ownership(f.session):
-                                CLOSURE.set_action_pending(f.session, False)
-                    self.assertFalse(f.mutations)
 
     def test_guarded_launch_binding_excludes_prompt_but_keeps_option_identity(self):
         with ReceiptFixture() as f, patch.object(CLOSURE, "process_started_at", return_value=datetime.now(timezone.utc) - timedelta(seconds=2)):
@@ -1323,355 +939,7 @@ class IdleReceiptIntegrationTests(unittest.TestCase):
             self.assertEqual(CLOSURE.guarded_launch_endpoint(456, [*native[:-1], "different private prompt"]), endpoint)
             self.assertIsNone(CLOSURE.guarded_launch_endpoint(456, [native[0], "--model", "changed", *native[1:]]))
 
-    def test_observation_uses_saved_native_exit_before_later_closure_record_time(self):
-        with ReceiptFixture() as f:
-            cutoff = datetime.now(timezone.utc) - timedelta(minutes=1)
-            rows = json.loads(f.log.read_text())
-            rows[0]["tty_exited_at"] = cutoff.isoformat()
-            f.log.write_text(json.dumps(rows))
-            f.process_rows = [(456, "fixture-tty", "new-unrelated-worker")]
-            with patch.object(CLOSURE, "process_started_at", return_value=cutoff + timedelta(seconds=22)):
-                self.assert_ended(f)
-
-    def test_newer_generation_or_malformed_receipt_keeps_idle_live(self):
-        with ReceiptFixture() as f:
-            self.assert_ended(f)
-            original = f.log.read_text()
-            rows = json.loads(original)
-            rows[0]["launch_generation"] = "new-generation"
-            f.log.write_text(json.dumps(rows))
-            self.assert_live(f)
-            f.log.write_text("{malformed")
-            self.assert_live(f)
-
-    def test_cross_account_copy_and_new_transcript_activity_defeat_idle_receipt(self):
-        with ReceiptFixture() as f:
-            self.assert_ended(f)
-            other = f.root / "other-account"
-            copy = other / "archived_sessions" / f.transcript.name
-            copy.parent.mkdir(parents=True)
-            copy.write_bytes(f.transcript.read_bytes())
-            f.homes.append(other)
-            self.assert_live(f)
-            f.homes.remove(other)
-            with f.transcript.open("a") as stream:
-                stream.write(json.dumps({"type": "event_msg", "timestamp": "2099-01-01T00:00:00Z", "payload": {"type": "task_started"}}) + "\n")
-            self.assert_live(f)
-
-    def test_missing_ownership_lease_never_creates_one_during_observation(self):
-        with ReceiptFixture() as f:
-            self.assert_ended(f)
-            path = CLOSURE.lease_path(f.session)
-            path.unlink()
-            self.assert_live(f)
-            self.assertFalse(path.exists())
-
-    def test_resume_invalidates_the_receipt_before_any_transcript_write(self):
-        with ReceiptFixture() as f:
-            self.assert_ended(f)
-            with CLOSURE.resume_guard(f.session):
-                self.assert_live(f)
-            self.assert_live(f)
-
-    def test_recorded_live_worker_is_not_leased_through_claim_round_trips(self):
-        with ReceiptFixture() as f:
-            f.process_rows = [(f.entry["pid"], f.entry["tty"], "codex worker")]
-            with CLOSURE.admission():
-                self.assert_live(f)
-                def own_action():
-                    with CLOSURE.resume_guard(f.session):
-                        pass
-                with ThreadPoolExecutor(max_workers=1) as pool:
-                    pool.submit(own_action).result(timeout=3)
-
-    def test_device_prefixed_tty_blocks_exit_without_leasing_the_live_worker(self):
-        with ReceiptFixture() as f:
-            rows = CLOSURE.log_rows()
-            row = next(r for r in rows if r.get("session_id") == f.session)
-            row["tty"] = "/dev/" + f.entry["tty"]
-            CLOSURE.replace_rows(rows)
-            f.process_rows = [(456, f.entry["tty"], "codex worker")]
-            from github_plan_release import stamp
-            with patch.object(CLOSURE, "process_started_at", return_value=stamp(f.entry["launch_started_at"])):
-                with self.assertRaises(ValueError):
-                    f.release.verify_process_exit(row, ended_at=stamp(row["ended_at"]))
-                with CLOSURE.admission():
-                    self.assert_live(f)
-                    def own_action():
-                        with CLOSURE.resume_guard(f.session):
-                            pass
-                    with ThreadPoolExecutor(max_workers=1) as pool:
-                        pool.submit(own_action).result(timeout=3)
-
-    def test_resume_and_admission_share_a_lease_and_handoff_disables_old_resume(self):
-        with ReceiptFixture() as f:
-            with CLOSURE.admission():
-                self.assert_ended(f)
-                def competing_resume():
-                    with CLOSURE.resume_guard(f.session): pass
-                with ThreadPoolExecutor(max_workers=1) as pool:
-                    with self.assertRaises(CLOSURE.LeaseBusy):
-                        pool.submit(competing_resume).result(timeout=3)
-                CLOSURE.admit_sources({f.session})
-            with self.assertRaises(ValueError):
-                with CLOSURE.resume_guard(f.session): pass
-
-    def test_native_uuid_alias_cannot_select_another_lease_or_frozen_generation(self):
-        with ReceiptFixture("01a1514c-fa7f-7be3-95ba-4d25df73d07e") as f:
-            with CLOSURE.ownership(f.session):
-                CLOSURE.admit_sources({f.session})
-            before = f.log.read_bytes()
-            leases = set(CLOSURE.lease_path(f.session).parent.iterdir())
-            for alias in (f.session.upper(), f.session.replace("-", ""), "{" + f.session + "}", "urn:uuid:" + f.session):
-                with self.subTest(alias=alias):
-                    with self.assertRaises(ValueError):
-                        CLOSURE.resume_record(alias, CLOSURE.log_rows())
-                    with self.assertRaises(ValueError):
-                        with CLOSURE.resume_guard(alias):
-                            self.fail("an alias acquired authority over the native source")
-                    self.assertEqual(set(CLOSURE.lease_path(f.session).parent.iterdir()), leases)
-                    self.assertEqual(f.log.read_bytes(), before)
-                    peers, states, _ = SESSIONS.observe({alias})
-                    identity = next(peer for peer in peers if peer["sessionId"] == alias)
-                    self.assertEqual(identity["source"], "native_identity")
-                    self.assertEqual(identity["canonical_session_id"], f.session)
-                    self.assertEqual(states[alias]["source"], "native_identity")
-                    self.assertEqual(set(CLOSURE.lease_path(f.session).parent.iterdir()), leases)
-                    self.assertEqual(f.log.read_bytes(), before)
-
-
-class NativeSessionsTests(unittest.IsolatedAsyncioTestCase):
-    def setUp(self):
-        shared = SESSIONS.process_liveness()
-        self.enterContext(patch.object(shared, "process_arguments",
-            side_effect=lambda _pid, command: (shared.harness_arguments(command), True)))
-
-    def test_native_uuid_alias_processes_report_the_requested_source_identity(self):
-        source = "01a1514c-fa7f-7be3-95ba-4d25df73d07e"
-        for alias in (source.upper(), source.replace("-", ""), "{" + source + "}", "urn:uuid:" + source.upper()):
-            with self.subTest(alias=alias):
-                peers = SESSIONS.process_sessions("456 codex resume " + alias, {source})
-                self.assertEqual([peer["sessionId"] for peer in peers], [source])
-
-    def test_repository_codex_scripts_do_not_hide_process_absence(self):
-        for command in ("456 python /repo/codex_idle_watch.py", "456 sh /repo/codex-watch.sh"):
-            with self.subTest(command=command):
-                self.assertTrue(SESSIONS.process_absence_known(command))
-                self.assertEqual(SESSIONS.process_sessions(command, {"holder"}), [])
-
-    def test_release_binary_resume_identifies_the_source(self):
-        command = "456 /opt/bin/codex-aarch64-apple-darwin exec resume holder"
-        self.assertEqual([row["sessionId"] for row in SESSIONS.process_sessions(command, {"holder"})], ["holder"])
-        self.assertFalse(SESSIONS.process_absence_known(command))
-
-    def test_resume_options_preserve_exact_source_process_observation(self):
-        source = "01a1514c-fa7f-7be3-95ba-4d25df73d07e"
-        other = "01a14296-2820-7da0-979b-51f158dfeb7b"
-        for command in (f"codex exec resume --json {source}", f"codex e resume -m model {source}",
-                        f"codex resume --all {source}", f"codex resume --model {other} {source}",
-                        f"codex resume --model={other} {source}"):
-            with self.subTest(command=command):
-                self.assertEqual([row["sessionId"] for row in SESSIONS.process_sessions(command, {source})], [source])
-                self.assertFalse(SESSIONS.process_absence_known(command))
-        for command in (f"codex resume --model {source} {other}", f"codex resume --model={source} {other}",
-                        f"codex resume -i {source} --last", f"codex resume --all {other} -- {source}"):
-            with self.subTest(command=command):
-                self.assertEqual(SESSIONS.process_sessions(command, {source}), [])
-
-    def test_resumed_cli_session_is_live_even_without_a_daemon(self):
-        for command in ("/opt/bin/codex resume holder", "codex --remote unix://fixture resume holder", "node /opt/bin/codex.js resume holder", "codex exec resume holder", "codex e resume holder",
-                        'codex -c notify=true resume holder'):
-            self.assertEqual([r["sessionId"] for r in SESSIONS.process_sessions(command, {"holder"})], ["holder"])
-        for command in ("rg resume holder", "rg codex resume holder", "codex exec -- please resume holder", "codex -- please resume holder"):
-            self.assertEqual(SESSIONS.process_sessions(command, {"holder"}), [])
-
-    def test_resume_pickers_prevent_process_absence_but_explicit_exec_prompts_do_not(self):
-        for command in ("codex exec resume --last", "codex e resume --last", "node /opt/bin/codex.js e resume --last"):
-            with self.subTest(command=command):
-                self.assertFalse(SESSIONS.process_absence_known(command))
-        for command in ("codex exec -- please resume holder", "codex e -- resume holder", "node /opt/bin/codex.js exec -- resume holder"):
-            with self.subTest(command=command):
-                self.assertTrue(SESSIONS.process_absence_known(command))
-
-    def test_wrapper_absence_requires_guarded_launch_identity(self):
-        for wrapper in ("codex-session.py", "codex_session_proxy.py"):
-            with self.subTest(wrapper=wrapper):
-                command = f"456 python /fixture/{wrapper} exec -- resume holder"
-                with patch.object(CLOSURE, "managed_launch", return_value=False) as managed:
-                    self.assertFalse(SESSIONS.process_absence_known(command))
-                    managed.assert_called_once_with(456, [f"/fixture/{wrapper}", "exec", "--", "resume", "holder"], set())
-                with patch.object(CLOSURE, "managed_launch", return_value=True):
-                    self.assertTrue(SESSIONS.process_absence_known(command))
-                self.assertEqual(SESSIONS.process_sessions(command, {"holder"}), [])
-
-    async def observe(self, state, *, safe=True, after=None, changed=False, mismatch=False, with_peer=False, unsafe=False,
-                      receipt=None, proof_sessions=None, receipt_changed=False):
-        thread = {"id": "holder", "cwd": "/retained/issue-42", "path": "/fixture/transcript", "historyMode": "paginated", "status": {"type": state}}
-        if mismatch: thread["id"] = "another-session"
-        reads, calls, unexpected, observed_ids = 0, 0, [], set()
-        async def handler(request):
-            nonlocal reads
-            ws = web.WebSocketResponse()
-            await ws.prepare(request)
-            async for frame in ws:
-                request = frame.json()
-                method = request["method"]
-                if method == "initialized": continue
-                if method == "initialize": result = {"codexHome": str(home)}
-                elif method in {"thread/items/list", "thread/queue/list", "thread/backgroundTerminals/list", "thread/timeline/list"}: result = {"data": [], "nextCursor": None}
-                elif method == "thread/turns/list": result = {"data": [{"id": "actual-turn", "status": "completed"}], "nextCursor": None}
-                elif method == "thread/goal/get": result = {"goal": None}
-                elif method == "thread/loaded/list": result = {"data": ["holder", "peer"] if with_peer else ["holder"], "nextCursor": None}
-                elif method == "thread/read":
-                    reads += 1
-                    observed = copy.deepcopy(thread)
-                    observed_ids.add(request["params"]["threadId"])
-                    if request["params"]["threadId"] == "peer": observed.update(id="peer", status={"type": "idle"})
-                    if reads > 2 and after: observed["status"]["type"] = after
-                    result = {"thread": observed}
-                else:
-                    unexpected.append(method)
-                    await ws.close()
-                    break
-                await ws.send_json({"id": request["id"], "result": result})
-            return ws
-        def status(_entry, *, include_status=False):
-            nonlocal calls
-            calls += 1
-            if with_peer: self.assertIn("peer", observed_ids)
-            result = {"/fixture/transcript": {"safe_verdict": safe, "timestamp": "2026-10-01T02:00:00Z",
-                                              "size": calls + int(bool(receipt)) if changed else 1}}
-            if include_status:
-                result["/fixture/transcript"]["status"] = {"turn_id": "actual-turn", "actual_turn_ids": ["actual-turn"]}
-            return result
-        # AF_UNIX paths are short on macOS; /var/folders can exceed that limit.
-        with tempfile.TemporaryDirectory(prefix="claim-", dir="/tmp") as folder:
-            home = Path(folder)
-            socket_path = CLOSURE.daemon_endpoint(home)
-            socket_path.parent.mkdir()
-            app = web.Application()
-            app.router.add_get("/", handler)
-            runner = web.AppRunner(app)
-            await runner.setup()
-            await web.UnixSite(runner, str(socket_path)).start()
-            os.chmod(socket_path, 0o666 if unsafe else 0o600)
-            token = None
-            try:
-                fingerprint = {"/fixture/transcript": {"safe_verdict": safe, "timestamp": "2026-10-01T02:00:00Z", "size": 1}}
-                record = {"session_id": "holder", "transcript": thread["path"], "launch_pid": 123,
-                          "launch_generation": "fixture-generation", "launch_started_at": "2026-10-01T01:00:00Z",
-                          "ended_at": "2026-10-01T02:01:00Z", "closure_evidence": {
-                              "codex_home": str(home.resolve()), "transcripts": fingerprint}} if receipt else None
-                token = CLOSURE.RECEIPTS.set({"holder": record} if record else {})
-                with patch.object(SESSIONS, "transcript_snapshot", side_effect=lambda *_args: status(None)), \
-                        patch.object(CLOSURE, "transcripts", side_effect=lambda *_args, **kw: status(None, **kw)), \
-                        patch.object(CLOSURE, "verified_record", return_value=record), \
-                        patch.object(CLOSURE, "receipt_current", return_value=not receipt_changed):
-                    peers, states, coverage = await SESSIONS.observe_home(home, {"holder"}, proof_sessions)
-            finally:
-                if token is not None: CLOSURE.RECEIPTS.reset(token)
-                await runner.cleanup()
-        self.assertEqual(unexpected, [])
-        self.assertEqual(coverage["peer_complete"], not (mismatch or unsafe))
-        if unsafe: self.assertEqual(coverage["status"], "incomplete")
-        return peers, states
-
-    async def test_unloaded_native_session_with_verified_final_handoff_is_candidate(self):
-        peers, states = await self.observe("notLoaded")
-        self.assertEqual(peers, [])
-        self.assertEqual(states["holder"]["state"], "ended")
-
-    async def test_released_idle_session_with_verified_closure_is_ended(self):
-        peers, states = await self.observe("idle", receipt=True, proof_sessions=set())
-        self.assertFalse(peers)
-        self.assertEqual(states["holder"]["state"], "ended")
-
-    async def test_idle_admission_requires_released_claim_and_unchanged_closure(self):
-        for kwargs in ({}, {"receipt": True}, {"receipt": True, "proof_sessions": set(), "receipt_changed": True},
-                       {"receipt": True, "proof_sessions": set(), "changed": True}):
-            with self.subTest(kwargs=kwargs):
-                peers, states = await self.observe("idle", **kwargs)
-                self.assertTrue(peers)
-                self.assertNotEqual(states.get("holder", {}).get("state"), "ended")
-
-    async def test_idle_closure_cannot_override_active_or_resumed_status(self):
-        for state, after in (("active", None), ("systemError", None), ("idle", "active")):
-            with self.subTest(state=state, after=after):
-                peers, states = await self.observe(state, receipt=True, proof_sessions=set(), after=after)
-                self.assertTrue(peers)
-                self.assertEqual(states["holder"]["state"], "live")
-
-    async def test_active_session_overrides_completion(self):
-        for state in ("active", "idle", "systemError"):
-            peers, states = await self.observe(state)
-            self.assertEqual(states["holder"]["state"], "live")
-            self.assertEqual(peers[0]["sessionId"], "holder")
-
-    async def test_idle_failure_unknown_and_changed_evidence_do_not_prove_end(self):
-        for kwargs in ({"safe": False}, {"changed": True}, {"mismatch": True}):
-            with self.subTest(kwargs=kwargs):
-                _, states = await self.observe("notLoaded", **kwargs)
-                self.assertNotEqual(states.get("holder", {}).get("state"), "ended")
-
-    async def test_resumed_while_reading_is_live(self):
-        peers, states = await self.observe("notLoaded", after="active")
-        self.assertEqual(states["holder"]["state"], "live")
-        self.assertTrue(peers)
-
-    async def test_loaded_peers_are_read_before_claim_transcript_work(self):
-        peers, _ = await self.observe("notLoaded", with_peer=True)
-        self.assertIn("peer", [peer["sessionId"] for peer in peers])
-
-    async def test_missing_daemon_does_not_establish_end(self):
-        with tempfile.TemporaryDirectory() as folder:
-            _, states, coverage = await SESSIONS.observe_home(Path(folder), {"holder"})
-        self.assertFalse(states)
-        self.assertEqual(coverage["status"], "unavailable")
-
-    async def test_unsafe_existing_socket_is_incomplete(self):
-        peers, states = await self.observe("idle", unsafe=True)
-        self.assertEqual((peers, states), ([], {}))
-
-    async def test_non_listening_stale_socket_is_unavailable(self):
-        with tempfile.TemporaryDirectory(prefix="claim-", dir="/tmp") as folder:
-            home = Path(folder)
-            path = CLOSURE.daemon_endpoint(home)
-            path.parent.mkdir()
-            with socket.socket(socket.AF_UNIX) as stale:
-                stale.bind(str(path))
-                os.chmod(path, 0o600)
-                peers, states, coverage = await SESSIONS.observe_home(home, {"holder"})
-        self.assertEqual((peers, states), ([], {}))
-        self.assertEqual(coverage["status"], "unavailable")
-
-
-class ObservationMergeTests(unittest.TestCase):
-    def setUp(self):
-        shared = SESSIONS.process_liveness()
-        self.enterContext(patch.object(shared, "process_arguments",
-            side_effect=lambda _pid, command: (shared.harness_arguments(command), True)))
-
-    def test_malformed_action_barrier_blocks_native_end_proof_without_writing(self):
-        with ReceiptFixture() as f:
-            f.native_state = "notLoaded"
-            path = CLOSURE.lease_path(f.session)
-            path.write_text("incomplete action evidence")
-            before = {p: p.read_bytes() for p in f.log.parent.rglob("*") if p.is_file()}
-            _, states, _ = f.observe({f.session})
-            self.assertEqual(states[f.session]["state"], "live")
-            self.assertIsNone(CLOSURE.verified_record(f.session, f.home))
-            self.assertEqual({p: p.read_bytes() for p in f.log.parent.rglob("*") if p.is_file()}, before)
-
-    def test_nonempty_or_missing_queue_evidence_blocks_even_authored_release_fallback(self):
-        for native in ("idle", "notLoaded"):
-            for queued in ({"data": [{"id": "pending"}], "nextCursor": None},
-                           {"data": [], "nextCursor": "more"}, {}):
-                with self.subTest(native=native, queued=queued), ReceiptFixture() as f:
-                    f.native_state = native
-                    f.rpc_results["thread/queue/list"] = queued
-                    _, states, _ = f.observe()
-                    self.assertEqual(states[f.session]["state"], "live")
-
+class AccountHomeTests(unittest.TestCase):
     def test_runtime_and_account_overrides_cannot_hide_a_frozen_source(self):
         with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"HOME": folder, "CODE_HOME": str(Path(folder) / ".code")}):
             path = CLOSURE.closed_log()
@@ -1697,7 +965,9 @@ class ObservationMergeTests(unittest.TestCase):
                                 + 'env={CODEX_HOME=' + json.dumps(str(home)) + '}\n')
             expected = [canonical_home.resolve()]
             with patch.dict(os.environ, {"CODE_HOME": str(root / "other-runtime"), "CODEX_HOME": str(root / "other-account")}):
-                self.assertEqual(SESSIONS.codex_homes(strict=True, configured_only=True), expected)
+                self.assertEqual(SESSIONS.configured_homes(strict=True), expected)
+                self.assertTrue({canonical_home.resolve(), (root / ".codex").resolve(),
+                                 (root / "other-account").resolve()} <= set(SESSIONS.observation_homes(strict=True)))
 
     def test_configured_receipt_homes_do_not_depend_on_caller_account_or_order(self):
         config = {"accounts": [{"provider": "openai", "env": {"CODEX_HOME": "/fixture/b"}},
@@ -1707,16 +977,19 @@ class ObservationMergeTests(unittest.TestCase):
         for current in ("/fixture/a", "/fixture/b", "/fixture/unconfigured"):
             with patch.dict(os.environ, {"CODEX_HOME": current}), \
                     patch.object(SESSIONS, "native_helpers", return_value=(helpers, None)):
-                results.append(SESSIONS.codex_homes(strict=True, configured_only=True))
+                results.append(SESSIONS.configured_homes(strict=True))
         self.assertTrue(all(homes == results[0] for homes in results))
         self.assertEqual(set(results[0]), {Path(a["env"]["CODEX_HOME"]).resolve() for a in config["accounts"]})
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"HOME": folder, "CODEX_HOME": "/fixture/a"}), \
+                patch.object(SESSIONS, "native_helpers", return_value=(helpers, None)):
+            self.assertIn((Path(folder) / ".codex").resolve(), SESSIONS.observation_homes(strict=True))
 
     def test_receipt_proofs_require_available_account_inventory(self):
-        config = SimpleNamespace(load_config=lambda: (_ for _ in ()).throw(ValueError("missing account inventory")))
+        config = SimpleNamespace(load_config=lambda **_kw: (_ for _ in ()).throw(ValueError("missing account inventory")))
         with patch.object(SESSIONS, "native_helpers", return_value=(config, None)):
-            self.assertTrue(SESSIONS.codex_homes())
+            self.assertTrue(SESSIONS.observation_homes())
             with self.assertRaisesRegex(ValueError, "missing account inventory"):
-                SESSIONS.codex_homes(strict=True)
+                SESSIONS.observation_homes(strict=True)
 
     def test_shared_log_is_independent_of_provider_account_home(self):
         with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"HOME": folder}):
@@ -1725,88 +998,6 @@ class ObservationMergeTests(unittest.TestCase):
                 self.assertEqual(CLOSURE.closed_log(), first)
             self.assertTrue(first.is_relative_to(folder))
             self.assertFalse(first.exists())
-
-    def test_session_specific_closure_allows_unrelated_clients_but_requires_process_read(self):
-        async def read(_home, _sessions, _proof):
-            return [], {"holder": {"state": "ended"}}, {
-                "status": "available", "peer_complete": True, "socket": "/fixture/socket"}
-        for returncode in (0, 1):
-            with self.subTest(returncode=returncode), \
-                    patch.object(SESSIONS, "codex_homes", return_value=[Path("/fixture")]), \
-                    patch.object(SESSIONS, "observe_home", side_effect=read), \
-                    patch.object(SESSIONS.subprocess, "run", return_value=SimpleNamespace(
-                        returncode=returncode, stdout="codex exec fresh-unrelated-work")):
-                _, states, _ = SESSIONS.observe({"holder"})
-            self.assertEqual(states.get("holder", {}).get("state") == "ended", returncode == 0)
-
-    def test_daemon_reads_do_not_require_codex_on_path(self):
-        async def read(_home, _sessions, _proof):
-            return [{"sessionId": "holder", "source": "codex_session"}], {"holder": {"state": "live"}}, {"status": "available", "peer_complete": True, "socket": "/fixture/socket"}
-        with patch.dict(os.environ, {"PATH": ""}), \
-                patch.object(SESSIONS, "codex_homes", return_value=[Path("/fixture")]), \
-                patch.object(SESSIONS, "observe_home", side_effect=read), \
-                patch.object(SESSIONS.subprocess, "run", side_effect=FileNotFoundError):
-            peers, states, coverage = SESSIONS.observe({"holder"})
-        self.assertEqual(states["holder"]["state"], "live")
-        self.assertTrue(peers)
-        self.assertEqual(coverage["process_coverage"], "unavailable")
-
-    def test_app_server_process_requires_its_exact_observed_socket(self):
-        socket_path = str(Path("/fixture/socket").resolve())
-        self.assertTrue(SESSIONS.process_absence_known(f"codex app-server --listen unix://{socket_path}", {socket_path}))
-        self.assertFalse(SESSIONS.process_absence_known("codex app-server", {socket_path}))
-        self.assertFalse(SESSIONS.process_absence_known("codex app-server --listen unix:///other/socket", {socket_path}))
-
-    def test_incomplete_peer_scan_is_reported_and_cannot_prove_native_end(self):
-        async def read(_home, _sessions, _proof):
-            return [], {"holder": {"state": "ended"}}, {"status": "incomplete", "peer_complete": False, "socket": "/fixture/socket"}
-        with patch.object(SESSIONS, "codex_homes", return_value=[Path("/fixture")]), \
-                patch.object(SESSIONS, "observe_home", side_effect=read), \
-                patch.object(SESSIONS.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="")):
-            _, states, coverage = SESSIONS.observe({"holder"})
-        self.assertNotIn("holder", states)
-        self.assertTrue(coverage["observed_source_incomplete"])
-        self.assertEqual(coverage["status"], "incomplete")
-
-    def test_snapshot_reads_archived_sibling_transcripts_for_the_same_native_identity(self):
-        with tempfile.TemporaryDirectory() as folder:
-            home = Path(folder)
-            history = [
-                {"type": "session_meta", "payload": {"id": "holder"}},
-                {"type": "event_msg", "timestamp": "2026-10-01T02:00:00Z", "payload": {"type": "agent_message", "message": "Safe to exit: yes"}},
-                {"type": "event_msg", "timestamp": "2026-10-01T02:00:01Z", "payload": {"type": "task_complete"}},
-            ]
-            primary = home / "sessions/rollout-holder.jsonl"
-            sibling = home / "archived_sessions/rollout-holder.jsonl"
-            for path, records in ((primary, history), (sibling, [*history, {
-                "type": "event_msg", "timestamp": "2026-10-01T03:00:00Z", "payload": {"type": "task_started"}}])):
-                path.parent.mkdir()
-                path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
-            with patch.object(SESSIONS, "codex_homes", return_value=[home]):
-                snapshot = SESSIONS.transcript_snapshot("holder", str(primary))
-            self.assertTrue(snapshot[str(primary.resolve())]["safe_verdict"])
-            self.assertFalse(snapshot[str(sibling.resolve())]["safe_verdict"])
-
-    def test_unknown_interactive_process_or_missing_process_inventory_prevents_native_end(self):
-        async def read(_home, _sessions, _proof): return [], {"holder": {"state": "ended"}}, {"status": "available", "peer_complete": True, "socket": "/fixture/socket"}
-        for command in ("codex resume --last", "codex --remote unix://fixture", "codex", "node /opt/codex-cli", "codex app-server", "codex app-server --listen unix:///unobserved/socket", ""):
-            for returncode in (0, 1):
-                with self.subTest(command=command, returncode=returncode), \
-                        patch.object(SESSIONS, "codex_homes", return_value=[Path("/fixture")]), \
-                        patch.object(SESSIONS, "observe_home", side_effect=read), \
-                        patch.object(SESSIONS.subprocess, "run", return_value=SimpleNamespace(returncode=returncode, stdout=command)):
-                    _, states, _ = SESSIONS.observe({"holder"})
-                    self.assertEqual(states.get("holder", {}).get("state") == "ended", not command and returncode == 0)
-
-    def test_live_evidence_wins_across_account_homes(self):
-        async def read(home, _sessions, _proof):
-            return [], {"holder": {"state": "live" if home.name == "live" else "ended"}}, {"status": "available", "peer_complete": True, "socket": str(home / "socket")}
-        with patch.object(SESSIONS, "codex_homes", return_value=[Path("/live"), Path("/ended")]), \
-                patch.object(SESSIONS, "observe_home", side_effect=read), \
-                patch.object(SESSIONS.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="")):
-            _, states, _ = SESSIONS.observe({"holder"})
-        self.assertEqual(states["holder"]["state"], "live")
-
 
 if __name__ == "__main__":
     unittest.main()

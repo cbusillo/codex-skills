@@ -29,6 +29,7 @@ from launchplane_safety import (  # noqa: E402
     public_code,
     public_identifier,
     public_summary_string,
+    public_service_text,
     public_timestamp,
     public_trace_id,
     public_url,
@@ -207,9 +208,9 @@ def _project_work_graph_item(item: object) -> dict[str, object]:
     if safe_to_start is not None:
         projected["safe_to_start"] = safe_to_start
     if "next_action" in source:
-        projected["next_action"] = public_summary_string(source["next_action"])
+        projected["next_action"] = public_service_text(source["next_action"])
     if "why_now" in source:
-        projected["why_now"] = public_summary_string(source["why_now"])
+        projected["why_now"] = public_service_text(source["why_now"])
     return projected
 
 
@@ -238,7 +239,7 @@ def _project_every_code_request(item: object) -> dict[str, object]:
     if source.get("result_pr_url"):
         projected["result_pr_url"] = public_url(source["result_pr_url"])
     if "summary_status" in source:
-        projected["summary_status"] = public_summary_string(source["summary_status"])
+        projected["summary_status"] = public_service_text(source["summary_status"])
     return projected
 
 
@@ -251,7 +252,7 @@ def _project_preview_item(item: object) -> dict[str, object]:
     if "source_of_truth_url" in source:
         projected["source_of_truth_url"] = public_url(source["source_of_truth_url"])
     if "detail" in source:
-        projected["detail"] = public_summary_string(source["detail"])
+        projected["detail"] = public_service_text(source["detail"])
     return projected
 
 
@@ -386,7 +387,7 @@ def normalize_launchplane_payload(
         if isinstance(items, list) and items:
             first = items[0]
             if isinstance(first, dict):
-                recommendation = public_summary_string(first.get("next_action") or recommendation)
+                recommendation = public_service_text(first.get("next_action") or recommendation)
                 safe_to_start = first.get("safe_to_start")
                 state = first.get("state")
                 source_of_truth_url = first.get("source_of_truth_url") or first.get("url")

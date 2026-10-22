@@ -28,6 +28,9 @@ sys.path.insert(0, str(HOOK.parent))
 
 import command_policy_hook  # noqa: E402
 
+sys.path.insert(0, str(HOOK.parents[1] / "skills/github/scripts"))
+import github_plan_lease  # noqa: E402
+
 VALIDATOR_PATH = HOOK.parents[1] / "skills/skill-creator/scripts/quick_validate.py"
 validator_spec = importlib.util.spec_from_file_location("quick_validate", VALIDATOR_PATH)
 assert validator_spec is not None and validator_spec.loader is not None
@@ -66,6 +69,29 @@ def linked_worktree(checkout: Path, linked: Path) -> Path:
 
 
 class CommandPolicyHookTests(unittest.TestCase):
+    def test_each_harness_tool_call_renews_its_claim_lease_without_skipping_policy(self) -> None:
+        payloads = {
+            "codex": {"hook_event_name": "PreToolUse", "session_id": "codex-session", "turn_id": "turn", "model": "gpt",
+                      "tool_name": "Bash", "tool_input": {"command": "kill -9 $(pgrep -f codex)"}},
+            "claude": {"hook_event_name": "PreToolUse", "session_id": "claude-session", "transcript_path": "/t.jsonl",
+                       "permission_mode": "default", "tool_name": "Bash", "tool_input": {"command": "kill -9 $(pgrep -f codex)"}},
+        }
+        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"HOME": home}):
+            for harness, payload in payloads.items():
+                with self.subTest(harness=harness):
+                    result = subprocess.run([sys.executable, str(HOOK), "--json"], input=json.dumps(payload),
+                                            capture_output=True, text=True, env={**os.environ, "HOME": home})
+                    self.assertEqual(json.loads(result.stdout)["hookSpecificOutput"]["permissionDecision"], "deny")
+                    self.assertEqual(github_plan_lease.state(payload["session_id"]), github_plan_lease.LIVE)
+
+    def test_unwritable_lease_store_still_applies_policy(self) -> None:
+        payload = {"session_id": "codex-session", "tool_name": "Bash", "tool_input": {"command": "kill -9 $(pgrep -f codex)"}}
+        with tempfile.TemporaryDirectory() as home:
+            (Path(home) / ".code").write_text("not a directory")
+            result = subprocess.run([sys.executable, str(HOOK), "--json"], input=json.dumps(payload),
+                                    capture_output=True, text=True, env={**os.environ, "HOME": home})
+        self.assertEqual(json.loads(result.stdout)["hookSpecificOutput"]["permissionDecision"], "deny")
+
     def test_pattern_process_kills_are_refused_without_running_them(self) -> None:
         for line in (
             "pkill sleep", "pkill -f 'sleep 10|sleep 15'", "killall sleep",
@@ -137,6 +163,78 @@ class CommandPolicyHookTests(unittest.TestCase):
             "caffeinate -i codex resume example",
             "timeout 600 codex exec resume example",
         ):
+            with self.subTest(line=line):
+                self.assertEqual(bash(line).returncode, 2)
+
+    def test_native_resume_and_queue_options_use_coordinated_helpers(self) -> None:
+        short_values = {
+            "-c": "model=example", "-C": "/repo's path", "-p": "example",
+            "-m": "example", "-s": "read-only", "-a": "never", "-i": "/image path.png",
+        }
+        prefixes = ["", "exec ", "e "]
+        for prefix in prefixes:
+            for option, value in short_values.items():
+                if prefix and option == "-a":
+                    continue
+                for argument in (f"{option} {shlex.quote(value)}", f"{option}={shlex.quote(value)}",
+                                 shlex.quote(f"{option}{value}")):
+                    operations = ["resume --last"]
+                    if not prefix:
+                        operations.append("queue --thread example --message continue")
+                    for operation in operations:
+                        line = f"codex {prefix}{argument} {operation}"
+                        with self.subTest(line=line):
+                            self.assertEqual(bash(line).returncode, 2)
+        for option, value in (
+            ("--remote-auth-token-env", "EXAMPLE_TOKEN"), ("--local-provider", "ollama"),
+            ("--output-schema", "/schema path.json"), ("--color", "never"),
+            ("--thread-source", "example"), ("--cyber-access-program", "standard"),
+            ("--output-last-message", "/output path.txt"), ("-o", "/output path.txt"),
+        ):
+            for argument in (f"{option} {shlex.quote(value)}", shlex.quote(f"{option}={value}")):
+                prefix = "" if option == "--remote-auth-token-env" else "e "
+                line = f"codex {prefix}{argument} resume --last continue"
+                with self.subTest(line=line):
+                    self.assertEqual(bash(line).returncode, 2)
+        for prefix in ("--yolo ", "e --yolo ", "--yolo e ", "--search ", "e --json "):
+            line = f"codex {prefix}resume --last continue"
+            with self.subTest(line=line):
+                self.assertEqual(bash(line).returncode, 2)
+        for line in ("codex --yolo queue --thread example --message continue",):
+            with self.subTest(line=line):
+                self.assertEqual(bash(line).returncode, 2)
+        for line in ("codex e resume --last continue", "codex exec -o/output resume --last",
+                     "timeout 60 codex -C/repo e resume --last", "codex -C/repo exec resume --last",
+                     "codex --cd=\"/repo's path\" resume --last",
+                     "codex queue --thread example --message='continue working'",
+                     "timeout 60 '/Applications/Codex CLI/codex' e resume --last"):
+            with self.subTest(line=line):
+                self.assertEqual(bash(line).returncode, 2)
+        for line in ("codex -C'/repo resume' exec 'new work'",
+                     "printf '%s' 'codex e resume --last'", "codex help e resume"):
+            with self.subTest(line=line):
+                self.assertEqual(bash(line).returncode, 0)
+
+    def test_many_native_options_do_not_stall_the_hook_for_new_work(self) -> None:
+        command = "codex " + "--config=feature=true " * 30 + "'start new work'"
+        result = subprocess.run(
+            [sys.executable, str(HOOK)],
+            input=json.dumps({"tool_name": "Bash", "tool_input": {"command": command}}),
+            capture_output=True, text=True, timeout=5,
+        )
+        self.assertEqual(result.returncode, 0)
+
+    def test_native_resume_help_is_not_routed_to_resume_mutations(self) -> None:
+        for line in ("codex exec resume --help", "codex resume -h", "codex e resume --last --help",
+                     "codex --help resume", "codex exec --help resume",
+                     "codex -C/repo e resume -h", "codex e -o/out resume --help",
+                     "codex --local-provider ollama resume --help",
+                     "codex resume -C\"/repo's path\" --help",
+                     "codex queue --thread example --message='continue working' --help"):
+            with self.subTest(line=line):
+                self.assertEqual(bash(line).returncode, 0)
+        for line in ("codex resume example -- --help", "codex exec resume example 'read --help output'",
+                     "codex exec resume --helpful example"):
             with self.subTest(line=line):
                 self.assertEqual(bash(line).returncode, 2)
 
@@ -651,16 +749,21 @@ class CommandPolicyHookTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 2)
 
     def test_commit_creating_git_commands_require_bot_path(self) -> None:
+        catalog = {(entry["skill"], entry["id"]): entry for entry in SIMULATOR.policy_catalog()}
         for command in ("merge --no-edit origin/main", "pull", "rebase --continue",
                         "cherry-pick abc", "revert HEAD", "am patch.mbox",
                         "merge --ff-only --no-ff main", "merge --ff-only --ff main",
                         "rebase --skip", "am --skip"):
             for prefix in ("git ", "git -C 'a path' ", "env FLAG=x git --no-pager ", "git -Cpath -cuser.name=Human "):
-                with self.subTest(command=prefix + command):
-                    result = bash(prefix + command)
+                line = prefix + command
+                with self.subTest(command=line):
+                    winner = SIMULATOR.primary_match(shlex.split(line), line)
+                    self.assertIsNotNone(winner)
+                    expected = catalog[(winner.skill, winner.policy_id)]
+                    result = bash(line)
                     self.assertEqual(result.returncode, 2, result.stderr)
-                    self.assertIn("git-commit-as-bot", result.stderr)
-                    self.assertIn("update-branch", result.stderr)
+                    self.assertIn(expected["id"], result.stderr)
+                    self.assertIn(str(expected["message"]), result.stderr)
         for command in ("git merge-base main topic", "git log --grep merge",
                         "git-commit-as-bot --git-command merge --no-edit main",
                         "git -C path -c core.hooksPath=/dev/null merge --ff-only --no-autostash --no-overwrite-ignore abc",

@@ -8,11 +8,16 @@ iTerm controls
 require macOS, iTerm2's Python API enabled and the session's existing authority;
 API connection failure is a stop, not a reason to change personal settings.
 
-The shared launcher passes Claude Code `--settings '{"promptSuggestionEnabled": false}'`
+The shared launcher passes Claude Code
+`--settings '{"promptSuggestionEnabled": false, "autoMemoryEnabled": false}'`
 before its brief on either backend, including when the command file has other
-settings. A launch-file inline `--settings` object is merged with this override,
-preserving its other keys. For `--settings file.json`, set
-`"promptSuggestionEnabled": false` in that file first: the launcher checks it
+settings. Auto memory is off because a worker's findings belong on the item's
+issue, and a write to the memory folder outside the working directory stops
+the worker at a permission prompt nobody can answer
+([memory settings](https://code.claude.com/docs/en/memory#enable-or-disable-auto-memory)).
+A launch-file inline `--settings` object is merged with this override,
+preserving its other keys. For `--settings file.json`, set both to `false` in
+that file first: the launcher checks them
 before launch and preserves the file argument, private values and relative
 permission-rule base. It never rewrites that file or inlines its contents.
 Use literal JSON or a readable file path; relative files resolve under the command's `cd` directory.
@@ -26,6 +31,11 @@ command file already passes `--autocompact` or `--autocompact=VALUE`, which it
 keeps. Claude Code skips its autocompact offer dialog when the window comes
 from a launch flag, and `auto` keeps the window it tunes for the model, so
 nothing is saved to the account's settings.
+Claude launches also get `--disallowedTools AskUserQuestion`, which removes the
+question picker from the session
+([CLI reference](https://code.claude.com/docs/en/cli-reference)), so a worker
+asks its question on the item, as the brief rules say, instead of waiting on a
+picker nobody can answer.
 Existing sessions may still draw dim suggestions. `read` retains the
 plain `screen` and adds `input_line` with the last visible `❯`, `›` or `>`
 prompt's text, line index and style (`dim`, `non_dim`, `mixed`, `empty`, or
@@ -45,6 +55,32 @@ both output and exit status; do not redirect away a refusal and send again.
 After verified non-submission, `clear --verified-target` sends Ctrl-U; read
 back empty input before another send. An unknown submission needs readback,
 not a retry.
+
+## Handoff record
+
+Each Director's handoffs, takeover comments and pilot lessons go to that
+Director's own record, never to an issue in another person's repository.
+Read it at takeover:
+
+```bash
+uv run skills/supervisor/scripts/handoff_record.py --owner OWNER
+```
+
+It reads `[handoff]` from the first private `skill-data/supervisor.toml` that
+has one, in the same order as [accounts](#choosing-the-account), or from
+`--config`:
+
+```toml
+[handoff]
+issue = "OWNER/direction#123"
+```
+
+With no `[handoff]`, it prints `{"repository": "OWNER/direction", "source": "default"}`:
+use the open issue titled `Supervisor handoffs` there, and open it under
+`github-plan` if none exists. The helper refuses an issue outside the Director's own
+account and a malformed value; fix the private config, or remove `[handoff]`
+to use the default. Lessons about shared skills that other Directors would
+also hit go to the [field reports](field-reports.md) issue.
 
 ## Local state and the session registry
 
@@ -123,14 +159,48 @@ fields unchanged. The tmux terminal id contains a launch nonce: never replace
 it with a pane number or a title. A mixed ledger may hold both backends; use
 the matching backend when reading or closing each terminal.
 
-Status and candidates expose `verdict_recognition`: `recognized` for a valid
+Status and candidates expose `verdict_recognition`: `recognized` for an accepted
 completed unqualified verdict, `unrecognized` when verdict wording is present
 but does not qualify, and `absent` when it is missing. A final verdict may share
 its line with `No Director action needed.` or `No Director decision needed.`;
 other accompanying prose stays unrecognized. For an ambiguous response, read
 the full transcript and handoff and ask the worker for a fresh standalone
-unqualified verdict if appropriate. Manual review does not override a refused
-parser result or any shutdown verification.
+unqualified verdict if appropriate. Manual review does not override the parser
+result or any shutdown verification.
+
+### Claim checks at close-out
+
+The verdict reader does not read claims. Closing a session needs its posted
+releases and a verified process exit. Before sending `/exit` or `/quit`, run the
+session-scoped check on its claiming host, using its local claim journal and
+native root and child transcripts:
+
+```bash
+uv run skills/work-closeout/scripts/check_claims.py --owner OWNER \
+  --session NATIVE_ID --transcript /absolute/native-transcript.jsonl
+```
+
+Exit 0 with `claims_clear: true` and complete coverage lets close-out continue.
+Otherwise nudge that exact worker once to release its own claims through the
+[claim disposition contract](../../work-closeout/SKILL.md#claim-disposition),
+naming its retained PRs, then check again. If it cannot, have it record
+conditional/no, the blocker, next actor and retained artifacts on the item, and
+keep its process and terminal open while you continue other work. A pending
+review remains open under its brief.
+
+A session that crashed or ended without releasing frees its claims when its
+host-local lease expires, 30 minutes after its last hook activity. Use
+`gh-plan.py release-claim` only where the lease cannot be read, such as a claim
+made on another host. Count takeovers by searching claim comments for
+`Lease takeover:`; shorten the lease only if those delays bite.
+
+`release_session_claims finish` is available only **after actual verified process
+exit**. It repairs sessions that already ended; it is not an active-session
+escape from this gate. If a person separately requests a shutdown that cannot
+meet the existing rules, surface that decision under `DIRECTION.md` rather than
+inventing new exit authority. After verified recovery, a resumed source may
+read back the validated releases through work-closeout's check for normal
+acceptance. Unknown scope/identity and unsafe terminal cleanup remain preserved.
 
 A complete trailing Claude local `/exit` sequence (meta caveat, `/exit` command,
 one stdout wrapper) preserves the preceding close-out verdict, including when
@@ -145,7 +215,8 @@ released. Other user turns or any later assistant turn invalidate it.
 uv run skills/supervisor/scripts/goal_board.py --owner OWNER --format markdown
 uv run skills/supervisor/scripts/fleet_counts.py --owner OWNER
 uv run skills/supervisor/scripts/status.py --ledger <private-ledger.json>
-uv run skills/supervisor/scripts/codex_idle_watch.py --ledger <private-ledger.json> --deadline-seconds 1800
+uv run skills/supervisor/scripts/codex_idle_watch.py --ledger <private-ledger.json> --delivered-state <private-codex-delivered.json> --deadline-seconds 1800
+uv run skills/supervisor/scripts/codex_idle_watch.py --ledger <private-ledger.json> --harness claude --delivered-state <private-claude-delivered.json> --deadline-seconds 1800
 uv run skills/supervisor/scripts/oq.py OWNER/REPO#123 --owner <Director-login> --decision-author <recording-automation-login>
 uv run skills/supervisor/scripts/finished_map.py --ledger <private-ledger.json>
 ```
@@ -153,8 +224,13 @@ uv run skills/supervisor/scripts/finished_map.py --ledger <private-ledger.json>
 Rebuild the ~23-minute check and morning digest using the harness's scheduler.
 On a turn-end notice, immediately enter the skill's
 [finished-session procedure](../SKILL.md#close-finished-sessions-on-every-notice-and-check)
-for its exact session. Do not collect notices until the next check. Codex
-notices include `closeout_request` only when the latest completed response has
+for its exact session. Do not collect notices until the next check. Run each
+watch as a background job: the harness wakes you when it exits, not when it
+prints. The watch exits right after printing a `closeout_request` that is not
+yet in its `--delivered-state` file, and records it there first, so a request
+pending at takeover or between watches wakes you once and re-arming over a
+session still under verification does not wake you again. Watch notices include
+`closeout_request` only when the latest completed response has
 an unqualified verdict, the ledger says Supervisor-owned and no background
 task remains. Those notices bypass `--idle-seconds` and arrive on the next
 watch poll (45 seconds by default); ordinary turn ends retain the idle delay.
@@ -187,10 +263,12 @@ never authorizes closing. No script here sends an exit command automatically.
 
 For each scheduled check, scan all sessions as a fallback for missed notices,
 nudge stalls with exact facts and gather Director questions.
-The watcher exits at its wall-clock bound; re-arm it with the harness's built-in
-monitor/scheduler. A new watcher may repeat a notice. `clean: null` means a turn
-ended, not that work succeeded; an abort is also a notice. Use Claude Code's
-`notify_when_idle` when available, not another watcher.
+The watcher exits at its wall-clock bound or on a new closeout request; re-arm
+it with the harness's built-in monitor/scheduler. A new watcher may repeat a
+notice. `clean: null` means a turn ended, not that work succeeded; an abort
+is also a notice. Claude Code's `notify_when_idle`, where it covers a worker,
+routes through the same exact-session read above; the Claude watch covers
+terminal-launched Claude workers it cannot see.
 
 The Codex idle watcher filters a mixed-harness ledger before transcript
 validation. It emits a `skipped: true` diagnostic with the ledger index,
@@ -254,7 +332,7 @@ be inside that home's live `sessions` directory and its existing daemon socket
 must be available. No helper starts a daemon or changes login settings.
 
 ```sh
-uv run skills/supervisor/scripts/codex_idle_watch.py --ledger <private-ledger.json> --capacity-state <private-capacity-state.json> --resume-capacity --deadline-seconds 1800
+uv run skills/supervisor/scripts/codex_idle_watch.py --ledger <private-ledger.json> --delivered-state <private-codex-delivered.json> --capacity-state <private-capacity-state.json> --resume-capacity --deadline-seconds 1800
 uv run skills/supervisor/scripts/status.py --ledger <private-ledger.json> --capacity-state <private-capacity-state.json>
 ```
 
@@ -1142,6 +1220,8 @@ uv run skills/supervisor/scripts/codex-session.py queue --session-id <native-id>
 uv run skills/supervisor/scripts/codex-session.py resume --session-id <native-id> --codex-home <source-home>
 uv run skills/supervisor/scripts/codex-session.py status --session-id <native-id>
 ```
+
+Native resume and queue mutations are routed through these helpers by command policy.
 
 Queue submission reports success only after its acknowledgement and connection
 and ownership cleanup complete. Once submission may have started, any failure,

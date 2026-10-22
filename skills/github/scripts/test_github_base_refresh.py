@@ -96,8 +96,9 @@ class LocalMergeTests(unittest.TestCase):
         self.run_git(seed, "push", "-q", "origin", "HEAD:main")
         self.seed = seed
         self.repo = self.root / "repo"
-        self.run_git(self.root, "clone", "-q", str(origin), str(self.repo))
-        self.run_git(self.repo, "switch", "-q", "-c", "work/task")
+        primary = self.root / "primary"
+        self.run_git(self.root, "clone", "-q", str(origin), str(primary))
+        self.run_git(primary, "worktree", "add", "-qb", "work/task", str(self.repo))
         self.write(self.repo, "task.txt", "task\n")
         self.run_git(self.repo, "add", ".")
         self.run_git(self.repo, "commit", "-q", "-m", "task")
@@ -118,7 +119,7 @@ class LocalMergeTests(unittest.TestCase):
         self.run_git(self.repo, "fetch", "-q", "origin")
 
     def bot(self, *args: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run([str(SCRIPTS / "git-commit-as-bot"), *args], cwd=self.repo,
+        return subprocess.run([str(SCRIPTS / "git-commit-as-bot"), "--worktree", str(self.repo), *args], cwd=self.repo,
                               env=self.env, text=True, capture_output=True)
 
     def head_parents(self) -> int:
@@ -137,7 +138,7 @@ class LocalMergeTests(unittest.TestCase):
         self.advance_main("shared.txt", "main side\n")
         result = self.bot("--git-command", "merge", "--no-edit", "origin/main")
         self.assertNotIn("merge train", result.stderr)
-        self.assertTrue((self.repo / ".git" / "MERGE_HEAD").exists(), result.stderr)
+        self.assertTrue(Path(self.run_git(self.repo, "rev-parse", "--git-path", "MERGE_HEAD")).exists(), result.stderr)
         self.assertEqual(self.bot("--git-command", "merge", "--abort").returncode, 0)
 
     def test_named_requirement_merges_the_base(self) -> None:

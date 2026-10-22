@@ -1,0 +1,9 @@
+<odoo>
+  <record id="private_execution_view" model="ir.ui.view">
+    <field name="name">Private execution view</field>
+    <field name="model">res.partner</field>
+    <field name="arch" type="xml">
+      <form><field name="name" attrs="{'readonly': [('name', '=', False)]}"/></form>
+    </field>
+  </record>
+</odoo>

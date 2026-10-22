@@ -6,6 +6,7 @@
 """Disposable transcripts and GitHub adapters exercise session claim release."""
 
 import json
+import os
 import contextlib
 import io
 import itertools
@@ -15,8 +16,6 @@ from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import tempfile
-import subprocess
-import sys
 import unittest
 from unittest.mock import Mock, patch
 
@@ -48,10 +47,11 @@ class ReleaseTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
+        self.enterContext(patch.dict(os.environ, {"HOME": str(self.root), "CODEX_HOME": str(self.root / "account")}))
         remote = patch.object(helper.claim, "run_read", side_effect=lambda _args, *, cwd: f"https://github.com/test/{cwd.name}.git")
         remote.start()
         self.addCleanup(remote.stop)
-        local = patch.object(helper.claim, "local_inventory", return_value={"sessions": [], "worktrees": [], "session_coverage": {}})
+        local = patch.object(helper.claim, "local_inventory", return_value={"worktrees": []})
         local.start()
         self.addCleanup(local.stop)
         self.transcript = self.root / "source-session.jsonl"
@@ -716,7 +716,7 @@ class ReleaseTests(unittest.TestCase):
         evidence = {**comment(99, "Closed session source-session\nEnded at: 2026-01-01T00:02:00Z\nSafe to exit: yes"),
                     "issue_url": "https://api.github.com/repos/test/control/issues/9",
                     "created_at": "2026-01-01T00:04:00Z", "updated_at": "2026-01-01T00:04:00Z"}
-        body = helper.release.prepare_release(self.source, evidence, [self.source], {"sessions": [], "worktrees": []},
+        body = helper.release.prepare_release(self.source, evidence, [self.source], {"worktrees": []},
             actor=ACTOR, role="supervisor", releaser_session="supervisor",
             evidence_url="https://github.com/test/control/issues/9#issuecomment-99", retained_prs=[], related=[])
         receipt = self.own_release(body=body, created_at="2026-01-01T00:05:00Z", updated_at="2026-01-01T00:05:00Z")
@@ -730,7 +730,7 @@ class ReleaseTests(unittest.TestCase):
         evidence = {**comment(99, "Closed session source-session\nEnded at: 2026-01-01T00:02:05Z\nSafe to exit: yes"),
                     "issue_url": "https://api.github.com/repos/test/control/issues/9",
                     "created_at": "2026-01-01T00:04:00Z", "updated_at": "2026-01-01T00:04:00Z"}
-        body = helper.release.prepare_release(self.source, evidence, [self.source], {"sessions": [], "worktrees": []},
+        body = helper.release.prepare_release(self.source, evidence, [self.source], {"worktrees": []},
             actor=ACTOR, role="supervisor", releaser_session="supervisor",
             evidence_url="https://github.com/test/control/issues/9#issuecomment-99", retained_prs=[], related=[])
         receipt = self.own_release(body=body, created_at="2026-01-01T00:05:00Z", updated_at="2026-01-01T00:05:00Z")
@@ -746,7 +746,7 @@ class ReleaseTests(unittest.TestCase):
         evidence = {**comment(99, "Closed session source-session\nEnded at: 2026-01-01T00:02:00Z\nSafe to exit: yes"),
                     "issue_url": "https://api.github.com/repos/test/control/issues/9",
                     "created_at": "2026-01-01T00:04:00Z", "updated_at": "2026-01-01T00:04:00Z"}
-        body = helper.release.prepare_release(self.source, evidence, [self.source], {"sessions": [], "worktrees": []},
+        body = helper.release.prepare_release(self.source, evidence, [self.source], {"worktrees": []},
             actor=ACTOR, role="supervisor", releaser_session="supervisor",
             evidence_url="https://github.com/test/control/issues/9#issuecomment-99", retained_prs=[], related=[])
         receipt = self.own_release(body=body, created_at="2026-01-01T00:05:00Z", updated_at="2026-01-01T00:05:00Z")
@@ -1036,15 +1036,12 @@ class ReleaseTests(unittest.TestCase):
         with self.transcript.open("a") as stream:
             for payload in ({"type": "agent_message", "message": "Safe to exit: yes"}, {"type": "task_complete"}):
                 stream.write(json.dumps({"timestamp": datetime.now(timezone.utc).isoformat(), "payload": payload}) + "\n")
-        # This test isolates generation matching after independent native
-        # recovery. Full pending resolution is exercised with a real daemon fixture.
         with helper.closure.ownership(SOURCE["session"]):
             helper.closure.set_action_pending(SOURCE["session"], False)
         with self.assertRaises(ValueError):
             helper.record_closure(log, self.entry, "supervisor")
         replacement = {**self.entry, **metadata, "pid": metadata["launch_pid"]}
         closed = helper.record_closure(log, replacement, "supervisor")
-        self.assertTrue(helper.closure.idle_eligible(closed))
         self.assertEqual(closed["launch_generation"], metadata["launch_generation"])
 
     def test_finish_uses_shared_default_and_preview_creates_nothing(self):
@@ -1077,88 +1074,12 @@ class ReleaseTests(unittest.TestCase):
         self.transcript.rename(sessions / self.transcript.name)
         self.transcript = sessions / self.transcript.name
         self.entry.update(transcript=str(self.transcript), codex_home=str(self.root))
-        self.enterContext(patch.object(github_plan_sessions, "codex_homes", return_value=[self.root.resolve()]))
+        self.enterContext(patch.object(github_plan_sessions, "configured_homes", return_value=[self.root.resolve()]))
         self.enterContext(patch.object(helper.closure, "host_identity", return_value={"host": "fixture", "boot": "boot-a", "uid": 1}))
         log = self.root / "closed.json"
         self.enterContext(patch.object(helper.closure, "closed_log", return_value=log))
         helper.record_closure(log, self.entry, "supervisor")
         return log
-
-    def test_shared_receipt_is_fresh_read_only_evidence(self):
-        log = self.shared_closure()
-        before = log.read_bytes(), log.stat().st_mtime_ns
-        result = helper.closure.verified_record(SOURCE["session"], self.root)
-        self.assertEqual(result["session_id"], SOURCE["session"])
-        self.assertEqual((log.read_bytes(), log.stat().st_mtime_ns), before)
-        with patch.object(helper, "inventory", return_value=[(123, "another-tty", "unrelated-process")]):
-            self.assertIsNone(helper.closure.verified_record(SOURCE["session"], self.root))
-        with patch.object(helper, "inventory", return_value=[(456, "other-tty", "codex --remote unix:///other")]):
-            self.assertIsNotNone(helper.closure.verified_record(SOURCE["session"], self.root))
-
-    def test_shared_receipt_ignores_unrelated_log_rewrites_but_pins_selected_source(self):
-        log = self.shared_closure()
-        original = json.loads(log.read_text())[0]
-        real_evidence = helper.closure.evidence
-        for changed in ("append", "rewrite", "source", "duplicate", "permissions", "pending", "transcript"):
-            with self.subTest(changed=changed):
-                log.chmod(0o600)
-                log.write_text(json.dumps([original]))
-                if changed == "transcript": self.transcript.write_text(self.transcript.read_text() + "\n")
-                def raced(entry):
-                    proof = real_evidence(entry)
-                    rows = [dict(original)]
-                    if changed == "append": rows.append({"session_id": "unrelated"})
-                    if changed == "source": rows[0]["launch_generation"] = "changed"
-                    if changed == "duplicate": rows.append(dict(original))
-                    temporary = log.with_suffix(".new")
-                    temporary.write_text(json.dumps(rows))
-                    temporary.chmod(0o644 if changed == "permissions" else 0o600)
-                    temporary.replace(log)
-                    return proof
-                with patch.object(helper.closure, "evidence", side_effect=raced), \
-                        patch.object(helper.closure, "action_pending", side_effect=lambda _sid: changed == "pending"):
-                    result = helper.closure.verified_record(SOURCE["session"], self.root)
-                self.assertEqual(result is not None, changed in {"append", "rewrite"})
-
-    def test_shared_receipt_refuses_resumed_and_rewritten_transcripts(self):
-        self.shared_closure()
-        original = self.transcript.read_text()
-        self.transcript.write_text(original + json.dumps({"timestamp": "2026-01-01T00:01:30Z",
-            "payload": {"type": "user_message", "message": "resume"}}) + "\n")
-        self.assertIsNone(helper.closure.verified_record(SOURCE["session"], self.root))
-        self.transcript.write_text(original)
-        # Even a rewrite restoring the old final verdict invalidates the receipt.
-        self.assertIsNone(helper.closure.verified_record(SOURCE["session"], self.root))
-
-    def test_new_transcript_copy_invalidates_shared_receipt(self):
-        import github_plan_sessions
-        self.shared_closure()
-        other = self.root / "other-account"
-        archived = other / "archived_sessions"
-        archived.mkdir(parents=True)
-        (archived / self.transcript.name).write_bytes(self.transcript.read_bytes())
-        with patch.object(github_plan_sessions, "codex_homes", return_value=[self.root.resolve(), other.resolve()]):
-            self.assertIsNone(helper.closure.verified_record(SOURCE["session"], self.root))
-
-    def test_shared_receipt_refuses_home_boot_malformed_and_missing_evidence(self):
-        log = self.shared_closure()
-        original = log.read_text()
-        self.assertIsNone(helper.closure.verified_record(SOURCE["session"], self.root / "another-home"))
-        with patch.object(helper.closure, "host_identity", return_value={"host": "fixture", "boot": "boot-b", "uid": 1}):
-            self.assertIsNone(helper.closure.verified_record(SOURCE["session"], self.root))
-        saved = json.loads(original)[0]
-        malformed = [json.dumps([{**saved, "closure_evidence": value}]) for value in (None, "invalid", [])]
-        malformed.append(json.dumps([{**saved, "pid": None, "_inventory": True,
-                                      "safe_exit_yes": True, "still_running": False}]))
-        for value in ("{", "{}", "[null]", "[]", json.dumps([saved, saved]), *malformed):
-            log.write_text(value)
-            self.assertIsNone(helper.closure.verified_record(SOURCE["session"], self.root))
-        log.write_text(original)
-        log.chmod(0o644)
-        self.assertIsNone(helper.closure.verified_record(SOURCE["session"], self.root))
-        log.unlink()
-        self.assertIsNone(helper.closure.verified_record(SOURCE["session"], self.root))
-        self.assertFalse(log.exists())
 
     def test_cross_repository_discovery_includes_closed_issue_comments(self):
         def paged(path, **kwargs):
@@ -1380,7 +1301,7 @@ class ReleaseTests(unittest.TestCase):
     def test_deleted_attestation_restores_claim_and_does_not_poison_other_session(self):
         evidence = {**comment(99, "Closed session source-session\nEnded at: 2026-01-01T00:02:00Z\nSafe to exit: yes"),
                     "created_at": "2026-01-01T00:04:00Z", "updated_at": "2026-01-01T00:04:00Z"}
-        body = helper.release.prepare_release(self.source, evidence, [self.source], {"sessions": [], "worktrees": []},
+        body = helper.release.prepare_release(self.source, evidence, [self.source], {"worktrees": []},
              actor=ACTOR, role="supervisor", releaser_session="supervisor", evidence_url=self.entry["handoff_url"], retained_prs=[], related=[])
         self.reader.paged_json.return_value = [self.source, comment(2, body)]
         self.reader.get_json.side_effect = helper.GitHubReadError("deleted", result=SimpleNamespace(status=404), diagnostics={})

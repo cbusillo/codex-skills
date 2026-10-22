@@ -55,6 +55,12 @@ resources:
   - path: scripts/codex_session_proxy.py
     kind: script
     description: Private per-client native RPC ingress that holds source ownership for attachments and actions; imported by codex-session.py.
+  - path: scripts/handoff_record.py
+    kind: script
+    description: Print this Director's own handoff record from private config, defaulting to OWNER/direction.
+  - path: references/field-reports.md
+    kind: reference
+    description: Where every Director's Supervisor sends field reports about shared skills.
   - path: references/helpers.md
     kind: reference
     description: Local state, session registry schema, goal board, helper usage and shutdown stages.
@@ -167,10 +173,12 @@ policy:
     - id: prefer-coordinated-codex-resume
       match:
         shell_regex: >-
-          (?x)^\s*(?:\S*/)?codex\s+
-          (?:(?:(?:--(?:remote|cd|config|profile|model|sandbox|ask-for-approval|enable|disable|add-dir|image)|-[cCpmsai])
-          (?:=(?:"[^"]*"|'[^']*'|\S+)|\s+(?:"[^"]*"|'[^']*'|\S+))|--[\w-]+|exec)\s+)*
-          (?:resume\b|queue\b(?=[^\n]*\s--message(?:[ =-]|$)))
+          (?x)^\s*(?:(?:\S*/)?codex|"[^"]*/codex"|'[^']*/codex')\s+
+          (?:(?:exec|e|--(?!help\b)[\w-]+
+          |(?:--(?!help\b)[\w-]+|-[cCpmsaio])(?:=|\s+(?!-))(?:"[^"]*"|'[^']*'|[^\s"'])+
+          |(?=['"](?:--[\w-]+=|-[cCpmsaio])|-[cCpmsaio][^=\s])(?:"[^"]*"|'[^']*'|[^\s"'])+)\s+)*
+          (?:resume\b|queue\b(?=[^\n]*\s['"]?--message(?:[ =-]|$)))
+          (?!(?:\s+(?!--(?:\s|$))(?:"[^"]*"|'[^']*'|[^\s"'])+)*?\s+(?:-h|--help)(?:\s|$))
       action: require_preferred
       message: Native resume and queue mutations must invalidate closure evidence under the same ownership lease as successor admission. Use the exact-thread helper with the source account home.
       preferred:
@@ -277,7 +285,7 @@ comments and status, `github` for merges, `launchplane` for the merge train,
 close out.
 
 The Director starts it on Claude Code with `/shared:supervisor` and one line
-naming the pilot issue. The Supervisor is a direction session in the
+naming the run. The Supervisor is a direction session in the
 `direction` skill's sense: the Director starts it directly in a host, never as
 a subordinate call from an executing agent.
 
@@ -296,10 +304,11 @@ each step it blocks. Never change the Director's settings yourself.
 
 ## Pilot Status
 
-This skill is a pilot. The record is
-[codex-skills#1043](https://github.com/cbusillo/codex-skills/issues/1043)
-Supervisor pilot, week 2, and the skill stays a pilot until its three exit
-criteria hold:
+This skill is a pilot. Each Director's pilot record is that Director's own
+[handoff record](references/helpers.md#handoff-record), never an issue in
+another person's repository. Lessons about shared skills that other Directors
+would hit too go to the [field reports](references/field-reports.md) issue.
+The skill stays a pilot until its three exit criteria hold:
 
 1. Two consecutive Supervisor handoffs with no new lesson and no brief widened
    after launch.
@@ -308,7 +317,7 @@ criteria hold:
    digest.
 3. The Director's open questions reach the Director in one place under the
    [question queue rules](../references/talking-with-the-director.md#decisions-holds-and-work-state),
-   and the pilot issue holds handoffs and lessons only.
+   and the handoff record holds handoffs and lessons only.
 
 Post each handoff as the [Handoff Shape](#handoff-shape) says, and say in it
 whether any lesson was new.
@@ -323,7 +332,7 @@ terminal tabs with `skills/supervisor/scripts/iterm_tab.py`, using an exact
 `--session-id` from its `list` output. Launch Codex sessions with "keep working
 through compaction" and Keep instructions naming the brief, issue and current
 step; do not hand them off at a context percentage. Codex as
-the Supervisor is expected to work; claim it only after a run has verified it and the pilot issue
+the Supervisor is expected to work; claim it only after a run has verified it and the handoff record
 records that run.
 
 For stale queued input on a stopped source, read the [recovery procedure](references/helpers.md#release-a-verified-finished-session)
@@ -348,9 +357,10 @@ answers, for example a computer-use session, tell the Director at launch that
 you will relay: bring each question to chat as a numbered Q and send the reply
 with `iterm_tab.py send` at a verified idle prompt.
 
-The shared launcher disables Claude Code prompt suggestions with
-`--settings '{"promptSuggestionEnabled": false}'` on both backends. Keep that
-setting on Supervisor launches; existing sessions may still show suggestions.
+The shared launcher disables Claude Code prompt suggestions and auto memory
+with `--settings '{"promptSuggestionEnabled": false, "autoMemoryEnabled": false}'`
+on both backends. Keep those settings on Supervisor launches; existing sessions
+may still show suggestions.
 It also passes `--autocompact auto` unless the launch file sets
 `--autocompact`, which keeps Claude Code's tuned window and stops the "Want to
 autocompact at … instead?" offer that an unattended session cannot answer
@@ -476,7 +486,9 @@ including non-dim text, establishes neither its author nor approval.
    Before a launch batch, compare PRs merged with PRs opened in each
    repository over the last few hours. If merges are behind and no merge-path
    fix is available, launch only finishing work. Keep each repository under
-   about 8 open agent PRs.
+   about 8 open agent PRs, not counting the merge train's batch PRs (titled
+   `Launchplane batch: #...`), which bundle PRs already counted, or drafts
+   parked on purpose.
 2. **Director questions live on the item's issue**, as a comment that starts
    `Director question:`. Follow the shared
    [question queue rules](../references/talking-with-the-director.md#decisions-holds-and-work-state)
@@ -561,11 +573,15 @@ for products a Client runs business on.
   [launchplane](../launchplane/SKILL.md) for that routing.
 - Open a Client-visible PR as soon as its work is ready; it gets one preview
   request whenever it opens, so holding it only delays the Client.
-- Land each Client-accepted PR first, or in the same train batch as other
-  PRs for that product, so a branch update cannot void the acceptance
-  ([launchplane#3234](https://github.com/cbusillo/launchplane/issues/3234)).
-  [codex-skills#1612](https://github.com/cbusillo/codex-skills/issues/1612)
-  replaces this hand ordering once Launchplane's automatic batch flow ships.
+- Unless the product is `director_standing`, each Client-visible PR needs
+  the Client's own Accept before it lands, and the release needs a separate
+  Accept. Hand the PR off with
+  `--waiting-for-client` until then. The train
+  [lands a product's ready accepted features together](https://github.com/cbusillo/launchplane/blob/main/docs/merge-train-policy.md)
+  and the release invitation names each one. A base update that leaves the
+  change unchanged
+  [keeps its acceptance](https://github.com/cbusillo/launchplane/blob/main/docs/owner-acceptance.md#carried-acceptance),
+  so there is no landing order to track.
 - Green engineering PRs route to the train as soon as they are ready, under
   [Q312](https://github.com/cbusillo/launchplane/issues/3327#issuecomment-6182485308).
   A merge deploys testing; engineering-only changes do not open a release
@@ -641,7 +657,8 @@ for recovery or repeat them as fact.
 2. Load `direction` and take the daily turn, which covers the Director's whole
    account whatever folder this session opened in and clears the turn
    reminder, before launching or taking over any session.
-3. Read the latest handoff on the pilot issue, then every comment after it.
+3. Find the Director's [handoff record](references/helpers.md#handoff-record)
+   with `handoff_record.py`. Read its latest handoff, then every comment after it.
    Before you repeat what the Director said, read the exact words where the
    Director said them, not a summary. Allocate new question IDs through the
    [shared question counter rules](../references/talking-with-the-director.md#decisions-holds-and-work-state);
@@ -653,9 +670,12 @@ for recovery or repeat them as fact.
    before you rely on a background driver or watcher the handoff says is
    running.
 5. Recreate the ~23-minute check and morning digest with the harness's own
-   scheduling feature. Arm Claude Code turn-end notices (`notify_when_idle`)
-   and the bounded `skills/supervisor/scripts/codex_idle_watch.py` watch for
-   Codex turn ends. On either notice, immediately run
+   scheduling feature. Start the bounded
+   `skills/supervisor/scripts/codex_idle_watch.py` watch as a background job
+   once per harness (`--harness codex` and `--harness claude`), each with its
+   own `--delivered-state` file. A background job wakes you only when it
+   exits, so the watch exits on each `closeout_request` it has not delivered.
+   On that exit, or another turn-end notice, immediately run
    [finished-session verification](#close-finished-sessions-on-every-notice-and-check)
    for that exact session; do not defer it to the ~23-minute check. A notice
    prompts verification, never a completion verdict.
@@ -696,7 +716,7 @@ for recovery or repeat them as fact.
    against the full issue and current evidence before correcting its status;
    this report-only mode leaves weekly audit markers untouched and grants no
    release of a real hold.
-7. Post a takeover comment on the pilot issue: what you found, what you
+7. Post a takeover comment on the handoff record: what you found, what you
    corrected, and the "needs the Director" list.
 8. When a finding would retire, stop, or redirect work, load `direction`
    again and open an issue labeled `direction` under its escalation
@@ -717,8 +737,9 @@ and its terminal, transcript and account readbacks before sending input.
 
 ## Close Finished Sessions On Every Notice And Check
 
-Handle turn-end notices as they arrive. For a Codex notice with
-`closeout_request`, start this procedure immediately. For a Claude
+Handle turn-end notices as they arrive. For a watch notice with
+`closeout_request`, start this procedure immediately and re-arm that
+harness's watch with the same `--delivered-state` file. For a Claude
 `notify_when_idle` notice, resolve its exact native session in the ledger and
 run `finished_map.py --ledger <private-ledger.json> --session-id <native-id>`;
 its `closeout_request` enters the same procedure. Re-read the transcript even
@@ -767,6 +788,10 @@ others. A missed target remains visible in the next check and handoff.
    qualify. Never infer completion from silence,
    idleness, or the screen; Claude Code redraws its screen and can hide the
    close-out message. If later transcript activity resumes work, keep it open.
+   Use `safe_verdict`, then run the session's
+   [claim check](references/helpers.md#claim-checks-at-close-out); keep the
+   terminal open until it clears. A required review wait still takes
+   precedence; do not close that worker out.
 2. Inspect the input line before sending keys. `read` reports its visible
    style as `dim`, `non_dim`, `mixed`, `empty` or `unknown`; this is style
    evidence, never authorship or approval. Never record dim suggestions as
@@ -841,9 +866,12 @@ others. A missed target remains visible in the next check and handoff.
 
 ## Handoff Shape
 
-Post the full handoff as one comment in the Director's private record on
-OWNER/direction, and a pointer with public-safe lessons on the pilot issue
-([Q403](https://github.com/cbusillo/codex-skills/issues/1043#issuecomment-6220453592)).
+Post the full handoff as one comment on the Director's own
+[handoff record](references/helpers.md#handoff-record)
+([Q403](https://github.com/cbusillo/codex-skills/issues/1043#issuecomment-6220453592),
+[#2462](https://github.com/cbusillo/codex-skills/issues/2462)). Send each new
+lesson about a shared skill, public-safe, to the
+[field reports](references/field-reports.md) issue as well.
 Follow [Agent Comments](../references/talking-with-the-director.md#agent-comments).
 Link item records and earlier decisions for facts already recorded; write out
 only new recovery information needed for takeover:
@@ -880,13 +908,10 @@ issue while pending. There is no local rule list.
 - Start a fresh tab per task; reused old sessions caused most of the friction.
   Put Supervisor tabs in one dedicated terminal window and leave the
   Director's own sessions alone.
-- A Codex thread may stay loaded after its client exits. Loaded status alone
-  does not require a fixed wait before a successor can claim. An exactly released
-  source needs verified idle closure or current native end proof with validated
-  source ownership; active work, queued input and unknown coverage still refuse.
-  Use the reported native state and recovery evidence rather than a timer
-  ([#1951](https://github.com/cbusillo/codex-skills/issues/1951),
-  [#2285](https://github.com/cbusillo/codex-skills/issues/2285)).
+- An exact release frees an issue for a successor at once, whatever the
+  released session's process or thread is doing. An unreleased claim refuses a
+  successor until its holder's lease expires
+  ([Q621](https://github.com/cbusillo/codex-skills/issues/2453)).
 - Take every time you write from `date`, never from memory or a summary.
 - Recorded pilot compactions preserved briefs and issues on both harnesses;
   keep recording degradation during the experiment above. The previous 450k

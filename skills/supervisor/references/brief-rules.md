@@ -34,7 +34,9 @@ Rules for this brief (every Supervisor brief carries them):
   Supervisor sends "continue"; just resume
   ([capacity stops](helpers.md#codex-provider-capacity-stops)).
 - At a repository's PR cap: count open agent PRs there first; at about 8, do
-  not open another ([the Pattern](../SKILL.md#the-pattern), step 1).
+  not open another ([the Pattern](../SKILL.md#the-pattern), step 1). Leave
+  out the merge train's batch PRs (titled `Launchplane batch: #...`), which
+  only bundle PRs already counted, and drafts parked on purpose.
 - Pace (Director, October 18, 2026): never open PRs faster than they can land.
   Finish and hand off what you open before starting anything new.
 - Never use Chris's own Chrome (the ChatGPT for Chrome extension, Claude in
@@ -49,7 +51,7 @@ Rules for this brief (every Supervisor brief carries them):
   Follow the repository's
   [executing loop](../../references/executing-loop.md), opening each step's
   owning SKILL.md before the step.
-- Recheck ownership, then claim with `gh-plan.py claim` (admission: the kind
+- Recheck ownership, then claim with `gh-plan.py --repo OWNER/REPO claim` (admission: the kind
   named at the top of the brief) before any worktree. The installed
   `gh-plan.py claim --help` and
   [Planning: Claim](../../github/references/cli-reference.md#planning-claim)
@@ -61,7 +63,8 @@ Rules for this brief (every Supervisor brief carries them):
   ([task worktrees](../../github/references/worktrees.md)). Never edit a
   primary checkout. Commit and push with
   `/Users/cbusillo/Developer/codex-skills/skills/github/scripts/git-commit-as-bot`
-  and `git-push-as-bot`
+  and `git-push-as-bot`, with `--worktree /absolute/task/path` first on both.
+  Name your intended task path, never the result of `pwd` or Git discovery
   ([bot helpers](../../github/SKILL.md#helpers-and-identity)). Never
   force-push or use `git stash`.
 - PRs land only through the merge train. When a PR is green and reviewed,
@@ -106,6 +109,11 @@ Rules for this brief (every Supervisor brief carries them):
   fix every reproduced defect, proven by the cheapest check that would catch
   it again; decline only non-defects, with one line each. After two review
   rounds on the same PR, stop patching and redesign with a fresh look.
+- Style ([codex-skills#2455](https://github.com/cbusillo/codex-skills/issues/2455)):
+  before writing Python, Odoo XML or JavaScript, read
+  [python-odoo-style](../../references/python-odoo-style.md) in full, and
+  check your diff against it before handoff. CI fails on new comments and
+  docstrings outside its exceptions.
 - Tests ([Q375](https://github.com/cbusillo/codex-skills/issues/1884#issuecomment-6215129557)):
   run focused tests plus the full test modules for the safety areas you touch
   locally ([gate selection](../../repo-readiness/SKILL.md#gate-selection));
@@ -137,7 +145,7 @@ above by link or inclusion. A lead ends its own run with the safe-exit line
 from step 7, not after each item.
 
 ```text
-Brief from the Supervisor (codex-skills#1043), __DATE__. Trial token: __TOKEN__. Milestone lead brief (Milestone lead trial, https://github.com/cbusillo/codex-skills/issues/2277; Director decision Q515).
+Brief from the Supervisor (__HANDOFF_RECORD__), __DATE__. Trial token: __TOKEN__. Milestone lead brief (Milestone lead trial, https://github.com/cbusillo/codex-skills/issues/2277; Director decision Q515).
 
 You are the long-running lead for: __TRACK__. Admission for every item you take: milestone (__MILESTONE__), linked into that Track's graph.
 

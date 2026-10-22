@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from launchplane_contract import BOUNDED_READ_RESPONSE_FIELDS  # noqa: E402
 from launchplane_contract import helper_command_path  # noqa: E402
 from launchplane_contract import internal_helper_path  # noqa: E402
 from launchplane_inventory import project_inventory  # noqa: E402
@@ -37,6 +38,7 @@ from launchplane_safety import (  # noqa: E402
     public_identifier,
     public_operator_text,
     public_summary_string,
+    public_service_text,
     public_timestamp,
     public_trace_id,
     public_url,
@@ -107,7 +109,6 @@ MERGE_TRAIN_POLICY_RECORD_FIELDS = {
     "policy_sha256",
     "policy",
 }
-MERGE_TRAIN_POLICY_TARGETS_FIELDS = {"status", "trace_id", "policy", "targets"}
 MERGE_TRAIN_POLICY_SUMMARY_FIELDS = {"record_id", "updated_at", "policy_sha256"}
 MERGE_TRAIN_POLICY_TARGET_FIELDS = {
     "repository",
@@ -857,7 +858,7 @@ def _project_intent_evaluation(value: object) -> dict[str, object]:
     if safe_to_execute is not None:
         projected["safe_to_execute"] = safe_to_execute
     if "next_action" in source:
-        projected["next_action"] = public_summary_string(source["next_action"])
+        projected["next_action"] = public_service_text(source["next_action"])
     if "secret_evidence" in source:
         projected["secret_evidence"] = _project_secret_evidence(
             source["secret_evidence"]
@@ -1325,7 +1326,7 @@ def _project_merge_train_dry_run(value: object) -> dict[str, object]:
             raise LaunchplaneSafetyError("invalid_response")
         projected["intended_next_action"] = public_code(source["intended_next_action"])
     if "next_action_detail" in source:
-        projected["next_action_detail"] = public_summary_string(source["next_action_detail"])
+        projected["next_action_detail"] = public_service_text(source["next_action_detail"])
     if "queue_order" in source:
         order = source["queue_order"]
         if not isinstance(order, list):
@@ -1351,7 +1352,7 @@ def _project_merge_train_blocking_reason(value: object) -> dict[str, object]:
         raise LaunchplaneSafetyError("invalid_response")
     return {
         "code": public_code(code),
-        "message": public_summary_string(source.get("message")),
+        "message": public_service_text(source.get("message")),
     }
 
 
@@ -1448,7 +1449,7 @@ def _project_merge_train_block_result(value: object) -> dict[str, object]:
         if key in source:
             projected[key] = public_identifier(source[key])
     if "detail" in source:
-        projected["detail"] = public_summary_string(source["detail"])
+        projected["detail"] = public_service_text(source["detail"])
     return projected
 
 
@@ -1486,7 +1487,7 @@ def _project_controller_last_result(value: object) -> dict[str, object]:
         observation = source["next_observation"]
         if not isinstance(observation, str) or len(observation) > 256:
             raise LaunchplaneSafetyError("invalid_response")
-        projected["next_observation"] = public_summary_string(observation)
+        projected["next_observation"] = public_service_text(observation)
     return projected
 
 
@@ -1644,7 +1645,12 @@ def _project_merge_train_policy_summary(value: object) -> dict[str, object]:
 
 
 def _project_merge_train_policy_targets(value: object) -> dict[str, object]:
-    source = _require_exact_fields(value, MERGE_TRAIN_POLICY_TARGETS_FIELDS)
+    source = _require_dict(value)
+    _require_read_fields(
+        "merge-train-policy-targets-read",
+        source,
+        required=frozenset({"status", "trace_id", "policy", "targets"}),
+    )
     if public_code(source.get("status")) != "ok":
         raise LaunchplaneSafetyError("invalid_response")
     targets = source.get("targets")
@@ -1818,7 +1824,7 @@ def _project_generic_web_deploy_recovery_result(
     }
     provider_status = source.get("provider_status")
     if provider_status:
-        projected["provider_status"] = public_summary_string(provider_status)
+        projected["provider_status"] = public_service_text(provider_status)
     if dry_run:
         projected.update(
             {
@@ -1994,6 +2000,37 @@ ODOO_ADDON_SETTINGS_SHOPIFY_FIELDS = {
     "webhook_key_secret_binding_id",
     "test_store",
 }
+ODOO_WEBSITE_SETTINGS_RESULT_FIELDS = {
+    "product",
+    "context",
+    "instance",
+    "record_sha256_before",
+    "mode",
+    "plan_sha256",
+    "before",
+    "after",
+    "changed",
+    "applied",
+    "read_back_matches",
+    "activation",
+}
+ODOO_WEBSITE_SETTINGS_PAYLOAD_FIELDS = {
+    "product",
+    "context",
+    "instance",
+    "reason",
+    "website_settings",
+}
+ODOO_WEBSITE_SETTINGS_INTENT_FIELDS = {"artifact_id", "settings"}
+ODOO_WEBSITE_SETTINGS_FIELDS = {
+    "operation",
+    "website_id",
+    "public_origin",
+    "public_indexing_enabled",
+    "google_analytics_key",
+    "cookies_bar",
+    "block_third_party_domains",
+}
 
 
 INTEGRATION_ALLOWANCE_FIELDS = {
@@ -2154,10 +2191,10 @@ def _project_integration_allowance(value: object) -> dict[str, object]:
     projected: dict[str, object] = {
         "integration": public_code(source.get("integration")),
         "kind": kind,
-        "reason": public_operator_text(source.get("reason")),
+        "reason": public_operator_text(source.get("reason"), redact_denied_markers=True),
     }
     if source.get("evidence"):
-        projected["evidence"] = public_operator_text(source.get("evidence"))
+        projected["evidence"] = public_operator_text(source.get("evidence"), redact_denied_markers=True)
     if source.get("recorded_by"):
         projected["recorded_by"] = public_identifier(source.get("recorded_by"))
     if source.get("recorded_at"):
@@ -2175,8 +2212,8 @@ def _project_sharing_reason(value: object) -> dict[str, object]:
         raise LaunchplaneSafetyError("invalid_response")
     projected: dict[str, object] = {
         "kind": kind,
-        "reason": public_operator_text(source.get("reason")),
-        "evidence": public_operator_text(source.get("evidence")),
+        "reason": public_operator_text(source.get("reason"), redact_denied_markers=True),
+        "evidence": public_operator_text(source.get("evidence"), redact_denied_markers=True),
     }
     if source.get("recorded_by"):
         projected["recorded_by"] = public_identifier(source.get("recorded_by"))
@@ -2296,7 +2333,7 @@ def _project_testing_hold(value: object) -> dict[str, object] | None:
     source = _require_dict(value)
     if any(str(key) not in TESTING_HOLD_FIELDS for key in source):
         raise LaunchplaneSafetyError("unsafe_response_shape")
-    projected: dict[str, object] = {"reason": public_operator_text(source.get("reason"))}
+    projected: dict[str, object] = {"reason": public_operator_text(source.get("reason"), redact_denied_markers=True)}
     if "purpose" in source:
         projected["purpose"] = _testing_hold_purpose(source["purpose"])
     if source.get("rehearsal") is not None:
@@ -2304,10 +2341,10 @@ def _project_testing_hold(value: object) -> dict[str, object] | None:
         projected["rehearsal"] = {
             "binding_sha256": _project_sha256(rehearsal.get("binding_sha256")),
             # Producer provenance is free text; legacy target labels may be empty.
-            "target_updated_at": public_operator_text(rehearsal["target_updated_at"]),
+            "target_updated_at": public_operator_text(rehearsal["target_updated_at"], redact_denied_markers=True),
             "target_source_label": (
                 "" if rehearsal["target_source_label"] == ""
-                else public_operator_text(rehearsal["target_source_label"])
+                else public_operator_text(rehearsal["target_source_label"], redact_denied_markers=True)
             ),
         }
     if source.get("recorded_by"):
@@ -2392,6 +2429,12 @@ def _optional_text(value: object, *, max_length: int = 64) -> str:
     if value in {None, ""}:
         return ""
     return public_summary_string(value, max_length=max_length)
+
+
+def _optional_response_text(value: object, *, max_length: int = 64) -> str:
+    if value is None or value == "":
+        return ""
+    return public_service_text(value, max_length=max_length)
 
 
 def _optional_code(value: object) -> str:
@@ -2486,7 +2529,7 @@ def _project_product_target(value: object) -> dict[str, object]:
             source.get("observed_runtime_identity")
         ),
         "runtime_identity_status": _optional_code(source.get("runtime_identity_status")),
-        "runtime_identity_detail": _optional_text(
+        "runtime_identity_detail": _optional_response_text(
             source.get("runtime_identity_detail"), max_length=300
         ),
         "trust_state": _optional_code(source.get("trust_state")),
@@ -2505,7 +2548,7 @@ def _project_product_health(value: object) -> dict[str, object] | None:
         check = _require_dict(check_value)
         projected_checks.append(
             {
-                "name": _optional_text(check.get("name"), max_length=120),
+                "name": _optional_response_text(check.get("name"), max_length=120),
                 "kind": _optional_code(check.get("kind")),
                 "enabled": bool(_optional_bool(check.get("enabled"))),
                 "probe_effective": _optional_bool(check.get("probe_effective")),
@@ -2606,7 +2649,7 @@ def _project_product_profile(value: object) -> dict[str, object]:
         raise LaunchplaneSafetyError("invalid_response")
     projected: dict[str, object] = {
         "product": public_identifier(source.get("product")),
-        "display_name": _optional_text(source.get("display_name"), max_length=120),
+        "display_name": _optional_response_text(source.get("display_name"), max_length=120),
         "driver_id": _optional_identifier(source.get("driver_id")),
         "repository": _optional_identifier(source.get("repository")),
         "production_use": production_use,
@@ -2686,7 +2729,7 @@ def _project_product_activity_event(
     def text(field: str, max_length: int) -> object:
         return drops.keep(
             f"events[].{field}",
-            lambda value: public_summary_string(value, max_length=max_length),
+            lambda value: public_service_text(value, max_length=max_length),
             event.get(field),
         )
 
@@ -2760,7 +2803,7 @@ def _protected_artifact_warning(value: object) -> str:
         for reference in value.split():
             if "@" in reference and not re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", reference):
                 _protected_artifact_identifier(reference)
-    return public_operator_text(value)
+    return public_operator_text(value, redact_denied_markers=True)
 
 
 def _protected_artifact_lane(value: object, *, optional: bool = False) -> str:
@@ -2878,11 +2921,11 @@ def _reconcile_plan_validators() -> dict[str, Any]:
         )
     )
     fields.update(
-        detail=lambda value: public_summary_string(value, max_length=400),
+        detail=lambda value: public_service_text(value, max_length=400),
         # Launchplane's fixed description plus up to 32 validated env-key names
         # (launchplane#2717); the helper's own summary redaction still applies.
-        last_failed_error_summary=lambda value: public_summary_string(value, max_length=1500),
-        hold_reason=lambda value: public_operator_text(value, max_length=300),
+        last_failed_error_summary=lambda value: public_service_text(value, max_length=1500),
+        hold_reason=lambda value: public_operator_text(value, max_length=300, redact_denied_markers=True),
         hold_recorded_at=lambda value: public_summary_string(value, max_length=64),
         preview_url=_public_origin_url,
     )
@@ -3024,7 +3067,7 @@ def _project_reconcile_request(
         "request_count": count("request_count"),
         "attempt": count("attempt"),
         "last_delivery_id": field("last_delivery_id", public_identifier),
-        "last_error": field("last_error", lambda value: public_summary_string(value, max_length=400)),
+        "last_error": field("last_error", lambda value: public_service_text(value, max_length=400)),
         "last_plan": _project_reconcile_plan(request.get("last_plan"), drops),
     }
 
@@ -3291,15 +3334,6 @@ def _project_target_replacement_result(
     return projected
 
 
-def _public_operation_error_description(value: object) -> str:
-    if not isinstance(value, str):
-        raise LaunchplaneSafetyError("invalid_response")
-    # Fixed service prose describes a credential refusal. Redact that word
-    # rather than loosening the public-summary policy; _FieldDrops checks the raw shape.
-    summary = re.sub(r"\bcredential\b(?!\s*[:=])", "[redacted]", value, flags=re.IGNORECASE)
-    return public_summary_string(summary)
-
-
 def _project_target_replacement_operation(provider_payload: dict[str, Any]) -> dict[str, object]:
     """One Odoo target-replacement operation's progress and bounded failure details. Error messages,
     settings, URLs, provider target names and evidence payloads are dropped and listed by
@@ -3333,7 +3367,7 @@ def _project_target_replacement_operation(provider_payload: dict[str, Any]) -> d
             "operation.request.artifact_id", public_identifier, request.get("artifact_id")
         ),
         "error_code": field("error_code", _public_dotted_code),
-        "error_description": field("error_description", _public_operation_error_description),
+        "error_description": field("error_description", public_service_text),
         "error_detail_keys": _project_env_key_names(
             operation.get("error_detail_keys"), path="operation.error_detail_keys", drops=drops
         ),
@@ -3713,7 +3747,7 @@ def _project_preview_generation(
         "overall_health_status": field("overall_health_status", _public_dotted_code),
         "failure_stage": field("failure_stage", _public_dotted_code),
         "failure_summary": field(
-            "failure_summary", lambda value: public_summary_string(value, max_length=300)
+            "failure_summary", lambda value: public_service_text(value, max_length=300)
         ),
         "runtime_identity": projected_identity,
     }
@@ -3820,7 +3854,7 @@ def _project_product_repository_identity_plan(result: object) -> dict[str, objec
         "inventory_record_id": public_identifier(source.get("inventory_record_id")),
         "inventory_revision": inventory_revision,
         "inventory_digest": _project_sha256(source.get("inventory_digest")),
-        "reason": public_operator_text(source.get("reason")),
+        "reason": public_operator_text(source.get("reason"), redact_denied_markers=True),
         "source_label": public_identifier(source.get("source_label")),
         "profile_record_sha256_before": _optional_sha256(
             source.get("profile_record_sha256_before")
@@ -3853,7 +3887,7 @@ def _project_odoo_addon_settings_result(result: object) -> dict[str, object]:
         "instance": public_identifier(source.get("instance")),
         "addon": public_code(source.get("addon")),
         "rendered_action": public_code(source.get("rendered_action")),
-        "reason": public_operator_text(source.get("reason")),
+        "reason": public_operator_text(source.get("reason"), redact_denied_markers=True),
         "source_label": public_identifier(source.get("source_label")),
         "record_sha256_before": _optional_sha256(source.get("record_sha256_before")),
         "record_sha256_after": _optional_sha256(source.get("record_sha256_after")),
@@ -3888,7 +3922,58 @@ def _project_odoo_addon_settings_result(result: object) -> dict[str, object]:
     next_actions = source.get("next_actions", [])
     if not isinstance(next_actions, list):
         raise LaunchplaneSafetyError("invalid_response")
-    projected["next_actions"] = [public_summary_string(item) for item in next_actions]
+    projected["next_actions"] = [public_service_text(item) for item in next_actions]
+    assert_public_safe_shape(projected)
+    return projected
+
+
+def _project_odoo_website_settings_intent(value: object) -> dict[str, object] | None:
+    if value is None:
+        return None
+    intent = _require_dict(value)
+    settings = _require_dict(intent.get("settings"))
+    if any(str(key) not in ODOO_WEBSITE_SETTINGS_INTENT_FIELDS for key in intent) or any(
+        str(key) not in ODOO_WEBSITE_SETTINGS_FIELDS for key in settings
+    ):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    website_id = settings.get("website_id")
+    if isinstance(website_id, bool) or not isinstance(website_id, int) or website_id < 1:
+        raise LaunchplaneSafetyError("invalid_response")
+    analytics_key = settings.get("google_analytics_key", "")
+    projected_settings: dict[str, object] = {
+        "operation": public_code(settings.get("operation"), default="apply"),
+        "website_id": website_id,
+        "public_origin": _public_origin_url(settings.get("public_origin")),
+        "public_indexing_enabled": bool(_optional_bool(settings.get("public_indexing_enabled"))),
+        # A GA4 Measurement ID is published in every page; it is not a secret.
+        "google_analytics_key": public_identifier(analytics_key) if analytics_key else "",
+    }
+    # Collection-only rollback stores null consent controls; keep null distinct from false.
+    for key in ("cookies_bar", "block_third_party_domains"):
+        projected_settings[key] = _optional_bool(settings.get(key))
+    return {
+        "artifact_id": public_identifier(intent.get("artifact_id")),
+        "settings": projected_settings,
+    }
+
+
+def _project_odoo_website_settings_result(result: object) -> dict[str, object]:
+    source = _require_dict(result)
+    if any(str(key) not in ODOO_WEBSITE_SETTINGS_RESULT_FIELDS for key in source):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
+    projected: dict[str, object] = {
+        "mode": public_code(source.get("mode")),
+        "product": public_identifier(source.get("product")),
+        "context": public_identifier(source.get("context")),
+        "instance": public_identifier(source.get("instance")),
+        "record_sha256_before": _optional_sha256(source.get("record_sha256_before")),
+        "plan_sha256": _optional_sha256(source.get("plan_sha256")),
+        "before": _project_odoo_website_settings_intent(source.get("before")),
+        "after": _project_odoo_website_settings_intent(source.get("after")),
+        "activation": public_service_text(source.get("activation")),
+    }
+    for key in ("changed", "applied", "read_back_matches"):
+        projected[key] = bool(_optional_bool(source.get(key)))
     assert_public_safe_shape(projected)
     return projected
 
@@ -4026,6 +4111,11 @@ def _project_success_output(
             provider_payload.get("records"), {"product_profile", "context", "instance"}
         )
         return records, _project_odoo_addon_settings_result(provider_payload.get("result"))
+    if operation in {"odoo-website-settings-dry-run", "odoo-website-settings-apply"}:
+        records = _project_records(
+            provider_payload.get("records"), {"product_profile", "context", "instance"}
+        )
+        return records, _project_odoo_website_settings_result(provider_payload.get("result"))
     if operation in {"integration-allowances-dry-run", "integration-allowances-apply"}:
         records = _project_records(
             provider_payload.get("records"), {"product_profile", "context", "instance"}
@@ -4097,8 +4187,7 @@ def _project_success_output(
 def summarize_repository_inventory_read(
     *, request: dict[str, object], provider_payload: dict[str, Any]
 ) -> dict[str, object]:
-    if any(str(key) not in {"status", "trace_id", "read_model"} for key in provider_payload):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
+    _require_read_fields("repository-inventory-read", provider_payload)
     status = public_code(provider_payload.get("status"), default="ok")
     payload = base_payload(
         status=status, operation="repository-inventory-read", request=request
@@ -4116,6 +4205,14 @@ def summarize_repository_inventory_read(
     assert_public_safe_shape(payload["result"])
     assert_public_safe_shape(payload["summary"])
     return payload
+
+
+def _require_read_fields(
+    operation: str, provider_payload: dict[str, Any], *, required: frozenset[str] = frozenset()
+) -> None:
+    keys = set(map(str, provider_payload))
+    if keys.difference(BOUNDED_READ_RESPONSE_FIELDS[operation]) or required.difference(keys):
+        raise LaunchplaneSafetyError("unsafe_response_shape")
 
 
 def _require_exact_fields(value: object, fields: set[str]) -> dict[str, Any]:
@@ -4368,6 +4465,15 @@ def summarize_success(
                 if operation == "odoo-addon-settings-dry-run"
                 else "Check read_back_matches, then run Odoo post-deploy for the lane and verify "
                 "the settings in its database."
+            )
+        elif operation in {"odoo-website-settings-dry-run", "odoo-website-settings-apply"}:
+            summary["plan_sha256"] = result.get("plan_sha256")
+            summary["recommendation"] = (
+                "Save this redacted dry-run output, review before and after, then apply the exact "
+                "same private payload with --expected-plan-digest."
+                if operation == "odoo-website-settings-dry-run"
+                else "Check read_back_matches. The intent is inert until the Client accepts the "
+                "release; that acceptance applies it to the Odoo database."
             )
         elif operation in {
             "generic-web-deploy-recovery-dry-run",
@@ -4791,6 +4897,36 @@ def _require_apply_eligible_odoo_addon_settings_dry_run(
         raise ValueError("reviewed_dry_run_not_apply_eligible")
 
 
+def _require_apply_eligible_odoo_website_settings_dry_run(
+    args: argparse.Namespace,
+    *,
+    expected_plan_digest: str,
+    expected_product: str,
+    expected_context: str,
+) -> None:
+    evidence_path = str(getattr(args, "dry_run_evidence_file", "") or "").strip()
+    if not evidence_path:
+        raise ValueError("reviewed_dry_run_not_apply_eligible")
+    try:
+        evidence = read_payload_file(evidence_path)
+    except ValueError:
+        raise ValueError("reviewed_dry_run_not_apply_eligible") from None
+    result = evidence.get("result")
+    if not isinstance(result, dict):
+        raise ValueError("reviewed_dry_run_not_apply_eligible")
+    # The website result has no status field; the accepted envelope is the success signal.
+    if (
+        evidence.get("operation") != "odoo-website-settings-dry-run"
+        or evidence.get("status") != "accepted"
+        or result.get("mode") != "dry-run"
+        or result.get("plan_sha256") != expected_plan_digest
+        or result.get("product") != expected_product
+        or result.get("context") != expected_context
+        or result.get("instance") != "prod"
+    ):
+        raise ValueError("reviewed_dry_run_not_apply_eligible")
+
+
 def _require_apply_eligible_integration_allowances_dry_run(
     args: argparse.Namespace,
     *,
@@ -4871,10 +5007,7 @@ def _summarize_lane_config_read(
     project: Any,
     recommendation: str,
 ) -> dict[str, object]:
-    if any(
-        str(key) not in {"status", "trace_id", "records", "result"} for key in provider_payload
-    ):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
+    _require_read_fields(operation, provider_payload)
     status = public_code(provider_payload.get("status"), default="ok")
     payload = base_payload(status=status, operation=operation, request=request)
     payload["records"] = _project_records(
@@ -4968,8 +5101,7 @@ def _summarize_product_read(
     project: Any,
     recommendation: str | None = None,
 ) -> dict[str, object]:
-    if any(str(key) not in {"status", "trace_id", result_key} for key in provider_payload):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
+    _require_read_fields(operation, provider_payload)
     status = public_code(provider_payload.get("status"), default="ok")
     payload = base_payload(status=status, operation=operation, request=request)
     payload["result"] = project(provider_payload.get(result_key))
@@ -5030,7 +5162,7 @@ def _project_path_check(value: object) -> dict[str, object]:
                 "state": step["state"],
                 # A failed testing deploy carries the operation's dotted error code.
                 "code": _path_check_step_code(step["code"]),
-                "description": public_summary_string(step["description"]),
+                "description": public_service_text(step["description"]),
                 "fix": step["fix"],
                 "record_ids": [public_identifier(record_id) for record_id in record_ids],
             }
@@ -5140,8 +5272,7 @@ def summarize_protected_artifacts_read(
 def summarize_preview_history_read(
     *, request: dict[str, object], provider_payload: dict[str, Any]
 ) -> dict[str, object]:
-    if any(str(key) not in {"status", "trace_id", "preview", "generations"} for key in provider_payload):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
+    _require_read_fields("preview-history-read", provider_payload)
     status = public_code(provider_payload.get("status"), default="ok")
     payload = base_payload(status=status, operation="preview-history-read", request=request)
     payload["result"] = _project_preview_history(provider_payload)
@@ -5160,8 +5291,7 @@ def summarize_preview_history_read(
 def summarize_reconcile_requests_read(
     *, request: dict[str, object], provider_payload: dict[str, Any]
 ) -> dict[str, object]:
-    if any(str(key) not in {"status", "trace_id", "product", "requests"} for key in provider_payload):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
+    _require_read_fields("reconcile-requests-read", provider_payload)
     status = public_code(provider_payload.get("status"), default="ok")
     payload = base_payload(status=status, operation="reconcile-requests-read", request=request)
     target_key = request.get("target_key")
@@ -5189,9 +5319,11 @@ def _recovery_reference(value: object) -> str:
 def summarize_recovery_reference_read(
     *, request: dict[str, object], provider_payload: dict[str, Any]
 ) -> dict[str, object]:
-    fields = {"product", "context", "instance", "recovery_reference", "reservation_state", "reservation_attempt"}
-    if set(provider_payload) != fields:
-        raise LaunchplaneSafetyError("unsafe_response_shape")
+    _require_read_fields(
+        "generic-web-deploy-recovery-reference-read",
+        provider_payload,
+        required=BOUNDED_READ_RESPONSE_FIELDS["generic-web-deploy-recovery-reference-read"],
+    )
     if (
         provider_payload["product"] != request["product"]
         or provider_payload["instance"] != "testing"
@@ -5218,8 +5350,7 @@ def summarize_recovery_reference_read(
 def summarize_product_secret_bindings_read(
     *, request: dict[str, object], provider_payload: dict[str, Any]
 ) -> dict[str, object]:
-    if any(str(key) not in {"status", "trace_id", "product", "bindings"} for key in provider_payload):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
+    _require_read_fields("product-secret-bindings-read", provider_payload)
     status = public_code(provider_payload.get("status"), default="ok")
     payload = base_payload(
         status=status, operation="product-secret-bindings-read", request=request
@@ -5280,8 +5411,7 @@ def _project_target_replacement_recovery(value: object) -> dict[str, object] | N
 def summarize_target_replacement_operation_read(
     *, request: dict[str, object], provider_payload: dict[str, Any]
 ) -> dict[str, object]:
-    if any(str(key) not in {"status", "trace_id", "operation", "result", "recovery"} for key in provider_payload):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
+    _require_read_fields("target-replacement-operation-read", provider_payload)
     status = public_code(provider_payload.get("status"), default="ok")
     payload = base_payload(
         status=status, operation="target-replacement-operation-read", request=request
@@ -5398,11 +5528,13 @@ def summarize_merge_train_policy_read(
     *, request: dict[str, object], provider_payload: dict[str, Any]
 ) -> dict[str, object]:
     """Project one repository; never emit credential sources or the fleet."""
-    source = _require_exact_fields(provider_payload, {"status", "trace_id", "record"})
-    record = _require_dict(source.get("record"))
+    _require_read_fields(
+        "merge-train-policy-read", provider_payload, required=frozenset({"status", "trace_id", "record"})
+    )
+    record = _require_dict(provider_payload.get("record"))
     policy = _require_dict(record.get("policy"))
     policies = policy.get("policies")
-    if source.get("status") != "ok" or record.get("status") != "active" or not isinstance(policies, list) or not policies:
+    if provider_payload.get("status") != "ok" or record.get("status") != "active" or not isinstance(policies, list) or not policies:
         raise LaunchplaneSafetyError("invalid_response")
     repository = public_identifier(request.get("repository"))
     targets: list[dict[str, str]] = []
@@ -5438,7 +5570,7 @@ def summarize_merge_train_policy_read(
             "updated_at": public_timestamp(record.get("updated_at")),
             "policy_sha256": _project_sha256(record.get("policy_sha256")),
         },
-        "trace_id": public_trace_id(source.get("trace_id")),
+        "trace_id": public_trace_id(provider_payload.get("trace_id")),
     }
     assert_public_safe_shape(summary)
     payload = base_payload(status="available", operation="merge-train-policy-read", request=request)
@@ -6027,6 +6159,76 @@ def odoo_addon_settings_body(args: argparse.Namespace, *, mode: str) -> dict[str
     return body
 
 
+def _odoo_website_settings_intent(value: object) -> dict[str, object] | None:
+    # Null withdraws the pending intent. The service owns GA4 and consent rules.
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("website_settings_required")
+    if any(str(key) not in ODOO_WEBSITE_SETTINGS_INTENT_FIELDS for key in value):
+        raise ValueError("unsupported_website_settings_field")
+    artifact_id = value.get("artifact_id")
+    if not isinstance(artifact_id, str) or not artifact_id.strip():
+        raise ValueError("artifact_id_required")
+    settings = value.get("settings")
+    if not isinstance(settings, dict):
+        raise ValueError("website_settings_required")
+    if any(str(key) not in ODOO_WEBSITE_SETTINGS_FIELDS for key in settings):
+        raise ValueError("unsupported_website_settings_field")
+    if settings.get("operation", "apply") != "apply":
+        raise ValueError("unsupported_website_settings_operation")
+    website_id = settings.get("website_id")
+    if isinstance(website_id, bool) or not isinstance(website_id, int) or website_id < 1:
+        raise ValueError("website_id_required")
+    origin = settings.get("public_origin")
+    try:
+        parts = urllib.parse.urlsplit(origin) if isinstance(origin, str) else None
+    except ValueError:
+        parts = None
+    if parts is None or parts.scheme != "https" or not parts.hostname:
+        raise ValueError("https_public_origin_required")
+    for key in ("public_indexing_enabled", "cookies_bar", "block_third_party_domains"):
+        if key in settings and not isinstance(settings[key], bool):
+            raise ValueError(f"{key}_boolean_required")
+    if not isinstance(settings.get("google_analytics_key", ""), str):
+        raise ValueError("google_analytics_key_string_required")
+    return {"artifact_id": artifact_id.strip(), "settings": settings}
+
+
+def odoo_website_settings_body(args: argparse.Namespace, *, mode: str) -> dict[str, object]:
+    payload = read_payload_file(args.payload_file)
+    if any(str(key) not in ODOO_WEBSITE_SETTINGS_PAYLOAD_FIELDS for key in payload):
+        raise ValueError("unsupported_payload_field")
+    body: dict[str, object] = {}
+    for field in ("product", "context", "reason"):
+        value = payload.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{field}_required")
+        body[field] = value.strip()
+    if payload.get("instance", "prod") != "prod":
+        raise ValueError("unsupported_instance")
+    body["instance"] = "prod"
+    if "website_settings" not in payload:
+        raise ValueError("website_settings_required")
+    body["website_settings"] = _odoo_website_settings_intent(payload["website_settings"])
+    body["mode"] = mode
+    if mode == "apply":
+        _require_idempotency(args)
+        if not args.reviewed_dry_run:
+            raise ValueError("reviewed_dry_run_required")
+        expected_plan_digest = args.expected_plan_digest.strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_plan_digest):
+            raise ValueError("invalid_expected_plan_digest")
+        _require_apply_eligible_odoo_website_settings_dry_run(
+            args,
+            expected_plan_digest=expected_plan_digest,
+            expected_product=cast(str, body["product"]),
+            expected_context=cast(str, body["context"]),
+        )
+        body["reviewed_plan_sha256"] = expected_plan_digest
+    return body
+
+
 def _recovery_request_sha256(body: dict[str, object]) -> str:
     reviewed = {key: value for key, value in body.items() if key != "expected_recovery_digest"}
     return hashlib.sha256(json.dumps(reviewed, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
@@ -6519,7 +6721,7 @@ def prepare_operator_settings(
     return settings
 
 
-def _runtime_sync_result(source: object, *, mode: str) -> dict[str, object]:
+def _runtime_sync_result(source: object, *, mode: str, selected_keys: list[str] | None = None) -> dict[str, object]:
     result = _require_dict(source)
     if result.get("status") != "ok" or result.get("mode") != mode:
         raise LaunchplaneSafetyError("invalid_response")
@@ -6540,6 +6742,13 @@ def _runtime_sync_result(source: object, *, mode: str) -> dict[str, object]:
         cast(list[str], projected_delta["different_keys"])
     ) | set(cast(list[str], projected_delta["retired_keys_present"]))
     if changed != expected:
+        raise LaunchplaneSafetyError("invalid_response")
+    if selected_keys is not None and (
+        result.get("selected_keys") != selected_keys
+        or changed - set(selected_keys)
+        or projected_delta["retired_keys_present"]
+        or projected_delta["desired_key_count"] != len(selected_keys)
+    ):
         raise LaunchplaneSafetyError("invalid_response")
     target = _require_dict(result.get("tracked_target"))
     if not isinstance(target.get("target_id"), str) or not target["target_id"]:
@@ -6570,6 +6779,8 @@ def _runtime_sync_result(source: object, *, mode: str) -> dict[str, object]:
         "persistence_status": verification_status,
         "deploy_requested": False,
     }
+    if selected_keys is not None:
+        projected["selected_keys"] = selected_keys
     assert_public_safe_shape(projected)
     return projected
 
@@ -6586,12 +6797,20 @@ def _runtime_sync_plan_digest(request: dict[str, object], result: dict[str, obje
 def execute_runtime_sync(args: argparse.Namespace) -> int:
     operation = args.command
     applying = operation.endswith("-apply")
-    request = {
+    request: dict[str, object] = {
         "product": public_identifier(args.product),
         "context": public_identifier(args.context),
         "instance": public_identifier(args.instance),
         "payload_source": "operator_argument",
     }
+    try:
+        selected_keys = sorted(_public_env_key(key) for key in args.key) if args.key else None
+    except LaunchplaneSafetyError as error:
+        raise ValueError("invalid_runtime_key_selection") from error
+    if selected_keys is not None:
+        if len(set(selected_keys)) != len(selected_keys):
+            raise ValueError("invalid_runtime_key_selection")
+        request["selected_keys"] = selected_keys
     reviewed_digest = ""
     if applying:
         _require_idempotency(args)
@@ -6612,6 +6831,8 @@ def execute_runtime_sync(args: argparse.Namespace) -> int:
     current_phase = "preflight"
     current_diagnostics: dict[str, object] = {}
     body = {"schema_version": 1, **{key: request[key] for key in ("product", "context", "instance")}, "deploy": False}
+    if selected_keys is not None:
+        body["selected_keys"] = selected_keys
     path = helper_command_path(operation)
 
     def call(mode: str, *, phase: str) -> tuple[dict[str, object], dict[str, Any]]:
@@ -6633,7 +6854,7 @@ def execute_runtime_sync(args: argparse.Namespace) -> int:
             known_trace = public_trace_id(response.get("trace_id"))
         if response.get("status") != "accepted":
             raise LaunchplaneSafetyError("invalid_response")
-        projected = _runtime_sync_result(response.get("result"), mode=mode)
+        projected = _runtime_sync_result(response.get("result"), mode=mode, selected_keys=selected_keys)
         if projected["context"] != request["context"] or projected["instance"] != request["instance"]:
             raise LaunchplaneSafetyError("invalid_response")
         return projected, response
@@ -6894,7 +7115,8 @@ def _preview_feedback_response_unverified(
 
 
 SIMPLE_APPLY_OPERATIONS = frozenset({
-    "odoo-addon-settings-apply", "integration-allowances-apply", "testing-hold-apply",
+    "odoo-addon-settings-apply", "odoo-website-settings-apply",
+    "integration-allowances-apply", "testing-hold-apply",
     "product-repository-identity-apply", "generic-web-deploy-recovery-apply",
     "repository-inventory-apply", "product-expected-config-apply",
 })
@@ -8743,8 +8965,7 @@ def read_production_backup_authority(
         timeout=timeout,
     )
     try:
-        if any(str(key) not in {"status", "trace_id", "authority"} for key in provider_payload):
-            raise LaunchplaneSafetyError("unsafe_response_shape")
+        _require_read_fields("production-backup-authority-read", provider_payload)
         return _project_production_backup_authority_read(provider_payload.get("authority"))
     except (LaunchplaneSafetyError, ValueError, TypeError) as exc:
         raise ServiceResponseError(service_response_diagnostics(provider_payload)) from exc
@@ -9437,8 +9658,7 @@ def execute_production_backup_authority_read(
             },
             timeout=args.timeout,
         )
-        if any(str(key) not in {"status", "trace_id", "authority"} for key in provider_payload):
-            raise LaunchplaneSafetyError("unsafe_response_shape")
+        _require_read_fields("production-backup-authority-read", provider_payload)
         status = public_code(provider_payload.get("status"), default="ok")
         payload = base_payload(status=status, operation=operation, request=request)
         try:
@@ -9493,16 +9713,6 @@ PRIVATE_HEALTH_ENDPOINT_PAYLOAD_FIELDS = {
 }
 PRIVATE_HEALTH_ENDPOINT_RECORD_FIELDS = PRIVATE_HEALTH_ENDPOINT_PAYLOAD_FIELDS | {"updated_at"}
 PRIVATE_HEALTH_ENDPOINT_RESULT_FIELDS = {"mode", "endpoint_key", "endpoint_status", "record"}
-PRIVATE_HEALTH_ENDPOINT_LIST_FIELDS = {
-    "status",
-    "trace_id",
-    "product",
-    "context",
-    "instance",
-    "limit",
-    "count",
-    "records",
-}
 PRIVATE_HEALTH_ENDPOINT_STATUSES = {"active", "disabled"}
 PRIVATE_HEALTH_ENDPOINT_PLAN_STATUSES = {"dry-run": "planned", "apply": "applied"}
 PRIVATE_HEALTH_ENDPOINT_MAX_RECORDS = 100
@@ -9729,8 +9939,7 @@ def read_private_health_endpoint(
         timeout=timeout,
     )
     try:
-        if any(str(key) not in {"status", "trace_id", "record"} for key in provider_payload):
-            raise LaunchplaneSafetyError("unsafe_response_shape")
+        _require_read_fields("private-health-endpoint-record-read", provider_payload)
         record = provider_payload.get("record")
         return _project_private_health_endpoint_record(record), _private_health_endpoint_url(record)
     except (LaunchplaneSafetyError, ValueError, TypeError) as exc:
@@ -9821,8 +10030,7 @@ def execute_private_health_endpoint_read(
             query=query,
             timeout=args.timeout,
         )
-        if any(str(key) not in PRIVATE_HEALTH_ENDPOINT_LIST_FIELDS for key in provider_payload):
-            raise LaunchplaneSafetyError("unsafe_response_shape")
+        _require_read_fields("private-health-endpoint-read", provider_payload)
         records = provider_payload.get("records")
         if not isinstance(records, list) or len(records) > PRIVATE_HEALTH_ENDPOINT_MAX_RECORDS:
             raise LaunchplaneSafetyError("invalid_response")
@@ -9946,10 +10154,7 @@ def _project_product_promotion_status(provider_payload: dict[str, Any]) -> dict[
     """Whether a testing-to-prod promotion could run and its evidence fingerprint. The
     release checklist, artifacts, commits, repository, workflow, live confirmations and
     every free-text reason are dropped."""
-    if any(
-        str(key) not in {"status", "trace_id", "promotion_status"} for key in provider_payload
-    ):
-        raise LaunchplaneSafetyError("unsafe_response_shape")
+    _require_read_fields("product-promotion-status-read", provider_payload)
     source = _require_dict(provider_payload.get("promotion_status"))
     release_review = _require_dict(source.get("release_review") or {})
     blockers = release_review.get("blockers") or []
@@ -10663,10 +10868,36 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Private saved JSON output from the reviewed addon-settings dry-run.",
     )
 
+    odoo_website_settings_dry_run = subparsers.add_parser(
+        "odoo-website-settings-dry-run",
+        help="Dry-run a product's pending production website settings intent from a private payload.",
+    )
+    odoo_website_settings_dry_run.add_argument(
+        "--payload-file", required=True, help="Private local JSON payload file."
+    )
+    odoo_website_settings_dry_run.set_defaults(idempotency_key="")
+
+    odoo_website_settings_apply = subparsers.add_parser(
+        "odoo-website-settings-apply",
+        help="Record reviewed website settings intent bound to the saved dry-run digest.",
+    )
+    odoo_website_settings_apply.add_argument(
+        "--payload-file", required=True, help="Private local JSON payload file."
+    )
+    odoo_website_settings_apply.add_argument("--idempotency-key", required=True)
+    odoo_website_settings_apply.add_argument("--reviewed-dry-run", action="store_true")
+    odoo_website_settings_apply.add_argument("--expected-plan-digest", required=True)
+    odoo_website_settings_apply.add_argument(
+        "--dry-run-evidence-file",
+        required=True,
+        help="Private saved JSON output from the reviewed website-settings dry-run.",
+    )
+
     for command in ("live-target-runtime-sync-dry-run", "live-target-runtime-sync-apply"):
         sync = subparsers.add_parser(command, help="Sync managed runtime values without deployment; key names only.")
         for name in ("product", "context", "instance"):
             sync.add_argument(f"--{name}", required=True)
+        sync.add_argument("--key", action="append", default=[], help="Select one existing managed runtime key; repeat for an exact selection.")
         sync.add_argument("--idempotency-key", required=command.endswith("-apply"), default="")
         if command.endswith("-apply"):
             sync.add_argument("--reviewed-dry-run", action="store_true")
@@ -11568,6 +11799,24 @@ def main(argv: list[str]) -> int:
                 "context": public_identifier(body["context"]),
                 "instance": public_identifier(body["instance"]),
                 "addon": "shopify",
+                "payload_source": "private_file",
+            }
+            return execute_post(
+                args=args,
+                operation=args.command,
+                path=helper_command_path(args.command),
+                request=request,
+                body=body,
+            )
+        if args.command in {"odoo-website-settings-dry-run", "odoo-website-settings-apply"}:
+            mode = "apply" if args.command == "odoo-website-settings-apply" else "dry-run"
+            body = odoo_website_settings_body(args, mode=mode)
+            request = {
+                "mode": mode,
+                "product": public_identifier(body["product"]),
+                "context": public_identifier(body["context"]),
+                "instance": "prod",
+                "withdraw": body["website_settings"] is None,
                 "payload_source": "private_file",
             }
             return execute_post(

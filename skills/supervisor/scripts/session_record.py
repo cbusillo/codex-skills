@@ -11,6 +11,8 @@ import json
 import re
 from pathlib import Path
 
+import claim_history
+
 MEMORY_CITATION_TAIL = re.compile(
     r"^<oai-mem-citation>(?:(?!</?oai-mem-citation>).)*"
     r"^</oai-mem-citation>\s*\Z",
@@ -19,9 +21,12 @@ MEMORY_CITATION_TAIL = re.compile(
 SAFE = re.compile(r"^(?:\*\*)?Safe to exit: yes\.?(?:\*\*)?$")
 NO_DIRECTOR_ACTION = re.compile(r"^No Director (?:action|decision) needed\.\s+")
 # A terminal Claude Code task notice carries <status>; Monitor event notices do not.
-TASK_NOTICE = re.compile(r"<task-notification>(.*?)</task-notification>", re.DOTALL)
-TASK_NOTICE_ID = re.compile(r"<task-id>([^<]+)</task-id>")
-TASK_NOTICE_STATUS = re.compile(r"<status>[^<]+</status>")
+TASK_TERMINAL_NOTICE = re.compile(
+    r"\A\s*<task-notification>\s*<task-id>([^<>\s]+)</task-id>\s*"
+    r"(?:<(tool-use-id|output-file)>[^<]*</\2>\s*)*"
+    r"<status>(?:completed|failed|killed|stopped)</status>\s*"
+    r"(?=<summary>|<result>|</task-notification>)"
+)
 
 
 def validate_record(record: dict) -> None:
@@ -233,31 +238,29 @@ def track_claude_background_tasks(record: dict, running: dict, scheduled: dict, 
             task_id = started.get("backgroundTaskId") or started.get("taskId")
             if isinstance(task_id, str) and task_id:
                 running[task_id] = record.get("timestamp")
-    # A notice absorbed mid-turn is written as a queue operation and an attachment, not a user record.
+    # A promoted native notice carries provenance outside its text. Queue text
+    # alone is also used for human input and cannot attest task completion.
     attachment = record.get("attachment")
+    origin = attachment.get("origin") if isinstance(attachment, dict) else record.get("origin")
     notice_text = {
         "user": text_content(message.get("content")),
-        "queue-operation": record.get("content"),
         "attachment": attachment.get("prompt") if isinstance(attachment, dict) else None,
     }.get(record.get("type"))
-    if isinstance(notice_text, str):
-        for notice in TASK_NOTICE.findall(notice_text):
-            task_id = TASK_NOTICE_ID.search(notice)
-            if task_id and TASK_NOTICE_STATUS.search(notice):
-                running.pop(task_id.group(1).strip(), None)
+    if (isinstance(notice_text, str) and isinstance(origin, dict)
+            and origin.get("kind") == "task-notification" and origin.get("producer") == "session-task"):
+        # Only the leading structural header attests completion. Event/result
+        # payloads can contain arbitrary task-like text, including other IDs.
+        if notice := TASK_TERMINAL_NOTICE.match(notice_text):
+            running.pop(notice[1], None)
     if record.get("type") == "assistant":
         for block in message.get("content") or []:
-            if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") in {"CronCreate", "CronDelete", "CronList"}:
+            if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") in {"CronCreate", "CronDelete", "CronList", "TaskStop"}:
                 identity = block.get("id")
                 if isinstance(identity, str) and identity not in tools:
                     tools[identity] = {"name": block["name"], "input": block.get("input") or {}, "complete": False}
                     if block["name"] == "CronCreate":
                         scheduled.setdefault("cron-create:" + identity, {
                             "started": record.get("timestamp"), "kind": "scheduled", "recurring": None})
-            if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") == "TaskStop":
-                stopped = (block.get("input") or {}).get("task_id")
-                if isinstance(stopped, str):
-                    running.pop(stopped, None)
     if record.get("type") == "user":
         result_blocks = [block for block in message.get("content") or []
                          if isinstance(block, dict) and block.get("type") == "tool_result"]
@@ -274,6 +277,12 @@ def track_claude_background_tasks(record: dict, running: dict, scheduled: dict, 
             if block.get("is_error") is True:
                 if name == "CronCreate":
                     scheduled.pop("cron-create:" + identity, None)
+                tool["complete"] = True
+                continue
+            if name == "TaskStop":
+                stopped = values.get("task_id")
+                if isinstance(stopped, str):
+                    running.pop(stopped, None)
                 tool["complete"] = True
                 continue
             result = record.get("toolUseResult") if len(result_blocks) == 1 else None
@@ -489,17 +498,7 @@ def session_status(entry: dict) -> dict:
         checked_stat()
         raise
     checked_stat()
-    identities = {
-        record.get("sessionId") for record in records if record.get("sessionId")
-    }
-    if entry["harness"] == "codex":
-        identities = {
-            record.get("payload", {}).get("id")
-            for record in records
-            if record.get("type") == "session_meta"
-        }
-    if identities != {entry["session_id"]}:
-        raise ValueError("transcript identity does not match the ledger session")
+    records = claim_history.root_records(path, entry["harness"], entry["session_id"], records)
     result = summarize(records, entry["harness"])
     after = checked_stat()
     result.update(

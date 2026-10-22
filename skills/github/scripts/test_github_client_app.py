@@ -801,7 +801,17 @@ class ClientAppTests(unittest.TestCase):
                 github_comment.comment("issue", 1, "fixture", repo="host/missing",
                                        expected_actor="app-1[bot]")
 
+    def task_worktree(self) -> Path:
+        primary = self.root / "primary"
+        task = self.root / "task"
+        subprocess.run(["git", "init", "-q", str(primary)], check=True)
+        subprocess.run(["git", "-C", str(primary), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                        "commit", "--allow-empty", "-qm", "seed"], check=True)
+        subprocess.run(["git", "-C", str(primary), "worktree", "add", "-qb", "work/task", str(task)], check=True)
+        return task
+
     def test_client_app_does_not_change_other_accounts_legacy_token_route(self) -> None:
+        task = self.task_worktree()
         for prefix in ("GITHUB_APP", "GITHUB_READER_APP"):
             for suffix in ("ID", "INSTALLATION_ID", "PRIVATE_KEY_PATH"):
                 os.environ.pop(f"{prefix}_{suffix}")
@@ -829,21 +839,22 @@ class ClientAppTests(unittest.TestCase):
         fake_git.chmod(0o700)
         commit_env = {**os.environ, "CODEX_AUTOMATION_EMAIL": "bot@example.invalid",
                       "GIT_COMMIT_AS_BOT_GIT": str(fake_git), "GIT_COMMIT_AS_BOT_PYTHON": sys.executable}
-        command = [str(Path(identity.__file__).with_name("git-commit-as-bot")), "-m", "fixture"]
-        result = subprocess.run(command, env=commit_env, text=True, capture_output=True, timeout=15)
+        command = [str(Path(identity.__file__).with_name("git-commit-as-bot")), "--worktree", str(task), "-m", "fixture"]
+        result = subprocess.run(command, cwd=task, env=commit_env, text=True, capture_output=True, timeout=15)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(committed.read_text())["author"], "app-1[bot]")
         remote.write_text("https://github.com/host/missing.git")
         committed.unlink()
-        refused = subprocess.run(command, env=commit_env, text=True, capture_output=True, timeout=15)
+        refused = subprocess.run(command, cwd=task, env=commit_env, text=True, capture_output=True, timeout=15)
         self.assertNotEqual(refused.returncode, 0)
         self.assertFalse(committed.exists())
-        allowed = subprocess.run(command, env={**commit_env, identity.OWN_USER_OPT_IN: "1"},
+        allowed = subprocess.run(command, cwd=task, env={**commit_env, identity.OWN_USER_OPT_IN: "1"},
                                  text=True, capture_output=True, timeout=15)
         self.assertEqual(allowed.returncode, 0, allowed.stderr)
         self.assertIsNone(json.loads(committed.read_text())["author"])
 
     def test_push_helper_uses_client_token_without_a_real_push(self) -> None:
+        task = self.task_worktree()
         fake_git = self.root / "git"
         pushed = self.root / "pushed.json"
         fake_git.write_text(
@@ -857,7 +868,7 @@ class ClientAppTests(unittest.TestCase):
         )
         fake_git.chmod(0o700)
         result = subprocess.run([str(Path(identity.__file__).with_name("git-push-as-bot")),
-                                 "origin", "work/fixture"], text=True, capture_output=True, timeout=15,
+                                 "--worktree", str(task), "origin", "work/fixture"], cwd=task, text=True, capture_output=True, timeout=15,
             env={**os.environ, "GIT_PUSH_AS_BOT_GIT": str(fake_git),
                  "GIT_PUSH_AS_BOT_GH": str(self.fake_gh()), "GIT_PUSH_AS_BOT_PYTHON": sys.executable})
         self.assertEqual(result.returncode, 0, result.stderr)

@@ -27,6 +27,7 @@ from unittest.mock import ANY, MagicMock, patch
 
 TEST_CACHE = tempfile.TemporaryDirectory(prefix="jetbrains-inspection-tests-")
 os.environ["JETBRAINS_INSPECTION_CACHE_DIR"] = TEST_CACHE.name
+os.environ["JETBRAINS_INSPECTION_REGISTRY_DIR"] = str(Path(TEST_CACHE.name) / "registry")
 os.environ["JB_INSPECT_OUTCOME_LOG"] = "0"
 os.environ["JB_INSPECT_UNKNOWN_LOG"] = "0"
 # API-route behavior; backend selection has its own tests in test_qodana_backend.
@@ -39,6 +40,17 @@ jb_inspect = cast(Any, importlib.util.module_from_spec(SPEC))
 assert SPEC.loader is not None
 sys.modules["jb_inspect"] = jb_inspect
 SPEC.loader.exec_module(jb_inspect)
+NO_LIVE_IDE = patch.object(
+    jb_inspect.urllib.request, "urlopen", side_effect=jb_inspect.urllib.error.URLError(ConnectionRefusedError("connection refused"))
+)
+
+
+def setUpModule() -> None:
+    NO_LIVE_IDE.start()
+
+
+def tearDownModule() -> None:
+    NO_LIVE_IDE.stop()
 
 
 def write_json(path: Path, payload: dict) -> None:
@@ -62,7 +74,7 @@ for command in sys.stdin:
     elif command.strip() == "stop":
         break
 """
-        for launch in (jb_inspect.bootstrap_ide_app, jb_inspect.open_in_ide):
+        for launch in (jb_inspect.bootstrap_ide_app,):
             with self.subTest(launch=launch.__name__), tempfile.TemporaryDirectory() as temporary:
                 task = Path(temporary).resolve() / "disposable-task"
                 task.mkdir()
@@ -84,6 +96,7 @@ for command in sys.stdin:
                 try:
                     with chdir(task), patch.dict(os.environ, {"PWD": str(task), "CS1159_LAUNCH_TEST": "preserved"}), \
                             patch.object(jb_inspect.sys, "platform", "darwin"), \
+                            patch.object(jb_inspect, "ide_launcher_pids", return_value=[]), \
                             patch.object(jb_inspect.subprocess, "run", side_effect=fake_open):
                         result = launch({"ide": "PyCharm", "worktree_root": str(task)}, background=True)
                         self.assertEqual(Path.cwd(), task)
@@ -4128,7 +4141,6 @@ class LifecycleTest(unittest.TestCase):
             ),
             patch.object(jb_inspect, "wait_for_exact_route_after_open", return_value=route),
             patch.object(jb_inspect, "ensure_exact_worktree", side_effect=jb_inspect.InspectError("wrong route", 3)),
-            patch.object(jb_inspect, "reclaim_close_proof", side_effect=lambda *args: cleanup_calls.append("reclaim")),
             patch.object(
                 jb_inspect,
                 "cleanup_lifecycle",
@@ -4465,7 +4477,6 @@ class LifecycleTest(unittest.TestCase):
             ),
             patch.object(jb_inspect, "wait_for_exact_route_after_open", return_value=route),
             patch.object(jb_inspect, "ensure_exact_worktree"),
-            patch.object(jb_inspect, "reclaim_close_proof", side_effect=lambda *args: cleanup_calls.append("reclaim")),
             patch.object(jb_inspect, "cleanup_lifecycle", side_effect=lambda *args: cleanup_calls.append("close")),
             patch.object(jb_inspect, "write_lease"),
         ):
@@ -6705,71 +6716,17 @@ class LifecycleTest(unittest.TestCase):
 
         self.assertEqual(raised.exception.payload["error_reason"], "inspection_api_unavailable")
 
-    def test_open_in_ide_uses_background_flag_on_macos(self):
-        with patch.object(jb_inspect.sys, "platform", "darwin"), patch.object(jb_inspect.subprocess, "run") as run:
-            run.return_value = subprocess.CompletedProcess(["open"], 0, "", "")
-            jb_inspect.open_in_ide({"ide": "IntelliJ IDEA", "worktree_root": "/tmp/worktree"}, background=True)
-
-        run.assert_called_once_with(["open", "-g", "-a", "IntelliJ IDEA", "/tmp/worktree"], env=ANY, check=False, capture_output=True, text=True)
-
-    def test_open_in_ide_uses_explicit_app_for_macos_launch(self):
-        with patch.object(jb_inspect.sys, "platform", "darwin"), patch.object(jb_inspect.subprocess, "run") as run:
-            run.return_value = subprocess.CompletedProcess(["open"], 0, "", "")
-            jb_inspect.open_in_ide(
-                {"ide": "WebStorm", "ide_app": "WebStorm 2026.2 EAP", "worktree_root": "/tmp/worktree"},
-                background=True,
-            )
-
-        run.assert_called_once_with(["open", "-g", "-a", "WebStorm 2026.2 EAP", "/tmp/worktree"], env=ANY, check=False, capture_output=True, text=True)
-
-    def test_open_in_ide_uses_resolved_app_path_when_available(self):
-        app_path = Path("/Applications/WebStorm 2026.2 EAP.app")
-        with patch.object(jb_inspect.sys, "platform", "darwin"), patch.object(jb_inspect.subprocess, "run") as run:
-            run.return_value = subprocess.CompletedProcess(["open"], 0, "", "")
-            jb_inspect.open_in_ide(
-                {
-                    "ide": "WebStorm",
-                    "ide_selection": {"app_path": str(app_path), "app_name": "WebStorm 2026.2 EAP"},
-                    "worktree_root": "/tmp/worktree",
-                },
-                background=True,
-            )
-
-        run.assert_called_once_with(["open", "-g", "-n", "-a", str(app_path), "/tmp/worktree"], env=ANY, check=False, capture_output=True, text=True)
-
-    def test_open_in_ide_uses_lifecycle_target_for_nested_project(self):
-        with patch.object(jb_inspect.sys, "platform", "darwin"), patch.object(jb_inspect.subprocess, "run") as run:
-            run.return_value = subprocess.CompletedProcess(["open"], 0, "", "")
-            jb_inspect.open_in_ide(
-                {
-                    "ide": "IntelliJ IDEA",
-                    "worktree_root": "/tmp/harness-parent",
-                    "lifecycle_target_path": "/tmp/harness-parent/workspace/project",
-                },
-                background=True,
-            )
-
-        run.assert_called_once_with(["open", "-g", "-a", "IntelliJ IDEA", "/tmp/harness-parent/workspace/project"], env=ANY, check=False, capture_output=True, text=True)
-
-    def test_open_in_ide_reports_failed_macos_open(self):
-        completed = subprocess.CompletedProcess(["open"], 1, "", "Unable to find application")
-        with patch.object(jb_inspect.sys, "platform", "darwin"), patch.object(jb_inspect.subprocess, "run", return_value=completed):
-            with self.assertRaises(jb_inspect.InspectError) as raised:
-                jb_inspect.open_in_ide({"ide": "Missing IDE", "worktree_root": "/tmp/worktree"}, background=True)
-
-        self.assertIn("Failed to ask macOS", str(raised.exception))
-        self.assertEqual(raised.exception.payload["returncode"], 1)
-        self.assertIn("Unable to find application", raised.exception.payload["stderr"])
-
     def test_bootstrap_ide_app_uses_hidden_launch_on_macos(self):
-        with patch.object(jb_inspect.sys, "platform", "darwin"), patch.object(jb_inspect.subprocess, "run") as run:
+        with patch.object(jb_inspect.sys, "platform", "darwin"), patch.object(jb_inspect, "ide_launcher_pids", return_value=[]), \
+                patch.object(jb_inspect.subprocess, "run") as run:
             run.return_value = subprocess.CompletedProcess(["open"], 0, "", "")
             jb_inspect.bootstrap_ide_app({"ide": "PyCharm", "worktree_root": "/tmp/worktree"}, background=True)
 
         run.assert_called_once_with(["open", "-g", "-j", "-a", "PyCharm"], env=ANY, check=False, capture_output=True, text=True)
 
     def test_bootstrap_ide_app_uses_explicit_app_for_hidden_launch(self):
-        with patch.object(jb_inspect.sys, "platform", "darwin"), patch.object(jb_inspect.subprocess, "run") as run:
+        with patch.object(jb_inspect.sys, "platform", "darwin"), patch.object(jb_inspect, "ide_launcher_pids", return_value=[]), \
+                patch.object(jb_inspect.subprocess, "run") as run:
             run.return_value = subprocess.CompletedProcess(["open"], 0, "", "")
             jb_inspect.bootstrap_ide_app({"ide": "WebStorm", "ide_app": "WebStorm 2026.2 EAP"}, background=True)
 
@@ -6777,21 +6734,77 @@ class LifecycleTest(unittest.TestCase):
 
     def test_bootstrap_ide_app_uses_resolved_app_path(self):
         app_path = Path("/Applications/WebStorm 2026.2 EAP.app")
-        with patch.object(jb_inspect.sys, "platform", "darwin"), patch.object(jb_inspect.subprocess, "run") as run:
+        with patch.object(jb_inspect.sys, "platform", "darwin"), patch.object(jb_inspect, "ide_launcher_pids", return_value=[]), \
+                patch.object(jb_inspect.subprocess, "run") as run:
             run.return_value = subprocess.CompletedProcess(["open"], 0, "", "")
             jb_inspect.bootstrap_ide_app({"ide_selection": {"app_path": str(app_path), "app_name": "WebStorm 2026.2 EAP"}}, background=True)
 
-        run.assert_called_once_with(["open", "-g", "-j", "-n", "-a", str(app_path)], env=ANY, check=False, capture_output=True, text=True)
+        run.assert_called_once_with(["open", "-g", "-j", "-a", str(app_path)], env=ANY, check=False, capture_output=True, text=True)
 
     def test_bootstrap_ide_app_reports_failed_hidden_launch(self):
         completed = subprocess.CompletedProcess(["open"], 1, "", "Unable to find application")
-        with patch.object(jb_inspect.sys, "platform", "darwin"), patch.object(jb_inspect.subprocess, "run", return_value=completed):
+        with patch.object(jb_inspect.sys, "platform", "darwin"), patch.object(jb_inspect, "ide_launcher_pids", return_value=[]), \
+                patch.object(jb_inspect.subprocess, "run", return_value=completed):
             with self.assertRaises(jb_inspect.InspectError) as raised:
-                jb_inspect.bootstrap_ide_app({"ide": "Missing IDE", "worktree_root": "/tmp/worktree"}, background=True)
+                jb_inspect.bootstrap_ide_app({"ide": "PyCharm", "ide_app": "Missing PyCharm", "worktree_root": "/tmp/worktree"}, background=True)
 
         self.assertIn("Failed to launch", str(raised.exception))
-        self.assertEqual(raised.exception.payload["command"], ["open", "-g", "-j", "-a", "Missing IDE"])
+        self.assertEqual(raised.exception.payload["command"], ["open", "-g", "-j", "-a", "Missing PyCharm"])
         self.assertIn("Unable to find application", raised.exception.payload["stderr"])
+
+    def test_bootstrap_never_launches_or_activates_a_running_app(self):
+        app_path = Path("/Applications/PyCharm.app")
+        with patch.object(jb_inspect.sys, "platform", "darwin"), patch.object(jb_inspect, "ide_launcher_pids", return_value=[783]), \
+                patch.object(jb_inspect.subprocess, "run") as run:
+            with self.assertRaises(jb_inspect.InspectError) as raised:
+                jb_inspect.bootstrap_ide_app({"ide_selection": {"app_path": str(app_path), "app_name": "PyCharm"}}, background=True)
+
+        run.assert_not_called()
+        self.assertEqual(raised.exception.payload["error_reason"], "ide_launch_refused")
+        self.assertEqual(raised.exception.payload["running_app_pids"], [783])
+
+    def test_launch_guard_finds_the_selected_product_however_the_app_is_named(self):
+        census = "\n".join([
+            "  783 /Users/someone/Applications/PyCharm.app/Contents/MacOS/pycharm",
+            " 1625 /Users/someone/Applications/PyCharm.app/Contents/bin/fsnotifier",
+            "  819 /Applications/WebStorm.app/Contents/MacOS/webstorm",
+        ])
+        selections = (
+            {"ide": "PyCharm"},
+            {"ide": "PyCharm", "ide_app": "./Current-PyCharm.app"},
+            {"ide": "PyCharm", "ide_app": "PyCharm.APP"},
+            {"ide_selection": {"product_key": "pycharm", "app_path": "/Volumes/Other/Renamed.app", "app_name": "Renamed"}},
+        )
+        for context in selections:
+            with self.subTest(context=context), patch.object(jb_inspect.subprocess, "check_output", return_value=census), \
+                    patch.object(jb_inspect.subprocess, "run") as run:
+                with self.assertRaises(jb_inspect.InspectError) as raised:
+                    jb_inspect.refuse_launch_while_app_runs(context)
+                run.assert_not_called()
+                self.assertEqual(raised.exception.payload["running_app_pids"], [783])
+
+    def test_launch_guard_allows_launch_when_only_another_product_runs(self):
+        census = "  819 /Applications/WebStorm.app/Contents/MacOS/webstorm\n 1625 /Applications/PyCharm.app/Contents/bin/fsnotifier"
+        with patch.object(jb_inspect.subprocess, "check_output", return_value=census):
+            jb_inspect.refuse_launch_while_app_runs({"ide": "PyCharm"})
+
+    def test_launch_guard_refuses_a_product_whose_launcher_it_cannot_identify(self):
+        with patch.object(jb_inspect.subprocess, "check_output", return_value="") as census, \
+                patch.object(jb_inspect.subprocess, "run") as run:
+            with self.assertRaises(jb_inspect.InspectError) as raised:
+                jb_inspect.refuse_launch_while_app_runs({"ide": "GoLand", "ide_app": "/Applications/GoLand.app"})
+        census.assert_not_called()
+        run.assert_not_called()
+        self.assertEqual(raised.exception.payload["error_reason"], "ide_launch_refused")
+
+    def test_unprovable_process_census_refuses_launch(self):
+        with patch.object(jb_inspect.subprocess, "check_output", side_effect=OSError("ps unavailable")), \
+                patch.object(jb_inspect.subprocess, "run") as run:
+            with self.assertRaises(jb_inspect.InspectError) as raised:
+                jb_inspect.refuse_launch_while_app_runs({"ide": "PyCharm"})
+
+        run.assert_not_called()
+        self.assertEqual(raised.exception.payload["error_reason"], "ide_launch_refused")
 
     def test_auto_open_timeout_payload_names_trust_and_modal_causes(self):
         args = Namespace(background_open=True)
@@ -7501,7 +7514,8 @@ class LifecycleTest(unittest.TestCase):
         ]
         jb_inspect.time.sleep = lambda seconds: None
         try:
-            result = jb_inspect.wait_for_matching_ide_identity(Namespace(port=None, background_open=True), {"ide": "PyCharm"}, 100)
+            with patch.object(jb_inspect, "now_ms", side_effect=[0, 0, 200]):
+                result = jb_inspect.wait_for_matching_ide_identity(Namespace(port=None, background_open=True), {"ide": "PyCharm"}, 100)
         finally:
             jb_inspect.discover_identities = original_discover
             jb_inspect.time.sleep = original_sleep
@@ -7521,7 +7535,8 @@ class LifecycleTest(unittest.TestCase):
         ]
         jb_inspect.time.sleep = lambda seconds: None
         try:
-            result = jb_inspect.wait_for_matching_ide_identity(Namespace(port=None, background_open=True), {"ide": "PyCharm"}, 100)
+            with patch.object(jb_inspect, "now_ms", side_effect=[0, 0, 200]):
+                result = jb_inspect.wait_for_matching_ide_identity(Namespace(port=None, background_open=True), {"ide": "PyCharm"}, 100)
         finally:
             jb_inspect.discover_identities = original_discover
             jb_inspect.discover_diagnostic_identities = original_diagnostic
@@ -8013,32 +8028,59 @@ class LifecycleTest(unittest.TestCase):
         self.assertTrue(result[2])
         self.assertEqual(calls, [("running", "running_ide")])
 
-    def test_no_ide_launch_stops_after_failed_running_open_and_preserves_attempt(self):
-        args = jb_inspect.build_parser().parse_args([
-            "inspect-closeout", "--port", "63486", "--no-ide-launch",
-        ])
+    def test_lifecycle_open_never_launches_an_app_unless_asked(self):
         attempt = {"method": "running_ide", "accepted": False, "reason": "unavailable"}
 
         def running(args, context, attempts=None, method="running_ide", lease=None):
             attempts.append(attempt)
             return None
 
+        for launch_flags in ([], ["--no-ide-launch"]):
+            with self.subTest(launch_flags=launch_flags):
+                args = jb_inspect.build_parser().parse_args(["inspect-closeout", "--port", "63486", *launch_flags])
+                with (
+                    patch.object(jb_inspect, "open_via_running_ide", side_effect=running),
+                    patch.object(jb_inspect, "bootstrap_ide_app") as bootstrap,
+                    patch.object(jb_inspect, "wait_for_matching_ide_identity") as wait,
+                    patch.object(jb_inspect, "wait_for_lifecycle_open", return_value=None),
+                ):
+                    with self.assertRaises(jb_inspect.InspectError) as raised:
+                        jb_inspect.open_project_for_lifecycle(args, {"ide": "PyCharm"})
+
+                self.assertEqual(raised.exception.payload["error_reason"], "ide_launch_disabled")
+                self.assertEqual(raised.exception.payload["open_attempts"], [attempt])
+                payload = jb_inspect.apply_verdict(jb_inspect.error_payload(raised.exception))
+                self.assertEqual(payload["agent_result"]["bucket"], "environment_blocked")
+                self.assertFalse(payload["retry_policy"]["retry"])
+                bootstrap.assert_not_called()
+                wait.assert_not_called()
+
+    def test_requested_launch_refused_for_running_app_sends_no_open(self):
+        args = jb_inspect.build_parser().parse_args(["inspect-closeout", "--port", "63486", "--ide-launch"])
+        attempt = {"method": "running_ide", "accepted": False, "reason": "no_matching_running_ide"}
+        lease = {"lease_id": "owned"}
+
+        def running(args, context, attempts=None, method="running_ide", lease=None):
+            attempts.append(attempt)
+            return None
+
         with (
+            patch.object(jb_inspect.sys, "platform", "darwin"),
             patch.object(jb_inspect, "open_via_running_ide", side_effect=running),
-            patch.object(jb_inspect, "bootstrap_ide_app") as bootstrap,
+            patch.object(jb_inspect, "ide_launcher_pids", return_value=[783]),
+            patch.object(jb_inspect.subprocess, "run") as run,
             patch.object(jb_inspect, "wait_for_matching_ide_identity") as wait,
-            patch.object(jb_inspect, "wait_for_lifecycle_open", return_value=None),
         ):
             with self.assertRaises(jb_inspect.InspectError) as raised:
-                jb_inspect.open_project_for_lifecycle(args, {"ide": "PyCharm"})
+                jb_inspect.open_project_for_lifecycle(args, {"ide": "PyCharm"}, lease)
 
-        self.assertEqual(raised.exception.payload["error_reason"], "ide_launch_disabled")
+        run.assert_not_called()
+        wait.assert_not_called()
         self.assertEqual(raised.exception.payload["open_attempts"], [attempt])
+        self.assertTrue(lease["open_not_attempted"])
         payload = jb_inspect.apply_verdict(jb_inspect.error_payload(raised.exception))
         self.assertEqual(payload["agent_result"]["bucket"], "environment_blocked")
         self.assertFalse(payload["retry_policy"]["retry"])
-        bootstrap.assert_not_called()
-        wait.assert_not_called()
 
     def test_no_ide_launch_releases_preparation_lease_when_no_open_was_sent(self):
         lease = {"lease_id": "owned", "state": "preparing"}
@@ -8139,7 +8181,7 @@ class LifecycleTest(unittest.TestCase):
         jb_inspect.monotonic_ms = lambda: 0
         jb_inspect.time.sleep = lambda seconds: calls.append(("sleep", seconds))
         try:
-            result = jb_inspect.open_project_for_lifecycle(Namespace(port=None, background_open=True, prepare_timeout_ms=1234), {"ide": "IntelliJ IDEA"})
+            result = jb_inspect.open_project_for_lifecycle(Namespace(port=None, background_open=True, ide_launch=True, prepare_timeout_ms=1234), {"ide": "IntelliJ IDEA"})
         finally:
             jb_inspect.open_via_running_ide = original_running
             jb_inspect.bootstrap_ide_app = original_bootstrap
@@ -8175,7 +8217,7 @@ class LifecycleTest(unittest.TestCase):
         jb_inspect.now_ms = lambda: next(ticks)
         jb_inspect.time.sleep = lambda seconds: calls.append(("sleep", seconds))
         try:
-            result = jb_inspect.open_project_for_lifecycle(Namespace(port=None, background_open=True, prepare_timeout_ms=1000), {"ide": "IntelliJ IDEA"})
+            result = jb_inspect.open_project_for_lifecycle(Namespace(port=None, background_open=True, ide_launch=True, prepare_timeout_ms=1000), {"ide": "IntelliJ IDEA"})
         finally:
             jb_inspect.open_via_running_ide = original_running
             jb_inspect.bootstrap_ide_app = original_bootstrap
@@ -8215,7 +8257,7 @@ class LifecycleTest(unittest.TestCase):
         try:
             with self.assertRaises(jb_inspect.InspectError) as raised:
                 jb_inspect.open_project_for_lifecycle(
-                    Namespace(port=None, background_open=True, prepare_timeout_ms=1234),
+                    Namespace(port=None, background_open=True, ide_launch=True, prepare_timeout_ms=1234),
                     {"ide": "IntelliJ IDEA", "worktree_root": "/tmp/worktree"},
                 )
         finally:
@@ -8818,7 +8860,7 @@ class LifecycleTest(unittest.TestCase):
 class AgentInspectContractTest(unittest.TestCase):
     def test_lifecycle_lock_timeout_reports_contention_without_native_inspection(self):
         output = io.StringIO()
-        try_lock = jb_inspect.lifecycle_lock._try_lock
+        try_lock = jb_inspect.lifecycle_lock.try_lock
 
         def locked_operation(_args, _context):
             with jb_inspect.lifecycle_lock(0):

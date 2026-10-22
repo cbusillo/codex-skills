@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import time
 import uuid
 from typing import NamedTuple
 from datetime import datetime
@@ -20,7 +21,7 @@ import github_plan_closure as closure
 
 
 @asynccontextmanager
-async def connection(home: Path, *, max_msg_size: int = 64 * 1024 * 1024):
+async def connection(home: Path, *, max_msg_size: int = 64 * 1024 * 1024, deadline_at=None):
     import aiohttp
     endpoint = closure.daemon_endpoint(home).resolve(strict=True)
     info = endpoint.stat()
@@ -28,7 +29,7 @@ async def connection(home: Path, *, max_msg_size: int = 64 * 1024 * 1024):
         raise ValueError("native socket ownership is unavailable")
     sequence = 0
     try:
-        async with asyncio.timeout(5):
+        async with asyncio.timeout(read_timeout(deadline_at)):
             async with aiohttp.ClientSession(connector=aiohttp.UnixConnector(path=str(endpoint))) as client:
                 async with client.ws_connect("http://localhost/", max_msg_size=max_msg_size) as ws:
                     async def request(method, params):
@@ -58,6 +59,10 @@ async def connection(home: Path, *, max_msg_size: int = 64 * 1024 * 1024):
         if isinstance(error, (OSError, ValueError)):
             raise  # Preserve existing known-absence and ordinary refusal handling.
         raise ValueError("native transport failed; preserve the uncertain operation and do not replay") from error
+
+
+def read_timeout(deadline_at=None):
+    return 5 if deadline_at is None else max(0, deadline_at - time.time())
 
 
 async def pages(request, method, session, **params):
@@ -172,13 +177,13 @@ async def read_thread(request, session, *, include_turns=False):
             "history_mode": thread.get("historyMode", "legacy")}
 
 
-async def read_thread_facts(request, session):
+async def read_thread_facts(request, session, *, include_active=False):
     # This serialized read fences the exact proven synchronous native routes.
     # It is not a fence for arbitrary asynchronous Core operations.
     thread = await read_thread(request, session)
     facts = {**thread, "queue": await read_queue(request, session), "turns": [],
              "executions": {"ended": True, "items": []}, "background": [], "realtime": [], "goal": None}
-    if thread["state"] in {"active", "systemError"}:
+    if thread["state"] == "systemError" or thread["state"] == "active" and not include_active:
         return facts
     if thread["state"] == "notLoaded":
         # Persisted unfinished commands/realtime may survive a crash. Current
@@ -399,7 +404,7 @@ def _authenticated_paths(snapshots, homes):
 
 def source_snapshot(entry, process=None):
     """Only file/process reads; safe to await in a cancellable worker thread."""
-    from github_plan_sessions import codex_homes
+    from github_plan_sessions import configured_homes, observation_homes
     if process is None:
         process = verify_source_process(entry)
     else:
@@ -417,7 +422,7 @@ def source_snapshot(entry, process=None):
     primary = Path(effective["transcript"]).resolve(strict=True)
     if generation is None and not any(primary.is_relative_to((home / root).resolve()) for root in ("sessions", "archived_sessions")):
         raise ValueError("native source home and transcript disagree")
-    configured = set(codex_homes(strict=True, configured_only=True))
+    configured = set(configured_homes(strict=True))
     if home not in configured and saved is None:
         raise ValueError("unconfigured native source lacks retained launch identity")
     scope = closure.action_homes(closure.lease_state(session))
@@ -433,7 +438,7 @@ def source_snapshot(entry, process=None):
             if any(status.get(key) and stamp(status[key]) > context.ended_at
                    for key in ("turn_started_at", "turn_completed_at", "message_at")):
                 raise _SourceEndMismatch("source actual turn is newer than the canonical closed-session evidence")
-    paths = _authenticated_paths(snapshots, homes | configured)
+    paths = _authenticated_paths(snapshots, observation_homes(strict=True, additional_homes=homes))
     # Relevant authenticated copies remain current-work coverage even if an old
     # buggy finish already cleared the marker that originally touched that home.
     homes.update(Path(value) for value in paths)
@@ -621,9 +626,9 @@ def _cancel_generation(entry, saved):
 
 
 def _cancel_origin(entry, action):
-    from github_plan_sessions import codex_homes
+    from github_plan_sessions import configured_homes
     primary = Path(entry["transcript"]).resolve(strict=True)
-    configured = set(codex_homes(strict=True, configured_only=True))
+    configured = set(configured_homes(strict=True))
     known = {Path(value).resolve(strict=True) for value in closure.action_homes(action)["known"]}
     if entry.get("codex_home"):
         if not isinstance(entry["codex_home"], str) or not Path(entry["codex_home"]).expanduser().is_absolute():
@@ -641,11 +646,12 @@ def _cancel_origin(entry, action):
 
 
 def _cancel_files(entry, action, reader=None, retained_homes=(), transcript_roots=None):
-    primary, home, configured, known = _cancel_origin(entry, action)
+    from github_plan_sessions import observation_homes
+    primary, home, _configured, known = _cancel_origin(entry, action)
     homes = {home, *known, *retained_homes}
     snapshots = closure.transcript_facts(entry["session_id"], str(primary), include_status=True,
                                          additional_homes=homes, additional_roots=transcript_roots, reader=reader)
-    paths = _authenticated_paths(snapshots, configured | homes)
+    paths = _authenticated_paths(snapshots, observation_homes(strict=True, additional_homes=homes))
     homes.update(Path(value) for value in paths)
     return {"home": str(home), "path": str(primary), "homes": sorted(str(value) for value in homes),
             "home_paths": paths, "transcripts": snapshots}

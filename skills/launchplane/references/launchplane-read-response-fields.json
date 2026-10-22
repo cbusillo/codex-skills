@@ -1,0 +1,125 @@
+{
+  "dokploy-inventory-read": [
+    "inventory",
+    "status",
+    "trace_id"
+  ],
+  "generic-web-deploy-recovery-reference-read": [
+    "context",
+    "instance",
+    "product",
+    "recovery_reference",
+    "reservation_attempt",
+    "reservation_state"
+  ],
+  "integration-allowances-read": [
+    "original_trace_id",
+    "records",
+    "replayed",
+    "result",
+    "status",
+    "trace_id"
+  ],
+  "merge-train-policy-read": [
+    "record",
+    "status",
+    "trace_id"
+  ],
+  "merge-train-policy-targets-read": [
+    "policy",
+    "status",
+    "targets",
+    "trace_id"
+  ],
+  "path-check": [
+    "check",
+    "status",
+    "trace_id"
+  ],
+  "preview-history-read": [
+    "generations",
+    "preview",
+    "status",
+    "trace_id"
+  ],
+  "private-health-endpoint-read": [
+    "context",
+    "count",
+    "instance",
+    "limit",
+    "product",
+    "records",
+    "status",
+    "trace_id"
+  ],
+  "private-health-endpoint-record-read": [
+    "record",
+    "status",
+    "trace_id"
+  ],
+  "product-activity-read": [
+    "activity",
+    "status",
+    "trace_id"
+  ],
+  "product-environment-read": [
+    "environment",
+    "host_network_capacity",
+    "host_network_capacity_available",
+    "status",
+    "trace_id"
+  ],
+  "product-profile-read": [
+    "profile",
+    "status",
+    "trace_id"
+  ],
+  "product-promotion-status-read": [
+    "promotion_status",
+    "status",
+    "trace_id"
+  ],
+  "product-secret-bindings-read": [
+    "bindings",
+    "product",
+    "status",
+    "trace_id"
+  ],
+  "production-backup-authority-read": [
+    "authority",
+    "status",
+    "trace_id"
+  ],
+  "protected-artifacts-read": [
+    "protected_artifacts",
+    "status",
+    "trace_id"
+  ],
+  "reconcile-requests-read": [
+    "product",
+    "requests",
+    "status",
+    "trace_id"
+  ],
+  "repository-inventory-read": [
+    "config_authority_delivery",
+    "read_model",
+    "status",
+    "trace_id"
+  ],
+  "target-replacement-operation-read": [
+    "operation",
+    "recovery",
+    "result",
+    "status",
+    "trace_id"
+  ],
+  "testing-hold-read": [
+    "original_trace_id",
+    "records",
+    "replayed",
+    "result",
+    "status",
+    "trace_id"
+  ]
+}

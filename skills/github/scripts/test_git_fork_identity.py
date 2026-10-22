@@ -44,6 +44,12 @@ class ForkIdentityTests(unittest.TestCase):
         self.run_git("config", "user.email", "person@example.invalid")
         self.run_git("remote", "add", "origin", "git@github.com:fork-owner/project.git")
         self.run_git("remote", "add", "upstream", "https://github.com/upstream-owner/project.git")
+        self.run_git("commit", "--allow-empty", "-qm", "seed")
+        primary = self.repo
+        self.repo = self.root / "task"
+        subprocess.run([str(self.git), "-C", str(primary), "worktree", "add", "-qb", "work/task", str(self.repo)],
+                       env=self.env, check=True, capture_output=True)
+        self.initial_history = self.run_git("rev-list", "--all")
         helper = self.root / "identity.py"
         helper.write_text('''import json, os, sys
 repo = sys.argv[sys.argv.index("--repo") + 1]
@@ -68,7 +74,7 @@ else:
         return result.stdout.strip()
 
     def commit(self, *prefix: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
-        return subprocess.run([str(SCRIPTS / "git-commit-as-bot"), *prefix,
+        return subprocess.run([str(SCRIPTS / "git-commit-as-bot"), "--worktree", str(self.repo), *prefix,
                                "--allow-empty", "-m", "fixture"], cwd=self.repo,
                               env=self.env | (env or {}), text=True, capture_output=True)
 
@@ -110,17 +116,17 @@ else:
         for overrides in cases:
             with self.subTest(overrides=overrides):
                 self.assertNotEqual(self.commit("--repo", "upstream-owner/project", env=overrides).returncode, 0)
-                self.assertEqual(self.run_git("rev-list", "--all"), "")
+                self.assertEqual(self.run_git("rev-list", "--all"), self.initial_history)
 
     def test_bad_target_and_failed_lookup_never_commit(self) -> None:
         for target in ("unknown-owner/project", "owner", "owner/repo/extra", "../project",
                        "https://github.com/owner/repo", "owner/", "owner/repo with spaces"):
             with self.subTest(target=target):
                 self.assertNotEqual(self.commit("--repo", target).returncode, 0)
-                self.assertEqual(self.run_git("rev-list", "--all"), "")
+                self.assertEqual(self.run_git("rev-list", "--all"), self.initial_history)
         result = self.commit("--repo", "fork-owner/project", "--repo", "upstream-owner/project")
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(self.run_git("rev-list", "--all"), "")
+        self.assertEqual(self.run_git("rev-list", "--all"), self.initial_history)
 
     def test_fork_push_stays_authenticated_for_destination_after_person_commit(self) -> None:
         result = self.commit("--repo", "upstream-owner/project", env={"GH_WITH_ENV_TOKEN_OWN_USER": "1"})
@@ -137,7 +143,7 @@ else:
 ''')
         git_proxy.chmod(0o700)
         push_log = self.root / "push.json"
-        push = subprocess.run([str(SCRIPTS / "git-push-as-bot"), "-u", "origin", "HEAD"],
+        push = subprocess.run([str(SCRIPTS / "git-push-as-bot"), "--worktree", str(self.repo), "-u", "origin", "HEAD"],
                               cwd=self.repo, env=self.env | {"GIT_PUSH_AS_BOT_GIT": str(git_proxy),
                                                            "PUSH_LOG": str(push_log)},
                               text=True, capture_output=True)
@@ -180,7 +186,7 @@ esac
             with self.subTest(declaration=declaration, active=active):
                 env_file.write_text(f"GH_WITH_ENV_TOKEN_OWN_USER_LOGIN={declaration}\n")
                 result = subprocess.run(
-                    [str(SCRIPTS / "git-push-as-bot"), "--remote", "upstream", "HEAD"],
+                    [str(SCRIPTS / "git-push-as-bot"), "--worktree", str(self.repo), "--remote", "upstream", "HEAD"],
                     cwd=self.repo, env=self.env | {
                         "CODEX_SKILLS_ENV_FILE": str(env_file),
                         "GH_WITH_ENV_TOKEN_OWN_USER": "1",

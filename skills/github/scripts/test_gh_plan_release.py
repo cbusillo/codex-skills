@@ -349,16 +349,12 @@ class ReleaseTests(ReleaseHarness):
                 self.assertFalse(refused["released_claims"])
 
     def test_known_source_refusals_precede_retained_pr_transport_failure(self):
-        cases = ("different-peer", "anonymous-peer", "native-session", "source-activity", "related-activity", "related-identity")
+        cases = ("source-activity", "related-activity", "related-identity")
         for case in cases:
             with self.subTest(case=case):
                 self.setUp()
                 self.f.inventory["worktrees"] = [{"branch": fixtures.OTHER["branch"], "path": "/source"}]
-                if case.endswith("peer"):
-                    self.f.inventory["sessions"] = [{"cwd": "/source/subdir", **({"sessionId": "different-session"} if case == "different-peer" else {})}]
-                elif case == "native-session":
-                    self.f.inventory["sessions"] = [{"cwd": "/elsewhere", "sessionId": fixtures.OTHER["session"]}]
-                elif case == "source-activity":
+                if case == "source-activity":
                     self.f.comments[0]["updated_at"] = "2026-10-03T00:00:00Z"
                 else:
                     native = "different-session" if case == "related-identity" else "session-b"
@@ -377,9 +373,8 @@ class ReleaseTests(ReleaseHarness):
                 self.assertFalse(reads)
                 self.f.assert_no_writes()
 
-    def test_unknown_retained_path_peer_does_not_mask_an_earlier_pr_read_failure(self):
+    def test_retained_path_pr_read_failure_refuses_before_writes(self):
         self.f.inventory["worktrees"] = [{"branch": "repair-branch", "path": "/retained"}]
-        self.f.inventory["sessions"] = [{"sessionId": "different-session", "cwd": "/retained"}]
         reads = []
         original = self.f.read_pages
         def pages(path, **kwargs):
@@ -391,21 +386,6 @@ class ReleaseTests(ReleaseHarness):
             self.run_release()
         self.assertEqual(PLAN.plan_error_status(caught.exception), 503)
         self.assertEqual(len(reads), 1)
-        self.f.assert_no_writes()
-
-    def test_attested_termination_artifact_peer_precedes_pr_transport_failure(self):
-        self.termination_setup()
-        self.f.inventory["sessions"] = [{"sessionId": "different-session", "cwd": self.termination_record["retained_artifacts"][0]["worktree"]}]
-        reads = []
-        original = self.f.read_pages
-        def pages(path, **kwargs):
-            if path.endswith("/pulls"):
-                reads.append(path)
-                raise PLAN.PlanError("fixture transport unavailable", api_result={"status": 503})
-            return original(path, **kwargs)
-        with patch.object(self.f, "read_pages", side_effect=pages), self.assertRaises(PLAN.PlanError):
-            self.run_release()
-        self.assertFalse(reads)
         self.f.assert_no_writes()
 
     def test_malformed_ended_at_precedes_pr_reads_for_subject_and_legacy_paths(self):
@@ -491,17 +471,14 @@ class ReleaseTests(ReleaseHarness):
         self.successor()
         self.assertTrue(self.f.emitted.call_args.args[0]["ok"])
 
-    def test_pr_attestation_new_activity_live_peer_or_changed_evidence_refuses(self):
-        for mode in ("commit", "peer", "evidence"):
+    def test_pr_attestation_new_activity_or_changed_evidence_refuses(self):
+        for mode in ("commit", "evidence"):
             with self.subTest(mode=mode):
                 self.setUp()
                 self.pr_setup()
                 if mode == "commit":
                     self.f.pulls[0]["head"]["ref"] = fixtures.OTHER["branch"]
                     self.commit_date = "2026-10-02T01:00:00Z"
-                elif mode == "peer":
-                    self.f.inventory["worktrees"] = [{"branch": self.f.pulls[0]["head"]["ref"], "path": "/pr-source"}]
-                    self.f.inventory["sessions"] = [{"sessionId": "peer", "cwd": "/pr-source"}]
                 else:
                     self.evidence["user"]["login"] = "stranger"
                 with self.assertRaises(PLAN.PlanError):
@@ -874,8 +851,9 @@ class ReleaseTests(ReleaseHarness):
                     f"Claimed by {renewed['worker']}\n\n" + CLAIM.marker(renewed),
                     "2026-10-04T00:00:00Z"))
                 with self.assertRaisesRegex(ValueError, "ownership activity"):
-                    release.check_activity(self.f.comments, self.f.comments[0],
-                                           release.stamp("2026-10-02T00:00:00Z"))
+                    release._check_activity(self.f.comments, self.f.comments[0],
+                                            release.stamp("2026-10-02T00:00:00Z"),
+                                            release.source_record(self.f.comments[0]))
                 posts = self.f.events.count("post")
                 with self.assertRaisesRegex(PLAN.PlanError, "ownership evidence"):
                     self.successor()
@@ -889,8 +867,9 @@ class ReleaseTests(ReleaseHarness):
         self.f.comments.append(self.comment(3, f"Claimed by {fixtures.OTHER['worker']}",
                                            "2026-10-04T00:00:00Z"))
         with self.assertRaisesRegex(ValueError, "ownership activity"):
-            release.check_activity(self.f.comments, self.f.comments[0],
-                                   release.stamp("2026-10-02T00:00:00Z"))
+            release._check_activity(self.f.comments, self.f.comments[0],
+                                    release.stamp("2026-10-02T00:00:00Z"),
+                                    release.source_record(self.f.comments[0]))
 
     def test_release_closed_issue_without_reopening_or_enabling_new_claim(self):
         self.f.issue["state"] = "closed"
@@ -899,24 +878,6 @@ class ReleaseTests(ReleaseHarness):
         self.assertEqual(self.f.issue["state"], "closed")
         with self.assertRaisesRegex(PLAN.PlanError, "open issue"):
             self.f.run_claim()
-
-    def test_retained_peer_and_live_source_refusals_stop_the_session(self):
-        self.f.inventory["worktrees"] = [{"branch": fixtures.OTHER["branch"], "path": "/source"}]
-        self.f.inventory["sessions"] = [{"sessionId": "different-session", "cwd": "/source"}]
-        with self.assertRaises(PLAN.PlanError) as caught:
-            self.run_release()
-        self.assertNotEqual(caught.exception.payload["release_refusal_scope"], release.ISSUE_REFUSAL_SCOPE)
-        self.f.assert_no_writes()
-        self.f.inventory["sessions"] = [{"sessionId": fixtures.OTHER["session"], "cwd": "/source"}]
-        with self.assertRaises(PLAN.PlanError) as caught:
-            self.run_release()
-        self.assertNotEqual(caught.exception.payload["release_refusal_scope"], release.ISSUE_REFUSAL_SCOPE)
-        self.f.assert_no_writes()
-        self.f.inventory["sessions"] = [{"cwd": "/source"}]
-        with self.assertRaises(PLAN.PlanError) as caught:
-            self.run_release()
-        self.assertNotEqual(caught.exception.payload["release_refusal_scope"], release.ISSUE_REFUSAL_SCOPE)
-        self.f.assert_no_writes()
 
     def test_related_followup_session_must_match_source_closure(self):
         for field in ("Session: {}", "**Session:** `{}`", "> Session: {}", "Session: {}.", "Session: {} (capacity work)", "Session ID: {}", "Native session ID: {}", "session={}", "session_id: {}", "sessionId: {}", "Session-ID: {}", "Thread ID: {}", "Session — {}", "| Session | {} |", "Session: {}; PR #99", "(Session: {})"):
@@ -1013,14 +974,10 @@ class ReleaseTests(ReleaseHarness):
         self.f.assert_no_writes()
 
     def test_refusal_shapes_do_not_write(self):
-        for mode in ("active_session", "live_retained_peer", "source_edit", "renewed_claim", "wrong_evidence_session", "missing_ended_at",
+        for mode in ("source_edit", "renewed_claim", "wrong_evidence_session", "missing_ended_at",
                      "foreign_evidence", "foreign_source", "unconfirmed", "releaser_is_source", "unknown_related", "unrelated_followup", "future_ended_at"):
             with self.subTest(mode=mode):
                 self.setUp()
-                if mode == "active_session": self.f.inventory["sessions"] = [{"sessionId": "session-b", "cwd": "/other"}]
-                if mode == "live_retained_peer":
-                    self.f.inventory["worktrees"] = [{"branch": fixtures.OTHER["branch"], "path": "/source"}]
-                    self.f.inventory["sessions"] = [{"sessionId": "different-session", "cwd": "/source"}]
                 if mode == "source_edit": self.f.comments[0]["updated_at"] = "2026-10-02T02:00:00Z"
                 if mode == "renewed_claim": self.f.comments.append(self.comment(2, CLAIM.marker(fixtures.OTHER), "2026-10-02T02:00:00Z"))
                 if mode == "wrong_evidence_session": self.evidence["body"] = self.evidence["body"].replace("session-b", "another")
@@ -1068,26 +1025,11 @@ class ReleaseTests(ReleaseHarness):
         self.f.assert_no_writes()
 
     def test_issue_refusal_cannot_mask_post_closure_commit_activity(self):
-        for peer in (False, True):
-            self.refresh_setup()
-            self.f.pulls[0]["head"]["ref"] = fixtures.OTHER["branch"]
-            self.f.pulls[0]["body"] = "See #42"
-            self.commit_date = "2026-10-02T01:00:00Z"
-            if peer:
-                self.f.inventory["worktrees"] = [{"branch": fixtures.OTHER["branch"], "path": "/source"}]
-                self.f.inventory["sessions"] = [{"sessionId": "different-session", "cwd": "/source"}]
-            with self.assertRaisesRegex(PLAN.PlanError, "commit activity after") as caught:
-                self.run_release()
-            self.assertNotEqual(caught.exception.payload.get("release_refusal_scope"), release.ISSUE_REFUSAL_SCOPE)
-            self.f.assert_no_writes()
-
-    def test_issue_refusal_cannot_mask_live_peer_on_a_retained_branch(self):
         self.refresh_setup()
-        retained = self.f.pulls[0]
-        retained["body"] = "Part of #42"
-        self.f.inventory["worktrees"] = [{"branch": retained["head"]["ref"], "path": "/retained"}]
-        self.f.inventory["sessions"] = [{"sessionId": "different-session", "cwd": "/retained/subdir"}]
-        with self.assertRaisesRegex(PLAN.PlanError, "live peer") as caught:
+        self.f.pulls[0]["head"]["ref"] = fixtures.OTHER["branch"]
+        self.f.pulls[0]["body"] = "See #42"
+        self.commit_date = "2026-10-02T01:00:00Z"
+        with self.assertRaisesRegex(PLAN.PlanError, "commit activity after") as caught:
             self.run_release()
         self.assertNotEqual(caught.exception.payload.get("release_refusal_scope"), release.ISSUE_REFUSAL_SCOPE)
         self.f.assert_no_writes()
@@ -1129,12 +1071,6 @@ class ReleaseTests(ReleaseHarness):
                     self.refresh_setup(); self.f.pulls[0]["state"] = "closed"
                 with self.assertRaises(PLAN.PlanError): self.run_release()
                 self.f.assert_no_writes()
-
-    def test_split_pr_live_peer_refuses_release(self):
-        self.refresh_setup()
-        self.f.inventory["sessions"] = [{"sessionId": "split-peer", "cwd": "/retained/issue-42-audits/skills"}]
-        with self.assertRaisesRegex(PLAN.PlanError, "live peer"): self.run_release()
-        self.f.assert_no_writes()
 
     def test_successor_push_does_not_resurrect_the_abandoned_owner(self):
         self.refresh_setup(); self.run_release()
@@ -1194,15 +1130,13 @@ class ReleaseTests(ReleaseHarness):
 
     def test_post_write_resumption_or_evidence_change_leaves_no_usable_release(self):
         for route in ("finished", "terminated"):
-            for mode in ("session", "evidence", *(("process",) if route == "terminated" else ())):
+            for mode in ("evidence", *(("process",) if route == "terminated" else ())):
                 with self.subTest(route=route, mode=mode):
                     self.setUp()
                     if route == "terminated":
                         self.termination_setup()
                     def resume():
-                        if mode == "session":
-                            self.f.inventory["sessions"] = [{"sessionId": fixtures.OTHER["session"]}]
-                        elif mode == "process":
+                        if mode == "process":
                             release.termination.inventory.return_value = [(12345, "other", "codex")]
                         else:
                             self.evidence["updated_at"] = "2026-10-04T00:00:00Z"
@@ -1215,7 +1149,6 @@ class ReleaseTests(ReleaseHarness):
                     self.assertIsNone(CLAIM.released_claim_id(posted["body"]))
                     self.assertNotIn("confirm_release", self.f.events)
                     # A transient process disappearing must not revive the failed release.
-                    self.f.inventory["sessions"] = []
                     if mode == "process":
                         release.termination.inventory.return_value = []
                     self.assert_source_still_owned()
@@ -1239,7 +1172,7 @@ class ReleaseTests(ReleaseHarness):
         self.f.wait = fixtures.wait_record.reviewed(
             evidence="Owner acceptance pending", waiting_for="Owner test", ends_when="Owner accepts")
         original_wait = copy.deepcopy(self.f.wait)
-        self.race = lambda: self.f.inventory["sessions"].append({"sessionId": fixtures.OTHER["session"]})
+        self.race = lambda: self.evidence.update(updated_at="2026-10-04T00:00:00Z")
         with self.assertRaises(PLAN.PlanError):
             self.run_release()
         effective = release.effective_comments(self.f.comments)
@@ -1264,38 +1197,29 @@ class ReleaseTests(ReleaseHarness):
         self.assertEqual((self.f.events.count("post"), self.f.events.count("confirm_release")), writes)
 
     def test_failed_pending_attempt_requires_fresh_closure_evidence_before_recovery(self):
-        for route in ("finished", "terminated"):
-            with self.subTest(route=route):
-                self.setUp()
-                if route == "terminated":
-                    self.termination_setup()
-                self.race = lambda: self.f.inventory["sessions"].append({"sessionId": fixtures.OTHER["session"]})
-                with self.assertRaises(PLAN.PlanError):
-                    self.run_release()
-                writes = (self.f.events.count("post"), self.f.events.count("confirm_release"))
-                self.f.inventory["sessions"] = []
-                self.race = lambda: None
-                with self.assertRaises(PLAN.PlanError):
-                    self.run_release()
-                self.assertEqual((self.f.events.count("post"), self.f.events.count("confirm_release")), writes)
-                self.assert_source_still_owned()
-                # The existing attestation route supplies the supported recovery.
-                self.evidence["id"] = 89
-                self.args.evidence_comment = self.args.evidence_comment.rsplit("-", 1)[0] + "-89"
-                if route == "terminated":
-                    fresh_now = release.stamp("2026-10-04T01:00:00Z")
-                    class Clock(datetime):
-                        @classmethod
-                        def now(cls, tz=None):
-                            return fresh_now.astimezone(tz or timezone.utc)
-                    with patch.object(release.termination, "datetime", Clock):
-                        self.evidence["body"] = release.termination.body(release.termination.verify(self.termination_record, "session-b"))
-                        self.evidence.update(created_at=fresh_now.isoformat(), updated_at=fresh_now.isoformat())
-                        self.run_release()
-                else:
-                    self.evidence.update(created_at="2026-10-04T01:00:00Z", updated_at="2026-10-04T01:00:00Z")
-                    self.run_release()
-                self.successor()
+        self.termination_setup()
+        self.race = lambda: release.termination.inventory.configure_mock(return_value=[(12345, "other", "codex")])
+        with self.assertRaises(PLAN.PlanError):
+            self.run_release()
+        writes = (self.f.events.count("post"), self.f.events.count("confirm_release"))
+        self.race = lambda: None
+        release.termination.inventory.return_value = []
+        with self.assertRaises(PLAN.PlanError):
+            self.run_release()
+        self.assertEqual((self.f.events.count("post"), self.f.events.count("confirm_release")), writes)
+        self.assert_source_still_owned()
+        self.evidence["id"] = 89
+        self.args.evidence_comment = self.args.evidence_comment.rsplit("-", 1)[0] + "-89"
+        fresh_now = release.stamp("2026-10-04T01:00:00Z")
+        class Clock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return fresh_now.astimezone(tz or timezone.utc)
+        with patch.object(release.termination, "datetime", Clock):
+            self.evidence["body"] = release.termination.body(release.termination.verify(self.termination_record, "session-b"))
+            self.evidence.update(created_at=fresh_now.isoformat(), updated_at=fresh_now.isoformat())
+            self.run_release()
+        self.successor()
 
     def test_related_recovery_reuses_source_when_observed_branch_pr_has_closed(self):
         self.f.comments.append(self.comment(2, "Claimed by trial-b to finish source work", "2026-10-01T01:00:00Z"))
@@ -1466,7 +1390,7 @@ class LegacyReleaseTests(ReleaseHarness):
     def test_legacy_guards_refuse_before_writes(self):
         for mode in ('branch', 'reason', 'worker', 'evidence_author', 'source_author', 'future',
                      'unknown_end', 'unconfirmed', 'source_edit', 'renewed', 'structured_renewed',
-                     'live_peer', 'worker_visible', 'branch_activity', 'related', 'retained_pr', 'wrong_branch'):
+                     'branch_activity', 'related', 'retained_pr', 'wrong_branch'):
             with self.subTest(mode=mode):
                 _, worker = self.legacy_setup()
                 if mode == 'branch': self.args.legacy_branch = None
@@ -1480,10 +1404,6 @@ class LegacyReleaseTests(ReleaseHarness):
                 if mode == 'source_edit': self.f.comments[0]['updated_at'] = '2026-10-04T00:00:00Z'
                 if mode == 'renewed': self.f.comments.append(self.comment(2, f'**Claimed by {worker}**', '2026-10-04T00:00:00Z'))
                 if mode == 'structured_renewed': self.f.comments.append(self.comment(2, CLAIM.marker({**fixtures.OTHER, 'worker': worker}), '2026-10-04T00:00:00Z'))
-                if mode == 'live_peer':
-                    self.f.inventory['worktrees'] = [{'branch': self.args.legacy_branch, 'path': '/legacy'}]
-                    self.f.inventory['sessions'] = [{'sessionId': 'peer', 'cwd': '/legacy/nested'}]
-                if mode == 'worker_visible': self.f.inventory['sessions'] = [{'sessionId': 'native-peer', 'name': worker, 'cwd': '/other'}]
                 if mode == 'branch_activity': self.source_branch_date = '2026-10-04T00:00:00Z'
                 if mode == 'related':
                     self.f.comments.append(self.comment(2, f'Claimed by {worker}', '2026-10-01T02:00:00Z'))
@@ -1655,6 +1575,213 @@ class OwnReleaseTests(ReleaseHarness):
         self.assertIs(parsed.func, PLAN.cmd_release)
         self.assertEqual((parsed.claim_comment, parsed.session),
                          (result["claim_comment"]["comment"]["id"], result["claim"]["session"]))
+
+    def test_release_discovers_other_branch_prs_from_source_links(self) -> None:
+        self.f.pulls = [
+            {"number": 99, "state": "open", "user": {"login": BOT}, "created_at": "2026-10-01T01:00:00Z",
+             "body": "Refs #42", "head": {"ref": "work/another-branch", "repo": {"full_name": "owner/repo"}},
+             "base": {"repo": {"full_name": "owner/repo"}}, "html_url": "https://github.com/owner/repo/pull/99"},
+        ]
+        cross_repo = copy.deepcopy(self.f.pulls[0])
+        cross_repo.update(number=77, body="Refs owner/repo#42", html_url="https://github.com/owner/other/pull/77")
+        for side in ("head", "base"):
+            cross_repo[side]["repo"]["full_name"] = "owner/other"
+        self.f.closed_pulls[77] = cross_repo
+        self.f.timelines["/repos/owner/repo/issues/42/timeline"] = [
+            {"event": "cross-referenced", "source": {"issue": {
+                "number": 77, "user": {"login": BOT}, "created_at": cross_repo["created_at"],
+                "pull_request": {"url": "https://api.github.com/repos/owner/other/pulls/77"}}}},
+        ]
+        with patch.object(PLAN, "api_json", side_effect=self.f.read_api):
+            with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                self.run_own_release()
+            self.assertEqual(caught.exception.code, "release_pr_attribution_required")
+            self.f.assert_no_writes()
+            self.args.retained_pr = [self.f.pulls[0]["html_url"], cross_repo["html_url"]]
+            self.run_own_release()
+        named = self.f.comments[-1]["body"]
+        for pull in [*self.f.pulls, cross_repo]:
+            self.assertIn(pull["html_url"], named)
+
+    def test_release_does_not_name_unrelated_foreign_or_preclaim_prs(self) -> None:
+        self.f.pulls = [
+            {"number": n, "state": "open", "user": {"login": author}, "created_at": created,
+             "body": body, "head": {"ref": "work/other", "repo": {"full_name": "owner/repo"}},
+             "base": {"repo": {"full_name": "owner/repo"}}, "html_url": f"https://github.com/owner/repo/pull/{n}"}
+            for n, author, created, body in [
+                (98, BOT, "2026-10-01T01:00:00Z", "Unrelated"),
+                (99, "someone-else", "2026-10-01T01:00:00Z", "Refs #42"),
+                (100, BOT, "2026-09-30T01:00:00Z", "Refs #42"),
+            ]
+        ]
+        self.run_own_release()
+        for pull in self.f.pulls:
+            self.assertNotIn(pull["html_url"], self.f.comments[-1]["body"])
+
+    def test_release_excludes_other_sessions_prs_without_transferring_ownership(self) -> None:
+        url = "https://github.com/owner/repo/pull/99"
+        self.f.pulls = [{"number": 99, "state": "open", "user": {"login": BOT},
+            "created_at": "2026-10-01T01:00:00Z", "body": "Parent: https://github.com/owner/repo/issues/42\nCloses #43",
+            "head": {"ref": "work/other-session", "repo": {"full_name": "owner/repo"}},
+            "base": {"repo": {"full_name": "owner/repo"}}}]
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_own_release()
+        self.assertEqual(caught.exception.code, "release_pr_attribution_required")
+        self.f.assert_no_writes()
+        self.args.exclude_pr = [url]
+        self.run_own_release()
+        self.assertNotIn(99, CLAIM.handoff_pr_numbers(self.f.comments[-1]["body"], issue_repo="owner/repo", target_repo="owner/repo"))
+
+    def test_release_never_uses_incidental_narrative_as_pr_attribution(self) -> None:
+        for created in ("2026-10-01T01:00:00Z", "2026-09-29T00:00:00Z"):
+            with self.subTest(created=created):
+                self.setUp()
+                url = "https://github.com/owner/repo/pull/99"
+                self.f.pulls = [{"number": 99, "state": "open", "user": {"login": BOT}, "created_at": created,
+                    "body": "Refs #42\nCloses #43", "head": {"ref": "work/other-session", "repo": {"full_name": "owner/repo"}},
+                    "base": {"repo": {"full_name": "owner/repo"}}}]
+                self.handoff.write_text("Left #99 alone. It belongs to another session.")
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.run_own_release()
+                self.assertEqual(caught.exception.code, "release_pr_attribution_required")
+                self.f.assert_no_writes()
+                self.args.exclude_pr = ["https://github.com/Owner/Repo/pull/99"]
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.run_own_release()
+                self.assertEqual(caught.exception.code, "release_excluded_pr_mentioned")
+                self.f.assert_no_writes()
+                self.handoff.write_text("Other session's work remains with its owner.")
+                self.run_own_release()
+                self.assertNotIn(99, CLAIM.handoff_pr_numbers(self.f.comments[-1]["body"], issue_repo="owner/repo", target_repo="owner/repo"))
+
+    def test_release_accepts_case_varied_explicit_attribution(self) -> None:
+        self.f.pulls = [{"number": 99, "state": "open", "user": {"login": BOT}, "created_at": "2026-10-01T01:00:00Z",
+            "body": "Refs #42", "head": {"ref": "work/other", "repo": {"full_name": "Owner/Repo"}},
+            "base": {"repo": {"full_name": "Owner/Repo"}}}]
+        self.args.retained_pr = ["https://github.com/owner/repo/pull/99"]
+        self.run_own_release()
+        self.assertIn(99, CLAIM.handoff_pr_numbers(self.f.comments[-1]["body"], issue_repo="owner/repo", target_repo="owner/repo"))
+
+    def test_release_checks_older_cross_repository_narrative_references(self) -> None:
+        self.handoff.write_text("Left owner/other#77 alone.")
+        self.f.closed_pulls[77] = {"number": 77, "state": "open", "user": {"login": BOT},
+            "created_at": "2026-09-29T00:00:00Z", "body": "Refs owner/repo#42",
+            "head": {"ref": "work/other-session", "repo": {"full_name": "owner/other"}},
+            "base": {"repo": {"full_name": "owner/other"}}}
+        self.f.timelines["/repos/owner/repo/issues/42/timeline"] = [{"event": "cross-referenced", "source": {"issue": {
+            "state": "open", "created_at": "2026-09-29T00:00:00Z", "user": {"login": BOT},
+            "pull_request": {"url": "https://api.github.com/repos/owner/other/pulls/77"}}}}]
+        with patch.object(PLAN, "api_json", side_effect=self.f.read_api):
+            with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                self.run_own_release()
+        self.assertEqual(caught.exception.code, "release_pr_attribution_required")
+        self.f.assert_no_writes()
+        self.args.retained_pr = ["https://github.com/Owner/Other/pull/77"]
+        self.handoff.write_text("Handing off the explicitly declared PR.")
+        with patch.object(PLAN, "api_json", side_effect=self.f.read_api):
+            self.run_own_release()
+        self.assertIn(77, CLAIM.handoff_pr_numbers(self.f.comments[-1]["body"], issue_repo="owner/repo", target_repo="owner/other"))
+
+    def test_release_checks_merged_pr_mentions_against_successor_qualification(self) -> None:
+        self.handoff.write_text("Rebased on #77 from another session.")
+        self.f.closed_pulls[77] = {"number": 77, "state": "closed", "merged_at": "2026-10-01T01:00:00Z",
+            "created_at": "2026-09-29T00:00:00Z", "user": {"login": BOT}, "body": "Refs #42\nCloses #43",
+            "head": {"ref": "work/other-session", "repo": {"full_name": "owner/repo"}},
+            "base": {"repo": {"full_name": "owner/repo"}}}
+        self.f.timelines["/repos/owner/repo/issues/42/timeline"] = [{"event": "cross-referenced", "source": {"issue": {
+            "state": "closed", "created_at": "2026-09-29T00:00:00Z", "user": {"login": BOT},
+            "pull_request": {"url": "https://api.github.com/repos/owner/repo/pulls/77"}}}}]
+        with patch.object(PLAN, "api_json", side_effect=self.f.read_api):
+            with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                self.run_own_release()
+        self.assertEqual(caught.exception.code, "release_pr_attribution_required")
+        self.f.assert_no_writes()
+
+    def test_release_classifies_missing_inherited_proof_without_declaration_override(self) -> None:
+        url = CLAIM.handoff_url("owner/repo", 42, 12)
+        record = {**fixtures.OTHER, "resume_from": "11", "retained_handoff": url}
+        self.f.comments[0]["body"] = CLAIM.marker(record)
+        for declared in ([], ["https://github.com/owner/repo/pull/99"]):
+            with self.subTest(declared=declared):
+                self.args.retained_pr = declared
+                with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+                    self.run_own_release()
+                self.assertEqual(caught.exception.code, "release_inherited_handoff_changed")
+                self.assertEqual(caught.exception.payload["retained_handoff"], url)
+                self.assertEqual(caught.exception.payload["claim_comment"], self.args.claim_comment)
+                self.f.assert_no_writes()
+
+    def test_release_refuses_unverified_declared_prs(self) -> None:
+        self.args.retained_pr = ["https://github.com/owner/repo/pull/99"]
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_own_release()
+        self.assertEqual(caught.exception.code, "release_declared_pr_unverified")
+        self.f.assert_no_writes()
+
+    def test_release_does_not_relabel_transient_inherited_reads_as_lost_proof(self) -> None:
+        failure = PLAN.PlanError("Read deadline expired")
+        with patch.object(PLAN, "read_release_inherited_prs", side_effect=failure):
+            with self.assertRaises(PLAN.PlanError) as caught:
+                self.run_own_release()
+        self.assertIs(caught.exception, failure)
+        self.f.assert_no_writes()
+
+    def test_release_refuses_a_stripped_inherited_handoff(self) -> None:
+        predecessor = {**fixtures.OTHER, "session": "predecessor", "branch": "work/predecessor",
+                       "claimed_at": "2026-09-28T00:00:00Z"}
+        current = {**fixtures.OTHER, "resume_from": "11", "retained_handoff": CLAIM.handoff_url("owner/repo", 42, 13)}
+        self.f.comments = [self.comment(11, CLAIM.marker(predecessor), predecessor["claimed_at"]),
+                           self.comment(13, "Released claim 11\n\nFinished work.", "2026-09-30T00:00:00Z"),
+                           self.comment(1, CLAIM.marker(current), current["claimed_at"])]
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_own_release()
+        self.assertEqual(caught.exception.code, "release_inherited_handoff_changed")
+        self.f.assert_no_writes()
+
+    def test_release_cannot_exclude_its_own_source_branch(self) -> None:
+        url = "https://github.com/owner/repo/pull/99"
+        self.f.pulls = [{"number": 99, "state": "open", "user": {"login": BOT},
+            "head": {"ref": fixtures.OTHER["branch"], "repo": {"full_name": "owner/repo"}},
+            "base": {"repo": {"full_name": "owner/repo"}}}]
+        self.args.exclude_pr = [url]
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_own_release()
+        self.assertEqual(caught.exception.code, "release_owned_pr_not_excludable")
+        self.f.assert_no_writes()
+
+    def test_release_carries_inherited_prs_created_before_this_claim(self) -> None:
+        predecessor = {**fixtures.OTHER, "session": "predecessor", "branch": "work/predecessor",
+                       "claimed_at": "2026-09-28T00:00:00Z"}
+        current = {**fixtures.OTHER, "resume_from": "11", "retained_handoff": CLAIM.handoff_url("owner/repo", 42, 13)}
+        self.f.comments = [self.comment(11, CLAIM.marker(predecessor), predecessor["claimed_at"]),
+                           self.comment(13, "Released claim 11\n\nRetained PR #99.", "2026-09-30T00:00:00Z"),
+                           self.comment(1, CLAIM.marker(current), current["claimed_at"])]
+        self.f.pulls = [{"number": 99, "state": "open", "user": {"login": BOT}, "created_at": "2026-09-29T00:00:00Z",
+            "body": "Refs #42", "head": {"ref": "work/retained", "repo": {"full_name": "owner/repo"}},
+            "base": {"repo": {"full_name": "owner/repo"}}}]
+        self.f.closed_pulls[99] = self.f.pulls[0]
+        with patch.object(PLAN, "api_json", side_effect=self.f.read_api):
+            self.run_own_release()
+        self.assertIn(99, CLAIM.handoff_pr_numbers(self.f.comments[-1]["body"], issue_repo="owner/repo", target_repo="owner/repo"))
+
+    def test_release_discovery_uses_server_clock_and_skips_only_missing_prs(self) -> None:
+        self.f.comments[0]["body"] = CLAIM.marker({**fixtures.OTHER, "claimed_at": "2026-10-01T01:00:00Z"})
+        self.f.pulls = [{"number": 99, "state": "open", "user": {"login": BOT}, "created_at": "2026-10-01T00:01:00Z",
+            "body": "Refs #42", "head": {"ref": "work/new-branch", "repo": {"full_name": "owner/repo"}},
+            "base": {"repo": {"full_name": "owner/repo"}}}]
+        with self.assertRaises(PLAN.ClassifiedPlanError) as caught:
+            self.run_own_release()
+        self.assertEqual(caught.exception.code, "release_pr_attribution_required")
+        self.args.retained_pr = ["https://github.com/owner/repo/pull/99"]
+        self.f.timelines["/repos/owner/repo/issues/42/timeline"] = [{"event": "cross-referenced", "source": {"issue": {
+            "user": {"login": BOT}, "pull_request": {"url": "https://api.github.com/repos/owner/other/pulls/77"}}}}]
+        with patch.object(PLAN, "api_json", side_effect=PLAN.PlanError("Unreadable", api_result={"status": 403})):
+            with self.assertRaises(PLAN.PlanError):
+                self.run_own_release()
+        self.f.assert_no_writes()
+        with patch.object(PLAN, "api_json", side_effect=self.f.read_api):
+            self.run_own_release()
+        self.assertIn(99, CLAIM.handoff_pr_numbers(self.f.comments[-1]["body"], issue_repo="owner/repo", target_repo="owner/repo"))
 
     def test_dry_run_shows_the_body_without_writing(self):
         self.args.dry_run = True

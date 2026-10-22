@@ -141,8 +141,7 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                     acknowledge.set()
                     self.assertIn("result", json.loads(await asyncio.wait_for(ws.recv(), 3)))
                     self.assertEqual(closure.action_time(f.session), floor)
-                _, states, _ = await asyncio.to_thread(f.observe)
-                self.assertEqual(states[f.session]["state"], "ended")
+                await asyncio.to_thread(f.release.record_closure, f.log, f.entry, "supervisor")
                 self.assertFalse(closure.action_pending(f.session))
             finally:
                 acknowledge.set()
@@ -223,7 +222,7 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
             f.rpc_results["thread/queue/add"] = ValueError("synthetic rejected queue")
             args = SimpleNamespace(command="queue", session_id=f.session, codex_home=f.home,
                                    message="status?", message_file=None)
-            with patch.object(github_plan_sessions, "codex_homes", return_value=[f.home]), self.assertRaises(ValueError):
+            with patch.object(github_plan_sessions, "configured_homes", return_value=[f.home]), self.assertRaises(ValueError):
                 await asyncio.to_thread(SESSION.run, args)
             self.assertTrue(closure.action_pending(f.session))
             self.assertFalse(f.mutations)
@@ -232,55 +231,6 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(closed["ended_at"], original["ended_at"])
             self.assertFalse(closure.action_pending(f.session))
             self.assertEqual(f.rpc_requests.count("thread/queue/add"), 1)
-
-    async def test_live_worker_actions_and_approvals_continue_during_claim_observation(self):
-        from websockets.asyncio.client import unix_connect
-        with ReceiptFixture() as f:
-            task, request, response, _ = await self.start_client(f)
-            reading, read_gate, observed, claim_gate = (threading.Event() for _ in range(4))
-            async def delayed(_request):
-                reading.set()
-                await asyncio.to_thread(read_gate.wait, 5)
-                return {"thread": {"id": f.session, "cwd": "/retained/source",
-                                   "path": str(f.transcript), "status": {"type": "idle"}}}
-            def claim_observation():
-                with closure.admission():
-                    result = f.observe({f.session})
-                    observed.set()
-                    claim_gate.wait(5)  # Subsequent GitHub reads in claim_once.
-                    return result
-            observing = None
-            try:
-                self.assertIn("result", await self.send(task, request, response, "turn/start", f.session))
-                f.rpc_results["thread/read"] = delayed
-                observing = asyncio.create_task(asyncio.to_thread(claim_observation))
-                self.assertTrue(await asyncio.to_thread(reading.wait, 3))
-                self.assertIn("result", await self.send(task, request, response, "turn/start", f.session))
-                f.approval_target = f.session
-                endpoint = next(r["endpoint"] for r in closure.log_rows() if r.get("record_kind") == "managed_proxy")
-                async with unix_connect(endpoint) as ws:
-                    await ws.send(json.dumps({"id": "approval", "method": "initialize", "params": {}}))
-                    self.assertIn("result", json.loads(await ws.recv()))
-                    approval = json.loads(await asyncio.wait_for(ws.recv(), 2))
-                    self.assertEqual(approval["method"], "execCommandApproval")
-                    await ws.send(json.dumps({"id": approval["id"], "result": {"decision": "denied"}}))
-                    async with asyncio.timeout(3):
-                        while not f.approval_results:
-                            await asyncio.sleep(.01)
-                    self.assertEqual(f.approval_results[-1]["result"], {"decision": "denied"})
-                read_gate.set()
-                self.assertTrue(await asyncio.to_thread(observed.wait, 3))
-                self.assertIn("result", await self.send(task, request, response, "turn/start", f.session))
-                claim_gate.set()
-                _, states, _ = await observing
-                self.assertEqual(states[f.session]["state"], "live")
-            finally:
-                read_gate.set()
-                claim_gate.set()
-                if observing is not None:
-                    await observing
-                (f.root / "stop").touch()
-                await asyncio.wait_for(task, 8)
 
     async def test_connected_worker_accepts_queue_and_capacity_continue_after_turn_reply(self):
         from test_codex_session import SESSION
@@ -295,7 +245,7 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                 result = await self.send(task, request, response, "turn/start", f.session)
                 self.assertIn("result", result)
                 with patch.dict(os.environ, {"PATH": str(queue_bin)}), \
-                        patch.object(github_plan_sessions, "codex_homes", return_value=[f.home]):
+                        patch.object(github_plan_sessions, "configured_homes", return_value=[f.home]):
                     self.assertEqual(await asyncio.to_thread(SESSION.run, args), 0)
                     # Capacity target validation is covered by its full module;
                     # exercise the shared typed queue writer while this client stays connected.
@@ -353,8 +303,7 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                 (f.root / "stop").touch()
                 await asyncio.wait_for(task, 8)
 
-    async def test_pending_queue_blocks_authored_release_but_quiet_observation_resolves_owned_source(self):
-        import github_plan_claim as claim
+    async def test_pending_queue_blocks_closure_until_it_clears(self):
         for receipt in (False, True):
             with self.subTest(receipt=receipt), ReceiptFixture() as f:
                 if not receipt:
@@ -364,25 +313,13 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                 task, request, response, _ = await self.start_client(f)
                 try:
                     self.assertIn("result", await self.send(task, request, response, "thread/queue/add", f.session, message="later"))
-                    record = {"worker": "predecessor", "session": f.session, "branch": "work/source", "claimed_at": "2026-10-01T01:00:00Z"}
-                    comments = [{"id": 1, "body": claim.marker(record), "user": {"login": "fixture-bot"}},
-                                {"id": 2, "body": "Released claim 1", "user": {"login": "fixture-bot"}}]
-                    peers, states, _ = await asyncio.to_thread(f.observe)
-                    self.assertEqual(states[f.session]["state"], "live")
-                    self.assertFalse(claim.ended_ownership(comments, {"sessions": peers, "session_states": states, "worktrees": []}))
                     with self.assertRaises(ValueError):
                         await asyncio.to_thread(f.release.record_closure, f.log, f.entry, "supervisor")
                     self.assertTrue(closure.action_pending(f.session))
                     f.queue_items = []
-                    if receipt:
-                        _, states, _ = await asyncio.to_thread(f.observe)
-                        self.assertEqual(states[f.session]["state"], "ended")
-                        self.assertFalse(closure.action_pending(f.session))
-                    else:
-                        # No ownership is inferred from an unowned partial row.
-                        closed = await asyncio.to_thread(f.release.record_closure, f.log, f.entry, "supervisor")
-                        self.assertTrue(closed["process_exit_verified"])
-                        self.assertFalse(closure.action_pending(f.session))
+                    closed = await asyncio.to_thread(f.release.record_closure, f.log, f.entry, "supervisor")
+                    self.assertTrue(closed["process_exit_verified"])
+                    self.assertFalse(closure.action_pending(f.session))
                 finally:
                     (f.root / "stop").touch()
                     await asyncio.wait_for(task, 8)
@@ -767,9 +704,6 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
             try:
                 result = await self.send(task, request, response, "thread/read", f.session)
                 self.assertIn("result", result)
-                _, states, coverage = await asyncio.to_thread(f.observe)
-                self.assertEqual(coverage["process_coverage"], "complete")
-                self.assertEqual(states[f.session]["state"], "ended")
             finally:
                 (f.root / "stop").touch()
                 await asyncio.wait_for(task, 8)
@@ -833,22 +767,16 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                             self.assertEqual(next(r for r in closure.log_rows() if r.get("session_id") == f.session), before)
                             closed = await asyncio.to_thread(f.release.record_closure, f.log, f.entry, "supervisor")
                             self.assertEqual(closed["ended_at"], before["ended_at"])
-                            f.native_state = "active"
-                            _, states, _ = await asyncio.to_thread(f.observe)
-                            self.assertEqual(states[f.session]["state"], "live")
-                            f.native_state = "idle"
                     self.assertFalse(f.mutations)
                 finally:
                     (f.root / "stop").touch()
                     await asyncio.wait_for(task, 8)
 
-    async def test_mtime_change_refuses_idle_proof_but_allows_ordinary_finish_retry(self):
+    async def test_mtime_change_allows_ordinary_finish_retry(self):
         with ReceiptFixture() as f:
             before = next(r for r in closure.log_rows() if r.get("session_id") == f.session)
-            self.assertIsNotNone(await asyncio.to_thread(closure.verified_record, f.session, f.home))
             stat = f.transcript.stat()
             os.utime(f.transcript, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
-            self.assertIsNone(await asyncio.to_thread(closure.verified_record, f.session, f.home))
             closed = await asyncio.to_thread(f.release.record_closure, f.log, f.entry, "supervisor")
             self.assertEqual(closed["ended_at"], before["ended_at"])
 
@@ -870,9 +798,6 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                                          gitInfo={"branch": "updated-branch"})
                 self.assertIn("result", result)
                 self.assertEqual(next(r for r in closure.log_rows() if r.get("session_id") == f.session), before)
-                self.assertIsNone(await asyncio.to_thread(closure.verified_record, f.session, f.home))
-                _, states, _ = await asyncio.to_thread(f.observe)
-                self.assertEqual(states[f.session]["state"], "live")
                 with self.assertRaises(ValueError):
                     await asyncio.to_thread(f.release.record_closure, f.log, f.entry, "supervisor")
                 self.assertEqual(next(r for r in closure.log_rows() if r.get("session_id") == f.session), before)
@@ -880,7 +805,7 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                 (f.root / "stop").touch()
                 await asyncio.wait_for(task, 8)
 
-    async def test_unarchive_preserves_generation_but_moved_rollout_invalidates_receipt(self):
+    async def test_unarchive_preserves_generation_but_moved_rollout_refuses_stale_closure(self):
         for frozen in (False, True):
             with self.subTest(frozen=frozen), ReceiptFixture(archived=True) as f:
                 f.native_state = "notLoaded"
@@ -904,34 +829,22 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                     self.assertFalse(previous.exists())
                     self.assertTrue(f.transcript.exists())
                     self.assertEqual(next(r for r in closure.log_rows() if r.get("session_id") == f.session), before)
-                    self.assertIsNone(await asyncio.to_thread(closure.verified_record, f.session, f.home))
                     with self.assertRaises((OSError, ValueError)):
                         await asyncio.to_thread(f.release.record_closure, f.log, f.entry, "supervisor")
                     with self.assertRaises(ValueError):
                         await asyncio.to_thread(f.release.record_closure, f.log,
                                                {**f.entry, "transcript": str(f.transcript)}, "supervisor")
-                    # The existing unloaded proof can read the restored rollout;
-                    # it does not reinterpret the stale idle-closure fingerprint.
-                    _, states, _ = await asyncio.to_thread(f.observe, {f.session})
-                    self.assertEqual(states[f.session]["native_state"], "notLoaded")
-                    self.assertEqual(states[f.session]["state"], "ended")
-                    self.assertFalse(states[f.session]["leased_closure"])
                 finally:
                     (f.root / "stop").touch()
                     await asyncio.wait_for(task, 8)
 
-    async def test_multiline_native_launch_is_known_but_tui_resume_owns_the_source(self):
+    async def test_multiline_native_launch_tui_resume_owns_the_source(self):
         with ReceiptFixture() as f:
             f.approval_on_resume = True
             task, request, response, pid = await self.start_client(f)
             try:
-                _, states, coverage = await asyncio.to_thread(f.observe)
-                self.assertEqual(coverage["process_coverage"], "complete")
-                self.assertEqual(states[f.session]["state"], "ended")
                 result = await self.send(task, request, response, "thread/resume", f.session)
                 self.assertIn("result", result)
-                _, states, _ = await asyncio.to_thread(f.observe)
-                self.assertEqual(states[f.session]["state"], "live")
                 row = next(r for r in closure.log_rows() if r.get("session_id") == f.session)
                 self.assertEqual(row["resumed_generation"]["pid"], pid)
                 self.assertTrue(row["resumed_at"])
@@ -942,12 +855,7 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_handoff_refuses_manual_tui_resume_and_turn_before_forwarding(self):
         with ReceiptFixture() as f:
-            def admit():
-                with closure.admission():
-                    _, states, _ = f.observe()
-                    self.assertEqual(states[f.session]["state"], "ended")
-                    closure.admit_sources({f.session})
-            await asyncio.to_thread(admit)
+            await asyncio.to_thread(closure.admit_sources, {f.session})
             task, request, response, _ = await self.start_client(f)
             try:
                 for method in ("thread/resume", "turn/start", "thread/fork", "thread/archive"):
@@ -963,31 +871,18 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                 (f.root / "stop").touch()
                 await asyncio.wait_for(task, 8)
 
-    async def test_guarded_resume_on_another_thread_does_not_block_idle_proof(self):
+    async def test_guarded_resume_on_another_thread_leaves_the_source_closed(self):
         with ReceiptFixture() as f:
             task, request, response, _ = await self.start_client(f, resume=OTHER_THREAD)
             try:
                 result = await self.send(task, request, response, "thread/resume", OTHER_THREAD)
                 self.assertIn("result", result)
-                _, states, coverage = await asyncio.to_thread(f.observe)
-                self.assertEqual(coverage["process_coverage"], "complete")
-                self.assertEqual(states[f.session]["state"], "ended")
+                self.assertFalse(closure.action_pending(f.session))
             finally:
                 (f.root / "stop").touch()
                 await asyncio.wait_for(task, 8)
 
-    async def test_guarded_native_child_of_waiting_wrapper_is_known(self):
-        with ReceiptFixture() as f:
-            task, _, _, _ = await self.start_client(f, wrapper=True)
-            try:
-                _, states, coverage = await asyncio.to_thread(f.observe)
-                self.assertEqual(coverage["process_coverage"], "complete")
-                self.assertEqual(states[f.session]["state"], "ended")
-            finally:
-                (f.root / "stop").touch()
-                await asyncio.wait_for(task, 8)
-
-    async def test_real_cli_proxy_wrapper_and_native_process_lines_are_all_observed(self):
+    async def test_real_cli_proxy_wrapper_and_native_process_lines_are_all_recognized(self):
         from session_liveness import harness_arguments
         with ReceiptFixture() as f:
             task, _, _, _ = await self.start_client(f, wrapper=True, external=True)
@@ -996,9 +891,6 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(len(lines), 3)  # Owned proxy, waiting wrapper, native client.
                 for line in lines:
                     self.assertTrue(harness_arguments(" ".join(line[1:])), "real client/helper line was ignored: " + " ".join(line[1:3]))
-                _, states, coverage = await asyncio.to_thread(f.observe)
-                self.assertEqual(coverage["process_coverage"], "complete")
-                self.assertEqual(states[f.session]["state"], "ended")
             finally:
                 (f.root / "stop").touch()
                 await asyncio.wait_for(task, 8)

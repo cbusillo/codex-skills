@@ -4,6 +4,9 @@ description: Use when the user requests a native reminder, including plain repea
 metadata:
   short-description: Close out workstreams cleanly
 resources:
+  - path: scripts/check_claims.py
+    kind: script
+    description: Reads a session's claim releases and retained PR handoffs on GitHub before a safe-exit verdict.
   - path: scripts/repo_cleanup.py
     kind: script
     description: Read-only cleanup inventory, fork dispositions, private snapshot revalidation, and post-action verification.
@@ -23,6 +26,11 @@ resources:
     kind: reference
     description: Read when the Director requests a native reminder, whether plain or for a session or repository.
 commands:
+  - name: closeout-check-claims
+    source: skill
+    resource_path: scripts/check_claims.py
+    example_argv: ["uv", "run", "scripts/check_claims.py", "--owner", "OWNER", "--session", "<native-id>", "--transcript", "/absolute/native-transcript.jsonl"]
+    purpose: Reads only the session's journaled and transcript-recorded claim targets, then verifies exact releases and retained PR handoffs; never writes.
   - name: session-reminder-link
     source: skill
     resource_path: scripts/reminder_link.py
@@ -263,7 +271,97 @@ preserved, or intentionally left in place.
    [contract-backed lifecycle routing](../launchplane/SKILL.md#contract-backed-lifecycle-and-repair-routing).
    For other resources, use [infra-ops](../infra-ops/SKILL.md#workflow) for
    documented provider lifecycle operations under existing task authority.
-8. Report final state concisely.
+8. Before a safe-exit all-clear, complete [claim disposition](#claim-disposition)
+   for this session on either harness. Updating status or preserving a
+   PR does not release ownership. Keep the claim while a required review is
+   pending and this session is expected to resume; end that turn without a
+   safe-exit all-clear.
+9. Report final state concisely.
+
+## Claim Disposition
+
+Before reporting `Safe to exit: yes`, account for every claim this session took,
+including earlier turns, other repositories and PR-only work. Ownership lives
+on GitHub: the claim comment, and its exact release.
+
+For a held claim, first finish or durably hand off its work and update Current
+Status with the next actor, action and retained artifacts. Then release it with
+the `release_command` the claim printed (`gh-plan.py release`), naming every
+retained PR's full URL in the handoff. An exact release frees the work for a
+successor at once. It releases ownership only. Never release another session's
+claim. Read the [claim contract](../github/references/cli-reference.md#planning-claim)
+before releasing or repairing a retained-PR handoff.
+
+Then read the record back:
+
+```bash
+uv run <skill-dir>/scripts/check_claims.py \
+  --session NATIVE_ID --transcript /absolute/native-transcript.jsonl
+```
+
+The check takes its targets from the session's private host-local claim journal
+and recorded claim results in its own native transcript. `gh-plan.py claim`
+records the exact repository and issue or PR number after target preflight and
+before posting. Failed or interrupted attempts stay targets until GitHub
+readback accounts for them. Children claiming under the root session ID enter
+the same journal even when their output is absent from the root transcript.
+
+For older helpers and mixed sessions, the check reads linked local native child
+transcripts recursively: Claude's own `subagents` directory, Codex's existing
+native child index and `SubAgentActivity.agent_thread_id` events. It never
+scans rollout directories. A missing indexed or advertised child refuses;
+restore its transcript on the claiming host or pass that child's native
+`--session` and `--transcript`. Supplied child paths can restore moved evidence.
+Keep the journal with its session; another host also needs the complete native
+lineage and recorded claim results.
+
+For older helpers, the reader reconstructs bounded literal invocations and
+native outputs without executing recorded programs. Missing or ambiguous
+claim evidence stays conditional while known targets are checked. When
+`unresolved_invocations` appears, or when recovering older/remote-host evidence,
+read [recorded claim discovery](references/claim-discovery.md) for supported
+program/data boundaries and recovery. Use an explicit literal `--repo OWNER/REPO`
+or qualified record reference in claim commands.
+
+The check reads only those issues and PRs, including closed records. It never
+inventories App installations or scans other repositories. It verifies every
+claim on each target against its exact authored release or validated Supervisor
+release, and checks each retained PR's handoff. Repeat `--session` and
+`--transcript` for any other session to include. A transcript belonging to
+another session, malformed claim evidence or an incomplete GitHub read refuses.
+Unrelated truncated transcript noise is ignored; a malformed recorded claim
+is not.
+`--repository OWNER/REPO` and `--owner OWNER` are compatibility context flags;
+they cannot narrow the recorded targets or request a fleet scan. Only exit 0
+with `claims_clear: true` and complete coverage permits an all-clear. The result
+reports its GitHub reader `request_count`; an empty session needs no requests.
+Keep the verdict conditional/no on a held claim, unverified retained PR or
+incomplete read. A later-deleted record or removed App access remains unreadable
+evidence, never a release. Preserve the journal and owning issue; restore the
+authorized read path, or record an irrecoverable-evidence decision for the
+Director. Do not silently retire the target or manufacture an all-clear.
+The Supervisor runs the same check for any session.
+
+An open PR need not merge before a session exits. Its exact release names the
+retained PR, and the check verifies the same repository, source identity and
+independent issue link under the successor's handoff contract. A PR-only claim
+uses the PR itself as its work record. Preserve the branch, worktree and the
+next actor's custody.
+
+The check does not inspect processes. Stop or hand off any background work you
+started before the verdict; leaving it running is a closeout problem, not
+something the check proves.
+
+A session that crashes cannot release. Its claim frees itself when its lease
+expires: the catalog's hooks renew a host-local lease on the session's activity
+(see [Planning: Claim](../github/references/cli-reference.md#planning-claim)),
+and after 30 minutes without activity a successor on the same host may take
+over, recording a `Lease takeover:` line in its claim. Set
+`GH_PLAN_CLAIM_LEASE_MINUTES` when claiming to change the period the claim
+records. A host with no lease for
+the session keeps the claim; a Supervisor or direction session releases an
+ended session's claim there with `gh-plan.py release-claim`. The lease is crash
+recovery, not a substitute for releasing.
 
 ## Consuming Readiness Evidence
 
@@ -354,6 +452,10 @@ Safe to exit: yes
   post-turn trigger may still occur and the answer says so explicitly. Activity
   in detached `auto-review-<hex>` worktrees for older targets is not a gate.
 - PR, issue, and GitHub plan state is current.
+- This session's claims are released, with complete readback evidence
+  under Claim Disposition and verified retained-PR handoffs where needed, or
+  GitHub claim disposition is explicitly not applicable. Held or unread claims
+  prevent an all-clear even when every readiness and artifact check passes.
 - The branches and worktrees this task created or adopted are accounted for:
   eligible completed ones are removed under the shared cleanup policy, and each
   one that stays is named with its reason and what will remove it. Work from the

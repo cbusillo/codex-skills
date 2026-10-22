@@ -203,20 +203,8 @@ def configure(session: Path, *, installation_id: str | None = None,
     if not isinstance(app, dict) or not isinstance(app.get("id"), int) or app["id"] != int(record["app_id"]) or app.get("slug") != record["slug"] or app.get("owner", {}).get("login", "").casefold() != record["owner"].casefold():
         raise Error("App ownership does not match the intended account; correct it in GitHub before resuming")
     if installation_id is None:
-        matches = []
-        page = 1
-        while True:
-            data = identity.github_app_request(urllib.request.Request(
-                f"{config.api_url}/app/installations?per_page=100&page={page}", method="GET", headers=headers),
-                operation="setup installation discovery")
-            if not isinstance(data, list):
-                raise Error("installation discovery returned an invalid response")
-            matches.extend(item for item in data if item.get("account", {}).get("login", "").casefold() == record["owner"].casefold())
-            if len(data) < 100:
-                break
-            page += 1
-            if page > 10:
-                raise Error("installation discovery incomplete; resume with --installation-id")
+        matches = [item for item in identity.app_installations(config)
+                   if item.get("account", {}).get("login", "").casefold() == record["owner"].casefold()]
         if len(matches) != 1:
             raise Error("install the App on the intended account, then resume; use --installation-id if ambiguous")
         installation_id = str(matches[0]["id"])

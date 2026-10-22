@@ -128,7 +128,7 @@ already meet the requested removal. Do not replay completed mutations.
 
 `uv run scripts/github_request_usage.py --hours 1` ranks local HTTP attempts
 for all observed identities, separately by actor, helper, operation, repository
-and quota bucket. Use `--actor LOGIN` to filter one identity. The private hourly receipts
+and quota bucket, including HTTP and charged REST requests per hour over the requested window. GraphQL point cost stays unknown in this count-only ledger. Use `--actor LOGIN` to filter one identity. The private hourly receipts
 live under the shared retry-state directory's `request-usage` folder and contain
 no request/response bodies, endpoint queries or credentials. Delegating watchers
 pass their caller name to the PR helper, so its reads count toward that watcher.
@@ -250,6 +250,22 @@ headers/API version. Every read still contacts GitHub: an ETag is sent as
 the stored body and pagination headers while preserving the fresh HTTP status,
 request ID and quota diagnostics. Changed 200s replace the entry. Authentication,
 permission and actor failures never become cached success.
+
+Plain JSON `gh-with-env-token api repos/OWNER/REPO/...` GETs under the selected
+App identity also use this conditional cache and record each response once.
+`--method GET` and `-X GET` are supported; formatting, custom headers, pagination,
+input, hostname overrides, downloads, credential/log surfaces and alternate identities keep
+their original CLI route. Fresh response bytes and gh error output are preserved; non-JSON bodies are not cached.
+The adapter never retries a completed failed request
+or serves a body after a provider/authentication failure.
+
+The Supervisor auto-enqueue and pending-review helpers discover open PRs across
+repositories with one GraphQL query per ordinary pass. Additional pages are read
+only for overflowing PR/label connections; partial or changing inventories skip
+only the affected repositories until the next pass. Discovery snapshots may precede
+controller reads; they never replace final freshness checks. This replaces discovery alone: controller policy, ready receipts,
+Client acceptance, reviews, checks and final fresh pre-write reads still decide
+eligibility. The final auto-enqueue queue-inventory recheck stays live REST.
 
 For lazy GitHub fields that require an unconditional observation, shared reader
 callers use `GitHubReader.request(..., fresh=True)`. It bypasses both conditional
@@ -614,7 +630,10 @@ After the real-data import, check the imported parts and supplier costs.
 The notes classify the PR: `Nothing for the Client to test: <reason>` and this
 engineering marker allow ordinary checked `ready`. The legacy marker
 `Nothing for the owner to test` also accepts `:` or `.` followed by a nonempty
-reason. Unmarked test steps need Client acceptance before merge. Never use
+reason. Other "nothing to test" wording, such as naming the Client
+(`Nothing for Justin to test.`), is a notes error rather than test steps, so
+`ready` refuses and the `owner-review` check fails with the exact wording to
+use. Unmarked test steps need Client acceptance before merge. Never use
 the engineering marker when the Client
 must approve wording, screens, workflows or data before merge; keep those PRs on
 `--waiting-for-client`. A review label, a non-neutral review check, or another
@@ -848,13 +867,22 @@ Before an authorized `go` creates a branch or worktree, run from a checkout of
 the target repository:
 
 ```bash
-uv run <skill-dir>/scripts/gh-plan.py claim <issue> \
+uv run <skill-dir>/scripts/gh-plan.py --repo OWNER/REPO claim <issue> \
   --worker <worker-token> --session <session-id> \
   --branch work/<task-slug> --next-action "<action>"
 ```
 
+Keep the repository and record literal in JavaScript tool wrappers or repeated
+shell commands. A qualified `OWNER/REPO#N` record also works. Closeout checks
+every known target, but a bare or computed command with uncertain
+execution count remains conditional even when one receipt is present. A
+journaled receipt alone does not prove every execution used a journaling helper.
+
 `--session` is the running session's native ID: `$CLAUDE_CODE_SESSION_ID` on
-Claude Code, `$CODEX_THREAD_ID` (or the root `$CODEX_SESSION_ID`) on Codex.
+Claude Code, the root `$CODEX_SESSION_ID` on Codex. A Codex child thread claims
+under its root, which refuses its own `$CODEX_THREAD_ID` with
+`session_not_root`: child hooks renew the root's lease, and the root's closeout
+check covers the claim.
 Once the running family is identified, a claim under any other value refuses
 with `session_not_native` and names the native ID, because `release-claim` can
 only release a session that exists. A harness that exposes no native ID claims
@@ -873,7 +901,20 @@ base; forks use a canonical planning issue. The PR's remote source head is its
 work record; local source branches/worktrees and live peers remain competing
 evidence unless owned or covered by an exact authored release. `--resume-from`
 works for released PR claims without inferring a retained-issue handoff from
-the subject PR itself. `release-claim` accepts the same PR references and attestation URLs on either
+the subject PR itself. For a PR retained by a released source issue, pass the
+source claim's exact URL to `--resume-from`, for example
+`--resume-from https://github.com/OWNER/REPO/issues/123#issuecomment-456`.
+The source must be an issue in the PR's repository with an exact authored,
+timestamp-proved release and a qualified handoff naming this PR. The helper
+reuses retained-handoff provenance, checks claims on the source family and
+retained PRs on both readbacks, and preserves every artifact and product hold.
+This route permits a PR-only claim when that released source is also its
+canonical implementation issue; other canonical issues still require their
+own claim. Use a new task branch separate from every retained source branch.
+The source-family checks cover every qualified retained sibling, so process
+these PR-only claims sequentially. Release preserves that inherited custody;
+it does not claim that this session changed every sibling PR.
+`release-claim` accepts the same PR references and attestation URLs on either
 issue or PR timeline comments. It checks the claimed source branch against the closed-session attestation. A
 later update to a separate Dependabot work-record branch does not count as
 source-session activity; source-branch activity, ownership and peer checks
@@ -901,6 +942,15 @@ authority. Structured claim/release records and independent branch, PR,
 worktree and live-session checks still refuse competing work. Historical
 `Claimed by` directives remain legacy claim records under the existing guarded
 release path; arbitrary status prose does not become a legacy claim.
+
+A `claim_wait_unresolved` refusal identifies the actual blocked issue or retained
+PR in `waiting_record`: its repository, number, record kind, URL, plan status
+and Current Status (including its latest PR status comment). `structured_wait`
+and `review_required` describe that record; a stale/done plan status can also
+refuse admission when its wait is clear. The error names its supported
+`gh-plan.py --repo OWNER/REPO wait N` review command. `previous_current_status`
+stays canonical and can differ from `waiting_record.current_status`. This
+diagnostic resolves no wait and supplies no retry authority.
 
 Before the first claim of a legacy issue or PR, read its full body/discussion
 and run `gh-plan.py wait <issue>` for the one-time review report. Record every
@@ -956,7 +1006,7 @@ The helper returns previous Current Status in the recovery result; it links
 the work record without copying that history into the claim comment.
 
 When the overall direction's Order admits the work, name the rule with
-`--admission live-breakage|milestone|repeat-stop|spare-capacity`; the claim
+`--admission live-breakage|milestone|own-project|repeat-stop|spare-capacity`; the claim
 comment records it as an `Admission:` line. Admission does not read or certify
 a milestone graph. Link milestone work into
 its Track during planning and cite that evidence with `--admission-link`.
@@ -975,55 +1025,42 @@ or `pull`, owner/repo case) count once, recorded as first written. Admission rec
 taken; it grants no authority and does not verify the linked decision.
 
 The command checks Current Status and the complete discussion, unresolved
-native blockers, registered worktrees, local branches, live remote heads, open
-PRs, and Claude's native `claude agents --json` session inventory when available.
-Codex uses the stock app-server read protocol on existing daemon sockets in the current
-and configured Supervisor account homes. It reads loaded threads and exact
-claim session IDs without starting or resuming them. Active threads and observed
-native CLI resumes refuse, including a different session using a retained
-worktree. Native-only completion requires an unloaded exact thread, stable
-safe-exit transcripts across configured session/archive roots, and successful
-process inventory excluding any matching or unidentified interactive Codex
-process. A loaded idle thread still refuses, even after a safe-exit turn.
-Missing daemons, unreadable transcripts, age and partial peer coverage cannot
-establish native completion. This needs no attestation comment or release write.
-An app-server process is excluded only when its exact listening socket was read;
-extension/stdio and unconfigured servers remain unidentified. On a host with
-unidentified interactive clients, native-only recovery stays unavailable; an
-exact authored release remains the supported ended-ownership proof.
-Loaded peers are read before transcript scans. A timed-out or truncated observed
-peer inventory is reported as incomplete and preserves retained-artifact conflicts.
-Socket reads do not require `codex` on PATH. Existing unsafe or unreadable sockets
-are incomplete sources. `session_coverage` also reports unidentified interactive
-processes for exact-release successors; an authored release proves ended claim
-ownership, not the absence of every unobservable session on the host.
-An absent or non-listening socket is unavailable, not an active peer. Incomplete
-handoff coverage is scoped to retained branches still present locally/remotely;
-the refusal names those branches and the source session for coordination.
+native blockers, registered worktrees, local branches, live remote heads and
+open PRs. It reads no process, session registry or daemon: ownership lives in
+the claim comments and their exact releases
+([Q621](https://github.com/cbusillo/codex-skills/issues/2453)).
 
-A confirmed canonical Supervisor or direction release can also identify a
-minimal saved resume generation. The helper binds its actual launch identity,
-home and transcript to the verified source and closure time, then checks all
-relevant native homes and physical processes. It rereads the canonical release
-authority before clearing a pending action; it adds no ownership fields to the
-saved row. Each publication phase collects its canonical source family, retained
-PR discussions, waits, blockers and checkout inventories before one shared native
-observation. Each discussion supplies its own exact releases and proof obligations;
-the shared result keeps each checkout's registry and local ownership independent.
-A verified End for the same native session can
-support physical completion across those records; each record still needs its
-own exact ownership release. The authority read after native verification stays
-fresh. Pending, legacy, worker-only and termination releases cannot supply
-this alternative. A recovering generation still needs its native proof after
-the pending marker clears and on every claim readback; another account's
-unloaded thread cannot replace a failed proof. Source activity is measured by
-actual turns, so a passive delivery alone does not require a new final verdict.
-The same-record no-PR resume route below keeps its original branch exception.
+After target preflight and before posting, `claim` records its session ID, exact
+repository and issue or PR number under `~/.code/skill-data/claim-log/<session-hash>/`.
+Each target is an atomically published JSON file. Concurrent children cannot
+interleave rows, and interrupted writes cannot corrupt earlier targets. The
+private journal is synced before any claim write; a journal failure refuses
+before posting. Root and child agents using the same session ID share it.
+Closeout reads this journal plus recorded transcript claim results, then checks
+only those targets on GitHub. Keep the journal on the claiming host with the
+session, including interrupted attempts; it is discovery evidence, never proof
+of ownership or release. See [claim disposition](../../work-closeout/SKILL.md#claim-disposition).
+
+Each claim carries a host-local lease, renewed without a GitHub write: by the
+catalog's `PreToolUse` hook on shell commands on both harnesses, on Claude Code
+also after every tool call and on prompts, stops and subagent events, and by
+`claim` for the claimant. Subagent hooks report their parent's session ID, so
+delegated work renews the parent's lease. One quiet stretch longer than the
+lease, such as a single tool call or a wait with no other activity, or on Codex
+a long run of non-shell tools, lets a successor take over a live session; set a
+longer `GH_PLAN_CLAIM_LEASE_MINUTES` when claiming such work. The claim records
+its period in the lease, so every reader applies the claimant's period. An unreleased claim of
+another session refuses while its lease is live, or unknown because this host
+holds no lease for it, such as a claim made on another host. After its recorded
+period without activity, 30 minutes by default, the lease expires and a
+successor takes over: the claim posts a `Lease takeover: claim <id>` line,
+reports the old claim's branches and worktrees in `retained_artifacts`, and
+freezes that session against a later Codex resume, as for a released source.
+Search claim comments for `Lease takeover:` to count crash takeovers.
 
 An exact authored release also establishes ended claim ownership. Its retained
 branches, worktrees and closed-PR artifacts no longer block an independent claim;
-the result names them in `retained_artifacts` and leaves them intact. Positive
-live-session evidence overrides a release. Automatic reconciliation grants no
+the result names them in `retained_artifacts` and leaves them intact. Automatic reconciliation grants no
 artifact adoption: use a new task branch, or the existing explicit `--resume-from`
 source-recovery route. Open PRs keep their separate handoff
 and wait checks. Unreleased or uncertain holders refuse with `coordination`
@@ -1073,6 +1110,43 @@ Current Status, write the handoff to a file and release with the
 It posts the exact directive with the handoff below it through the same bot
 identity and reads it back; do not hand-write the release comment.
 Release affects that exact comment, not another worker's record.
+Before posting, `release` carries forward the claim's verified inherited
+retained handoff and inventories open PRs on its source branch. It also finds
+source-linked PRs opened since the claim comment's server timestamp, including
+other branches and repositories in the source record's reference timeline.
+Shared bot authorship and handoff prose do not identify a session: each
+other-branch candidate needs an explicit `--retained-pr URL`. Use
+`--exclude-pr URL` for another session's work; exclusions never become retained
+handoff links. Remove references to excluded PRs from the handoff file too;
+`release_excluded_pr_mentioned` identifies any remaining reference. The helper
+uses the successor's parser to check narrative references, including older
+source-linked PRs, before posting. An unclassified candidate stops and lists
+the exact URLs to account for. Declared PRs must qualify in the current
+inventory or verified inherited custody. A mentioned merged PR receives the
+same checks because the successor can retain its branch and worktree too.
+The source branch, subject PR, and inherited work
+cannot be excluded. These declarations affect only the source author's own
+release and add no ownership store or successor authority.
+Keep the source work-record link in every PR opened under a claim; unlinked
+work cannot be attributed to the session. Discovery skips known closed or
+preclaim timeline entries unless the narrative mentions them; incomplete
+entries are fetched and checked. It skips a missing PR (404), and other read
+failures stop release before posting. Cross-repository retained
+links remain available to the existing issue-resume path; a PR-only source
+claim URL still requires a source in that PR's repository. The abandoned
+`release-claim` route keeps its existing explicit, attested `--retained-pr`
+contract.
+
+`release_inherited_handoff_changed` names the recorded handoff URL, original
+source claim, and current claim when inheritance cannot be revalidated.
+The source author restores edited proof before retrying. Deleted proof needs
+the Supervisor to reconstruct the complete custody from native session and
+GitHub evidence, preserving every artifact; `--retained-pr` cannot replace a
+missing inherited set. Use the existing abandoned-claim recovery only after
+that session ends and its canonical-record and retained-PR checks pass.
+That route does not promise to recover cross-scope siblings; unresolved
+provenance stays with the Supervisor for explicit recovery, without an exit
+all-clear or an artifact deletion to get past the guard.
 Retained artifacts stay preserved and reported; positive live activity and an
 open PR's handoff/waits remain independent checks.
 The release directive is an unquoted, unindented line exactly
@@ -1314,7 +1388,7 @@ For an authorized **ordinary successor** whose next step precedes PR refresh,
 use the canonical open planning issue in the PRs' repository:
 
 ```bash
-uv run <skill-dir>/scripts/gh-plan.py claim <canonical-issue> \
+uv run <skill-dir>/scripts/gh-plan.py --repo OWNER/REPO claim <canonical-issue> \
   --worker <worker-token> --session <native-session-id> \
   --branch work/<new-task-slug> --next-action "<authorized next step>" \
   --resume-from <released-claim-comment-id> \
@@ -1371,16 +1445,13 @@ grandchild holder blocks the grandparent and its other children, and the reverse
 claim order checks those same holders. Once a child records
 that source or handoff, its full ownership is checked, including later plain
 resumes that omit handoff metadata or change branch. Its claims refuse until
-exact authored releases or verified native session completion account for
-them; positive live-session evidence still refuses. Closing a child does not
-release its ownership; use its exact authored release or verified native session
-completion before retrying. A child with no record of
+exact authored releases or expired leases account for
+them. Closing a child does not release its ownership; use its exact authored
+release before retrying. A child with no record of
 that source remains unrelated and does not block it. Later claims on a child,
 including plain resume, retained handoff and fresh claims, also recheck the
 original source family recorded in its claim history, so they cannot race a
-new holder on the parent or another child. The requester's own native session
-may occupy a released source worktree; foreign sessions and unreleased
-ownership still refuse. Malformed lineage
+new holder on the parent or another child. Unreleased ownership still refuses. Malformed lineage
 refuses with `claim_resume_lineage_invalid`. These checks read ownership only;
 they do not transfer authority or change the original parent's holds.
 Taking a parent's handoff also checks the claimed child's existing native
@@ -1707,6 +1778,10 @@ competitor's record.
   later does not answer it, even when the edit links or mentions it. Planning
   records and Director question or decision records are not replies, even when
   they link the comment. Answer each with a new reply on its thread and rerun.
+  When degraded coverage comes from a body reference that does not exist, such
+  as a bare `#N` meant for another repository, the refusal names each one with
+  its `owner/repo#N` correction and does not offer the override for it; fix
+  the body and rerun.
   Only the Director overrides:
   `--unanswered-decision COMMENT_URL` names a repository owner comment on
   this issue after the newest such comment, or an unedited `Director decision:`
@@ -2506,8 +2581,10 @@ Under the same per-command opt-in, two commands run as the declared personal
 login whatever credential the repository would select, because an App
 installation token can never act for an account: a `gh api` read of an
 endpoint that answers only for the authenticated account (`user/...`,
-`notifications`, `notifications/...`, `repos/OWNER/REPO/subscription`, also
-given as an `https://api.github.com/` URL), and
+`notifications`, `notifications/...`, `repos/OWNER/REPO/subscription`, and
+`users/LOGIN/settings/billing/...` when LOGIN is the declared
+`GH_WITH_ENV_TOKEN_OWN_USER_LOGIN`, also given as an `https://api.github.com/`
+URL), and
 `gh repo fork` without `--org`, whose fork lands in the person's account.
 Stderr names the endpoint or the fork source. Bare `user` stays the App actor
 probe, a fork into an organization keeps the repository's route, and required
@@ -2584,7 +2661,28 @@ the configured automation account. The push helper picks credentials the same
 way as the wrapper: a configured GitHub App first, then `CODEX_GITHUB_TOKEN`,
 `GH_TOKEN`, and `GITHUB_TOKEN`.
 
-`git-commit-as-bot <commit args>` defaults to identity selection for `origin`.
+Both Git helpers require `--worktree /absolute/task/path` as their first pair
+of arguments. Use the worker's intended linked task path, independent of the
+current directory; never fill it from `pwd` or `git rev-parse`. This assertion
+catches a failed `cd` and refuses a different worker's checkout. It is not a
+claim lookup or a grant of branch ownership. The helpers check the physical
+current directory and Git checkout before loading private configuration,
+selecting an identity, changing a remote URL, committing or pushing. Missing,
+unavailable or relative expected paths, primary checkouts, and checked-out
+main/master or known default branches refuse with a diagnostic. Subdirectories and path aliases of
+the expected linked task checkout are supported. Create the task worktree with
+[dev-worktree](worktrees.md) first; run `cd /absolute/task/path || exit 1`, then
+supply that same absolute path to each helper. Non-creating default-checkout
+synchronization keeps its documented raw `merge --ff-only` route. Ref-only pushes,
+such as an approved release tag or remote branch deletion, also run from your
+own linked task worktree of the same repository. If its implementation worktree
+has already retired, create a focused release or cleanup worktree with
+`dev-worktree REPOSITORY TASK-SLUG origin/main`, then pass its absolute path.
+Tags are shared across worktrees; a release tag can target the approved merged
+commit while this helper runs on the release task branch. Existing release,
+branch-ownership and protected-branch authority still applies.
+
+`git-commit-as-bot --worktree /absolute/task/path <commit args>` defaults to identity selection for `origin`.
 For a fork contribution, pass `--repo UPSTREAM-OWNER/REPO` before the Git
 arguments to select the identity for the PR's target repository. This does not
 infer a target from an `upstream` remote or grant approval to write there.
@@ -2594,18 +2692,18 @@ automation auth still refuses it. App-installed targets keep the bot identity
 even with the opt-in. For example, after approval:
 
 ```bash
-GH_WITH_ENV_TOKEN_OWN_USER=1 scripts/git-commit-as-bot --repo upstream-owner/project -m 'Fix example'
-scripts/git-push-as-bot -u origin work/fix-example
+GH_WITH_ENV_TOKEN_OWN_USER=1 scripts/git-commit-as-bot --worktree /absolute/task/path --repo upstream-owner/project -m 'Fix example'
+scripts/git-push-as-bot --worktree /absolute/task/path -u origin work/fix-example
 ```
 
 The push authenticates for its actual destination (the fork), independently of
 the commit's target. An App-installed fork keeps App credentials; the upstream
 PR write needs its own per-command approval opt-in. Do not apply `--repo` to
 the push helper. For local
-integration, use `git-commit-as-bot --git-command COMMAND <args>`, where COMMAND
+integration, use `git-commit-as-bot --worktree /absolute/task/path --git-command COMMAND <args>`, where COMMAND
 is `commit`, `merge`, `pull`, `rebase`, `cherry-pick`, `revert`, or `am`.
-Run the helper from the target directory; use `cd` first when working in
-another checkout. Conflict resolution uses the same mode with `--continue`. New commits use the
+Run the helper from the declared task worktree; use `cd /absolute/task/path || exit 1`
+when entering it. Conflict resolution uses the same mode with `--continue`. New commits use the
 bot environment; replayed commits preserve original authors and use the bot
 committer. Identity selection and credential stripping apply to every mode.
 Use `gh-pr.py update-branch` for authorized PR base updates; these commands do
@@ -2624,10 +2722,10 @@ conflicting fast-forward option, `--abort`, and `--quit` stay allowed
 because they create no commits. Sequencer `--skip` still needs the bot wrapper
 because it can recreate later commits.
 
-`git-push-as-bot [options] origin <refspec>` remains the default. When
+`git-push-as-bot --worktree /absolute/task/path [options] origin <refspec>` remains the default. When
 `origin` points at upstream and the Director's repository is a named remote, use
-`git-push-as-bot --remote public -u work/task` or
-`git-push-as-bot --remote fork --delete work/task`. Put `--remote NAME` first;
+`git-push-as-bot --worktree /absolute/task/path --remote public -u work/task` or
+`git-push-as-bot --worktree /absolute/task/path --remote fork --delete work/task`. Put `--remote NAME` immediately after `--worktree PATH`;
 the remaining arguments are push options and refspecs, without another remote.
 The helper resolves that configured remote to a GitHub owner/repository, selects
 and verifies its credentials, temporarily uses its HTTPS URL, checks all its

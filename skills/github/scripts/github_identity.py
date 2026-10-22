@@ -239,9 +239,12 @@ def repository_context() -> str | None:
 
 def github_app_config(environ: Mapping[str, str] | None = None, *, reader: bool = False,
                       repository: str | None = None) -> GitHubAppConfig | None:
+    return _github_app_config(github_app_prefix(repository, environ, reader=reader), environ)
+
+
+def _github_app_config(prefix: str, environ: Mapping[str, str] | None = None) -> GitHubAppConfig | None:
     values = os.environ if environ is None else environ
     local_values = load_local_env(values)
-    prefix = github_app_prefix(repository, values, reader=reader)
     names = tuple(f"{prefix}_{suffix}" for suffix in ("ID", "INSTALLATION_ID", "PRIVATE_KEY_PATH"))
     configured = {
         name: configured_value(name, environ=values, local_env=local_values)
@@ -520,6 +523,29 @@ def github_app_request(request: urllib.request.Request, *, operation: str) -> ob
     return _request_json(request, operation=operation)
 
 
+def app_installations(config: GitHubAppConfig, *, deadline_at: float | None = None) -> list[dict]:
+    """Complete configured-App membership, using the existing metadata transport."""
+    installations = {}
+    for page in range(1, 11):
+        if deadline_at is not None and time.time() >= deadline_at:
+            raise GitHubAppError("App installation inventory deadline exceeded")
+        rows = github_app_request(urllib.request.Request(
+            f"{config.api_url}/app/installations?per_page=100&page={page}",
+            method="GET", headers=github_app_headers(config)), operation="installation discovery")
+        if not isinstance(rows, list) or len(rows) > 100:
+            raise GitHubAppError("App installation inventory is malformed")
+        for row in rows:
+            if (not isinstance(row, dict) or type(row.get("id")) is not int or row["id"] <= 0
+                    or str(row.get("app_id")) != config.app_id):
+                raise GitHubAppError("App installation inventory returned the wrong App or installation")
+            if row["id"] in installations:
+                raise GitHubAppError("App installation inventory repeated an installation")
+            installations[row["id"]] = row
+        if len(rows) < 100:
+            return list(installations.values())
+    raise GitHubAppError("App installation inventory is incomplete")
+
+
 def _request_app_login(config: GitHubAppConfig, *, now: int) -> str:
     request = urllib.request.Request(
         f"{config.api_url}/app",
@@ -563,6 +589,14 @@ def github_app_installation_metadata(
     payload = _installation_payload(config, now=int(time.time() if now is None else now))
     permissions = payload.get("permissions")
     account = payload.get("account")
+    suspended_at = payload.get("suspended_at")
+    if suspended_at is not None:
+        try:
+            suspended = datetime.fromisoformat(suspended_at.replace("Z", "+00:00"))
+            if suspended.utcoffset() is None:
+                raise ValueError("missing timezone")
+        except (AttributeError, TypeError, ValueError) as error:
+            raise GitHubAppError("GitHub App suspension timestamp is malformed") from error
     if (
         not isinstance(permissions, dict)
         or any(not isinstance(key, str) or not key or not isinstance(value, str)
@@ -582,7 +616,8 @@ def github_app_installation_metadata(
         "account": {"login": account["login"], "type": account["type"]},
         "permissions": dict(permissions),
         "repository_selection": payload["repository_selection"],
-        "suspended": payload.get("suspended_at") is not None,
+        "suspended": suspended_at is not None,
+        "suspended_at": suspended_at,
     }
 
 

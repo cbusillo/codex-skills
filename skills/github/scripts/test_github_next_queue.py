@@ -26,7 +26,7 @@ def item(action: str = "Implement the missing export path.", state: str = "Activ
 
 
 def evidence() -> dict:
-    return {'complete': True, 'pulls': [], 'inventory': {'local_branches': [], 'remote_branches': [], 'worktrees': [], 'sessions': []},
+    return {'complete': True, 'pulls': [], 'inventory': {'local_branches': [], 'remote_branches': [], 'worktrees': []},
             'coverage': {'sessions': 'partial'}}
 
 
@@ -101,6 +101,15 @@ def test_claim_and_linked_pr_cannot_be_advertised_as_unclaimed_work() -> None:
     assert classify(row, observed)['state'] == 'underway'  # recorded source branch
     observed['pulls'][0]['head']['ref'] = 'work/unrelated'
     assert classify(row, observed)['state'] == 'available'
+    source = {**source, 'branch': 'work/issue-1-source'}
+    row['discussion']['comments'][0]['body'] = claim.marker(source)
+    row['discussion']['comments'][-1]['created_at'] = '2026-10-01T00:01:00Z'
+    observed['pulls'] = []
+    observed['inventory']['remote_branches'] = [source['branch']]
+    observed['inventory']['local_branches'] = [source['branch']]
+    assert classify(row, observed)['state'] == 'available'
+    row['discussion']['comments'].pop()
+    assert classify(row, observed)['state'] == 'underway'
 
 
 def test_current_qualification_does_not_hide_a_mixed_engineering_remainder() -> None:
