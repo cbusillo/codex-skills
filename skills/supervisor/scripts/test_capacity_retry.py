@@ -42,7 +42,8 @@ class CapacityTests(unittest.TestCase):
             self.assertEqual(stored[self.native_id]["phase"], "uncertain")
             capacity_retry.resume(self.entry, session_record.session_status(self.entry), stored, self.state_path, self.now + 200000)
             self.assertEqual(connect.call_count, 1)
-            self.assertTrue(capacity_retry.github_plan_closure.action_pending(self.native_id))
+            # The failure came on the read-only ownership check, before the lease marked any send.
+            self.assertFalse(capacity_retry.github_plan_closure.action_pending(self.native_id))
 
     def test_ownership_busy_before_send_does_not_spend_or_uncertainly_record_an_attempt(self):
         state = {}
@@ -86,6 +87,8 @@ class CapacityTests(unittest.TestCase):
         @asynccontextmanager
         async def connection(home, **_kwargs):
             async def request(method, params):
+                if method == "thread/read":
+                    return {"thread": {"id": params["threadId"], "path": str(self.transcript), "status": {"type": "idle"}}}
                 self.assertEqual(method, "thread/queue/add")
                 self.queue_hook()
                 self.queue_requests.append(params)

@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager, contextmanager, redirect_stdout
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import github_plan_native as NATIVE
 import github_plan_closure as CLOSURE
@@ -1276,10 +1276,17 @@ class NativeQueueTests(unittest.TestCase):
         import sys
         import uuid
         from test_codex_session import SESSION
+        original_connect = aiohttp.ClientSession.ws_connect
         for error in (aiohttp.ClientConnectionError("synthetic transport failure"), asyncio.CancelledError()):
             with self.subTest(error=type(error).__name__), ReceiptFixture(str(uuid.uuid4())) as f:
                 output = io.StringIO()
-                with patch.object(aiohttp.ClientSession, "ws_connect", side_effect=error) as connect, \
+                connects = []
+                def connect(client, *args, failure=error, **kwargs):
+                    connects.append(args)
+                    if len(connects) == 1:
+                        return original_connect(client, *args, **kwargs)
+                    raise failure
+                with patch.object(aiohttp.ClientSession, "ws_connect", autospec=True, side_effect=connect), \
                         patch.object(sys, "argv", ["codex-session.py", "queue", "--session-id", f.session,
                             "--codex-home", str(f.home), "--message", "synthetic private input"]), redirect_stdout(output):
                     if isinstance(error, asyncio.CancelledError):
@@ -1287,7 +1294,8 @@ class NativeQueueTests(unittest.TestCase):
                     else:
                         self.assertEqual(SESSION.main(), 1)
                         self.assertFalse(json.loads(output.getvalue())["ok"])
-                    self.assertEqual(connect.call_count, 1)
+                    # One read-only ownership connection, then one queue attempt and no replay.
+                    self.assertEqual(len(connects), 2)
                     self.assertTrue(CLOSURE.action_pending(f.session))
                 self.assertNotIn("synthetic private input", output.getvalue())
                 self.assertFalse(f.mutations)
@@ -1297,11 +1305,18 @@ class NativeQueueTests(unittest.TestCase):
         import sys
         import uuid
         from test_codex_session import SESSION
+        original_receive = aiohttp.ClientWebSocketResponse.receive
         for kind in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.BINARY):
             with self.subTest(kind=kind), ReceiptFixture(str(uuid.uuid4())) as f:
                 output = io.StringIO()
                 frame = aiohttp.WSMessage(kind, b"synthetic private wire data", None)
-                with patch.object(aiohttp.ClientWebSocketResponse, "receive", new=AsyncMock(return_value=frame)), \
+                ownership_reads = []
+                async def receive(ws, *args, nontext=frame, **kwargs):
+                    ownership_reads[:] = ownership_reads or [ws]
+                    if ws is ownership_reads[0]:
+                        return await original_receive(ws, *args, **kwargs)
+                    return nontext
+                with patch.object(aiohttp.ClientWebSocketResponse, "receive", new=receive), \
                         patch.object(sys, "argv", ["codex-session.py", "queue", "--session-id", f.session,
                             "--codex-home", str(f.home), "--message", "synthetic input"]), redirect_stdout(output):
                     self.assertEqual(SESSION.main(), 1)
@@ -1499,6 +1514,24 @@ class NativeQueueTests(unittest.TestCase):
             self.assertNotIn("input", result)
             self.assertNotIn(json.dumps(text), json.dumps(result))
             self.assertEqual(len(sent), 1)
+
+    def test_queue_goes_only_to_the_home_whose_daemon_has_the_thread_loaded(self):
+        import sys
+        import uuid
+        with ReceiptFixture(str(uuid.uuid4())) as f:
+            from test_codex_session import SESSION
+            # Both homes reach the transcript, as account homes sharing one sessions directory do.
+            other = f.root / "other-account"
+            f.add_home(other)
+            f.home_states[str(other.resolve())] = "notLoaded"
+            for home, owner in ((other, False), (f.home, True)):
+                output = io.StringIO()
+                with self.subTest(owner=owner), patch.object(sys, "argv", ["codex-session.py", "queue", "--session-id",
+                        f.session, "--codex-home", str(home), "--message", "synthetic input"]), redirect_stdout(output):
+                    self.assertEqual(SESSION.main(), 0 if owner else 1)
+                    self.assertEqual(json.loads(output.getvalue())["ok"], owner)
+                    self.assertEqual(CLOSURE.action_pending(f.session), owner)
+            self.assertEqual([home for home, method in f.home_requests if method == "thread/queue/add"], [str(f.home)])
 
     def test_queue_submission_exit_failure_is_private_uncertainty_without_replay(self):
         import sys

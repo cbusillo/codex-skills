@@ -267,12 +267,23 @@ def _queue_outcome(operation):
         raise ValueError(f"queue {operation} is uncertain; preserve state and do not replay") from error
 
 
+async def require_loaded_thread(request, session, home):
+    """Only the daemon that has the thread loaded delivers queued input to it."""
+    if (await read_thread(request, session))["state"] == "notLoaded":
+        raise ValueError(f"thread {session} is not loaded by the CODEX_HOME={home} daemon; "
+                         "queue through the home whose daemon runs it, or resume it first")
+
+
 async def queue_input(home: Path, session: str, text: str, *, transcript: Path | None = None):
     """Submit once; normalize post-send cancellation at the top-level CLI boundary."""
     from github_plan_sessions import native_helpers
     native_helpers()
     from codex_session_proxy import source_endpoint
     source_endpoint(session, home, transcript=transcript)
+    # Account homes may share one sessions directory, so a transcript cannot
+    # say which daemon owns the thread. Ask the daemon before taking the lease.
+    async with connection(home) as request:
+        await require_loaded_thread(request, session, home)
     client_id = str(uuid.uuid4())
     params = {"threadId": session, "clientUserMessageId": client_id,
               "input": [{"type": "text", "text": text, "text_elements": []}]}

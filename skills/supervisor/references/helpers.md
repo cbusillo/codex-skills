@@ -1223,6 +1223,13 @@ uv run skills/supervisor/scripts/codex-session.py status --session-id <native-id
 
 Native resume and queue mutations are routed through these helpers by command policy.
 
+Before it takes the lease, queue asks the `--codex-home` daemon to read the
+thread and refuses, with nothing written, unless that daemon has it loaded.
+Account homes can share one sessions directory, so a transcript does not show
+which home runs the thread; only the running home's daemon delivers queued
+input. Take the home from the ledger's `codex_home`. Resume a stopped session
+before queueing to it.
+
 Queue submission reports success only after its acknowledgement and connection
 and ownership cleanup complete. Once submission may have started, any failure,
 including timeout or cancellation during cleanup, reports uncertainty with
