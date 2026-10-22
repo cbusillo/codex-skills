@@ -6,6 +6,7 @@
 #     "aiohttp==3.14.5",
 #     "tree-sitter==0.26.0",
 #     "tree-sitter-bash==0.25.1",
+#     "tree-sitter-javascript==0.25.0",
 # ]
 # ///
 """Compact GitHub issue planning helper for Codex skills."""
@@ -3544,18 +3545,39 @@ def claim_once(args: argparse.Namespace) -> None:
         raise
     claim_id = (claim_comment.get("comment") or {}).get("id")
     # Name the supported release here so a finishing worker never hand-writes the directive.
-    release_route = ({"release_command": shlex.join([
-        "uv", "run", str(pathlib.Path(__file__).resolve()), "--repo", issue_repo, "release", str(number),
-        "--claim-comment", str(claim_id), "--session", claim["session"], "--handoff-file", "<handoff.md>"])}
-        if claim_id else {})
-    emit({"ok": True, "actor": actor, "record_kind": record_kind, "claim": claim, "claim_comment": claim_comment, **release_route,
-          "issue": compact_issue(final),
-          "current_status_location": "issue_body" if can_update else "claim_comment",
-          "previous_current_status": previous_status,
-          "retained_artifacts": [entry for entry in ended_owners if entry.get("worktrees") or entry.get("pull_requests")
-                                 or entry["branch"] in inventory["local_branches"] or entry["branch"] in inventory["remote_branches"]],
-          "lease_minutes": github_plan_lease.lease_minutes(), "exclusive_lock": False,
-          "completed_steps": completed})
+    release_route = (
+        {
+            "release_command": github_plan_claim_log.release_command(
+                pathlib.Path(__file__).resolve(), issue_repo, number, claim_id, claim["session"]
+            )
+        }
+        if claim_id
+        else {}
+    )
+    emit(
+        {
+            "ok": True,
+            "actor": actor,
+            "record_kind": record_kind,
+            "claim": claim,
+            "claim_comment": claim_comment,
+            **release_route,
+            "issue": compact_issue(final),
+            "current_status_location": "issue_body" if can_update else "claim_comment",
+            "previous_current_status": previous_status,
+            "retained_artifacts": [
+                entry
+                for entry in ended_owners
+                if entry.get("worktrees")
+                or entry.get("pull_requests")
+                or entry["branch"] in inventory["local_branches"]
+                or entry["branch"] in inventory["remote_branches"]
+            ],
+            "lease_minutes": github_plan_lease.lease_minutes(),
+            "exclusive_lock": False,
+            "completed_steps": completed,
+        }
+    )
 
 
 def automatic_planning_writes_allowed() -> bool:

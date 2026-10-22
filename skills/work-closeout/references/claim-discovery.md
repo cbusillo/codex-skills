@@ -13,8 +13,20 @@ write stays conditional. The report lists `unresolved_invocations` with its
 session, transcript, call ID and recovery, while still verifying every known
 target. Restore the missing native command/output on the claiming host. A
 plain nonzero exit or traceback never proves that an old helper did not post.
-Only structured native denials or explicit helper prewrite outcomes do that.
-Raw JavaScript does not prove how often a bare claim command executed. Use an
+Structured native denials and explicit helper prewrite outcomes prove refusal.
+A single literal shell call wrapped in `text(await ...)`, `text((await
+...).output)` or `const result = await ...; text(result)` can use its own
+receipt or prewrite refusal. Its options must be literal and its shell must
+contain only claim invocations. Successful receipts still identify targets
+whose claims need exact releases. Additional commands or possible repetitions
+cannot borrow that refusal.
+A shortened helper display can retain its target through the structured
+`release_command` field when it is the helper's canonical `uv run gh-plan.py`
+release route with an exact repository, positive record/comment IDs, matching
+native session and handoff placeholder. This adds a target to verify; it never
+proves release or excuses other execution. A conflicting full receipt refuses.
+Missing or noncanonical target data still refuses; prose is not a release route.
+Other raw JavaScript does not prove how often a bare claim command executed. Use an
 explicit `--repo OWNER/REPO` or qualified record reference in literal commands;
 those targets remain bounded even inside loops. Bare or computed JavaScript
 claims, unsupported executable shell payloads and unresolved template interpolations stay
@@ -28,22 +40,99 @@ Interactive input and command strings passed to unclassified launchers cannot
 prove complete claim coverage. Their known receipts are still checked. Keep
 the claiming host's journal and complete native lineage when using remote shells.
 
-Code-mode templates can expand a leading literal `for (const n of [1,2])` loop's
-first shell call, or a leading constant literal array passed immediately through
-`Promise.all` or `Promise.allSettled` to `map`. Only the directly bound name may
-be interpolated, and every value must be a plain shell word under the same
-bounds as literal shell loops. Each expanded command stays a separate shell
-execution and goes through claim discovery and canonical release checks. Map
-arrays and parameters must have no other code references; direct `eval` stays
-conditional. Command objects with duplicate command fields, spreads, computed
-keys or accessors also stay conditional. Other statements before the call,
-mutations, additional template substitutions, escaped identifiers, escaped keys,
-escaped array values or templates, inexact numeric values and shell syntax in
-values keep the invocation conditional. Quoted commands support only escapes
-shared by JavaScript and Python, including quoted newlines and hexadecimal or
-four-digit Unicode escapes. Use a plain command key and keep unrelated template
-substitutions in a separate code cell. This is literal
-decoding, never JavaScript execution.
+The exact native zero-time `Script failed` / `SyntaxError: Invalid or unexpected
+token` result proves no execution only for one supported literal shell-call
+wrapper, or a complete sequence of text-wrapped literal shell calls, with an
+unescaped physical newline inside an ordinary quoted string. That
+string cannot parse in either a script or module. Template newlines and escaped
+line continuations do not supply that proof. Other failures, runtime `eval`
+errors and differences between JavaScript engines stay conditional. Known
+receipt targets are still checked; no recorded JavaScript is executed.
+
+Command fields and their literal bindings use the same syntax tree. The reader
+expands immutable constant strings/arrays, literal `for-of` loops, and maps of
+literal arrays, including destructured tuple parameters and numeric map indices.
+Template substitutions support plain string/integer bindings and exact integer
+addition, under the existing literal shell word and expansion bounds. Workdir
+or output templates do not change the command's bindings. Each expanded command
+goes through shell discovery and canonical release checks. Unknown bindings,
+inexact integers, expansion overflow, unshared string escapes and escaped
+templates stay conditional. Duplicate command fields, spreads, computed keys
+and accessors also stay conditional. Quoted command strings support only escapes
+shared by JavaScript and Python. This is literal decoding, never execution.
+
+In claim-related code-mode cells, a Tree-sitter JavaScript syntax tree checks
+that every effect belongs to a bounded data language. It accepts direct native
+shell/output calls, literal arrays, plain loops and conditions, and immutable
+native or JSON data reads. Read-only string/array methods support the recorded
+JSON parsing, filtering, mapping and output-formatting shapes. Inline callbacks
+are checked under their own data bindings. Calls are limited to supported
+non-constructor builtins and checked inline callbacks; callback references stay
+conditional except `forEach(text)`. Function literals cannot enter data directly.
+Only numeric `let` counters may be incremented. Explicit property writes,
+mutating method names and loop assignment targets stay conditional. Literal
+arrays used to decode targets remain immutable. Prototype/constructor access, capability aliases, unknown calls,
+named functions, executable options, computed callees, regex/division syntax,
+identifier escapes and unsupported syntax keep coverage conditional. A parse
+error alone never proves nonexecution. The reader assumes native results,
+`load` values and tool metadata obey the harness's serializable-data contract;
+the existing stored-claim check still covers later `load` cells. Use direct
+literal shell calls and `text(result)` outside this subset. Known shell calls
+and their argument objects come from syntax-tree locations, including recovered
+nodes in unbounded cells. Any code-mode cell outside the bounded subset retains
+pending interactive claim uncertainty, including aliases, computed constructors
+and escaped shorthand keys. Every decoded target remains subject to release
+verification even when the surrounding cell is conditional.
+
+`interactive_uncertain` means a prior invocation could have left claim input in
+an interactive process and this later cell is outside that subset. Complete
+output alone does not resolve it. Preserve the originating command, process
+session ID and subsequent input/output on the owning issue; keep coverage
+conditional when that evidence cannot establish it. The existing Director-decision
+route applies to irrecoverable older evidence. For new cells, use the supported
+direct literal shell calls and `text(result)`; use `.includes` for plain string
+filters. Literal string replacement arguments are also supported, including
+bounded output filenames derived from literal command lists or object entries.
+
+Process IDs alone do not establish an input channel. Starting with stable Codex
+0.87.0, non-PTY `exec_command` uses closed stdin; see the upstream
+[process manager](https://raw.githubusercontent.com/openai/codex/rust-v0.87.0/codex-rs/core/src/unified_exec/process_manager.rs)
+and [pipe implementation](https://raw.githubusercontent.com/openai/codex/rust-v0.87.0/codex-rs/utils/pty/src/pipe.rs).
+The reader admits this contract only when every native session metadata record
+has a supported stable version. Earlier, missing, malformed or prerelease
+versions remain conservative. A bounded code-mode cell cannot seed input
+uncertainty when every shell call has a plain argument object, known option
+names and absent or literal `tty:false`; empty `write_stdin` polls also cannot
+introduce claim input. Duplicates, spreads, escaped or computed keys, unknown
+TTY values, other shell APIs, borrowed `load` results and opaque code retain
+conservative coverage. One-shot shell APIs keep their existing result rules.
+Possible TTY launches seed uncertainty even if their process ID was not printed
+or their runtime metadata is missing. Explicit claim input remains subject to the
+existing checks. This proof concerns native `write_stdin`, not files or sockets.
+
+A structurally terminal native `CommandExecution` event, or the supported native
+parse-failure proof, cannot initiate a new interactive context. Neither clears
+an earlier possible context. Printed exit codes never retire one. A non-PTY
+claim with an unknown target still needs a conclusive receipt; known targets
+require GitHub verification. Closed stdin never proves that a claim was not written.
+
+Known targets also need evidence that their attempt ended before GitHub is read.
+An unfinished native process, missing terminal result, background Bash task or
+asynchronous shell claim stays conditional even when its repository is known.
+A bound canonical helper outcome ends that helper attempt; an unknown write
+outcome still requires checking its known target on GitHub. A terminal result
+belongs only to a whole native result, not printed stdout or a projected exit
+field. Later polls can finish their originating process only while its
+process generation remains unambiguous. Earlier polls, reused IDs and partially
+printed intervening launches cannot supply that proof.
+
+For bounded wrappers that project or combine results, native terminal events
+can prove completion when the exact command started during that wrapper's
+recorded timestamp interval, belongs to the same native session and matches
+the full possible execution count. Overlapping or still-yielded tool calls,
+unbounded repetitions, missing timestamps, foreign events and duplicate event
+IDs cannot satisfy that proof. Literal loops and callbacks reuse the existing
+bounded literal expansion; no historical code is executed.
 
 A shell variable assigned once to a literal value at the top level, and a `for`
 loop over literal words, expand into exact claim targets, so

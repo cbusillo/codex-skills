@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["tree-sitter==0.26.0", "tree-sitter-bash==0.25.1"]
+# dependencies = ["tree-sitter==0.26.0", "tree-sitter-bash==0.25.1", "tree-sitter-javascript==0.25.0"]
 # ///
 from __future__ import annotations
 
@@ -9,14 +9,32 @@ import json
 import re
 import shlex
 import sqlite3
+from collections import Counter
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
+from typing import NamedTuple
 
 import claim_history
+import claim_javascript
 import github_plan_claim_log as claim_log
 import tree_sitter_bash
 from tree_sitter import Language, Node, Parser
+
+CLOSED_STDIN_SINCE = (0, 87, 0)
+UNFINISHED_CLAIM = "unfinished_claim"
+
+
+def closed_stdin_runtime(records: list[dict]) -> bool:
+    versions = [row.get("payload") for row in records if row.get("type") == "session_meta"]
+    return bool(versions) and all(
+        isinstance(payload, dict)
+        and isinstance(version := payload.get("cli_version"), str)
+        and re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", version) is not None
+        and tuple(map(int, version.split("."))) >= CLOSED_STDIN_SINCE
+        for payload in versions
+    )
 
 
 def values(value: object) -> Iterator[dict]:
@@ -291,6 +309,33 @@ def expand(entries: list[dict]) -> list[dict]:
     return expanded
 
 
+def projected_release_target(value: dict, session: str) -> tuple[str, int] | None:
+    command = value.get("release_command")
+    if not isinstance(command, str):
+        return None
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        return None
+    if len(argv) != 13 or Path(argv[0]).name != "uv" or argv[1] != "run" or Path(argv[2]).name != "gh-plan.py":
+        return None
+    arguments = argv[3:]
+    if arguments[::2] != ["--repo", "release", "--claim-comment", "--session", "--handoff-file"]:
+        return None
+    if (
+        arguments[7] != session
+        or any(re.fullmatch(r"[1-9][0-9]*", arguments[index]) is None for index in (3, 5))
+        or arguments[9] != "<handoff.md>"
+    ):
+        return None
+    receipt = value.get("claim_comment")
+    if isinstance(receipt, dict):
+        comment = receipt.get("comment", receipt)
+        if isinstance(comment, dict) and "id" in comment and comment["id"] != int(arguments[5]):
+            raise ValueError("recorded claim comment IDs disagree")
+    return claim_log.target({"session": session, "repository": arguments[1], "record": int(arguments[3])}, session)
+
+
 def claim_target(value: dict, session: str) -> tuple[str, int] | None:
     source = value.get("claim")
     if not isinstance(source, dict) or source.get("session") != session:
@@ -299,9 +344,17 @@ def claim_target(value: dict, session: str) -> tuple[str, int] | None:
     record = value.get("issue") or receipt
     if not isinstance(record, dict) or not isinstance(receipt, dict):
         raise ValueError("recorded claim result has an invalid target")
+    projected = projected_release_target(value, session)
+    if projected is not None and (
+        (record.get("repo") is not None and record["repo"] != projected[0])
+        or (record.get("number") is not None and record["number"] != projected[1])
+    ):
+        raise ValueError("recorded claim targets disagree")
     if record.get("repo") and record.get("number"):
         return claim_log.target({"session": session, "repository": record["repo"], "record": record["number"]}, session)
-    if receipt or "post_claim" in value.get("completed_steps", []):
+    if projected is not None:
+        return projected
+    if receipt or "post_claim" in value.get("completed_steps", []) or "release_command" in value:
         raise ValueError("recorded claim write lacks its repository and record number")
     return None
 
@@ -320,22 +373,34 @@ def execution_item(row: dict) -> dict:
     return item if isinstance(item, dict) and item.get("type") == "CommandExecution" else {}
 
 
-def tool_inputs(records: list[dict]) -> Iterator[tuple[str, str, bool]]:
-    for row in records:
+class ToolCall(NamedTuple):
+    identifier: str
+    text: str
+    javascript: bool
+    name: str
+    index: int
+
+
+def tool_details(records: list[dict]) -> Iterator[ToolCall]:
+    for index, row in enumerate(records):
         item = execution_item(row)
         if item and "command" in item:
-            yield "command:" + str(item.get("id", "")), json.dumps({"command": item["command"]}), False
+            yield ToolCall("command:" + str(item.get("id", "")), json.dumps({"command": item["command"]}), False, "command", index)
         payload = row.get("payload")
         if isinstance(payload, dict) and payload.get("type") == "local_shell_call":
-            yield str(payload.get("call_id", "")), json.dumps(payload.get("action") or {}), False
+            yield ToolCall(
+                str(payload.get("call_id", "")), json.dumps(payload.get("action") or {}), False, "local_shell_call", index
+            )
         if isinstance(payload, dict) and payload.get("type") in {"function_call", "custom_tool_call"}:
             name = str(payload.get("name", "")).split(".")[-1].casefold()
             if name in {"exec", "exec_command", "bash", "write_stdin", "shell_command", "shell"}:
                 raw = payload.get("arguments", payload.get("input", ""))
-                yield (
+                yield ToolCall(
                     str(payload.get("call_id", "")),
                     raw if isinstance(raw, str) else json.dumps(raw),
                     name == "exec" and payload["type"] == "custom_tool_call",
+                    name,
+                    index,
                 )
         content = (row.get("message") or {}).get("content", [])
         if isinstance(content, list):
@@ -343,7 +408,12 @@ def tool_inputs(records: list[dict]) -> Iterator[tuple[str, str, bool]]:
                 if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") == "Bash":
                     command = (block.get("input") or {}).get("command")
                     if isinstance(command, str):
-                        yield str(block.get("id", "")), command, False
+                        yield ToolCall(str(block.get("id", "")), command, False, "bash", index)
+
+
+def tool_inputs(records: list[dict]) -> Iterator[tuple[str, str, bool]]:
+    for identifier, text, javascript, _, _ in tool_details(records):
+        yield identifier, text, javascript
 
 
 def denied_invocations(records: list[dict]) -> set[str]:
@@ -362,7 +432,7 @@ def denied_invocations(records: list[dict]) -> set[str]:
     return denied
 
 
-def tool_outputs(records: list[dict]) -> dict[str, list[object]]:
+def tool_outputs(records: list[dict], *, followups: bool = True) -> dict[str, list[object]]:
     outputs: dict[str, list[object]] = {}
     for row in records:
         item = execution_item(row)
@@ -384,130 +454,43 @@ def tool_outputs(records: list[dict]) -> dict[str, list[object]]:
             for block in content:
                 if isinstance(block, dict) and block.get("type") == "tool_result":
                     outputs.setdefault(str(block.get("tool_use_id", "")), []).append(block.get("content"))
-    inputs = {identifier: text for identifier, text, _ in tool_inputs(records)}
+    if not followups:
+        return outputs
+    inputs = {identifier: (text, javascript, name, index) for identifier, text, javascript, name, index in tool_details(records)}
     recorded = {identifier: list(blocks) for identifier, blocks in outputs.items()}
-    followups: dict[str, list[tuple[int, str]]] = {}
-    for order, (identifier, text) in enumerate(inputs.items()):
-        for match in re.finditer(r"session_id[\"']?\s*:\s*(-?\d+)(?!\d)", text):
-            followups.setdefault(match[1], []).append((order, identifier))
-    for identifier, blocks in recorded.items():
-        yielded = {item["session_id"] for block in blocks for item in values(block) if type(item.get("session_id")) is int}
-        polls = {poll for process in yielded for poll in followups.get(str(process), [])}
-        for _, followup in sorted(polls):
-            if followup != identifier:
-                outputs[identifier].extend(recorded.get(followup, []))
+    for identifier in recorded:
+        for followup in ordered_polls(identifier, inputs, recorded):
+            outputs[identifier].extend(recorded.get(followup, []))
     return outputs
 
 
-def command_literal(text: str, start: int, literal: str) -> list[str] | None:
-    tokens = [match[0] for match in re.finditer(literal + r"|[A-Za-z_$][A-Za-z0-9_$]*|[^\s]", text[start:])]
-    if not tokens or tokens[0] != "{":
-        return None
+JAVASCRIPT_LITERAL = r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|`(?:\\.|[^`\\])*`'
+JAVASCRIPT_COMMENT = r"//[^\r\n\u2028\u2029]*|/\*.*?\*/|#![^\r\n\u2028\u2029]*"
+
+CLAIM_WORD = re.compile(r"""(?:^|[\s'"`])claim(?:$|[\s'"`])""")
+JAVASCRIPT_PATCH = re.compile(r"\btools\.apply_patch\s*\(\s*(?:" + JAVASCRIPT_LITERAL + r")\s*\)", re.DOTALL)
+
+
+def javascript_tokens(text: str) -> list[str]:
+    return [
+        token
+        for token in re.findall(
+            JAVASCRIPT_LITERAL + "|" + JAVASCRIPT_COMMENT + r"|[A-Za-z_$][A-Za-z0-9_$]*|[0-9]+|[^\s]", text, re.DOTALL
+        )
+        if not token.startswith(("//", "/*", "#!"))
+    ]
+
+
+def javascript_object_end(tokens: list[str]) -> int | None:
     depth = 0
-    field_start = 1
-    fields = []
     for index, token in enumerate(tokens):
         if token in {"{", "[", "("}:
             depth += 1
         elif token in {"}", "]", ")"}:
             depth -= 1
             if depth == 0:
-                fields.append(tokens[field_start:index])
-                break
-        if depth == 1 and token == ",":
-            fields.append(tokens[field_start:index])
-            field_start = index + 1
-    else:
-        return None
-    command = None
-    for field in fields:
-        if not field:
-            continue
-        key = field[0]
-        if re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", key) is None:
-            if "\\" in key:
-                return None
-            try:
-                key = ast.literal_eval(key)
-            except (SyntaxError, ValueError):
-                return None
-        if len(field) == 1 and key not in {"cmd", "command", "chars"}:
-            continue
-        if field[1:2] != [":"]:
-            return None
-        if key not in {"cmd", "command", "chars"}:
-            continue
-        if command is not None or len(field) != 3 or re.fullmatch(literal, field[2], re.DOTALL) is None:
-            return None
-        value = field[2]
-        if value.startswith("`"):
-            command = literal_template(text, start, value)
-            if command is None:
-                return None
-            continue
-        if re.fullmatch(r"(?:[^\\]|\\(?:[\\\"'nrtbfv]|x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}))*", value) is None:
-            return None
-        try:
-            command = [ast.literal_eval(value)]
-        except (ValueError, SyntaxError):
-            return None
-    return command
-
-
-JAVASCRIPT_LITERAL = r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|`(?:\\.|[^`\\])*`'
-CLAIM_WORD = re.compile(r"""(?:^|[\s'"`])claim(?:$|[\s'"`])""")
-JAVASCRIPT_PATCH = re.compile(r"\btools\.apply_patch\s*\(\s*(?:" + JAVASCRIPT_LITERAL + r")\s*\)", re.DOTALL)
-
-
-def literal_template(text: str, start: int, template: str) -> list[str] | None:
-    if "\\" in template:
-        return None
-    body = template[1:-1].replace("\r\n", "\n").replace("\r", "\n")
-    if "${" not in body:
-        return [body]
-    if text.count("${") != template.count("${"):
-        return None
-    tokens = re.findall(JAVASCRIPT_LITERAL + r"|//[^\n]*|/\*.*?\*/|[A-Za-z_$][A-Za-z0-9_$]*|[0-9]+|[^\s]", text[:start], re.DOTALL)
-    code = " ".join(token for token in tokens if not token.startswith(("//", "/*")))
-    binding = r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)"
-    array = r"\[ (?P<values>.+?) \]"
-    call = r"tools \. (?:exec_command|shell_command|shell) \("
-    match = re.fullmatch(r"for \( const " + binding + r" of " + array + r" \) \{ (?:const \w+ = )?(?:text \( )?await " + call, code)
-    if match is None:
-        match = re.fullmatch(
-            r"const (?P<array>[A-Za-z_]\w*) = "
-            + array
-            + r" ; (?:const \w+ = )?(?:text \( )?await Promise \. (?:all|allSettled) \( (?P=array) \. map \( "
-            + binding
-            + r" = > "
-            + call,
-            code,
-        )
-    if match is None or "\\" in match["values"]:
-        return None
-    names = re.findall(JAVASCRIPT_LITERAL + r"|//[^\n]*|/\*.*?\*/|(?P<name>[A-Za-z_$][A-Za-z0-9_$]*|\\)", text, re.DOTALL)
-    if "\\" in names:
-        return None
-    if "eval" in names or ("array" in match.re.groupindex and (names.count(match["array"]) != 2 or names.count(match["name"]) != 1)):
-        return None
-    try:
-        values = ast.literal_eval("[" + match["values"] + "]")
-    except (SyntaxError, ValueError):
-        return None
-    if not isinstance(values, list) or not 0 < len(values) <= LITERAL_LOOP_VALUES:
-        return None
-    if any(
-        type(value) not in {str, int}
-        or (type(value) is int and abs(value) > (1 << 53) - 1)
-        or not LITERAL_SHELL_VALUE.fullmatch(str(value))
-        for value in values
-    ):
-        return None
-    marker = "${" + match["name"] + "}"
-    if "${" in body.replace(marker, ""):
-        return None
-    commands = [body.replace(marker, str(value)) for value in values]
-    return commands if sum(len(command.encode()) for command in commands) <= LITERAL_EXPANSION_BYTES else None
+                return index
+    return None
 
 
 def without_patch_text(text: str) -> str:
@@ -516,12 +499,322 @@ def without_patch_text(text: str) -> str:
 
 def javascript_names(text: str) -> set[str]:
     names = set()
-    for match in re.finditer(JAVASCRIPT_LITERAL + r"|//[^\n]*|/\*.*?\*/|(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)", text, re.DOTALL):
+    for match in re.finditer(
+        JAVASCRIPT_LITERAL + "|" + JAVASCRIPT_COMMENT + r"|(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)", text, re.DOTALL
+    ):
         if match["name"]:
             names.add(match["name"])
         elif match[0].startswith("`") and "${" in match[0]:
             names.update(re.findall(r"\b(?:store|load)\b", match[0]))
     return names
+
+
+def single_javascript_shell(text: str, *, whole_result: bool = False, stdin: bool = False) -> bool:
+    literal = r"(?:" + JAVASCRIPT_LITERAL + r")"
+    value = r"(?:" + literal + r"|[0-9]+|true|false)"
+    key = (
+        r"(?:session_id|chars|yield_time_ms|max_output_tokens)"
+        if stdin
+        else r"(?:cmd|command|workdir|yield_time_ms|max_output_tokens|login|tty)"
+    )
+    field = r"(?:" + key + r"|\"" + key + r"\"|'" + key + r"') : " + value
+    tokens = javascript_tokens(text)
+    if any(token.startswith("`") and "${" in token for token in tokens):
+        return False
+    code = " ".join(tokens)
+    method = r"write_stdin" if stdin else r"(?:exec_command|shell_command|shell)"
+    call = r"tools \. " + method + r" \( \{ " + field + r"(?: , " + field + r")* \} \)"
+    projection = "" if whole_result else r"(?: \. output)?"
+    return any(
+        re.fullmatch(prefix + call + suffix, code) is not None
+        for prefix, suffix in (
+            (r"text \( await ", r" \)(?: ;)?"),
+            *(([(r"text \( \( await ", r" \) \. output \)(?: ;)?")]) if not whole_result else []),
+            (r"const (?P<result>[A-Za-z_]\w*) = await ", r" ; text \( (?P=result)" + projection + r" \)(?: ;)?"),
+        )
+    )
+
+
+def literal_javascript_shell_sequence(text: str, *, whole_result: bool = False) -> bool:
+    tokens = javascript_tokens(text)
+    while tokens:
+        if tokens[:2] != ["text", "("]:
+            return False
+        end = javascript_object_end(tokens[1:])
+        if end is None or not single_javascript_shell(" ".join(tokens[: end + 2]), whole_result=whole_result):
+            return False
+        tokens = tokens[end + 2 :]
+        if tokens[:1] == [";"]:
+            tokens = tokens[1:]
+    return True
+
+
+def native_results(blocks: list[object]) -> list[dict]:
+    results = []
+    for block in blocks:
+        parts = block if isinstance(block, list) else [block]
+        for part in parts:
+            if isinstance(part, dict) and part.get("type") in {"input_text", "text"}:
+                part = part.get("text")
+            if isinstance(part, str):
+                try:
+                    part = json.loads(part)
+                except ValueError:
+                    header = re.match(
+                        r"(?:Warning: truncated output \(original token count: \d+\)\n)?"
+                        r"(?:Total output lines: \d+\n\n)?(?:Chunk ID: [^\n]+\n)?"
+                        r"Wall time: [0-9.]+ seconds\n"
+                        r"(?:Process exited with code (?P<exit>-?\d+)\n)?"
+                        r"(?:Process running with session ID (?P<process>-?\d+)\n)?"
+                        r"(?:Original token count: \d+\n)?Output:",
+                        part,
+                    )
+                    if header is None:
+                        continue
+                    part = {
+                        "exit_code": int(header["exit"]) if header["exit"] is not None else None,
+                        "session_id": int(header["process"]) if header["process"] is not None else None,
+                    }
+            if isinstance(part, dict):
+                results.append(part)
+    return results
+
+
+def whole_shell_result(text: str, javascript: bool, name: str) -> bool:
+    return (
+        (
+            single_javascript_shell(text, whole_result=True)
+            or single_javascript_shell(text, whole_result=True, stdin=True)
+            or literal_javascript_shell_sequence(text, whole_result=True)
+        )
+        if javascript
+        else name in {"exec_command", "write_stdin"}
+    )
+
+
+def poll_process(text: str, javascript: bool, name: str) -> int | None:
+    try:
+        if javascript:
+            if not single_javascript_shell(text, stdin=True):
+                return None
+            bounded, sites = claim_javascript.analyse(text)
+            if not bounded or len(sites) != 1:
+                return None
+            fields = claim_javascript.children(claim_javascript.children(sites[0][0])[0])
+            options = {}
+            for member in fields:
+                key = claim_javascript.property_name(member.child_by_field_name("key"))
+                if key in options:
+                    return None
+                options[key] = ast.literal_eval(claim_javascript.source(member.child_by_field_name("value")))
+        elif name == "write_stdin":
+            pairs = json.loads(text, object_pairs_hook=list)
+            if not isinstance(pairs, list) or any(not isinstance(pair, tuple) or len(pair) != 2 for pair in pairs):
+                return None
+            options = dict(pairs)
+            if len(options) != len(pairs):
+                return None
+        else:
+            return None
+        process = options.get("session_id")
+        return process if type(process) is int else None
+    except (ValueError, TypeError, AttributeError, SyntaxError):
+        return None
+
+
+def ordered_polls(identifier: str, inputs: dict, outputs: dict) -> list[str]:
+    if identifier not in inputs:
+        return []
+    text, javascript, name, start = inputs[identifier]
+    if not whole_shell_result(text, javascript, name):
+        return []
+    processes = {
+        value["session_id"] for value in native_results(outputs.get(identifier, [])) if type(value.get("session_id")) is int
+    }
+    if not processes:
+        return []
+    polls = []
+    for other, (source, code, tool, index) in inputs.items():
+        if index <= start:
+            continue
+        if poll_process(source, code, tool) in processes:
+            polls.append(other)
+            continue
+        bounded, sites = claim_javascript.analyse(source) if code else (True, [])
+        launch = (
+            code and (not bounded or any(claim_javascript.shell_method(arguments) == "exec_command" for arguments, _ in sites))
+        ) or tool == "exec_command"
+        if not launch:
+            continue
+        results = native_results(outputs.get(other, [])) if whole_shell_result(source, code, tool) else []
+        visible = {value["session_id"] for value in results if type(value.get("session_id")) is int}
+        commands = shell_texts(source, code).commands
+        covered = bool(results) and len(results) == len(commands)
+        if (
+            visible & processes
+            or not covered
+            or any(type(value.get("exit_code")) is not int and type(value.get("session_id")) is not int for value in results)
+        ):
+            break
+    return polls
+
+
+def terminal_command(item: dict, text: str) -> bool:
+    command = item.get("command")
+    return command == text or (
+        isinstance(command, list)
+        and len(command) == 3
+        and all(isinstance(argument, str) for argument in command)
+        and Path(command[0]).name in SHELL_NAMES
+        and command[1] in {"-c", "-lc"}
+        and command[2] == text
+    )
+
+
+def window_completions(records: list[dict], inputs: dict, identifier: str, sources: ShellTexts, session: str) -> list[bool]:
+    text, javascript, name, start = inputs[identifier]
+    missing = [False] * len(sources.commands)
+    if not javascript and name != "exec_command":
+        return missing
+    responses = {
+        str(payload.get("call_id", "")): index
+        for index, row in enumerate(records)
+        if isinstance(payload := row.get("payload"), dict)
+        and payload.get("type") in {"function_call_output", "custom_tool_call_output", "local_shell_call_output"}
+    }
+    for row in records:
+        payload = row.get("payload") or {}
+        if payload.get("type") == "custom_tool_call_output" and "Script running with cell ID" in str(payload.get("output", "")):
+            responses.pop(str(payload.get("call_id", "")), None)
+    end = responses.get(identifier)
+    if end is None or any(
+        other != identifier and tool != "command" and index < end and responses.get(other, len(records)) > start
+        for other, (_, _, tool, index) in inputs.items()
+    ):
+        return missing
+    try:
+        stamp = datetime.fromisoformat(records[start]["timestamp"])
+        completed_stamp = datetime.fromisoformat(records[end]["timestamp"])
+        if stamp.tzinfo is None or completed_stamp.tzinfo is None:
+            return missing
+        started = stamp.timestamp() * 1000
+        returned = completed_stamp.timestamp() * 1000
+    except (KeyError, TypeError, ValueError):
+        return missing
+    if javascript:
+        bounded, sites = claim_javascript.analyse(text)
+        if not bounded:
+            return missing
+        expected = Counter()
+        for arguments, _ in sites:
+            commands = claim_javascript.literal_commands(
+                arguments, LITERAL_SHELL_VALUE, LITERAL_LOOP_VALUES, LITERAL_EXPANSION_BYTES, occurrences=True
+            )
+            if commands is None:
+                return missing
+            expected.update(commands)
+    else:
+        expected = Counter(source.text for source in sources.commands)
+    observed = Counter()
+    seen = set()
+    for row in records[start + 1 :]:
+        payload = row.get("payload") or {}
+        item = execution_item(row)
+        identity = item.get("id")
+        if (
+            row.get("type") != "event_msg"
+            or payload.get("type") != "item_completed"
+            or payload.get("thread_id") != session
+            or item.get("source") != "unified_exec_startup"
+            or item.get("status") not in {"completed", "failed"}
+            or type(item.get("exit_code")) is not int
+            or type(payload.get("started_at_ms")) is not int
+            or not started <= payload["started_at_ms"] <= returned
+            or not isinstance(identity, str)
+            or not identity
+            or identity in seen
+        ):
+            continue
+        seen.add(identity)
+        for command in expected:
+            if terminal_command(item, command):
+                observed[command] += 1
+    return [observed[source.text] >= expected[source.text] for source in sources.commands]
+
+
+def completed_sources(
+    records: list[dict], inputs: dict, outputs: dict, identifier: str, sources: ShellTexts, session: str
+) -> list[bool]:
+    text, javascript, name, _ = inputs[identifier]
+    own = outputs.get(identifier, [])
+    if name == "command":
+        ended = any(
+            row.get("type") == "event_msg"
+            and (row.get("payload") or {}).get("type") == "item_completed"
+            and "command:" + str((item := execution_item(row)).get("id", "")) == identifier
+            and item.get("status") in {"completed", "failed"}
+            and type(item.get("exit_code")) is int
+            for row in records
+        )
+        return [ended] * len(sources.commands)
+    if not javascript and name in {"bash", "local_shell_call", "shell", "shell_command"}:
+        background = any(value.get("backgroundTaskId") for block in own for value in values(block))
+        for row in records:
+            blocks = (row.get("message") or {}).get("content", [])
+            if not isinstance(blocks, list):
+                continue
+            if any(
+                isinstance(block, dict) and block.get("id") == identifier and (block.get("input") or {}).get("run_in_background")
+                for block in blocks
+            ):
+                background = True
+            if any(isinstance(block, dict) and block.get("tool_use_id") == identifier for block in blocks):
+                result = row.get("toolUseResult")
+                background = background or (isinstance(result, dict) and bool(result.get("backgroundTaskId")))
+        ended = bool(own) and not background
+        return [ended] * len(sources.commands)
+    window = window_completions(records, inputs, identifier, sources, session)
+    if not whole_shell_result(text, javascript, name):
+        return window
+    results = native_results(own)
+    if len(results) != len(sources.commands):
+        return window
+    flags = []
+    for source, result, completed in zip(sources.commands, results, window, strict=True):
+        ended = completed or (type(result.get("exit_code")) is int and not isinstance(result.get("session_id"), int))
+        process = result.get("session_id")
+        if type(process) is int:
+            for poll in ordered_polls(identifier, inputs, outputs):
+                poll_text, poll_js, poll_name, _ = inputs[poll]
+                if poll_process(poll_text, poll_js, poll_name) == process and (
+                    not poll_js or single_javascript_shell(poll_text, whole_result=True, stdin=True)
+                ):
+                    ended = ended or any(
+                        type(value.get("exit_code")) is int and value.get("session_id") is None
+                        for value in native_results(outputs.get(poll, []))
+                    )
+        flags.append(ended)
+    return flags
+
+
+def native_javascript_parse_failure(text: str, blocks: list[object]) -> bool:
+    messages = [
+        item["text"]
+        for block in blocks
+        if isinstance(block, list)
+        for item in block
+        if isinstance(item, dict) and item.get("type") == "input_text" and isinstance(item.get("text"), str)
+    ]
+    if len(messages) != 2 or messages[0] != "Script failed\nWall time 0.0 seconds\nOutput:\n":
+        return False
+    if messages[1] != "Script error:\nSyntaxError: Invalid or unexpected token" or not (
+        single_javascript_shell(text) or literal_javascript_shell_sequence(text)
+    ):
+        return False
+    return any(
+        token.startswith(('"', "'")) and re.search(r"[\r\n]", re.sub(r"\\(?:\r\n|\r|\n)", "", token)) is not None
+        for token in javascript_tokens(text)
+    )
 
 
 @dataclass
@@ -535,9 +828,12 @@ class ShellTexts:
     commands: list[ShellCommand]
     opaque: bool = False
     interactive_opaque: bool = False
+    stdin_closed: bool = False
+    stdin_possible: bool = False
+    exec_launch: bool = False
 
 
-def shell_texts(text: str, javascript: bool) -> ShellTexts:
+def shell_texts(text: str, javascript: bool, *, exec_command: bool = False) -> ShellTexts:
     if not javascript:
         try:
             decoded = json.loads(text)
@@ -546,36 +842,31 @@ def shell_texts(text: str, javascript: bool) -> ShellTexts:
         if isinstance(decoded, dict):
             command = decoded.get("cmd", decoded.get("command", decoded.get("chars")))
             commands = [ShellCommand(command_text(command), "chars" in decoded)] if command is not None else []
-            return ShellTexts(commands)
+            return ShellTexts(commands, stdin_possible=decoded.get("tty") is True, exec_launch=exec_command)
         return ShellTexts([ShellCommand(text)])
-    literal = JAVASCRIPT_LITERAL
-    reference = r"\btools\s*\[\s*['\"](?:exec_command|shell_command|shell|write_stdin)['\"]\s*\]|\b(?:exec_command|shell_command|write_stdin)\b|\btools\.shell\b|\bshell\s*\("
-    site = re.compile(
-        r"(?P<call>\btools\.(?:exec_command|shell_command|shell|write_stdin)\s*\()|(?P<reference>"
-        + reference
-        + r")|(?:"
-        + literal
-        + r")|(?://[^\n]*|/\*.*?\*/)",
-        re.DOTALL,
-    )
+    bounded, sites = claim_javascript.analyse(text)
     commands = []
-    opaque = False
-    interactive_opaque = False
-    for match in site.finditer(text):
-        if match["reference"] is not None:
+    opaque = not bounded
+    interactive_opaque = not bounded
+    for arguments, interactive in sites:
+        decoded = claim_javascript.literal_commands(arguments, LITERAL_SHELL_VALUE, LITERAL_LOOP_VALUES, LITERAL_EXPANSION_BYTES)
+        if decoded is None:
             opaque = True
-            interactive_opaque = interactive_opaque or "write_stdin" in match[0]
-        elif match["call"] is not None:
-            decoded = command_literal(text, match.end(), literal)
-            if decoded is None:
-                opaque = True
-                interactive_opaque = interactive_opaque or "write_stdin" in match[0]
-            else:
-                commands.extend(ShellCommand(command, "write_stdin" in match[0]) for command in decoded)
-        elif match[0].startswith("`") and "${" in match[0] and re.search(reference, match[0]):
-            opaque = True
-            interactive_opaque = interactive_opaque or "write_stdin" in match[0]
-    return ShellTexts(commands, opaque, interactive_opaque)
+            interactive_opaque = interactive_opaque or interactive
+        else:
+            commands.extend(ShellCommand(command, interactive) for command in decoded)
+    stdin_possible = any(
+        claim_javascript.shell_method(arguments) in {"exec_command", "write_stdin"} and not claim_javascript.closed_stdin(arguments)
+        for arguments, _ in sites
+    )
+    stdin_closed = (
+        bounded
+        and bool(sites)
+        and "load" not in javascript_names(text)
+        and all(claim_javascript.closed_stdin(arguments) for arguments, _ in sites)
+    )
+    exec_launch = any(claim_javascript.shell_method(arguments) == "exec_command" for arguments, _ in sites)
+    return ShellTexts(commands, opaque, interactive_opaque, stdin_closed, bounded and stdin_possible, exec_launch)
 
 
 SHELL_NAMES = {"sh", "bash", "zsh", "dash", "ksh", "fish"}
@@ -883,6 +1174,7 @@ class ShellClaims:
     opaque: bool = False
     receipt_pure: bool = True
     decode_failed: bool = False
+    asynchronous: bool = False
 
 
 @dataclass
@@ -1141,7 +1433,9 @@ SAFE_GIT_CONFIG = frozenset(
     }
 )
 GIT_GLOBAL_VALUE_OPTIONS = frozenset({"-C", "--git-dir", "--work-tree", "--namespace"})
-GIT_GLOBAL_FLAGS = frozenset({"--version", "--help", "--no-pager", "-P", "--no-optional-locks", "--bare", "--literal-pathspecs", "--no-replace-objects"})
+GIT_GLOBAL_FLAGS = frozenset(
+    {"--version", "--help", "--no-pager", "-P", "--no-optional-locks", "--bare", "--literal-pathspecs", "--no-replace-objects"}
+)
 GIT_DATA_COMMANDS = frozenset(
     {
         "add",
@@ -1226,7 +1520,18 @@ GIT_CONFIG_VALUE_OPTIONS = frozenset({"-f", "--file", "--blob", "--type", "--def
 GIT_COMMAND_SETTINGS = frozenset({"core.pager", "core.editor", "sequence.editor"})
 INERT_COMMANDS = frozenset({"", "cat", "true", "false", ":"})
 GIT_CONFIG_READ_OPTIONS = frozenset(
-    {"--get", "--get-all", "--get-regexp", "--get-urlmatch", "-l", "--list", "--unset", "--unset-all", "--remove-section", "--rename-section"}
+    {
+        "--get",
+        "--get-all",
+        "--get-regexp",
+        "--get-urlmatch",
+        "-l",
+        "--list",
+        "--unset",
+        "--unset-all",
+        "--remove-section",
+        "--rename-section",
+    }
 )
 GH_DATA_COMMANDS = frozenset(
     {
@@ -1300,11 +1605,7 @@ def long_option(argument: str, option: str, options: tuple[str, ...] = ()) -> bo
     flag = argument.partition("=")[0]
     if flag == option:
         return True
-    return (
-        len(flag) > 3
-        and option.startswith(flag)
-        and not any(other != option and other.startswith(flag) for other in options)
-    )
+    return len(flag) > 3 and option.startswith(flag) and not any(other != option and other.startswith(flag) for other in options)
 
 
 def short_option(argument: str, letter: str) -> bool:
@@ -2248,6 +2549,11 @@ def shell_claims(text: str, *, claim_related: bool = False) -> ShellClaims:
         return discovery
     root = with_literal_values(root, text.encode())
     for node in shell_nodes(root):
+        discovery.asynchronous = (
+            discovery.asynchronous
+            or node.type == "process_substitution"
+            or any(child.type in {"&", "&!", "&|"} for child in node.children)
+        )
         if node.type in {
             "pipeline",
             "command_substitution",
@@ -2280,9 +2586,7 @@ def shell_claims(text: str, *, claim_related: bool = False) -> ShellClaims:
                 )
             name = node.child_by_field_name("name")
             discovery.opaque = discovery.opaque or bool(name is not None and shell_generated(name) and related)
-            discovery.opaque = discovery.opaque or (
-                loads_test_code(argv) and (claim_related or claim_text_outside(root, node))
-            )
+            discovery.opaque = discovery.opaque or (loads_test_code(argv) and (claim_related or claim_text_outside(root, node)))
             programs.extend(command_sources)
         for program in programs:
             discovery.receipt_pure = False
@@ -2293,6 +2597,7 @@ def shell_claims(text: str, *, claim_related: bool = False) -> ShellClaims:
             elif Path(program.consumer).name in SHELL_NAMES | {"eval"}:
                 nested = shell_claims(program.text, claim_related=related)
                 discovery.arguments.extend(nested.arguments)
+                discovery.asynchronous = discovery.asynchronous or nested.asynchronous
                 discovery.opaque = discovery.opaque or nested.opaque
                 discovery.decode_failed = discovery.decode_failed or nested.decode_failed
             else:
@@ -2410,7 +2715,12 @@ def invocation_target(arguments: list[str], session: str) -> dict | None:
 
 
 def resolve_invocations(
-    arguments_list: list[list[str]], blocks: list[object], session: str, *, receipt_pure: bool = True
+    arguments_list: list[list[str]],
+    blocks: list[object],
+    session: str,
+    *,
+    receipt_pure: bool = True,
+    ended: list[bool] | None = None,
 ) -> tuple[set[tuple[str, int]], bool]:
     results = list({json.dumps(item, sort_keys=True): item for block in blocks for item in values(block)}.values())
     completed = [
@@ -2421,8 +2731,6 @@ def resolve_invocations(
         and (target := claim_target(item, item["claim"]["session"])) is not None
     ]
     targets = {target for native, target in completed if native == session}
-    if any(item.get("foreign_native_output") for item in results):
-        return targets, False
     rejected = [
         item
         for item in results
@@ -2432,11 +2740,23 @@ def resolve_invocations(
         and not item.get("claim_comment")
         and "post_claim" not in item.get("completed_steps", [])
     ]
-    invocations = [item for arguments in arguments_list if (item := invocation_target(arguments, session)) is not None]
-    invocations.sort(key=lambda item: not (item["known"] or item["foreign"]))
+    flags = ended if ended is not None else [False] * len(arguments_list)
+    invocations = [
+        (item, finished)
+        for arguments, finished in zip(arguments_list, flags, strict=True)
+        if (item := invocation_target(arguments, session)) is not None
+    ]
+    invocations.sort(key=lambda item: not (item[0]["known"] or item[0]["foreign"]))
+    bound_receipt = receipt_pure and len(invocations) == 1
+    bound_outcome = bound_receipt and any(
+        item.get("operation") == "github.plan.claim"
+        and item.get("ok") is False
+        and item.get("write_outcome") in {"unknown", "rejected", "not_started", "confirmed"}
+        for item in results
+    )
     missing = 0
     unproven = False
-    for item in invocations:
+    for item, finished in invocations:
         if not receipt_pure and not item["known"] and not item["foreign"]:
             unproven = True
             continue
@@ -2451,11 +2771,15 @@ def resolve_invocations(
         )
         if match is not None:
             completed.pop(match)
+            if item["known"] and not item["foreign"] and not (finished or bound_receipt):
+                unproven = True
         elif item["known"] or item["foreign"]:
             if rejected:
                 rejected.pop()
             if item["known"] and not item["foreign"]:
                 targets.add(item["known"])
+                if not (finished or bound_outcome):
+                    unproven = True
         else:
             missing += 1
     return targets, unproven or missing > len(rejected)
@@ -2500,7 +2824,19 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
     targets = set()
     errors = []
     outputs = tool_outputs(records)
+    own_outputs = tool_outputs(records, followups=False)
+    inputs = {identifier: (text, javascript, name, index) for identifier, text, javascript, name, index in tool_details(records)}
     denied = denied_invocations(records)
+    non_tty_stdin_closed = closed_stdin_runtime(records)
+    finished = {
+        "command:" + str(item.get("id", ""))
+        for row in records
+        if row.get("type") == "event_msg"
+        and isinstance(payload := row.get("payload"), dict)
+        and payload.get("type") == "item_completed"
+        and (item := execution_item(row)).get("status") in {"completed", "failed"}
+        and type(item.get("exit_code")) is int
+    }
     if directory is not None:
         errors.extend(
             {
@@ -2512,47 +2848,61 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
         )
     claim_may_be_stored = False
     claim_may_be_interactive = False
-    for identifier, text, javascript in tool_inputs(records):
+    for identifier, (text, javascript, name, _) in inputs.items():
         if identifier in denied:
             continue
+        unexecuted = javascript and native_javascript_parse_failure(text, outputs.get(identifier, []))
         names = javascript_names(text) if javascript else set()
         executable_text = without_patch_text(text) if javascript else text
         claim_related_here = "gh-plan" in executable_text or CLAIM_WORD.search(executable_text) is not None
         invocations = []
+        ended_invocations = []
         opaque = False
         unclassified = False
         reason = "missing_output"
         decode_failed = False
-        receipt_pure = not javascript
+        interactive_uncertain = False
+        receipt_pure = not javascript or single_javascript_shell(text)
         try:
-            sources = shell_texts(text, javascript)
+            sources = shell_texts(text, javascript, exec_command=name == "exec_command")
+            source_ended = completed_sources(records, inputs, own_outputs, identifier, sources, session)
             opaque = sources.opaque
-            claim_may_be_interactive = (
-                claim_may_be_interactive
-                or (
-                    claim_related_here
-                    and (
-                        sources.interactive_opaque
-                        or any(
-                            type(value.get("session_id")) is int for block in outputs.get(identifier, []) for value in values(block)
+            if not unexecuted and identifier not in finished:
+                claim_may_be_interactive = (
+                    claim_may_be_interactive
+                    or (
+                        claim_related_here
+                        and (
+                            sources.interactive_opaque
+                            or sources.stdin_possible
+                            or (sources.exec_launch and not non_tty_stdin_closed)
+                            or (
+                                not (non_tty_stdin_closed and sources.stdin_closed)
+                                and any(
+                                    type(value.get("session_id")) is int
+                                    for block in outputs.get(identifier, [])
+                                    for value in values(block)
+                                )
+                            )
                         )
                     )
+                    or any(
+                        source.interactive and ("gh-plan" in source.text or CLAIM_WORD.search(source.text))
+                        for source in sources.commands
+                    )
                 )
-                or any(
-                    source.interactive and ("gh-plan" in source.text or CLAIM_WORD.search(source.text))
-                    for source in sources.commands
-                )
-            )
+            interactive_uncertain = opaque and sources.interactive_opaque and claim_may_be_interactive
             unclassified = opaque
             opaque = opaque and (
                 claim_related_here
                 or (claim_may_be_stored and "load" in names)
                 or (sources.interactive_opaque and claim_may_be_interactive)
             )
-            for source in sources.commands:
+            for source, ended in zip(sources.commands, source_ended, strict=True):
                 receipt_pure = receipt_pure and not source.interactive
                 discovery = shell_claims(source.text, claim_related=source.interactive and claim_may_be_interactive)
                 invocations.extend(discovery.arguments)
+                ended_invocations.extend([ended and not discovery.asynchronous] * len(discovery.arguments))
                 opaque = opaque or discovery.opaque
                 receipt_pure = receipt_pure and discovery.receipt_pure
                 if discovery.decode_failed:
@@ -2570,27 +2920,58 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
             )
         )
         blocks = outputs.get(identifier, [])
-        found, unknown = resolve_invocations(invocations, blocks, session, receipt_pure=receipt_pure)
+        found, unknown = resolve_invocations(invocations, blocks, session, receipt_pure=receipt_pure, ended=ended_invocations)
+        if (
+            unknown
+            and not opaque
+            and any(
+                not ended and item is not None and item["known"] and not item["foreign"]
+                for arguments, ended in zip(invocations, ended_invocations, strict=True)
+                for item in [invocation_target(arguments, session)]
+            )
+        ):
+            reason = UNFINISHED_CLAIM
         targets.update(found)
         if javascript:
             opaque = opaque or (unclassified and bool(found))
             claim_may_be_stored = claim_may_be_stored or ("store" in names and (claim_related_here or bool(found)))
         if opaque:
-            reason = "unproven_execution_count" if invocations and not receipt_pure else "computed"
+            reason = (
+                "interactive_uncertain"
+                if interactive_uncertain
+                else ("unproven_execution_count" if invocations and not receipt_pure else "computed")
+            )
         if (unknown or opaque) and directory is not None:
             try:
                 saved = persisted_output(records, directory, session, identifier)
                 blocks = [*blocks, *tool_outputs(saved).get(identifier, [])]
-                found, unknown = resolve_invocations(invocations, blocks, session, receipt_pure=receipt_pure)
+                restored = {**own_outputs, identifier: [*own_outputs.get(identifier, []), *tool_outputs(saved).get(identifier, [])]}
+                restored_flags = completed_sources(records, inputs, restored, identifier, sources, session)
+                ended_invocations = [
+                    ended and not discovery.asynchronous
+                    for source, ended in zip(sources.commands, restored_flags, strict=True)
+                    for discovery in [shell_claims(source.text, claim_related=source.interactive and claim_may_be_interactive)]
+                    for _ in discovery.arguments
+                ]
+                found, unknown = resolve_invocations(
+                    invocations, blocks, session, receipt_pure=receipt_pure, ended=ended_invocations
+                )
                 targets.update(found)
             except (OSError, ValueError) as error:
                 reason = "missing_output: " + str(error)
-        if unknown or opaque or decode_failed:
+        if (unknown or opaque or decode_failed) and not unexecuted:
             errors.append(
                 {
                     "call_id": identifier,
                     "reason": reason,
-                    "recovery": "Restore this invocation's complete native command and output on the claiming host; keep unknown writes conditional. If evidence is irrecoverable, record the Director's decision on the owning issue.",
+                    "recovery": (
+                        "This code-mode cell is outside the bounded subset after possible interactive claim input. "
+                        "Preserve the originating command, process session ID and complete input/output evidence on the owning issue; "
+                        "keep coverage conditional. Use direct literal shell calls and text(result) for new cells. "
+                        "If the old evidence cannot establish coverage, record the Director's decision on the owning issue."
+                        if reason == "interactive_uncertain"
+                        else "Restore this invocation's complete native command and output on the claiming host; keep unknown writes conditional. If evidence is irrecoverable, record the Director's decision on the owning issue."
+                    ),
                 }
             )
     return {"targets": targets, "unresolved_invocations": errors}
