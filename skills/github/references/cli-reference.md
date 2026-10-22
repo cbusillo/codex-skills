@@ -1000,7 +1000,7 @@ The helper returns previous Current Status in the recovery result; it links
 the work record without copying that history into the claim comment.
 
 When the overall direction's Order admits the work, name the rule with
-`--admission live-breakage|milestone|repeat-stop|spare-capacity`; the claim
+`--admission live-breakage|milestone|own-project|repeat-stop|spare-capacity`; the claim
 comment records it as an `Admission:` line. Admission does not read or certify
 a milestone graph. Link milestone work into
 its Track during planning and cite that evidence with `--admission-link`.
@@ -2564,8 +2564,10 @@ Under the same per-command opt-in, two commands run as the declared personal
 login whatever credential the repository would select, because an App
 installation token can never act for an account: a `gh api` read of an
 endpoint that answers only for the authenticated account (`user/...`,
-`notifications`, `notifications/...`, `repos/OWNER/REPO/subscription`, also
-given as an `https://api.github.com/` URL), and
+`notifications`, `notifications/...`, `repos/OWNER/REPO/subscription`, and
+`users/LOGIN/settings/billing/...` when LOGIN is the declared
+`GH_WITH_ENV_TOKEN_OWN_USER_LOGIN`, also given as an `https://api.github.com/`
+URL), and
 `gh repo fork` without `--org`, whose fork lands in the person's account.
 Stderr names the endpoint or the fork source. Bare `user` stays the App actor
 probe, a fork into an organization keeps the repository's route, and required

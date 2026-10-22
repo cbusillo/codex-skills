@@ -5223,6 +5223,14 @@ class ClaimTests(unittest.TestCase):
         self.admit("spare-capacity")
         self.assertIn(CLAIM.admission_text("spare-capacity", []), self.comments[-1]["body"])
 
+    def test_own_project_admission_is_accepted_and_recorded(self):
+        parsed = PLAN.build_parser().parse_args(["claim", "7", "--worker", "worker", "--session", "session",
+                                                 "--branch", "work/own", "--next-action", "Fix it",
+                                                 "--admission", "own-project"])
+        self.admit(parsed.admission)
+        self.assertIn(CLAIM.admission_text("own-project", []), self.comments[-1]["body"])
+        self.assertTrue(self.emitted.call_args.args[0]["ok"])
+
     def test_admission_details_require_the_kind_they_describe(self):
         for kind, links, unlinked in ((None, ("https://github.com/owner/repo/issues/5",), None),
                                       ("spare-capacity", (), "reason"),

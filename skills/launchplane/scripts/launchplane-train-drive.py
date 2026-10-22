@@ -135,7 +135,7 @@ class DriveIO:
     controller: Callable[[str, str, str], dict[str, Any] | None]
     pull_request: Callable[[str, int], dict[str, Any] | None]
     update_branch: Callable[[str, int], bool]
-    failing_checks: Callable[[str, str], list[dict[str, str]] | None]
+    candidate_checks: Callable[[str, str], list[dict[str, Any]] | None]
     # Bounded GitHub landing inventory, independent of mutable enqueue labels.
     merged_since: Callable[[str, float], dict[str, Any]] = lambda _repository, _since: {
         "numbers": [], "complete": False, "reason": "unavailable"}
@@ -261,7 +261,7 @@ class Cadence:
 
         return dataclasses.replace(
             io, controller=controller, sleep=sleep, pull_request=github_read(io.pull_request),
-            failing_checks=github_read(io.failing_checks), merged_since=github_read(io.merged_since),
+            candidate_checks=github_read(io.candidate_checks), merged_since=github_read(io.merged_since),
             quota_wait=github_read(io.quota_wait),
             observe_controller=observe_controller if io.observe_controller is not None else None,
             recover=recover if original_recover is not None else None,
@@ -582,7 +582,10 @@ def _judge(
     if action == "candidate_failed":
         candidate = result.get("candidate") or {}
         candidate_sha = str(candidate.get("candidate_sha") or result.get("candidate_sha") or "")
-        failing = io.failing_checks(settings.repository, candidate_sha) if candidate_sha else None
+        checks = (io.candidate_checks(settings.repository, candidate_sha) if candidate_sha else None) or []
+        if _any_check_running(checks):
+            return None
+        failing = [run for run in checks if run.get("conclusion") in FAILING_CONCLUSIONS]
         if failing:
             return "failed", {"reason": "candidate_failed", "candidate_sha": candidate_sha, "failing_checks": failing}
         # A candidate made stale by a queue change is discarded and rebuilt.
@@ -605,6 +608,10 @@ def _judge(
     else:
         state.ineligible_streak = 0
     return None
+
+
+def _any_check_running(checks: list[dict[str, Any]]) -> bool:
+    return any(run.get("status") != "completed" for run in checks)
 
 
 def _update_branch(
@@ -997,7 +1004,7 @@ def live_io(helper_timeout: float, *, deadline_at: float | None = None, reposito
             return False
         return completed.returncode == 0
 
-    def failing_checks(repository: str, sha: str) -> list[dict[str, str]] | None:
+    def candidate_checks(repository: str, sha: str) -> list[dict[str, Any]] | None:
         try:
             payload = reader.paged_json(f"/repos/{repository}/commits/{sha}/check-runs",
                                         step_prefix="candidate_checks", collection_key="check_runs")
@@ -1005,8 +1012,8 @@ def live_io(helper_timeout: float, *, deadline_at: float | None = None, reposito
             if error.result.failure and error.result.failure.cause in TERMINAL_READ_FAILURES:
                 raise
             return None
-        return [{"name": run.get("name", ""), "conclusion": run["conclusion"], "url": run.get("details_url", "")}
-                for run in payload if run.get("conclusion") in FAILING_CONCLUSIONS]
+        return [{"name": run.get("name", ""), "status": run.get("status"), "conclusion": run.get("conclusion"),
+                 "url": run.get("details_url", "")} for run in payload]
 
     def merged_since(repository: str, since: float) -> dict[str, Any]:
         since = int(since)  # GitHub timestamps have one-second precision.
@@ -1100,7 +1107,7 @@ def live_io(helper_timeout: float, *, deadline_at: float | None = None, reposito
         observe_controller=observe_controller,
         pull_request=pull_request,
         update_branch=update_branch,
-        failing_checks=failing_checks,
+        candidate_checks=candidate_checks,
         merged_since=merged_since,
         quota_wait=quota_wait,
         reconcile=reconcile,

@@ -889,7 +889,8 @@ each target repository:
   With the opt-in, reads of a private repository there that the App cannot
   see also use that login, scoped to the repository. In any repository, the
   opt-in also runs `gh api` reads that only an account can answer (`user/...`,
-  `notifications`, `repos/OWNER/REPO/subscription`) and `gh repo fork` without
+  `notifications`, `repos/OWNER/REPO/subscription`, and the declared login's
+  billing under `users/LOGIN/settings/billing/...`) and `gh repo fork` without
   `--org` as that login; other reads keep the App.
   Commits keep your git identity, and `gh-pr.py create` adds the
   AI-assistance sentence to the body unless it already says so.
