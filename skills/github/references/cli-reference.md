@@ -1288,9 +1288,9 @@ Use the existing `--termination-record` procedure when the original native exit
 completed without a safe-exit verdict. Do not add a closure-log row or rewrite
 the original verdict. The private record keeps the native UUID, harness,
 source host, transcript, transcript roots, cause and retained artifacts.
-A historical Claude record may use `"exit_record": {"kind": "claude_local_exit"}`
+A historical Claude record with that original sequence may use `"exit_record": {"kind": "claude_local_exit"}`
 instead of PID, TTY and tmux fields. The generator derives the exit time from
-the completed native `/exit` or `/quit` sequence, pins that original evidence,
+the existing completed native `/exit` sequence, pins that original evidence,
 and refuses a conflicting supplied `ended_at`. Typed input and history entries
 alone are insufficient. Codex without original terminal exit proof refuses.
 
@@ -1307,8 +1307,10 @@ The generator and release preflight check configured account roots, every source
 copy, pending actions, native loaded/queued state and live or uncertain process
 owners. A canonical closure row, if present, is a resume veto only. Missing
 closure rows supply no exit proof and require no shared-log write. A historical
-source refuses while a same-family process may predate its exit or has no
-independent native identity. The existing crash route keeps its PID, TTY and
+source refuses while a same-family process has no independent native identity.
+An exact other-session resume or fresh PID/start-time binding from Claude's
+native registry lets unrelated sessions keep working. Unresolved resume targets
+still refuse on the existing inventory backfill route. The existing crash route keeps its PID, TTY and
 nonce-bearing tmux checks. The release repeats verification after its pending
 write, preserves artifacts, and keeps branch, PR, wait and blocker checks.
 Generate the attestation with `github_plan_termination.py --record FILE`, inspect

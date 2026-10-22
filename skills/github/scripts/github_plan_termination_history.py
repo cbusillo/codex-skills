@@ -4,17 +4,15 @@
 # ///
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import re
 import subprocess
-from datetime import timedelta
+from datetime import datetime
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any
 
 import github_plan_closure as closure
-import github_plan_native as native
 import github_plan_sessions as sessions
 import github_plan_termination as termination
 
@@ -27,39 +25,29 @@ def claude_accounts() -> list[dict[str, Any]]:
     return accounts
 
 
-async def verify_native(entry: dict[str, Any], snapshots: dict[str, Any]) -> None:
-    if entry["harness"] != "codex":
-        for account in claude_accounts():
-            env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CONFIG_DIR"}
-            env.update({k: os.path.expanduser(v) for k, v in account["env"].items()})
-            result = await asyncio.to_thread(
-                subprocess.run, ["claude", "agents", "--json"], env=env, check=True, capture_output=True, text=True, timeout=10
-            )
-            agents = json.loads(result.stdout)
-            if not isinstance(agents, list) or any(
-                not isinstance(a, dict) or sessions.process_liveness().native_uuid(a.get("sessionId")) is None for a in agents
-            ):
+def native_owners(entry: dict[str, Any]) -> dict[int, dict[str, Any]]:
+    owners = {}
+    for account in claude_accounts():
+        env = {key: value for key, value in os.environ.items() if key != "CLAUDE_CONFIG_DIR"}
+        env.update({key: os.path.expanduser(value) for key, value in account["env"].items()})
+        result = subprocess.run(
+            ["claude", "agents", "--json", "--all"], env=env, check=True, capture_output=True, text=True, timeout=10
+        )
+        agents = json.loads(result.stdout)
+        if not isinstance(agents, list):
+            raise TypeError("Claude native inventory is uncertain")
+        for agent in agents:
+            if not isinstance(agent, dict) or sessions.process_liveness().native_uuid(agent.get("sessionId")) is None:
                 raise ValueError("Claude native inventory is uncertain")
-            if any(sessions.process_liveness().native_uuid(a["sessionId"]) == entry["session_id"] for a in agents):
+            if agent["sessionId"] == entry["session_id"]:
                 raise ValueError("Source Claude session is still live; preserve claims")
-        return
-    homes = sessions.observation_homes(strict=True, additional_homes={Path(entry["codex_home"])})
-    action = closure.lease_state(entry["session_id"])
-    if action.get("action_pending"):
-        raise ValueError("Source has a pending native action; preserve claims")
-    authenticated = native._authenticated_paths(snapshots, homes)
-    if str(Path(entry["codex_home"]).resolve()) not in authenticated:
-        raise ValueError("Recorded source account lacks authenticated source transcripts")
-    for home in authenticated:
-        async with native.connection(Path(home)) as request:
-            first = await native.read_thread_facts(request, entry["session_id"])
-            if first["path"] not in snapshots:
-                raise ValueError("Native source path is absent from verified closure transcripts")
-            second = await native.read_thread_facts(request, entry["session_id"])
-            if any(facts["state"] != "notLoaded" or facts["queue"] for facts in (first, second)) or native.current_facts(
-                first
-            ) != native.current_facts(second):
-                raise ValueError("Native source changed during ownership release")
+            pid = agent.get("pid")
+            if type(pid) is not int or pid <= 0 or type(agent.get("startedAt")) is not int:
+                raise TypeError("Claude native process identity is uncertain")
+            if pid in owners and owners[pid] != agent:
+                raise ValueError("Claude process has conflicting native identities")
+            owners[pid] = agent
+    return owners
 
 
 def claim_write(text: str) -> bool:
@@ -99,81 +87,32 @@ def original_interval(start: str | None, end: str | None, created_at: str | None
 def original_claim_output(records: list[dict[str, Any]], url: str, record: dict[str, str], *, created_at: str | None = None) -> bool:
     calls = {}
     for row in records:
-        payload = row.get("payload") or {}
-        execution = payload.get("item") or {}
-        if (
-            execution.get("type") == "CommandExecution"
-            and execution.get("status") == "completed"
-            and type(execution.get("exit_code")) is int
-            and execution["exit_code"] == 0
-            and claim_write(str(execution.get("command", "")))
-            and isinstance(execution.get("duration"), dict)
-            and original_interval(
-                (
-                    termination.stamp(row["timestamp"])
-                    - timedelta(
-                        seconds=execution["duration"].get("secs", 0), microseconds=execution["duration"].get("nanos", 0) / 1000
-                    )
-                ).isoformat(),
-                row.get("timestamp"),
-                created_at,
-            )
-            and posted_claim(execution.get("stdout"), url, record)
-        ):
-            return True
         content = (row.get("message") or {}).get("content")
-        blocks = content if isinstance(content, list) else []
-        inputs, outputs = [], []
-        if payload.get("type") in {"function_call", "custom_tool_call"}:
-            inputs.append((payload.get("call_id"), str(payload.get("arguments", payload.get("input", "")))))
-        if payload.get("type") in {"function_call_output", "custom_tool_call_output"}:
-            outputs.append((payload.get("call_id"), payload.get("output")))
-        for block in blocks:
-            if block.get("type") == "tool_use":
-                arguments = block.get("input") or {}
-                inputs.append((block.get("id"), str(arguments.get("command", "")) if isinstance(arguments, dict) else ""))
-            if block.get("type") == "tool_result" and not block.get("is_error"):
-                outputs.append((block.get("tool_use_id"), block.get("content")))
-        for identifier, text in inputs:
-            if not isinstance(identifier, str) or not identifier:
-                continue
-            if claim_write(text):
-                calls[identifier] = text, row.get("timestamp")
-        for identifier, output in outputs:
-            if identifier not in calls:
-                continue
-            if original_interval(calls[identifier][1], row.get("timestamp"), created_at) and posted_claim(output, url, record):
+        for block in content if isinstance(content, list) else []:
+            if block.get("type") == "tool_use" and block.get("name") == "Bash":
+                command = (block.get("input") or {}).get("command", "")
+                if isinstance(command, str) and claim_write(command):
+                    calls[block.get("id")] = row.get("timestamp")
+            identifier = block.get("tool_use_id")
+            if (
+                block.get("type") == "tool_result"
+                and not block.get("is_error")
+                and identifier in calls
+                and original_interval(calls[identifier], row.get("timestamp"), created_at)
+                and posted_claim(block.get("content"), url, record)
+            ):
                 return True
     return False
-
-
-class TranscriptSnapshot(NamedTuple):
-    records: list[dict[str, Any]]
-    mtime: int
-    size: int
-    truncated: bool
-
-
-def transcript_snapshot(entry: dict[str, Any], path: Path) -> TranscriptSnapshot:
-    if path.suffix != ".zst":
-        return TranscriptSnapshot(*termination.transcript_snapshot(entry, path))
-    before = path.stat()
-    result = subprocess.run(["zstd", "-dc", str(path)], check=True, capture_output=True, text=True, timeout=10)
-    records, truncated = termination.transcript_records(entry, result.stdout.splitlines(keepends=True))
-    after = path.stat()
-    if closure.transcript_identity(before) != closure.transcript_identity(after):
-        raise ValueError("Archived source transcript changed during closure verification")
-    return TranscriptSnapshot(records, after.st_mtime_ns, after.st_size, truncated)
 
 
 def configured_roots(record: dict[str, Any]) -> set[Path]:
     roots = termination._transcript_roots(record)
     config = sessions.native_helpers()[0].load_config(path=closure.closed_log().with_name("supervisor.toml"))
-    provider = "anthropic" if record["harness"] == "claude" else "openai"
+    provider = "anthropic"
     accounts = [account for account in config["accounts"] if account["provider"] == provider]
     if not accounts:
         raise ValueError("Configured source account coverage is unavailable")
-    variable = "CLAUDE_CONFIG_DIR" if provider == "anthropic" else "CODEX_HOME"
+    variable = "CLAUDE_CONFIG_DIR"
     for account in accounts:
         home = Path(account["env"].get(variable, str(Path.home() / ".claude"))).expanduser()
         if not home.is_dir():
@@ -190,16 +129,14 @@ def transcript_paths(record: dict[str, Any], roots: set[Path]) -> set[Path]:
     paths = {Path(record["transcript"]).resolve(strict=True)}
     session = record["session_id"]
     for root in roots:
-        paths.update(path.resolve() for path in root.rglob(f"*{session}*.jsonl*"))
-        if record["harness"] != "claude":
-            continue
+        paths.update(path.resolve() for path in root.rglob(f"*{session}*.jsonl"))
+        paths.update(path.resolve() for path in root.glob(f"**/{session}/subagents/*.jsonl"))
         project = root / Path(record["transcript"]).parent.name
         if not project.is_dir():
             continue
         for path in project.rglob("*.jsonl"):
-            with path.open(encoding="utf-8") as stream:
-                if any(json.loads(line).get("sessionId") == session for line in stream if line.strip()):
-                    paths.add(path.resolve())
+            if any(row.get("sessionId") == session for row in candidate_rows(path)):
+                paths.add(path.resolve())
     return paths
 
 
@@ -208,14 +145,6 @@ def own_records(record: dict[str, Any], path: Path, rows: list[dict[str, Any]]) 
 
     if any(row.get("isSidechain") or row.get("parentToolUseID") for row in rows):
         raise ValueError("Spawned histories cannot establish original claim ownership")
-    if record["harness"] == "codex":
-        metadata = rows[0].get("payload") or {}
-        if (
-            metadata.get("forked_from_id")
-            or metadata.get("parent_thread_id")
-            or claim_history.source_parent(metadata.get("source", {}))
-        ):
-            raise ValueError("Forked or spawned histories cannot establish original claim ownership")
     return claim_history.root_records(path, record["harness"], record["session_id"], rows)
 
 
@@ -234,6 +163,8 @@ def verify(record: dict[str, Any], session: str) -> dict[str, Any]:
     import hashlib
 
     termination._validate_metadata(record, session)
+    if record.get("harness") != "claude":
+        raise ValueError("Historical source lacks a supported original exit record; preserve claims")
     identity = record["session_id"]
     if (
         sessions.process_liveness().native_uuid(identity) != identity
@@ -247,9 +178,9 @@ def verify(record: dict[str, Any], session: str) -> dict[str, Any]:
         raise ValueError("Source has resumed or has a pending action; preserve claims")
     roots = configured_roots(record)
     paths = transcript_paths(record, roots)
-    snapshots = {path: transcript_snapshot(record, path) for path in paths}
+    snapshots = {path: termination.transcript_snapshot(record, path) for path in paths}
     original = Path(record["transcript"]).resolve(strict=True)
-    rows = own_records(record, original, snapshots[original].records)
+    rows = own_records(record, original, snapshots[original][0])
     ended_at = exit_timestamp(record, rows)
     ended = termination.stamp(ended_at)
     if record.get("ended_at") is not None and termination.stamp(record["ended_at"]) != ended:
@@ -257,15 +188,11 @@ def verify(record: dict[str, Any], session: str) -> dict[str, Any]:
     now = termination.datetime.now(termination.timezone.utc)
     if ended > now:
         raise ValueError("Original exit is in the future")
-    physical = {**record, "_inventory": True}
-    shared = sessions.process_liveness()
-    shared.verify_process_exit(physical, rows=termination.inventory(), ended_at=ended)
+    verify_processes(record, ended)
     last = ended
-    for path, snapshot in snapshots.items():
-        times = [termination.stamp(row["timestamp"]) for row in snapshot.records if row.get("timestamp")]
-        last = max(last, termination._transcript_activity(times, snapshot.mtime, snapshot.truncated, now, ended))
-        if exit_timestamp(record, own_records(record, path, snapshot.records)) != ended_at:
-            raise ValueError("Source copies disagree about the original exit")
+    for snapshot in snapshots.values():
+        times = [termination.stamp(row["timestamp"]) for row in snapshot[0] if row.get("timestamp")]
+        last = max(last, termination._transcript_activity(times, snapshot[1], snapshot[3], now, ended))
     if record.get("claim_session", identity) != identity:
         source = record.get("claim")
         url = record.get("claim_url")
@@ -273,16 +200,17 @@ def verify(record: dict[str, Any], session: str) -> dict[str, Any]:
             raise ValueError("Alias recovery requires the exact original claim and URL")
         if not original_claim_output(rows, url, source, created_at=record.get("claim_created_at")):
             raise ValueError("Native root lacks the original claim's direct creation receipt")
-    asyncio.run(verify_native(record, {str(path).removesuffix(".zst"): {} for path in snapshots}))
-    shared.verify_process_exit(physical, rows=termination.inventory(), ended_at=ended)
+    refuse_duplicate_receipt(record, roots)
+    verify_processes(record, ended)
     if (
-        any(transcript_snapshot(record, path) != snapshot for path, snapshot in snapshots.items())
+        any(termination.transcript_snapshot(record, path) != snapshot for path, snapshot in snapshots.items())
         or transcript_paths(record, roots) != paths
         or configured_roots(record) != roots
         or closure.source_records({identity}).get(identity) != canonical
         or closure.action_pending(identity)
     ):
         raise ValueError("Source evidence changed during termination checks")
+    refuse_duplicate_receipt(record, roots)
     data = {key: record[key] for key in ("session_id", "host", "cause", "retained_artifacts")}
     for key in ("claim_session", "claim", "claim_url", "claim_created_at"):
         if key in record:
@@ -299,3 +227,58 @@ def verify(record: dict[str, Any], session: str) -> dict[str, Any]:
     termination.validate(data, session)
     termination._verify_artifacts(data["retained_artifacts"])
     return data
+
+
+def verify_processes(record: dict[str, Any], ended: datetime) -> None:
+    shared = sessions.process_liveness()
+    owners = native_owners(record)
+
+    def independent(pid: int, _argv: list[str]) -> bool:
+        owner = owners.get(pid)
+        if owner is None:
+            return False
+        try:
+            return int(shared.process_started_at(pid).timestamp()) == owner["startedAt"] // 1000
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            raise ValueError("Native process birth is unavailable; preserve claims") from error
+
+    shared.verify_process_exit(
+        {**record, "_inventory": True, "_historical_exit": True},
+        rows=termination.inventory(),
+        ended_at=ended,
+        independent_harness=independent,
+    )
+
+
+def refuse_duplicate_receipt(record: dict[str, Any], roots: set[Path]) -> None:
+    if record.get("claim_session", record["session_id"]) == record["session_id"]:
+        return
+    for root in roots:
+        for path in root.rglob("*.jsonl"):
+            content = path.read_text(encoding="utf-8")
+            if record["claim_url"] not in content:
+                continue
+            rows = candidate_rows(path)
+            identities = {row.get("sessionId") for row in rows if row.get("sessionId")}
+            if identities == {record["session_id"]} and not any(row.get("isSidechain") for row in rows):
+                continue
+            if original_claim_output(rows, record["claim_url"], record["claim"], created_at=record["claim_created_at"]):
+                raise ValueError("Original claim receipt also appears in another native history; preserve claims")
+
+
+def candidate_rows(path: Path) -> list[dict[str, Any]]:
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    rows = []
+    for index, line in enumerate(lines):
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            if index == len(lines) - 1 and not line.endswith(("\n", "\r")):
+                break
+            raise
+        if not isinstance(row, dict):
+            raise TypeError("Native transcript candidate is not an object")
+        rows.append(row)
+    return rows

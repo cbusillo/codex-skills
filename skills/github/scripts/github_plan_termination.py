@@ -297,7 +297,7 @@ def body(data):
                      f"Native session unavailable: {legacy['legacy_reason']}\n") if "legacy_reason" in legacy else ""
     artifacts = "\n".join(f"- {a.get('worktree') or 'no local worktree'} (branch {a['branch']})" for a in data["retained_artifacts"]) or "None; no source branch or worktree was created."
     return (f"Terminated session {data.get('claim_session', data['session_id'])}\nEnded at: {data['ended_at']}\n"
-            + legacy_fields + f"Recorded PID: {data['pid']}\nTermination cause: {data['cause']}\n"
+            + legacy_fields + f"Recorded PID: {data['pid'] or 'not recorded'}\nTermination cause: {data['cause']}\n"
             f"Fresh process, transcript and terminal checks: {data['checked_at']}; {data['terminal_state']}.\n"
             f"Retained artifacts (resume; preserve uncommitted work):\n\n{artifacts}\n\n"
             "<!-- " + MARKER + json.dumps(data, sort_keys=True).replace(">", "\\u003e") + " -->")

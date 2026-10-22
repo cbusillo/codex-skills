@@ -8,12 +8,9 @@ import json
 import os
 import tempfile
 import unittest
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import github_plan_release as release
 import github_plan_termination_history as ended
@@ -76,14 +73,14 @@ class HistoricalTerminationTests(fixtures.ReleaseHarness):
             },
             user("<local-command-caveat>Local command output</local-command-caveat>", "2026-10-01T00:09:59Z", isMeta=True),
             user(
-                "<command-name>/quit</command-name>\n<command-message>quit</command-message>\n<command-args></command-args>",
+                "<command-name>/exit</command-name>\n<command-message>exit</command-message>\n<command-args></command-args>",
                 "2026-10-01T00:10:00Z",
             ),
             user("<local-command-stdout></local-command-stdout>", "2026-10-01T00:10:01Z"),
         ]
         self.path = self.directory / "termination.json"
         self.args.termination_record = self.path
-        self.native_check = self.enterContext(patch.object(ended, "verify_native", return_value=None))
+        self.native_check = self.enterContext(patch.object(ended, "native_owners", return_value={}))
         self.enterContext(patch.object(ended, "configured_roots", return_value={self.directory}))
         self.enterContext(patch.object(ended.termination, "inventory", return_value=[]))
         self.enterContext(patch.object(ended.termination.socket, "gethostname", return_value="source-host"))
@@ -219,6 +216,48 @@ class HistoricalTerminationTests(fixtures.ReleaseHarness):
         self.assertIsNotNone(release.receipt_for({"body": body}))
         self.f.assert_no_writes()
 
+    def test_subagent_and_partial_source_copy_only_veto_later_activity(self) -> None:
+        child = self.directory / self.native / "subagents" / "agent-example.jsonl"
+        child.parent.mkdir(parents=True)
+        child.write_text(
+            json.dumps(
+                {
+                    "sessionId": self.native,
+                    "isSidechain": True,
+                    "type": "assistant",
+                    "timestamp": "2026-10-01T00:05:00Z",
+                    "message": {"content": "done"},
+                }
+            )
+            + "\n"
+        )
+        os.utime(child, (1759276800, 1759276800))
+        self.attest()
+        child.write_text(child.read_text().replace("00:05:00", "00:15:00"))
+        os.utime(child, (1759276800, 1759276800))
+        with self.assertRaises(ValueError):
+            self.attest()
+
+    def test_duplicate_original_receipt_in_another_native_session_refuses(self) -> None:
+        other = "f5bd6d9f-d638-4a78-a6d1-ae9f8944beca"
+        copied = self.directory / f"{other}.jsonl"
+        copied.write_text("".join(json.dumps(row).replace(self.native, other) + "\n" for row in self.rows))
+        os.utime(copied, (1759276800, 1759276800))
+        with self.assertRaises(ValueError):
+            self.attest()
+
+    def test_independent_native_process_can_keep_working_during_history_verification(self) -> None:
+        shared = ended.sessions.process_liveness()
+        other = "f5bd6d9f-d638-4a78-a6d1-ae9f8944beca"
+        born = release.stamp("2026-09-30T00:00:00Z")
+        self.native_check.return_value = {123: {"sessionId": other, "startedAt": int(born.timestamp() * 1000)}}
+        with (
+            patch.object(ended.termination, "inventory", return_value=[(123, "ttys002", "claude")]),
+            patch.object(shared, "process_arguments", return_value=(["claude"], True)),
+            patch.object(shared, "process_started_at", return_value=born),
+        ):
+            self.attest()
+
     def test_codex_without_original_exit_and_changed_exit_receipt_refuse(self) -> None:
         record = {**self.record, "harness": "codex"}
         with self.assertRaises(ValueError):
@@ -237,31 +276,24 @@ class ClaimReceiptBoundaryTests(unittest.TestCase):
             rows = [
                 {
                     "timestamp": "2026-10-03T00:00:00Z",
-                    "payload": {"type": "function_call", "call_id": "read", "input": "rg 'gh-plan.py claim 42' source.jsonl"},
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "id": "read",
+                                "name": "Bash",
+                                "input": {"command": "rg 'gh-plan.py claim 42' source.jsonl"},
+                            }
+                        ]
+                    },
                 },
                 {
                     "timestamp": "2026-10-03T00:01:00Z",
-                    "payload": {"type": "function_call_output", "call_id": "read", "output": output},
+                    "message": {"content": [{"type": "tool_result", "tool_use_id": "read", "content": output}]},
                 },
             ]
             with self.subTest(output=output):
                 self.assertFalse(ended.original_claim_output(rows, url, fixtures.fixtures.OTHER, created_at="2026-10-01T00:00:00Z"))
-
-    def test_native_execution_receipt_requires_the_original_creation_interval(self) -> None:
-        url = "https://github.com/owner/repo/issues/42#issuecomment-1"
-        receipt = {"ok": True, "claim": fixtures.fixtures.OTHER, "claim_comment": {"comment": {"id": 1, "url": url}}}
-        item = {
-            "type": "CommandExecution",
-            "command": ["sh", "-c", "gh-plan.py claim 42"],
-            "status": "completed",
-            "exit_code": 0,
-            "stdout": json.dumps(receipt),
-            "duration": {"secs": 10, "nanos": 0},
-        }
-        rows = [{"timestamp": "2026-10-01T00:00:10Z", "payload": {"item": item}}]
-        self.assertTrue(ended.original_claim_output(rows, url, fixtures.fixtures.OTHER, created_at="2026-10-01T00:00:05Z"))
-        self.assertFalse(ended.original_claim_output(rows, url, fixtures.fixtures.OTHER, created_at="2026-09-30T23:59:00Z"))
-        self.assertFalse(ended.original_claim_output(rows, url, fixtures.fixtures.OTHER, created_at="2026-10-01T00:00:11Z"))
 
     def test_historical_process_inventory_refuses_unbound_resume_targets(self) -> None:
         shared = ended.sessions.process_liveness()
@@ -275,78 +307,59 @@ class ClaimReceiptBoundaryTests(unittest.TestCase):
                     self.assertRaises(ValueError),
                 ):
                     shared.verify_process_exit(
-                        {**source, "harness": harness, "_historical_exit": True}, rows=[(1234, "ttys002", command)]
+                        {**source, "harness": harness},
+                        rows=[(1234, "ttys002", command)],
+                        ended_at=release.stamp("2026-10-01T00:00:00Z"),
+                        started_at=lambda _pid: release.stamp("2026-10-02T00:00:00Z"),
                     )
 
 
-class NativeEndedTests(unittest.IsolatedAsyncioTestCase):
-    def setUp(self) -> None:
-        self.entry = {"harness": "codex", "session_id": "01a0fcce-ef3c-74e3-af74-6721809e4990", "codex_home": "/account"}
-        self.snapshots = {"/account/sessions/source.jsonl": {"status": {"turn_id": None}}}
-        self.facts = {
-            "id": "source-native",
-            "path": "/account/sessions/source.jsonl",
-            "state": "notLoaded",
-            "queue": {},
-            "background": [],
-            "realtime": [],
-            "goal": None,
-            "turns": [],
-            "executions": {"ended": True},
-        }
-
-        @asynccontextmanager
-        async def connection(_home: Path) -> AsyncIterator[None]:
-            yield None
-
-        self.enterContext(patch.object(ended.native, "connection", connection))
-        self.enterContext(patch.object(ended.sessions, "observation_homes", return_value=[Path("/account")]))
-        self.enterContext(patch.object(ended.closure, "lease_state", return_value={}))
-        self.read = self.enterContext(patch.object(ended.native, "read_thread_facts", new_callable=AsyncMock))
-        self.read.return_value = self.facts
-
-    async def test_native_absence_permits_the_independent_exit_check(self) -> None:
-        await ended.verify_native(self.entry, self.snapshots)
-
-    async def test_loaded_idle_codex_refuses_even_with_quiet_completed_history(self) -> None:
-        self.facts.update(state="idle", turns=[{"id": "turn", "status": "completed"}])
-        self.snapshots["/account/sessions/source.jsonl"]["status"].update(turn_id="turn", actual_turn_ids=["turn"])
-        with self.assertRaises(ValueError):
-            await ended.verify_native(self.entry, self.snapshots)
-
-    async def test_active_queued_unknown_or_changed_native_owner_refuses(self) -> None:
-        for changes in (
-            {"state": "active"},
-            {"state": "idle"},
-            {"queue": {"queued": "work"}},
-            {"state": "systemError"},
-            {"path": "/different/source.jsonl"},
-        ):
-            with self.subTest(changes=changes):
-                self.read.return_value = {**self.facts, **changes}
+class HistoryCoverageTests(unittest.TestCase):
+    def test_configured_accounts_are_required_and_unreadable_accounts_refuse(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            explicit, first, second = (root / name for name in ("explicit", "first", "second"))
+            for path in (explicit, first / "projects", second / "projects"):
+                path.mkdir(parents=True)
+            accounts = [{"provider": "anthropic", "env": {"CLAUDE_CONFIG_DIR": str(home)}} for home in (first, second)]
+            entry = {"transcript_roots": [str(explicit)], "harness": "claude"}
+            with patch.object(ended.sessions.native_helpers()[0], "load_config", return_value={"accounts": accounts}):
+                self.assertEqual(
+                    ended.configured_roots(entry), {path.resolve() for path in (explicit, first / "projects", second / "projects")}
+                )
+                (second / "projects").rmdir()
+                second.rmdir()
                 with self.assertRaises(ValueError):
-                    await ended.verify_native(self.entry, self.snapshots)
-        self.read.side_effect = [self.facts, {**self.facts, "queue": {"new": "work"}}]
-        with self.assertRaises(ValueError):
-            await ended.verify_native(self.entry, self.snapshots)
+                    ended.configured_roots(entry)
+                second.mkdir()
+                (second / "projects").mkdir()
+                original = ended.os.scandir
 
-    async def test_account_without_authenticated_source_does_not_receive_thread_reads(self) -> None:
-        with patch.object(ended.sessions, "observation_homes", return_value=[Path("/account"), Path("/unrelated")]):
-            await ended.verify_native(self.entry, self.snapshots)
+                def scan(path: object) -> object:
+                    if Path(path) == second / "projects":
+                        raise PermissionError("unreadable account")
+                    return original(path)
 
-    async def test_claude_idle_process_and_unavailable_inventory_refuse(self) -> None:
+                with patch.object(ended.os, "scandir", side_effect=scan), self.assertRaises(PermissionError):
+                    ended.configured_roots(entry)
+
+    def test_native_registry_vetoes_source_and_binds_other_process_identity(self) -> None:
+        from types import SimpleNamespace
+
+        source = "e5bd6d9f-d638-4a78-a6d1-ae9f8944beca"
+        other = "f5bd6d9f-d638-4a78-a6d1-ae9f8944beca"
         account = {"provider": "anthropic", "env": {}}
-        self.entry["harness"] = "claude"
-        with patch.object(ended.sessions.native_helpers()[0], "load_config", return_value={"accounts": [account]}):
-            for agents in ([{"sessionId": self.entry["session_id"], "status": "idle"}], {}, [{}]):
+        agent = {"pid": 123, "sessionId": other, "startedAt": 1790812800000}
+        with patch.object(ended, "claude_accounts", return_value=[account]):
+            with patch.object(ended.subprocess, "run", return_value=SimpleNamespace(stdout=json.dumps([agent]))):
+                self.assertEqual(ended.native_owners({"session_id": source}), {agent["pid"]: agent})
+            for rows in ([{**agent, "sessionId": source}], {}, [{"pid": 123}], [{**agent, "startedAt": None}]):
                 with (
-                    self.subTest(agents=agents),
-                    patch.object(ended.subprocess, "run", return_value=SimpleNamespace(stdout=json.dumps(agents))),
-                    self.assertRaises(ValueError),
+                    self.subTest(rows=rows),
+                    patch.object(ended.subprocess, "run", return_value=SimpleNamespace(stdout=json.dumps(rows))),
+                    self.assertRaises((ValueError, TypeError)),
                 ):
-                    await ended.verify_native(self.entry, self.snapshots)
-            with patch.object(ended.subprocess, "run", return_value=SimpleNamespace(stdout="[]")):
-                await ended.verify_native(self.entry, self.snapshots)
+                    ended.native_owners({"session_id": source})
 
 
 if __name__ == "__main__":
