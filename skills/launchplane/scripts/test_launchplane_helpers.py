@@ -9000,6 +9000,60 @@ def test_runtime_sync_review_persistence_and_boundaries() -> None:
         assert code == 1 and result["status"] == "accepted_unverified"
 
 
+def test_runtime_sync_selected_keys_bind_review_apply_and_readback() -> None:
+    flags = ["--product", "example-site", "--context", "example-context", "--instance", "testing",
+             "--key", "EXAMPLE_API_TOKEN"]
+
+    def response(*, mode: str = "dry-run", changed: bool = True) -> dict[str, Any]:
+        service_response = _runtime_sync_response(mode=mode, changed=changed)
+        service_response["result"]["selected_keys"] = ["EXAMPLE_API_TOKEN"]
+        service_response["result"]["runtime_environment"]["desired_key_count"] = 1
+        service_response["result"]["runtime_environment"]["unchanged_key_count"] = 0 if changed else 1
+        service_response["result"]["private_value"] = "SECRET_SENTINEL"
+        return service_response
+
+    for invalid_names in (["EXAMPLE_API_TOKEN", "EXAMPLE_API_TOKEN"], ["BAD-KEY"], ["9X"]):
+        invalid_argv = ["live-target-runtime-sync-dry-run", *flags[:-2]]
+        for name in invalid_names:
+            invalid_argv.extend(["--key", name])
+        code, invalid, transport = _run_runtime_sync(invalid_argv, [])
+        assert code == 2 and transport.call_count == 0
+        assert invalid["warnings"][0]["code"] == "invalid_runtime_key_selection"
+    code, evidence, transport = _run_runtime_sync(["live-target-runtime-sync-dry-run", *flags], [response()])
+    assert code == 0
+    assert evidence["request"]["selected_keys"] == ["EXAMPLE_API_TOKEN"]
+    assert transport.call_args.kwargs["body"]["selected_keys"] == ["EXAMPLE_API_TOKEN"]
+    assert "SECRET_SENTINEL" not in json.dumps(evidence)
+    with TemporaryDirectory() as temporary:
+        path = Path(temporary) / "review.json"
+        path.write_text(json.dumps(evidence))
+        argv = ["live-target-runtime-sync-apply", *flags, "--idempotency-key", "selected-sync", "--reviewed-dry-run",
+                "--expected-plan-digest", evidence["result"]["plan_sha256"], "--dry-run-evidence-file", str(path)]
+        code, result, transport = _run_runtime_sync(argv, [response(), response(mode="apply"), response(changed=False)])
+        assert code == 0 and result["result"]["read_back_matches"] is True
+        assert "SECRET_SENTINEL" not in json.dumps(result)
+        assert all(call.kwargs["body"]["selected_keys"] == ["EXAMPLE_API_TOKEN"] for call in transport.call_args_list)
+        code, _, transport = _run_runtime_sync([*argv, "--key", "OTHER_KEY"], [])
+        assert code == 2 and transport.call_count == 0
+        for invalid in ("missing_selection", "wrong_selection", "unselected_change", "retirement", "wrong_count"):
+            unsafe = response()
+            if invalid == "missing_selection":
+                del unsafe["result"]["selected_keys"]
+            elif invalid == "wrong_selection":
+                unsafe["result"]["selected_keys"] = ["OTHER_KEY"]
+            elif invalid == "unselected_change":
+                unsafe["result"]["runtime_environment"]["different_keys"].append("OTHER_KEY")
+                unsafe["result"]["runtime_environment"]["changed_keys"].append("OTHER_KEY")
+            elif invalid == "retirement":
+                unsafe["result"]["runtime_environment"]["retired_keys_present"] = ["EXAMPLE_API_TOKEN"]
+            else:
+                unsafe["result"]["runtime_environment"]["desired_key_count"] += 1
+            code, _, transport = _run_runtime_sync(argv, [unsafe])
+            assert code == 1 and transport.call_count == 1
+        code, result, transport = _run_runtime_sync(argv, [response(), response(mode="apply"), response()])
+        assert code == 1 and result["status"] == "accepted_unverified" and transport.call_count == 3
+
+
 def test_runtime_sync_denial_and_unsafe_output() -> None:
     argv = ["live-target-runtime-sync-dry-run", "--product", "example-site", "--context", "example-context", "--instance", "testing"]
     error = urllib.error.HTTPError("https://example.invalid", 403, "Forbidden", Message(), io.BytesIO(json.dumps({
