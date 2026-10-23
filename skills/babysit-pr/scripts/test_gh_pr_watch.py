@@ -2533,6 +2533,7 @@ def test_required_runner_acquisition_admitted_without_logs():
     ("jobs", {"run_attempt": 2}),
     ("jobs", {"run_id": 2}),
     ("jobs", {"check_run_url": "https://api.github.com/repos/other/repo/check-runs/9"}),
+    ("jobs", {"check_run_url": "https://[broken"}),
     ("check", {"head_sha": "old"}),
     ("check", {"id": 10}),
     ("run", {"run_attempt": 2}),
@@ -3923,6 +3924,179 @@ def test_current_terminal_workflow_failure_without_checks_blocks_ready(monkeypat
     assert [run["run_id"] for run in snapshot["failed_runs"]] == [2]
     assert "ready_to_merge" not in snapshot["actions"]
     assert "diagnose_ci_failure" in snapshot["actions"]
+
+
+def timeout_step(number, name, conclusion, started, completed):
+    return {"name": name, "status": "completed", "conclusion": conclusion, "number": number,
+            "started_at": f"2026-10-23T{started}Z", "completed_at": f"2026-10-23T{completed}Z"}
+
+
+def timeout_job(job_id, name, conclusion, completed, steps):
+    return {"id": job_id, "run_id": 1, "run_attempt": 1, "head_sha": "abc123", "name": name,
+            "status": "completed", "conclusion": conclusion, "runner_id": job_id % 10_000 + 1,
+            "started_at": "2026-10-23T15:00:35Z", "completed_at": f"2026-10-23T{completed}Z",
+            "check_run_url": f"https://api.github.com/repos/openai/codex/check-runs/{job_id}", "steps": steps}
+
+
+def run_39974519424_attempt_1_jobs():
+    return [
+        timeout_job(120485523998, "Validate Python 3.12", "success", "15:07:21", [
+            timeout_step(1, "Set up job", "success", "15:00:36", "15:00:37"),
+            timeout_step(5, "Ensure zsh for interactive shell behavior tests", "success", "15:00:41", "15:03:58"),
+            timeout_step(6, "Validate skills", "success", "15:03:58", "15:07:14"),
+            timeout_step(17, "Complete job", "success", "15:07:18", "15:07:18"),
+        ]),
+        timeout_job(120485524103, "Validate Python 3.14", "cancelled", "15:15:52", [
+            timeout_step(1, "Set up job", "success", "15:00:36", "15:00:37"),
+            timeout_step(4, "Install uv", "success", "15:00:40", "15:00:42"),
+            timeout_step(5, "Ensure zsh for interactive shell behavior tests", "cancelled", "15:00:42", "15:15:49"),
+            timeout_step(6, "Validate skills", "skipped", "15:15:49", "15:15:49"),
+            timeout_step(17, "Complete job", "success", "15:15:49", "15:15:49"),
+        ]),
+    ]
+
+
+def own_timeout_annotations():
+    return [
+        {"annotation_level": "failure", "message": "The job has exceeded the maximum execution time of 15m0s"},
+        {"annotation_level": "failure", "message": "The operation was canceled."},
+    ]
+
+
+class TimeoutReader:
+    def __init__(self):
+        self.results = []
+        self.cache_enabled = True
+        self.degraded_reasons = []
+        self.jobs = run_39974519424_attempt_1_jobs()
+        self.annotations = {120485524103: own_timeout_annotations()}
+        self.paths = []
+
+    def diagnostics(self):
+        return {}
+
+    def paged_json(self, path, **_kwargs):
+        self.paths.append(path)
+        if path.endswith("/annotations"):
+            return self.annotations.get(int(path.split("/")[-2]), [])
+        return self.jobs
+
+
+def cancelled_run():
+    return failed_run(1, "cancelled")
+
+
+def test_job_cancelled_by_its_own_timeout_during_setup_is_retryable():
+    reader = TimeoutReader()
+    assert gh_pr_watch.job_timeout_retry(sample_pr(), cancelled_run(), reader)
+    assert "/repos/openai/codex/actions/runs/1/attempts/1/jobs" in reader.paths
+    assert not any("logs" in path for path in reader.paths)
+
+
+@pytest.mark.parametrize("message", [
+    "The run was canceled by @octocat.",
+    "Canceling since a higher priority waiting request for 'Validate Skills-feature' exists",
+])
+def test_job_cancelled_by_a_person_or_newer_run_is_not_retryable(message):
+    reader = TimeoutReader()
+    reader.annotations[120485524103] = [{"annotation_level": "failure", "message": message},
+                                        {"annotation_level": "failure", "message": "The operation was canceled."}]
+    assert not gh_pr_watch.job_timeout_retry(sample_pr(), cancelled_run(), reader)
+
+
+@pytest.mark.parametrize("case", [
+    "no_annotations", "notice_level", "short_elapsed", "unparsed_limit", "no_runner", "no_steps",
+    "no_cancelled_step", "newer_head", "other_attempt", "other_run", "foreign_check", "unfinished_job",
+    "person_cancelled_sibling", "failed_run", "actor", "read_error", "bad_pagination",
+    "timeout_then_person", "timeout_then_newer_run", "naive_timestamp", "broken_check_url",
+])
+def test_job_timeout_with_unknown_or_conflicting_cause_is_not_retryable(case):
+    reader = TimeoutReader()
+    run = cancelled_run()
+    job = reader.jobs[1]
+    annotation = reader.annotations[120485524103][0]
+    if case == "no_annotations":
+        reader.annotations = {}
+    elif case == "notice_level":
+        annotation["annotation_level"] = "notice"
+    elif case == "short_elapsed":
+        job["completed_at"] = "2026-10-23T15:05:00Z"
+    elif case == "unparsed_limit":
+        annotation["message"] = "The job has exceeded the maximum execution time"
+    elif case == "no_runner":
+        job["runner_id"] = 0
+    elif case == "no_steps":
+        job["steps"] = []
+    elif case == "no_cancelled_step":
+        job["steps"] = [step for step in job["steps"] if step["conclusion"] != "cancelled"]
+    elif case == "newer_head":
+        job["head_sha"] = "older"
+    elif case == "other_attempt":
+        job["run_attempt"] = 2
+    elif case == "other_run":
+        job["run_id"] = 2
+    elif case == "foreign_check":
+        job["check_run_url"] = "https://api.github.com/repos/other/repo/check-runs/120485524103"
+    elif case == "unfinished_job":
+        reader.jobs[0]["status"] = "in_progress"
+    elif case == "person_cancelled_sibling":
+        reader.jobs[0].update(conclusion="cancelled", completed_at=job["completed_at"], steps=job["steps"])
+        reader.annotations[120485523998] = [{"annotation_level": "failure", "message": "The run was canceled by @octocat."}]
+    elif case == "failed_run":
+        run["conclusion"] = "failure"
+    elif case == "timeout_then_person":
+        reader.annotations[120485524103].append({"annotation_level": "failure", "message": "The run was canceled by @octocat."})
+    elif case == "timeout_then_newer_run":
+        reader.annotations[120485524103].append({"annotation_level": "failure", "message":
+            "Canceling since a higher priority waiting request for 'Validate Skills-feature' exists"})
+    elif case == "naive_timestamp":
+        job["started_at"] = "2026-10-23T15:00:35"
+    elif case == "broken_check_url":
+        job["check_run_url"] = "https://[broken"
+    elif case == "actor":
+        reader.degraded_reasons = [{"component": "actor"}]
+    elif case == "read_error":
+        def unavailable(*_args, **_kwargs):
+            raise gh_pr_watch.github_read.GitHubReadError("unavailable", result=None, diagnostics={})
+        reader.paged_json = unavailable
+    else:
+        def bad_shape(*_args, **_kwargs):
+            raise gh_pr_watch.github_read.GitHubReadShapeError("repeated page")
+        reader.paged_json = bad_shape
+    assert not gh_pr_watch.job_timeout_retry(sample_pr(), run, reader)
+
+
+@pytest.mark.parametrize("own_timeout", [True, False])
+def test_snapshot_offers_retry_only_for_a_verified_own_timeout(monkeypatch, tmp_path, own_timeout):
+    reader = TimeoutReader()
+    if not own_timeout:
+        reader.annotations[120485524103][0]["message"] = "The run was canceled by @octocat."
+    monkeypatch.setattr(gh_pr_watch, "watcher_reader",
+                        lambda **kwargs: ReviewReader() if kwargs.get("operation") is None else reader)
+    monkeypatch.setattr(gh_pr_watch, "get_authenticated_login", lambda *_a, **_kw: "fixture-bot")
+    monkeypatch.setattr(gh_pr_watch, "fetch_new_review_items", lambda *_a, **_kw: [])
+    monkeypatch.setattr(gh_pr_watch.github_read, "pull_request_checks", lambda *_a, **_kw: {})
+    monkeypatch.setattr(gh_pr_watch, "summarize_checks", lambda *_a, **_kw: sample_checks(failed_count=1))
+    monkeypatch.setattr(gh_pr_watch, "get_workflow_runs_for_sha", lambda *_a, **_kw: [
+        {"id": 1, "head_sha": "abc123", "run_attempt": 1, "status": "completed", "conclusion": "cancelled",
+         "name": "Validate Skills", "event": "pull_request"},
+    ])
+    monkeypatch.setattr(gh_pr_watch, "failed_jobs_from_workflow_runs", lambda *_a, **_kw: [failed_job(1, "cancelled")])
+    snapshot, _ = gh_pr_watch.collect_locked_snapshot(
+        argparse.Namespace(max_flaky_retries=3), sample_pr(), {}, tmp_path / "state.json")
+    assert ("retry_failed_checks" in snapshot["actions"]) == own_timeout
+    assert "diagnose_ci_failure" in snapshot["actions"]
+
+
+def test_own_timeout_retry_reruns_failed_jobs_within_the_budget(monkeypatch, tmp_path):
+    run = {**cancelled_run(), "retry_mode": "job_timeout"}
+    _, path = retry_snapshot(monkeypatch, tmp_path, [run], [failed_job(1, "cancelled")])
+    writes = []
+    monkeypatch.setattr(gh_pr_watch, "gh_text", lambda args, **kwargs: writes.append(args))
+    result = gh_pr_watch.retry_failed_now(argparse.Namespace())
+    assert writes == [["run", "rerun", "1", "--failed"]]
+    assert result["rerun_run_ids"] == [1]
+    assert gh_pr_watch.current_retry_count(gh_pr_watch.load_state(path)[0], "abc123") == 1
 
 
 if __name__ == "__main__":
