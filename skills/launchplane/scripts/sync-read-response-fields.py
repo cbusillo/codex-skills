@@ -3,22 +3,6 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""Keep the pinned Launchplane read response fields equal to Launchplane's.
-
-The pin lists, for each bounded GET read in BOUNDED_READ_RESPONSE_FIELDS, the
-top-level response fields Launchplane's published OpenAPI declares for that
-route. The tests require each pinned set to fit the caller's allowlist, so a
-field Launchplane adds is accepted, and projected only on purpose, before it
-stops a read.
-
-`sync [--ref REF]` rewrites the pin from Launchplane's OpenAPI at REF (default
-`main`). Name the Launchplane commit in the commit that changes the pin.
-
-`check [--ref REF]` exits 0 when the pin matches, 1 when it differs, and 2 when
-Launchplane's OpenAPI could not be read or no longer describes a pinned route.
-CI runs it so a drift fails the build.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -83,30 +67,35 @@ def render_pin(openapi: dict[str, Any]) -> bytes:
 
 
 def run(argv: list[str], *, fetch: Fetch = fetch_upstream, pin: Path = PIN_PATH) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description="Compare pinned read fields with generated OpenAPI.")
     parser.add_argument("command", choices=("check", "sync"))
-    parser.add_argument("--ref", default="main", help="Launchplane git ref to compare or copy (default: main)")
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument("--ref", default="main", help="Historical ref with a published OpenAPI snapshot")
+    source.add_argument("--openapi-file", type=Path, help="OpenAPI exported from a producer checkout")
     args = parser.parse_args(argv)
+    source_label = "the supplied generated schema" if args.openapi_file else f"Launchplane {args.ref}"
     try:
-        upstream = render_pin(json.loads(fetch(args.ref)))
+        document = args.openapi_file.read_bytes() if args.openapi_file else fetch(args.ref)
+        upstream = render_pin(json.loads(document))
     except (OSError, ValueError, KeyError, TypeError, urllib.error.URLError) as exc:
-        print(f"unavailable: could not derive read fields from {upstream_url(args.ref)} ({type(exc).__name__}: {exc})",
+        print(f"unavailable: could not derive read fields from {source_label} ({type(exc).__name__}: {exc}). "
+              "Generate OpenAPI from Launchplane source and pass --openapi-file.",
               file=sys.stderr)
         return 2
     if args.command == "check":
         if pin.read_bytes() == upstream:
-            print(f"current: {pin.name} matches Launchplane {args.ref}")
+            print(f"current: {pin.name} matches {source_label}")
             return 0
         print(
-            f"drift: {pin.name} differs from Launchplane {args.ref}. Run "
-            "`uv run skills/launchplane/scripts/sync-read-response-fields.py sync`, "
+            f"drift: {pin.name} differs from {source_label}. Run "
+            "`uv run skills/launchplane/scripts/sync-read-response-fields.py sync --openapi-file FILE`, "
             "add each new field to its read in BOUNDED_READ_RESPONSE_FIELDS, "
             "and name the Launchplane commit in the commit message.",
             file=sys.stderr,
         )
         return 1
     pin.write_bytes(upstream)
-    print(f"synced: {pin.name} from Launchplane {args.ref}")
+    print(f"synced: {pin.name} from {source_label}")
     return 0
 
 

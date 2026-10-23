@@ -2360,6 +2360,18 @@ reuse the dry run's exact keys, reason, review id and digest. A 403
 with its trace. A client timeout is `unavailable` with the error code
 `client_timeout`.
 
+## Read-response compatibility
+
+The read-response compatibility check generates OpenAPI from the public producer
+source before comparison; current Launchplane no longer commits the schema JSON.
+For local checks, export with `uv run --locked launchplane service export-openapi
+--output /private/path/openapi.json` in the selected Launchplane checkout, then run
+`uv run skills/launchplane/scripts/sync-read-response-fields.py check --openapi-file
+/private/path/openapi.json` from this catalog. `sync --openapi-file` updates the
+pin after reviewing changed fields and naming that producer commit. Historical
+`--ref` reads remain available for revisions that published the old snapshot.
+Missing or invalid file inputs fail closed without a network fallback.
+
 ## Policy Proposals
 
 `privileged-policy-propose --payload-file <private-envelope>` is a bounded local

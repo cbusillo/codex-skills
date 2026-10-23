@@ -26,11 +26,27 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Check out Launchplane source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: cbusillo/launchplane
+          ref: main
+          path: launchplane-source
+          persist-credentials: false
+
       - name: Install uv
         uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
-          cache-dependency-glob: "**/*.py"
+          cache-dependency-glob: |
+            skills/launchplane/scripts/sync-read-response-fields.py
+            launchplane-source/uv.lock
+            launchplane-source/pyproject.toml
+            launchplane-source/.python-version
           python-version: "3.12"
 
+      - name: Generate the producer schema
+        working-directory: launchplane-source
+        run: uv run --python "$(cat .python-version)" --locked launchplane service export-openapi --output "${RUNNER_TEMP}/launchplane-openapi.json"
+
       - name: Compare the pin with Launchplane main
-        run: uv run skills/launchplane/scripts/sync-read-response-fields.py check
+        run: uv run skills/launchplane/scripts/sync-read-response-fields.py check --openapi-file "${RUNNER_TEMP}/launchplane-openapi.json"

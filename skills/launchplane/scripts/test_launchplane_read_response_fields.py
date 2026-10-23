@@ -77,5 +77,21 @@ def test_sync_reads_the_requested_ref(tmp_path: Path) -> None:
     assert requested == ["abc123"]
 
 
+def test_check_accepts_generated_source_schema_without_fetching_a_snapshot(tmp_path: Path) -> None:
+    schema = tmp_path / "openapi.json"
+    schema.write_bytes(_openapi())
+    pin = tmp_path / "pin.json"
+    pin.write_bytes(sync.render_pin(json.loads(schema.read_bytes())))
+
+    def unavailable(_ref: str) -> bytes:
+        raise AssertionError("A supplied generated schema must not fetch a remote snapshot.")
+
+    assert sync.run(["check", "--openapi-file", str(schema)], fetch=unavailable, pin=pin) == 0
+    schema.write_bytes(_openapi("new_response_field"))
+    assert sync.run(["check", "--openapi-file", str(schema)], fetch=unavailable, pin=pin) == 1
+    schema.unlink()
+    assert sync.run(["check", "--openapi-file", str(schema)], fetch=unavailable, pin=pin) == 2
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))
