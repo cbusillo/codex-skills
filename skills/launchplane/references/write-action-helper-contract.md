@@ -554,6 +554,14 @@ installed local helper bindings.
   before `product-profile-read`. The dedicated mapping read is GET-only; it is
   not an exposed write-action CLI command. An absent or ambiguous mapping,
   mismatched profile or unavailable read never supplies standing acceptance.
+  Any active product classification can supply the recorded Director standing;
+  a repository pinned into another Client's Odoo lane still requires Client
+  review. Standing reads inspect Odoo prod/testing lane pins; unavailable or
+  truncated lane evidence and ambiguous mappings withhold standing. This does
+  not change ordinary Client-note discovery when its mapping is unknown.
+  All enrolled products still
+  require Client test notes, including the existing no-test reason for tooling;
+  standing acceptance removes the per-PR acceptance step.
 - An odd value in an optional field (for example a status Launchplane added
   later) is dropped to `""` and listed by path in `dropped_field_paths`, with
   `dropped_field_count`; an event without a usable id or type is left out and

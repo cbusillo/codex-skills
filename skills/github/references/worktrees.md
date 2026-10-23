@@ -120,7 +120,9 @@ merge-train worktree on another branch when its HEAD is one of the PR's own
 commits. It keeps one whose HEAD is on the default branch's first-parent
 history, since a fresh worktree starts there, every such worktree when the PR
 was fast-forwarded, and one whose branch an open claim on the PR or an issue
-it links names. The host helper's own checks still decide.
+it links names. Only an exact release ends a claim, even when its marker
+stays in Current Status; an expired session lease does not, since the session
+may still be open. The host helper's own checks still decide.
 Portable unlocked worktrees are outside it and follow work-closeout. The
 [daily stranded-work sweep](../../direction/references/stranded-work.md) reports
 finished worktrees the landing step left behind.
