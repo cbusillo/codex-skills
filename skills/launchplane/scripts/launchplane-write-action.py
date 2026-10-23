@@ -3033,8 +3033,10 @@ def _project_reconcile_feedback(value: object, drops: _FieldDrops) -> dict[str, 
     projected: dict[str, object] = {}
     for key, item in value.items():
         if key in validators:
-            projected[key] = drops.keep(f"requests[].last_plan.pr_feedback.{key}", validators[key], item)
-        else:
+            kept = drops.keep(f"requests[].last_plan.pr_feedback.{key}", validators[key], item)
+            if kept != "":
+                projected[key] = kept
+        elif key != "error" or (item is not None and item != ""):
             path = "error" if key == "error" else "<unlisted field>"
             drops.drop(f"requests[].last_plan.pr_feedback.{path}")
     return projected
@@ -3368,7 +3370,7 @@ def _project_target_replacement_result(
         known=TARGET_REPLACEMENT_RESULT_FIELDS,
         drops=drops,
     )
-    if image_reference not in {None, ""}:
+    if image_reference is not None and image_reference != "":
         # The repository part of the reference is dropped; only the digest is kept.
         drops.drop("result.image_reference")
     return projected

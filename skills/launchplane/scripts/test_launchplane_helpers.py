@@ -4551,6 +4551,12 @@ def test_reconcile_requests_read_projects_feedback_without_inventing_terminal_ev
         "requests[].last_plan.pr_feedback.error",
     ]
 
+    response["requests"][0]["last_plan"]["pr_feedback"] = {**feedback, "error": ""}
+    status, payload, _calls = _run_product_read(argv, response)
+    assert status == 0
+    assert payload["result"]["requests"][0]["last_plan"]["pr_feedback"] == feedback
+    assert not payload["result"]["dropped_field_paths"]
+
     response["requests"][0]["last_plan"]["pr_feedback"] = {"error": "Legacy unclassified feedback"}
     status, payload, _calls = _run_product_read(argv, response)
     assert status == 0
@@ -4568,8 +4574,6 @@ def test_reconcile_requests_read_projects_feedback_without_inventing_terminal_ev
     assert payload["result"]["requests"][0]["last_plan"]["pr_feedback"] == {
         "status": "future_status",
         "delivery_status": "future_delivery",
-        "comment_id": "",
-        "body_sha256": "",
     }
 
     response["requests"][0]["last_plan"]["pr_feedback"] = {"feedback_id": "token ghp_abcdefghijklmnop"}
@@ -4589,6 +4593,13 @@ def test_optional_read_scalars_reject_unhashable_values_with_safety_errors() -> 
         for value in ({"unexpected": "value"}, ["unexpected"]):
             with pytest.raises(safety.LaunchplaneSafetyError):
                 validator(value)
+    for value in ({"unexpected": "value"}, ["unexpected"]):
+        with pytest.raises(safety.LaunchplaneSafetyError):
+            write_action._project_image_repository(value, pattern=write_action.re.compile(r"[a-z]+"))
+        drops = write_action._FieldDrops()
+        projected = write_action._project_target_replacement_result({"image_reference": value}, drops)
+        assert projected["image_digest"] == ""
+        assert "result.image_reference" in drops.paths
 
 
 def test_reconcile_requests_read_keeps_generic_web_testing_outcome() -> None:

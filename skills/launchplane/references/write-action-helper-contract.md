@@ -571,9 +571,10 @@ installed local helper bindings.
   are omitted and counted; a rejection without a usable commit is omitted and
   counted as an entry. Lists retain the existing 20-entry bound.
   `pr_feedback` retains bounded `status`, `delivery_status`, `delivery_action`
-  and legacy `owner_review` codes, `feedback_id`, nonnegative PR/comment ids,
-  and the comment body's `body_sha256` digest. Error prose is withheld and
-  counted by name, other unknown nested fields under `<unlisted field>`.
+  and feedback-time `owner_review` codes, `feedback_id`, nonnegative PR/comment ids,
+  and the comment body's `body_sha256` digest. Invalid or empty optional fields
+  are omitted; malformed values are counted. Nonempty error prose is withheld
+  and counted by name, other unknown nested fields under `<unlisted field>`.
   Missing legacy fields stay missing and new code values stay explicit; the
   helper never infers terminal feedback, delivery or current Client acceptance
   from an absent comment, missing status or a historical feedback record.
