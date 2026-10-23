@@ -124,8 +124,6 @@ def parse_status_filter(values: list[str], default: set[str]) -> set[str]:
 def parse_variant(value: str) -> dict[str, str]:
     name, sep, rest = value.partition("=")
     provider, sep2, model = rest.partition(":")
-    if provider == "code-llm":
-        raise SystemExit("error: code-llm belongs to the retired Every Code harness; use NAME=claude:MODEL")
     if not sep or not sep2 or provider != "claude" or not name.strip() or not model:
         raise SystemExit(f"error: invalid variant {value!r}; expected NAME=PROVIDER:MODEL")
     return {"name": name.strip(), "provider": provider, "model": model}
@@ -313,7 +311,7 @@ def summarize_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def row_key(budget_name: str, variant: dict[str, str]) -> tuple[str, str, str, str]:
-    return (budget_name, variant["name"], variant["provider"], variant["model"])
+    return budget_name, variant["name"], variant["provider"], variant["model"]
 
 
 def reusable_existing_row(
@@ -331,7 +329,7 @@ def read_existing_rows(path: Path) -> dict[tuple[str, str, str, str], list[dict[
     rows: dict[tuple[str, str, str, str], list[dict[str, Any]]] = {}
     if not path.exists():
         return rows
-    with path.open("r", encoding="utf-8") as handle:
+    with path.open(encoding="utf-8") as handle:
         for line in handle:
             if not line.strip():
                 continue
@@ -352,7 +350,7 @@ def read_existing_rows(path: Path) -> dict[tuple[str, str, str, str], list[dict[
 
 
 def sha256_text(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+    return hashlib.sha256(value.encode()).hexdigest()
 
 
 def append_jsonl(path: Path, payload: dict[str, Any]) -> None:
@@ -429,7 +427,7 @@ def discard_item() -> dict[str, Any]:
 
 
 def read_json(path: Path) -> dict[str, Any]:
-    with path.open("r", encoding="utf-8") as handle:
+    with path.open(encoding="utf-8") as handle:
         payload = json.load(handle)
     if not isinstance(payload, dict):
         raise ValueError(f"{path} did not contain a JSON object")

@@ -400,8 +400,8 @@ memory/profile/local-config candidates.
 
 For rollout/model matrix evaluation, use the matrix runner's bounded Claude
 transport, which sends the selected-note prompt on stdin and requests strict
-JSON output. The retired Every Code `code-llm` transport is rejected, including
-in dry runs. Existing matrix result files remain readable as historical data.
+JSON output. Other transports are rejected, including in dry runs. Existing
+matrix result files remain readable as historical data.
 Use explicit `NAME=claude:MODEL` variants for approved model comparisons;
 additional variants change provider cost and runtime. Keep prompt content,
 budgets, validation, and output artifacts on this controlled one-shot path.
