@@ -1,6 +1,6 @@
 ---
 name: supervisor
-description: Use to start a separate terminal worker on any provider through the supported launcher, or when the Director asks a session to supervise other sessions for a stretch of work or take over a Supervisor handoff. Full supervision groups related work, checks sessions about every 23 minutes, records Director decisions, routes landings through the merge train, and hands off what needs the Director. Not for in-harness subagents, model reviews (model-review), Computer Use calls, doing an item's work (executing loop), judging supervised runs (direction, on another model), or watching one PR (babysit-pr).
+description: Use to hand implementation work to a separate agent process on any provider, including headless CLI handoffs, through the supported launcher; or when the Director asks a session to supervise other sessions for a stretch of work or take over a Supervisor handoff. Full supervision groups related work, checks sessions about every 23 minutes, records Director decisions, routes landings through the merge train, and hands off what needs the Director. Not for in-harness subagents, model reviews (model-review), Computer Use calls, doing an item's work (executing loop), judging supervised runs (direction, on another model), or watching one PR (babysit-pr).
 metadata:
   short-description: Brief, watch, nudge, and record agent sessions
 resources:
@@ -280,11 +280,10 @@ Follow [task scope](../references/execution-scope.md) and
 Use [the step-to-skill table](../references/using-skills.md) for each step,
 `direction` for daily turns and escalations, and `launchplane` for train operations.
 
-For a separate terminal worker, read [Harnesses](#harnesses), [Local State](#local-state),
+For a separate worker, read [Harnesses](#harnesses), [launch effort](#accounts-pace-and-launch-effort), [the session registry](references/helpers.md#local-state-and-the-session-registry),
 [terminal launches](references/helpers.md#terminal-launches), [account choice](references/helpers.md#choosing-the-account), and
-[shutdown stages](references/helpers.md#finished-session-shutdown-stages) before using `iterm_tab.py new --account-provider`.
-Within existing delegation authority, the launching session owns launch records, capacity nudges, monitoring and verified closeout.
-These launcher duties do not start a full Supervisor run; its remaining procedure follows below.
+[worker closeout](#close-finished-sessions-on-every-notice-and-check) before using `iterm_tab.py new --account-provider`.
+Within existing delegation authority, the launching session takes the Supervisor's role in these sections and the brief rules for workers it launches. This does not start a full Supervisor run.
 
 For full supervision, the Director starts `/shared:supervisor` on Claude Code
 and names the run. This is a `direction` session, started directly in a host,
