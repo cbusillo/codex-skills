@@ -99,6 +99,35 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(target.read_text(), reconciled)
         self.assertFalse((self.codex / "hooks.json").exists())
 
+    def test_direction_refresh_updates_both_hosts_without_adopting_direction_as_personal(self) -> None:
+        private = self.catalog / ".local/global-instructions.md"
+        private.parent.mkdir()
+        private.write_text("Personal fixture rule.\n")
+        before = private.read_bytes()
+        first = self.sync.DIRECTION_START + "\nFirst merged direction."
+        updated = self.sync.DIRECTION_START + "\nUpdated merged direction."
+        for path in (self.codex / "AGENTS.md", self.claude / "CLAUDE.md"):
+            path.write_text(self.sync.render(self.catalog / "instructions/global.md", private, first))
+        with mock.patch.object(self.sync, "direction_content", return_value=first):
+            self.install()
+        with mock.patch.object(self.sync, "direction_content", return_value=updated):
+            self.install()
+            self.install()
+        for path in (self.codex / "AGENTS.md", self.claude / "CLAUDE.md"):
+            self.assertIn(updated, path.read_text())
+            self.assertNotIn(first, path.read_text())
+            self.assertIn(private.read_text().strip(), path.read_text())
+        self.assertEqual(private.read_bytes(), before)
+
+    def test_unavailable_merged_direction_preserves_installed_files_and_receipt(self) -> None:
+        self.install()
+        paths = (self.codex / "AGENTS.md", self.claude / "CLAUDE.md", self.catalog / ".local/catalog-install.json")
+        before = {path: path.read_bytes() for path in paths}
+        with mock.patch.object(self.sync, "direction_content", side_effect=ValueError("merged source unavailable")):
+            with self.assertRaisesRegex(ValueError, "merged source unavailable"):
+                self.install()
+        self.assertEqual({path: path.read_bytes() for path in paths}, before)
+
     def test_fresh_install_twice_preserves_personal_settings_and_new_skills(self):
         (self.claude / "CLAUDE.md").write_text("Keep my history.\n")
         (self.codex / "AGENTS.md").write_text("Prefer concise replies.\n")

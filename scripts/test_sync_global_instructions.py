@@ -9,6 +9,8 @@
 
 import importlib.util
 import json
+import os
+import runpy
 import shlex
 import subprocess
 import sys
@@ -25,7 +27,65 @@ SPEC.loader.exec_module(sync)
 
 
 class GlobalInstructionsTests(unittest.TestCase):
-    def test_explicit_upgrade_adopts_legacy_catalog_hook_and_preserves_other_handlers(self) -> None:
+    def test_direction_bundle_uses_merged_sources_and_scopes_only_the_selected_owner(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            marker = home / ".code/direction-last-check.json"
+            marker.parent.mkdir()
+            marker.write_text(
+                json.dumps(
+                    {
+                        "turn": "2026-10-23T12:00:00Z",
+                        "turn_repo": "owner/direction",
+                        "audits": {
+                            "owner/direction": "2026-10-23",
+                            "owner/product": "2026-10-23",
+                            "other/product": "2026-10-23",
+                        },
+                    }
+                )
+            )
+            sources = {
+                "owner/direction": "# Overall fixture\n\nComplete purpose and boundaries.\n",
+                "owner/product": "# Product fixture\n\nComplete journey.\n",
+            }
+            calls = []
+
+            def read(*args: str) -> subprocess.CompletedProcess[str]:
+                calls.append(args)
+                repo = args[1].removeprefix("repos/").removesuffix("/contents/DIRECTION.md")
+                return subprocess.CompletedProcess(args, 0, sources[repo], "")
+
+            hook = runpy.run_path(str(sync.ROOT / "hooks/direction_check_hook.py"))
+            with (
+                mock.patch.dict(os.environ, {"DIRECTION_MARKER": str(marker)}),
+                mock.patch.object(sync.runpy, "run_path", return_value={**hook, "run_reader": read}),
+            ):
+                content = sync.direction_content(home)
+            for failure in (subprocess.CompletedProcess([], 1, "", "read unavailable"), subprocess.TimeoutExpired("reader", 6)):
+                failed_reader = (mock.Mock(side_effect=failure) if isinstance(failure, Exception)
+                                 else mock.Mock(return_value=failure))
+                with (mock.patch.dict(os.environ, {"DIRECTION_MARKER": str(marker)}),
+                      mock.patch.object(sync.runpy, "run_path", return_value={**hook, "run_reader": failed_reader})):
+                    with self.assertRaisesRegex(ValueError, "owner/direction"):
+                        sync.direction_content(home)
+            for repo, source in sources.items():
+                self.assertIn(source, content)
+                self.assertIn(repo, content)
+            self.assertNotIn("other/product", content)
+            self.assertEqual(len(calls), len(sources))
+            self.assertLess(
+                content.index(sources["owner/direction"]),
+                content.index(sources["owner/product"]),
+            )
+            with mock.patch.dict(os.environ, {"DIRECTION_MARKER": str(home / "missing")}):
+                self.assertEqual(sync.direction_content(home), "")
+
+    def test_explicit_upgrade_adopts_legacy_catalog_hook_and_preserves_other_handlers(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             codex = Path(directory)
             path = codex / "hooks.json"
