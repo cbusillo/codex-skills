@@ -19,6 +19,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -2408,6 +2409,7 @@ PRODUCT_READ_PATH_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 PRODUCT_ACTIVITY_MAX_EVENTS = 50
 PRODUCT_ACTIVITY_MAX_RECORD_LINKS = 10
 PRODUCT_HEALTH_MAX_CHECKS = 20
+PRODUCT_OPERATIONAL_MAX_ENTRIES = 50
 PRODUCT_ACTIVITY_CODE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]{0,79}$")
 PREVIEW_MAX_GENERATIONS = 20
 PREVIEW_MAX_SOURCES = 10
@@ -2569,7 +2571,80 @@ def _project_product_health(value: object) -> dict[str, object] | None:
         "provenance": _project_product_provenance(source.get("provenance")),
         "checks": projected_checks,
         "checks_truncated": len(checks) > PRODUCT_HEALTH_MAX_CHECKS,
+        **_project_operational_list(source, "open_incidents", _project_product_incident),
     }
+
+
+def _project_operational_list(
+    source: dict[str, Any], key: str, project: Callable[[dict[str, Any]], dict[str, object]],
+) -> dict[str, object]:
+    values = source.get(key)
+    if values is None:
+        return {key: None, f"{key}_count": None, f"{key}_truncated": None}
+    if not isinstance(values, list):
+        raise LaunchplaneSafetyError("invalid_response")
+    return {
+        key: [project(_require_dict(value)) for value in values[:PRODUCT_OPERATIONAL_MAX_ENTRIES]],
+        f"{key}_count": len(values),
+        f"{key}_truncated": len(values) > PRODUCT_OPERATIONAL_MAX_ENTRIES,
+    }
+
+
+def _project_product_incident(source: dict[str, Any]) -> dict[str, object]:
+    return {
+        "incident_id": _optional_identifier(source.get("incident_id")),
+        "check_name": _optional_identifier(source.get("check_name")),
+        **{key: _optional_code(source.get(key)) for key in (
+            "status", "severity", "failure_code", "failure_layer",
+        )},
+    }
+
+
+def _project_topology_warning(source: dict[str, Any]) -> dict[str, object]:
+    return {key: _optional_code(source.get(key)) for key in ("code", "scope", "severity")}
+
+
+def _project_tls_domain(source: dict[str, Any]) -> dict[str, object]:
+    domain = source.get("domain_name")
+    if not isinstance(domain, str) or len(domain) > 253 or not all(
+        re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label)
+        for label in domain.split(".")
+    ):
+        raise LaunchplaneSafetyError("invalid_response")
+    return {
+        "domain_name": public_identifier(domain),
+        "status": _optional_code(source.get("status")),
+        "trust_state": _optional_code(source.get("trust_state")),
+        "provenance": _project_product_provenance(source.get("provenance")),
+    }
+
+
+def _project_product_topology(value: object) -> dict[str, object] | None:
+    source = _optional_dict(value)
+    if source is None:
+        return None
+    observed = _optional_dict(source.get("observed"))
+    return {
+        **_project_operational_list(source, "warnings", _project_topology_warning),
+        "observed": None if observed is None else _project_operational_list(
+            observed, "tls_domains", _project_tls_domain,
+        ),
+    }
+
+
+def _product_other_warning_count(source: dict[str, Any]) -> int | None:
+    warnings = source.get("warnings")
+    if warnings is None:
+        return None
+    if not isinstance(warnings, list) or not all(isinstance(warning, str) for warning in warnings):
+        raise LaunchplaneSafetyError("invalid_response")
+    topology = _optional_dict(source.get("topology"))
+    if topology is None or not isinstance(topology.get("warnings"), list):
+        return None
+    details = [_require_dict(warning).get("detail") for warning in topology["warnings"]]
+    if not all(isinstance(detail, str) for detail in details):
+        raise LaunchplaneSafetyError("invalid_response")
+    return sum(warning not in details for warning in warnings)
 
 
 def _project_product_public_ingress(value: object) -> dict[str, object] | None:
@@ -2586,7 +2661,6 @@ def _project_product_public_ingress(value: object) -> dict[str, object] | None:
 
 
 def _project_product_environment(value: object) -> dict[str, object]:
-    """Deploy-verification fields only; settings, secrets, actions and URLs are dropped."""
     source = _require_dict(value)
     projected: dict[str, object] = {
         "product": public_identifier(source.get("product")),
@@ -2596,6 +2670,8 @@ def _project_product_environment(value: object) -> dict[str, object]:
         "driver_id": _optional_identifier(source.get("driver_id")),
         "target": _project_product_target(source.get("target")),
         "health_monitoring": _project_product_health(source.get("health_monitoring")),
+        "topology": _project_product_topology(source.get("topology")),
+        "other_warning_count": _product_other_warning_count(source),
         "public_ingress": _project_product_public_ingress(source.get("public_ingress")),
         "trust_state": _optional_code(source.get("trust_state")),
         "provenance": _project_product_provenance(source.get("provenance")),
@@ -5268,8 +5344,9 @@ def summarize_product_environment_read(
         result_key="environment",
         project=_project_product_environment,
         recommendation=(
-            "Compare target.artifact and the expected and observed runtime identity "
-            "with the build you expect this lane to serve."
+            "Compare deployment identity and fresh health evidence with the expected build. "
+            "Also inspect open incidents, topology warning codes, TLS states and other_warning_count; "
+            "passing checks alone do not establish sidebar green. Missing or truncated evidence is unknown."
         ),
     )
 
@@ -9374,7 +9451,7 @@ def _apply_outcome_unknown(
     payload = base_payload(status="outcome_unknown", operation=operation, request=request)
     payload["summary"] = {
         "recommendation": (
-            f"The apply outcome is unknown because the exchange failed after the POST began. "
+            "The apply outcome is unknown because the exchange failed after the POST began. "
             + (_recovery_apply_readback(request)
                if operation == "generic-web-deploy-recovery-apply"
                else f"Read back the {label} before any retry.")

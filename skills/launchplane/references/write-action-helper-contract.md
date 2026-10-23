@@ -500,6 +500,19 @@ installed local helper bindings.
   fresh. Private endpoint keys, URLs, free-text provenance detail and unknown
   fields are dropped; malformed retained values fail the read. Check output
   remains bounded with `checks_truncated` disclosing omitted checks.
+  `health_monitoring.open_incidents` retains incident IDs, check names, status,
+  severity, failure code and layer, including provider warnings independent of
+  healthy checks. `topology.warnings` retains code, scope and severity;
+  `topology.observed.tls_domains` retains DNS names, states and provenance.
+  These lists disclose full counts and truncation; omitted legacy lists remain
+  `null`, never an empty all-clear. `other_warning_count` counts lane warnings
+  whose detail is absent from topology warnings, matching the sidebar's separate
+  warning branch without exposing prose. Missing warning inputs remain unknown.
+  Passing checks and identity alone never establish sidebar green: inspect all
+  attention evidence and freshness, and preserve unknown/truncated results.
+  Incident summaries, warning detail, certificate contents, URLs and other
+  topology fields are omitted. The helper reports evidence, not a second color
+  algorithm or authority to clear an incident.
 - `product-activity-read --product` returns up to 50 events, newest first, each
   with type, lane, action, status, time, title, summary and up to 10 record
   links; `events_truncated` says when more were returned.
