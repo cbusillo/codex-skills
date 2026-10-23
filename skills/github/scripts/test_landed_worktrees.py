@@ -18,6 +18,7 @@ from contextlib import redirect_stdout
 from unittest import mock
 
 import github_plan_claim
+import github_plan_lease
 import landed_worktrees
 
 
@@ -167,12 +168,13 @@ class MainTests(Fixture):
         super().setUp()
         self.git(self.repo, "remote", "set-url", "origin", "https://github.com/o/sample.git")
 
-    def run_main(self, pull, repo="o/sample", commits=(), discussions=None):
+    def run_main(self, pull, repo="o/sample", commits=(), discussions=None, bodies=None):
         config = self.base / "worktrees.json"
         config.write_text(json.dumps({"root": str(self.root), "hostHelper": str(self.base / "host-helper")}))
         discussions = discussions or {}
         reader = mock.Mock()
-        reader.get_json.side_effect = lambda path, step: pull if path.endswith("/pulls/7") else {"body": ""}
+        reader.get_json.side_effect = lambda path, step: pull if path.endswith("/pulls/7") else {
+            "body": (bodies or {}).get(path.rsplit("/", 1)[-1], "")}
 
         def paged_json(path, step_prefix):
             if path.endswith("/pulls/7/commits"):
@@ -240,6 +242,37 @@ class MainTests(Fixture):
         self.assertEqual(code, 0)
         self.assertEqual({r["path"]: r["decision"] for r in result["worktrees"]}[str(refresh)], "kept")
         self.assertNotIn(mock.call(str(refresh), dry_run=False), run.call_args_list)
+
+    def claimed_source(self, *, released):
+        record = {"worker": "author", "session": "s1", "branch": "work/source", "claimed_at": "2026-10-22T00:00:00Z"}
+        claim = {"id": 11, "user": {"login": "bot"}, "created_at": "2026-10-22T00:00:00Z",
+                 "body": "Claimed by author\n" + github_plan_claim.marker(record)}
+        release = {"id": 12, "user": {"login": "bot"}, "created_at": "2026-10-22T01:00:00Z",
+                   "body": "Released claim 11\n\nHandoff: ready for the train."}
+        status = "## Current Status\n\nNext action: train lands it.\n" + github_plan_claim.marker(record)
+        return {"discussions": {"3": [claim, release] if released else [claim]}, "bodies": {"3": status}}
+
+    def test_released_claim_left_in_current_status_does_not_keep_the_worktree(self):
+        _, pull, commits = self.merged_refresh()
+        code, result, run = self.run_main(pull, commits=commits, **self.claimed_source(released=True))
+        source = str(self.root / "sample" / "source")
+        self.assertEqual((code, {r["path"]: r["decision"] for r in result["worktrees"]}[source]), (0, "retired"))
+        self.assertIn(mock.call(source, dry_run=False), run.call_args_list)
+
+    def test_unreleased_claim_in_current_status_keeps_the_worktree(self):
+        _, pull, commits = self.merged_refresh()
+        code, result, run = self.run_main(pull, commits=commits, **self.claimed_source(released=False))
+        source = str(self.root / "sample" / "source")
+        self.assertEqual((code, {r["path"]: r["decision"] for r in result["worktrees"]}[source]), (0, "kept"))
+        self.assertNotIn(mock.call(source, dry_run=False), run.call_args_list)
+
+    def test_claim_whose_session_lease_expired_does_not_keep_the_worktree(self):
+        _, pull, commits = self.merged_refresh()
+        github_plan_lease.renew("s1")
+        os.utime(github_plan_lease.lease_path("s1"), (0, 0))
+        code, result, run = self.run_main(pull, commits=commits, **self.claimed_source(released=False))
+        source = str(self.root / "sample" / "source")
+        self.assertEqual({r["path"]: r["decision"] for r in result["worktrees"]}[source], "retired")
 
     def test_open_claim_on_an_issue_the_pr_refs_keeps_the_refresh_worktree(self):
         refresh, pull, commits = self.merged_refresh()
