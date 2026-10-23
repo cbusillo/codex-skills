@@ -3,22 +3,6 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""Record that a daily direction turn just finished, on this machine and for every machine.
-
-A daily turn is account-wide: it always covers the Director's OWNER/direction,
-whatever folder the session started in. The turn goes into the local marker
-and into one shared turn record, an issue in OWNER/direction kept by the
-automation identity. The session-start hook in `hooks/direction_check_hook.py`
-reads the marker, reads the shared record when the marker's turn is stale,
-and reminds the owner while a turn is overdue. Only the direction agent runs
-this, at the end of a turn the owner took part in. Audits are not marked by
-hand: `direction_audit.py` records each repository's audit and, after a
-complete `--weekly` run, the weekly audit, locally and in its own shared
-record. The `audits` map holds where each repository's next audit window
-starts; `audit_runs` holds when an audit last ran and, when it kept its window
-open, why; `weekly_audit` holds when the last complete weekly audit ran.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -38,8 +22,6 @@ MARKER_NAME = "direction-last-check.json"
 GITHUB_SCRIPTS = Path(__file__).resolve().parents[2] / "github" / "scripts"
 TURN_RECORD_TAG = "<!-- direction-turn-record -->"
 TURN_RECORD_TITLE = "Daily direction turns"
-WEEKLY_RECORD_TAG = "<!-- direction-weekly-audit-record -->"
-WEEKLY_RECORD_TITLE = "Weekly direction audits"
 OVERALL_REPO = "direction"
 SHARED_TIMEOUT = 60
 # Pages of open issues read to find a record. A record not found within them is unconfirmed.
@@ -192,15 +174,6 @@ def turn_record_body(stamp: str, repo: str) -> str:
     )
 
 
-def weekly_record_body(stamp: str) -> str:
-    return (
-        f"{WEEKLY_RECORD_TAG}\n"
-        "`direction_audit.py --weekly` updates this issue after a weekly audit that read every adopted repository. "
-        "Keep it open and do not edit it by hand.\n\n"
-        f"Last weekly audit: {stamp}\n"
-    )
-
-
 def run_helper(args: list[str], stdin: str | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(args, input=stdin, text=True, capture_output=True, timeout=SHARED_TIMEOUT)
 
@@ -212,11 +185,6 @@ def failure(result: subprocess.CompletedProcess[str]) -> str:
 def share_turn(stamp: str, repo: str) -> dict[str, object]:
     """Keep the shared turn record in OWNER/direction current, through the automation helpers."""
     return share_record(direction_repo(repo), TURN_RECORD_TAG, TURN_RECORD_TITLE, turn_record_body(stamp, direction_repo(repo)))
-
-
-def share_weekly(stamp: str, owner: str) -> dict[str, object]:
-    """Keep the shared weekly-audit record in OWNER/direction current; the turn record is not touched."""
-    return share_record(direction_repo(owner), WEEKLY_RECORD_TAG, WEEKLY_RECORD_TITLE, weekly_record_body(stamp))
 
 
 def trusted_record(issue: object, tag: str) -> bool:
@@ -269,7 +237,7 @@ def share_record(record_repo: str, tag: str, title: str, body: str) -> dict[str,
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description="Record an account-wide daily direction turn locally and publish its shared record.")
     parser.add_argument("kind", choices=["turn"], help="only a daily turn can be marked by hand")
     coverage = parser.add_mutually_exclusive_group(required=True)
     coverage.add_argument("--owner", type=account, help="the Director's account; the turn covers OWNER/direction")

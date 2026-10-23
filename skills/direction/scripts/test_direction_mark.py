@@ -302,26 +302,6 @@ def test_two_machines_one_turn() -> None:
         assert "HTTP 403" in hook.reminder(blind, soon, second, "owner")
 
 
-def test_turn_and_weekly_records_leave_each_other_untouched() -> None:
-    mark = load(SCRIPT, "direction_mark_separate_records")
-    with tempfile.TemporaryDirectory() as tmp:
-        github = FakeGitHub(Path(tmp) / "github")
-        with patch.object(mark, "GITHUB_SCRIPTS", github.scripts):
-            assert mark.share_turn("2026-09-20T00:00:00Z", "owner")["ok"]
-            turn_body = github.issues()[0]["body"]
-            assert mark.share_weekly("2026-09-21T00:00:00Z", "owner")["ok"]
-            issues = github.issues()
-            assert len(issues) == 2 and issues[0]["body"] == turn_body, "a weekly write leaves the turn record alone"
-            weekly_body = issues[1]["body"]
-            assert mark.share_turn("2026-09-22T00:00:00Z", "owner")["ok"]
-            issues = github.issues()
-            assert len(issues) == 2 and issues[1]["body"] == weekly_body, "a turn write leaves the weekly record alone"
-            assert "2026-09-22T00:00:00Z" in issues[0]["body"]
-            assert mark.share_weekly("2026-09-23T00:00:00Z", "owner")["ok"]
-            issues = github.issues()
-            assert len(issues) == 2 and "2026-09-22T00:00:00Z" in issues[0]["body"] and "2026-09-23T00:00:00Z" in issues[1]["body"]
-
-
 def test_a_record_beyond_the_first_page_is_found_and_updated() -> None:
     mark = load(SCRIPT, "direction_mark_paged_records")
     hook = load(HOOK, "direction_check_hook_paged_records")
@@ -352,7 +332,6 @@ def test_incomplete_record_discovery_is_unconfirmed_and_creates_nothing() -> Non
         printed = io.StringIO()
         with (patch.object(mark, "GITHUB_SCRIPTS", github.scripts), patch.object(mark, "RECORD_PAGES", 2),
               patch.dict(os.environ, {"DIRECTION_MARKER": str(path)}), redirect_stdout(printed), redirect_stderr(io.StringIO())):
-            assert mark.share_weekly(mark.utc_stamp(NOW), "owner")["ok"] is False
             assert mark.main(["turn", "--owner", "owner"]) == 2, "an unfinished search is not shared"
         assert len(github.issues()) == 200, "no record is created when one may exist beyond the pages read"
         assert json.loads(printed.getvalue())["shared"]["ok"] is False

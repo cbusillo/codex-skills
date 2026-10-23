@@ -1158,28 +1158,7 @@ retry_eligibility = "conditional"
 reconciliation_strategy = "read_after_write"
 retained_graphql_rationale = "No GraphQL transport; the record is one repository-scoped issue body."
 source_refs = ["direction/scripts/direction_mark.py:share_turn", "direction/scripts/direction_mark.py:share_record", "direction/scripts/direction_mark.py:oldest_record"]
-test_refs = ["direction/scripts/test_direction_mark.py:test_two_machines_one_turn", "direction/scripts/test_direction_mark.py:test_incomplete_record_discovery_is_unconfirmed_and_creates_nothing", "direction/scripts/test_direction_mark.py:test_turn_cli_requires_coverage_and_reports_written_repository", "direction/scripts/test_direction_mark.py:test_turn_cli_reports_local_write_failure_without_sharing", "direction/scripts/test_direction_mark.py:test_turn_cli_reports_marker_path_resolution_failure_without_sharing", "direction/scripts/test_direction_mark.py:test_turn_and_weekly_records_leave_each_other_untouched", "direction/scripts/test_direction_mark.py:test_a_record_beyond_the_first_page_is_found_and_updated", "direction/scripts/test_direction_mark.py:test_several_records_reader_takes_the_newest_and_writer_updates_the_oldest_trusted"]
-
-[[operations]]
-id = "github.direction.weekly_audit_record"
-request_priority = "essential"
-capabilities = ["issues_read", "issues_write"]
-permission_mode = "fixed"
-permission_note = "Uses the existing Issues read and write grants through gh-with-env-token and gh-issue, the same path as the shared turn record; no profile expansion. Written only after every adopted repository was read and the local weekly stamp was saved; a failed local write reports marker_error with exit 1 and attempts no shared write. A failed shared list or write is reported as shared.ok false with exit 2. The record has its own tag, so it never rewrites the turn record and the turn never rewrites it. A missing record is created only after every open issue is read; duplicate records reuse the oldest trusted match."
-entrypoint = "direction/scripts/direction_audit.py --weekly --owner OWNER (shared weekly-audit record)"
-intent = "Keep one open issue in OWNER/direction holding the last complete weekly audit."
-current_transport = "rest_api"
-selected_transport = "rest_api"
-endpoint_or_command = "GET /repos/{owner}/direction/issues?state=open&sort=created&direction=asc&per_page=100&page=N, page by page; then gh-issue edit on the oldest trusted record carrying the weekly-audit tag, or gh-issue create only when every open issue was read and none exists"
-quota_bucket = "rest_core"
-actor_policy = "automation_required_for_writes"
-mutation_class = "update"
-idempotency = "conditional"
-retry_eligibility = "conditional"
-reconciliation_strategy = "read_after_write"
-retained_graphql_rationale = "No GraphQL transport; the record is one repository-scoped issue body."
-source_refs = ["direction/scripts/direction_mark.py:share_weekly", "direction/scripts/direction_mark.py:share_record", "direction/scripts/direction_mark.py:oldest_record", "direction/scripts/direction_audit.py:weekly_audit"]
-test_refs = ["direction/scripts/test_direction_audit.py:test_weekly_audit_holds_a_failed_capacity_read_and_rereads_it_next_time", "direction/scripts/test_direction_audit.py:test_weekly_audit_counts_a_held_window_as_read_but_not_a_failed_audit", "direction/scripts/test_direction_mark.py:test_turn_and_weekly_records_leave_each_other_untouched", "direction/scripts/test_direction_audit.py:test_weekly_audit_records_once_every_adopted_repository_was_read", "direction/scripts/test_direction_audit.py:test_weekly_audit_reports_a_shared_write_failure_after_the_local_stamp"]
+test_refs = ["direction/scripts/test_direction_mark.py:test_two_machines_one_turn", "direction/scripts/test_direction_mark.py:test_incomplete_record_discovery_is_unconfirmed_and_creates_nothing", "direction/scripts/test_direction_mark.py:test_turn_cli_requires_coverage_and_reports_written_repository", "direction/scripts/test_direction_mark.py:test_turn_cli_reports_local_write_failure_without_sharing", "direction/scripts/test_direction_mark.py:test_turn_cli_reports_marker_path_resolution_failure_without_sharing", "direction/scripts/test_direction_mark.py:test_a_record_beyond_the_first_page_is_found_and_updated", "direction/scripts/test_direction_mark.py:test_several_records_reader_takes_the_newest_and_writer_updates_the_oldest_trusted"]
 
 [[operations]]
 id = "github.direction.audit_rulesets"
