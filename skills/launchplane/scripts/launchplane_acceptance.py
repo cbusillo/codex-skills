@@ -34,7 +34,7 @@ def repository_key(value: str) -> str:
 
 def _repository_entries(
     settings: dict[str, Any],
-) -> list[dict[str, Any]] | None:
+) -> tuple[list[dict[str, Any]], bool] | None:
     mapping_payload = operator.request_launchplane_read(
         service_url=settings["service_url"], settings=settings,
         path=operator.helper_command_path("repo-product-mapping-read"),
@@ -43,14 +43,18 @@ def _repository_entries(
     mapping = mapping_payload.get("mapping")
     if not isinstance(mapping, dict) or not isinstance(mapping.get("repositories"), list):
         return None
-    return [
+    ambiguous = mapping.get("ambiguous_repositories", [])
+    if not isinstance(ambiguous, list):
+        return None
+    entries = [
         entry for entry in mapping["repositories"]
         if isinstance(entry, dict)
         and isinstance(entry.get("repository"), str)
     ]
+    return entries, bool(ambiguous)
 
 
-def _read_active_client_profile(
+def _read_active_profile(
     settings: dict[str, Any], entry: dict[str, Any]
 ) -> dict[str, Any] | None:
     try:
@@ -72,7 +76,6 @@ def _read_active_client_profile(
         or not isinstance(result.get("repository"), str)
         or repository_key(result["repository"]) != repository_key(entry["repository"])
         or result.get("lifecycle_state") != "active"
-        or not result["owner_github_login"]
     ):
         return None
     return result
@@ -129,7 +132,7 @@ def _pinned_release_modes(settings: dict[str, Any], entries: list[dict[str, Any]
     for entry in entries:
         if entry.get("driver_id") != "odoo":
             continue
-        profile = _read_active_client_profile(settings, entry)
+        profile = _read_active_profile(settings, entry)
         if profile is None:
             yield None
             continue
@@ -147,7 +150,7 @@ def _pinned_release_modes(settings: dict[str, Any], entries: list[dict[str, Any]
             if pinned is None:
                 yield None
             elif pinned:
-                yield profile["release_on_acceptance"]
+                yield profile["release_on_acceptance"] if profile["owner_github_login"] else None
 
 
 def read_director_standing(repository: str) -> bool:
@@ -162,8 +165,11 @@ def read_director_standing(repository: str) -> bool:
         operator.validate_service_url(settings["service_url"])
         if not settings["token"]:
             return False
-        entries = _repository_entries(settings)
-        if entries is None:
+        mapping = _repository_entries(settings)
+        if mapping is None:
+            return False
+        entries, ambiguous = mapping
+        if ambiguous:
             return False
         matches = [
             entry for entry in entries
@@ -171,9 +177,10 @@ def read_director_standing(repository: str) -> bool:
         ]
         if len(matches) != 1:
             return False
-        result = _read_active_client_profile(settings, matches[0])
+        result = _read_active_profile(settings, matches[0])
         return bool(
             result is not None
+            and result["owner_github_login"]
             and result["release_on_acceptance"] == "director_standing"
             and all(mode == "director_standing" for mode in _pinned_release_modes(settings, entries, target_key))
         )
@@ -194,9 +201,10 @@ def read_client_release_repository(repository: str) -> bool:
         operator.validate_service_url(settings["service_url"])
         if not settings["token"]:
             return False
-        entries = _repository_entries(settings)
-        if entries is None:
+        mapping = _repository_entries(settings)
+        if mapping is None:
             return False
+        entries, _ = mapping
         matches = [
             entry for entry in entries
             if repository_key(entry["repository"]) == target_key
@@ -204,7 +212,8 @@ def read_client_release_repository(repository: str) -> bool:
         if len(matches) > 1:
             return False
         for entry in matches:
-            if _read_active_client_profile(settings, entry) is not None:
+            profile = _read_active_profile(settings, entry)
+            if profile is not None and profile["owner_github_login"]:
                 return True
         return any(_pinned_release_modes(settings, entries, target_key))
     except (ValueError, OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException):

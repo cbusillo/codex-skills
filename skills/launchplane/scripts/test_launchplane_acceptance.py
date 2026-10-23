@@ -97,9 +97,15 @@ class AcceptanceTests(unittest.TestCase):
         for classification in ("active_awareness", "support_dependency", "out_of_scope"):
             with self.subTest(classification=classification):
                 self.entry["classification"] = classification
-                self.profile["profile"]["classification"] = classification
                 self.assertFalse(self.requires_client())
                 self.assertTrue(acceptance.read_client_release_repository(REPO))
+
+    def test_ambiguous_products_cannot_hide_client_lane_pins(self):
+        self.mapping["mapping"]["ambiguous_repositories"] = ["example/shared-client"]
+        self.assertTrue(self.requires_client())
+        self.assertTrue(acceptance.read_client_release_repository(REPO))
+        self.mapping["mapping"]["ambiguous_repositories"] = "malformed"
+        self.assertTrue(self.requires_client())
 
     def test_client_lane_pins_override_a_director_product_record(self):
         self.entry["classification"] = "active_awareness"
@@ -139,8 +145,11 @@ class AcceptanceTests(unittest.TestCase):
         self.transport.side_effect = read
         self.assertTrue(self.requires_client())
         self.assertTrue(acceptance.read_client_release_repository(REPO))
+        client_profile["profile"]["owner"] = None
+        self.assertTrue(self.requires_client())
         sources.clear()
         self.assertFalse(self.requires_client())
+        client_profile["profile"]["owner"] = {"github_login": "client"}
         client_profile["profile"]["driver_id"] = "generic-web"
         self.assertTrue(self.requires_client())
         client_profile["profile"]["driver_id"] = "odoo"
