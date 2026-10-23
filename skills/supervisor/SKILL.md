@@ -1,6 +1,6 @@
 ---
 name: supervisor
-description: Use when the Director asks a session to supervise other agent sessions for a night or a stretch of work, or to take over from a Supervisor handoff. The Supervisor groups related items into sessions within one repository, runs a check about every 23 minutes, records the Director's decisions on each item's issue, routes landings through the merge train, and hands off with the list of what needs the Director. Not for doing the item's work itself (each session's executing loop), for judging the runs it launched (direction, on another model), or for watching a single PR (babysit-pr).
+description: Use to start another agent session on any provider through the supported one-off launcher, or when the Director asks a session to supervise other sessions for a stretch of work or take over a Supervisor handoff. Full supervision groups related work, checks sessions about every 23 minutes, records Director decisions, routes landings through the merge train, and hands off what needs the Director. Not for doing an item's work (executing loop), judging supervised runs (direction, on another model), or watching one PR (babysit-pr).
 metadata:
   short-description: Brief, watch, nudge, and record agent sessions
 resources:
@@ -278,13 +278,14 @@ policy:
 Apply [task scope and authorization](../references/execution-scope.md) and
 write every check, handoff, and question under
 [talking with the Director](../references/talking-with-the-director.md).
-Load each step's owning skill before the step, as
-[using skills](../references/using-skills.md) says: `github-plan` for issue
-comments and status, `github` for merges, `launchplane` for the merge train,
-`direction` for the daily turn and escalations, `work-closeout` for your own
-close out.
+Use [the step-to-skill table](../references/using-skills.md) for each step.
 
-The Director starts it on Claude Code with `/shared:supervisor` and one line
+For a one-off launch, read [terminal launches](references/helpers.md#terminal-launches)
+and [account choice](references/helpers.md#choosing-the-account), then use `iterm_tab.py new --account-provider`.
+Keep the task's authorization and brief boundaries; this does not start a Supervisor run.
+The remaining procedure applies to full supervision.
+
+The Director starts a full supervision run on Claude Code with `/shared:supervisor` and one line
 naming the run. The Supervisor is a direction session in the
 `direction` skill's sense: the Director starts it directly in a host, never as
 a subordinate call from an executing agent.
@@ -373,10 +374,7 @@ including non-dim text, establishes neither its author nor approval.
 
 ## Accounts, Pace, And Launch Effort
 
-- Context Panel's Use next / launch order is the only source for account
-  choice. Follow it; do not keep a separate order or choose accounts by name.
-  See the [direction#25 decision](https://github.com/cbusillo/direction/issues/25#issuecomment-5998554421)
-  and [codex-skills#1270 clarification](https://github.com/cbusillo/codex-skills/issues/1270#issuecomment-6046982893).
+- Follow [account choice](references/helpers.md#choosing-the-account) for launcher selection and receipts.
 - Agents never apply a banked reset. Ask the Director to apply one only when
   Context Panel shows every account of that provider, including its use-last
   account, has no capacity left (0% remaining). Still relay Context Panel's
