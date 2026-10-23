@@ -47,8 +47,9 @@ def _openapi(extra_environment_field: str = "") -> bytes:
     for command in BOUNDED_READ_RESPONSE_FIELDS:
         path = sync.bounded_read_path(command)
         name = "Environment" if command == "product-environment-read" else command
-        paths[path] = {"get": {"responses": {"200": {"content": {"application/json": {
-            "schema": {"$ref": f"#/components/schemas/{name}"}}}}}}}
+        paths[path] = {
+            "get": {"responses": {"200": {"content": {"application/json": {"schema": {"$ref": f"#/components/schemas/{name}"}}}}}}
+        }
     schemas = {command: {"properties": {"status": {}, "trace_id": {}}} for command in BOUNDED_READ_RESPONSE_FIELDS}
     schemas["Environment"] = {"properties": environment}
     return json.dumps({"paths": paths, "components": {"schemas": schemas}}).encode()
@@ -56,25 +57,51 @@ def _openapi(extra_environment_field: str = "") -> bytes:
 
 def test_check_reports_current_drift_and_unavailable(tmp_path: Path) -> None:
     pin = tmp_path / "pin.json"
-    assert sync.run(["sync"], fetch=lambda ref: _openapi(), pin=pin) == 0
-    assert json.loads(pin.read_text())["product-environment-read"] == ["environment", "status", "trace_id"]
-    assert sync.run(["check"], fetch=lambda ref: _openapi(), pin=pin) == 0
-    assert sync.run(["check"], fetch=lambda ref: _openapi("added_field"), pin=pin) == 1
-
-    def unavailable(_ref: str) -> bytes:
-        raise OSError("offline")
-
-    assert sync.run(["check"], fetch=unavailable, pin=pin) == 2
+    schema = tmp_path / "openapi.json"
+    schema.write_bytes(_openapi())
+    arguments = ["--openapi", str(schema)]
+    assert sync.run(["sync", *arguments], pin=pin) == 0
+    assert sync.run(["check", *arguments], pin=pin) == 0
+    schema.write_bytes(_openapi("added_field"))
+    assert sync.run(["check", *arguments], pin=pin) == 1
     missing_route = json.loads(_openapi())
     del missing_route["paths"][sync.bounded_read_path("product-environment-read")]
-    assert sync.run(["check"], fetch=lambda ref: json.dumps(missing_route).encode(), pin=pin) == 2
+    schema.write_text(json.dumps(missing_route))
+    assert sync.run(["check", *arguments], pin=pin) == 2
+    schema.unlink()
+    assert sync.run(["check", *arguments], pin=pin) == 2
 
 
-def test_sync_reads_the_requested_ref(tmp_path: Path) -> None:
-    requested: list[str] = []
+def test_sync_reads_the_requested_document(tmp_path: Path) -> None:
     pin = tmp_path / "pin.json"
-    assert sync.run(["sync", "--ref", "abc123"], fetch=lambda ref: requested.append(ref) or _openapi(), pin=pin) == 0
-    assert requested == ["abc123"]
+    for name, payload in (("first.json", _openapi()), ("second.json", _openapi("added_field"))):
+        schema = tmp_path / name
+        schema.write_bytes(payload)
+        assert sync.run(["sync", "--openapi", str(schema)], pin=pin) == 0
+        assert pin.read_bytes() == sync.render_pin(json.loads(payload))
+
+
+@pytest.mark.parametrize("payload", [b"invalid", b"[]", b"null", b"{}"])
+def test_invalid_documents_preserve_the_pin(tmp_path: Path, payload: bytes) -> None:
+    schema = tmp_path / "openapi.json"
+    pin = tmp_path / "pin.json"
+    pin.write_bytes(sync.render_pin(json.loads(_openapi())))
+    original = pin.read_bytes()
+    schema.write_bytes(payload)
+    assert sync.run(["sync", "--openapi", str(schema)], pin=pin) == 2
+    assert pin.read_bytes() == original
+
+
+def test_oversized_document_preserves_the_pin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    schema = tmp_path / "openapi.json"
+    pin = tmp_path / "pin.json"
+    payload = _openapi()
+    schema.write_bytes(payload)
+    pin.write_bytes(sync.render_pin(json.loads(payload)))
+    original = pin.read_bytes()
+    monkeypatch.setattr(sync, "MAX_OPENAPI_BYTES", len(payload) - 1)
+    assert sync.run(["sync", "--openapi", str(schema)], pin=pin) == 2
+    assert pin.read_bytes() == original
 
 
 if __name__ == "__main__":

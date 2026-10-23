@@ -2116,13 +2116,16 @@ Launchplane declares there but the read does not project, such as the
 environment read's `host_network_capacity_available` and
 `host_network_capacity`, is accepted and dropped; any other field still fails
 closed. `references/launchplane-read-response-fields.json` pins the top-level
-fields Launchplane's published OpenAPI declares for each of those routes, and
+fields Launchplane's generated OpenAPI declares for each of those routes, and
 the tests require every pinned field to be in its read's allowlist. Refresh the
-pin with `uv run scripts/sync-read-response-fields.py sync` from this skill
-directory, then add each new field to its read's allowlist, projecting it only
+pin by running `uv run launchplane service export-openapi --output <schema-path>`
+from a Launchplane source checkout, then
+`uv run scripts/sync-read-response-fields.py sync --openapi <schema-path>` from
+this skill directory. Add each new field to its read's allowlist, projecting it only
 when the read should emit it, and name the Launchplane commit in the commit
 message. The `Launchplane Read Response Fields` workflow fails on pull
-requests, on `main` and daily when the pin differs from Launchplane's `main`.
+requests, on `main` and daily when the pin differs from a fresh source export
+of Launchplane's `main`. It does not fetch the retired committed snapshots.
 
 The merge-train controller reply has no helper allowlist. Launchplane publishes
 its contract as `contracts/merge-train-controller-reply.schema.json` and tests

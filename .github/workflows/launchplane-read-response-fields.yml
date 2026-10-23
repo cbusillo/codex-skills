@@ -30,7 +30,19 @@ jobs:
         uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           cache-dependency-glob: "**/*.py"
-          python-version: "3.12"
+          python-version: "3.13"
+
+      - name: Check out Launchplane source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: cbusillo/launchplane
+          ref: main
+          path: .local/launchplane-schema-source
+          persist-credentials: false
+
+      - name: Generate Launchplane OpenAPI
+        working-directory: .local/launchplane-schema-source
+        run: uv run launchplane service export-openapi --output "$RUNNER_TEMP/launchplane-openapi.json"
 
       - name: Compare the pin with Launchplane main
-        run: uv run skills/launchplane/scripts/sync-read-response-fields.py check
+        run: uv run skills/launchplane/scripts/sync-read-response-fields.py check --openapi "$RUNNER_TEMP/launchplane-openapi.json"
