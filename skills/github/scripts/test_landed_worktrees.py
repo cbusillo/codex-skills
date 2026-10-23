@@ -241,6 +241,21 @@ class MainTests(Fixture):
         self.assertEqual({r["path"]: r["decision"] for r in result["worktrees"]}[str(refresh)], "kept")
         self.assertNotIn(mock.call(str(refresh), dry_run=False), run.call_args_list)
 
+    def test_open_claim_on_an_issue_the_pr_refs_keeps_the_refresh_worktree(self):
+        refresh, pull, commits = self.merged_refresh()
+        claim = {"id": 12, "user": {"login": "bot"}, "created_at": "2026-10-22T00:00:00Z",
+                 "body": "Claimed by refresher\n" + github_plan_claim.marker(
+                     {"worker": "refresher", "session": "s1", "branch": "work/refresh", "claimed_at": "2026-10-22T00:00:00Z"})}
+        code, result, run = self.run_main({**pull, "body": "Refs #5"}, commits=commits, discussions={"5": [claim]})
+        self.assertEqual({r["path"]: r["decision"] for r in result["worktrees"]}[str(refresh)], "kept")
+        self.assertNotIn(mock.call(str(refresh), dry_run=False), run.call_args_list)
+
+    def test_fast_forward_landing_keeps_worktrees_on_its_commits(self):
+        refresh, pull, commits = self.merged_refresh()
+        code, result, run = self.run_main({**pull, "merge_commit_sha": commits[-1]}, commits=commits)
+        self.assertNotIn(str(refresh), [r["path"] for r in result["worktrees"]])
+        self.assertNotIn(mock.call(str(refresh), dry_run=False), run.call_args_list)
+
     def test_unreadable_claims_retire_nothing(self):
         _, pull, commits = self.merged_refresh()
         code, result, run = self.run_main(pull, commits=commits, discussions={"3": ValueError("Malformed claim marker")})

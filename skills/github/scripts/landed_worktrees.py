@@ -3,13 +3,6 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""Retire a landed PR's source worktree with the command its lock names.
-
-Sessions end before the merge train lands their PR, so the landing step owns
-retirement. Only the host helper named in the lock deletes anything; it keeps
-dirty, unpublished and in-use worktrees itself.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -219,6 +212,10 @@ def finished(root: Path, pulls_for, include=lambda slug: True) -> tuple[list[dic
     return found, gaps
 
 
+def unless_fast_forwarded(pull: dict, pr_commits: set[str]) -> set[str]:
+    return set() if pull.get("merge_commit_sha") in pr_commits else pr_commits
+
+
 def open_claims(reader, github_read, repo: str, number: int, pull: dict) -> str:
     import github_plan_landing
 
@@ -230,12 +227,12 @@ def open_claims(reader, github_read, repo: str, number: int, pull: dict) -> str:
                 return None
             raise
 
-    records = [(repo, number)]
+    records = [(repo, number), *github_plan_landing.linked_issues(github_plan_claim, repo, pull)]
     base = pull.get("base") or {}
     if pull.get("merged_at") and base.get("ref") == (base.get("repo") or {}).get("default_branch"):
         records += github_plan_landing.closing_references(reader, repo, number)[1]
     found = []
-    for record_repo, record_number in records:
+    for record_repo, record_number in dict.fromkeys(records):
         issue = reader.get_json(f"repos/{record_repo}/issues/{record_number}", step="landed_claim_record")
         comments = reader.paged_json(f"repos/{record_repo}/issues/{record_number}/comments",
                                      step_prefix="landed_claim_discussion")
@@ -246,7 +243,7 @@ def open_claims(reader, github_read, repo: str, number: int, pull: dict) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description="Retire a landed PR's worktrees with the command each lock names.")
     parser.add_argument("--repo", required=True, help="OWNER/REPO of the landed PR")
     parser.add_argument("--pr", required=True, type=int)
     parser.add_argument("--checkout", required=True, type=Path, help="any local checkout of that repository")
@@ -284,6 +281,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         pr_commits = {c.get("sha") for c in reader.paged_json(f"repos/{args.repo}/pulls/{args.pr}/commits",
                                                               step_prefix="landed_pull_commits")}
+        pr_commits = unless_fast_forwarded(pull, pr_commits)
         claims = open_claims(reader, github_read, args.repo, args.pr, pull)
     except (github_read.GitHubReadError, github_read.GitHubReadShapeError, ValueError, TypeError) as exc:
         print(json.dumps({"ok": False, "error": f"PR commits or claims unavailable; nothing is retired: {exc}"}))
