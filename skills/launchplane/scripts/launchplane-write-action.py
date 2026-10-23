@@ -1188,7 +1188,7 @@ def _utc_timestamp(value: object) -> str:
     if not value:
         return ""
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value)
         if parsed.tzinfo is None:
             raise ValueError("timezone required")
         return public_timestamp(parsed.astimezone(UTC).isoformat().replace("+00:00", "Z"))

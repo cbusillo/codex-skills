@@ -2200,6 +2200,7 @@ def test_calendar_apply_uses_exact_review_then_checks_persisted_policy(operation
             observed = response["result"]["odoo_business_hours"]["window"]["next_release_at"]
             if observed:
                 assert datetime.fromisoformat(window["next_release_at"]) == datetime.fromisoformat(observed)
+                assert response["result"]["odoo_business_hours"]["window"]["blocked_reason"] not in json.dumps(output)
             else:
                 assert not window["next_release_at"]
         if expected is None:
