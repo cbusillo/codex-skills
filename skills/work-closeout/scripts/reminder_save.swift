@@ -21,6 +21,7 @@ struct Request: Decodable {
     let delete_id: String?
     let preserve_existing: Bool?
     let shortcut: String?
+    let nonce: String?
 }
 
 // reminder_save.py decides the target from the lookup; this writer only rechecks it.
@@ -95,7 +96,13 @@ func runShortcut(_ name: String, title: String, notes: String, url: String) -> B
     run.standardOutput = FileHandle.nullDevice
     run.standardError = FileHandle.nullDevice
     guard (try? run.run()) != nil else { return false }
-    run.waitUntilExit()
+    // Stop a stalled shortcut well inside reminder_save.py's 90-second watchdog.
+    let deadline = Date().addingTimeInterval(60)
+    while run.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.2) }
+    if run.isRunning {
+        run.terminate()
+        return false
+    }
     return run.terminationStatus == 0
 }
 
@@ -213,6 +220,7 @@ do {
             finish("refused", "This reminder has no matching visible link and Shortcuts cannot add one to an existing reminder; delete it with --delete-id and create it again. No mutation")
         }
     } else if hasURL {
+        guard request.nonce != nil else { finish("refused", "A linked reminder needs its request nonce; no mutation") }
         guard let shortcut = request.shortcut, shortcutInstalled(shortcut) else {
             finish("manual_required", "Install the reminder link shortcut once with reminder_shortcut.py; no mutation")
         }
@@ -291,9 +299,8 @@ do {
             monthDays == [NSNumber(value: calendar.component(.day, from: due))])
     }
     created = itemID == nil
-    if hasURL && created, let shortcut = request.shortcut {
+    if hasURL && created, let shortcut = request.shortcut, let nonce = request.nonce {
         // A one-time token in Notes finds the shortcut's reminder; EventKit then sets the real fields.
-        let nonce = "reminder-nonce:" + UUID().uuidString
         guard runShortcut(shortcut, title: request.title, notes: nonce, url: request.url) else {
             finish("uncertain", "The shortcut did not finish; search all lists for Notes \(nonce) before retrying", extra: ["nonce": nonce])
         }

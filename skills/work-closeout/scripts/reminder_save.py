@@ -17,7 +17,7 @@ import threading
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote, urlsplit
-from uuid import UUID
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 from reminder_link import prepare, target_list
@@ -162,6 +162,9 @@ def exchange(process: subprocess.Popen, request: dict) -> dict | None:
 def native(request: dict) -> dict:
     if sys.platform != "darwin":
         raise ValueError("Native saving requires macOS 14+; use the prepared manual fields")
+    if request.get("url"):
+        # Kept here so a killed writer still reports how to find a reminder its shortcut made.
+        request = {**request, "nonce": f"reminder-nonce:{uuid4()}"}
     # The writer prints one lookup line, then waits for this side's target decision.
     with tempfile.TemporaryFile("w+") as errors, subprocess.Popen(
             ["swift", str(Path(__file__).with_suffix(".swift"))], stdin=subprocess.PIPE,
@@ -174,7 +177,10 @@ def native(request: dict) -> dict:
             watchdog.cancel()
         if receipt is None:
             errors.seek(0)
-            raise ValueError(errors.read().strip() or "Native writer returned no receipt; read back before retrying")
+            detail = errors.read().strip() or "Native writer returned no receipt; read back before retrying"
+            if request.get("nonce"):
+                detail += f"; search all lists for Notes {request['nonce']} before retrying"
+            raise ValueError(detail)
     expected = "deleted" if request.get("delete_id") else "saved"
     if (process.returncode or receipt.get("status") != expected
             or (expected == "saved" and request.get("kind") == "plain"

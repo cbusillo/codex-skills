@@ -178,6 +178,15 @@ class ReminderSaveTests(unittest.TestCase):
                 self.save(reminders, **overrides)
             self.assertEqual(self.decisions(), [[]])
 
+    def test_killed_writer_reports_the_nonce_it_was_sent(self):
+        with patch.object(reminder_save.sys, "platform", "darwin"), self.writer([], crash="killed"):
+            with self.assertRaises(ValueError) as failed:
+                reminder_save.native(self.request())
+        nonce = self.writers[0].sent[0]["nonce"]
+        self.assertIn(nonce, str(failed.exception))
+        self.save([])
+        self.assertNotEqual(self.writers[0].sent[0]["nonce"], nonce)
+
     def test_native_receipt_must_prove_visible_attachment(self):
         with patch.object(reminder_save.sys, "platform", "darwin"):
             for receipt in ({"status": "partial", "reminder_id": "owned-id"},
