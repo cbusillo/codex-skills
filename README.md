@@ -10,7 +10,7 @@ read the Director's overall `DIRECTION.md` in the repository owner's
 [AGENTS.md](AGENTS.md) holds execution details for both hosts and is the only
 repository agent-instruction filename; path-specific instructions use nested
 `AGENTS.md` files. Generated host-global instructions remain host-specific.
-Every Code traces, fixtures, and artifact readers describe historical behavior.
+Every Code history is available in Git; its history readers and fixtures are removed.
 Codex Lab is retired; its traces and archives are historical evidence.
 
 Each skill lives in its own directory under [`skills/`](skills) with a `SKILL.md`
