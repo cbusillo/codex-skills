@@ -180,8 +180,8 @@ before using it for moves.
 `/tui` saves a user renderer preference and is not a qualified drop-in account
 move. Keep this probe in disposable homes. The wrapper recognizes a pending
 move only from the shared parser's single exact native resume, including a renderer switch.
-Unknown option positions, repeated selectors and attached short forms keep the inherited
-account and argv; use the supported `--resume UUID` form when needed. Do not use an unrelated
+The parser must reach that canonical UUID before unknown options; all resume values
+must agree, without continue or fork. Otherwise the inherited account and argv stay. Do not use an unrelated
 relaunch to bypass qualification or recovery; use the existing verified
 cancellation step when continuation in place makes the request obsolete.
 Launch restrictions such as

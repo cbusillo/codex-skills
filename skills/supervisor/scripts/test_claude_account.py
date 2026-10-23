@@ -157,8 +157,16 @@ class MoveTests(unittest.TestCase):
         self.assertEqual(account.resumed_session(["claude", "--resume=" + self.identifier]), self.identifier)
         self.assertEqual(account.resumed_session(["claude", "-r", self.identifier]), self.identifier)
         self.assertIsNone(account.resumed_session(["claude", "--resume", str(self.transcript)]))
-        self.assertIsNone(account.resumed_session([*self.argv, "--resume", self.identifier]))
+        self.assertEqual(account.resumed_session([*self.argv, "--resume", self.identifier]), self.identifier)
         self.assertIsNone(account.resumed_session([*self.argv, "--resume", str(uuid.uuid4())]))
+        for suffix in (["--fork-session"], ["-c"], ["--resume"], ["--resume", "another-session"]):
+            self.assertIsNone(account.resumed_session([*self.argv, *suffix]))
+        launcher = account.load_module("iterm_tab", Path(account.__file__).with_name("iterm_tab.py"))
+        words = launcher.launch_words(launcher.append_brief("claude", "fixture"))
+        native_resume = ["claude", "--resume", self.identifier, *words[1:words.index("--")]]
+        self.assertEqual(account.resumed_session(native_resume), self.identifier)
+        native = account.load_module("session_liveness", Path(account.__file__).with_name("session_liveness.py"))
+        self.assertIsNone(native.invocation(native_resume)[2])
 
     def test_exec_failure_keeps_move_request(self):
         self.record()
@@ -212,7 +220,8 @@ class MoveTests(unittest.TestCase):
             env.pop(key, None)
         installed = account.install(self.old / "settings.json", self.root / "moves", write=True)
         for options, home in ((["--append-system-prompt", "--resume"], self.old),
-                              (["--append-system-prompt", "--", "--resume"], self.new), (["--resume"], self.new)):
+                              (["--append-system-prompt", "--", "--resume"], self.new),
+                              (["--resume", self.identifier, "--disallowed-tools", "AskUserQuestion", "--autocompact", "auto", "--resume"], self.new)):
             result = subprocess.run([*json.loads(installed["env"]["CLAUDE_CODE_PROCESS_WRAPPER"]),
                                      str(child), *options, self.identifier], env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)

@@ -165,9 +165,13 @@ def hook(payload, env):
 
 
 def resumed_session(argv: list[str]) -> str | None:
+    if "--fork-session" in argv:
+        return None
     native = load_module("session_liveness", Path(__file__).with_name("session_liveness.py"))
-    exact = native.claude_invocation(argv)[2]
-    return session_id(exact) if exact else None
+    parsed = native.claude_invocation(argv)
+    identifier = session_id(parsed.resume)
+    return identifier if identifier and identifier == parsed.resume and all(
+        session_id(value) in (None, identifier) for value in parsed.candidates) else None
 
 
 def bounded_snapshot(*args, **kwargs):
