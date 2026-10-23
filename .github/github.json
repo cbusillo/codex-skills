@@ -45,7 +45,7 @@
             "scripts/install-catalog.py",
             "scripts/sync-global-instructions.py",
             "scripts/test_catalog_install.py",
-            "scripts/test_pep723_publication.py",
+            "scripts/test_pep723_proposal.py",
             "scripts/validate_execution_environment.py",
             "skills/github/scripts/test_github_work_evidence.py",
             "skills/supervisor/scripts/iterm_tab.py"
@@ -111,14 +111,19 @@
       ]
     },
     "test": {
-      "default": "./scripts/validate-skills.sh"
+      "local": "scripts/run-python-helper.sh {test_or_validator}",
+      "ci": "./scripts/validate-skills.sh"
     },
     "syntax": {
       "python": "uv run --python 3.12 python -m compileall -q skills scripts hooks evals",
       "shell": "bash -n skills/github/scripts/dev-worktree skills/github/scripts/github-repo-snapshot.sh skills/github/scripts/gh-with-env-token skills/github/scripts/git-commit-as-bot skills/github/scripts/git-push-as-bot skills/github/scripts/gh-issue skills/github/scripts/gh-comment skills/google-seo/scripts/google-cloud-inventory.sh scripts/validate-skills.sh scripts/lint-tls.sh"
     },
     "lint": {
-      "tls": "scripts/lint-tls.sh"
+      "tls": "scripts/lint-tls.sh",
+      "publicSafety": "scripts/run-python-helper.sh scripts/validate-public-safety.py"
+    },
+    "typecheck": {
+      "python": "scripts/typecheck.sh"
     }
   },
   "importantWorkflows": [

@@ -73,6 +73,11 @@ commands:
     resource_path: scripts/launchplane-write-action.py
     example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "privileged-policy-propose", "--payload-file", "<private-envelope>"]
     purpose: Creates an inert pending policy plan and returns its full Director UI review URL without approval or apply.
+  - name: launchplane-merge-train-trusted-automation-propose
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "merge-train-trusted-automation-propose", "--change", "add", "--github-user-id", "<id>", "--repo", "OWNER/REPO", "--reason", "<reason>", "--source-event-id", "<stable-id>"]
+    purpose: Proposes one trusted automation id change on named enrolled repositories from the active policy, keeping the record in memory, and returns the review URL without approval or apply.
   - name: launchplane-live-target-runtime-sync-dry-run
     source: skill
     resource_path: scripts/launchplane-write-action.py
@@ -414,7 +419,65 @@ commands:
         "<private-inspect-output>",
         "--reviewed-inspect",
       ]
-    purpose: Records short-lived safety facts for a reviewed lane binding; known facts only for an exact preview.
+    purpose: Records unknown testing facts and optional retained-operation linkage for a reviewed lane binding; refuses preview assertions.
+  - name: launchplane-disposable-lane-clear
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/launchplane-write-action.py",
+        "disposable-lane-clear",
+        "--payload-file",
+        "<private-file>",
+        "--expected-binding-sha256",
+        "<binding-sha256>",
+        "--expected-observation-sha256",
+        "<observation-sha256>",
+        "--inspect-evidence-file",
+        "<private-inspect-output>",
+        "--reviewed-inspect",
+      ]
+    purpose: Clears only the reviewed observation for an unchanged lane binding and verifies its absence; never deletes lane resources.
+  - name: launchplane-disposable-lane-prepare-rebuild
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv:
+      [
+        "uv",
+        "run",
+        "scripts/launchplane-write-action.py",
+        "disposable-lane-prepare-rebuild",
+        "--payload-file",
+        "<private-file>",
+        "--expected-binding-sha256",
+        "<binding-sha256>",
+        "--inspect-evidence-file",
+        "<private-inspect-output>",
+        "--reviewed-inspect",
+      ]
+    purpose: Requests the service's retained testing-operation capture for a reviewed lane binding; never rebuilds or proves historical effects absent.
+  - name: launchplane-testing-replacement-resources-dry-run
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "testing-replacement-resources-dry-run", "--payload-file", "<private-file>"]
+    purpose: Records retained preparation, excludes the retained executor and returns a service plan without allocating provider resources.
+  - name: launchplane-testing-replacement-resources-apply
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "testing-replacement-resources-apply", "--payload-file", "<private-file>", "--expected-plan-digest", "<plan-sha256>", "--dry-run-evidence-file", "<private-review-file>", "--reviewed-dry-run", "--idempotency-key", "<original-key>"]
+    purpose: Submits the reviewed original-key testing allocation and independently reads back its resource binding.
+  - name: launchplane-testing-replacement-resources-release
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "testing-replacement-resources-release", "--payload-file", "<private-file>", "--expected-plan-digest", "<plan-sha256>", "--dry-run-evidence-file", "<private-review-file>", "--reviewed-dry-run", "--idempotency-key", "<original-key>"]
+    purpose: Releases only a reviewed initial preparation after the service proves no provider effects started.
+  - name: launchplane-testing-replacement-resources-readback
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "testing-replacement-resources-readback", "--payload-file", "<private-file>"]
+    purpose: Requests actual testing resource qualification for the retained operation; never repeats provider creation.
   - name: launchplane-merge-train-policy-import-dry-run
     source: skill
     resource_path: scripts/launchplane-write-action.py
@@ -698,6 +761,10 @@ policy:
         - repository: cbusillo/launchplane
           argv_prefix: ["launchplane", "service", "audit-config-authority"]
         - repository: cbusillo/launchplane
+          argv_prefix: ["launchplane", "service", "plan-config-authority-transition"]
+        - repository: cbusillo/launchplane
+          argv_prefix: ["launchplane", "local-consumer", "--help"]
+        - repository: cbusillo/launchplane
           argv_prefix: ["launchplane", "odoo-ownership", "check"]
         - repository: cbusillo/launchplane
           argv_prefix: ["launchplane", "ci", "postgres-integration"]
@@ -736,6 +803,7 @@ policy:
 
 The source-only `service export-openapi`, `service export-agent-contract`,
 `service export-owner-control-contract`, `service audit-config-authority`,
+`service plan-config-authority-transition`, `local-consumer --help`,
 `odoo-ownership check`, `action-pins check|update`, and
 `ci unittest-shard local|plan|run` gates may run through
 `uv run [--extra dev] launchplane` in a verified `cbusillo/launchplane`
@@ -748,7 +816,8 @@ is not visible to the hook, so use the `cd` prefix. Other shell
 directory/project overrides retain the block. All live/admin CLI commands
 retain their helper route below. Consumers without
 repository-exception support keep the original block; do not bypass it through
-an alternate entry point.
+an alternate entry point. The local gates support chained checks and output
+redirection. `local-consumer prepare|receive` remain Director-run transfers.
 
 Use this skill to inspect product/runtime state and perform safe,
 authenticated mutations via the Launchplane service API.
@@ -811,7 +880,10 @@ proposer grant for the configured `local_operator`; the Director approves it
 separately through the Access policy card. Backup proposals reuse existing
 exact-lane backup planning authority and open the product's production Actions
 card. Submit no proposal until the service supports its descriptor and the caller
-has the required authority. Source delivery grants no access.
+has the required authority. Source delivery grants no access. To add or remove
+one trusted automation id on named enrolled repositories, use
+`merge-train-trusted-automation-propose` instead of hand-building a merge-train
+record; it keeps the active record in memory only.
 
 Creation is pending and inert. Director questions and handoffs that send the
 Director to a page include a full clickable URL, never a bare UI path. Use the
@@ -1097,8 +1169,8 @@ merge-train-controller-run-once` instead of open-coding the route. Mutating
 
 This skill combines inspection and mutation. You must explicitly announce when
 you are transitioning from **Inspecting Context** to **Executing Admin
-Actions**. Never apply a mutation without a preceding dry-run and situational
-verification.
+Actions**. Before a mutation, follow its producer contract's dry-run or
+reviewed-inspect procedure and verify the situation.
 
 ## Tools
 
@@ -1107,11 +1179,17 @@ verification.
   [private ingress caller contract](references/write-action-helper-contract.md#application-testing-private-ingress)
   before use, including private files, review, original-key recovery, redaction
   and readback limits.
-- `disposable-lane-inspect` / `-collect` / `-record` wrap the producer's
+- `disposable-lane-inspect` / `-collect` / `-record` / `-clear` / `-prepare-rebuild` wrap the producer's
   disposable lane observation operation. Read the
   [disposable lane contract](references/write-action-helper-contract.md#disposable-lane-observations)
-  before use, including the reviewed inspect binding, testing fact limits, no
-  retry and readback limits. Clearing an observation is not offered yet.
+  before use, including the reviewed binding and observation digests, testing
+  fact limits, no retry and readback limits. Clear removes an observation;
+  it does not establish disposal eligibility or resolve a hold.
+- `testing-replacement-resources-dry-run` / `-apply` / `-readback` / `-release` wrap the
+  producer's retained replacement and initial preparation, qualification and no-effect release. Read the
+  [replacement resource caller contract](references/write-action-helper-contract.md#empty-testing-replacement-resources)
+  before use, including private review evidence, original-key recovery and
+  the distinction between `separation_ready` and completed isolation.
 
 - `scripts/launchplane-context.py`: Structural state helper.
 - `scripts/launchplane-write-action.py`: Public-safe write-action wrapper for
@@ -1238,7 +1316,11 @@ verification.
   event reconciler last decided for each of a product's previews and its
   testing lane: state, attempt, delivery id, last error, and the plan's
   action, reason, commit, digests and ids. When testing keeps an older build,
-  `rejected_builds` lists the newer commits that failed verification. Use `--target-key <exact-target-key>`
+  `rejected_builds` lists newer commits, selected run ids and bounded rejection
+  codes. `pr_feedback` retains delivery decisions and record identity while
+  dropping error prose; missing legacy fields remain unknown. See the
+  [reconcile read contract](references/write-action-helper-contract.md#product-environment-activity-and-preview-reads)
+  for retained evidence and deliberately withheld objects. Use `--target-key <exact-target-key>`
   to select a target from the service response before the helper's output bound;
   a truncated unselected read cannot prove that testing is absent. An empty
   selection describes only the returned service list, not records outside it.

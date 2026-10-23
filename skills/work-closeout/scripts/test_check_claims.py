@@ -1,10 +1,11 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["tree-sitter==0.26.0", "tree-sitter-bash==0.25.1"]
+# dependencies = ["tree-sitter==0.26.0", "tree-sitter-bash==0.25.1", "tree-sitter-javascript==0.25.0"]
 # ///
 """Exercise native-session closeout against disposable GitHub and transcript records."""
 import contextlib
+from collections.abc import Callable
 import io
 import json
 from pathlib import Path
@@ -20,6 +21,7 @@ ACTOR = "fixture[bot]"
 SESSION = "native-session"
 REPO = "test/a"
 SOURCE = {"worker": "worker", "session": SESSION, "branch": "work/task", "claimed_at": "2026-01-01T00:00:00Z"}
+SUPPORTED_CLI_VERSION = ".".join(map(str, helper.history.CLOSED_STDIN_SINCE))
 
 
 def comment(identifier, body, actor=ACTOR, at="2026-01-01T00:01:00Z"):
@@ -35,6 +37,24 @@ def pull(number=2, branch=SOURCE["branch"], **changes):
 
 def bash_call(command):
     return [{"message": {"content": [{"type": "tool_use", "name": "Bash", "id": "call", "input": {"command": command}}]}}]
+
+
+def completed_bash_call(command: str) -> list[dict]:
+    return [*bash_call(command), {"message": {"content": [{"type": "tool_result", "tool_use_id": "call", "content": ""}]}}]
+
+
+def native_terminal_result(identifier: str, output: str = "", *, javascript: bool = False) -> dict:
+    return {
+        "payload": {
+            "type": "custom_tool_call_output" if javascript else "function_call_output",
+            "call_id": identifier,
+            "output": (json.dumps({"exit_code": 0, "output": output}) if javascript else f"Chunk ID: fixture\nWall time: 0.1 seconds\nProcess exited with code 0\nOutput:\n{output}"),
+        }
+    }
+
+
+def native_runtime() -> dict:
+    return {"type": "session_meta", "payload": {"id": SESSION, "cli_version": SUPPORTED_CLI_VERSION}}
 
 
 class ClaimCloseoutTests(unittest.TestCase):
@@ -78,9 +98,11 @@ class ClaimCloseoutTests(unittest.TestCase):
     def check(self):
         return helper.check_record(self.reader, REPO, 1, SESSION, ACTOR)
 
-    def entry(self, session=SESSION, timestamp=SOURCE["claimed_at"]):
+    def entry(self, session: str = SESSION, timestamp: str | None = SOURCE["claimed_at"], cli_version: str | None = None) -> dict:
         path = self.folder / (session + ".jsonl")
         row = {"type": "session_meta", "payload": {"id": session}}
+        if cli_version is not None:
+            row["payload"]["cli_version"] = cli_version
         if timestamp is not None:
             row["timestamp"] = timestamp
         path.write_text(json.dumps(row) + "\n")
@@ -337,6 +359,41 @@ class ClaimCloseoutTests(unittest.TestCase):
             stream.write(json.dumps({"claim": SOURCE, "issue": {"repo": REPO, "number": 1}}) + "\n")
         self.assertEqual(helper.recorded_targets(entry)["targets"], {(REPO, 1)})
 
+    def test_projected_receipt_binds_its_canonical_release_target(self) -> None:
+        command = helper.claim_log.release_command(Path("/catalog/gh-plan.py"), REPO, 1, self.source["id"], SESSION)
+        projection = {"claim": SOURCE, "completed_steps": ["post_claim"], "release_command": command}
+        self.assertEqual(helper.history.claim_target({"claim": SOURCE, "release_command": command}, SESSION), (REPO, 1))
+        entry = self.entry()
+        rows = [
+            {"payload": {"type": "custom_tool_call", "name": "exec", "call_id": "projection", "input": 'text(load("receipt"));'}},
+            {"payload": {"type": "custom_tool_call_output", "call_id": "projection", "output": json.dumps(projection)}},
+        ]
+        with Path(entry["transcript"]).open("a") as stream:
+            for row in rows:
+                stream.write(json.dumps(row) + "\n")
+        self.assertEqual(helper.recorded_targets(entry)["targets"], {(REPO, 1)})
+        self.assertFalse(helper.check([entry])["claims_clear"])
+        self.comments.append(self.release)
+        self.assertTrue(helper.check([entry])["claims_clear"])
+        for changed in (
+            None,
+            command.replace(SESSION, "another-session"),
+            command.replace("--claim-comment", "--other-comment"),
+            command + "; echo extra",
+            "The command was " + command,
+        ):
+            with self.subTest(command=changed), self.assertRaises(ValueError):
+                helper.history.claim_target({**projection, "release_command": changed}, SESSION)
+        with self.assertRaises(ValueError):
+            helper.history.claim_target({**projection, "issue": {"repo": "another/repository", "number": 2}}, SESSION)
+        for partial in (
+            {"claim_comment": {"comment": {"id": self.source["id"] + 1}}},
+            {"issue": {"repo": "another/repository"}},
+            {"issue": {"number": 2}},
+        ):
+            with self.subTest(partial=partial), self.assertRaises(ValueError):
+                helper.history.claim_target({**projection, **partial}, SESSION)
+
     def test_recorded_claim_targets_include_closed_and_pr_only_work_across_sessions(self) -> None:
         records = ((REPO, 1), ("second/b", 5), ("second/b", 6))
         entries = [self.receipt_entry(records=records), self.receipt_entry("child", records=((REPO, 8),))]
@@ -546,7 +603,10 @@ class ClaimCloseoutTests(unittest.TestCase):
 
     def test_polling_one_process_many_times_links_each_poll_output_once(self) -> None:
         polls = 12
-        rows = [{"type": "custom_tool_call_output", "call_id": "start", "output": json.dumps({"session_id": 41})}]
+        rows = [
+            {"type": "custom_tool_call", "name": "exec", "call_id": "start", "input": 'text(await tools.exec_command({cmd:"pwd"}));'},
+            {"type": "custom_tool_call_output", "call_id": "start", "output": json.dumps({"session_id": 41})},
+        ]
         poll_input = 'text(await tools.write_stdin({session_id:41,chars:""}));'
         for poll in range(polls):
             rows.append({"type": "custom_tool_call", "name": "exec", "call_id": f"poll-{poll}", "input": poll_input})
@@ -556,7 +616,7 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.assertLessEqual(sum(map(len, outputs.values())), (1 + polls) ** 2)
 
     def test_literal_repository_target_survives_a_truncated_claim_result(self) -> None:
-        root = self.entry()
+        root = self.entry(cli_version=SUPPORTED_CLI_VERSION)
         with Path(root["transcript"]).open("a") as stream:
             stream.write(
                 json.dumps(
@@ -579,7 +639,7 @@ class ClaimCloseoutTests(unittest.TestCase):
                         "payload": {
                             "type": "custom_tool_call_output",
                             "call_id": "claim-call",
-                            "output": 'Warning: truncated output\n{"claim":',
+                            "output": 'Warning: truncated output (original token count: 3000)\nWall time: 1.0 seconds\nProcess exited with code 0\nOutput:\n{"claim":',
                         },
                     }
                 )
@@ -588,6 +648,25 @@ class ClaimCloseoutTests(unittest.TestCase):
         self.assertFalse(helper.check([root])["claims_clear"])
         self.comments.append(self.release)
         self.assertTrue(helper.check([root])["claims_clear"])
+
+    def test_known_target_without_terminal_output_stays_pending_after_release(self) -> None:
+        root = self.entry(cli_version=SUPPORTED_CLI_VERSION)
+        call = {
+            "payload": {
+                "type": "custom_tool_call",
+                "name": "exec",
+                "call_id": "unfinished",
+                "input": 'text(await tools.exec_command({cmd:"uv run gh-plan.py --repo test/a claim 1 --session native-session"}));',
+            }
+        }
+        with Path(root["transcript"]).open("a") as stream:
+            stream.write(json.dumps(call) + "\n")
+        self.comments.append(self.release)
+        report = helper.check([root])
+        self.assertFalse(report["claims_clear"])
+        self.assertFalse(report["coverage"]["complete"])
+        self.assertEqual(report["coverage"]["repositories"], [REPO])
+        self.assertEqual([item["call_id"] for item in report["unresolved_invocations"]], ["unfinished"])
 
     def test_real_codex_activity_requires_the_child_transcript(self) -> None:
         entry = self.entry()
@@ -613,6 +692,54 @@ class ClaimCloseoutTests(unittest.TestCase):
         with patch.object(helper, "repository_reader") as reader, self.assertRaises(ValueError):
             helper.check([entry])
         reader.assert_not_called()
+
+    def test_peer_activity_does_not_reparent_an_indexed_sibling(self) -> None:
+        root = self.entry()
+        helper.claim_log.record(SESSION, REPO, 1)
+        children = [self.receipt_entry(name, records=((REPO, 1),)) for name in ("first", "second")]
+        for child in children:
+            native = child["session_id"]
+            path = Path(child["transcript"])
+            rows = [json.loads(line) for line in path.read_text().splitlines()]
+            rows[0]["payload"].update(session_id=SESSION, source={"subagent": {"thread_spawn": {"parent_thread_id": SESSION}}})
+            rows.append(
+                {
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "item_completed",
+                        "thread_id": native,
+                        "item": {
+                            "type": "SubAgentActivity",
+                            "kind": "interacted",
+                            "agent_thread_id": "first" if native == "second" else "second",
+                        },
+                    },
+                }
+            )
+            path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+            self.native_index.execute("INSERT INTO threads VALUES(?,?)", (native, str(path)))
+            self.native_index.execute("INSERT INTO thread_spawn_edges VALUES(?,?)", (SESSION, native))
+        for released in (False, True):
+            self.comments = [self.source, self.release] if released else [self.source]
+            with self.subTest(released=released), patch.object(helper, "check_record", wraps=helper.check_record) as check:
+                report = helper.check([root])
+                self.assertEqual(report["claims_clear"], released)
+                self.assertEqual({call.args[3] for call in check.call_args_list}, {SESSION, "first", "second"})
+        self.native_index.execute("DELETE FROM thread_spawn_edges")
+        self.native_index.executemany(
+            "INSERT INTO thread_spawn_edges VALUES(?,?)", [(SESSION, "second"), (SESSION, "first"), ("second", "first")]
+        )
+        with self.assertRaises(ValueError):
+            helper.check([root])
+
+        self.native_index.execute("DELETE FROM thread_spawn_edges")
+        self.native_index.executemany("INSERT INTO thread_spawn_edges VALUES(?,?)", [(SESSION, "first"), (SESSION, "second")])
+        path = Path(children[0]["transcript"])
+        rows = [json.loads(line) for line in path.read_text().splitlines()]
+        rows[-1]["payload"]["item"].update(kind="unknown", agent_thread_id="missing")
+        path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+        with self.assertRaises(ValueError):
+            helper.check([root])
 
     def test_real_claude_result_requires_its_subagent_transcript(self) -> None:
         entry = self.entry()
@@ -750,6 +877,7 @@ class ClaimCloseoutTests(unittest.TestCase):
             'git commit -m "gh-plan.py claim 1"',
             "cat <<EOF\ngh-plan.py claim 1\nEOF",
             "cat <<'EOF'\n$(uv run gh-plan.py claim 1)\nEOF",
+            "G=/catalog/skills/github; uv run $G/scripts/gh-plan.py claim --help 2>&1 | head -60",
         ]
         for command in commands:
             rows = [{"message": {"content": [{"type": "tool_use", "name": "Bash", "id": "read", "input": {"command": command}}]}}]
@@ -771,7 +899,7 @@ class ClaimCloseoutTests(unittest.TestCase):
         for command, targets in cases.items():
             with self.subTest(command=command):
                 self.assertEqual(
-                    helper.history.literal_targets(bash_call(command), SESSION), {"targets": targets, "unresolved_invocations": []}
+                    helper.history.literal_targets(completed_bash_call(command), SESSION), {"targets": targets, "unresolved_invocations": []}
                 )
 
     def test_claim_values_a_shell_could_change_stay_computed(self) -> None:
@@ -830,6 +958,85 @@ class ClaimCloseoutTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertTrue(helper.history.literal_targets(bash_call(command), SESSION)["unresolved_invocations"])
 
+    def test_claims_run_through_a_data_commands_execution_feature_stay_computed(self) -> None:
+        claim = "uv run gh-plan.py --repo test/a claim 5"
+        script = f"import subprocess\nsubprocess.run({claim.split()!r})"
+        commands = [
+            f"git -c 'alias.x=!{claim}' x",
+            f"C='!{claim}'; git -c \"alias.x=$C\" x",
+            f"git -c \"alias.x=$(printf '!{claim}')\" x",
+            f"git --config-env=alias.x=C x; echo '{claim}'",
+            f"git config alias.x '!{claim}' && git x",
+            f"git rebase --exec '{claim}' main",
+            f"git rebase -m --exec '{claim}' main",
+            f"git grep -F --open-files-in-pager='sh -c \"{claim}\" --' needle",
+            f"git config --comment --get core.editor 'sh -c \"{claim}\" --'; git commit --allow-empty",
+            f"cat > 1 <<'EOF'\n[core]\n editor = sh -c '{claim}' --\nEOF\nGIT_CONFIG_GLOBAL=1 git commit --allow-empty",
+            f"git bisect run sh -c '{claim}'",
+            f"git submodule foreach '{claim}'",
+            f"GIT_PAGER='sh -c \"{claim}\"' git log",
+            f"export GIT_EDITOR='sh -c \"{claim}\" --'; git commit --allow-empty",
+            f"cat >> .git/config <<'EOF'\n[alias]\n    c = !{claim}\nEOF\ngit c",
+            f"gh alias set c '!{claim}' && gh c",
+            f"gh plan-runner '{claim}'",
+            f"gh extension exec runner '{claim}'",
+            f"sed -n '1e {claim}' notes.txt",
+            f"echo '{claim}' | sed 's/^//e'",
+            f"sed -e 1d -e 's/.*/{claim.replace('/', r'\/')}/e' notes.txt",
+            f"sed 's|[|]|w|;e {claim}' notes.txt",
+            f"sed -n '/x/{{e {claim}\n}}' notes.txt",
+            f"cat > test_claim.py <<'EOF'\n{script}\nEOF\nuv run pytest test_claim.py",
+            f"cat <<'EOF' > c\n{claim}\nEOF\nchmod +x c; rg --pre ./c pattern .",
+            f"printf '{claim}\\n' > c; chmod +x c; sort --compress-program=./c big.txt",
+            f"printf '{claim}\\n' > c; chmod +x c; sort --compress-p ./c big.txt",
+            f"less '+!{claim}' notes.txt",
+            f"less '+#{claim}' notes.txt",
+            f"less '+G!{claim}' notes.txt",
+            f"read 'a[$({claim})]' <<< x",
+            f"printf -v 'a[$({claim})]' %s x",
+            f"test -v 'a[$({claim})]'",
+        ]
+        for command in commands:
+            with self.subTest(command=command):
+                self.assertTrue(helper.history.literal_targets(bash_call(command), SESSION)["unresolved_invocations"])
+
+    def test_plain_data_uses_of_execution_capable_commands_stay_data(self) -> None:
+        mention = "gh-plan.py claim 2"
+        commands = [
+            "git status",
+            f"git log --grep '{mention}'",
+            f"git -c user.name=bot commit -m '{mention}'",
+            f"git config user.email bot@example.com; git commit -m '{mention}'",
+            f"gh issue comment 5 --body '{mention}'",
+            f"GH_PAGER=cat gh pr view 5; rg '{mention}' .",
+            f"sed -n 1p notes.txt; rg '{mention}' .",
+            f"sed -i 's/old/{mention}/' notes.txt",
+            f"sed -e 's/a/b/g;/x/d' -e '$a\\\\\n{mention}' notes.txt",
+            f"gh -R test/a issue comment 5 --body '{mention}'",
+            f"git grep -e '-Only {mention}'",
+            f"rg -- '--pre' notes; echo '{mention}'",
+            f"sort -- --compress-program; echo '{mention}'",
+            f"git config --get-regexp 'gh-plan.py' claim",
+            f"sed -n '/{mention}/{{p;}}' notes.txt",
+            f"sed -n 's|[|]|e|p' notes.txt; echo '{mention}'",
+            f"NOTE='{mention}' git status",
+            f"less '+/{mention} |release' notes.txt",
+            f"sort -u notes.txt | less; rg '{mention}' .",
+            f"read -r line <<< '{mention}'",
+            f"read -p '[{mention}]' line",
+            f"printf %s '-v[{mention}]'",
+            f"git -c core.pager=cat log --grep '{mention}'",
+            f"git config --get --default --edit color.ui; echo '{mention}'",
+            f"LESS=-R rg '{mention}' .",
+            f"printf -v line %s '{mention}'",
+            f"test -n '{mention}'",
+        ]
+        for command in commands:
+            with self.subTest(command=command):
+                self.assertEqual(
+                    helper.history.literal_targets(bash_call(command), SESSION), {"targets": set(), "unresolved_invocations": []}
+                )
+
     def test_scripts_and_patches_that_only_mention_claims_are_data(self) -> None:
         commands = [
             "cd /w && cat > /tmp/probe.py <<'EOF'\nfor cmd in ['S=gh-plan.py; uv run $S --repo test/a claim 2']:\n    print(cmd)\nEOF\n"
@@ -868,6 +1075,7 @@ class ClaimCloseoutTests(unittest.TestCase):
             call = {"type": "function_call", "name": "shell_command", "call_id": "loop", "arguments": json.dumps({"command": command})}
             with Path(root["transcript"]).open("a") as stream:
                 stream.write(json.dumps({"payload": call}) + "\n")
+                stream.write(json.dumps(native_terminal_result("loop")) + "\n")
             with self.subTest(values=values), patch.object(helper, "check_record", return_value=[]) as check:
                 self.assertEqual(helper.check([root])["claims_clear"], clear)
                 if clear:
@@ -1251,6 +1459,8 @@ class ClaimCloseoutTests(unittest.TestCase):
             {"payload": {"type": "custom_tool_call", "name": "exec", "call_id": str(index), "input": source}}
             for index, source in enumerate(sources)
         ]
+        rows.insert(0, native_runtime())
+        rows.insert(2, native_terminal_result("0", javascript=True))
         self.assertEqual(helper.history.literal_targets(rows, SESSION), {"targets": {("first/a", 5)}, "unresolved_invocations": []})
 
     def test_computed_cell_receipts_keep_unobserved_claim_executions_conditional(self) -> None:
@@ -1367,6 +1577,172 @@ class ClaimCloseoutTests(unittest.TestCase):
         source = 'text(`${(await tools.exec_command({cmd:"uv run gh-plan.py claim 5"})).output}`);'
         rows = [{"payload": {"type": "custom_tool_call", "name": "exec", "call_id": "template", "input": source}}]
         self.assertTrue(helper.history.literal_targets(rows, SESSION)["unresolved_invocations"])
+
+    def test_computed_reads_preserve_each_shell_commands_claim_context(self) -> None:
+        reads = [
+            'const charts=["app.processes","app.memory"]; '
+            'const out=await Promise.allSettled(charts.map(chart=>tools.exec_command({cmd:`ssh host "curl -fsS https://metrics.invalid/?chart=${chart}"`}))); '
+            'out.forEach(text); text(await tools.exec_command({cmd:"uv run gh-plan.py --repo test/a show 1 --full"}));',
+            "for (const n of [1,2]) { const r=await tools.exec_command({cmd:`uv run gh-plan.py --repo test/a show ${n} --full`}); text(r); }",
+        ]
+        reads.append(reads[0].replace("allSettled", "all"))
+        for source in reads:
+            rows = [{"payload": {"type": "custom_tool_call", "name": "exec", "call_id": "read", "input": source}}]
+            with self.subTest(source=source):
+                self.assertEqual(helper.history.literal_targets(rows, SESSION), {"targets": set(), "unresolved_invocations": []})
+        for source in (
+            "for (const n of issueNumbers()) { const r=await tools.exec_command({cmd:`uv run gh-plan.py --repo test/a show ${n} --full`}); text(r); }",
+            "for (const n of [1,2]) { const r=await tools.exec_command({cmd:`uv run gh-plan.py --repo test/a ${verb} ${n}`}); text(r); }",
+            "for (const n of [1,2]) { const r=await tools.exec_command({cmd:`uv run gh-plan.py claim ${n}`}); text(r); }",
+            'const c=load("command"); text(await tools.exec_command({cmd:c})); text(await tools.exec_command({cmd:"uv run gh-plan.py --repo test/a show 1"}));',
+            'for (const n of ["1;$(cat f)"]) { const r=await tools.exec_command({cmd:`uv run gh-plan.py --repo test/a show ${n}`}); }',
+            "const xs=[1]; xs.push(value); await Promise.all(xs.map(n=>tools.exec_command({cmd:`uv run gh-plan.py --repo test/a show ${n}`})));",
+            "Array.prototype.map=callback; const xs=[1]; await Promise.all(xs.map(n=>tools.exec_command({cmd:`uv run gh-plan.py --repo test/a show ${n}`})));",
+            "// for (const n of [1,2]) {\nconst r=await tools.exec_command({cmd:`uv run gh-plan.py --repo test/a show ${n}`});",
+            "for (const n of [1,2]) { const n=value; const r=await tools.exec_command({cmd:`uv run gh-plan.py --repo test/a show ${n}`}); }",
+            'for (const n of [1,2]) { await tools.exec_command({cmd:`uv run gh-plan.py --repo test/a show ${n}`,cmd:load("command")}); }',
+            'for (const n of [1,2]) { await tools.exec_command({cmd:`uv run gh-plan.py --repo test/a show ${n}`,...load("options")}); }',
+            'for (const n of [1,2]) { await tools.exec_command({cmd:`uv run gh-plan.py --repo test/a show ${n}`,["cmd"]:load("command")}); }',
+            'for (const n of [1,2]) { await tools.exec_command({cmd:`uv run gh-plan.py --repo test/a show ${n}`,get cmd(){return load("command")}}); }',
+            "const xs=[1,2]; await Promise.all(xs.map(n=>tools.exec_command({workdir:(n=value),cmd:`uv run gh-plan.py --repo test/a show ${n}`})));",
+            "const xs=[1,2]; await Promise.all(xs.map(n=>tools.exec_command({cmd:`uv run gh-plan.py --repo test/a show ${n}`,max_output_tokens:(xs[1]=value)})));",
+            'const xs=[1,2]; await Promise.all(xs.map(n=>tools.exec_command({cmd:`uv run gh-plan.py --repo test/a show ${n}`,max_output_tokens:eval("xs[1]=value")})));',
+            "for (const n of [1,2]) { await tools.exec_command({cmd:`uv run gh-plan.py --repo test/a claim \\${n}`}); }",
+            "for (const n of [1,2]) { await tools.exec_command({cmd:`echo done\\nuv run gh-plan.py --repo test/a claim ${n}`}); }",
+            'for (const n of ["\\N{DIGIT ONE}"]) { await tools.exec_command({cmd:`uv run gh-plan.py --repo test/a claim ${n}`}); }',
+            "for (const n of ["
+            + str((1 << 53) + 1)
+            + "]) { await tools.exec_command({cmd:`uv run gh-plan.py --repo test/a claim ${n}`}); }",
+            "for (const n of "
+            + json.dumps(list(range(helper.history.LITERAL_LOOP_VALUES + 1)))
+            + ") { await tools.exec_command({cmd:`uv run gh-plan.py --repo test/a claim ${n}`}); }",
+        ):
+            rows = [{"payload": {"type": "custom_tool_call", "name": "exec", "call_id": "write", "input": source}}]
+            with self.subTest(source=source):
+                self.assertTrue(helper.history.literal_targets(rows, SESSION)["unresolved_invocations"])
+
+        source = "for (const n of [1,2]) { await tools.exec_command({cmd:`uv run gh-plan.py --repo test/a claim ${n}`}); }"
+        with patch.object(helper.history, "LITERAL_EXPANSION_BYTES", 16):
+            rows = [{"payload": {"type": "custom_tool_call", "name": "exec", "call_id": "large", "input": source}}]
+            self.assertTrue(helper.history.literal_targets(rows, SESSION)["unresolved_invocations"])
+
+        for body in (
+            "G=/catalog/skills/github; uv run $G/scripts/gh-plan.py --repo test/a claim ${n}",
+            "R=test/a; uv run gh-plan.py --repo $R claim ${n}",
+            "for r in test/a; do uv run gh-plan.py --repo $r claim ${n}; done",
+        ):
+            source = "for (const n of [1,2]) { await tools.exec_command({cmd:`" + body + "`}); }"
+            rows = [
+                native_runtime(),
+                {"payload": {"type": "custom_tool_call", "name": "exec", "call_id": "copies", "input": source}},
+            ]
+            with self.subTest(body=body):
+                report = helper.history.literal_targets(rows, SESSION)
+                self.assertEqual(report["targets"], {(REPO, 1), (REPO, 2)})
+                self.assertEqual(
+                    [(item["call_id"], item["reason"]) for item in report["unresolved_invocations"]],
+                    [("copies", "unfinished_claim")],
+                )
+
+        root = self.entry(cli_version=SUPPORTED_CLI_VERSION)
+        source = "for (const n of [1,2]) { const r=await tools.exec_command({cmd:`uv run gh-plan.py --repo test/a claim ${n}`}); text(r); }"
+        with Path(root["transcript"]).open("a") as stream:
+            stream.write(
+                json.dumps({"payload": {"type": "custom_tool_call", "name": "exec", "call_id": "claims", "input": source}}) + "\n"
+            )
+        report = helper.check([root])
+        self.assertFalse(report["claims_clear"])
+        self.assertEqual(report["coverage"]["repositories"], [REPO])
+        self.assertEqual(len(report["blocked"]), 2)
+        self.assertEqual(
+            [(item["call_id"], item["reason"]) for item in report["unresolved_invocations"]],
+            [("claims", "unfinished_claim")],
+        )
+
+    def test_javascript_hidden_mutations_and_unshared_escapes_remain_conditional(self) -> None:
+        mapped = "const xs=[1,2]; await Promise.all(xs.map(n=>tools.exec_command({%s})));"
+        command = "cmd:`uv run gh-plan.py --repo test/a claim ${n}`"
+        sources = [
+            mapped % (command + ",workdir:`${xs[1]=3}`"),
+            mapped % ("workdir:`${n=3}`," + command),
+            mapped % (command + ',workdir:`${eval("xs[1]=3")}`'),
+            mapped % command + "text(`${xs[1]=3}`);",
+            mapped % (command + r",max_output_tokens:(\u0078s[1]=3)"),
+            mapped % (r"workdir:(\u006e=3)," + command),
+            r"text(await tools.exec_command({cmd:`echo ok\nuv run gh-plan.py --repo test/a claim 7`}));",
+            r'text(await tools.exec_command({cmd:"uv run gh-plan.py --repo test/a cl\aim 7"}));',
+            r'text(await tools.exec_command({cmd:"uv run gh-plan.py --repo test/a claim 1","\cmd":"uv run gh-plan.py --repo test/a claim 2"}));',
+        ]
+        for source in sources:
+            rows = [{"payload": {"type": "custom_tool_call", "name": "exec", "call_id": "hidden", "input": source}}]
+            with self.subTest(source=source):
+                self.assertTrue(helper.history.literal_targets(rows, SESSION)["unresolved_invocations"])
+
+    def test_shared_javascript_string_escapes_and_template_newlines_preserve_targets(self) -> None:
+        commands = [
+            ('"echo ok\\nuv run gh-plan.py --repo test/a claim 7"', 7),
+            ("\"cat <<'EOF'\\nuv run gh-plan.py --repo test/a claim 7\\nEOF\\nuv run gh-plan.py --repo test/a claim 8\"", 8),
+            (r'"uv run gh-plan.py --repo test/a cl\x61im 7"', 7),
+            (r'"uv run gh-plan.py --repo test/a cl\u0061im 7"', 7),
+            ("`echo ok\nuv run gh-plan.py --repo test/a claim 7`", 7),
+            ("`echo ok\ruv run gh-plan.py --repo test/a claim 7`", 7),
+            ("`echo ok\r\nuv run gh-plan.py --repo test/a claim 7`", 7),
+        ]
+        for command, number in commands:
+            source = "text(await tools.exec_command({cmd:" + command + "}));"
+            rows = [
+                native_runtime(),
+                {"payload": {"type": "custom_tool_call", "name": "exec", "call_id": "literal", "input": source}},
+                native_terminal_result("literal", javascript=True),
+            ]
+            with self.subTest(command=command):
+                self.assertEqual(
+                    helper.history.literal_targets(rows, SESSION), {"targets": {(REPO, number)}, "unresolved_invocations": []}
+                )
+
+    def test_poll_binding_work_grows_with_native_input_size(self) -> None:
+        rows = []
+        for process in range(40):
+            for payload in (
+                {
+                    "type": "function_call",
+                    "name": "exec_command",
+                    "call_id": f"launch-{process}",
+                    "arguments": json.dumps({"cmd": "echo done"}),
+                },
+                {"type": "function_call_output", "call_id": f"launch-{process}", "output": json.dumps({"session_id": process})},
+                {
+                    "type": "function_call",
+                    "name": "write_stdin",
+                    "call_id": f"poll-{process}",
+                    "arguments": json.dumps({"session_id": process}),
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": f"poll-{process}",
+                    "output": json.dumps({"exit_code": 0, "process": process}),
+                },
+            ):
+                rows.append({"payload": payload})
+        input_bytes = sum(len(text) for _, text, _ in helper.history.tool_inputs(rows))
+        scanned = 0
+
+        def meter(method: Callable[..., object]) -> Callable[..., object]:
+            def measured(pattern: object, text: str, *args: object, **kwargs: object) -> object:
+                nonlocal scanned
+                if "session_id" in getattr(pattern, "pattern", str(pattern)):
+                    scanned += len(text)
+                return method(pattern, text, *args, **kwargs)
+
+            return measured
+
+        with contextlib.ExitStack() as stack:
+            for name in ("search", "findall", "finditer"):
+                stack.enter_context(patch.object(helper.history.re, name, meter(getattr(helper.history.re, name))))
+            outputs = helper.history.tool_outputs(rows)
+        self.assertLessEqual(scanned, input_bytes * 2)
+        for process in range(40):
+            self.assertEqual(json.loads(outputs[f"launch-{process}"][-1])["process"], process)
 
     def test_python_fixture_data_is_distinct_from_process_execution(self) -> None:
         data = "rows=[{'cmd':'uv run gh-plan.py claim 5'}]; print(history.literal_targets(rows,SESSION))"
@@ -1495,8 +1871,8 @@ class ClaimCloseoutTests(unittest.TestCase):
             (qualified + " >/dev/null", False, {("first/a", 5)}),
             (f"cat <({claim})", True, set()),
             (f"tee >({claim})", True, set()),
-            (f"cat <({qualified})", False, {("first/a", 5)}),
-            (f"read x < <({qualified})", False, {("first/a", 5)}),
+            (f"cat <({qualified})", True, {("first/a", 5)}),
+            (f"read x < <({qualified})", True, {("first/a", 5)}),
             (f"printf '%s' 2>({qualified})", True, set()),
             (f"printf '%s' '<({claim})'", False, set()),
             (f'''bash -c 'echo "{claim}"' ''', False, set()),
@@ -1522,7 +1898,9 @@ class ClaimCloseoutTests(unittest.TestCase):
                     }
                 )
                 with self.subTest(command=command, javascript=javascript):
-                    report = helper.history.literal_targets([{"payload": payload}], SESSION)
+                    report = helper.history.literal_targets(
+                        [native_runtime(), {"payload": payload}, native_terminal_result("boundary", javascript=javascript)], SESSION
+                    )
                     self.assertEqual(report["targets"], targets)
                     self.assertEqual(bool(report["unresolved_invocations"]), unresolved)
 
@@ -1644,7 +2022,7 @@ class ClaimCloseoutTests(unittest.TestCase):
                 )
                 rows = [
                     {"payload": payload},
-                    {"payload": {"type": "function_call_output", "call_id": "input", "output": json.dumps(receipt)}},
+                    native_terminal_result("input", json.dumps(receipt), javascript=javascript),
                 ]
                 with self.subTest(command=command, javascript=javascript):
                     report = helper.history.literal_targets(rows, SESSION)
@@ -1914,11 +2292,95 @@ class ClaimCloseoutTests(unittest.TestCase):
         )
         for command in commands:
             rows = [
-                {"message": {"content": [{"type": "tool_use", "name": "Bash", "id": "qualified", "input": {"command": command}}]}}
+                {"message": {"content": [{"type": "tool_use", "name": "Bash", "id": "qualified", "input": {"command": command}}]}},
+                {"message": {"content": [{"type": "tool_result", "tool_use_id": "qualified", "content": ""}]}},
             ]
             with self.subTest(command=command):
                 self.assertEqual(
                     helper.history.literal_targets(rows, SESSION), {"targets": {("first/a", 5)}, "unresolved_invocations": []}
+                )
+
+    def test_timeout_preserves_inner_claim_targets_and_uncertainty(self) -> None:
+        prefixes = (
+            "timeout 300",
+            "/usr/bin/timeout --preserve-status --foreground --verbose 5m",
+            "timeout -v -k 2s -s TERM 0.5h",
+            "timeout --kill-after 1m --signal 9 1d",
+            "timeout --kill-after=2s --signal=TERM -- 300",
+            "timeout -k2s -sTERM 300",
+        )
+        commands = (
+            "uv run skills/github/scripts/gh-plan.py --repo first/a claim 5",
+            "uv run --no-project --python python3 gh-plan.py claim first/a#5",
+            "python3 gh-plan.py --repo first/a claim 5",
+            "gh-plan.py --repo first/a claim 5",
+            "uv run gh-plan.py claim 5",
+            "uv run gh-plan.py --repo first/a claim $TARGET",
+        )
+        for command in commands:
+            for suffix in ("", " | tail -40", " 2>&1 | tail -40"):
+                expected = helper.history.literal_targets(bash_call(command + suffix), SESSION)
+                for prefix in prefixes:
+                    with self.subTest(prefix=prefix, command=command, suffix=suffix):
+                        actual = helper.history.literal_targets(bash_call(f"{prefix} {command}{suffix}"), SESSION)
+                        self.assertEqual(actual, expected)
+
+    def test_timeout_non_claim_subcommand_ignores_surrounding_claim_data(self) -> None:
+        command = "uv run gh-plan.py --repo first/a update-section 5 'Current Status' --body-file status.md"
+        data = "cat >status.md <<'EOF'\nReleased gh-plan.py claim 5\nEOF\n"
+        for suffix in ("", " | tail -40", " 2>&1 | tail -40"):
+            for prefix in ("timeout 400", "timeout -k 10 --signal=TERM 400"):
+                with self.subTest(prefix=prefix, suffix=suffix):
+                    result = helper.history.literal_targets(bash_call(f"{data}{prefix} {command}{suffix}"), SESSION)
+                    self.assertEqual(result, {"targets": set(), "unresolved_invocations": []})
+
+    def test_unparsed_timeout_wrappers_remain_conditional(self) -> None:
+        prefixes = (
+            "timeout --unknown 300",
+            "timeout --signal= 300",
+            "timeout --kill-after= 300",
+            "timeout --foreground=yes 300",
+            "timeout -k invalid 300",
+            "timeout --signal",
+            "timeout",
+            "timeout $DURATION",
+            "timeout invalid",
+            "timeout 300 timeout --unknown 200",
+        )
+        for prefix in prefixes:
+            for arguments in ("claim 5", "show 5"):
+                command = f"echo 'gh-plan.py claim 5'; {prefix} uv run gh-plan.py --repo first/a {arguments}"
+                with self.subTest(prefix=prefix, arguments=arguments):
+                    result = helper.history.literal_targets(bash_call(command), SESSION)
+                    self.assertTrue(result["unresolved_invocations"])
+                    self.assertEqual(result["targets"], set())
+
+    def test_timeout_preserves_unrecognized_inner_uv_commands(self) -> None:
+        for command in ("uv sync", "uv build", "uv pip install package", "uv run --exact pytest", "uv run --python"):
+            source = f"echo 'gh-plan.py claim 5'; {command}"
+            for prefix in ("timeout 600", "timeout 600 timeout -v 300"):
+                with self.subTest(command=command, prefix=prefix):
+                    wrapped = f"echo 'gh-plan.py claim 5'; {prefix} {command}"
+                    self.assertEqual(
+                        helper.history.literal_targets(bash_call(wrapped), SESSION),
+                        helper.history.literal_targets(bash_call(source), SESSION),
+                    )
+
+    def test_timeout_does_not_trust_data_command_execution_channels(self) -> None:
+        commands = (
+            "git -c 'alias.x=!uv run gh-plan.py --repo first/a claim 5' x",
+            "rg --pre 'uv run gh-plan.py --repo first/a claim 5' pattern",
+            "sed 'e uv run gh-plan.py --repo first/a claim 5' file",
+            "python3 probe.py 'uv run gh-plan.py --repo first/a claim 5'",
+            "bash saved-program.sh",
+        )
+        for command in commands:
+            source = f"echo 'gh-plan.py claim 5'; {command}"
+            wrapped = f"echo 'gh-plan.py claim 5'; timeout 300 {command}"
+            with self.subTest(command=command):
+                self.assertEqual(
+                    helper.history.literal_targets(bash_call(wrapped), SESSION),
+                    helper.history.literal_targets(bash_call(source), SESSION),
                 )
 
     def test_uv_options_select_the_command_instead_of_interpreter_option_values(self) -> None:
@@ -2097,7 +2559,7 @@ print(root)"""
                         "arguments": json.dumps({"cmd": command}),
                     }
                 },
-                {"payload": {"type": "function_call_output", "call_id": "claim", "output": json.dumps(receipt)}},
+                native_terminal_result("claim", json.dumps(receipt)),
             ]
             with self.subTest(command=command):
                 self.assertEqual(helper.history.literal_targets(rows, SESSION), {"targets": targets, "unresolved_invocations": []})
@@ -2105,15 +2567,15 @@ print(root)"""
     def test_raw_javascript_does_not_prove_bare_claim_execution_count(self) -> None:
         command = 'tools.exec_command({cmd:"uv run gh-plan.py claim 5",workdir})'
         sources = [
-            f'for (const workdir of ["/a", "/b"]) text(await {command});',
-            f"while (next()) text(await {command});",
-            f'await Promise.all(["/a", "/b"].map(async workdir => {command}));',
-            f'async function run(workdir) {{ return {command}; }} text(await run("/a")); text(await run("/b"));',
-            f"text(await {command});",
+            (f'for (const workdir of ["/a", "/b"]) text(await {command});', False),
+            (f"while (next()) text(await {command});", True),
+            (f'await Promise.all(["/a", "/b"].map(async workdir => {command}));', False),
+            (f'async function run(workdir) {{ return {command}; }} text(await run("/a")); text(await run("/b"));', True),
+            (f"text(await {command});", True),
         ]
         receipts = [{"claim": SOURCE, "issue": {"repo": repo, "number": 5}} for repo in ("first/a", "second/b")]
         rejection = {"operation": "github.plan.claim", "ok": False, "write_outcome": "not_started"}
-        for source in sources:
+        for source, qualified_unknown in sources:
             for result in (receipts[:1], receipts, rejection):
                 rows = [
                     {"payload": {"type": "custom_tool_call", "name": "exec", "call_id": "repeat", "input": source}},
@@ -2126,6 +2588,7 @@ print(root)"""
                         report["targets"], {(item["issue"]["repo"], 5) for item in result} if isinstance(result, list) else set()
                     )
             rows = [
+                native_runtime(),
                 {
                     "payload": {
                         "type": "custom_tool_call",
@@ -2133,13 +2596,15 @@ print(root)"""
                         "call_id": "qualified",
                         "input": source.replace("claim 5", "--repo first/a claim 5"),
                     }
-                }
+                },
             ]
-            self.assertEqual(
-                helper.history.literal_targets(rows, SESSION), {"targets": {("first/a", 5)}, "unresolved_invocations": []}
-            )
+            report = helper.history.literal_targets(rows, SESSION)
+            self.assertEqual(report["targets"], {("first/a", 5)})
+            self.assertTrue(report["unresolved_invocations"])
+            if not qualified_unknown:
+                self.assertEqual([item["reason"] for item in report["unresolved_invocations"]], ["unfinished_claim"])
 
-    def test_uncertain_javascript_reads_its_saved_receipt_targets(self) -> None:
+    def test_single_wrapped_claim_reads_its_saved_receipt_target(self) -> None:
         rows = [
             {
                 "payload": {
@@ -2163,7 +2628,21 @@ print(root)"""
             report = helper.history.literal_targets(rows, SESSION, directory=self.folder)
         read.assert_called_once()
         self.assertEqual(report["targets"], {("second/b", 5)})
-        self.assertTrue(report["unresolved_invocations"])
+        self.assertEqual(report["unresolved_invocations"], [])
+
+    def test_single_wrapped_claim_receipt_still_needs_its_exact_release(self) -> None:
+        root = self.entry()
+        rows = [
+            {"payload": {"type": "custom_tool_call", "name": "exec", "call_id": "single",
+                         "input": 'text(await tools.exec_command({cmd:"uv run gh-plan.py claim 1"}));'}},
+            {"payload": {"type": "custom_tool_call_output", "call_id": "single",
+                         "output": json.dumps({"claim": SOURCE, "issue": {"repo": REPO, "number": 1}})}},
+        ]
+        with Path(root["transcript"]).open("a") as stream:
+            stream.write("\n".join(json.dumps(row) for row in rows) + "\n")
+        self.assertFalse(helper.check([root])["claims_clear"])
+        self.comments.append(self.release)
+        self.assertTrue(helper.check([root])["claims_clear"])
 
     def test_recorded_claim_uses_the_target_repositories_writer(self) -> None:
         client_actor = "client-fixture[bot]"

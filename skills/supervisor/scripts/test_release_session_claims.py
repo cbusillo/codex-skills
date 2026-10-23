@@ -32,6 +32,15 @@ def comment(number, body, author=ACTOR):
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_inventory_backfill_refuses_unresolved_resume_after_the_original_exit(self) -> None:
+        source = {"session_id": "01a0fcce-ef3c-74e3-af74-6721809e4990", "harness": "codex", "_inventory": True, "_backfill": True}
+        cutoff = helper.release.stamp("2026-01-01T00:02:00Z")
+        for command in ("codex resume --last", "codex resume"):
+            with (self.subTest(command=command), patch.object(helper, "inventory", return_value=[(543, "ttys002", command)]),
+                  patch.object(helper.closure, "process_started_at", return_value=cutoff + timedelta(minutes=1)),
+                  patch.object(helper.closure, "guarded_launch_endpoint", return_value=None), self.assertRaises(ValueError)):
+                helper.verify_process_exit(source, ended_at=cutoff)
+
     def test_optional_admission_proof_is_not_a_dependency_of_release_retry(self):
         log = self.root / "closed.json"
         saved = {**self.entry, "closure_evidence": {"host": "old-boot"}}

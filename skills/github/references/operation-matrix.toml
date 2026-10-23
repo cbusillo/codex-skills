@@ -2572,22 +2572,22 @@ test_refs = ["github/scripts/test_github_plan_landing.py:MutationProjectionTests
 [[operations]]
 id = "github.worktree.retire_landed"
 request_priority = "essential"
-capabilities = ["pull_requests_read"]
+capabilities = ["pull_requests_read", "issues_read"]
 permission_mode = "delegated"
-permission_note = "One PR read under the existing pull-request read grant. Local retirement runs only the host helper named in the worktree's lock; no GitHub write, branch deletion on the remote or new grant."
+permission_note = "PR, PR commit and claim-discussion reads under the existing pull-request and issue read grants. Local retirement runs only the host helper named in the worktree's lock; no GitHub write, branch deletion on the remote or new grant."
 entrypoint = "github/scripts/landed_worktrees.py"
-intent = "After a landing, retire the PR's source task worktree on this host when the PR is merged or closed and the local branch holds nothing beyond its head."
-current_transport = "rest_api"
-selected_transport = "rest_api"
-endpoint_or_command = "GET /repos/{owner}/{repo}/pulls/{number}; local git worktree list and the lock-named dev-worktree retire command"
-quota_bucket = "rest_core"
+intent = "After a landing, retire the PR's source task worktree and any review or refresh worktree whose HEAD is one of the PR's commits, keeping fresh starts on the default branch and branches an open claim names."
+current_transport = "composite"
+selected_transport = "composite"
+endpoint_or_command = "GET /repos/{owner}/{repo}/pulls/{number} and its commits; issue and comment reads of the PR and the issues it links or closes; GraphQL closingIssuesReferences; local git worktree list and the lock-named dev-worktree retire command"
+quota_bucket = "mixed"
 actor_policy = "automation_required"
 mutation_class = "read"
 idempotency = "read_only"
 retry_eligibility = "safe"
 reconciliation_strategy = "degraded_snapshot"
-retained_graphql_rationale = "No GraphQL is required; one REST PR read supplies the head branch, head commit and state."
-source_refs = ["github/scripts/landed_worktrees.py:main", "github/scripts/landed_worktrees.py:landed_decisions"]
+retained_graphql_rationale = "REST supplies the PR, its commits and claim discussions; only GraphQL lists the closing issues that hold claims."
+source_refs = ["github/scripts/landed_worktrees.py:main", "github/scripts/landed_worktrees.py:landed_decisions", "github/scripts/landed_worktrees.py:open_claims"]
 test_refs = ["github/scripts/test_landed_worktrees.py"]
 
 [[operations]]
@@ -2715,3 +2715,149 @@ reconciliation_strategy = "fail_closed_write"
 retained_graphql_rationale = "No retained GraphQL transport; REST exposes the complete owner protection and ruleset writer surfaces."
 source_refs = ["github/scripts/github_rulesets.py:check_snapshot", "github/scripts/github_rulesets.py:run_check_plan", "github/scripts/gh-rulesets.py:run_checks"]
 test_refs = ["github/scripts/test_github_required_checks.py:test_classic_preserves_requirements_bindings_strictness_and_other_protection"]
+
+[[operations]]
+id = "github.owner.admin.plan"
+request_priority = "essential"
+capabilities = ["owner_admin_write"]
+permission_mode = "delegated"
+permission_note = "Explicit existing verified human owner transport; no automatic identity fallback or change to App grants. Source tests authorize no live admin call."
+entrypoint = "github/scripts/gh-owner-admin.py plan"
+intent = "Plan, explicitly apply and verify the recorded repository admin cases, or return only environment secret names."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "GET verified owner, repository, paged direct collaborators/invitations, full rulesets or environment secret names"
+quota_bucket = "rest_core"
+actor_policy = "active_human_required"
+mutation_class = "read"
+idempotency = "read_only"
+retry_eligibility = "safe"
+reconciliation_strategy = "fresh_read"
+retained_graphql_rationale = "No GraphQL; REST supports exact repository scope, paged reads and write readback."
+source_refs = ["github/scripts/gh-owner-admin.py:run", "github/scripts/gh-owner-admin.py:run_plan", "github/scripts/gh-owner-admin.py:read_request"]
+test_refs = ["github/scripts/test_github_owner_admin.py:OwnerAdminTests"]
+
+[[operations]]
+id = "github.owner.admin.settings.plan"
+request_priority = "essential"
+capabilities = ["owner_admin_write"]
+permission_mode = "delegated"
+permission_note = "Explicit existing verified human owner transport; no automatic identity fallback or change to App grants. Source tests authorize no live admin call."
+entrypoint = "github/scripts/gh-owner-admin.py settings-plan"
+intent = "Plan, explicitly apply and verify the recorded repository admin cases, or return only environment secret names."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "GET verified owner, repository, paged direct collaborators/invitations, full rulesets or environment secret names"
+quota_bucket = "rest_core"
+actor_policy = "active_human_required"
+mutation_class = "read"
+idempotency = "read_only"
+retry_eligibility = "safe"
+reconciliation_strategy = "fresh_read"
+retained_graphql_rationale = "No GraphQL; REST supports exact repository scope, paged reads and write readback."
+source_refs = ["github/scripts/gh-owner-admin.py:run", "github/scripts/gh-owner-admin.py:run_plan", "github/scripts/gh-owner-admin.py:read_request"]
+test_refs = ["github/scripts/test_github_owner_admin.py:OwnerAdminTests"]
+
+[[operations]]
+id = "github.owner.admin.apply"
+request_priority = "essential"
+capabilities = ["owner_admin_write"]
+permission_mode = "delegated"
+permission_note = "Explicit existing verified human owner transport; no automatic identity fallback or change to App grants. Source tests authorize no live admin call."
+entrypoint = "github/scripts/gh-owner-admin.py apply"
+intent = "Plan, explicitly apply and verify the recorded repository admin cases, or return only environment secret names."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "PATCH /repos/{repo} flags; DELETE collaborator/invitation; POST/PUT custom tag ruleset; readback"
+quota_bucket = "rest_core"
+actor_policy = "active_human_required"
+mutation_class = "mixed"
+idempotency = "conditional"
+retry_eligibility = "manual"
+reconciliation_strategy = "fail_closed_write"
+retained_graphql_rationale = "No GraphQL; REST supports exact repository scope, paged reads and write readback."
+source_refs = ["github/scripts/gh-owner-admin.py:run", "github/scripts/gh-owner-admin.py:run_plan", "github/scripts/gh-owner-admin.py:read_request"]
+test_refs = ["github/scripts/test_github_owner_admin.py:OwnerAdminTests"]
+
+[[operations]]
+id = "github.owner.admin.readback"
+request_priority = "essential"
+capabilities = ["owner_admin_write"]
+permission_mode = "delegated"
+permission_note = "Explicit existing verified human owner transport; no automatic identity fallback or change to App grants. Source tests authorize no live admin call."
+entrypoint = "github/scripts/gh-owner-admin.py readback"
+intent = "Plan, explicitly apply and verify the recorded repository admin cases, or return only environment secret names."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "GET verified owner, repository, paged direct collaborators/invitations, full rulesets or environment secret names"
+quota_bucket = "rest_core"
+actor_policy = "active_human_required"
+mutation_class = "read"
+idempotency = "read_only"
+retry_eligibility = "safe"
+reconciliation_strategy = "fresh_read"
+retained_graphql_rationale = "No GraphQL; REST supports exact repository scope, paged reads and write readback."
+source_refs = ["github/scripts/gh-owner-admin.py:run", "github/scripts/gh-owner-admin.py:run_plan", "github/scripts/gh-owner-admin.py:read_request"]
+test_refs = ["github/scripts/test_github_owner_admin.py:OwnerAdminTests"]
+
+[[operations]]
+id = "github.owner.admin.read"
+request_priority = "essential"
+capabilities = ["owner_admin_write", "environment_names_read"]
+permission_mode = "delegated"
+permission_note = "Explicit existing verified human owner transport; no automatic identity fallback or change to App grants. Source tests authorize no live admin call."
+entrypoint = "github/scripts/gh-owner-admin.py read"
+intent = "Plan, explicitly apply and verify the recorded repository admin cases, or return only environment secret names."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "GET verified owner, repository, paged direct collaborators/invitations, full rulesets or environment secret names"
+quota_bucket = "rest_core"
+actor_policy = "active_human_required"
+mutation_class = "read"
+idempotency = "read_only"
+retry_eligibility = "safe"
+reconciliation_strategy = "fresh_read"
+retained_graphql_rationale = "No GraphQL; REST supports exact repository scope, paged reads and write readback."
+source_refs = ["github/scripts/gh-owner-admin.py:run", "github/scripts/gh-owner-admin.py:run_plan", "github/scripts/gh-owner-admin.py:read_request"]
+test_refs = ["github/scripts/test_github_owner_admin.py:OwnerAdminTests"]
+
+[[operations]]
+id = "github.owner.admin.write"
+request_priority = "essential"
+capabilities = ["owner_admin_write"]
+permission_mode = "delegated"
+permission_note = "Explicit existing verified human owner transport; no automatic identity fallback or change to App grants. Source tests authorize no live admin call."
+entrypoint = "github/scripts/gh-owner-admin.py apply --confirm-owner-admin-write"
+intent = "Plan, explicitly apply and verify the recorded repository admin cases, or return only environment secret names."
+current_transport = "rest_api"
+selected_transport = "rest_api"
+endpoint_or_command = "PATCH /repos/{repo} flags; DELETE collaborator/invitation; POST/PUT custom tag ruleset; readback"
+quota_bucket = "rest_core"
+actor_policy = "active_human_required"
+mutation_class = "mixed"
+idempotency = "conditional"
+retry_eligibility = "manual"
+reconciliation_strategy = "fail_closed_write"
+retained_graphql_rationale = "No GraphQL; REST supports exact repository scope, paged reads and write readback."
+source_refs = ["github/scripts/gh-owner-admin.py:run", "github/scripts/gh-owner-admin.py:run_plan", "github/scripts/gh-owner-admin.py:read_request"]
+test_refs = ["github/scripts/test_github_owner_admin.py:OwnerAdminTests"]
+
+[capabilities.owner_admin_write]
+scope = "repository"
+permission = "administration"
+access = "write"
+actor = "operator"
+read_supported = true
+probe = "separate_actor"
+degraded_behavior = "Only separately authorized calls through the existing verified owner transport; App Administration remains read-only. Denials never switch identity."
+documentation = "https://docs.github.com/en/rest/repos/repos#update-a-repository"
+
+[capabilities.environment_names_read]
+scope = "repository"
+permission = "environments"
+access = "read"
+actor = "operator"
+read_supported = true
+probe = "separate_actor"
+degraded_behavior = "An explicitly selected verified-owner read returns names only; no values, public keys or environment grant are added to the App."
+documentation = "https://docs.github.com/en/rest/actions/secrets#list-environment-secrets"

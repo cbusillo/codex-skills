@@ -3597,6 +3597,74 @@ def test_product_health_legacy_evidence_stays_unknown_and_retired_aggregate_is_i
     assert check["provenance"] is None
 
 
+def test_environment_read_preserves_sidebar_attention_inputs_without_private_detail() -> None:
+    response = _product_environment_response()
+    environment = cast(dict[str, Any], response["environment"])
+    incident = {
+        "incident_id": "incident-testing-delivery", "check_name": "Odoo health (private)",
+        "status": "open", "severity": "warning", "failure_code": "testing_delivery_failed",
+        "failure_layer": "provider", "summary": "PRIVATE_INCIDENT_DETAIL",
+    }
+    warning = {"code": "public_ingress_failure", "scope": "ingress", "severity": "error",
+               "detail": "PRIVATE_WARNING_DETAIL"}
+    tls = {"domain_name": "testing.example.invalid", "status": "self_signed", "trust_state": "verified",
+           "provenance": {"freshness_status": "verified", "stale_after": "2026-10-23T12:00:00Z"},
+           "certificate": "PRIVATE_CERTIFICATE_DETAIL"}
+    environment["health_monitoring"]["open_incidents"] = [incident]
+    environment["topology"] = {"warnings": [warning], "observed": {"tls_domains": [tls]}}
+    environment["warnings"] = [warning["detail"], "PRIVATE_LANE_WARNING"]
+    status, payload, _calls = _run_product_read(
+        ["product-environment-read", "--product", "example-product", "--environment", "testing"], response,
+    )
+    assert status == 0, payload
+    result = payload["result"]
+    assert result["health_monitoring"]["open_incidents"] == [
+        {key: value for key, value in incident.items() if key != "summary"}
+    ]
+    assert result["topology"]["warnings"] == [
+        {key: value for key, value in warning.items() if key != "detail"}
+    ]
+    projected_tls = result["topology"]["observed"]["tls_domains"][0]
+    assert {key: projected_tls[key] for key in ("domain_name", "status", "trust_state")} == {
+        key: tls[key] for key in ("domain_name", "status", "trust_state")
+    }
+    assert all(projected_tls["provenance"][key] == value for key, value in tls["provenance"].items())
+    assert result["other_warning_count"] == len(environment["warnings"]) - len(environment["topology"]["warnings"])
+    assert "PRIVATE_" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("field", ["open_incidents", "warnings", "tls_domains"])
+def test_sidebar_evidence_discloses_missing_and_truncated_lists(field: str) -> None:
+    projectors = {
+        "open_incidents": (write_action._project_product_health, {}),
+        "warnings": (write_action._project_product_topology, {}),
+        "tls_domains": (lambda value: write_action._project_product_topology({"observed": value})["observed"],
+                        {"domain_name": "testing.example.invalid"}),
+    }
+    project, row = projectors[field]
+    missing = project({})
+    assert all(missing[key] is None for key in (field, f"{field}_count", f"{field}_truncated"))
+    empty = project({field: []})
+    assert empty[field] == [] and empty[f"{field}_count"] == len(empty[field])
+    assert empty[f"{field}_truncated"] is False
+    entries = [row] * (write_action.PRODUCT_OPERATIONAL_MAX_ENTRIES + 1)
+    bounded = project({field: entries})
+    assert bounded[field] == [bounded[field][0]] * write_action.PRODUCT_OPERATIONAL_MAX_ENTRIES
+    assert bounded[f"{field}_count"] == len(entries) and bounded[f"{field}_truncated"]
+
+
+def test_other_sidebar_warning_count_requires_both_source_lists() -> None:
+    for source in ({}, {"warnings": []}, {"topology": {"warnings": []}}):
+        assert write_action._product_other_warning_count(source) is None
+    assert write_action._product_other_warning_count({"warnings": [], "topology": {"warnings": []}}) == 0
+
+
+@pytest.mark.parametrize("domain", ["https://private.invalid/path", "user:password@private.invalid", "ghp_PRIVATEVALUE"])
+def test_sidebar_tls_projection_refuses_urls_and_credentials(domain: str) -> None:
+    with pytest.raises(safety.LaunchplaneSafetyError):
+        write_action._project_product_topology({"observed": {"tls_domains": [{"domain_name": domain}]}})
+
+
 @pytest.mark.parametrize("extra", [0, 1])
 def test_product_health_discloses_incomplete_check_projection(extra: int) -> None:
     checks = [{"name": f"check-{index}", "probe_effective": True}
@@ -3699,7 +3767,6 @@ def test_product_environment_read_uses_path_route_and_projects_deploy_identity()
         "private detail",
         "testing.example.invalid",
         "/v1/private",
-        "topology",
     ):
         assert dropped not in rendered, dropped
 
@@ -4296,7 +4363,7 @@ def test_reconcile_requests_read_keeps_the_decision_and_drops_the_rest() -> None
     assert result["omitted_request_count"] == 1
     assert result["dropped_field_paths"] == [
         "requests[].last_plan.<unlisted field>",
-        "requests[].last_plan.rejected_builds[].<unlisted field>",
+        "requests[].last_plan.rejected_builds[]",
         "requests[].target_key",
     ]
     rendered = json.dumps(payload)
@@ -4394,9 +4461,9 @@ def test_reconcile_requests_read_keeps_testing_operation_ids() -> None:
     ):
         assert kept[name] == plan[name], name
     assert kept["rejected_builds"] == [{"commit": "abc123" * 6 + "abcd"}]
-    assert "pr_feedback" not in kept
+    assert kept["pr_feedback"] == {}
     assert payload["result"]["dropped_field_paths"] == [
-        "requests[].last_plan.<unlisted field>",
+        "requests[].last_plan.pr_feedback.error",
         "requests[].last_plan.rejected_builds[].error",
     ]
     rendered = json.dumps(payload)
@@ -4421,9 +4488,19 @@ def test_reconcile_requests_read_shows_why_testing_skipped_a_newer_build() -> No
         "built_commits_seen": 2,
         "ordered_built_commits": 2,
         "current_build_evidence": "recorded_runtime_identity",
+        "failure_trace_id": "testing-reconcile-example",
+        "failed_restore_deployment_record_id": "deployment-restore-example",
+        "testing_runtime_drift_sha256": "a" * 64,
+        "testing_deploy_recovery_refusal": "recovery_original_available",
+        "held_reservations_truncated": True,
+        "artifact_scan": {"image_reference": "private-host.example.invalid/image"},
+        "held_reservations": [{"provider_target": "private-host"}],
+        "testing_deploy_recovery": {"provider_evidence": "private-host"},
         "rejected_builds": [
             {
                 "commit": new_commit,
+                "run_id": 17,
+                "code": "github_read_failed",
                 "error": "GitHub read failed for /repos/example/private-path: HTTP Error 404",
             },
             {"commit": "https://private-host.example.invalid/path#frag", "error": "Private text"},
@@ -4442,7 +4519,7 @@ def test_reconcile_requests_read_shows_why_testing_skipped_a_newer_build() -> No
 
     assert status == 0
     kept = payload["result"]["requests"][0]["last_plan"]
-    assert kept["rejected_builds"] == [{"commit": new_commit}]
+    assert kept["rejected_builds"] == [{key: plan["rejected_builds"][0][key] for key in ("commit", "run_id", "code")}]
     for name in (
         "current_commit",
         "build_runs_seen",
@@ -4452,16 +4529,24 @@ def test_reconcile_requests_read_shows_why_testing_skipped_a_newer_build() -> No
         "built_commits_seen",
         "ordered_built_commits",
         "current_build_evidence",
+        "failure_trace_id",
+        "failed_restore_deployment_record_id",
+        "testing_runtime_drift_sha256",
+        "testing_deploy_recovery_refusal",
+        "held_reservations_truncated",
     ):
         assert kept[name] == plan[name], name
     assert "preview_recovery_plan" not in kept
     assert "destroy_retry_stop_reason" not in kept
     assert payload["result"]["dropped_field_paths"] == [
+        "requests[].last_plan.artifact_scan",
         "requests[].last_plan.destroy_retry_stop_reason",
+        "requests[].last_plan.held_reservations",
         "requests[].last_plan.preview_recovery_plan",
         "requests[].last_plan.rejected_builds[]",
         "requests[].last_plan.rejected_builds[].commit",
         "requests[].last_plan.rejected_builds[].error",
+        "requests[].last_plan.testing_deploy_recovery",
     ]
     rendered = json.dumps(payload)
     assert "private-path" not in rendered
@@ -4479,6 +4564,109 @@ def test_reconcile_requests_read_shows_why_testing_skipped_a_newer_build() -> No
     assert kept["current_commit"] == ""
     assert "requests[].last_plan.current_commit" in payload["result"]["dropped_field_paths"]
     assert "private-host" not in json.dumps(payload)
+
+    plan["rejected_builds"][0]["run_id"] = None
+    status, payload, _calls = _run_product_read(argv, response)
+    assert status == 0
+    assert payload["result"]["requests"][0]["last_plan"]["rejected_builds"][0]["run_id"] is None
+
+    plan["rejected_builds"][0].update(run_id=True, code="https://private-host.example.invalid/failure")
+    status, payload, _calls = _run_product_read(argv, response)
+    assert status == 0
+    rejected = payload["result"]["requests"][0]["last_plan"]["rejected_builds"][0]
+    assert rejected == {"commit": new_commit}
+    assert "requests[].last_plan.rejected_builds[].run_id" in payload["result"]["dropped_field_paths"]
+    assert "requests[].last_plan.rejected_builds[].code" in payload["result"]["dropped_field_paths"]
+    assert "private-host" not in json.dumps(payload)
+
+
+def test_reconcile_requests_read_projects_feedback_without_inventing_terminal_evidence() -> None:
+    feedback = {
+        "status": "cleared",
+        "delivery_status": "delivered",
+        "delivery_action": "no_existing_comment",
+        "pull_request_number": 7,
+        "comment_id": 0,
+        "feedback_id": "preview-pr-feedback-example-pr-7-20261023T010000Z",
+        "body_sha256": "sha256:" + "a" * 64,
+        "owner_review": "accepted",
+    }
+    response = {
+        "status": "ok",
+        "product": "example-product",
+        "requests": [
+            {
+                "target_key": "example-product:preview:7",
+                "last_plan": {
+                    "pr_feedback": {
+                        **feedback,
+                        "error": "Private feedback text",
+                        "provider_payload": {"path": "private-host"},
+                    }
+                },
+            }
+        ],
+    }
+    argv = ["reconcile-requests-read", "--product", "example-product"]
+    status, payload, _calls = _run_product_read(argv, response)
+    assert status == 0
+    assert payload["result"]["requests"][0]["last_plan"]["pr_feedback"] == feedback
+    assert "Private feedback" not in json.dumps(payload)
+    assert "private-host" not in json.dumps(payload)
+    assert payload["result"]["dropped_field_paths"] == [
+        "requests[].last_plan.pr_feedback.<unlisted field>",
+        "requests[].last_plan.pr_feedback.error",
+    ]
+
+    response["requests"][0]["last_plan"]["pr_feedback"] = {**feedback, "error": ""}
+    status, payload, _calls = _run_product_read(argv, response)
+    assert status == 0
+    assert payload["result"]["requests"][0]["last_plan"]["pr_feedback"] == feedback
+    assert not payload["result"]["dropped_field_paths"]
+
+    response["requests"][0]["last_plan"]["pr_feedback"] = {"error": "Legacy unclassified feedback"}
+    status, payload, _calls = _run_product_read(argv, response)
+    assert status == 0
+    assert payload["result"]["requests"][0]["last_plan"]["pr_feedback"] == {}
+    assert "Legacy" not in json.dumps(payload)
+
+    response["requests"][0]["last_plan"]["pr_feedback"] = {
+        "status": "future_status",
+        "delivery_status": "future_delivery",
+        "comment_id": True,
+        "body_sha256": {"unexpected": "not a digest"},
+    }
+    status, payload, _calls = _run_product_read(argv, response)
+    assert status == 0
+    assert payload["result"]["requests"][0]["last_plan"]["pr_feedback"] == {
+        "status": "future_status",
+        "delivery_status": "future_delivery",
+    }
+
+    response["requests"][0]["last_plan"]["pr_feedback"] = {"feedback_id": "token ghp_abcdefghijklmnop"}
+    status, payload, _calls = _run_product_read(argv, response)
+    assert status == 1
+    assert payload["status"] == "invalid"
+    assert not payload["result"]
+
+
+def test_optional_read_scalars_reject_unhashable_values_with_safety_errors() -> None:
+    for validator in (
+        write_action._optional_text,
+        write_action._optional_code,
+        write_action._optional_identifier,
+        write_action._optional_sha256,
+    ):
+        for value in ({"unexpected": "value"}, ["unexpected"]):
+            with pytest.raises(safety.LaunchplaneSafetyError):
+                validator(value)
+    for value in ({"unexpected": "value"}, ["unexpected"]):
+        with pytest.raises(safety.LaunchplaneSafetyError):
+            write_action._project_image_repository(value, pattern=write_action.re.compile(r"[a-z]+"))
+        drops = write_action._FieldDrops()
+        projected = write_action._project_target_replacement_result({"image_reference": value}, drops)
+        assert projected["image_digest"] == ""
+        assert "result.image_reference" in drops.paths
 
 
 def test_reconcile_requests_read_keeps_generic_web_testing_outcome() -> None:
@@ -6349,7 +6537,12 @@ def test_generic_web_deploy_recovery_cli_dispatches_exact_routes() -> None:
         "/v1/admin/generic-web/deploy-recovery/apply",
     ]
     assert calls[0]["request"] == {"mode": "dry_run", "payload_source": "private_file"}
-    assert calls[1]["request"] == {"mode": "apply", "payload_source": "private_file"}
+    reviewed = _generic_web_deploy_recovery_evidence()["result"]
+    assert calls[1]["request"] == {
+        "mode": "apply", "payload_source": "private_file",
+        "expected_recovery_digest": reviewed["recovery_digest"],
+        "reviewed_recovery_action": reviewed["proposed_action"],
+    }
     assert calls[1]["body"]["expected_recovery_digest"] == "a" * 64
     assert "original_deploy" not in json.dumps(calls[0]["request"])
     assert "original_deploy" not in json.dumps(calls[1]["request"])
@@ -10506,6 +10699,8 @@ def test_event_recovery_reference_read_refuses_unsafe_or_wrong_lane(changes: dic
     ("retry_original_operation", "absent", True), ("adopt_observed", "present", True),
     ("adopt_observed", "present", False),
     ("close_out_observed", "absent", False),
+    ("settle_testing_failure", "present", False),
+    ("abandon_testing_original", "unknown", False),
 ])
 def test_event_recovery_apply_binds_review_without_caller_key(action: str, outcome: str, retry: bool) -> None:
     with TemporaryDirectory(dir=Path.home()) as directory:
@@ -10523,6 +10718,91 @@ def test_event_recovery_apply_binds_review_without_caller_key(action: str, outco
     assert posts[0]["body"]["recovery_reference"] == EVENT_REFERENCE
     assert posts[0]["body"]["expected_recovery_digest"] == result["recovery_digest"]
     assert "Inspect held testing deploy." not in json.dumps(receipt)
+
+
+@pytest.mark.parametrize("instance,action,outcome,retry,allowed", [
+    ("testing", "settle_testing_failure", "present", False, True),
+    ("prod", "settle_testing_failure", "present", False, False),
+    ("testing", "settle_testing_failure", "unknown", False, False),
+    ("testing", "settle_testing_failure", "present", True, False),
+    ("testing", "adopt_observed", "absent", True, False),
+    ("testing", "retry_original_operation", "present", True, False),
+    ("testing", "abandon_testing_original", "unknown", False, False),
+    ("prod", "abandon_testing_original", "unknown", False, False),
+])
+def test_explicit_recovery_settlement_preserves_testing_and_evidence_fences(
+    instance: str, action: str, outcome: str, retry: bool, allowed: bool,
+) -> None:
+    private = _generic_web_deploy_recovery_payload()
+    private["instance"] = instance
+    private["original_deploy"]["deploy"]["instance"] = instance
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        payload = _write_json(directory, "original.json", private)
+        evidence = _write_json(directory, "review.json", _generic_web_deploy_recovery_evidence(
+            instance=instance, proposed_action=action, provider_outcome=outcome, retry_safe=retry))
+        result = {"schema_version": 1, "status": "accepted", "mode": "apply",
+                  "trace_id": "launchplane_req_explicit_apply", "product": "example-product",
+                  "context": "example", "instance": instance, "reservation_state": "completed",
+                  "reservation_attempt": 2, "recovery_action": action, "provider_outcome": outcome,
+                  "retry_safe": retry, "recovery_digest": "a" * 64}
+        status, receipt, posts, reads = _run_main(
+            _event_recovery_apply_argv(payload, evidence, "a" * 64)
+            + ["--idempotency-key", "original-deploy-key-1"], post=result)
+    if allowed:
+        assert status == 0, receipt
+        assert receipt["status"] == "accepted"
+        assert receipt["summary"]["recovery_action"] == action
+        assert len(posts) == 1 and posts[0]["idempotency_key"] == "original-deploy-key-1"
+    else:
+        assert status == 2 and not posts and not reads
+        assert receipt["warnings"][0]["code"] == "reviewed_dry_run_not_apply_eligible"
+
+
+@pytest.mark.parametrize("reference", [True, False])
+@pytest.mark.parametrize("changes", [
+    {"recovery_action": "settle_testing_failure"}, {"recovery_digest": "f" * 64},
+])
+def test_recovery_apply_reply_must_match_review(reference: bool, changes: dict[str, object]) -> None:
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        if reference:
+            payload, evidence, receipt = _event_recovery_review(
+                directory, proposed_action="abandon_testing_original", provider_outcome="unknown", retry_safe=False)
+        else:
+            private = _generic_web_deploy_recovery_payload()
+            private["instance"] = "testing"
+            private["original_deploy"]["deploy"]["instance"] = private["instance"]
+            payload = _write_json(directory, "original.json", private)
+            receipt = _generic_web_deploy_recovery_evidence(instance=private["instance"])
+            evidence = _write_json(directory, "review.json", receipt)
+        result = {"schema_version": 1, "status": "accepted", "mode": "apply",
+                  "trace_id": "launchplane_req_abandonment_apply", "product": "example-product",
+                  "context": "example", "instance": "testing", "reservation_state": "completed",
+                  "reservation_attempt": 2, "recovery_action": "abandon_testing_original",
+                  "provider_outcome": "unknown", "retry_safe": False,
+                  "recovery_digest": receipt["result"]["recovery_digest"], **changes}
+        if not reference:
+            result.update({"recovery_action": "retry_original_operation", "provider_outcome": "absent",
+                           "retry_safe": True, **changes})
+        argv = _event_recovery_apply_argv(payload, evidence, receipt["result"]["recovery_digest"])
+        if not reference:
+            argv += ["--idempotency-key", "original-deploy-key-1"]
+        status, applied, posts, reads = _run_main(argv, post=result)
+    assert status == 0 and len(posts) == 1 and not reads
+    assert applied["status"] == "accepted_unverified"
+    assert applied["warnings"][0]["code"] == "apply_response_unverified"
+
+
+@pytest.mark.parametrize("http_status", [408, 502, 504])
+def test_event_abandonment_lost_http_reply_remains_unknown(http_status: int) -> None:
+    with TemporaryDirectory(dir=Path.home()) as directory:
+        payload, evidence, receipt = _event_recovery_review(
+            directory, proposed_action="abandon_testing_original", provider_outcome="unknown", retry_safe=False)
+        failure = urllib.error.HTTPError("https://example.invalid", http_status, "Lost reply",
+                                        hdrs=Message(), fp=io.BytesIO(b"{}"))
+        status, applied, posts, reads = _run_main(
+            _event_recovery_apply_argv(payload, evidence, receipt["result"]["recovery_digest"]), post=failure)
+    assert status == 1 and len(posts) == 1 and not reads
+    assert applied["status"] == "outcome_unknown"
 
 
 @pytest.mark.parametrize("changes", [
@@ -10545,6 +10825,10 @@ def test_event_recovery_changed_review_sends_no_request(changes: dict[str, objec
     {"proposed_action": "close_out_observed", "provider_outcome": "unknown", "retry_safe": False},
     {"proposed_action": "adopt_observed", "provider_outcome": "absent"},
     {"proposed_action": "retry_original_operation", "provider_outcome": "present"},
+    {"proposed_action": "settle_testing_failure", "provider_outcome": "absent", "retry_safe": False},
+    {"proposed_action": "settle_testing_failure", "provider_outcome": "present", "retry_safe": True},
+    {"proposed_action": "abandon_testing_original", "provider_outcome": "present", "retry_safe": False},
+    {"proposed_action": "abandon_testing_original", "provider_outcome": "unknown", "retry_safe": True},
 ])
 def test_event_recovery_held_or_uninspected_review_sends_no_apply(changes: dict[str, object]) -> None:
     with TemporaryDirectory(dir=Path.home()) as directory:
@@ -11279,3 +11563,156 @@ def test_service_prose_with_marker_named_settings_remains_safe_and_reviewable() 
     assert isinstance(projected["message"], str) and projected["message"]
     assert "fixture-private-value" not in json.dumps(projected)
     write_action.assert_public_safe_shape(projected)
+
+
+def _active_merge_train_policy_read(trusted: dict[str, list[int]]) -> dict[str, object]:
+    return {
+        "status": "ok",
+        "trace_id": "launchplane_req_" + "d" * 32,
+        "record": {
+            "schema_version": 1,
+            "record_id": "merge-train-policy-20261019T162850Z-" + "e" * 12,
+            "status": "active",
+            "source": "operator:private-policy-source",
+            "updated_at": "2026-10-19T16:28:50Z",
+            "policy_sha256": "e" * 64,
+            "policy": {
+                "schema_version": 1,
+                "policies": [
+                    {
+                        "repository": repository,
+                        "base_branch": "main",
+                        "github_token": {"env_var": "PRIVATE_GITHUB_TOKEN"},
+                        "enqueue": {"label_required": True, "trusted_automation_github_user_ids": ids},
+                    }
+                    for repository, ids in trusted.items()
+                ],
+            },
+        },
+    }
+
+
+def _run_trusted_automation_proposal(
+    argv: list[str], read_payload: dict[str, object]
+) -> tuple[int, dict[str, Any], list[dict[str, object]]]:
+    posted: list[dict[str, object]] = []
+
+    def post(**kwargs: Any) -> dict[str, object]:
+        assert kwargs["path"] == contract.helper_command_path("privileged-policy-propose")
+        posted.append(kwargs["body"])
+        return {
+            "status": "ok",
+            "trace_id": "launchplane_req_" + "b" * 32,
+            "write_status": "written",
+            "summary": {
+                "operation_id": "privileged-operation-" + "a" * 32,
+                "descriptor_id": "managed-merge-train-policy-import",
+                "status": "planned",
+                "result_status": "ok",
+                "active_target_count": 3,
+                "candidate_target_count": 3,
+                "unchanged_policy_key_count": 1,
+                "expires_at": "",
+            },
+        }
+
+    def read(**kwargs: Any) -> dict[str, object]:
+        assert kwargs["path"] == contract.helper_command_path("merge-train-policy-read")
+        return copy.deepcopy(read_payload)
+
+    output = io.StringIO()
+    with (
+        patch.object(
+            write_action,
+            "resolve_settings",
+            return_value={"service_url": "https://private.example.invalid", "token": "private-token"},
+        ),
+        patch.object(write_action, "request_launchplane", side_effect=post),
+        patch.object(write_action, "request_launchplane_read", side_effect=read),
+        redirect_stdout(output),
+    ):
+        exit_code = write_action.main(argv)
+    return exit_code, json.loads(output.getvalue()), posted
+
+
+def _trusted_automation_argv(change: str, *repositories: str) -> list[str]:
+    argv = [
+        "merge-train-trusted-automation-propose",
+        "--change", change,
+        "--github-user-id", "29139614",
+        "--reason", "Q662: admit Renovate pull requests",
+        "--related-issue", "https://github.com/example-owner/example/issues/1",
+        "--source-event-id", "test:trusted:one",
+        "--updated-at", "2026-10-22T17:30:00Z",
+    ]
+    for repository in repositories:
+        argv += ["--repo", repository]
+    return argv
+
+
+def test_trusted_automation_proposal_changes_only_named_targets_and_returns_review_metadata() -> None:
+    read_payload = _active_merge_train_policy_read(
+        {"owner/alpha": [49699333], "owner/beta": [], "owner/gamma": [49699333]}
+    )
+    exit_code, output, posted = _run_trusted_automation_proposal(
+        _trusted_automation_argv("add", "Owner/Alpha", "owner/beta"), read_payload
+    )
+
+    assert exit_code == 0
+    record = cast(dict[str, Any], posted[0]["request"])["record"]
+    trusted = {
+        target["repository"]: target["enqueue"]["trusted_automation_github_user_ids"]
+        for target in record["policy"]["policies"]
+    }
+    assert trusted == {"owner/alpha": [29139614, 49699333], "owner/beta": [29139614], "owner/gamma": [49699333]}
+    assert all(target["github_token"] == {"env_var": "PRIVATE_GITHUB_TOKEN"} for target in record["policy"]["policies"])
+    assert record["record_id"] == "merge-train-policy-20261022T173000Z-proposal"
+    assert "policy_sha256" not in record
+    assert output["result"]["review_url"].endswith("operation_id=privileged-operation-" + "a" * 32)
+    assert output["request"]["changed_target_count"] == 2
+    assert output["request"]["active_policy_sha256"] == "e" * 64
+    assert "PRIVATE_GITHUB_TOKEN" not in json.dumps(output)
+
+
+def test_trusted_automation_proposal_remove_drops_only_that_id() -> None:
+    _, _, posted = _run_trusted_automation_proposal(
+        _trusted_automation_argv("remove", "owner/alpha"),
+        _active_merge_train_policy_read({"owner/alpha": [29139614, 49699333]}),
+    )
+
+    record = cast(dict[str, Any], posted[0]["request"])["record"]
+    assert record["policy"]["policies"][0]["enqueue"]["trusted_automation_github_user_ids"] == [49699333]
+
+
+def test_trusted_automation_proposal_refuses_unknown_repository_and_no_op_without_posting() -> None:
+    for repositories, trusted, code in (
+        (("owner/alpha", "owner/missing"), {"owner/alpha": []}, "repository_not_enrolled"),
+        (("owner/alpha",), {"owner/alpha": [29139614]}, "policy_unchanged"),
+    ):
+        exit_code, output, posted = _run_trusted_automation_proposal(
+            _trusted_automation_argv("add", *repositories), _active_merge_train_policy_read(trusted)
+        )
+        assert (exit_code, output["warnings"][0]["code"], posted) == (2, code, [])
+
+
+def test_trusted_automation_proposal_replays_the_identical_envelope() -> None:
+    read_payload = _active_merge_train_policy_read({"owner/alpha": []})
+    bodies = [
+        _run_trusted_automation_proposal(_trusted_automation_argv("add", "owner/alpha"), read_payload)[2][0]
+        for _ in range(2)
+    ]
+
+    assert bodies[0] == bodies[1]
+
+
+def test_trusted_automation_proposal_replay_refuses_a_changed_active_policy() -> None:
+    drifted = _active_merge_train_policy_read({"owner/alpha": []})
+    cast(dict[str, Any], drifted["record"])["record_id"] = "merge-train-policy-20261022T180000Z-" + "f" * 12
+    argv = _trusted_automation_argv("add", "owner/alpha") + [
+        "--expected-active-record-id",
+        "merge-train-policy-20261019T162850Z-" + "e" * 12,
+    ]
+
+    exit_code, output, posted = _run_trusted_automation_proposal(argv, drifted)
+
+    assert (exit_code, output["warnings"][0]["code"], posted) == (2, "active_policy_changed", [])

@@ -82,24 +82,6 @@ skills:
           notes: PR watcher behavior covered by focused helper tests.
     known_gaps:
       - No exec-harness scenario yet for live PR babysitting judgment.
-  browser-ui-review:
-    status: active
-    risk_classes:
-      - browser_ui
-      - command_execution
-    checks:
-      - check_id: skill-repo-validation
-        kind: static_validator
-        mode: ci
-        dimension: metadata
-        gate: required
-        baseline:
-          outcome: pass
-          score: 1000
-          last_validated_ref: main
-          notes: Metadata and references covered by repo validation.
-    known_gaps:
-      - No browser harness performance scenario yet.
   direction:
     status: active
     risk_classes:

@@ -1,0 +1,40 @@
+{
+  "command": [
+    "claude",
+    "agents",
+    "--json"
+  ],
+  "rows": [
+    {
+      "kind": "background",
+      "state": "blocked",
+      "sessionId": "00000000-0000-0000-0000-000000000001"
+    },
+    {
+      "kind": "background",
+      "state": "blocked",
+      "sessionId": "00000000-0000-0000-0000-000000000002"
+    },
+    {
+      "kind": "background",
+      "state": "working",
+      "sessionId": "00000000-0000-0000-0000-000000000003"
+    },
+    {
+      "kind": "interactive",
+      "status": "busy",
+      "sessionId": "00000000-0000-0000-0000-000000000004"
+    },
+    {
+      "kind": "background",
+      "state": "blocked",
+      "status": "idle",
+      "sessionId": "00000000-0000-0000-0000-000000000005"
+    },
+    {
+      "kind": "interactive",
+      "status": "busy",
+      "sessionId": "00000000-0000-0000-0000-000000000006"
+    }
+  ]
+}

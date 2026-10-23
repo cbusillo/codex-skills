@@ -169,6 +169,36 @@ jobs:
             raise AssertionError(f"direct mapping value must override merged value: {violations}")
 
 
+def test_untagged_first_party_action_needs_its_own_marker() -> None:
+    module = load_module()
+    reference = (
+        "cbusillo/launchplane/.github/actions/launchplane-request"
+        "@88b024d3d093e400c7b134d922105f6ebf63543a"
+    )
+    with fixture_root(
+        f"""jobs:
+  test:
+    steps:
+      - uses: {reference} # launchplane-request
+"""
+    ) as root:
+        violations = module.validate_repository(root, require_exact_sources=False)
+        if violations:
+            raise AssertionError(f"marked untagged action must pass: {violations}")
+    for provenance in ("v1.0.0", "main"):
+        with fixture_root(
+            f"""jobs:
+  test:
+    steps:
+      - uses: {reference} # {provenance}
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # launchplane-request
+"""
+        ) as root:
+            violations = module.validate_repository(root, require_exact_sources=False)
+            assert_contains(violations, "must be marked 'launchplane-request'")
+            assert_contains(violations, "release provenance must be a version tag")
+
+
 def test_rejects_stale_mutable_reference_allowlist_entries() -> None:
     module = load_module()
     original_allowlist = module.MUTABLE_REFERENCE_ALLOWLIST
@@ -190,6 +220,7 @@ def main() -> int:
     test_rejects_mutable_flow_style_reference()
     test_workflow_named_action_yml_is_not_misclassified()
     test_direct_uses_overrides_merged_anchor_value()
+    test_untagged_first_party_action_needs_its_own_marker()
     test_rejects_stale_mutable_reference_allowlist_entries()
     print("ok test-github-actions-security")
     return 0

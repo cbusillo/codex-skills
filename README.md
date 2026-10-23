@@ -573,6 +573,39 @@ timeout locally. It is the leading explanation for the historical CI failures,
 whose process traces were not retained. The regression keeps its five-second
 deadline, and the import does not fetch the manual.
 
+### Local tests and CI
+
+Run `scripts/run-python-helper.sh {test_or_validator}` locally, replacing the
+placeholder with the tracked test helper or validator for the changed area.
+Shell behavior tests run through their own executable wrappers. Follow the
+[test command contract](skills/github/references/config-schema.md#workflow-metadata)
+for local coverage and current-head CI requirements. Before pushing, run the
+metadata's lint checks, including the public-safety scan, and `scripts/typecheck.sh`.
+
+For instruction changes, run these helpers through `scripts/run-python-helper.sh`:
+`skills/skill-creator/scripts/validate-skill-repo.py`,
+`skills/skill-creator/scripts/quick_validate.py --self-test`,
+`skills/skill-creator/scripts/validate-skill-behavior.py`, and
+`skills/skill-creator/scripts/validate-command-policy-simulator.py` both with and
+without `--self-test`.
+
+Select complete safety modules by changed area, then trace callers for any
+additional affected modules:
+
+| Area | Local modules |
+| --- | --- |
+| Command approval policy | `hooks/test_command_policy_hook.py`; command-policy simulator above |
+| Claims and ready handoffs | `skills/github/scripts/test_gh_plan_claim.py`, `test_github_plan_claim_log.py`, `test_ready_handoff.py`; `skills/supervisor/scripts/test_auto_enqueue.py` |
+| Worktree creation and retirement | `skills/github/scripts/test_dev_worktree.py`, `test_git_task_worktree.py`, `test_landed_worktrees.py` |
+| Launchplane route authority | `skills/launchplane/scripts/test_launchplane_route_authority.py` |
+
+Paths after a semicolon start a new directory; other basenames share the first
+path's directory. For areas outside this table, trace the touched helper's
+callers and select their complete test modules under the shared contract.
+
+The complete `./scripts/validate-skills.sh` suite runs in the Validate Skills
+workflow.
+
 ## JetBrains inspections
 
 On macOS, `jetbrains-inspection` runs Python and Odoo assessments through stock
@@ -1096,6 +1129,12 @@ browser completed the flow. Primary references:
 and [App versus machine-user accounts](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/differences-between-github-apps-and-oauth-apps).
 
 ### Standard Repository Rulesets
+
+For separately authorized repository flags, collaborator removal, custom tag
+rulesets or environment secret-name reads, use the shared
+[verified repository-owner admin route](skills/github/references/cli-reference.md#verified-repository-owner-administration).
+It reuses the existing repository-owner transport, with saved plans and readback; no App
+grant or automatic permission-refusal fallback is introduced.
 
 `skills/github/scripts/gh-rulesets.py` maintains two repository rulesets on the
 default branch: one reserves updates for the repository owner and the configured

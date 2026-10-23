@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import contextlib
 import functools
-import io
 import importlib.util
+import io
 import json
 import os
 import shlex
@@ -20,8 +20,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest import mock
 from pathlib import Path
+from unittest import mock
 
 HOOK = Path(__file__).resolve().parent / "command_policy_hook.py"
 sys.path.insert(0, str(HOOK.parent))
@@ -411,6 +411,8 @@ class CommandPolicyHookTests(unittest.TestCase):
                 "launchplane ci unittest-shard plan --shard-count 2 --timings-file timings.json",
                 "launchplane ci unittest-shard run --shard-count 2 --shard-index 0",
                 "launchplane service audit-config-authority --control-plane-root .",
+                "launchplane service plan-config-authority-transition --base-branch main --required-checks-file checks.json",
+                "launchplane local-consumer --help",
                 "launchplane odoo-ownership check --workspace-root ..",
                 "launchplane action-pins check --repo-root . --revision HEAD --repository cbusillo/launchplane",
                 "launchplane action-pins update --release-sha 0123abc",
@@ -458,7 +460,16 @@ class CommandPolicyHookTests(unittest.TestCase):
             for line in (
                 "cd /other && " + command,
                 ". /other/setup && uv run " + command,
+                "uv run ruff check . && . /other/setup && uv run " + command,
                 "builtin . /other/setup && uv run " + command,
+                "{ builtin . /other/setup; uv run " + command + "; }",
+                "if builtin . /other/setup; then uv run " + command + "; fi",
+                "time -p . /other/setup && uv run " + command,
+                ">log . /other/setup && uv run " + command,
+                "2>log . /other/setup && uv run " + command,
+                "command >log . /other/setup && uv run " + command,
+                "function f { . /other/setup; }; f && uv run " + command,
+                "function f { cd /other; }; f && uv run " + command,
                 "{ . /other/setup; uv run " + command + "; }",
                 "if . /other/setup; then uv run " + command + "; fi",
                 "! . /other/setup; uv run " + command,
@@ -536,6 +547,10 @@ class CommandPolicyHookTests(unittest.TestCase):
                 "launchplane ci unittest-shard local-other",
                 "launchplane ci other-command",
                 "launchplane service audit-config-authority-other",
+                "launchplane service plan-config-authority-transition-other",
+                "launchplane local-consumer prepare --directory recipient",
+                "launchplane local-consumer receive --directory recipient --package-file package.json",
+                "launchplane local-consumer --help-other",
                 "launchplane odoo-ownership other-command",
                 "launchplane odoo-targets replacement-plan",
                 "launchplane action-pins report --revision HEAD --repository cbusillo/launchplane",
@@ -549,6 +564,38 @@ class CommandPolicyHookTests(unittest.TestCase):
             self.assertEqual(bash("launchplane ci unittest-shard local", checkout).returncode, 2)
             self.assertEqual(bash("uv run --project /other launchplane ci unittest-shard local", checkout).returncode, 2)
             self.assertEqual(bash("echo --repository; tools/launchplane action-pins check --revision HEAD", checkout).returncode, 2)
+
+    def test_local_gate_chains_and_redirections_keep_the_verified_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checkout = root / "checkout"
+            subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+            subprocess.run(["git", "-C", str(checkout), "config", "remote.origin.url", "git@github.com:cbusillo/launchplane.git"], check=True)
+            export = "uv run launchplane service export-openapi --output generated/openapi.json"
+            gate = "uv run --extra dev launchplane ci unittest-shard local --jobs 4"
+            for local_gate in (
+                gate,
+                "uv run launchplane service plan-config-authority-transition --base-branch main --required-checks-file checks.json",
+            ):
+                for line in (
+                    local_gate + " > output.log 2>&1",
+                    "uv run ruff check . && " + local_gate,
+                    export + " && " + local_gate,
+                    local_gate + " && git status --short",
+                ):
+                    with self.subTest(line=line):
+                        self.assertEqual(bash(line, checkout).returncode, 0)
+                        self.assertEqual(bash("cd " + shlex.quote(str(checkout)) + " && " + line, root).returncode, 0)
+            for command in (
+                "rg -n '->' .",
+                "rg '<div>' .",
+                "rg -n '>' .",
+                "rg source .",
+                "git log --grep cd",
+                "rg -C 3 launchplane .",
+            ):
+                with self.subTest(command=command):
+                    self.assertEqual(bash(command + " && " + gate, checkout).returncode, 0)
 
     def test_postgres_gate_runs_only_against_a_named_loopback_database(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -578,6 +625,7 @@ class CommandPolicyHookTests(unittest.TestCase):
                 "LAUNCHPLANE_TEST_POSTGRES_URL=postgresql://test@db.example.com/postgres " + gate + " --database-url " + local,
                 "LAUNCHPLANE_TEST_POSTGRES_URL=" + local + " " + gate + " --database-url postgresql://test@db.example.com/postgres",
                 "LAUNCHPLANE_TEST_POSTGRES_URL=" + local + " uv run launchplane service start",
+                "LAUNCHPLANE_TEST_POSTGRES_URL=" + local + " builtin . /other/setup && " + gate + " --database-url " + local,
                 "LAUNCHPLANE_TEST_POSTGRES_URL=" + local + " UV_PROJECT=/other " + gate,
                 "uv run --env-file=.env --extra dev launchplane ci postgres-integration --database-url " + local,
                 "uv run --env-file .env --extra dev launchplane ci postgres-integration --database-url " + local,

@@ -35,20 +35,16 @@ Reminders; apply performs the exact-list lookup and duplicate checks before savi
 
 Plain reminder identity is the exact title in the selected list, rather than the
 optional link (several different tasks can share one report). The shared writer
-refuses duplicate incomplete matches. When attaching a link, titles must also be
-unique among completed items so the native UI can select one row. Plain reminders
-without links may reuse completed titles and update a live item beside completed
-occurrences. For a linked repeating reminder, completed same-title occurrences
-therefore require the visible manual workflow for later updates. An existing
+refuses duplicate incomplete matches. Completed items with the same title never
+block creating or updating a reminder. An existing
 incomplete match needs its explicit `--update-id` and update
 authority; the same title is required. The same ID-based repair and deletion
 rules below apply. A renamed title is a different target, so do not rename to
 bypass an existing-item refusal.
 
 A plain reminder without a link uses EventKit alone and needs existing Reminders
-access, but no Accessibility access or open Reminders window. When a link is
-requested, the visible attachment must also be verified through the shared native
-UI adapter. The `saved` receipt requires saved-field readback in both cases;
+access. A reminder with a link also needs the one-time shortcut described under
+[Save and verify](#save-and-verify-in-apple-reminders). The `saved` receipt requires saved-field readback in both cases;
 `visible_url_verified` is false when no URL was requested. Removing an existing
 link requires the visible manual workflow; a no-link update to an item with an
 EventKit URL refuses before writing, because EventKit absence alone cannot prove
@@ -155,28 +151,39 @@ do not approximate them or invent a recurrence.
 
 The writer resolves the same private configuration as `reminder_link.py`, including
 `--list` and `--repo`. It requires exactly one writable list and existing Reminders
-access, plus Accessibility access when saving a URL; it never requests permissions. Open one Reminders list
-window with the sidebar visible before applying (Settings can stay open).
-It schedules through EventKit, selects the exact list through Accessibility,
-sets the native URL field and verifies the resulting `AXLink` on that reminder.
-**EventKit's `url` property alone is not the visible URL attachment** and never counts
+access; it never requests permissions. A reminder with a link is created by the
+**Agent Reminder Link** shortcut, which runs Shortcuts' built-in Add New Reminder
+action with the title, notes and URL. EventKit then moves it to the exact list and
+sets the schedule, alarm and recurrence. The writer clicks nothing, so it works with
+Reminders closed or in the background, in any language.
+
+Install the shortcut once per Mac: `uv run <skill-dir>/scripts/reminder_shortcut.py`
+signs it on this Mac and opens it; the Director clicks **Add Shortcut** and keeps the
+name. `--check` reports whether it is installed. Shortcuts may ask once for Reminders
+access. Without the shortcut, a linked save refuses before any change and names this
+step.
+
+**EventKit's `url` property is not the visible URL attachment** and never counts
 as success. The writer sets it for duplicate lookup; older reminders can also be
-found by the generator's marker in Notes. It never writes ReminderKit internals or
-the Reminders database.
+found by the generator's marker in Notes. It verifies the visible link by reading
+the Reminders store read-only and never writes ReminderKit internals or the
+Reminders database. Diagnose reminder problems read-only, through EventKit and the
+store; never press buttons in, or script, the Director's Reminders app.
 
 A single existing incomplete match is reported with its ID and left untouched.
 Pass `--update-id <id>` only when changing that existing reminder is authorized.
-For an authorized cleanup of existing Notes and URL, also pass `--preserve-existing`.
+Shortcuts cannot add a link to an existing reminder, so an update with a link
+requires that item to already show the same visible link; otherwise the writer
+refuses and the item is deleted with `--delete-id` and created again.
+For an authorized cleanup of existing Notes, also pass `--preserve-existing`.
 It requires `--update-id` and the unchanged title (pass the existing title with
-`--title`, or the original `--due` for a default title), changes only Notes and URL, and
+`--title`, or the original `--due` for a default title), changes only Notes, and
 reads back the same ID with unchanged list, title, due/start dates, timezone,
 priority, completion, alarms and recurrence. The required dry-run schedule fields
 are validated but are not applied in this mode. Ordinary updates keep their
 explicit schedule behavior.
-Missing update targets, duplicate incomplete matches and colliding titles are refused.
-Completed matches are never changed or reactivated and do not block a new reminder,
-but for session or linked reminders a completed item with the same title still
-collides: the default title differs by due time; otherwise pass a distinct `--title`. A `saved` receipt confirms list,
+Missing update targets and duplicate incomplete matches are refused.
+Completed matches are never changed or reactivated and do not block a new reminder. A `saved` receipt confirms list,
 title, schedule, alarm, recurrence, short notes and the exact visible URL. A `partial`
 receipt includes the created/updated ID and missing proof: do not claim completion
 or repeat creation. Finish that same item with its ID or, under removal authority,

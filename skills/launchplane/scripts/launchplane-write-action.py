@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import http.client
 import json
@@ -20,6 +21,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -2146,7 +2148,7 @@ REVIEWED_PLAN_MODES = {"dry-run", "apply"}
 
 
 def _optional_sha256(value: object) -> str:
-    if value in {None, ""}:
+    if value is None or value == "":
         return ""
     if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
         raise LaunchplaneSafetyError("invalid_response")
@@ -2409,6 +2411,7 @@ PRODUCT_READ_PATH_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 PRODUCT_ACTIVITY_MAX_EVENTS = 50
 PRODUCT_ACTIVITY_MAX_RECORD_LINKS = 10
 PRODUCT_HEALTH_MAX_CHECKS = 20
+PRODUCT_OPERATIONAL_MAX_ENTRIES = 50
 PRODUCT_ACTIVITY_CODE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]{0,79}$")
 PREVIEW_MAX_GENERATIONS = 20
 PREVIEW_MAX_SOURCES = 10
@@ -2428,7 +2431,7 @@ def _product_read_path(command: str, **segments: str) -> str:
 
 
 def _optional_text(value: object, *, max_length: int = 64) -> str:
-    if value in {None, ""}:
+    if value is None or value == "":
         return ""
     return public_summary_string(value, max_length=max_length)
 
@@ -2440,13 +2443,13 @@ def _optional_response_text(value: object, *, max_length: int = 64) -> str:
 
 
 def _optional_code(value: object) -> str:
-    if value in {None, ""}:
+    if value is None or value == "":
         return ""
     return public_code(value)
 
 
 def _optional_identifier(value: object) -> str:
-    if value in {None, ""}:
+    if value is None or value == "":
         return ""
     return public_identifier(value)
 
@@ -2570,7 +2573,80 @@ def _project_product_health(value: object) -> dict[str, object] | None:
         "provenance": _project_product_provenance(source.get("provenance")),
         "checks": projected_checks,
         "checks_truncated": len(checks) > PRODUCT_HEALTH_MAX_CHECKS,
+        **_project_operational_list(source, "open_incidents", _project_product_incident),
     }
+
+
+def _project_operational_list(
+    source: dict[str, Any], key: str, project: Callable[[dict[str, Any]], dict[str, object]],
+) -> dict[str, object]:
+    values = source.get(key)
+    if values is None:
+        return {key: None, f"{key}_count": None, f"{key}_truncated": None}
+    if not isinstance(values, list):
+        raise LaunchplaneSafetyError("invalid_response")
+    return {
+        key: [project(_require_dict(value)) for value in values[:PRODUCT_OPERATIONAL_MAX_ENTRIES]],
+        f"{key}_count": len(values),
+        f"{key}_truncated": len(values) > PRODUCT_OPERATIONAL_MAX_ENTRIES,
+    }
+
+
+def _project_product_incident(source: dict[str, Any]) -> dict[str, object]:
+    return {
+        "incident_id": _optional_identifier(source.get("incident_id")),
+        "check_name": _optional_response_text(source.get("check_name"), max_length=120),
+        **{key: _optional_code(source.get(key)) for key in (
+            "status", "severity", "failure_code", "failure_layer",
+        )},
+    }
+
+
+def _project_topology_warning(source: dict[str, Any]) -> dict[str, object]:
+    return {key: _optional_code(source.get(key)) for key in ("code", "scope", "severity")}
+
+
+def _project_tls_domain(source: dict[str, Any]) -> dict[str, object]:
+    domain = source.get("domain_name")
+    if not isinstance(domain, str) or len(domain) > 253 or not all(
+        re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label)
+        for label in domain.split(".")
+    ):
+        raise LaunchplaneSafetyError("invalid_response")
+    return {
+        "domain_name": public_identifier(domain),
+        "status": _optional_code(source.get("status")),
+        "trust_state": _optional_code(source.get("trust_state")),
+        "provenance": _project_product_provenance(source.get("provenance")),
+    }
+
+
+def _project_product_topology(value: object) -> dict[str, object] | None:
+    source = _optional_dict(value)
+    if source is None:
+        return None
+    observed = _optional_dict(source.get("observed"))
+    return {
+        **_project_operational_list(source, "warnings", _project_topology_warning),
+        "observed": None if observed is None else _project_operational_list(
+            observed, "tls_domains", _project_tls_domain,
+        ),
+    }
+
+
+def _product_other_warning_count(source: dict[str, Any]) -> int | None:
+    warnings = source.get("warnings")
+    if warnings is None:
+        return None
+    if not isinstance(warnings, list) or not all(isinstance(warning, str) for warning in warnings):
+        raise LaunchplaneSafetyError("invalid_response")
+    topology = _optional_dict(source.get("topology"))
+    if topology is None or not isinstance(topology.get("warnings"), list):
+        return None
+    details = [_require_dict(warning).get("detail") for warning in topology["warnings"]]
+    if not all(isinstance(detail, str) for detail in details):
+        raise LaunchplaneSafetyError("invalid_response")
+    return sum(warning not in details for warning in warnings)
 
 
 def _project_product_public_ingress(value: object) -> dict[str, object] | None:
@@ -2587,7 +2663,6 @@ def _project_product_public_ingress(value: object) -> dict[str, object] | None:
 
 
 def _project_product_environment(value: object) -> dict[str, object]:
-    """Deploy-verification fields only; settings, secrets, actions and URLs are dropped."""
     source = _require_dict(value)
     projected: dict[str, object] = {
         "product": public_identifier(source.get("product")),
@@ -2597,6 +2672,8 @@ def _project_product_environment(value: object) -> dict[str, object]:
         "driver_id": _optional_identifier(source.get("driver_id")),
         "target": _project_product_target(source.get("target")),
         "health_monitoring": _project_product_health(source.get("health_monitoring")),
+        "topology": _project_product_topology(source.get("topology")),
+        "other_warning_count": _product_other_warning_count(source),
         "public_ingress": _project_product_public_ingress(source.get("public_ingress")),
         "trust_state": _optional_code(source.get("trust_state")),
         "provenance": _project_product_provenance(source.get("provenance")),
@@ -2889,6 +2966,7 @@ def _reconcile_plan_validators() -> dict[str, Any]:
             "last_failed_error_code",
             "preview_result_error_code",
             "current_build_evidence",
+            "testing_deploy_recovery_refusal",
         ),
         _public_dotted_code,
     )
@@ -2912,6 +2990,8 @@ def _reconcile_plan_validators() -> dict[str, Any]:
                 "hold_recorded_by",
                 "preview_build_run",
                 "feedback_recovery_delivery_id",
+                "failure_trace_id",
+                "failed_restore_deployment_record_id",
             ),
             public_identifier,
         )
@@ -2930,6 +3010,7 @@ def _reconcile_plan_validators() -> dict[str, Any]:
         hold_reason=lambda value: public_operator_text(value, max_length=300, redact_denied_markers=True),
         hold_recorded_at=lambda value: public_summary_string(value, max_length=64),
         preview_url=_public_origin_url,
+        testing_runtime_drift_sha256=_project_sha256,
     )
     return fields
 
@@ -2943,6 +3024,7 @@ RECONCILE_PLAN_FLAGS = frozenset({
     "preview_execution_refused",
     "preview_transport_retryable",
     "feedback_recovery_closed_observed",
+    "held_reservations_truncated",
 })
 # Counts: testing build selection (how much run and commit history was read) and retries.
 RECONCILE_PLAN_COUNTS = frozenset({
@@ -2964,6 +3046,10 @@ RECONCILE_PLAN_WITHHELD = frozenset({
     "preview_recovery_plan",
     "destroy_retry_stop_reason",
     "feedback_recovery_stop_reason",
+    "artifact_scan",
+    "held_reservations",
+    "testing_deploy_recovery",
+    "product",
 })
 # Plan lists of setting key names (never values), by the name they are output under.
 RECONCILE_PLAN_KEY_NAME_LISTS = {
@@ -2979,28 +3065,58 @@ def _reconcile_deploy_key_digest(value: object) -> str:
 
 
 def _project_rejected_builds(entries: list[object], drops: _FieldDrops) -> list[dict[str, object]]:
-    """The newer builds testing selection skipped, newest first, by commit. Launchplane
-    records each reason only as free text, which can carry API paths and upstream errors,
-    so it is dropped and counted (launchplane#3322 adds a fixed code and run id)."""
+    validators = {"commit": _public_commit_sha, "run_id": _positive_int, "code": _public_dotted_code}
     projected: list[dict[str, object]] = []
     for entry in entries[:RECONCILE_MAX_PLAN_LIST_ITEMS]:
         if not isinstance(entry, dict):
             drops.drop("requests[].last_plan.rejected_builds[]")
             continue
-        commit = drops.keep(
-            "requests[].last_plan.rejected_builds[].commit", _public_commit_sha, entry.get("commit")
-        )
-        for key in entry:
-            if key != "commit":
+        evidence: dict[str, object] = {}
+        for key, value in entry.items():
+            if key in validators:
+                evidence[key] = (
+                    None
+                    if key == "run_id" and value is None
+                    else drops.keep(f"requests[].last_plan.rejected_builds[].{key}", validators[key], value)
+                )
+            else:
                 drops.drop(
                     "requests[].last_plan.rejected_builds[].error"
                     if key == "error"
                     else "requests[].last_plan.rejected_builds[].<unlisted field>"
                 )
-        if commit:
-            projected.append({"commit": commit})
+        if evidence.get("commit"):
+            projected.append({key: value for key, value in evidence.items() if value != ""})
+        else:
+            drops.drop("requests[].last_plan.rejected_builds[]")
     if len(entries) > RECONCILE_MAX_PLAN_LIST_ITEMS:
         drops.drop("requests[].last_plan.rejected_builds[]")
+    return projected
+
+
+def _project_reconcile_feedback(value: object, drops: _FieldDrops) -> dict[str, object]:
+    if not isinstance(value, dict):
+        drops.drop("requests[].last_plan.pr_feedback")
+        return {}
+    validators = {
+        "status": _public_dotted_code,
+        "delivery_status": _public_dotted_code,
+        "delivery_action": _public_dotted_code,
+        "owner_review": _public_dotted_code,
+        "feedback_id": public_identifier,
+        "pull_request_number": _nonnegative_int,
+        "comment_id": _nonnegative_int,
+        "body_sha256": _protected_artifact_digest,
+    }
+    projected: dict[str, object] = {}
+    for key, item in value.items():
+        if key in validators:
+            kept = drops.keep(f"requests[].last_plan.pr_feedback.{key}", validators[key], item)
+            if kept != "":
+                projected[key] = kept
+        elif key != "error" or (item is not None and item != ""):
+            path = "error" if key == "error" else "<unlisted field>"
+            drops.drop(f"requests[].last_plan.pr_feedback.{path}")
     return projected
 
 
@@ -3023,6 +3139,8 @@ def _project_reconcile_plan(plan_value: object, drops: _FieldDrops) -> dict[str,
             projected[key] = value if type(value) is int else None
         elif key == "rejected_builds" and isinstance(value, list):
             projected[key] = _project_rejected_builds(value, drops)
+        elif key == "pr_feedback":
+            projected[key] = _project_reconcile_feedback(value, drops)
         elif key in RECONCILE_PLAN_WITHHELD:
             drops.drop(f"requests[].last_plan.{key}")
         elif key in RECONCILE_PLAN_KEY_NAME_LISTS and isinstance(value, list):
@@ -3330,7 +3448,7 @@ def _project_target_replacement_result(
         known=TARGET_REPLACEMENT_RESULT_FIELDS,
         drops=drops,
     )
-    if image_reference not in {None, ""}:
+    if image_reference is not None and image_reference != "":
         # The repository part of the reference is dropped; only the digest is kept.
         drops.drop("result.image_reference")
     return projected
@@ -3995,6 +4113,11 @@ def _project_success_output(
             result["product"] != request["product"] or result["instance"] != request["instance"]
         ):
             raise LaunchplaneSafetyError("invalid_response")
+        if request and operation == "generic-web-deploy-recovery-apply" and (
+            ("expected_recovery_digest" in request and result["recovery_digest"] != request["expected_recovery_digest"])
+            or ("reviewed_recovery_action" in request and result["recovery_action"] != request["reviewed_recovery_action"])
+        ):
+            raise LaunchplaneSafetyError("invalid_response")
         return {}, result
     if any(str(key) not in SUCCESS_TOP_LEVEL_KEYS for key in provider_payload):
         raise LaunchplaneSafetyError("unsafe_response_shape")
@@ -4490,7 +4613,7 @@ def summarize_success(
             summary["recommendation"] = (
                 "Review the redacted dry-run result before applying the exact same private payload."
                 if operation == "generic-web-deploy-recovery-dry-run"
-                else "Verify the recovered reservation and a subsequent normal deploy before closing the recovery plan."
+                else _recovery_apply_readback(request)
             )
     assert_public_safe_shape(summary)
     payload["summary"] = {key: value for key, value in summary.items() if value not in {"", None}}
@@ -4826,7 +4949,7 @@ def _require_apply_eligible_recovery_dry_run(
     expected_product: str,
     expected_instance: str,
     expected_request_sha256: str | None = None,
-) -> None:
+) -> str:
     evidence_path = str(getattr(args, "dry_run_evidence_file", "") or "").strip()
     if not evidence_path:
         raise ValueError("reviewed_dry_run_not_apply_eligible")
@@ -4840,17 +4963,17 @@ def _require_apply_eligible_recovery_dry_run(
     action = result.get("proposed_action")
     outcome = result.get("provider_outcome")
     retry_safe = result.get("retry_safe")
-    actionable = (
-        action in {"adopt_observed", "retry_original_operation"}
-        and outcome in {"present", "absent"}
-        and retry_safe is True
-    )
+    eligible = {("adopt_observed", "present", True), ("retry_original_operation", "absent", True)}
+    if expected_instance == "testing":
+        eligible.add(("settle_testing_failure", "present", False))
     if expected_request_sha256 is not None:
-        actionable = (
-            (action == "adopt_observed" and outcome == "present" and isinstance(retry_safe, bool))
-            or (action == "retry_original_operation" and outcome == "absent" and retry_safe is True)
-            or (action == "close_out_observed" and outcome == "absent" and retry_safe is False)
-        )
+        eligible.update({("adopt_observed", "present", False), ("close_out_observed", "absent", False)})
+        if expected_instance == "testing":
+            eligible.add(("abandon_testing_original", "unknown", False))
+    actionable = (
+        isinstance(action, str) and isinstance(outcome, str) and isinstance(retry_safe, bool)
+        and (action, outcome, retry_safe) in eligible
+    )
     if (
         evidence.get("operation") != "generic-web-deploy-recovery-dry-run"
         or evidence.get("status") != "ok"
@@ -4866,6 +4989,8 @@ def _require_apply_eligible_recovery_dry_run(
         request = evidence.get("request")
         if not isinstance(request, dict) or request.get("recovery_request_sha256") != expected_request_sha256:
             raise ValueError("reviewed_dry_run_not_apply_eligible")
+    return cast(str, action)
+
 
 
 def _require_apply_eligible_odoo_addon_settings_dry_run(
@@ -5221,8 +5346,10 @@ def summarize_product_environment_read(
         result_key="environment",
         project=_project_product_environment,
         recommendation=(
-            "Compare target.artifact and the expected and observed runtime identity "
-            "with the build you expect this lane to serve."
+            "Compare deployment identity and fresh health evidence with the expected build. "
+            "Inspect open incidents, topology warning codes, TLS states and other_warning_count. "
+            "Route diagnostics do not set the sidebar color. This is attention evidence, not a green verdict; "
+            "verify green with complete canonical sidebar data. Missing or truncated evidence is unknown."
         ),
     )
 
@@ -6313,7 +6440,7 @@ def generic_web_deploy_recovery_body(
         )
         if payload_recovery_digest and payload_recovery_digest != expected_recovery_digest:
             raise ValueError("recovery_digest_mismatch")
-        _require_apply_eligible_recovery_dry_run(
+        args.reviewed_recovery_action = _require_apply_eligible_recovery_dry_run(
             args,
             expected_recovery_digest=expected_recovery_digest,
             expected_product=product.strip(),
@@ -6989,6 +7116,119 @@ def privileged_policy_proposal_body(args: argparse.Namespace) -> dict[str, objec
     return body
 
 
+def trusted_automation_proposal_request(args: argparse.Namespace) -> dict[str, object]:
+    repositories = sorted({repository.removesuffix(".git") for repository in args.repo}, key=str.casefold)
+    if not repositories or any(
+        re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository) is None for repository in repositories
+    ):
+        raise ValueError("repository_unresolved")
+    if args.github_user_id <= 0:
+        raise ValueError("invalid_github_user_id")
+    updated_at = args.updated_at or datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", updated_at) is None:
+        raise ValueError("invalid_updated_at")
+    return {
+        "mode": "propose",
+        "descriptor_id": "managed-merge-train-policy-import",
+        "change": args.change,
+        "github_user_id": args.github_user_id,
+        "repositories": [public_identifier(repository) for repository in repositories],
+        "updated_at": updated_at,
+        "candidate_record_id": f"merge-train-policy-{updated_at.replace('-', '').replace(':', '')}-proposal",
+    }
+
+
+def trusted_automation_proposal_body(
+    *, args: argparse.Namespace, request: dict[str, object], provider_payload: dict[str, Any]
+) -> dict[str, object]:
+    record = _require_dict(provider_payload.get("record"))
+    policy = copy.deepcopy(_require_dict(record.get("policy")))
+    targets = policy.get("policies")
+    if provider_payload.get("status") != "ok" or record.get("status") != "active" or not isinstance(targets, list):
+        raise LaunchplaneSafetyError("invalid_response")
+    if args.expected_active_record_id and record.get("record_id") != args.expected_active_record_id:
+        raise ValueError("active_policy_changed")
+    requested = {repository.casefold() for repository in cast(list[str], request["repositories"])}
+    matched: set[str] = set()
+    changed_target_count = 0
+    for value in targets:
+        target = _require_dict(value)
+        repository = target.get("repository")
+        if not isinstance(repository, str) or repository.casefold() not in requested:
+            continue
+        matched.add(repository.casefold())
+        enqueue = _require_dict(target.get("enqueue"))
+        current = enqueue.get("trusted_automation_github_user_ids") or []
+        if not isinstance(current, list) or not all(isinstance(user_id, int) for user_id in current):
+            raise LaunchplaneSafetyError("invalid_response")
+        user_id = int(str(request["github_user_id"]))
+        candidate = sorted({*current, user_id}) if request["change"] == "add" else [entry for entry in current if entry != user_id]
+        if candidate != current:
+            enqueue["trusted_automation_github_user_ids"] = candidate
+            changed_target_count += 1
+    if requested - matched:
+        raise ValueError("repository_not_enrolled")
+    if not changed_target_count:
+        raise ValueError("policy_unchanged")
+    request["active_record_id"] = public_identifier(record.get("record_id"))
+    request["active_policy_sha256"] = _project_sha256(record.get("policy_sha256"))
+    request["changed_target_count"] = changed_target_count
+    return {
+        "schema_version": 1,
+        "descriptor_id": "managed-merge-train-policy-import",
+        "source_event_id": args.source_event_id,
+        "request": {
+            "record": {
+                "schema_version": 1,
+                "record_id": request["candidate_record_id"],
+                "status": "active",
+                "source": "privileged-policy-proposal",
+                "updated_at": request["updated_at"],
+                "policy": policy,
+            },
+            "reason": args.reason,
+            "related_issue": args.related_issue,
+        },
+    }
+
+
+def execute_trusted_automation_proposal(args: argparse.Namespace) -> int:
+    request = trusted_automation_proposal_request(args)
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", args.source_event_id) is None:
+        raise ValueError("invalid_proposal_source_event")
+    if not args.reason.strip() or len(args.reason) > 240:
+        raise ValueError("invalid_proposal_reason")
+    settings = prepare_operator_settings(args=args, operation=args.command, request=request)
+    if settings is None:
+        return 2
+    provider_payload = None
+    try:
+        provider_payload = request_launchplane_read(
+            service_url=settings["service_url"],
+            path=helper_command_path("merge-train-policy-read"),
+            settings=settings,
+            query={},
+            timeout=args.timeout,
+        )
+        body = trusted_automation_proposal_body(args=args, request=request, provider_payload=provider_payload)
+    except urllib.error.HTTPError as exc:
+        emit_http_error_payload(operation=args.command, request=request, exc=exc)
+        return 1
+    except LaunchplaneSafetyError as exc:
+        emit_safety_error_payload(operation=args.command, request=request, exc=exc, provider_payload=provider_payload)
+        return 1
+    except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException) as exc:
+        emit_read_transport_error(operation=args.command, request=request, timeout=args.timeout, exc=exc)
+        return 1
+    return execute_post(
+        args=args,
+        operation="privileged-policy-propose",
+        path=helper_command_path("privileged-policy-propose"),
+        request=request,
+        body=body,
+    )
+
+
 def summarize_privileged_policy_proposal(
     *, request: dict[str, object], provider_payload: dict[str, object], service_url: str
 ) -> dict[str, object]:
@@ -7124,6 +7364,16 @@ SIMPLE_APPLY_OPERATIONS = frozenset({
 })
 
 
+def _recovery_apply_readback(request: dict[str, object]) -> str:
+    if request.get("reviewed_recovery_action") == "abandon_testing_original":
+        return (
+            "Re-run the same reference dry-run before retrying. Require completed, "
+            "replay_completed and the saved recovery digest, then verify current-main "
+            "post-deploy qualification. Original fixture residue may remain."
+        )
+    return "Verify the original reservation and a subsequent normal deploy before retrying or closing recovery."
+
+
 def _simple_apply_response_unverified(
     *, operation: str, request: dict[str, object], source: object,
 ) -> dict[str, object]:
@@ -7135,9 +7385,8 @@ def _simple_apply_response_unverified(
     payload["summary"] = {
         **service_response_diagnostics(source),
         "recommendation": (
-            "Launchplane accepted the recovery apply, but the response could not be "
-            "verified locally. Inspect the original deploy reservation and normal deploy "
-            "evidence before retrying."
+            "Launchplane accepted the recovery apply, but its reply could not be verified. "
+            + _recovery_apply_readback(request)
             if recovery_apply
             else (
                 "Launchplane accepted the inventory apply, but the response could not be "
@@ -7892,7 +8141,7 @@ def _project_product_owner_plan(result: object) -> dict[str, object]:
 
 
 def _project_image_repository(value: object, *, pattern: re.Pattern[str]) -> str:
-    if value in {None, ""}:
+    if value is None or value == "":
         return ""
     if not isinstance(value, str) or not pattern.fullmatch(value):
         raise LaunchplaneSafetyError("invalid_response")
@@ -9205,8 +9454,10 @@ def _apply_outcome_unknown(
     payload = base_payload(status="outcome_unknown", operation=operation, request=request)
     payload["summary"] = {
         "recommendation": (
-            f"The apply outcome is unknown because the exchange failed after the POST began. "
-            f"Read back the {label} before any retry."
+            "The apply outcome is unknown because the exchange failed after the POST began. "
+            + (_recovery_apply_readback(request)
+               if operation == "generic-web-deploy-recovery-apply"
+               else f"Read back the {label} before any retry.")
         )
     }
     payload["warnings"] = [
@@ -10306,13 +10557,16 @@ def _add_reviewed_apply_arguments(parser: argparse.ArgumentParser, *, apply: boo
 OPERATION_PATH_CHECK_TIMEOUT_SECONDS = 300.0
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
+    from launchplane_testing_resources import TIMEOUT_SECONDS as testing_resources_timeout
     parser = argparse.ArgumentParser(description="Execute bounded Launchplane operator actions.")
     parser.add_argument("--config", help="Optional private operator JSON config path.")
     parser.add_argument("--env-config", help="Optional private operator .env config path.")
     parser.add_argument("--url", help="Optional Launchplane service URL override.")
     parser.add_argument(
         "--timeout", type=float, default=argparse.SUPPRESS,
-        help="HTTP timeout seconds (operation path checks: 300; disposable lane collect: 240; promotion status, Dokploy inventory and other disposable lane commands: 30; controller: 180; other commands: 10).",
+        help=(f"HTTP timeout seconds (testing replacement resources: {testing_resources_timeout:g}; "
+              "operation path checks: 300; disposable lane collect: 240; promotion status, Dokploy inventory "
+              "and other disposable lane commands: 30; controller: 180; other commands: 10)."),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     from launchplane_testing_rebuild import add_parser as add_testing_rebuild_parser
@@ -10321,6 +10575,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     add_private_ingress_parser(subparsers)
     from launchplane_disposable_lane import add_parser as add_disposable_lane_parser
     add_disposable_lane_parser(subparsers)
+    from launchplane_testing_resources import add_parser as add_testing_resources_parser
+    add_testing_resources_parser(subparsers)
     from launchplane_workflow_rule_retirement import add_parser as add_workflow_rule_retirement_parser
     add_workflow_rule_retirement_parser(subparsers)
     from launchplane_runtime_setting_removal import add_parser as add_runtime_setting_removal_parser
@@ -10378,6 +10634,19 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     proposal = subparsers.add_parser("privileged-policy-propose", help="Submit an inert policy plan for signed-in Director review; never approve or apply.")
     proposal.add_argument("--payload-file", required=True, help="Private local JSON envelope with a stable source_event_id for retries.")
     proposal.set_defaults(idempotency_key="")
+    trusted_proposal = subparsers.add_parser(
+        "merge-train-trusted-automation-propose",
+        help="Propose adding or removing one trusted automation id on named enrolled repositories; never approve or apply.",
+    )
+    trusted_proposal.add_argument("--change", choices=("add", "remove"), required=True)
+    trusted_proposal.add_argument("--github-user-id", type=int, required=True, help="Immutable GitHub numeric user id.")
+    trusted_proposal.add_argument("--repo", action="append", required=True, help="Enrolled OWNER/REPO; repeat per repository.")
+    trusted_proposal.add_argument("--reason", required=True)
+    trusted_proposal.add_argument("--related-issue", default="")
+    trusted_proposal.add_argument("--source-event-id", required=True, help="Stable id; reuse it to replay an uncertain submission.")
+    trusted_proposal.add_argument("--updated-at", default="", help="Reported updated_at, to replay an uncertain submission.")
+    trusted_proposal.add_argument("--expected-active-record-id", default="", help="Reported active_record_id; refuses if the active policy changed since.")
+    trusted_proposal.set_defaults(idempotency_key="")
 
     merge_train_policy_dry_run = subparsers.add_parser(
         "merge-train-policy-import-dry-run",
@@ -10967,6 +11236,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     args.timeout = getattr(
         args, "timeout",
         disposable_lane_timeouts[args.command] if args.command in disposable_lane_timeouts
+        else testing_resources_timeout if args.command.startswith("testing-replacement-resources-")
         else OPERATION_PATH_CHECK_TIMEOUT_SECONDS if args.command == "path-check" and args.intent is not None
         else 180.0 if args.command == "merge-train-controller-run-once"
         else 30.0 if args.command in {"product-promotion-status-read", "dokploy-inventory-read"} else 10.0,
@@ -11216,6 +11486,9 @@ def main(argv: list[str]) -> int:
         from launchplane_disposable_lane import COMMANDS as disposable_lane_commands, execute as execute_disposable_lane
         if args.command in disposable_lane_commands:
             return execute_disposable_lane(sys.modules[__name__], args)
+        from launchplane_testing_resources import COMMANDS as testing_resources_commands, execute as execute_testing_resources
+        if args.command in testing_resources_commands:
+            return execute_testing_resources(sys.modules[__name__], args)
         from launchplane_workflow_rule_retirement import (
             COMMANDS as workflow_rule_retirement_commands, execute as execute_workflow_rule_retirement,
         )
@@ -11280,6 +11553,8 @@ def main(argv: list[str]) -> int:
             payload["summary"] = diagnostic
             emit(payload)
             return 0
+        if args.command == "merge-train-trusted-automation-propose":
+            return execute_trusted_automation_proposal(args)
         if args.command == "privileged-policy-propose":
             body = privileged_policy_proposal_body(args)
             request = {"mode": "propose", "payload_source": "private_file", "descriptor_id": body["descriptor_id"]}
@@ -11843,6 +12118,10 @@ def main(argv: list[str]) -> int:
         if args.command == "generic-web-deploy-recovery-apply":
             body = generic_web_deploy_recovery_body(args, mode="apply")
             request = _recovery_request(body, mode="apply")
+            request.update({
+                "expected_recovery_digest": body["expected_recovery_digest"],
+                "reviewed_recovery_action": args.reviewed_recovery_action,
+            })
             return execute_post(
                 args=args,
                 operation=args.command,

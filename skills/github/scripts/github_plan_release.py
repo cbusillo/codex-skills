@@ -168,7 +168,9 @@ def parse_release(source: dict[str, Any], evidence: dict[str, Any], *, actor: st
     if (evidence.get("user") or {}).get("login") != actor:
         raise ValueError("Session-ended evidence must be authored by the configured automation identity")
     text = evidence.get("body") or ""
-    terminated = termination.evidence(text, record["session"]) if not legacy else None
+    terminated = termination.evidence(text, record["session"])
+    if terminated is not None and terminated["session_id"] == releaser_session:
+        raise ValueError("Abandoned release requires a distinct native source session")
     if terminated is None and (text.splitlines()[:1] != [evidence_header(source["id"], record)] or "Safe to exit: yes" not in text.splitlines()):
         raise ValueError("Evidence must be a closed-session attestation naming the exact native session and Safe to exit: yes")
     if legacy and (f"Worker: {record['worker']}" not in text.splitlines()
@@ -364,7 +366,7 @@ def validate_evidence(receipt: dict[str, Any], evidence: dict[str, Any], author:
             f"Native session unavailable: {record['legacy_reason']}")):
         raise ValueError("Legacy evidence no longer attests this source identity")
     ended = re.findall(r"(?m)^Ended at: (\S+)$", text)
-    terminated = termination.evidence(text, record["session"], apply_policy=False) if "legacy_reason" not in record else None
+    terminated = termination.evidence(text, record["session"], apply_policy=False)
     if terminated != receipt.get("termination"):
         raise ValueError("Termination evidence no longer matches the release")
     if ((evidence.get("user") or {}).get("login") != author

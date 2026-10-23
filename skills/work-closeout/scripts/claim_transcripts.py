@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["tree-sitter==0.26.0", "tree-sitter-bash==0.25.1"]
+# dependencies = ["tree-sitter==0.26.0", "tree-sitter-bash==0.25.1", "tree-sitter-javascript==0.25.0"]
 # ///
 from __future__ import annotations
 
@@ -9,14 +9,32 @@ import json
 import re
 import shlex
 import sqlite3
+from collections import Counter
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
+from typing import NamedTuple
 
 import claim_history
+import claim_javascript
 import github_plan_claim_log as claim_log
 import tree_sitter_bash
 from tree_sitter import Language, Node, Parser
+
+CLOSED_STDIN_SINCE = (0, 87, 0)
+UNFINISHED_CLAIM = "unfinished_claim"
+
+
+def closed_stdin_runtime(records: list[dict]) -> bool:
+    versions = [row.get("payload") for row in records if row.get("type") == "session_meta"]
+    return bool(versions) and all(
+        isinstance(payload, dict)
+        and isinstance(version := payload.get("cli_version"), str)
+        and re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", version) is not None
+        and tuple(map(int, version.split("."))) >= CLOSED_STDIN_SINCE
+        for payload in versions
+    )
 
 
 def values(value: object) -> Iterator[dict]:
@@ -66,6 +84,7 @@ def codex_children(records: list[dict]) -> set[str]:
         and row["payload"].get("type") == "item_completed"
         and isinstance(item := row["payload"].get("item"), dict)
         and item.get("type") == "SubAgentActivity"
+        and item.get("kind") != "interacted"
         and isinstance(item.get("agent_thread_id"), str)
     }
 
@@ -108,15 +127,17 @@ def codex_entries(root: dict, supplied: dict[str, set[Path]]) -> list[dict]:
     root_identity = metadata(read_records(root_path)).get("session_id", root_id)
     expanded = []
     pending = [(root_id, None, ())]
-    visited = set()
+    parents = {}
     with claim_history.native_databases(root_path) as databases:
         while pending:
             native, parent, ancestors = pending.pop()
-            if native in visited:
+            if native in parents:
+                if parents[native] != parent:
+                    raise ValueError(f"native child {native} has contradictory parent edges")
                 continue
-            if len(visited) >= 4096:
+            if len(parents) >= 4096:
                 raise ValueError("native session lineage exceeds its coverage bound")
-            visited.add(native)
+            parents[native] = parent
             paths = supplied.get(native) or indexed_paths(databases, native)
             if not paths:
                 raise ValueError(f"missing native transcript for child {native}; restore it or pass --session and --transcript")
@@ -288,6 +309,33 @@ def expand(entries: list[dict]) -> list[dict]:
     return expanded
 
 
+def projected_release_target(value: dict, session: str) -> tuple[str, int] | None:
+    command = value.get("release_command")
+    if not isinstance(command, str):
+        return None
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        return None
+    if len(argv) != 13 or Path(argv[0]).name != "uv" or argv[1] != "run" or Path(argv[2]).name != "gh-plan.py":
+        return None
+    arguments = argv[3:]
+    if arguments[::2] != ["--repo", "release", "--claim-comment", "--session", "--handoff-file"]:
+        return None
+    if (
+        arguments[7] != session
+        or any(re.fullmatch(r"[1-9][0-9]*", arguments[index]) is None for index in (3, 5))
+        or arguments[9] != "<handoff.md>"
+    ):
+        return None
+    receipt = value.get("claim_comment")
+    if isinstance(receipt, dict):
+        comment = receipt.get("comment", receipt)
+        if isinstance(comment, dict) and "id" in comment and comment["id"] != int(arguments[5]):
+            raise ValueError("recorded claim comment IDs disagree")
+    return claim_log.target({"session": session, "repository": arguments[1], "record": int(arguments[3])}, session)
+
+
 def claim_target(value: dict, session: str) -> tuple[str, int] | None:
     source = value.get("claim")
     if not isinstance(source, dict) or source.get("session") != session:
@@ -296,9 +344,17 @@ def claim_target(value: dict, session: str) -> tuple[str, int] | None:
     record = value.get("issue") or receipt
     if not isinstance(record, dict) or not isinstance(receipt, dict):
         raise ValueError("recorded claim result has an invalid target")
+    projected = projected_release_target(value, session)
+    if projected is not None and (
+        (record.get("repo") is not None and record["repo"] != projected[0])
+        or (record.get("number") is not None and record["number"] != projected[1])
+    ):
+        raise ValueError("recorded claim targets disagree")
     if record.get("repo") and record.get("number"):
         return claim_log.target({"session": session, "repository": record["repo"], "record": record["number"]}, session)
-    if receipt or "post_claim" in value.get("completed_steps", []):
+    if projected is not None:
+        return projected
+    if receipt or "post_claim" in value.get("completed_steps", []) or "release_command" in value:
         raise ValueError("recorded claim write lacks its repository and record number")
     return None
 
@@ -317,22 +373,34 @@ def execution_item(row: dict) -> dict:
     return item if isinstance(item, dict) and item.get("type") == "CommandExecution" else {}
 
 
-def tool_inputs(records: list[dict]) -> Iterator[tuple[str, str, bool]]:
-    for row in records:
+class ToolCall(NamedTuple):
+    identifier: str
+    text: str
+    javascript: bool
+    name: str
+    index: int
+
+
+def tool_details(records: list[dict]) -> Iterator[ToolCall]:
+    for index, row in enumerate(records):
         item = execution_item(row)
         if item and "command" in item:
-            yield "command:" + str(item.get("id", "")), json.dumps({"command": item["command"]}), False
+            yield ToolCall("command:" + str(item.get("id", "")), json.dumps({"command": item["command"]}), False, "command", index)
         payload = row.get("payload")
         if isinstance(payload, dict) and payload.get("type") == "local_shell_call":
-            yield str(payload.get("call_id", "")), json.dumps(payload.get("action") or {}), False
+            yield ToolCall(
+                str(payload.get("call_id", "")), json.dumps(payload.get("action") or {}), False, "local_shell_call", index
+            )
         if isinstance(payload, dict) and payload.get("type") in {"function_call", "custom_tool_call"}:
             name = str(payload.get("name", "")).split(".")[-1].casefold()
             if name in {"exec", "exec_command", "bash", "write_stdin", "shell_command", "shell"}:
                 raw = payload.get("arguments", payload.get("input", ""))
-                yield (
+                yield ToolCall(
                     str(payload.get("call_id", "")),
                     raw if isinstance(raw, str) else json.dumps(raw),
                     name == "exec" and payload["type"] == "custom_tool_call",
+                    name,
+                    index,
                 )
         content = (row.get("message") or {}).get("content", [])
         if isinstance(content, list):
@@ -340,7 +408,12 @@ def tool_inputs(records: list[dict]) -> Iterator[tuple[str, str, bool]]:
                 if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") == "Bash":
                     command = (block.get("input") or {}).get("command")
                     if isinstance(command, str):
-                        yield str(block.get("id", "")), command, False
+                        yield ToolCall(str(block.get("id", "")), command, False, "bash", index)
+
+
+def tool_inputs(records: list[dict]) -> Iterator[tuple[str, str, bool]]:
+    for identifier, text, javascript, _, _ in tool_details(records):
+        yield identifier, text, javascript
 
 
 def denied_invocations(records: list[dict]) -> set[str]:
@@ -359,7 +432,7 @@ def denied_invocations(records: list[dict]) -> set[str]:
     return denied
 
 
-def tool_outputs(records: list[dict]) -> dict[str, list[object]]:
+def tool_outputs(records: list[dict], *, followups: bool = True) -> dict[str, list[object]]:
     outputs: dict[str, list[object]] = {}
     for row in records:
         item = execution_item(row)
@@ -381,22 +454,34 @@ def tool_outputs(records: list[dict]) -> dict[str, list[object]]:
             for block in content:
                 if isinstance(block, dict) and block.get("type") == "tool_result":
                     outputs.setdefault(str(block.get("tool_use_id", "")), []).append(block.get("content"))
-    inputs = {identifier: text for identifier, text, _ in tool_inputs(records)}
+    if not followups:
+        return outputs
+    inputs = {identifier: (text, javascript, name, index) for identifier, text, javascript, name, index in tool_details(records)}
     recorded = {identifier: list(blocks) for identifier, blocks in outputs.items()}
-    for identifier, blocks in recorded.items():
-        yielded = {item["session_id"] for block in blocks for item in values(block) if type(item.get("session_id")) is int}
-        if not yielded:
-            continue
-        for followup, text in inputs.items():
-            if followup != identifier and any(re.search(rf"session_id[\"']?\s*:\s*{process}(?!\d)", text) for process in yielded):
-                outputs[identifier].extend(recorded.get(followup, []))
+    for identifier in recorded:
+        for followup in ordered_polls(identifier, inputs, recorded):
+            outputs[identifier].extend(recorded.get(followup, []))
     return outputs
 
 
-def command_literal(text: str, start: int, literal: str) -> str | None:
-    tokens = [match[0] for match in re.finditer(literal + r"|[A-Za-z_$][A-Za-z0-9_$]*|[^\s]", text[start:])]
-    if not tokens or tokens[0] != "{":
-        return None
+JAVASCRIPT_LITERAL = r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|`(?:\\.|[^`\\])*`'
+JAVASCRIPT_COMMENT = r"//[^\r\n\u2028\u2029]*|/\*.*?\*/|#![^\r\n\u2028\u2029]*"
+
+CLAIM_WORD = re.compile(r"""(?:^|[\s'"`])claim(?:$|[\s'"`])""")
+JAVASCRIPT_PATCH = re.compile(r"\btools\.apply_patch\s*\(\s*(?:" + JAVASCRIPT_LITERAL + r")\s*\)", re.DOTALL)
+
+
+def javascript_tokens(text: str) -> list[str]:
+    return [
+        token
+        for token in re.findall(
+            JAVASCRIPT_LITERAL + "|" + JAVASCRIPT_COMMENT + r"|[A-Za-z_$][A-Za-z0-9_$]*|[0-9]+|[^\s]", text, re.DOTALL
+        )
+        if not token.startswith(("//", "/*", "#!"))
+    ]
+
+
+def javascript_object_end(tokens: list[str]) -> int | None:
     depth = 0
     for index, token in enumerate(tokens):
         if token in {"{", "[", "("}:
@@ -404,25 +489,8 @@ def command_literal(text: str, start: int, literal: str) -> str | None:
         elif token in {"}", "]", ")"}:
             depth -= 1
             if depth == 0:
-                break
-        if depth != 1 or token.strip("\"'") not in {"cmd", "command", "chars"} or tokens[index + 1 : index + 2] != [":"]:
-            continue
-        tail = tokens[index + 2 : index + 4]
-        if len(tail) != 2 or tail[1] not in {",", "}"} or not re.fullmatch(literal, tail[0], re.DOTALL):
-            return None
-        value = tail[0]
-        if value.startswith("`"):
-            return value[1:-1] if "${" not in value else None
-        try:
-            return ast.literal_eval(value)
-        except (ValueError, SyntaxError):
-            return None
+                return index
     return None
-
-
-JAVASCRIPT_LITERAL = r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|`(?:\\.|[^`\\])*`'
-CLAIM_WORD = re.compile(r"""(?:^|[\s'"`])claim(?:$|[\s'"`])""")
-JAVASCRIPT_PATCH = re.compile(r"\btools\.apply_patch\s*\(\s*(?:" + JAVASCRIPT_LITERAL + r")\s*\)", re.DOTALL)
 
 
 def without_patch_text(text: str) -> str:
@@ -431,12 +499,322 @@ def without_patch_text(text: str) -> str:
 
 def javascript_names(text: str) -> set[str]:
     names = set()
-    for match in re.finditer(JAVASCRIPT_LITERAL + r"|//[^\n]*|/\*.*?\*/|(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)", text, re.DOTALL):
+    for match in re.finditer(
+        JAVASCRIPT_LITERAL + "|" + JAVASCRIPT_COMMENT + r"|(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)", text, re.DOTALL
+    ):
         if match["name"]:
             names.add(match["name"])
         elif match[0].startswith("`") and "${" in match[0]:
             names.update(re.findall(r"\b(?:store|load)\b", match[0]))
     return names
+
+
+def single_javascript_shell(text: str, *, whole_result: bool = False, stdin: bool = False) -> bool:
+    literal = r"(?:" + JAVASCRIPT_LITERAL + r")"
+    value = r"(?:" + literal + r"|[0-9]+|true|false)"
+    key = (
+        r"(?:session_id|chars|yield_time_ms|max_output_tokens)"
+        if stdin
+        else r"(?:cmd|command|workdir|yield_time_ms|max_output_tokens|login|tty)"
+    )
+    field = r"(?:" + key + r"|\"" + key + r"\"|'" + key + r"') : " + value
+    tokens = javascript_tokens(text)
+    if any(token.startswith("`") and "${" in token for token in tokens):
+        return False
+    code = " ".join(tokens)
+    method = r"write_stdin" if stdin else r"(?:exec_command|shell_command|shell)"
+    call = r"tools \. " + method + r" \( \{ " + field + r"(?: , " + field + r")* \} \)"
+    projection = "" if whole_result else r"(?: \. output)?"
+    return any(
+        re.fullmatch(prefix + call + suffix, code) is not None
+        for prefix, suffix in (
+            (r"text \( await ", r" \)(?: ;)?"),
+            *(([(r"text \( \( await ", r" \) \. output \)(?: ;)?")]) if not whole_result else []),
+            (r"const (?P<result>[A-Za-z_]\w*) = await ", r" ; text \( (?P=result)" + projection + r" \)(?: ;)?"),
+        )
+    )
+
+
+def literal_javascript_shell_sequence(text: str, *, whole_result: bool = False) -> bool:
+    tokens = javascript_tokens(text)
+    while tokens:
+        if tokens[:2] != ["text", "("]:
+            return False
+        end = javascript_object_end(tokens[1:])
+        if end is None or not single_javascript_shell(" ".join(tokens[: end + 2]), whole_result=whole_result):
+            return False
+        tokens = tokens[end + 2 :]
+        if tokens[:1] == [";"]:
+            tokens = tokens[1:]
+    return True
+
+
+def native_results(blocks: list[object]) -> list[dict]:
+    results = []
+    for block in blocks:
+        parts = block if isinstance(block, list) else [block]
+        for part in parts:
+            if isinstance(part, dict) and part.get("type") in {"input_text", "text"}:
+                part = part.get("text")
+            if isinstance(part, str):
+                try:
+                    part = json.loads(part)
+                except ValueError:
+                    header = re.match(
+                        r"(?:Warning: truncated output \(original token count: \d+\)\n)?"
+                        r"(?:Total output lines: \d+\n\n)?(?:Chunk ID: [^\n]+\n)?"
+                        r"Wall time: [0-9.]+ seconds\n"
+                        r"(?:Process exited with code (?P<exit>-?\d+)\n)?"
+                        r"(?:Process running with session ID (?P<process>-?\d+)\n)?"
+                        r"(?:Original token count: \d+\n)?Output:",
+                        part,
+                    )
+                    if header is None:
+                        continue
+                    part = {
+                        "exit_code": int(header["exit"]) if header["exit"] is not None else None,
+                        "session_id": int(header["process"]) if header["process"] is not None else None,
+                    }
+            if isinstance(part, dict):
+                results.append(part)
+    return results
+
+
+def whole_shell_result(text: str, javascript: bool, name: str) -> bool:
+    return (
+        (
+            single_javascript_shell(text, whole_result=True)
+            or single_javascript_shell(text, whole_result=True, stdin=True)
+            or literal_javascript_shell_sequence(text, whole_result=True)
+        )
+        if javascript
+        else name in {"exec_command", "write_stdin"}
+    )
+
+
+def poll_process(text: str, javascript: bool, name: str) -> int | None:
+    try:
+        if javascript:
+            if not single_javascript_shell(text, stdin=True):
+                return None
+            bounded, sites = claim_javascript.analyse(text)
+            if not bounded or len(sites) != 1:
+                return None
+            fields = claim_javascript.children(claim_javascript.children(sites[0][0])[0])
+            options = {}
+            for member in fields:
+                key = claim_javascript.property_name(member.child_by_field_name("key"))
+                if key in options:
+                    return None
+                options[key] = ast.literal_eval(claim_javascript.source(member.child_by_field_name("value")))
+        elif name == "write_stdin":
+            pairs = json.loads(text, object_pairs_hook=list)
+            if not isinstance(pairs, list) or any(not isinstance(pair, tuple) or len(pair) != 2 for pair in pairs):
+                return None
+            options = dict(pairs)
+            if len(options) != len(pairs):
+                return None
+        else:
+            return None
+        process = options.get("session_id")
+        return process if type(process) is int else None
+    except (ValueError, TypeError, AttributeError, SyntaxError):
+        return None
+
+
+def ordered_polls(identifier: str, inputs: dict, outputs: dict) -> list[str]:
+    if identifier not in inputs:
+        return []
+    text, javascript, name, start = inputs[identifier]
+    if not whole_shell_result(text, javascript, name):
+        return []
+    processes = {
+        value["session_id"] for value in native_results(outputs.get(identifier, [])) if type(value.get("session_id")) is int
+    }
+    if not processes:
+        return []
+    polls = []
+    for other, (source, code, tool, index) in inputs.items():
+        if index <= start:
+            continue
+        if poll_process(source, code, tool) in processes:
+            polls.append(other)
+            continue
+        bounded, sites = claim_javascript.analyse(source) if code else (True, [])
+        launch = (
+            code and (not bounded or any(claim_javascript.shell_method(arguments) == "exec_command" for arguments, _ in sites))
+        ) or tool == "exec_command"
+        if not launch:
+            continue
+        results = native_results(outputs.get(other, [])) if whole_shell_result(source, code, tool) else []
+        visible = {value["session_id"] for value in results if type(value.get("session_id")) is int}
+        commands = shell_texts(source, code).commands
+        covered = bool(results) and len(results) == len(commands)
+        if (
+            visible & processes
+            or not covered
+            or any(type(value.get("exit_code")) is not int and type(value.get("session_id")) is not int for value in results)
+        ):
+            break
+    return polls
+
+
+def terminal_command(item: dict, text: str) -> bool:
+    command = item.get("command")
+    return command == text or (
+        isinstance(command, list)
+        and len(command) == 3
+        and all(isinstance(argument, str) for argument in command)
+        and Path(command[0]).name in SHELL_NAMES
+        and command[1] in {"-c", "-lc"}
+        and command[2] == text
+    )
+
+
+def window_completions(records: list[dict], inputs: dict, identifier: str, sources: ShellTexts, session: str) -> list[bool]:
+    text, javascript, name, start = inputs[identifier]
+    missing = [False] * len(sources.commands)
+    if not javascript and name != "exec_command":
+        return missing
+    responses = {
+        str(payload.get("call_id", "")): index
+        for index, row in enumerate(records)
+        if isinstance(payload := row.get("payload"), dict)
+        and payload.get("type") in {"function_call_output", "custom_tool_call_output", "local_shell_call_output"}
+    }
+    for row in records:
+        payload = row.get("payload") or {}
+        if payload.get("type") == "custom_tool_call_output" and "Script running with cell ID" in str(payload.get("output", "")):
+            responses.pop(str(payload.get("call_id", "")), None)
+    end = responses.get(identifier)
+    if end is None or any(
+        other != identifier and tool != "command" and index < end and responses.get(other, len(records)) > start
+        for other, (_, _, tool, index) in inputs.items()
+    ):
+        return missing
+    try:
+        stamp = datetime.fromisoformat(records[start]["timestamp"])
+        completed_stamp = datetime.fromisoformat(records[end]["timestamp"])
+        if stamp.tzinfo is None or completed_stamp.tzinfo is None:
+            return missing
+        started = stamp.timestamp() * 1000
+        returned = completed_stamp.timestamp() * 1000
+    except (KeyError, TypeError, ValueError):
+        return missing
+    if javascript:
+        bounded, sites = claim_javascript.analyse(text)
+        if not bounded:
+            return missing
+        expected = Counter()
+        for arguments, _ in sites:
+            commands = claim_javascript.literal_commands(
+                arguments, LITERAL_SHELL_VALUE, LITERAL_LOOP_VALUES, LITERAL_EXPANSION_BYTES, occurrences=True
+            )
+            if commands is None:
+                return missing
+            expected.update(commands)
+    else:
+        expected = Counter(source.text for source in sources.commands)
+    observed = Counter()
+    seen = set()
+    for row in records[start + 1 :]:
+        payload = row.get("payload") or {}
+        item = execution_item(row)
+        identity = item.get("id")
+        if (
+            row.get("type") != "event_msg"
+            or payload.get("type") != "item_completed"
+            or payload.get("thread_id") != session
+            or item.get("source") != "unified_exec_startup"
+            or item.get("status") not in {"completed", "failed"}
+            or type(item.get("exit_code")) is not int
+            or type(payload.get("started_at_ms")) is not int
+            or not started <= payload["started_at_ms"] <= returned
+            or not isinstance(identity, str)
+            or not identity
+            or identity in seen
+        ):
+            continue
+        seen.add(identity)
+        for command in expected:
+            if terminal_command(item, command):
+                observed[command] += 1
+    return [observed[source.text] >= expected[source.text] for source in sources.commands]
+
+
+def completed_sources(
+    records: list[dict], inputs: dict, outputs: dict, identifier: str, sources: ShellTexts, session: str
+) -> list[bool]:
+    text, javascript, name, _ = inputs[identifier]
+    own = outputs.get(identifier, [])
+    if name == "command":
+        ended = any(
+            row.get("type") == "event_msg"
+            and (row.get("payload") or {}).get("type") == "item_completed"
+            and "command:" + str((item := execution_item(row)).get("id", "")) == identifier
+            and item.get("status") in {"completed", "failed"}
+            and type(item.get("exit_code")) is int
+            for row in records
+        )
+        return [ended] * len(sources.commands)
+    if not javascript and name in {"bash", "local_shell_call", "shell", "shell_command"}:
+        background = any(value.get("backgroundTaskId") for block in own for value in values(block))
+        for row in records:
+            blocks = (row.get("message") or {}).get("content", [])
+            if not isinstance(blocks, list):
+                continue
+            if any(
+                isinstance(block, dict) and block.get("id") == identifier and (block.get("input") or {}).get("run_in_background")
+                for block in blocks
+            ):
+                background = True
+            if any(isinstance(block, dict) and block.get("tool_use_id") == identifier for block in blocks):
+                result = row.get("toolUseResult")
+                background = background or (isinstance(result, dict) and bool(result.get("backgroundTaskId")))
+        ended = bool(own) and not background
+        return [ended] * len(sources.commands)
+    window = window_completions(records, inputs, identifier, sources, session)
+    if not whole_shell_result(text, javascript, name):
+        return window
+    results = native_results(own)
+    if len(results) != len(sources.commands):
+        return window
+    flags = []
+    for source, result, completed in zip(sources.commands, results, window, strict=True):
+        ended = completed or (type(result.get("exit_code")) is int and not isinstance(result.get("session_id"), int))
+        process = result.get("session_id")
+        if type(process) is int:
+            for poll in ordered_polls(identifier, inputs, outputs):
+                poll_text, poll_js, poll_name, _ = inputs[poll]
+                if poll_process(poll_text, poll_js, poll_name) == process and (
+                    not poll_js or single_javascript_shell(poll_text, whole_result=True, stdin=True)
+                ):
+                    ended = ended or any(
+                        type(value.get("exit_code")) is int and value.get("session_id") is None
+                        for value in native_results(outputs.get(poll, []))
+                    )
+        flags.append(ended)
+    return flags
+
+
+def native_javascript_parse_failure(text: str, blocks: list[object]) -> bool:
+    messages = [
+        item["text"]
+        for block in blocks
+        if isinstance(block, list)
+        for item in block
+        if isinstance(item, dict) and item.get("type") == "input_text" and isinstance(item.get("text"), str)
+    ]
+    if len(messages) != 2 or messages[0] != "Script failed\nWall time 0.0 seconds\nOutput:\n":
+        return False
+    if messages[1] != "Script error:\nSyntaxError: Invalid or unexpected token" or not (
+        single_javascript_shell(text) or literal_javascript_shell_sequence(text)
+    ):
+        return False
+    return any(
+        token.startswith(('"', "'")) and re.search(r"[\r\n]", re.sub(r"\\(?:\r\n|\r|\n)", "", token)) is not None
+        for token in javascript_tokens(text)
+    )
 
 
 @dataclass
@@ -450,9 +828,12 @@ class ShellTexts:
     commands: list[ShellCommand]
     opaque: bool = False
     interactive_opaque: bool = False
+    stdin_closed: bool = False
+    stdin_possible: bool = False
+    exec_launch: bool = False
 
 
-def shell_texts(text: str, javascript: bool) -> ShellTexts:
+def shell_texts(text: str, javascript: bool, *, exec_command: bool = False) -> ShellTexts:
     if not javascript:
         try:
             decoded = json.loads(text)
@@ -461,36 +842,31 @@ def shell_texts(text: str, javascript: bool) -> ShellTexts:
         if isinstance(decoded, dict):
             command = decoded.get("cmd", decoded.get("command", decoded.get("chars")))
             commands = [ShellCommand(command_text(command), "chars" in decoded)] if command is not None else []
-            return ShellTexts(commands)
+            return ShellTexts(commands, stdin_possible=decoded.get("tty") is True, exec_launch=exec_command)
         return ShellTexts([ShellCommand(text)])
-    literal = JAVASCRIPT_LITERAL
-    reference = r"\btools\s*\[\s*['\"](?:exec_command|shell_command|shell|write_stdin)['\"]\s*\]|\b(?:exec_command|shell_command|write_stdin)\b|\btools\.shell\b|\bshell\s*\("
-    site = re.compile(
-        r"(?P<call>\btools\.(?:exec_command|shell_command|shell|write_stdin)\s*\()|(?P<reference>"
-        + reference
-        + r")|(?:"
-        + literal
-        + r")|(?://[^\n]*|/\*.*?\*/)",
-        re.DOTALL,
-    )
+    bounded, sites = claim_javascript.analyse(text)
     commands = []
-    opaque = False
-    interactive_opaque = False
-    for match in site.finditer(text):
-        if match["reference"] is not None:
+    opaque = not bounded
+    interactive_opaque = not bounded
+    for arguments, interactive in sites:
+        decoded = claim_javascript.literal_commands(arguments, LITERAL_SHELL_VALUE, LITERAL_LOOP_VALUES, LITERAL_EXPANSION_BYTES)
+        if decoded is None:
             opaque = True
-            interactive_opaque = interactive_opaque or "write_stdin" in match[0]
-        elif match["call"] is not None:
-            command = command_literal(text, match.end(), literal)
-            if command is None:
-                opaque = True
-                interactive_opaque = interactive_opaque or "write_stdin" in match[0]
-            else:
-                commands.append(ShellCommand(command, "write_stdin" in match[0]))
-        elif match[0].startswith("`") and "${" in match[0] and re.search(reference, match[0]):
-            opaque = True
-            interactive_opaque = interactive_opaque or "write_stdin" in match[0]
-    return ShellTexts(commands, opaque, interactive_opaque)
+            interactive_opaque = interactive_opaque or interactive
+        else:
+            commands.extend(ShellCommand(command, interactive) for command in decoded)
+    stdin_possible = any(
+        claim_javascript.shell_method(arguments) in {"exec_command", "write_stdin"} and not claim_javascript.closed_stdin(arguments)
+        for arguments, _ in sites
+    )
+    stdin_closed = (
+        bounded
+        and bool(sites)
+        and "load" not in javascript_names(text)
+        and all(claim_javascript.closed_stdin(arguments) for arguments, _ in sites)
+    )
+    exec_launch = any(claim_javascript.shell_method(arguments) == "exec_command" for arguments, _ in sites)
+    return ShellTexts(commands, opaque, interactive_opaque, stdin_closed, bounded and stdin_possible, exec_launch)
 
 
 SHELL_NAMES = {"sh", "bash", "zsh", "dash", "ksh", "fish"}
@@ -798,6 +1174,7 @@ class ShellClaims:
     opaque: bool = False
     receipt_pure: bool = True
     decode_failed: bool = False
+    asynchronous: bool = False
 
 
 @dataclass
@@ -854,12 +1231,54 @@ class CommandPosition:
     python_script: bool = False
 
 
-def command_position(argv: list[str]) -> CommandPosition | None:
-    if not argv:
+def timeout_command_index(argv: list[str]) -> int | None:
+    duration = r"(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?[smhd]?"
+    index = 1
+    while index < len(argv) and argv[index].startswith("-"):
+        option, equal, value = argv[index].partition("=")
+        if option == "--" and not equal:
+            index += 1
+            break
+        if option in {"--preserve-status", "--foreground", "-v", "--verbose"} and not equal:
+            index += 1
+            continue
+        if not equal and argv[index][:2] in {"-k", "-s"}:
+            option, value = argv[index][:2], argv[index][2:]
+        if option not in {"-k", "--kill-after", "-s", "--signal"}:
+            return None
+        if equal and option in {"-k", "-s"}:
+            return None
+        if not value and not equal:
+            index += 1
+            if index >= len(argv):
+                return None
+            value = argv[index]
+        pattern = duration if option in {"-k", "--kill-after"} else r"[A-Za-z0-9]+"
+        if re.fullmatch(pattern, value) is None:
+            return None
+        index += 1
+    if index + 1 >= len(argv) or re.fullmatch(duration, argv[index]) is None:
         return None
-    if Path(argv[0]).name != "uv":
-        return CommandPosition(0)
-    if argv[1:2] != ["run"]:
+    return index + 1
+
+
+def unwrap_timeouts(argv: list[str]) -> int | None:
+    index = 0
+    while index < len(argv) and Path(argv[index]).name == "timeout":
+        offset = timeout_command_index(argv[index:])
+        if offset is None:
+            return None
+        index += offset
+    return index
+
+
+def command_position(argv: list[str]) -> CommandPosition | None:
+    index = unwrap_timeouts(argv)
+    if index is None or index >= len(argv):
+        return None
+    if Path(argv[index]).name != "uv":
+        return CommandPosition(index)
+    if argv[index + 1 : index + 2] != ["run"]:
         return None
     value_flags = {
         "--python",
@@ -895,7 +1314,7 @@ def command_position(argv: list[str]) -> CommandPosition | None:
         "--all-groups",
         "--active",
     }
-    index = 2
+    index += 2
     python_script = False
     while index < len(argv) and argv[index].startswith("-"):
         flag, equal, value = argv[index].partition("=")
@@ -948,12 +1367,8 @@ def reads_program_stdin(argv: list[str], consumer: str) -> bool:
     )
 
 
-def accepts_claim_data(argv: list[str]) -> bool:
-    position = command_position(argv)
-    if position is None:
-        return False
-    name = Path(argv[position.index]).name if position.index < len(argv) else ""
-    if name in {
+DATA_COMMANDS = frozenset(
+    {
         "rg",
         "grep",
         "git",
@@ -993,8 +1408,562 @@ def accepts_claim_data(argv: list[str]) -> bool:
         "pytest",
         "gh-issue",
         "gh-comment",
-    }:
+    }
+)
+SAFE_GIT_CONFIG = frozenset(
+    {
+        "user.name",
+        "user.email",
+        "commit.gpgsign",
+        "tag.gpgsign",
+        "core.quotepath",
+        "core.autocrlf",
+        "core.filemode",
+        "init.defaultbranch",
+        "safe.directory",
+        "pull.rebase",
+        "pull.ff",
+        "push.default",
+        "push.autosetupremote",
+        "merge.conflictstyle",
+        "rebase.autosquash",
+        "rebase.autostash",
+        "log.showsignature",
+        "status.showuntrackedfiles",
+    }
+)
+GIT_GLOBAL_VALUE_OPTIONS = frozenset({"-C", "--git-dir", "--work-tree", "--namespace"})
+GIT_GLOBAL_FLAGS = frozenset(
+    {"--version", "--help", "--no-pager", "-P", "--no-optional-locks", "--bare", "--literal-pathspecs", "--no-replace-objects"}
+)
+GIT_DATA_COMMANDS = frozenset(
+    {
+        "add",
+        "am",
+        "apply",
+        "bisect",
+        "blame",
+        "branch",
+        "cat-file",
+        "check-ignore",
+        "checkout",
+        "cherry",
+        "cherry-pick",
+        "clean",
+        "clone",
+        "commit",
+        "config",
+        "count-objects",
+        "describe",
+        "diff",
+        "diff-files",
+        "diff-index",
+        "diff-tree",
+        "fetch",
+        "for-each-ref",
+        "format-patch",
+        "fsck",
+        "gc",
+        "grep",
+        "hash-object",
+        "init",
+        "log",
+        "ls-files",
+        "ls-remote",
+        "ls-tree",
+        "merge",
+        "merge-base",
+        "mv",
+        "name-rev",
+        "notes",
+        "pull",
+        "push",
+        "range-diff",
+        "rebase",
+        "reflog",
+        "remote",
+        "reset",
+        "restore",
+        "rev-list",
+        "rev-parse",
+        "revert",
+        "rm",
+        "shortlog",
+        "show",
+        "show-ref",
+        "sparse-checkout",
+        "stash",
+        "status",
+        "submodule",
+        "switch",
+        "symbolic-ref",
+        "tag",
+        "update-index",
+        "update-ref",
+        "var",
+        "version",
+        "worktree",
+    }
+)
+GIT_EXECUTING_OPTIONS = {
+    "rebase": ("--exec", "-x"),
+    "grep": ("--open-files-in-pager", "-O"),
+    "clone": ("--upload-pack", "-u", "--config", "-c"),
+    "fetch": ("--upload-pack",),
+    "pull": ("--upload-pack",),
+    "ls-remote": ("--upload-pack", "-u"),
+    "push": ("--receive-pack", "--exec"),
+}
+GIT_EXECUTING_ACTIONS = {"bisect": "run", "submodule": "foreach"}
+GIT_COMMAND_VALUE_OPTIONS = {"grep": frozenset({"-e", "-f", "-m", "--max-count", "-A", "-B", "-C", "--max-depth"})}
+GIT_CONFIG_VALUE_OPTIONS = frozenset({"-f", "--file", "--blob", "--type", "--default", "--comment", "--value"})
+GIT_COMMAND_SETTINGS = frozenset({"core.pager", "core.editor", "sequence.editor"})
+INERT_COMMANDS = frozenset({"", "cat", "true", "false", ":"})
+GIT_CONFIG_READ_OPTIONS = frozenset(
+    {
+        "--get",
+        "--get-all",
+        "--get-regexp",
+        "--get-urlmatch",
+        "-l",
+        "--list",
+        "--unset",
+        "--unset-all",
+        "--remove-section",
+        "--rename-section",
+    }
+)
+GH_DATA_COMMANDS = frozenset(
+    {
+        "api",
+        "auth",
+        "browse",
+        "cache",
+        "co",
+        "completion",
+        "gist",
+        "help",
+        "issue",
+        "label",
+        "org",
+        "pr",
+        "project",
+        "release",
+        "repo",
+        "ruleset",
+        "run",
+        "search",
+        "secret",
+        "ssh-key",
+        "gpg-key",
+        "status",
+        "variable",
+        "version",
+        "workflow",
+        "alias",
+        "config",
+        "extension",
+        "ext",
+        "extensions",
+    }
+)
+GH_VALUE_OPTIONS = frozenset({"-R", "--repo", "-h", "--host", "--hostname"})
+SED_LONG_OPTIONS = (
+    "--debug",
+    "--expression",
+    "--file",
+    "--follow-symlinks",
+    "--help",
+    "--in-place",
+    "--line-length",
+    "--null-data",
+    "--posix",
+    "--quiet",
+    "--regexp-extended",
+    "--sandbox",
+    "--separate",
+    "--silent",
+    "--unbuffered",
+    "--version",
+    "--zero-terminated",
+)
+SEARCH_VALUE_OPTIONS = frozenset({"-e", "--regexp", "-f", "--file", "-g", "--glob", "-t", "--type", "-T", "--type-not"})
+COMMAND_ENVIRONMENT = re.compile(
+    r"GIT_(?:PAGER|EDITOR|SEQUENCE_EDITOR|EXTERNAL_DIFF|SSH|SSH_COMMAND|ASKPASS|PROXY_COMMAND)"
+    r"|GH_(?:PAGER|EDITOR|BROWSER)|PAGER|EDITOR|VISUAL|BROWSER|LESSOPEN|LESSCLOSE"
+)
+CONFIGURATION_ENVIRONMENT = re.compile(
+    r"GIT_CONFIG(?!_NOSYSTEM$)\w*|GIT_EXEC_PATH|GIT_TEMPLATE_DIR|GH_CONFIG_DIR|RIPGREP_CONFIG_PATH"
+    r"|PYTHONPATH|PYTEST_\w+|BASH_ENV|ENV|LESSKEY\w*"
+)
+LESS_DATA_START = re.compile(r"\+\+?(?:\d*[gGF]?|/.*|\?.*)")
+READ_VALUE_OPTIONS = frozenset({"-p", "-d", "-n", "-N", "-t", "-u", "-i"})
+SORT_VALUE_OPTIONS = frozenset({"-o", "--output", "-k", "--key", "-t", "-T", "-S"})
+
+
+def long_option(argument: str, option: str, options: tuple[str, ...] = ()) -> bool:
+    flag = argument.partition("=")[0]
+    if flag == option:
         return True
+    return len(flag) > 3 and option.startswith(flag) and not any(other != option and other.startswith(flag) for other in options)
+
+
+def short_option(argument: str, letter: str) -> bool:
+    return re.match(rf"-[A-Za-z0-9]*{letter}", argument) is not None and not argument.startswith("--")
+
+
+def option_words(arguments: list[str], value_options: frozenset[str]) -> Iterator[str]:
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "--":
+            return
+        if argument.startswith("-"):
+            yield argument
+            index += 2 if argument in value_options else 1
+            continue
+        index += 1
+
+
+def operands(arguments: list[str], value_options: frozenset[str]) -> list[str]:
+    words: list[str] = []
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "--":
+            return words + arguments[index + 1 :]
+        if argument.startswith("-") and argument != "-":
+            index += 2 if argument in value_options else 1
+            continue
+        words.append(argument)
+        index += 1
+    return words
+
+
+def safe_git_config(setting: str, value: str | None = None) -> bool:
+    key, equal, assigned = setting.partition("=")
+    key = key.lower()
+    value = assigned if equal else value
+    return (
+        key in SAFE_GIT_CONFIG
+        or key.startswith(("advice.", "color."))
+        or (key == "core.hookspath" and value == "/dev/null")
+        or ((key in GIT_COMMAND_SETTINGS or key.startswith("pager.")) and value in INERT_COMMANDS)
+    )
+
+
+def git_config_is_data(arguments: list[str]) -> bool:
+    flags = list(option_words(arguments, GIT_CONFIG_VALUE_OPTIONS))
+    if any(flag == "-e" or long_option(flag, "--edit") for flag in flags):
+        return False
+    if any(flag.partition("=")[0] in GIT_CONFIG_READ_OPTIONS for flag in flags):
+        return True
+    words = operands(arguments, GIT_CONFIG_VALUE_OPTIONS)
+    if words[:1] in (["get"], ["list"], ["unset"], ["remove-section"], ["rename-section"]):
+        return True
+    if words[:1] == ["edit"]:
+        return False
+    if words[:1] == ["set"]:
+        words = words[1:]
+    return len(words) < 2 or safe_git_config(words[0], words[1])
+
+
+def git_is_data(arguments: list[str]) -> bool:
+    index = 0
+    while index < len(arguments) and arguments[index].startswith("-"):
+        argument = arguments[index]
+        if argument == "-c":
+            if index + 1 >= len(arguments) or not safe_git_config(arguments[index + 1]):
+                return False
+            index += 2
+        elif argument in GIT_GLOBAL_VALUE_OPTIONS:
+            index += 2
+        elif argument in GIT_GLOBAL_FLAGS or argument.partition("=")[0] in GIT_GLOBAL_VALUE_OPTIONS:
+            index += 1
+        else:
+            return False
+    if index >= len(arguments):
+        return True
+    command, rest = arguments[index], arguments[index + 1 :]
+    if command not in GIT_DATA_COMMANDS:
+        return False
+    if command == "config":
+        return git_config_is_data(rest)
+    if command in GIT_EXECUTING_ACTIONS:
+        return GIT_EXECUTING_ACTIONS[command] not in operands(rest, frozenset())
+    return not any(
+        long_option(argument, option) if option.startswith("--") else short_option(argument, option[1])
+        for option in GIT_EXECUTING_OPTIONS.get(command, ())
+        for argument in option_words(rest, GIT_COMMAND_VALUE_OPTIONS.get(command, frozenset()))
+    )
+
+
+def gh_is_data(arguments: list[str]) -> bool:
+    words = operands(arguments, GH_VALUE_OPTIONS)
+    if not words:
+        return True
+    command, action = words[0], words[1] if len(words) > 1 else ""
+    if command not in GH_DATA_COMMANDS:
+        return False
+    if command == "alias":
+        return action not in {"set", "import"}
+    if command in {"ext", "extension", "extensions"}:
+        return action != "exec"
+    if command == "config":
+        return action != "set" or words[2:3] not in (["editor"], ["pager"], ["browser"])
+    if command == "repo":
+        return action != "clone" or "--" not in arguments
+    return True
+
+
+def sed_scripts(arguments: list[str]) -> list[str] | None:
+    scripts: list[str] = []
+    positionals: list[str] = []
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        index += 1
+        if argument == "--":
+            positionals.extend(arguments[index:])
+            break
+        if argument.startswith("--"):
+            if long_option(argument, "--sandbox", SED_LONG_OPTIONS):
+                return []
+            if long_option(argument, "--file", SED_LONG_OPTIONS):
+                return None
+            if long_option(argument, "--expression", SED_LONG_OPTIONS):
+                if "=" in argument:
+                    scripts.append(argument.partition("=")[2])
+                elif index < len(arguments):
+                    scripts.append(arguments[index])
+                    index += 1
+                else:
+                    return None
+            elif long_option(argument, "--line-length", SED_LONG_OPTIONS) and "=" not in argument:
+                index += 1
+            elif not any(long_option(argument, option, SED_LONG_OPTIONS) for option in SED_LONG_OPTIONS):
+                return None
+            continue
+        if not argument.startswith("-") or argument == "-":
+            positionals.append(argument)
+            continue
+        for offset, letter in enumerate(argument[1:], 2):
+            if letter == "f":
+                return None
+            if letter == "i":
+                break
+            if letter in "el":
+                value = argument[offset:]
+                if not value:
+                    if index >= len(arguments):
+                        return None
+                    value = arguments[index]
+                    index += 1
+                if letter == "e":
+                    scripts.append(value)
+                break
+            if letter not in {"n", "r", "E", "s", "u", "z"}:
+                return None
+    if not scripts:
+        if not positionals:
+            return None
+        scripts.append(positionals[0])
+    return scripts
+
+
+def sed_bracket_end(script: str, index: int) -> int | None:
+    index += 1
+    if index < len(script) and script[index] == "^":
+        index += 1
+    if index < len(script) and script[index] == "]":
+        index += 1
+    while index < len(script) and script[index] != "]":
+        if script[index] == "[" and index + 1 < len(script) and script[index + 1] in ":.=":
+            close = script.find(script[index + 1] + "]", index + 2)
+            if close < 0:
+                return None
+            index = close + 2
+            continue
+        index += 1
+    return index + 1 if index < len(script) else None
+
+
+def sed_delimited(script: str, index: int, delimiter: str, regex_parts: int, parts: int) -> int | None:
+    for part in range(parts):
+        while index < len(script) and script[index] != delimiter:
+            if script[index] == "\\":
+                index += 2
+                continue
+            if script[index] == "\n":
+                return None
+            if part < regex_parts and script[index] == "[":
+                end = sed_bracket_end(script, index)
+                if end is None:
+                    return None
+                index = end
+                continue
+            index += 1
+        if index >= len(script):
+            return None
+        index += 1
+    return index
+
+
+def sed_line_end(script: str, index: int) -> int:
+    while index < len(script) and script[index] != "\n":
+        index += 2 if script[index] == "\\" else 1
+    return index
+
+
+def sed_address(script: str, index: int) -> int | None:
+    while index < len(script):
+        character = script[index]
+        if character.isdigit() or character in "$,~+ \t!":
+            index += 1
+        elif character in "/\\":
+            if character == "\\":
+                if index + 1 >= len(script):
+                    return None
+                index += 1
+            end = sed_delimited(script, index + 1, script[index], 1, 1)
+            if end is None:
+                return None
+            index = end
+            while index < len(script) and script[index] in "IM":
+                index += 1
+        else:
+            return index
+    return index
+
+
+def sed_executes(script: str) -> bool:
+    index = 0
+    while index < len(script):
+        if script[index] in " \t\n;{}":
+            index += 1
+            continue
+        address_end = sed_address(script, index)
+        if address_end is None:
+            return True
+        if address_end >= len(script):
+            return False
+        index = address_end
+        command = script[index]
+        index += 1
+        if command in {"{", "}"}:
+            continue
+        if command == "e":
+            return True
+        if command in {"s", "y"}:
+            if index >= len(script):
+                return True
+            end = sed_delimited(script, index + 1, script[index], 1 if command == "s" else 0, 2)
+            if end is None:
+                return True
+            index = end
+            if command == "s":
+                while index < len(script) and script[index] not in " \t\n;}":
+                    if script[index] == "e":
+                        return True
+                    if script[index] in {"w", "W"}:
+                        index = sed_line_end(script, index)
+                        break
+                    if not (script[index].isdigit() or script[index] in {"g", "p", "i", "I", "m", "M"}):
+                        return True
+                    index += 1
+            continue
+        if command in {"a", "i", "c", "r", "R", "w", "W", "#"}:
+            index = sed_line_end(script, index)
+        elif command in {":", "b", "t", "T", "v", "l", "L", "q", "Q"}:
+            while index < len(script) and script[index] not in "\n;}":
+                index += 1
+        elif command not in {"=", "d", "D", "g", "G", "h", "H", "n", "N", "p", "P", "x", "z", "F"}:
+            return True
+    return False
+
+
+def sed_is_data(arguments: list[str]) -> bool:
+    scripts = sed_scripts(arguments)
+    return scripts is not None and not any(sed_executes(script) for script in scripts)
+
+
+def less_is_data(arguments: list[str]) -> bool:
+    options = arguments[: arguments.index("--")] if "--" in arguments else arguments
+    return not any(
+        (argument.startswith("+") and LESS_DATA_START.fullmatch(argument) is None)
+        or argument.startswith("--lesskey")
+        or re.match(r"-[^-+]*k", argument) is not None
+        for argument in options
+    )
+
+
+def subscript_is_data(arguments: list[str], name: str) -> bool:
+    if name == "read":
+        names = operands(arguments, READ_VALUE_OPTIONS)
+        names += [argument[2:] for argument in arguments if argument.startswith("-a") and len(argument) > 2]
+        return not any("[" in word for word in names)
+    if name == "printf":
+        first = arguments[0] if arguments else ""
+        destination = first[2:] or (arguments[1] if len(arguments) > 1 else "") if first.startswith("-v") else ""
+        return "[" not in destination
+    return not any(
+        argument in {"-v", "-R"} and index + 1 < len(arguments) and "[" in arguments[index + 1]
+        for index, argument in enumerate(arguments)
+    )
+
+
+def data_command_executes(argv: list[str]) -> bool:
+    position = command_position(argv)
+    if position is None or position.index >= len(argv):
+        return False
+    name = Path(argv[position.index]).name
+    arguments = argv[position.index + 1 :]
+    if name == "git":
+        return not git_is_data(arguments)
+    if name == "gh":
+        return not gh_is_data(arguments)
+    if name == "sed":
+        return not sed_is_data(arguments)
+    if name == "rg":
+        return any(argument.partition("=")[0] == "--pre" for argument in option_words(arguments, SEARCH_VALUE_OPTIONS))
+    if name == "sort":
+        return any(long_option(argument, "--compress-program") for argument in option_words(arguments, SORT_VALUE_OPTIONS))
+    if name == "less":
+        return not less_is_data(arguments)
+    if name in {"read", "printf", "test", "["}:
+        return not subscript_is_data(arguments, name)
+    return False
+
+
+def loads_test_code(argv: list[str]) -> bool:
+    position = command_position(argv)
+    return position is not None and position.index < len(argv) and Path(argv[position.index]).name == "pytest"
+
+
+def claim_text_outside(root: Node, node: Node) -> bool:
+    source = root.text or b""
+    return has_claim_text((source[: node.start_byte] + source[node.end_byte :]).decode(errors="replace"))
+
+
+def environment_executes(assignment: Node) -> bool:
+    name_node = assignment.child_by_field_name("name")
+    value_node = assignment.child_by_field_name("value")
+    name = name_node.text.decode() if name_node is not None and name_node.text is not None else ""
+    value = shell_word(value_node) if value_node is not None else ""
+    if name == "LESS":
+        return not less_is_data(value.split())
+    if COMMAND_ENVIRONMENT.fullmatch(name):
+        return value not in INERT_COMMANDS
+    return CONFIGURATION_ENVIRONMENT.fullmatch(name) is not None
+
+
+def accepts_claim_data(argv: list[str]) -> bool:
+    position = command_position(argv)
+    if position is None:
+        return False
+    name = Path(argv[position.index]).name if position.index < len(argv) else ""
+    if name in DATA_COMMANDS:
+        return not data_command_executes(argv)
     if name.endswith(".py") and name != "gh-plan.py":
         return True
     consumer = script_consumer(argv)
@@ -1580,6 +2549,11 @@ def shell_claims(text: str, *, claim_related: bool = False) -> ShellClaims:
         return discovery
     root = with_literal_values(root, text.encode())
     for node in shell_nodes(root):
+        discovery.asynchronous = (
+            discovery.asynchronous
+            or node.type == "process_substitution"
+            or any(child.type in {"&", "&!", "&|"} for child in node.children)
+        )
         if node.type in {
             "pipeline",
             "command_substitution",
@@ -1592,6 +2566,8 @@ def shell_claims(text: str, *, claim_related: bool = False) -> ShellClaims:
             "case_statement",
         }:
             discovery.receipt_pure = False
+        if node.type == "variable_assignment":
+            discovery.opaque = discovery.opaque or (related and environment_executes(node))
         programs = list(input_programs(node))
         if node.type == "command":
             argv = command_argv(node)
@@ -1610,6 +2586,7 @@ def shell_claims(text: str, *, claim_related: bool = False) -> ShellClaims:
                 )
             name = node.child_by_field_name("name")
             discovery.opaque = discovery.opaque or bool(name is not None and shell_generated(name) and related)
+            discovery.opaque = discovery.opaque or (loads_test_code(argv) and (claim_related or claim_text_outside(root, node)))
             programs.extend(command_sources)
         for program in programs:
             discovery.receipt_pure = False
@@ -1620,6 +2597,7 @@ def shell_claims(text: str, *, claim_related: bool = False) -> ShellClaims:
             elif Path(program.consumer).name in SHELL_NAMES | {"eval"}:
                 nested = shell_claims(program.text, claim_related=related)
                 discovery.arguments.extend(nested.arguments)
+                discovery.asynchronous = discovery.asynchronous or nested.asynchronous
                 discovery.opaque = discovery.opaque or nested.opaque
                 discovery.decode_failed = discovery.decode_failed or nested.decode_failed
             else:
@@ -1651,12 +2629,16 @@ def claim_arguments(argv: list[str]) -> list[str] | None:
 def has_opaque_claim_execution(argv: list[str], covered: set[int], *, generated: bool = False, claim_related: bool = False) -> bool:
     if not argv or accepts_claim_data(argv):
         return False
+    position = command_position(argv)
+    if claim_related and unwrap_timeouts(argv) is None:
+        return True
+    if claim_related and data_command_executes(argv):
+        return True
     helper = next((index for index, argument in enumerate(argv) if Path(argument).name == "gh-plan.py"), None)
     if helper is not None and "claim" in argv[helper + 1 :]:
         return True
     if "claim" in argv and any("$" in argument or "`" in argument for argument in argv[: argv.index("claim")]):
         return True
-    position = command_position(argv)
     offset = position.index + 1 if position is not None else 0
     interpreter = is_interpreter(script_consumer(argv))
     if claim_related and any(
@@ -1733,7 +2715,12 @@ def invocation_target(arguments: list[str], session: str) -> dict | None:
 
 
 def resolve_invocations(
-    arguments_list: list[list[str]], blocks: list[object], session: str, *, receipt_pure: bool = True
+    arguments_list: list[list[str]],
+    blocks: list[object],
+    session: str,
+    *,
+    receipt_pure: bool = True,
+    ended: list[bool] | None = None,
 ) -> tuple[set[tuple[str, int]], bool]:
     results = list({json.dumps(item, sort_keys=True): item for block in blocks for item in values(block)}.values())
     completed = [
@@ -1744,8 +2731,6 @@ def resolve_invocations(
         and (target := claim_target(item, item["claim"]["session"])) is not None
     ]
     targets = {target for native, target in completed if native == session}
-    if any(item.get("foreign_native_output") for item in results):
-        return targets, False
     rejected = [
         item
         for item in results
@@ -1755,11 +2740,23 @@ def resolve_invocations(
         and not item.get("claim_comment")
         and "post_claim" not in item.get("completed_steps", [])
     ]
-    invocations = [item for arguments in arguments_list if (item := invocation_target(arguments, session)) is not None]
-    invocations.sort(key=lambda item: not (item["known"] or item["foreign"]))
+    flags = ended if ended is not None else [False] * len(arguments_list)
+    invocations = [
+        (item, finished)
+        for arguments, finished in zip(arguments_list, flags, strict=True)
+        if (item := invocation_target(arguments, session)) is not None
+    ]
+    invocations.sort(key=lambda item: not (item[0]["known"] or item[0]["foreign"]))
+    bound_receipt = receipt_pure and len(invocations) == 1
+    bound_outcome = bound_receipt and any(
+        item.get("operation") == "github.plan.claim"
+        and item.get("ok") is False
+        and item.get("write_outcome") in {"unknown", "rejected", "not_started", "confirmed"}
+        for item in results
+    )
     missing = 0
     unproven = False
-    for item in invocations:
+    for item, finished in invocations:
         if not receipt_pure and not item["known"] and not item["foreign"]:
             unproven = True
             continue
@@ -1774,11 +2771,15 @@ def resolve_invocations(
         )
         if match is not None:
             completed.pop(match)
+            if item["known"] and not item["foreign"] and not (finished or bound_receipt):
+                unproven = True
         elif item["known"] or item["foreign"]:
             if rejected:
                 rejected.pop()
             if item["known"] and not item["foreign"]:
                 targets.add(item["known"])
+                if not (finished or bound_outcome):
+                    unproven = True
         else:
             missing += 1
     return targets, unproven or missing > len(rejected)
@@ -1823,7 +2824,19 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
     targets = set()
     errors = []
     outputs = tool_outputs(records)
+    own_outputs = tool_outputs(records, followups=False)
+    inputs = {identifier: (text, javascript, name, index) for identifier, text, javascript, name, index in tool_details(records)}
     denied = denied_invocations(records)
+    non_tty_stdin_closed = closed_stdin_runtime(records)
+    finished = {
+        "command:" + str(item.get("id", ""))
+        for row in records
+        if row.get("type") == "event_msg"
+        and isinstance(payload := row.get("payload"), dict)
+        and payload.get("type") == "item_completed"
+        and (item := execution_item(row)).get("status") in {"completed", "failed"}
+        and type(item.get("exit_code")) is int
+    }
     if directory is not None:
         errors.extend(
             {
@@ -1835,47 +2848,61 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
         )
     claim_may_be_stored = False
     claim_may_be_interactive = False
-    for identifier, text, javascript in tool_inputs(records):
+    for identifier, (text, javascript, name, _) in inputs.items():
         if identifier in denied:
             continue
+        unexecuted = javascript and native_javascript_parse_failure(text, outputs.get(identifier, []))
         names = javascript_names(text) if javascript else set()
         executable_text = without_patch_text(text) if javascript else text
         claim_related_here = "gh-plan" in executable_text or CLAIM_WORD.search(executable_text) is not None
         invocations = []
+        ended_invocations = []
         opaque = False
         unclassified = False
         reason = "missing_output"
         decode_failed = False
-        receipt_pure = not javascript
+        interactive_uncertain = False
+        receipt_pure = not javascript or single_javascript_shell(text)
         try:
-            sources = shell_texts(text, javascript)
+            sources = shell_texts(text, javascript, exec_command=name == "exec_command")
+            source_ended = completed_sources(records, inputs, own_outputs, identifier, sources, session)
             opaque = sources.opaque
-            claim_may_be_interactive = (
-                claim_may_be_interactive
-                or (
-                    claim_related_here
-                    and (
-                        sources.interactive_opaque
-                        or any(
-                            type(value.get("session_id")) is int for block in outputs.get(identifier, []) for value in values(block)
+            if not unexecuted and identifier not in finished:
+                claim_may_be_interactive = (
+                    claim_may_be_interactive
+                    or (
+                        claim_related_here
+                        and (
+                            sources.interactive_opaque
+                            or sources.stdin_possible
+                            or (sources.exec_launch and not non_tty_stdin_closed)
+                            or (
+                                not (non_tty_stdin_closed and sources.stdin_closed)
+                                and any(
+                                    type(value.get("session_id")) is int
+                                    for block in outputs.get(identifier, [])
+                                    for value in values(block)
+                                )
+                            )
                         )
                     )
+                    or any(
+                        source.interactive and ("gh-plan" in source.text or CLAIM_WORD.search(source.text))
+                        for source in sources.commands
+                    )
                 )
-                or any(
-                    source.interactive and ("gh-plan" in source.text or CLAIM_WORD.search(source.text))
-                    for source in sources.commands
-                )
-            )
+            interactive_uncertain = opaque and sources.interactive_opaque and claim_may_be_interactive
             unclassified = opaque
             opaque = opaque and (
                 claim_related_here
                 or (claim_may_be_stored and "load" in names)
                 or (sources.interactive_opaque and claim_may_be_interactive)
             )
-            for source in sources.commands:
+            for source, ended in zip(sources.commands, source_ended, strict=True):
                 receipt_pure = receipt_pure and not source.interactive
                 discovery = shell_claims(source.text, claim_related=source.interactive and claim_may_be_interactive)
                 invocations.extend(discovery.arguments)
+                ended_invocations.extend([ended and not discovery.asynchronous] * len(discovery.arguments))
                 opaque = opaque or discovery.opaque
                 receipt_pure = receipt_pure and discovery.receipt_pure
                 if discovery.decode_failed:
@@ -1893,27 +2920,58 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
             )
         )
         blocks = outputs.get(identifier, [])
-        found, unknown = resolve_invocations(invocations, blocks, session, receipt_pure=receipt_pure)
+        found, unknown = resolve_invocations(invocations, blocks, session, receipt_pure=receipt_pure, ended=ended_invocations)
+        if (
+            unknown
+            and not opaque
+            and any(
+                not ended and item is not None and item["known"] and not item["foreign"]
+                for arguments, ended in zip(invocations, ended_invocations, strict=True)
+                for item in [invocation_target(arguments, session)]
+            )
+        ):
+            reason = UNFINISHED_CLAIM
         targets.update(found)
         if javascript:
             opaque = opaque or (unclassified and bool(found))
             claim_may_be_stored = claim_may_be_stored or ("store" in names and (claim_related_here or bool(found)))
         if opaque:
-            reason = "unproven_execution_count" if invocations and not receipt_pure else "computed"
+            reason = (
+                "interactive_uncertain"
+                if interactive_uncertain
+                else ("unproven_execution_count" if invocations and not receipt_pure else "computed")
+            )
         if (unknown or opaque) and directory is not None:
             try:
                 saved = persisted_output(records, directory, session, identifier)
                 blocks = [*blocks, *tool_outputs(saved).get(identifier, [])]
-                found, unknown = resolve_invocations(invocations, blocks, session, receipt_pure=receipt_pure)
+                restored = {**own_outputs, identifier: [*own_outputs.get(identifier, []), *tool_outputs(saved).get(identifier, [])]}
+                restored_flags = completed_sources(records, inputs, restored, identifier, sources, session)
+                ended_invocations = [
+                    ended and not discovery.asynchronous
+                    for source, ended in zip(sources.commands, restored_flags, strict=True)
+                    for discovery in [shell_claims(source.text, claim_related=source.interactive and claim_may_be_interactive)]
+                    for _ in discovery.arguments
+                ]
+                found, unknown = resolve_invocations(
+                    invocations, blocks, session, receipt_pure=receipt_pure, ended=ended_invocations
+                )
                 targets.update(found)
             except (OSError, ValueError) as error:
                 reason = "missing_output: " + str(error)
-        if unknown or opaque or decode_failed:
+        if (unknown or opaque or decode_failed) and not unexecuted:
             errors.append(
                 {
                     "call_id": identifier,
                     "reason": reason,
-                    "recovery": "Restore this invocation's complete native command and output on the claiming host; keep unknown writes conditional. If evidence is irrecoverable, record the Director's decision on the owning issue.",
+                    "recovery": (
+                        "This code-mode cell is outside the bounded subset after possible interactive claim input. "
+                        "Preserve the originating command, process session ID and complete input/output evidence on the owning issue; "
+                        "keep coverage conditional. Use direct literal shell calls and text(result) for new cells. "
+                        "If the old evidence cannot establish coverage, record the Director's decision on the owning issue."
+                        if reason == "interactive_uncertain"
+                        else "Restore this invocation's complete native command and output on the claiming host; keep unknown writes conditional. If evidence is irrecoverable, record the Director's decision on the owning issue."
+                    ),
                 }
             )
     return {"targets": targets, "unresolved_invocations": errors}

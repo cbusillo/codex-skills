@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import http.client
 import re
 import urllib.error
@@ -14,11 +15,9 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 PREFIX = "disposable-lane-"
-# This consumer installs only these three modes; other producer modes need
-# their own consumer implementation.
-MODES = ("inspect", "collect", "record")
+MODES = ("inspect", "collect", "record", "clear", "prepare-rebuild")
 COMMANDS = frozenset(PREFIX + mode for mode in MODES)
-TIMEOUTS = {PREFIX + "collect": 240.0, PREFIX + "inspect": 30.0, PREFIX + "record": 30.0}
+TIMEOUTS = {PREFIX + mode: 240.0 if mode == "collect" else 30.0 for mode in MODES}
 SCOPE = ("product", "context", "instance")
 FACTS = {
     "usage": ({"unknown", "unused", "in_use"}, "usage_evidence"),
@@ -29,18 +28,17 @@ EVIDENCE = tuple(reference for _allowed, reference in FACTS.values())
 INPUT_FIELDS = {
     "inspect": {*SCOPE, "preview_id"},
     "collect": {*SCOPE, "preview_id", "lifetime_seconds"},
-    "record": {*SCOPE, "preview_id", "lifetime_seconds", *FACTS, *EVIDENCE},
+    "record": {*SCOPE, "lifetime_seconds", "replaces_operation_id"},
+    "clear": {*SCOPE, "preview_id"},
+    "prepare-rebuild": {*SCOPE, "replaces_operation_id"},
 }
+EMPTY_OBSERVATION_SHA256 = hashlib.sha256(b"null").hexdigest()
 MAX_LIFETIME_SECONDS = 900
 DEFAULT_LIFETIME_SECONDS = 300
 CLOCK_SKEW_SECONDS = 5
 DIGEST_RE = re.compile(r"[a-f0-9]{64}")
 CODE_RE = re.compile(r"[a-z][a-z0-9_]{0,63}")
-OBSERVER_KINDS = {"director_agent", "director_agent_preview_cleanup"}
 
-# Closed public vocabularies, taken from the producer (Launchplane 07c93f7d9).
-# Keep them here, in one place, and refresh them from the named sources.
-#
 # control_plane/disposable_lane_collection.py disposable_collection_coverage():
 # the producer client (scripts/collect-disposable-lane.py) requires exactly
 # these coverage sources and refuses any other set.
@@ -68,10 +66,6 @@ UNRECOGNIZED_REASON = "diagnostics_unrecognized"
 # scripts/collect-disposable-lane.py: any other qualification reads as unavailable.
 NEVER_SERVED = {"never_served", "never_served_records_incomplete", "never_served_protection_seen",
                 "never_served_not_attempted"}
-# Evidence the collector can build for each fact value:
-# control_plane/disposable_lane_collection.py collect_disposable_lane_facts and
-# collect_testing_resource_facts, plus the timestamp control_plane/http_app.py
-# appends to a fresh in_use reference. An unknown fact carries no evidence.
 _HEX = "[a-f0-9]{64}"
 _AT = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:[+-]\d{2}:\d{2}|Z)"
 EVIDENCE_FORMATS: dict[str, dict[str, tuple[tuple[str, re.Pattern[str]], ...]]] = {
@@ -84,21 +78,19 @@ EVIDENCE_FORMATS: dict[str, dict[str, tuple[tuple[str, re.Pattern[str]], ...]]] 
     },
     "data": {
         "unknown": (),
-        "reproducible": (("testing-resource-inspection", re.compile(rf"service:testing-resource-inspection:{_HEX}")),),
+        "reproducible": (("testing-resource-inspection", re.compile(rf"service:testing-resource-inspection:{_HEX}")),
+                         ("testing-resources", re.compile(rf"service:testing-resources:{_HEX}"))),
         "only_copy": (),
     },
     "production_resources": {
         "unknown": (),
         "isolated": (("testing-resource-inspection", re.compile(rf"service:testing-resource-inspection:{_HEX}")),),
-        "separation_ready": (),
+        "separation_ready": (("testing-resources", re.compile(rf"service:testing-resources:{_HEX}")),),
         "shared": (("production-target-alias", re.compile(rf"service:production-target-alias:{_HEX}:{_HEX}")),),
     },
 }
 # The usage diagnostic each unused evidence kind is built with.
 UNUSED_REASON_BY_KIND = {"odoo-testing-never-served": "never_served", "odoo-testing-usage": "complete"}
-# control_plane/disposable_lane_collection.py merge_collected_safety keeps these
-# facts from an earlier row. On a preview that row can be a recorded observation
-# whose evidence is the Director's own reference, reported only as "recorded".
 RECORDED_PREVIEW_FACTS = {"usage": {"in_use"}, "data": {"reproducible", "only_copy"},
                           "production_resources": {"isolated", "separation_ready", "shared"}}
 RESULT_FIELDS = {
@@ -109,23 +101,33 @@ RESULT_FIELDS = {
                 "expires_at", "provider_mutation", "automatic_fact_collection", "source_coverage"},
     "record": {"mode", "binding_sha256", "observed_by", "observer_kind", *FACTS, "provider_mutation",
                "automatic_fact_collection", "source_coverage", "reconcile_requested"},
+    "clear": {"mode", "binding_sha256", "observation_sha256", "provider_mutation"},
+    "prepare-rebuild": {"mode", "binding_sha256", "operation_id", "historical_effects", "provider_mutation"},
 }
 RECOVERY = (
     "The observation may or may not be stored. Do not retry automatically. Run disposable-lane-inspect, "
     "review its binding, then re-run this command explicitly if it is still needed. Never change identity "
     "or use a provider call."
 )
+PREPARATION_RECOVERY = (
+    "Preserve the original request and operation ID. Re-inspect the lane; if its binding is unchanged, "
+    "review and explicitly resubmit that same preparation request. Do not retry automatically. A refusal "
+    "of a later attempt does not establish whether an earlier capture exists. Inspect cannot read that "
+    "capture or prove historical effects absent."
+)
 
 
 def add_parser(subparsers: Any) -> None:
     for mode in MODES:
-        parser = subparsers.add_parser(PREFIX + mode, help="Inspect, collect or record one disposable lane observation.")
+        parser = subparsers.add_parser(PREFIX + mode, help="Inspect or change disposable-lane evidence; prepare a retained testing rebuild.")
         parser.add_argument("--payload-file", required=True, help="Private request JSON outside the repository.")
         if mode != "inspect":
             parser.add_argument("--expected-binding-sha256", required=True)
             parser.add_argument("--inspect-evidence-file", required=True,
                                 help="Saved output of a prior disposable-lane-inspect for the same lane.")
             parser.add_argument("--reviewed-inspect", action="store_true")
+        if mode == "clear":
+            parser.add_argument("--expected-observation-sha256", required=True)
 
 
 def _scope_value(h: Any, body: dict[str, Any], field: str) -> str:
@@ -154,34 +156,17 @@ def intent(h: Any, mode: str, args: argparse.Namespace) -> tuple[dict[str, objec
         raise ValueError("disposable_lane_production_refused")
     if body["instance"] != "testing" and "preview_id" not in body:
         raise ValueError("disposable_lane_requires_testing_or_preview")
+    if mode in {"record", "prepare-rebuild"}:
+        if mode == "prepare-rebuild" and "replaces_operation_id" not in raw:
+            raise ValueError("disposable_lane_replaces_operation_required")
+        if "replaces_operation_id" in raw:
+            body["replaces_operation_id"] = _scope_value(h, raw, "replaces_operation_id")
     if "lifetime_seconds" in raw:
         lifetime = raw["lifetime_seconds"]
         if type(lifetime) is not int or not 0 < lifetime <= MAX_LIFETIME_SECONDS:
             raise ValueError("invalid_disposable_lane_lifetime_seconds")
         body["lifetime_seconds"] = lifetime
-    known = 0
-    if mode == "record":
-        for fact, (allowed, reference) in FACTS.items():
-            value = raw.get(fact, "unknown")
-            evidence = raw.get(reference, "")
-            if value not in allowed:
-                raise ValueError("invalid_disposable_lane_" + fact)
-            if not isinstance(evidence, str) or len(evidence) > 1024:
-                raise ValueError("invalid_disposable_lane_" + reference)
-            if value != "unknown":
-                if "preview_id" not in body:
-                    # The service collects testing facts itself; an assertion would be discarded.
-                    raise ValueError("disposable_lane_testing_facts_are_service_collected")
-                if not evidence.strip():
-                    raise ValueError("disposable_lane_fact_requires_evidence")
-                known += 1
-            if fact in raw:
-                body[fact] = value
-            if reference in raw:
-                body[reference] = evidence.strip()
     request: dict[str, object] = {"mode": mode, "payload_source": "private_file"}
-    if mode == "record":
-        request["known_fact_count"] = known
     h.assert_public_safe_shape(request)
     return request, body
 
@@ -190,8 +175,10 @@ def scope_of(body: dict[str, Any]) -> dict[str, str]:
     return {field: body[field] for field in (*SCOPE, "preview_id") if field in body}
 
 
-def review_binding(h: Any, scope: dict[str, str], digest: str, service: str) -> str:
-    return h.metadata_review_digest({"scope": scope, "binding_sha256": digest, "service_fingerprint": service})
+def review_binding(h: Any, scope: dict[str, str], digest: str, service: str,
+                   observation_digest: str, observation: dict[str, str] | None) -> str:
+    return h.metadata_review_digest({"scope": scope, "binding_sha256": digest, "service_fingerprint": service,
+                                     "observation_sha256": observation_digest, "observation": observation})
 
 
 def require_review(h: Any, args: argparse.Namespace, scope: dict[str, str]) -> tuple[str, str]:
@@ -207,8 +194,23 @@ def require_review(h: Any, args: argparse.Namespace, scope: dict[str, str]) -> t
         or not isinstance(result, dict) or result.get("mode") != "inspect"
         or result.get("binding_sha256") != digest
         or not isinstance(result.get("service_fingerprint"), str)
-        or result.get("review_binding_sha256") != review_binding(h, scope, digest, result["service_fingerprint"])):
+        or not isinstance(result.get("observation_sha256"), str)
+        or not DIGEST_RE.fullmatch(result["observation_sha256"])
+        or "observation" not in result):
         raise ValueError("reviewed_inspect_not_eligible")
+    try:
+        observation = _stored_observation(h, result["observation"])
+    except h.LaunchplaneSafetyError:
+        raise ValueError("reviewed_inspect_not_eligible") from None
+    if result.get("review_binding_sha256") != review_binding(
+            h, scope, digest, result["service_fingerprint"], result["observation_sha256"], observation):
+        raise ValueError("reviewed_inspect_not_eligible")
+    if args.command == PREFIX + "clear":
+        expected = args.expected_observation_sha256.strip()
+        if not DIGEST_RE.fullmatch(expected):
+            raise ValueError("invalid_expected_observation_sha256")
+        if expected != result["observation_sha256"]:
+            raise ValueError("reviewed_inspect_observation_changed")
     return digest, result["service_fingerprint"]
 
 
@@ -320,7 +322,8 @@ def _collect_checks(h: Any, source: dict[str, Any], facts: dict[str, str]) -> tu
             "never_served_qualification": qualification}, reason
 
 
-def project(h: Any, response: dict[str, Any], mode: str, body: dict[str, Any], digest: str) -> dict[str, object]:
+def project(h: Any, response: dict[str, Any], mode: str, body: dict[str, Any], digest: str,
+            observation_digest: str = "") -> dict[str, object]:
     """Fail closed on any unexpected receipt; never synthesize a positive fact."""
     source = h._require_dict(response.get("result"))
     if (response.get("status") != "accepted" or source.get("mode") != mode
@@ -333,6 +336,21 @@ def project(h: Any, response: dict[str, Any], mode: str, body: dict[str, Any], d
     binding = _digest(h, source.get("binding_sha256"))
     if mode != "inspect" and binding != digest:
         raise h.LaunchplaneSafetyError("invalid_response")
+    if mode == "clear":
+        observation = _digest(h, source.get("observation_sha256"))
+        if observation != observation_digest:
+            raise h.LaunchplaneSafetyError("invalid_response")
+        result = {"mode": mode, "binding_sha256": binding, "observation_sha256": observation,
+                  "provider_mutation": False}
+        h.assert_public_safe_shape(result)
+        return result
+    if mode == "prepare-rebuild":
+        if source.get("operation_id") != body["replaces_operation_id"] or source.get("historical_effects") != "unknown":
+            raise h.LaunchplaneSafetyError("invalid_response")
+        result = {"mode": mode, "binding_sha256": binding, "operation_id_matches": True,
+                  "historical_effects": "unknown", "provider_mutation": False}
+        h.assert_public_safe_shape(result)
+        return result
     facts = {fact: source.get(fact) for fact in FACTS}
     if any(facts[fact] not in allowed for fact, (allowed, _ref) in FACTS.items()):
         raise h.LaunchplaneSafetyError("invalid_response")
@@ -351,7 +369,7 @@ def project(h: Any, response: dict[str, Any], mode: str, body: dict[str, Any], d
         return result
     preview = "preview_id" in body
     observer = source.get("observer_kind")
-    if observer not in OBSERVER_KINDS:
+    if observer != "director_agent":
         raise h.LaunchplaneSafetyError("invalid_response")
     result.update(observer_kind=observer, provider_mutation=False)
     if mode == "collect":
@@ -361,13 +379,10 @@ def project(h: Any, response: dict[str, Any], mode: str, body: dict[str, Any], d
         result.update(checks, evidence=_evidence_summary(h, source, facts, reason, preview),
                       automatic_fact_collection=automatic, expires_at=_lifetime(h, source, body))
     else:
-        submitted = {fact: body.get(fact, "unknown") for fact in FACTS} if preview else dict.fromkeys(FACTS, "unknown")
-        reconcile = source.get("reconcile_requested")
-        if (automatic != "unavailable" or facts != submitted or type(reconcile) is not bool
-            or reconcile is not preview
-            or observer != ("director_agent_preview_cleanup" if preview else "director_agent")):
+        if (automatic != "unavailable" or any(value != "unknown" for value in facts.values())
+            or source.get("reconcile_requested", False) is not False):
             raise h.LaunchplaneSafetyError("invalid_response")
-        result.update(automatic_fact_collection=automatic, reconcile_requested=reconcile)
+        result.update(automatic_fact_collection=automatic)
     h.assert_public_safe_shape(result)
     return result
 
@@ -393,6 +408,13 @@ def _readback(h: Any, call: Any, body: dict[str, Any], mode: str, digest: str,
         return "accepted_unverified", h.service_response_diagnostics(error)
     diagnostics = h.service_response_diagnostics(readback)
     result["binding_readback_matches"] = observed["binding_sha256"] == digest
+    if mode == "clear":
+        result["observation_readback_matches"] = (
+            observed["observation"] is None and observed["observation_sha256"] == EMPTY_OBSERVATION_SHA256)
+        confirmed = result["binding_readback_matches"] and result["observation_readback_matches"]
+        if confirmed:
+            result["effect_readback"] = "verified"
+        return ("accepted" if confirmed else "accepted_unverified"), diagnostics
     return ("accepted" if result["binding_readback_matches"] else "accepted_unverified"), diagnostics
 
 
@@ -414,6 +436,9 @@ def execute(h: Any, args: argparse.Namespace) -> int:
     if mode != "inspect":
         # The service rechecks this binding before storing anything.
         payload["expected_binding_sha256"] = digest
+    observation_digest = args.expected_observation_sha256.strip() if mode == "clear" else ""
+    if mode == "clear":
+        payload["expected_observation_sha256"] = observation_digest
 
     def call(sent: dict[str, Any]) -> dict[str, Any]:
         return h.request_launchplane(service_url=settings["service_url"], path=path, settings=settings,
@@ -421,8 +446,9 @@ def execute(h: Any, args: argparse.Namespace) -> int:
 
     response: dict[str, Any] | None = None
     try:
-        response = call(payload)
-        result = project(h, response, mode, body, digest)
+        received = call(payload)
+        response = received
+        result = project(h, received, mode, body, digest, observation_digest)
     except urllib.error.HTTPError as error:
         error_payload = h._ServiceResponse({}, error.code)
         try:
@@ -464,41 +490,60 @@ def execute(h: Any, args: argparse.Namespace) -> int:
     readback: dict[str, object] = {}
     if mode == "inspect":
         result["service_fingerprint"] = service
-        result["review_binding_sha256"] = review_binding(h, scope, str(result["binding_sha256"]), service)
+        result["review_binding_sha256"] = review_binding(
+            h, scope, _digest(h, result["binding_sha256"]), service, _digest(h, result["observation_sha256"]),
+            _stored_observation(h, result["observation"]))
     else:
         status, readback = _readback(h, call, body, mode, digest, result)
     output = h.base_payload(status=status, operation=args.command, request=request)
     output["result"] = result
     output["summary"] = {**h.service_response_diagnostics(response),
                          **{"read_back_" + key: value for key, value in readback.items()},
-                         "recommendation": _recommendation(mode, status, body)}
+                         "recommendation": _recommendation(mode, status)}
     h.assert_public_safe_shape(output["summary"])
     h.emit(output)
     return 0 if status == "accepted" else 1
 
 
-def _recommendation(mode: str, status: str, body: dict[str, Any]) -> str:
+def _recommendation(mode: str, status: str) -> str:
     if mode == "inspect":
-        return ("Save this output privately and review the binding. It is required evidence for collect "
-                "and record. Fresh facts stay unknown until the service collects them. Stored observations "
+        return ("Save this output privately and review the binding and stored report. It is required evidence "
+                "for collect, record, clear and prepare-rebuild. Fresh facts stay unknown until the service collects them. Stored observations "
                 "have unverified freshness and binding; they do not establish current disposal eligibility.")
+    if mode == "prepare-rebuild":
+        if status != "accepted":
+            return ("The service accepted preparation, but the lane binding could not be confirmed afterwards. "
+                    + PREPARATION_RECOVERY)
+        return ("The service accepted the retained testing preparation. Only the lane binding was rechecked; "
+                "the separate capture record has no readback through inspect. Historical effects remain unknown. "
+                "No rebuild, resource deletion or hold release was performed.")
+    if mode == "clear":
+        if status != "accepted":
+            return ("The service accepted the clear request, but removal of the reviewed observation could not "
+                    "be confirmed. Inspect again before relying on it; do not retry automatically.")
+        return ("The reviewed observation is absent on readback. Clearing it does not resolve holds or "
+                "establish disposal eligibility.")
     if status != "accepted":
         return ("The service accepted the request, but the lane binding could not be confirmed afterwards. "
                 "Inspect again before relying on it; do not retry automatically.")
-    if mode == "record" and "preview_id" in body:
-        return ("The preview observation is recorded and a preview reconcile was requested. Only the lane "
-                "binding was rechecked; the stored report was not matched to this submission.")
     return ("The observation is stored for a short time. Only the lane binding was rechecked; "
             "the stored report was not matched to this submission.")
 
 
 def _outcome_unknown(h: Any, args: argparse.Namespace, request: dict[str, object],
                      diagnostics: dict[str, object], invalid: str = "") -> int:
-    output = h._apply_outcome_unknown(operation=args.command, request=request, label="disposable lane observation")
+    preparation = args.command == PREFIX + "prepare-rebuild"
+    output = h._apply_outcome_unknown(operation=args.command, request=request,
+                                    label="testing replacement preparation" if preparation else "disposable lane observation")
     for key in ("trace_id", "error_code", "http_status"):
         if key in diagnostics:
             output["summary"][key] = diagnostics[key]
-    output["summary"]["recommendation"] = RECOVERY
+    output["summary"]["recommendation"] = (
+        "The retained testing preparation may or may not be stored. " + PREPARATION_RECOVERY
+        if preparation else
+        "The observation may or may not have been cleared. Do not retry automatically. Run disposable-lane-inspect "
+        "and review the current binding and report before another explicit clear. Never change identity or use a provider call."
+        if args.command == PREFIX + "clear" else RECOVERY)
     output["warnings"] = [h.warning("outcome_unknown", "Do not retry automatically; inspect the lane first.")]
     if invalid:
         # The receipt failed its checks after the service accepted the call; no fact is reported.

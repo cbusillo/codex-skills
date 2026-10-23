@@ -59,6 +59,7 @@ SIMULATOR = CATALOG / "skill-creator" / "scripts" / "validate-command-policy-sim
 CLAIM_LEASE = CATALOG / "github" / "scripts" / "github_plan_lease.py"
 CODE_HOME_SKILLS = "$CODE_HOME/skills/"
 OPERATORS = re.compile(r"^[;&|()\n]+$")
+REDIRECTION = re.compile(r"[<>][<>&|]*|&>>?")
 REPOSITORY_SLUG = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9_.-]*/launchplane")
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 TRANSPARENT = {"command", "exec", "time", "nohup"}
@@ -71,11 +72,6 @@ SHELL_COMMAND_FLAG = re.compile(r"^-[A-Za-z]*c$")
 GH_WRAPPER_FLAGS = {"--print-auth-account", "--require-automation-auth"}
 ENV_VALUE_FLAGS = {"-u", "--unset", "-C", "--chdir"}
 UV_VALUE_FLAGS = {"--python", "-p", "--extra", "--group", "--project", "--directory", "--with", "--with-editable", "--with-requirements", "--env-file"}
-# A gate whose checkout-root option takes `.` as data, not the shell `.` source command.
-DOT_ROOT_OPTIONS = {
-    "--control-plane-root": ["launchplane", "service", "audit-config-authority"],
-    "--repo-root": ["launchplane", "action-pins"],
-}
 POSTGRES_GATE = ["launchplane", "ci", "postgres-integration"]
 POSTGRES_URL_VARIABLE = "LAUNCHPLANE_TEST_POSTGRES_URL="
 # libpq reads these query parameters and variables as the server to connect to, overriding the URL host.
@@ -276,19 +272,23 @@ def reads_script_from_input(argv: list[str]) -> bool:
     return bool(shells) and not any(SHELL_COMMAND_FLAG.match(token) for token in argv[shells[0] + 1:])
 
 
-def reads_program_from_stdin(argv: list[str]) -> bool:
-    """Distinguish an interpreter's stdin program from data passed to inline code or a file."""
+def without_redirections(argv: list[str]) -> list[str]:
     arguments: list[str] = []
-    cursor = 1
+    cursor = 0
     while cursor < len(argv):
         token = argv[cursor]
-        if token.isdecimal() and cursor + 1 < len(argv) and argv[cursor + 1].startswith(("<", ">")):
-            cursor += 1  # File descriptor before a redirection.
-        elif re.fullmatch(r"[<>][<>&]*|&>>?", token):
+        if token.isdecimal() and cursor + 1 < len(argv) and REDIRECTION.fullmatch(argv[cursor + 1]):
+            cursor += 1
+        elif REDIRECTION.fullmatch(token):
             cursor += 3 if token == "<<" and argv[cursor + 1:cursor + 2] == ["-"] else 2
         else:
             arguments.append(token)
             cursor += 1
+    return arguments
+
+
+def reads_program_from_stdin(argv: list[str]) -> bool:
+    arguments = without_redirections(argv[1:])
     tool = argv[0]
     if tool == "xdotool":
         return len(arguments) == 1 and arguments[0] in STDIN_PROGRAM_PATHS
@@ -581,32 +581,44 @@ def exception_cwd(shell: str, cwd: Path) -> Path | None:
                     return None
                 return exception_cwd(tokens[index + 1], cwd)
         return None
-    for position, token in enumerate(tokens):
-        if token in {"cd", "pushd", "popd", "eval", "source", "--active", "--no-project"} or Path(token).name in SHELLS:
+    for token in tokens:
+        if Path(token).name in SHELLS:
             return None
         if token.startswith(POSTGRES_URL_VARIABLE) and loopback_database(token.removeprefix(POSTGRES_URL_VARIABLE)):
             continue
-        if token.startswith("-C") or ASSIGNMENT.match(token) or token.split("=", 1)[0] in {"-C", "--chdir", "--directory", "--project", "--with", "--with-editable", "--with-requirements", "--env-file"}:
+        if ASSIGNMENT.match(token):
             return None
-        # A path ending in launchplane is another executable; `--repository OWNER/launchplane` names this one.
-        repository = token.removeprefix("--repository=") if tokens[position - 1:position] != ["--repository"] else token
-        repository_slug = repository != token or tokens[position - 1:position] == ["--repository"]
-        if Path(token).name == "launchplane" and token != "launchplane" and not (repository_slug and REPOSITORY_SLUG.fullmatch(repository)):
+    for raw_argv in commands:
+        argv = without_redirections(raw_argv)
+        while argv and (argv[0] in TRANSPARENT | SHELL_KEYWORDS | {"builtin", "function"} or ASSIGNMENT.match(argv[0])):
+            wrapper = argv[0]
+            argv = argv[2:] if wrapper == "function" else argv[1:]
+            if wrapper in TRANSPARENT | {"builtin"}:
+                argv = drop_flags(argv)
+        if argv and argv[0] in {".", "source", "cd", "pushd", "popd", "eval"}:
             return None
-    for argv in commands:
-        while argv and argv[0] in TRANSPARENT | {"builtin"}:
-            argv = argv[1:]
-        normalized = unwrap(argv)
-        if normalized and normalized[0][:3] == POSTGRES_GATE and not names_loopback_database(argv):
-            return None
-        for index, token in enumerate(argv):
-            gate = DOT_ROOT_OPTIONS.get(argv[index - 1]) if index > 0 else None
-            if token == "." and not (gate and normalized and normalized[0][:len(gate)] == gate):
+        normalized = unwrap(raw_argv)
+        if not normalized or normalized[0][:1] != ["launchplane"]:
+            continue
+        for position, token in enumerate(raw_argv):
+            if (
+                token in {"--active", "--no-project"}
+                or token.startswith("-C")
+                or token.split("=", 1)[0]
+                in {"--chdir", "--directory", "--project", "--with", "--with-editable", "--with-requirements", "--env-file"}
+            ):
                 return None
-        command = argv
-        while command and command[0].startswith(POSTGRES_URL_VARIABLE):
-            command = command[1:]
-        if any(Path(token).name == "launchplane" for token in command) and command[:2] != ["uv", "run"]:
+            repository = token.removeprefix("--repository=") if raw_argv[position - 1 : position] != ["--repository"] else token
+            repository_slug = repository != token or raw_argv[position - 1 : position] == ["--repository"]
+            if (
+                Path(token).name == "launchplane"
+                and token != "launchplane"
+                and not (repository_slug and REPOSITORY_SLUG.fullmatch(repository))
+            ):
+                return None
+        if normalized[0][:3] == POSTGRES_GATE and not names_loopback_database(raw_argv):
+            return None
+        if argv[:2] != ["uv", "run"]:
             return None
     return cwd if cwd.is_absolute() else None
 

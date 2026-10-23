@@ -490,6 +490,11 @@ def verify_process_exit(entry, *, rows=None, ended_at=None, started_at=None,
             resumed, command_kind, exact_resume = invocation(argv, bounded=bounded)
             if source in [native_uuid(value) or value for value in resumed]:
                 raise ValueError("source native session is visible in a resumed harness process")
+            if entry.get("_inventory") and argv and harness_family(argv[0]) == entry.get("harness"):
+                if command_kind == "resume" and native_uuid(exact_resume) is None:
+                    raise ValueError("Unresolved native process may own the source; preserve claims")
+                if entry.get("_historical_exit"):
+                    raise ValueError(f"Live source-family process {pid} ({argv[0]}) remains; preserve historical claims")
         if process_tty != tty or idle_terminal_command(command):
             continue
         if not entry.get("_backfill"):

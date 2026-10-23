@@ -82,60 +82,95 @@ source and caller delivery.
 
 ## Disposable lane observations
 
-`disposable-lane-inspect`, `disposable-lane-collect` and
-`disposable-lane-record` call the producer's `record_disposable_lane_safety`
+`disposable-lane-inspect`, `disposable-lane-collect`,
+`disposable-lane-record`, `disposable-lane-clear` and
+`disposable-lane-prepare-rebuild` call the producer's `record_disposable_lane_safety`
 service API with the existing Director-agent identity. They add no permission
 or provider fallback. An observation
 is short-lived safety evidence for one lane. It is never an access grant.
 
-Clear and prepare-rebuild have no installed catalog command. For the producer's
-supported modes and requirements, read
+For the producer's supported modes and requirements, read
 [the producer contract and caller bindings](agent-operator-contract.md).
 
 Each command requires `--payload-file /absolute/private/request.json` outside
-the repository. Its fields are `product`, `context`, `instance` and an optional
-`preview_id`. Collect and record also accept `lifetime_seconds` (1 to 900,
-default 300). Record also accepts `usage` (`unknown`, `unused`, `in_use`),
-`data` (`unknown`, `reproducible`, `only_copy`), `production_resources`
-(`unknown`, `isolated`, `separation_ready`, `shared`) and the evidence
-references `usage_evidence`, `data_evidence` and `isolation_evidence`. Any
-other field is refused. The helper refuses these before reading configuration:
-instance `prod`; an instance other than `testing` without a `preview_id`; a
-known fact without its evidence reference; and any known fact on a testing
-lane. The service collects testing facts itself and would store them as
-`unknown`.
+the repository. Inspect, collect and clear use `product`, `context`, `instance`
+and an optional `preview_id`. Collect and record also accept `lifetime_seconds`
+(1 to 900, default 300). Record accepts only testing scope and an optional
+`replaces_operation_id`; all fact assertions and evidence references are refused
+before configuration. Its service receipt reports unknown facts and requests no
+preview reconciliation. A previous testing receipt's optional
+`reconcile_requested` is accepted only when strictly `false` and is omitted
+from output. Preview record is unsupported under
+[Q652](https://github.com/cbusillo/launchplane/issues/4434#issuecomment-6341807424):
+closed-PR preview teardown uses the preview's own-resource guard, without caller
+usage or custody assertions. Inspect and collect remain observation tools.
+Instance `prod` and an instance other than `testing` without a `preview_id` are
+refused before configuration.
 
 Run inspect first and save its JSON output privately. It returns the lane's
 `binding_sha256`, with every fresh fact `unknown`, plus `observation_sha256`
 and a nullable `observation` holding the stored report's usage, data and
 production-resource values. A response missing either is invalid. Stored
 reports do not establish current disposal eligibility or replace the fresh
-facts. Collect and record each require
+facts. Collect, record, clear and prepare-rebuild each require
 `--expected-binding-sha256` (that value), `--inspect-evidence-file` (the saved
 output) and `--reviewed-inspect`. The evidence must match the private request
-scope, the configured service and the digest. The helper never runs inspect
+scope, the configured service, the binding digest, the stored report digest
+and its summary. Evidence saved before this proof included the report must be
+replaced by running inspect again. The helper never runs inspect
 inside a mutation for you. The service rechecks the binding and refuses a
 changed lane with a 409.
 
+Clear additionally requires `--expected-observation-sha256` from that saved
+inspect. Its private payload accepts only the lane scope. The service compares
+both reviewed digests transactionally before removing the observation. A changed
+report or lane binding refuses without clearing it. Resolve the reason
+for any protective report before clearing it; absence is not proof of non-use,
+data custody or isolation. Clear does not delete lane resources, lift holds or
+alter historical operation records. There is no clear dry-run mode; the supported
+review step is inspect. Its receipt must echo both reviewed digests and
+`provider_mutation=false`.
+
+Prepare-rebuild takes only the lane scope and required `replaces_operation_id`
+in its private payload. It accepts only instance `testing`, without a
+`preview_id`, fact assertions, evidence references or lifetime. The service
+requires the operation to belong to that exact lane, be service-owned and held
+in `reconciliation_required`, and excludes its executor while capturing the
+retained target ID in a separate preparation record. It does not rebuild the
+lane, delete resources, resolve holds or attest to historical provider effects.
+The receipt must match the requested operation and reviewed binding, return
+`historical_effects=unknown` and state `provider_mutation=false`. There is no
+dry-run mode or idempotency key; inspect is the supported lane review step.
+The record form can carry `replaces_operation_id` for that same testing lane.
+The producer resolves the retained target from its preparation record; callers
+cannot name a replacement target or assert qualifying facts. The record receipt
+and subsequent inspect do not echo or independently verify this operation link.
+Recording it does not qualify resources, complete isolation or release a fence.
+Use the separate resource caller below and the producer's
+`docs/disposable-lanes.md` for the supported workflow.
+
 Output never echoes the product, context, instance, preview ID, evidence
-references or the observing identity. The request shows only the mode, the
-payload source and, for record, the count of known facts. Collect reports each
+references, replaced operation ID or the observing identity. The request shows only the mode and the
+payload source. Collect reports each
 fact, the usage diagnostics and, for each evidence reference, only whether it is
 present and its source kind. Coverage sources, evidence kinds and usage
 diagnostics are closed vocabularies copied from the producer. A usage
 diagnostic the helper does not know is reported as `diagnostics_unrecognized`,
 as the producer's own client does. On a preview, a fact kept from an earlier
-recorded observation reports the kind `recorded`.
+recorded observation reports the kind `recorded`. The producer can retain those
+earlier protective reports; this reader permits no new preview assertions.
+Testing collection also recognizes the producer's `service:testing-resources`
+evidence for reproducible data and `separation_ready` after replacement readback.
 
 A receipt that fails these checks reports no facts and carries an
 `invalid_response` warning: a wrong binding, `provider_mutation` other than
 `false`, an unknown fact value, unknown coverage sources, an evidence reference
 the producer does not build for that fact, a positive fact returned for a
-testing record, preview facts that differ from those submitted, collect usage
+testing record, collect usage
 evidence that contradicts itself, or a collect window that is not current. The
 window must have started no later than now (5 seconds of clock skew allowed),
 must not have expired, and must last no longer than the requested lifetime. For
-inspect this is `invalid`. For collect and record the service has already
+inspect this is `invalid`. For collect, record, clear and prepare-rebuild the service has already
 answered, so it is `outcome_unknown` with the recovery below.
 
 There is no automatic retry and no `Idempotency-Key`. Transport loss, a
@@ -151,8 +186,27 @@ POST. It reports `binding_readback_matches`. `effect_readback` is always
 report to the submitted effect. A mismatch or
 failed readback returns `accepted_unverified` and exits nonzero.
 
-Recording facts for a preview also requests a preview reconcile, reported as
-`reconcile_requested=true`.
+After accepted clear, the separate inspect must confirm the same binding and
+an absent observation with its canonical null digest. Only then does the helper
+return `accepted` with `effect_readback=verified` and
+`observation_readback_matches=true`. A failed readback, changed binding or
+new observation returns `accepted_unverified`; an uncertain clear exchange
+returns `outcome_unknown`. Neither is retried. A successful nonempty clear
+changes the report digest, so replaying its original request is not idempotent.
+
+After accepted prepare-rebuild, one separate inspect checks the lane binding.
+`operation_id_matches=true` means the receipt agreed with the private request;
+the operation ID is omitted. `effect_readback=unavailable` remains explicit:
+inspect cannot read the separate preparation record. A matching binding permits
+`accepted`, but does not verify that capture. A failed or changed binding gives
+`accepted_unverified`. A lost or malformed prepare exchange gives
+`outcome_unknown`. Preserve the original request and operation ID. Re-inspect
+the lane; when its binding is unchanged, review and explicitly resubmit the same
+preparation request. The service preserves an existing capture instead of
+overwriting it. Do not retry automatically. A later refusal stops that attempt
+but does not establish whether an earlier capture exists, for example when the
+operation has since left `reconciliation_required`. Inspect cannot resolve
+that capture uncertainty or prove historical effects absent.
 
 ## Read budgets and timeout diagnostics
 
@@ -446,6 +500,24 @@ installed local helper bindings.
   fresh. Private endpoint keys, URLs, free-text provenance detail and unknown
   fields are dropped; malformed retained values fail the read. Check output
   remains bounded with `checks_truncated` disclosing omitted checks.
+  `health_monitoring.open_incidents` retains incident IDs, check names, status,
+  severity, failure code and layer, including provider warnings independent of
+  healthy checks. `topology.warnings` retains code, scope and severity;
+  `topology.observed.tls_domains` retains DNS names, states and provenance.
+  These lists disclose full counts and truncation; omitted legacy lists remain
+  `null`, never an empty all-clear. `other_warning_count` counts lane warnings
+  whose detail is absent from topology warnings, matching the sidebar's separate
+  warning branch without exposing prose. Missing warning inputs remain unknown.
+  This read exposes red evidence; it cannot settle the complete amber/green
+  state, which also needs the sidebar's placement, public-observation and
+  applicability inputs. Verify green with complete canonical sidebar data.
+  Route-diagnostic warning codes remain route-change evidence and are excluded
+  by the sidebar's `healthWarnings` rule; their severity alone is not a color.
+  Passing checks and identity alone never establish green. Preserve unknown
+  and truncated results.
+  Incident summaries, warning detail, certificate contents, URLs and other
+  topology fields are omitted. The helper reports evidence, not a second color
+  algorithm or authority to clear an incident.
 - `product-activity-read --product` returns up to 50 events, newest first, each
   with type, lane, action, status, time, title, summary and up to 10 record
   links; `events_truncated` says when more were returned.
@@ -510,13 +582,33 @@ installed local helper bindings.
   The service redacts that summary, and the helper's summary rules then apply
   to it the same way they do to `last_error`. A testing plan also keeps
   `current_commit`, its build-selection counts and flags, and `rejected_builds`:
-  each newer build that failed verification and was skipped, by `commit` only.
-  Launchplane records the reason only as free text, which is dropped and counted
-  under `requests[].last_plan.rejected_builds[].error` (launchplane#3322 adds a
-  fixed code and run id). Commit fields must be full Git commit ids.
+  each newer build that failed verification, by full `commit`, selected positive
+  `run_id` (or null when not selected), and the service's fixed-format `code`.
+  Free-text `error` is still dropped and counted under
+  `requests[].last_plan.rejected_builds[].error`. Malformed identifiers/codes
+  are omitted and counted; a rejection without a usable commit is omitted and
+  counted as an entry. Lists retain the existing 20-entry bound.
+  `pr_feedback` retains bounded `status`, `delivery_status`, `delivery_action`
+  and feedback-time `owner_review` codes, `feedback_id`, nonnegative PR/comment ids,
+  and the comment body's `body_sha256` digest. Invalid or empty optional fields
+  are omitted; malformed values are counted. Nonempty error prose is withheld
+  and counted by name, other unknown nested fields under `<unlisted field>`.
+  Missing legacy fields stay missing and new code values stay explicit; the
+  helper never infers terminal feedback, delivery or current Client acceptance
+  from an absent comment, missing status or a historical feedback record.
+  The plan also retains `failure_trace_id`, `failed_restore_deployment_record_id`,
+  `testing_runtime_drift_sha256`, `testing_deploy_recovery_refusal` and the
+  `held_reservations_truncated` flag, with the existing scalar safety rules.
   `destroy_retry_key`, `preview_recovery_plan`, `destroy_retry_stop_reason` and
-  `feedback_recovery_stop_reason` are withheld and counted under their own names. Any other plan field, such as PR
-  feedback, is dropped and counted under `requests[].last_plan.<unlisted field>`;
+  `feedback_recovery_stop_reason` are withheld and counted under their own names.
+  The reviewed `artifact_scan` object can carry a registry/image reference;
+  `held_reservations` and `testing_deploy_recovery` carry original-operation or
+  provider evidence. These raw objects are deliberately withheld and counted by
+  name; their presence is not absence or a recovery clearance. The plan's
+  duplicate `product` is withheld because the result already supplies the
+  product scope. The retained action, reason, hold and refusal fields remain
+  the decision evidence. Other unknown plan fields are dropped and counted
+  under `requests[].last_plan.<unlisted field>`;
   the same drop and omit rules apply.
 - `product-secret-bindings-read --product` calls
   `GET /v1/products/{product}/secret-bindings` with no query. It returns up to
@@ -647,6 +739,85 @@ installed local helper bindings.
 - Path segments must be plain identifiers; anything else is refused before a
   request is sent. Runtime settings, managed secrets, available actions, URLs,
   provider target names and driver extensions are dropped from the output.
+
+## Empty testing replacement resources
+
+`testing-replacement-resources-dry-run`, `-apply`, `-readback` and `-release` call
+`POST /v1/products/{product}/testing-replacement-resources` using the existing
+authenticated transport. Their private `--payload-file` must be outside the
+repository and contain `product`, `context`, `instance: "testing"` and `reason`.
+Retained replacements also require their `operation_id`. Optional `source_mode` is `ssh` (default, omitted
+on the wire) or `container-export`. The caller accepts no preview, production
+destination, volume, credential, domain or placement input. For initial generation,
+set `initial_generation: true` and omit `operation_id` or leave it empty; the
+service derives the initial intent from the original stable key. An explicit
+operation must still match. Supply `--idempotency-key` in every initial mode,
+including dry-run and readback. The saved review binds that key within the private-intent digest and the returned
+operation ID, which is validated and returned for bootstrap continuation. Keep the same private request
+through planning, apply, readback and release.
+
+The dry run records preparation metadata and allocates no provider resources.
+Retained replacements exclude the retained executor; initial preparation does
+not reserve an executor. It returns the service's
+`plan_sha256`. Save its output privately and review it. Apply requires that
+output as `--dry-run-evidence-file`, `--expected-plan-digest`,
+`--reviewed-dry-run`, and the original stable `--idempotency-key`. Every private
+request field and the configured service are bound to the review. Apply sends
+the reviewed digest directly without replanning. The service owns its allocation
+namespace, retained-executor exclusion, authority comparisons and original-key
+provider recovery. The caller neither grants access nor calls a provider.
+
+Initial `-release` requires the same review arguments and original key as apply.
+Its exact receipt must match the reviewed operation and lane, confirm
+`released: true`, `provider_effects_started: false` and preservation of the
+retained target. It does not allocate or qualify resources. An apply replay
+that reports the reviewed initial intent as released returns `released`,
+`resources_verified: false` and a nonzero exit, without allocation readback.
+An uncertain release preserves the intent, review, original key and fence;
+inspect effect evidence before another explicit original-key release. Never
+clear a fence or delete resources to resolve uncertainty.
+
+Receipts must match the exact product, context, testing instance and reviewed
+operation. The plan requires preserved retained target, fresh storage, no host
+ports or host SSH mounts and no restore. Apply must echo the reviewed digest and
+provide a verified resource binding. A separate actual readback must return that
+same binding, preserved retained target, `separation_ready`, and no restore.
+Only then does apply return `accepted` with `resource_readback_matches=true`.
+Failed or changed readback returns `accepted_unverified`, exits nonzero and
+leaves that match false. Standalone readback needs the same private request and
+does not require an earlier plan or repeat creation; it can publish fresh
+qualification evidence. None of these receipts proves completed isolation,
+bootstrap, healthy web, supersession, absent historical effects or fence release.
+
+No command retries itself. Planning loss can leave preparation metadata and
+the retained executor excluded;
+inspect before explicitly planning again. Lost or malformed apply exchanges and
+uncertain 409s preserve the exact request, review, operation and key as
+`outcome_unknown`; inspect/read back before supported original-key recovery.
+A standalone readback 409 is unverified qualification, also `outcome_unknown`,
+and never an instruction to allocate again. After accepted apply with failed
+readback, retain `accepted_unverified` and use the separate readback command,
+without repeating apply. Both available traces and projection diagnostics survive.
+
+The producer's explicit `testing_resources_refused` on dry-run/apply is a
+pre-provider refusal: inspect the current lane and prepare/review a new dry run.
+Preserve earlier artifacts and any original key. This refusal says nothing about
+earlier attempts, and retained preparation can still require its earlier digest;
+if a fresh review is refused again, stop and report the trace with the retained
+operation instead of cycling plans, keys or clearing preparation. Denials retain
+the established authority stop/report/no-fallback guidance and the current
+apply request, review and key,
+including when readback is denied after accepted apply. Other definite refusals
+keep their service code, trace and corrective guidance. No refusal proves that
+an earlier attempt had no effects. Never allocate a second target or delete
+partial resources to recover. The ordinary `--timeout` override remains available.
+
+Public output contains only modes, matching flags, safety booleans, qualification
+and review digests, and bounded service diagnostics. Product, context, operation,
+reason and schedule identity remain private, except the validated initial
+preparation operation ID required by bootstrap. Scope and service fingerprints bind
+the review without exposing those values. Runtime qualification remains with the
+owning operational issue after source delivery.
 
 ## Product repository identity
 
@@ -1600,15 +1771,24 @@ mixed reference/original-deploy payloads, binds the saved review to the exact
 reference and reason by `recovery_request_sha256`, and verifies response lane
 identity. A changed reference requires a fresh read and review, never guessing.
 The service rechecks the reservation and provider evidence against the reviewed
-digest on apply. A reference does not grant recovery authority.
+digest on apply. The helper compares the apply reply's action and recovery digest
+with the saved review; a mismatch is `accepted_unverified`. A reference does
+not grant recovery authority.
 
 Reference recovery also accepts the service's `close_out_observed` plan when
 the outcome is `absent` and `retry_safe` is false: the provider operation's
 deployment record is absent, while separate runtime evidence proves the exact
-running artifact. It closes the reservation without retrying it. Unknown or
-uninspected outcomes stay held. A denied runtime sync remains denied; obtaining
+running artifact. It closes the reservation without retrying it. Testing
+recovery accepts `settle_testing_failure` only with `present` and
+`retry_safe: false`. Reference recovery accepts `abandon_testing_original`
+only for testing with `unknown` and `retry_safe: false`. This archives the
+unknown original without claiming fixture cleanup or qualification. Re-run the
+same reference dry-run for abandonment readback: require `reservation_state:
+completed`, `proposed_action: replay_completed`, and the saved `recovery_digest`.
+A lost apply reply retains the request and review for that readback. All other unknown or uninspected outcomes stay held.
+A denied runtime sync remains denied; obtaining
 a recovery reference does not deliver runtime values or enable a deployment.
-For `adopt_observed`, the outcome must be `present`; it need not be retry-safe
+For reference `adopt_observed`, the outcome must be `present`; it need not be retry-safe
 because adoption does not retry. `retry_original_operation` requires `absent`
 and `retry_safe: true`.
 
@@ -2151,6 +2331,24 @@ backup policy, even with a backup-write grant. The older direct-apply helper
 command does not override this: the service refuses `local_operator`/`terminal_agent`
 application, and approval stays in the signed-in Director card. Before use, verify that the service
 supports the descriptor; source delivery does not activate it or grant access.
+
+`merge-train-trusted-automation-propose --change add|remove --github-user-id ID
+--repo OWNER/REPO ... --reason TEXT --source-event-id ID` builds the
+`managed-merge-train-policy-import` envelope itself. It reads the active policy
+through the `merge-train-policy-read` route, changes only
+`enqueue.trusted_automation_github_user_ids` on the named repositories' targets,
+and submits the result through the same proposal route and output. The record,
+including credential-routing fields, stays in memory and is never written to
+disk. The candidate's `policy_sha256` is left for the service to compute, and
+its `record_id` is `merge-train-policy-<updated_at>-proposal`. The request in the
+output names the repositories, the active record id and digest, the changed
+target count and `updated_at`. To replay an uncertain submission, rerun with the
+same source event, `--updated-at` and `--expected-active-record-id` set to the
+reported `active_record_id`; that rebuilds the identical envelope. If the replay
+stops with `active_policy_changed` or `policy_unchanged`, the policy moved or the
+plan already ran: read the plan's persisted review instead of resubmitting. An
+unenrolled repository (`repository_not_enrolled`) or a change that alters nothing
+(`policy_unchanged`) stops before any write.
 
 On a timeout, HTTP 5xx or response-verification failure, retain the same envelope and
 source event for reconciliation/replay. Never substitute a new identity or a new

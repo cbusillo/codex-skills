@@ -349,7 +349,9 @@ error. Do not rotate/delete the state to retry an exhausted session.
 The attempt is durably reserved before sending; transcript readback must show
 a new `continue` user message. A crash, command failure or absent readback
 reports `capacity_retry.state: reconciliation_required` and permits no more
-automatic sends. Inspect the exact thread and queued messages before any
+automatic sends. A queue refused before its lease, such as a home whose
+daemon has not loaded the thread, sent nothing: the watcher reports the error,
+restores the reservation and tries again on a later check. Inspect the exact thread and queued messages before any
 manual intervention; never replay an uncertain send. A changed home or
 transcript reports `target_changed` and also stops automatic sends.
 After the Supervisor verifies queued messages and the current native thread,
@@ -1223,6 +1225,14 @@ uv run skills/supervisor/scripts/codex-session.py status --session-id <native-id
 
 Native resume and queue mutations are routed through these helpers by command policy.
 
+Before it takes the lease, queue asks the `--codex-home` daemon to read the
+thread and refuses, with nothing written, unless that daemon has it loaded.
+The submission uses that same connection.
+Account homes can share one sessions directory, so a transcript does not show
+which home runs the thread; only the running home's daemon delivers queued
+input. Take the home from the ledger's `codex_home`. Resume a stopped session
+before queueing to it.
+
 Queue submission reports success only after its acknowledgement and connection
 and ownership cleanup complete. Once submission may have started, any failure,
 including timeout or cancellation during cleanup, reports uncertainty with
@@ -1543,6 +1553,16 @@ Read the returned account, source and reason before recording the session.
 Successful launch output reports environment variable names, without their
 private path values. A daemon refusal includes the selected home in its recovery
 diagnostic; keep that diagnostic out of public comments.
+
+`remaining_fraction` is Context Panel's headline for whichever window limits
+the account now, named by `limiting_window_label`; it is not a weekly figure.
+When reporting capacity, read `window_capacity.five_hour` and
+`window_capacity.weekly` instead: each lists that period's windows with their
+own remaining fraction, reset and burn. For weekly pacing or banked-reset burn,
+use the weekly entries' `burn_units_per_hour`, never changes in the headline.
+Snapshots older than
+[context-panel#961](https://github.com/cbusillo/context-panel/pull/961) carry
+no periods, so both are `null` (unknown) and the label is `null`.
 
 For source work on Codex's shared app server, launch with `codex --remote unix:// -C /absolute/repository`: the empty
 Unix endpoint resolves through the selected `CODEX_HOME`, so each account uses

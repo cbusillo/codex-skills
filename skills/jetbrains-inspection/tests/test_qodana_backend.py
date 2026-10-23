@@ -441,6 +441,58 @@ class QodanaTests(unittest.TestCase):
         result = self.run_backend(mutate)
         self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
         self.assertEqual(result["diagnostic"]["error_reason"], "qodana_source_inputs_changed")
+        drift = result["diagnostic"]["qodana"]["source_input_drift"]
+        self.assertEqual(drift["changed_inputs"], {"paths": ["src/a.py"], "count": 1, "omitted_count": 0})
+        self.assertNotIn("fixed", json.dumps(result))
+
+    def test_review_scratch_removed_while_the_engine_runs_names_missing_inputs_with_bounded_counts(self):
+        scratch = self.repo / ".model-review-abc"
+        scratch.mkdir()
+        for index in range(backend.DRIFT_PATH_LIMIT + 2):
+            (scratch / f"input-{index:02}.md").write_text("private review prompt\n")
+        def remove_scratch(*args):
+            self.completed(*args)
+            for path in scratch.iterdir():
+                path.unlink()
+            scratch.rmdir()
+        result = self.run_backend(remove_scratch)
+        self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+        self.assertEqual(result["diagnostic"]["error_reason"], "qodana_source_inputs_changed")
+        self.assertEqual(result["cleanup"]["status"], "closed")
+        missing = result["diagnostic"]["qodana"]["source_input_drift"]["missing_inputs"]
+        self.assertEqual(missing["count"], backend.DRIFT_PATH_LIMIT + 2)
+        self.assertEqual(missing["omitted_count"], 2)
+        self.assertEqual(missing["paths"][0], ".model-review-abc/input-00.md")
+        self.assertEqual(len(missing["paths"]), backend.DRIFT_PATH_LIMIT)
+        self.assertNotIn("selection_added", result["diagnostic"]["qodana"]["source_input_drift"])
+        self.assertNotIn("private review prompt", json.dumps(result))
+
+    def test_selection_drift_is_reported_apart_from_input_changes(self):
+        self.args = host.build_parser().parse_args(["agent-inspect", "--backend", "qodana", "--repo", str(self.repo),
+                                                    "--scope", "directory", "--dir", "src", "--profile", "Test Profile"])
+        def add_selected(*args):
+            self.clean_with_canary()(*args)
+            (self.repo / "src/c.py").write_text("print('new')\n")
+        result = self.run_backend(add_selected)
+        self.assertEqual(result["agent_result"]["verdict"], "UNKNOWN")
+        self.assertEqual(result["diagnostic"]["error_reason"], "qodana_source_selection_changed")
+        drift = result["diagnostic"]["qodana"]["source_input_drift"]
+        self.assertEqual(drift["kind"], "selection")
+        self.assertEqual(drift["selection_added"]["paths"], ["src/c.py"])
+        self.assertNotIn("changed_inputs", drift)
+
+    def test_lane_excluded_files_do_not_count_as_selection_drift(self):
+        inspection = {"lanes": [{"id": "python", "ide": "PyCharm", "required": True,
+                                 "include": ["**/*.py"], "exclude": ["fixtures/**"]}],
+                      "prepare": {"python": {"version": "3.12", "moduleName": "fixture"}}}
+        (self.repo / ".github/github.json").write_text(json.dumps({"qualityGate": {"inspection": inspection}}))
+        (self.repo / "fixtures").mkdir()
+        (self.repo / "fixtures/defect.py").write_text("print(missing)\n")
+        self.args = host.build_parser().parse_args(["agent-inspect", "--backend", "qodana", "--repo", str(self.repo),
+                                                    "--scope", "whole_project", "--profile", "Test Profile"])
+        result = self.run_backend()
+        self.assertNotIn("source_input_drift", result["diagnostic"]["qodana"])
+        self.assertEqual(result["agent_result"]["verdict"], "RED")
 
     def test_cleanup_failure_overrides_decisive_red_and_reports_retained_profile(self):
         with patch.object(backend.shutil, "rmtree", side_effect=PermissionError):

@@ -7,12 +7,33 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shlex
 import stat
 import tempfile
 from pathlib import Path
 
 import github_plan_lease as lease
 from github_identity import REPOSITORY_PATTERN
+
+
+def release_command(helper: Path, repo: str, number: int, claim_comment: int, session: str) -> str:
+    return shlex.join(
+        [
+            "uv",
+            "run",
+            str(helper),
+            "--repo",
+            repo,
+            "release",
+            str(number),
+            "--claim-comment",
+            str(claim_comment),
+            "--session",
+            session,
+            "--handoff-file",
+            "<handoff.md>",
+        ]
+    )
 
 
 def log_path(session: str, *, create: bool = False) -> Path:

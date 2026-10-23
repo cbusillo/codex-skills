@@ -17,6 +17,7 @@ import re
 OPERATION_PATHS = {
     "prepare_testing_private_ingress": "/v1/products/{product}/testing-private-ingress",
     "record_disposable_lane_safety": "/v1/disposable-lanes/observations",
+    "prepare_testing_replacement_resources": "/v1/products/{product}/testing-replacement-resources",
     "read_agent_context": "/v1/agent/context",
     "evaluate_agent_write_intent": "/v1/agent/write-intents/evaluate",
     "apply_product_config": "/v1/product-config/apply",
@@ -27,6 +28,8 @@ OPERATION_PATHS = {
 }
 
 HELPER_OPERATIONS = {
+    **{"testing-replacement-resources-" + mode: "prepare_testing_replacement_resources"
+       for mode in ("dry-run", "apply", "readback", "release")},
     "agent-context": "read_agent_context",
     "product-config-preflight": "evaluate_agent_write_intent",
     "product-config-dry-run": "apply_product_config",
@@ -43,6 +46,8 @@ HELPER_OPERATIONS = {
     "disposable-lane-inspect": "record_disposable_lane_safety",
     "disposable-lane-collect": "record_disposable_lane_safety",
     "disposable-lane-record": "record_disposable_lane_safety",
+    "disposable-lane-clear": "record_disposable_lane_safety",
+    "disposable-lane-prepare-rebuild": "record_disposable_lane_safety",
 }
 
 LOCAL_EXTENSION_ROUTES = {

@@ -85,6 +85,7 @@ class ResumeTests(unittest.TestCase):
         self.child.wait.return_value = 0
         self.queue_requests = []
         self.queue_hook = lambda: None
+        self.thread_state = "notLoaded"
         @contextlib.asynccontextmanager
         async def connection(home, **_kwargs):
             async def request(method, params):
@@ -93,7 +94,7 @@ class ResumeTests(unittest.TestCase):
                     self.queue_requests.append(params)
                     return {"queuedSubmission": {"id": "queued", **{key: params[key] for key in ("clientUserMessageId", "input")}}}
                 if method == "thread/read":
-                    return {"thread": {"id": self.native, "path": str(path), "status": {"type": "notLoaded"}}}
+                    return {"thread": {"id": self.native, "path": str(path), "status": {"type": self.thread_state}}}
                 return {"data": [], "nextCursor": None}
             request.codex_home = str(home.resolve())
             yield request
@@ -184,6 +185,7 @@ class ResumeTests(unittest.TestCase):
         def queued():
             self.assertIsNone(json.loads(self.log.read_text())[0]["closure_evidence"])
         self.queue_hook = queued
+        self.thread_state = "idle"
         self.args.command, self.args.message = "queue", "literal $(touch NEVER) message"
         self.assertEqual(SESSION.run(self.args), 0)
         self.assertEqual(self.queue_requests[0]["input"][0]["text"], self.args.message)
@@ -196,8 +198,10 @@ class ResumeTests(unittest.TestCase):
             stream.write(json.dumps({"timestamp": "2026-10-01T02:00:00Z", "type": "event_msg", "payload": {
                 "type": "agent_message", "message": "Safe to exit: yes"}}) + "\n")
             stream.write(json.dumps({"timestamp": "2026-10-01T02:00:01Z", "type": "event_msg", "payload": {"type": "task_complete"}}) + "\n")
+        self.thread_state = "idle"
         self.args.command, self.args.message = "queue", "continue"
         self.assertEqual(SESSION.run(self.args), 0)
+        self.thread_state = "notLoaded"
         timestamp = datetime.now(timezone.utc).isoformat()
         with transcript.open("a") as stream:
             for payload in ({"type": "agent_message", "message": "Safe to exit: yes"}, {"type": "task_complete"}):

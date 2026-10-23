@@ -1,32 +1,36 @@
 name: Update PEP 723 Dependencies
 
+# The calculate job resolves and tests new pins without OIDC or a write token.
+# Only the submit job may request OIDC. It runs this run's own trusted source,
+# treats the candidate artifact as data, and asks Launchplane to open the PR.
 on:
   schedule:
     - cron: "17 9 * * 1"
   workflow_dispatch:
 
 permissions:
-  actions: write
-  contents: write
-  pull-requests: write
+  contents: read
 
 concurrency:
   group: update-pep723-dependencies
   cancel-in-progress: false
 
 jobs:
-  update:
+  calculate:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    env:
-      AUTOMATION_BRANCH: automation/pep723-dependencies
-      PR_MARKER: "<!-- pep723-dependency-updater -->"
+    permissions:
+      contents: read
+    outputs:
+      attempt: ${{ github.run_attempt }}
+      changed: ${{ steps.package.outputs.changed }}
+      digest: ${{ steps.package.outputs.digest }}
     steps:
-      - name: Check out repository
+      - name: Check out the run commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Install uv
@@ -36,18 +40,14 @@ jobs:
           python-version: "3.12"
 
       - name: Resolve PEP 723 dependency updates
-        id: update
-        run: |
-          set -euo pipefail
-          uv run scripts/update_pep723_dependencies.py --update
-          if git diff --quiet -- '*.py'; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          fi
+        run: uv run scripts/update_pep723_dependencies.py --update
 
-      - name: Validate updated repository
-        if: steps.update.outputs.changed == 'true'
+      - name: Package the candidate before the new pins run
+        id: package
+        run: uv run scripts/pep723_proposal.py package "$RUNNER_TEMP/pep723-candidate"
+
+      - name: Validate the candidate repository
+        if: steps.package.outputs.changed == 'true'
         run: |
           set -euo pipefail
           if ! command -v zsh >/dev/null; then
@@ -56,208 +56,79 @@ jobs:
           fi
           ./scripts/validate-skills.sh
 
-      - name: Commit and push automation branch
-        if: steps.update.outputs.changed == 'true'
-        id: push
+      - name: Upload the validated candidate
+        if: steps.package.outputs.changed == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pep723-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pep723-candidate
+          if-no-files-found: error
+          retention-days: 7
+
+  submit:
+    needs: calculate
+    if: needs.calculate.outputs.changed == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out the trusted run source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      # Re-running only this job resends the same candidate's identical request.
+      - name: Download this run's candidate outside the checkout
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: pep723-candidate-${{ github.run_id }}-${{ needs.calculate.outputs.attempt }}
+          path: ${{ runner.temp }}/pep723-candidate
+
+      # The runner's own Python runs only standard-library code from this
+      # checkout; no dependency is installed in the job that holds OIDC.
+      - name: Validate the candidate as data and build the request
+        id: prepare
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          gh auth setup-git
-          existing_pr="$(gh pr list \
-            --repo "$GITHUB_REPOSITORY" \
-            --head "$AUTOMATION_BRANCH" \
-            --state open \
-            --json author,baseRefName,body,headRefName,headRefOid,headRepository,number \
-            --jq '.[0] // empty')"
-          remote_sha="$(git ls-remote --heads origin "refs/heads/$AUTOMATION_BRANCH" | awk '{print $1}')"
+          CANDIDATE_RUN_ATTEMPT: ${{ needs.calculate.outputs.attempt }}
+          EXPECTED_DIGEST: ${{ needs.calculate.outputs.digest }}
+        run: >-
+          python3 -E -s scripts/pep723_proposal.py prepare
+          "$RUNNER_TEMP/pep723-candidate" "$RUNNER_TEMP/pep723-request.json"
 
-          if [[ -n "$existing_pr" ]]; then
-            jq -er \
-              --arg base "main" \
-              --arg branch "$AUTOMATION_BRANCH" \
-              --arg marker "$PR_MARKER" \
-              --arg repo "$GITHUB_REPOSITORY" \
-              --arg sha "$remote_sha" \
-              '.author.is_bot == true
-                and .baseRefName == $base
-                and (.body // "" | contains($marker))
-                and .headRefName == $branch
-                and .headRefOid == $sha
-                and .headRepository.nameWithOwner == $repo' \
-              <<<"$existing_pr" >/dev/null || {
-                echo "Refusing to replace a PR that is not owned by this automation" >&2
-                exit 1
-              }
-          fi
+      - name: Request an App-authored proposal from Launchplane
+        id: proposal
+        uses: cbusillo/launchplane/.github/actions/launchplane-request@88b024d3d093e400c7b134d922105f6ebf63543a # launchplane-request
+        with:
+          launchplane-url: ${{ vars.LAUNCHPLANE_PUBLIC_URL }}
+          route-path: /v1/source-control/updater-proposals
+          payload-file: ${{ runner.temp }}/pep723-request.json
+          timeout-ms: "60000"
+          output-paths: disposition=disposition,pull_request_url=pull_request_url,head_sha=head_sha
+          response-output-file: ${{ runner.temp }}/pep723-response.json
+          log-response-body: "false"
 
-          if [[ -n "$remote_sha" ]]; then
-            git fetch --no-tags origin \
-              "refs/heads/$AUTOMATION_BRANCH:refs/remotes/origin/$AUTOMATION_BRANCH"
-            uv run scripts/check_pep723_branch.py "$remote_sha" HEAD
-          fi
-
-          git switch --create "$AUTOMATION_BRANCH"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -- '*.py'
-          git commit \
-            -m "build(deps): update PEP 723 dependencies" \
-            -m "PEP723-Automation: true"
-          head_sha="$(git rev-parse HEAD)"
-
-          if [[ -n "$remote_sha" ]]; then
-            git push \
-              --force-with-lease="refs/heads/$AUTOMATION_BRANCH:$remote_sha" \
-              origin "HEAD:refs/heads/$AUTOMATION_BRANCH"
-          else
-            git push origin "HEAD:refs/heads/$AUTOMATION_BRANCH"
-          fi
-          pushed_sha="$(git ls-remote --heads origin "refs/heads/$AUTOMATION_BRANCH" | awk '{print $1}')"
-          if [[ "$pushed_sha" != "$head_sha" ]]; then
-            echo "Automation branch does not match the pushed commit" >&2
-            exit 1
-          fi
-          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
-
-      - name: Validate pushed commit
-        if: steps.update.outputs.changed == 'true'
-        id: validate
+      - name: Report the actual proposal outcome
+        if: ${{ always() && steps.prepare.outcome == 'success' }}
         env:
-          GH_TOKEN: ${{ github.token }}
-          HEAD_SHA: ${{ steps.push.outputs.head_sha }}
-        run: |
-          set -euo pipefail
-          gh workflow run validate-skills.yml \
-            --repo "$GITHUB_REPOSITORY" \
-            --ref "$AUTOMATION_BRANCH"
+          SUBMIT_OUTCOME: ${{ steps.proposal.outcome }}
+          SUBMIT_STATUS: ${{ steps.proposal.outputs.status-code }}
+          RESPONSE_DISPOSITION: ${{ steps.proposal.outputs.disposition }}
+          RESPONSE_PULL_REQUEST_URL: ${{ steps.proposal.outputs.pull_request_url }}
+          RESPONSE_HEAD_SHA: ${{ steps.proposal.outputs.head_sha }}
+        run: >-
+          python3 -E -s scripts/pep723_proposal.py summary
+          "$RUNNER_TEMP/pep723-request.json" "$RUNNER_TEMP/pep723-response.json"
 
-          run_id=""
-          for _attempt in {1..60}; do
-            run_id="$(gh run list \
-              --repo "$GITHUB_REPOSITORY" \
-              --workflow validate-skills.yml \
-              --branch "$AUTOMATION_BRANCH" \
-              --event workflow_dispatch \
-              --limit 10 \
-              --json databaseId,headSha \
-              --jq ".[] | select(.headSha == \"$HEAD_SHA\") | .databaseId" \
-              | head -n 1)"
-            [[ -n "$run_id" ]] && break
-            sleep 5
-          done
-          if [[ -z "$run_id" ]]; then
-            echo "Could not find the dispatched validation run for $HEAD_SHA" >&2
-            exit 1
-          fi
-          gh run watch "$run_id" --repo "$GITHUB_REPOSITORY" --exit-status
-          run_json="$(gh run view "$run_id" \
-            --repo "$GITHUB_REPOSITORY" \
-            --json conclusion,event,headSha,workflowName)"
-          jq -er \
-            --arg sha "$HEAD_SHA" \
-            '.conclusion == "success"
-              and .event == "workflow_dispatch"
-              and .headSha == $sha
-              and .workflowName == "Validate Skills"' \
-            <<<"$run_json" >/dev/null || {
-              echo "Dispatched validation did not prove success for $HEAD_SHA" >&2
-              exit 1
-            }
-          remote_sha="$(git ls-remote --heads origin "refs/heads/$AUTOMATION_BRANCH" | awk '{print $1}')"
-          if [[ "$remote_sha" != "$HEAD_SHA" ]]; then
-            echo "Automation branch changed after validation" >&2
-            exit 1
-          fi
-          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
-
-      - name: Create or refresh pull request
-        if: steps.update.outputs.changed == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          HEAD_SHA: ${{ steps.push.outputs.head_sha }}
-          VALIDATION_RUN_ID: ${{ steps.validate.outputs.run_id }}
-        run: |
-          set -euo pipefail
-          body_file="$(mktemp)"
-          cat >"$body_file" <<EOF
-          $PR_MARKER
-          ## Summary
-
-          - update repository-wide PEP 723 direct dependency pins from PyPI
-          - keep one exact version for each normalized direct package name
-
-          ## Validation
-
-          - \`./scripts/validate-skills.sh\`
-          - Validate Skills run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$VALIDATION_RUN_ID
-
-          This PR and its branch are automation-owned. The next scheduled or manual run may replace the branch after validating new changes.
-          EOF
-
-          remote_sha="$(git ls-remote --heads origin "refs/heads/$AUTOMATION_BRANCH" | awk '{print $1}')"
-          if [[ "$remote_sha" != "$HEAD_SHA" ]]; then
-            echo "Automation branch changed before PR publication" >&2
-            exit 1
-          fi
-
-          existing_pr="$(gh pr list \
-            --repo "$GITHUB_REPOSITORY" \
-            --head "$AUTOMATION_BRANCH" \
-            --state open \
-            --json author,baseRefName,body,headRefName,headRefOid,headRepository,number \
-            --jq '.[0] // empty')"
-          pr_number="$(jq -r '.number // empty' <<<"${existing_pr:-"{}"}")"
-          if [[ -n "$pr_number" ]]; then
-            jq -er \
-              --arg branch "$AUTOMATION_BRANCH" \
-              --arg marker "$PR_MARKER" \
-              --arg repo "$GITHUB_REPOSITORY" \
-              --arg sha "$HEAD_SHA" \
-              '.author.is_bot == true
-                and .baseRefName == "main"
-                and (.body // "" | contains($marker))
-                and .headRefName == $branch
-                and .headRefOid == $sha
-                and .headRepository.nameWithOwner == $repo' \
-              <<<"$existing_pr" >/dev/null || {
-                echo "Refusing to edit a PR that is not owned by this automation" >&2
-                exit 1
-              }
-            gh pr edit "$pr_number" \
-              --repo "$GITHUB_REPOSITORY" \
-              --title "build(deps): update PEP 723 dependencies" \
-              --body-file "$body_file"
-          else
-            pr_url="$(gh pr create \
-              --repo "$GITHUB_REPOSITORY" \
-              --base main \
-              --head "$AUTOMATION_BRANCH" \
-              --title "build(deps): update PEP 723 dependencies" \
-              --body-file "$body_file")"
-            pr_number="${pr_url##*/}"
-          fi
-
-          published_pr="$(gh pr view "$pr_number" \
-            --repo "$GITHUB_REPOSITORY" \
-            --json author,baseRefName,body,headRefName,headRefOid,headRepository,number)"
-          jq -er \
-            --arg branch "$AUTOMATION_BRANCH" \
-            --arg marker "$PR_MARKER" \
-            --arg repo "$GITHUB_REPOSITORY" \
-            --arg sha "$HEAD_SHA" \
-            '.author.is_bot == true
-              and .baseRefName == "main"
-              and (.body // "" | contains($marker))
-              and .headRefName == $branch
-              and .headRefOid == $sha
-              and .headRepository.nameWithOwner == $repo' \
-            <<<"$published_pr" >/dev/null || {
-              echo "Published PR does not match the validated automation commit" >&2
-              exit 1
-            }
-          final_remote_sha="$(git ls-remote --heads origin "refs/heads/$AUTOMATION_BRANCH" | awk '{print $1}')"
-          if [[ "$final_remote_sha" != "$HEAD_SHA" ]]; then
-            echo "Automation branch changed during PR publication" >&2
-            exit 1
-          fi
+      - name: Retain the exact request and any response for reconciliation
+        if: ${{ always() && steps.prepare.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pep723-proposal-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/pep723-request.json
+            ${{ runner.temp }}/pep723-response.json
+          if-no-files-found: warn
+          retention-days: 7
