@@ -115,7 +115,12 @@ The session that created a worktree usually ends before the merge train lands
 its PR, so [After A Merge](../SKILL.md#after-a-merge) retires it with
 `scripts/landed_worktrees.py`. That helper reads the PR, requires it merged or
 closed, and keeps a worktree whose lock names no retire command or whose branch
-has commits beyond the PR head; the host helper's own checks still decide.
+has commits beyond the PR head. It also retires a review, conflict-refresh or
+merge-train worktree on another branch when its HEAD is one of the PR's own
+commits. It keeps one whose HEAD is on the default branch's first-parent
+history, since a fresh worktree starts there, and one whose branch an open
+claim on the PR or its closing issues names. The host helper's own checks
+still decide.
 Portable unlocked worktrees are outside it and follow work-closeout. The
 [daily stranded-work sweep](../../direction/references/stranded-work.md) reports
 finished worktrees the landing step left behind.

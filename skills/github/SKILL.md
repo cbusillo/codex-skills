@@ -1140,8 +1140,9 @@ failure and never causes a merge retry.
   landing step retires the PR's task worktree on this host:
   `uv run scripts/landed_worktrees.py --repo OWNER/REPO --pr N --checkout /any/local/checkout --apply`.
   It acts only on a merged or closed PR, on worktrees whose lock names a retire
-  command and whose branch holds nothing beyond the PR head, and previews each
-  through that command before retiring it. The host helper keeps dirty,
+  command and whose branch holds nothing beyond the PR head, or whose HEAD is
+  one of the PR's own commits, as a review or conflict refresh leaves it. It
+  previews each through that command before retiring it. The host helper keeps dirty,
   unpublished and in-use worktrees; report each kept one with its reason. See
   [task worktrees](references/worktrees.md#retirement).
 - **Verify and sweep**: Check Actions and relevant security and quality signals

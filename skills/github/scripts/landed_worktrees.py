@@ -7,9 +7,7 @@
 
 Sessions end before the merge train lands their PR, so the landing step owns
 retirement. Only the host helper named in the lock deletes anything; it keeps
-dirty, unpublished and in-use worktrees itself. This layer adds the landing
-facts: the PR is merged or closed, and the local branch holds nothing beyond
-the PR's head.
+dirty, unpublished and in-use worktrees itself.
 """
 
 from __future__ import annotations
@@ -23,11 +21,14 @@ import subprocess
 import sys
 
 import dev_worktree
+import github_plan_claim
+import github_plan_release
 
 
 # The host helper's lock reason ends with "retire with: dev-worktree retire <path>".
 RETIRE_MARKER = "retire with: dev-worktree retire"
 DEV_WORKTREE = Path(__file__).with_name("dev-worktree")
+ANY_CLAIM = {"worker": "", "session": "", "branch": "", "claimed_at": ""}
 
 
 @dataclass(frozen=True)
@@ -81,18 +82,29 @@ def is_under(path: Path, root: Path) -> bool:
     return path.resolve().is_relative_to(root.resolve())
 
 
-def landed_decisions(checkout: Path, branch: str, pr_head: str, root: Path) -> list[dict]:
-    """Decide each worktree on the landed branch; only 'candidate' rows may be retired."""
+def first_parent_history(checkout: Path) -> set[str]:
+    tip = default_tracking_tip(checkout)
+    return set(git(checkout, "rev-list", "--first-parent", tip).stdout.split()) if tip else set()
+
+
+def landed_decisions(checkout: Path, branch: str, pr_head: str, root: Path, *,
+                     pr_commits: set[str] = frozenset(), claims: str = "") -> list[dict]:
+    fresh_starts = first_parent_history(checkout) if pr_commits else set()
     rows = []
     for tree in registered(checkout):
-        if tree.branch != branch:
+        fed_the_pr = tree.branch != branch and tree.head in pr_commits
+        if tree.branch != branch and not fed_the_pr:
             continue
-        row = {"path": str(tree.path), "branch": branch, "head": tree.head}
+        row = {"path": str(tree.path), "branch": tree.branch, "head": tree.head}
         if not is_under(tree.path, root):
             row.update(decision="kept", reason="outside the configured worktree root")
         elif not tree.names_retire_command:
             row.update(decision="kept", reason="lock names no retire command; follow work-closeout")
-        elif not contained(checkout, tree.head, pr_head):
+        elif tree.branch and tree.branch in claims:
+            row.update(decision="kept", reason="an open claim names this branch")
+        elif fed_the_pr and (tree.head in fresh_starts or not fresh_starts):
+            row.update(decision="kept", reason="HEAD may be a fresh start on the default branch")
+        elif not fed_the_pr and not contained(checkout, tree.head, pr_head):
             row.update(decision="kept", reason="local commits beyond the landed PR head")
         else:
             row.update(decision="candidate")
@@ -207,6 +219,32 @@ def finished(root: Path, pulls_for, include=lambda slug: True) -> tuple[list[dic
     return found, gaps
 
 
+def open_claims(reader, github_read, repo: str, number: int, pull: dict) -> str:
+    import github_plan_landing
+
+    def release_evidence(evidence_repo, _issue, comment_id):
+        try:
+            return reader.get_json(f"repos/{evidence_repo}/issues/comments/{comment_id}", step="landed_release_evidence")
+        except github_read.GitHubReadError as exc:
+            if getattr(exc.result, "status", None) in {403, 404}:
+                return None
+            raise
+
+    records = [(repo, number)]
+    base = pull.get("base") or {}
+    if pull.get("merged_at") and base.get("ref") == (base.get("repo") or {}).get("default_branch"):
+        records += github_plan_landing.closing_references(reader, repo, number)[1]
+    found = []
+    for record_repo, record_number in records:
+        issue = reader.get_json(f"repos/{record_repo}/issues/{record_number}", step="landed_claim_record")
+        comments = reader.paged_json(f"repos/{record_repo}/issues/{record_number}/comments",
+                                     step_prefix="landed_claim_discussion")
+        comments = github_plan_release.verified_comments(comments, release_evidence)
+        conflicts, _ = github_plan_claim.discussion_evidence((issue or {}).get("body") or "", comments, ANY_CLAIM)
+        found += [json.dumps(c["record"]) if "record" in c else c.get("text", "") for c in conflicts]
+    return "\n".join(found)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--repo", required=True, help="OWNER/REPO of the landed PR")
@@ -244,7 +282,14 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"ok": True, "worktrees": [], "note": "PR head is in another repository"}))
         return 0
     try:
-        rows = landed_decisions(args.checkout, head["ref"], head["sha"], root)
+        pr_commits = {c.get("sha") for c in reader.paged_json(f"repos/{args.repo}/pulls/{args.pr}/commits",
+                                                              step_prefix="landed_pull_commits")}
+        claims = open_claims(reader, github_read, args.repo, args.pr, pull)
+    except (github_read.GitHubReadError, github_read.GitHubReadShapeError, ValueError, TypeError) as exc:
+        print(json.dumps({"ok": False, "error": f"PR commits or claims unavailable; nothing is retired: {exc}"}))
+        return 2
+    try:
+        rows = landed_decisions(args.checkout, head["ref"], head["sha"], root, pr_commits=pr_commits, claims=claims)
     except (ValueError, OSError, KeyError) as exc:
         print(json.dumps({"ok": False, "error": str(exc)}))
         return 2

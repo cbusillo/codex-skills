@@ -2572,22 +2572,22 @@ test_refs = ["github/scripts/test_github_plan_landing.py:MutationProjectionTests
 [[operations]]
 id = "github.worktree.retire_landed"
 request_priority = "essential"
-capabilities = ["pull_requests_read"]
+capabilities = ["pull_requests_read", "issues_read"]
 permission_mode = "delegated"
-permission_note = "One PR read under the existing pull-request read grant. Local retirement runs only the host helper named in the worktree's lock; no GitHub write, branch deletion on the remote or new grant."
+permission_note = "PR, PR commit and claim-discussion reads under the existing pull-request and issue read grants. Local retirement runs only the host helper named in the worktree's lock; no GitHub write, branch deletion on the remote or new grant."
 entrypoint = "github/scripts/landed_worktrees.py"
-intent = "After a landing, retire the PR's source task worktree on this host when the PR is merged or closed and the local branch holds nothing beyond its head."
-current_transport = "rest_api"
-selected_transport = "rest_api"
-endpoint_or_command = "GET /repos/{owner}/{repo}/pulls/{number}; local git worktree list and the lock-named dev-worktree retire command"
-quota_bucket = "rest_core"
+intent = "After a landing, retire the PR's source task worktree and any review or refresh worktree whose HEAD is one of the PR's commits, keeping fresh starts on the default branch and branches an open claim names."
+current_transport = "composite"
+selected_transport = "composite"
+endpoint_or_command = "GET /repos/{owner}/{repo}/pulls/{number} and its commits; issue and comment reads of the PR and its closing issues; GraphQL closingIssuesReferences; local git worktree list and the lock-named dev-worktree retire command"
+quota_bucket = "mixed"
 actor_policy = "automation_required"
 mutation_class = "read"
 idempotency = "read_only"
 retry_eligibility = "safe"
 reconciliation_strategy = "degraded_snapshot"
-retained_graphql_rationale = "No GraphQL is required; one REST PR read supplies the head branch, head commit and state."
-source_refs = ["github/scripts/landed_worktrees.py:main", "github/scripts/landed_worktrees.py:landed_decisions"]
+retained_graphql_rationale = "REST supplies the PR, its commits and claim discussions; only GraphQL lists the closing issues that hold claims."
+source_refs = ["github/scripts/landed_worktrees.py:main", "github/scripts/landed_worktrees.py:landed_decisions", "github/scripts/landed_worktrees.py:open_claims"]
 test_refs = ["github/scripts/test_landed_worktrees.py"]
 
 [[operations]]

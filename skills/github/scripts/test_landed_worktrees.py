@@ -17,6 +17,7 @@ import unittest
 from contextlib import redirect_stdout
 from unittest import mock
 
+import github_plan_claim
 import landed_worktrees
 
 
@@ -96,6 +97,39 @@ class LandedDecisionTests(Fixture):
         self.worktree("unrelated")
         self.assertEqual(landed_worktrees.landed_decisions(self.repo, "work/landed", "0" * 40, self.root), [])
 
+    def refreshed_pull(self):
+        source = self.worktree("source")
+        self.commit(source, "Source work")
+        refresh = self.worktree("refresh")
+        self.git(refresh, "merge", "-q", "work/source")
+        pr_head = self.commit(refresh, "Refresh resolution")
+        self.git(refresh, "push", "-q", "origin", "work/refresh:work/source")
+        return refresh, pr_head, {self.git(source, "rev-parse", "HEAD"), pr_head}
+
+    def test_refresh_worktree_on_a_pr_commit_is_a_candidate(self):
+        refresh, pr_head, pr_commits = self.refreshed_pull()
+        rows = landed_worktrees.landed_decisions(self.repo, "work/source", pr_head, self.root, pr_commits=pr_commits)
+        self.assertIn((str(refresh), "candidate"), [(r["path"], r["decision"]) for r in rows])
+
+    def test_fresh_worktree_on_the_default_branch_is_kept_even_when_the_pr_names_its_commit(self):
+        fresh = self.worktree("fresh")
+        main_tip = self.git(fresh, "rev-parse", "HEAD")
+        rows = landed_worktrees.landed_decisions(self.repo, "work/landed", main_tip, self.root, pr_commits={main_tip})
+        self.assertEqual([(r["path"], r["decision"]) for r in rows], [(str(fresh), "kept")])
+
+    def test_worktrees_off_the_pr_commits_are_not_considered(self):
+        _, pr_head, pr_commits = self.refreshed_pull()
+        reviewer = self.worktree("review")
+        self.commit(reviewer, "Unpushed review notes")
+        rows = landed_worktrees.landed_decisions(self.repo, "work/source", pr_head, self.root, pr_commits=pr_commits)
+        self.assertNotIn(str(reviewer), [r["path"] for r in rows])
+
+    def test_open_claim_on_the_branch_keeps_the_worktree(self):
+        refresh, pr_head, pr_commits = self.refreshed_pull()
+        rows = landed_worktrees.landed_decisions(self.repo, "work/source", pr_head, self.root, pr_commits=pr_commits,
+                                                 claims='{"branch": "work/refresh"}')
+        self.assertEqual({r["path"]: r["decision"] for r in rows}[str(refresh)], "kept")
+
 
 class RetireTests(unittest.TestCase):
     def runner(self, refuse_preview=False, refuse_apply=False):
@@ -133,14 +167,33 @@ class MainTests(Fixture):
         super().setUp()
         self.git(self.repo, "remote", "set-url", "origin", "https://github.com/o/sample.git")
 
-    def run_main(self, pull, repo="o/sample"):
+    def run_main(self, pull, repo="o/sample", commits=(), discussions=None):
         config = self.base / "worktrees.json"
         config.write_text(json.dumps({"root": str(self.root), "hostHelper": str(self.base / "host-helper")}))
+        discussions = discussions or {}
         reader = mock.Mock()
-        reader.get_json.return_value = pull
+        reader.get_json.side_effect = lambda path, step: pull if path.endswith("/pulls/7") else {"body": ""}
+
+        def paged_json(path, step_prefix):
+            if path.endswith("/pulls/7/commits"):
+                return [{"sha": sha} for sha in commits]
+            discussion = discussions.get(path.split("/issues/")[1].split("/")[0])
+            if isinstance(discussion, Exception):
+                raise discussion
+            return discussion or []
+
+        reader.paged_json.side_effect = paged_json
+        reader.graphql_json.return_value = mock.Mock(ok=True, body={"data": {"repository": {
+            "defaultBranchRef": {"name": "main"},
+            "pullRequest": {"merged": True, "baseRefName": "main", "url": "u", "mergeCommit": {"oid": "1" * 40},
+                            "closingIssuesReferences": {"nodes": [{"number": 3, "repository": {"nameWithOwner": repo}}],
+                                                        "pageInfo": {"hasNextPage": False}}}}}})
+        read_errors = mock.Mock(GitHubReadError=type("ReadError", (Exception,), {}),
+                                GitHubReadShapeError=type("ShapeError", (Exception,), {}),
+                                GitHubReader=mock.Mock(return_value=reader))
         out = io.StringIO()
         with mock.patch.dict(os.environ, {"DEV_WORKTREE_CONFIG": str(config)}), \
-                mock.patch.dict("sys.modules", {"github_read": mock.Mock(GitHubReader=mock.Mock(return_value=reader))}), \
+                mock.patch.dict("sys.modules", {"github_read": read_errors}), \
                 mock.patch.object(landed_worktrees, "run_retire") as run, redirect_stdout(out):
             run.return_value = subprocess.CompletedProcess([], 0, "", "")
             code = landed_worktrees.main(["--repo", repo, "--pr", "7", "--checkout", str(self.repo), "--apply"])
@@ -161,6 +214,38 @@ class MainTests(Fixture):
         self.assertEqual(code, 0)
         self.assertEqual([r["decision"] for r in result["worktrees"]], ["retired"])
         self.assertEqual(run.call_args_list, [mock.call(str(path), dry_run=True), mock.call(str(path), dry_run=False)])
+
+    def merged_refresh(self):
+        self.worktree("source")
+        refresh = self.worktree("refresh")
+        pr_head = self.commit(refresh, "Refresh resolution")
+        pull = {"state": "closed", "merged_at": "2026-10-23T00:00:00Z",
+                "base": {"ref": "main", "repo": {"default_branch": "main"}},
+                "head": {"ref": "work/source", "sha": pr_head, "repo": {"full_name": "o/sample"}}}
+        return refresh, pull, [pr_head]
+
+    def test_merged_pr_retires_the_refresh_worktree_that_pushed_its_head(self):
+        refresh, pull, commits = self.merged_refresh()
+        code, result, run = self.run_main(pull, commits=commits)
+        self.assertEqual(code, 0)
+        self.assertEqual({r["path"]: r["decision"] for r in result["worktrees"]}[str(refresh)], "retired")
+        self.assertIn(mock.call(str(refresh), dry_run=False), run.call_args_list)
+
+    def test_open_claim_on_a_closing_issue_keeps_the_refresh_worktree(self):
+        refresh, pull, commits = self.merged_refresh()
+        claim = {"id": 11, "user": {"login": "bot"}, "created_at": "2026-10-22T00:00:00Z",
+                 "body": "Claimed by refresher\n" + github_plan_claim.marker(
+                     {"worker": "refresher", "session": "s1", "branch": "work/refresh", "claimed_at": "2026-10-22T00:00:00Z"})}
+        code, result, run = self.run_main(pull, commits=commits, discussions={"3": [claim]})
+        self.assertEqual(code, 0)
+        self.assertEqual({r["path"]: r["decision"] for r in result["worktrees"]}[str(refresh)], "kept")
+        self.assertNotIn(mock.call(str(refresh), dry_run=False), run.call_args_list)
+
+    def test_unreadable_claims_retire_nothing(self):
+        _, pull, commits = self.merged_refresh()
+        code, result, run = self.run_main(pull, commits=commits, discussions={"3": ValueError("Malformed claim marker")})
+        self.assertEqual((code, result["ok"]), (2, False))
+        run.assert_not_called()
 
     def test_checkout_of_another_repository_retires_nothing(self):
         # A sibling repository with the same branch name must not lose its worktree to this PR.
