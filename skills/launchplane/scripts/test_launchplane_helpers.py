@@ -4296,7 +4296,7 @@ def test_reconcile_requests_read_keeps_the_decision_and_drops_the_rest() -> None
     assert result["omitted_request_count"] == 1
     assert result["dropped_field_paths"] == [
         "requests[].last_plan.<unlisted field>",
-        "requests[].last_plan.rejected_builds[].<unlisted field>",
+        "requests[].last_plan.rejected_builds[]",
         "requests[].target_key",
     ]
     rendered = json.dumps(payload)
@@ -4394,9 +4394,9 @@ def test_reconcile_requests_read_keeps_testing_operation_ids() -> None:
     ):
         assert kept[name] == plan[name], name
     assert kept["rejected_builds"] == [{"commit": "abc123" * 6 + "abcd"}]
-    assert "pr_feedback" not in kept
+    assert kept["pr_feedback"] == {}
     assert payload["result"]["dropped_field_paths"] == [
-        "requests[].last_plan.<unlisted field>",
+        "requests[].last_plan.pr_feedback.error",
         "requests[].last_plan.rejected_builds[].error",
     ]
     rendered = json.dumps(payload)
@@ -4421,9 +4421,19 @@ def test_reconcile_requests_read_shows_why_testing_skipped_a_newer_build() -> No
         "built_commits_seen": 2,
         "ordered_built_commits": 2,
         "current_build_evidence": "recorded_runtime_identity",
+        "failure_trace_id": "testing-reconcile-example",
+        "failed_restore_deployment_record_id": "deployment-restore-example",
+        "testing_runtime_drift_sha256": "a" * 64,
+        "testing_deploy_recovery_refusal": "recovery_original_available",
+        "held_reservations_truncated": True,
+        "artifact_scan": {"image_reference": "private-host.example.invalid/image"},
+        "held_reservations": [{"provider_target": "private-host"}],
+        "testing_deploy_recovery": {"provider_evidence": "private-host"},
         "rejected_builds": [
             {
                 "commit": new_commit,
+                "run_id": 17,
+                "code": "github_read_failed",
                 "error": "GitHub read failed for /repos/example/private-path: HTTP Error 404",
             },
             {"commit": "https://private-host.example.invalid/path#frag", "error": "Private text"},
@@ -4442,7 +4452,7 @@ def test_reconcile_requests_read_shows_why_testing_skipped_a_newer_build() -> No
 
     assert status == 0
     kept = payload["result"]["requests"][0]["last_plan"]
-    assert kept["rejected_builds"] == [{"commit": new_commit}]
+    assert kept["rejected_builds"] == [{key: plan["rejected_builds"][0][key] for key in ("commit", "run_id", "code")}]
     for name in (
         "current_commit",
         "build_runs_seen",
@@ -4452,16 +4462,24 @@ def test_reconcile_requests_read_shows_why_testing_skipped_a_newer_build() -> No
         "built_commits_seen",
         "ordered_built_commits",
         "current_build_evidence",
+        "failure_trace_id",
+        "failed_restore_deployment_record_id",
+        "testing_runtime_drift_sha256",
+        "testing_deploy_recovery_refusal",
+        "held_reservations_truncated",
     ):
         assert kept[name] == plan[name], name
     assert "preview_recovery_plan" not in kept
     assert "destroy_retry_stop_reason" not in kept
     assert payload["result"]["dropped_field_paths"] == [
+        "requests[].last_plan.artifact_scan",
         "requests[].last_plan.destroy_retry_stop_reason",
+        "requests[].last_plan.held_reservations",
         "requests[].last_plan.preview_recovery_plan",
         "requests[].last_plan.rejected_builds[]",
         "requests[].last_plan.rejected_builds[].commit",
         "requests[].last_plan.rejected_builds[].error",
+        "requests[].last_plan.testing_deploy_recovery",
     ]
     rendered = json.dumps(payload)
     assert "private-path" not in rendered
@@ -4479,6 +4497,98 @@ def test_reconcile_requests_read_shows_why_testing_skipped_a_newer_build() -> No
     assert kept["current_commit"] == ""
     assert "requests[].last_plan.current_commit" in payload["result"]["dropped_field_paths"]
     assert "private-host" not in json.dumps(payload)
+
+    plan["rejected_builds"][0]["run_id"] = None
+    status, payload, _calls = _run_product_read(argv, response)
+    assert status == 0
+    assert payload["result"]["requests"][0]["last_plan"]["rejected_builds"][0]["run_id"] is None
+
+    plan["rejected_builds"][0].update(run_id=True, code="https://private-host.example.invalid/failure")
+    status, payload, _calls = _run_product_read(argv, response)
+    assert status == 0
+    rejected = payload["result"]["requests"][0]["last_plan"]["rejected_builds"][0]
+    assert rejected == {"commit": new_commit}
+    assert "requests[].last_plan.rejected_builds[].run_id" in payload["result"]["dropped_field_paths"]
+    assert "requests[].last_plan.rejected_builds[].code" in payload["result"]["dropped_field_paths"]
+    assert "private-host" not in json.dumps(payload)
+
+
+def test_reconcile_requests_read_projects_feedback_without_inventing_terminal_evidence() -> None:
+    feedback = {
+        "status": "cleared",
+        "delivery_status": "delivered",
+        "delivery_action": "no_existing_comment",
+        "pull_request_number": 7,
+        "comment_id": 0,
+        "feedback_id": "preview-pr-feedback-example-pr-7-20261023T010000Z",
+        "body_sha256": "sha256:" + "a" * 64,
+        "owner_review": "accepted",
+    }
+    response = {
+        "status": "ok",
+        "product": "example-product",
+        "requests": [
+            {
+                "target_key": "example-product:preview:7",
+                "last_plan": {
+                    "pr_feedback": {
+                        **feedback,
+                        "error": "Private feedback text",
+                        "provider_payload": {"path": "private-host"},
+                    }
+                },
+            }
+        ],
+    }
+    argv = ["reconcile-requests-read", "--product", "example-product"]
+    status, payload, _calls = _run_product_read(argv, response)
+    assert status == 0
+    assert payload["result"]["requests"][0]["last_plan"]["pr_feedback"] == feedback
+    assert "Private feedback" not in json.dumps(payload)
+    assert "private-host" not in json.dumps(payload)
+    assert payload["result"]["dropped_field_paths"] == [
+        "requests[].last_plan.pr_feedback.<unlisted field>",
+        "requests[].last_plan.pr_feedback.error",
+    ]
+
+    response["requests"][0]["last_plan"]["pr_feedback"] = {"error": "Legacy unclassified feedback"}
+    status, payload, _calls = _run_product_read(argv, response)
+    assert status == 0
+    assert payload["result"]["requests"][0]["last_plan"]["pr_feedback"] == {}
+    assert "Legacy" not in json.dumps(payload)
+
+    response["requests"][0]["last_plan"]["pr_feedback"] = {
+        "status": "future_status",
+        "delivery_status": "future_delivery",
+        "comment_id": True,
+        "body_sha256": {"unexpected": "not a digest"},
+    }
+    status, payload, _calls = _run_product_read(argv, response)
+    assert status == 0
+    assert payload["result"]["requests"][0]["last_plan"]["pr_feedback"] == {
+        "status": "future_status",
+        "delivery_status": "future_delivery",
+        "comment_id": "",
+        "body_sha256": "",
+    }
+
+    response["requests"][0]["last_plan"]["pr_feedback"] = {"feedback_id": "token ghp_abcdefghijklmnop"}
+    status, payload, _calls = _run_product_read(argv, response)
+    assert status == 1
+    assert payload["status"] == "invalid"
+    assert not payload["result"]
+
+
+def test_optional_read_scalars_reject_unhashable_values_with_safety_errors() -> None:
+    for validator in (
+        write_action._optional_text,
+        write_action._optional_code,
+        write_action._optional_identifier,
+        write_action._optional_sha256,
+    ):
+        for value in ({"unexpected": "value"}, ["unexpected"]):
+            with pytest.raises(safety.LaunchplaneSafetyError):
+                validator(value)
 
 
 def test_reconcile_requests_read_keeps_generic_web_testing_outcome() -> None:

@@ -564,13 +564,32 @@ installed local helper bindings.
   The service redacts that summary, and the helper's summary rules then apply
   to it the same way they do to `last_error`. A testing plan also keeps
   `current_commit`, its build-selection counts and flags, and `rejected_builds`:
-  each newer build that failed verification and was skipped, by `commit` only.
-  Launchplane records the reason only as free text, which is dropped and counted
-  under `requests[].last_plan.rejected_builds[].error` (launchplane#3322 adds a
-  fixed code and run id). Commit fields must be full Git commit ids.
+  each newer build that failed verification, by full `commit`, selected positive
+  `run_id` (or null when not selected), and the service's fixed-format `code`.
+  Free-text `error` is still dropped and counted under
+  `requests[].last_plan.rejected_builds[].error`. Malformed identifiers/codes
+  are omitted and counted; a rejection without a usable commit is omitted and
+  counted as an entry. Lists retain the existing 20-entry bound.
+  `pr_feedback` retains bounded `status`, `delivery_status`, `delivery_action`
+  and legacy `owner_review` codes, `feedback_id`, nonnegative PR/comment ids,
+  and the comment body's `body_sha256` digest. Error prose is withheld and
+  counted by name, other unknown nested fields under `<unlisted field>`.
+  Missing legacy fields stay missing and new code values stay explicit; the
+  helper never infers terminal feedback, delivery or current Client acceptance
+  from an absent comment, missing status or a historical feedback record.
+  The plan also retains `failure_trace_id`, `failed_restore_deployment_record_id`,
+  `testing_runtime_drift_sha256`, `testing_deploy_recovery_refusal` and the
+  `held_reservations_truncated` flag, with the existing scalar safety rules.
   `destroy_retry_key`, `preview_recovery_plan`, `destroy_retry_stop_reason` and
-  `feedback_recovery_stop_reason` are withheld and counted under their own names. Any other plan field, such as PR
-  feedback, is dropped and counted under `requests[].last_plan.<unlisted field>`;
+  `feedback_recovery_stop_reason` are withheld and counted under their own names.
+  The reviewed `artifact_scan` object can carry a registry/image reference;
+  `held_reservations` and `testing_deploy_recovery` carry original-operation or
+  provider evidence. These raw objects are deliberately withheld and counted by
+  name; their presence is not absence or a recovery clearance. The plan's
+  duplicate `product` is withheld because the result already supplies the
+  product scope. The retained action, reason, hold and refusal fields remain
+  the decision evidence. Other unknown plan fields are dropped and counted
+  under `requests[].last_plan.<unlisted field>`;
   the same drop and omit rules apply.
 - `product-secret-bindings-read --product` calls
   `GET /v1/products/{product}/secret-bindings` with no query. It returns up to
