@@ -539,7 +539,8 @@ installed local helper bindings.
 - `product-profile-read --product` calls `GET /v1/product-profiles/{product}`
   and returns the product's Client GitHub login and review label, `production_use`,
   `release_on_acceptance`, lifecycle state, display name, driver, repository and
-  lanes (context and instance only). The summary contains service status and trace
+  lanes (context and instance only), plus the optional typed business-hours policy
+  with its wire presence preserved. The summary contains service status and trace
   provenance only. For release authority, follow the
   [release rule](../../references/role-words.md#release-rule) and read service-owned
   evidence with `product-promotion-status-read`. `release_on_acceptance` is `held`, `promote`,
@@ -1474,7 +1475,7 @@ and a readback recommendation. It must not be retried as a failed write.
   Odoo website-settings, integration-allowances, testing-hold,
   product-repository-identity, generic-web deploy-recovery, repository-inventory,
   product expected-config, and merge-train policy import applies; product-config
-  apply does not emit it. It exits 1 for the reviewed lane-setup
+  apply emits it only for the reviewed business-hours path, exiting 1. It exits 1 for the reviewed lane-setup
   applies (product Client, product image repository, Dokploy target, production
   backup authority, and private health endpoint). In every case the write may
   have committed; read back the active record before any retry.
@@ -1492,7 +1493,8 @@ admin operation.
 
 For helper-driven product-config work, agents should start with intent
 preflight. This validates authorization and managed-secret binding policy
-without accepting plaintext values:
+without accepting plaintext values. For business-hours policy, use the standalone
+inspection flow below instead:
 
 ```sh
 uv run scripts/launchplane-write-action.py \
@@ -1570,6 +1572,61 @@ reachability. No target-setup grant, DNS/TLS change, Client release or separate
 target-inspection permission is needed to consume this result. On a stale plan
 or partial provider outcome, save a new dry-run and review it before retrying;
 never infer success from the previous request's transport outcome.
+
+### Odoo business-hours policy
+
+The same `product-config-dry-run` and `product-config-apply` commands support a
+standalone `odoo_business_hours` section on an exact Odoo prod lane. Reuse the
+existing service route and current identity. Task scope still owns authority;
+this capability does not grant configuration or release permission.
+
+Use a private payload with product, context, `instance: "prod"`, reason and an
+optional source label. The calendar section selects `operation: "inspect"`,
+`"set"` or `"clear"`. Inspect is dry-run only; it returns bounded permitted-company
+references and safe private labels. An optional company ID narrows inspection.
+Set requires an explicit company ID and its observed `expected_calendar_id`.
+An optional `private_endpoint_key` references an existing endpoint; URLs and
+credentials are not accepted. Clear removes the selection. Runtime settings,
+secrets, binding removals and public-host changes cannot be mixed into this
+request. Odoo remains the timetable authority; no hours or calendar ID persist
+in the stored policy.
+
+Save the complete dry-run output. Set/clear apply additionally requires
+`--expected-plan-digest` from `result.odoo_business_hours.plan_digest` and
+`--dry-run-evidence-file`, alongside `--reviewed-dry-run` and the original
+`--idempotency-key`. The helper binds the exact request, reason, source label,
+scope and selection to that saved review and supplies `reviewed_plan_sha256`;
+do not put that field in the private payload. A new runtime/endpoint authority
+plan must be reviewed explicitly even when the chosen company stays the same.
+
+The calendar result distinguishes current runtime qualification from persisted
+policy. An accepted apply that matches the reviewed plan performs an independent
+profile GET and reports `read_back` and
+`read_back_matches`. The policy contains only company ID and endpoint reference.
+`product-profile-read` preserves a present `odoo_business_hours: null`, a typed
+policy, or omission as separate wire states. The producer may omit its unset
+optional default. The apply readback accepts that default only from a matching,
+complete typed profile response; missing/malformed/failed reads remain unknown.
+No explicit-null observation is invented from omission.
+
+Unsafe company labels are omitted and marked `label_omitted`; keep inspection
+labels in private evidence. Unknown calendar/policy fields, malformed identities/digests and
+inconsistent scope or selection fail projection. The result's company scope is
+the permitted-company set, bounded to 128 companies, not database-wide visibility.
+Runtime identity projects only the required lane, deployment, artifact and
+source references; other runtime metadata is omitted.
+Window `next_release_at` is normalized to UTC. The producer's release prose is
+omitted from configuration output; use the observed closing time.
+
+A calendar qualification failure retains its service code and trace and calls
+for inspecting/correcting company, calendar, endpoint and current authority.
+The helper never retries automatically. An interrupted apply is
+`outcome_unknown`; an unreadable or mismatched accepted result/readback is
+`accepted_unverified`, both exit 1. Read the stored policy and retain the original
+payload, saved review and idempotency key before deciding recovery. Neither
+state proves no write. A committed clear receipt and a later profile read are
+separate evidence. Source delivery does not configure a product, activate a
+live release policy or prove a release drill.
 
 ### Copying a managed runtime secret
 
