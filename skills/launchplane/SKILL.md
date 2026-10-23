@@ -1324,6 +1324,12 @@ reviewed-inspect procedure and verify the situation.
   to select a target from the service response before the helper's output bound;
   a truncated unselected read cannot prove that testing is absent. An empty
   selection describes only the returned service list, not records outside it.
+- For Odoo business-hours inspection and reviewed policy set/clear, reuse
+  `product-config-dry-run` / `product-config-apply` and `product-profile-read`.
+  Read the [calendar caller contract](references/write-action-helper-contract.md#odoo-business-hours-policy)
+  before this flow. Use explicit observed company/calendar references, saved
+  review/digest binding and independent policy readback; runtime configuration
+  and release authority remain on the owning product's plan.
 - `GET /v1/products/{product}/secret-bindings`: Bounded helper read
   (`product-secret-bindings-read --product`) of a product's runtime secret
   binding metadata: binding key, name, scope, context, instance, declared
