@@ -131,7 +131,6 @@ def validate_request(value: Any) -> dict[str, Any]:
             or body.get("target") != "tag"
             or not body["name"].strip()
             or body["name"] in MANAGED_NAMES
-            or body["enforcement"] not in {"active", "disabled", "evaluate"}
         ):
             fail("custom ruleset writes need a complete tag ruleset, separate from managed rulesets")
         refs = body["conditions"].get("ref_name")
