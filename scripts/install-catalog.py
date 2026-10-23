@@ -80,6 +80,8 @@ def personal_source(sync, destinations: list[Path], local: Path, *, new_destinat
         # interpreting the remainder as private text, including source trims.
         bases.extend(committed_shared_sources(sync))
     for path, text in texts.items():
+        if text.startswith(sync.HEADER):
+            text = text.partition(sync.DIRECTION_START)[0].rstrip() + "\n"
         if not text or text == known:
             continue
         if text.startswith(sync.HEADER):
@@ -158,7 +160,7 @@ def install(home: Path, codex: Path, claude: Path, *, write: bool, updater: bool
     personal = personal_source(sync, adoption, local, new_destinations={path for path in destinations if str(path) not in hashes})
     shared_source = (ROOT / "instructions" / "global.md").read_text()
     base = "\n\n".join(filter(None, (sync.HEADER, shared_source.strip()))) + "\n"
-    content = "\n\n".join(filter(None, (base.strip(), personal.strip()))) + "\n"
+    content = "\n\n".join(filter(None, (base.strip(), personal.strip(), sync.direction_content(home)))) + "\n"
     requested = {"codex": str(codex), "claude": str(claude)}
     previous = {key: previous_installation.get(key) for key in requested}
     configuration_change = {"previous": previous, "requested": requested} if previous_installation and previous != requested else None

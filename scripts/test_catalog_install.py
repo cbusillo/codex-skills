@@ -39,6 +39,11 @@ def command(*args, cwd=None):
     return subprocess.run(args, cwd=cwd, text=True, capture_output=True, check=True).stdout.strip()
 
 
+def setUpModule() -> None:
+    fixture = unittest.enterModuleContext(tempfile.TemporaryDirectory())
+    unittest.enterModuleContext(mock.patch.dict(os.environ, {"DIRECTION_MARKER": str(Path(fixture) / "absent-marker")}))
+
+
 class InstallTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -98,6 +103,42 @@ class InstallTests(unittest.TestCase):
         self.assertFalse(any(item["state"] == "skipped" for item in receipt["outputs"]))
         self.assertEqual(target.read_text(), reconciled)
         self.assertFalse((self.codex / "hooks.json").exists())
+
+    def test_direction_refresh_updates_both_hosts_without_adopting_direction_as_personal(self) -> None:
+        private = self.catalog / ".local/global-instructions.md"
+        private.parent.mkdir()
+        private.write_text("Personal fixture rule.\n")
+        before = private.read_bytes()
+        first = self.sync.DIRECTION_START + "\nFirst merged direction."
+        updated = self.sync.DIRECTION_START + "\nUpdated merged direction."
+        for path in (self.codex / "AGENTS.md", self.claude / "CLAUDE.md"):
+            path.write_text(self.sync.render(self.catalog / "instructions/global.md", private, first))
+        original_paths = (self.codex / "AGENTS.md", self.claude / "CLAUDE.md")
+        aliases = (self.home / "codex-account/AGENTS.md", self.home / "claude-account/CLAUDE.md")
+        for alias, target in zip(aliases, original_paths):
+            alias.parent.mkdir()
+            alias.symlink_to(target)
+        self.claude = aliases[1].parent
+        with mock.patch.object(self.sync, "direction_content", return_value=first):
+            self.install()
+        with mock.patch.object(self.sync, "direction_content", return_value=updated):
+            for _ in range(2):
+                installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
+        for path in (*original_paths, *aliases):
+            self.assertIn(updated, path.read_text())
+            self.assertNotIn(first, path.read_text())
+            self.assertIn(private.read_text().strip(), path.read_text())
+        self.assertTrue(all(alias.is_symlink() for alias in aliases))
+        self.assertEqual(private.read_bytes(), before)
+
+    def test_unavailable_merged_direction_preserves_installed_files_and_receipt(self) -> None:
+        self.install()
+        paths = (self.codex / "AGENTS.md", self.claude / "CLAUDE.md", self.catalog / ".local/catalog-install.json")
+        before = {path: path.read_bytes() for path in paths}
+        with mock.patch.object(self.sync, "direction_content", side_effect=ValueError("merged source unavailable")):
+            with self.assertRaisesRegex(ValueError, "merged source unavailable"):
+                self.install()
+        self.assertEqual({path: path.read_bytes() for path in paths}, before)
 
     def test_fresh_install_twice_preserves_personal_settings_and_new_skills(self):
         (self.claude / "CLAUDE.md").write_text("Keep my history.\n")
@@ -1205,6 +1246,23 @@ class UpdateTests(unittest.TestCase):
         command("git", "commit", "-qam", "second", cwd=self.seed)
         command("git", "push", "-q", "origin", "main", cwd=self.seed)
 
+    def test_refresh_failure_reason_reaches_saved_state_and_startup(self) -> None:
+        local = self.checkout / ".local"
+        local.mkdir()
+        home = self.base / "home"
+        (local / "catalog-install.json").write_text(json.dumps({"home": str(home), "codex": str(home / ".codex"),
+                                                               "claude": str(home / ".claude")}))
+        diagnostic = "fixture direction source unavailable"
+        run = subprocess.run
+        def fail_refresh(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            if len(args) > 1 and args[1] == str(self.checkout / "scripts/install-catalog.py"):
+                return subprocess.CompletedProcess(args, 1, "", diagnostic + "\n")
+            return run(args, **kwargs)
+        with mock.patch.object(runtime.subprocess, "run", side_effect=fail_refresh):
+            result = runtime.update(self.checkout)
+        self.assertIn(diagnostic, result["reason"])
+        self.assertIn(diagnostic, runtime.status_line(self.checkout))
+
     def test_clean_main_fast_forwards_and_status_goes_quiet(self):
         self.advance()
         command("git", "fetch", "-q", "origin", cwd=self.checkout)
@@ -1469,7 +1527,8 @@ class UpdateTests(unittest.TestCase):
         (self.seed / "instructions").mkdir()
         (self.seed / "instructions" / "global.md").write_text("First shared instructions.\n")
         (self.seed / "hooks").mkdir()
-        shutil.copyfile(source.parent / "hooks" / "hooks.json", self.seed / "hooks" / "hooks.json")
+        for name in ("hooks.json", "direction_check_hook.py"):
+            shutil.copyfile(source.parent / "hooks" / name, self.seed / "hooks" / name)
         (self.seed / "skills").mkdir()
         (self.seed / "skills" / "original").write_text("first")
         command("git", "add", ".", cwd=self.seed)
@@ -1658,7 +1717,7 @@ class UpdateTests(unittest.TestCase):
                 else:
                     update.write_text(update_text)
                 self.assertIn("Catalog blocked", runtime.status_line(self.checkout))
-                with mock.patch.object(hook, "direction_root", return_value=self.checkout), mock.patch.object(hook, "reminder", return_value="Fixture overdue reminder."):
+                with mock.patch.dict(os.environ, {"HOME": str(self.base)}), mock.patch.object(hook, "direction_root", return_value=self.checkout), mock.patch.object(hook, "session_reminder", return_value="Fixture overdue reminder."):
                     output = io.StringIO()
                     with contextlib.redirect_stdout(output):
                         self.assertEqual(hook.main(catalog_root=self.checkout), 0)
@@ -1675,7 +1734,8 @@ class UpdateTests(unittest.TestCase):
         (self.checkout / ".local").mkdir(exist_ok=True)
         (self.checkout / ".local" / "catalog-install.json").write_text("{}")
         for env in ({"CLAUDECODE": "1"}, {"CODEX_HOME": "/fixture"}):
-            with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(runtime, "status_line", return_value=actual), mock.patch.object(hook, "direction_root", return_value=None), mock.patch.object(hook, "reminder", return_value=""):
+            env = {**env, "HOME": str(self.base)}
+            with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(runtime, "status_line", return_value=actual), mock.patch.object(hook, "direction_root", return_value=None), mock.patch.object(hook, "session_reminder", return_value=""):
                 output = io.StringIO()
                 with contextlib.redirect_stdout(output):
                     self.assertEqual(hook.main(catalog_root=self.checkout), 0)

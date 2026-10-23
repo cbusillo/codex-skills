@@ -686,25 +686,43 @@ uv run skills/direction/scripts/direction_audit.py --repo OWNER/REPO
 Once a repository has `DIRECTION.md`, `gh-plan.py milestone-create` refuses a
 title the file does not list, and `milestone-update` refuses a rename to one.
 
-The plugin also ships a `SessionStart` hook, `hooks/direction_check_hook.py`.
-On Claude Code (`CLAUDECODE=1`) it first prints the shared
-[skills protocol](skills/references/using-skills.md), including which skill owns
-each intermediate step. This applies even outside direction repositories.
-Codex already carries a skills protocol in its base instructions, so it does
-not receive this additional copy.
-In a repository with a root `DIRECTION.md`, it prints the shared
-[executing loop's command block](skills/references/executing-loop.md) and a link
-to its full procedure at session start. The loop
-defines `next`, `go`, escalation, landing, and closeout for either harness
-when its session-start hook is registered.
-In a repository without one, when its origin repository owner's
-`OWNER/direction` repository is in the marker's audited repositories or is checked out as
-`direction` beside the repository's main checkout, it prints that overall
-direction's stop boundaries, read from the merged default branch (or from that
-checkout's last-fetched default branch when GitHub cannot be read), with the
-file's link and the executing loop. When neither can be read
-it says so in one line. Repositories under other repository owners print
-nothing extra.
+The existing global-instruction renderer includes the full merged overall
+DIRECTION in each selected Claude config home's `CLAUDE.md` and Codex home's
+`AGENTS.md`. It uses the account in the local direction marker and includes
+that account's audited repository directions as explicitly scoped sections.
+Each repository section applies only to work in that repository; the overall
+direction wins. Text comes from GitHub's merged default branch. A repository
+file reported absent or not visible to the reader (HTTP 404) is omitted. Other
+unreadable sources preserve the installed instructions and stop the refresh. The installer and catalog
+updater use the same renderer. Native account files linked to those generated
+targets receive the same refresh, preserving their links. Independent account
+homes need their own configured refresh; verify the selected destinations and
+aliases during rollout. No shell line, launcher flag or compact hook delivers
+DIRECTION. Private instructions stay in their existing source. Without a marker
+that names an account, direction is unconfigured and the renderer adds no bundle.
+
+Global files retain this context through native compaction on the exercised
+Claude terminal (headless), Claude custom-subagent, Codex and Codex native-subagent
+paths.
+Claude's built-in Explore and Plan helpers omit global `CLAUDE.md` files by
+design ([native documentation](https://code.claude.com/docs/en/sub-agents#what-loads-at-startup));
+they are the documented exception. Desktop and editor delivery remains unverified.
+The per-repository read rule still applies to repositories absent from the bundle.
+After a direction change or first direction turn, run
+`uv run scripts/catalog_runtime.py --update` from the runtime checkout. It
+refreshes the receipt's destinations and hashes through the normal installer.
+For a manual preview, use `scripts/install-catalog.py --refresh-instructions`
+with those same destinations, then add `--write`. The standalone sync remains
+available for initial setup and explicit reconciliation; rerun the installer
+afterward so its receipt follows the written files. A running session keeps its
+loaded snapshot; restart it for updated context.
+
+The plugin's `SessionStart` hook, `hooks/direction_check_hook.py`, keeps the small
+daily-turn and weekly-audit reminder. It no longer delivers direction text.
+Existing skills-protocol, executing-loop and unrelated startup diagnostics stay
+in their existing hooks. The executing loop's command block and reference print
+in repositories with their own root `DIRECTION.md`; Claude also receives the
+shared [skills protocol](skills/references/using-skills.md).
 It reads a local marker that `direction_mark.py` writes at the end of a daily
 turn and that `direction_audit.py --weekly` writes after a weekly audit that
 read every adopted repository. It prints at most two reminder lines, the same
@@ -713,9 +731,9 @@ the weekly audit is more than a week old for an account with direction set up.
 Audits of single repositories never clear the weekly line. The account is the
 one whose direction repository the marker's newest turn or weekly audit names.
 Only when the marker records no account does it fall back to the account of
-the folder's origin, and only when that account has `OWNER/direction` set up
-as above. A local turn or weekly audit counts only when it names that
-account. While either local stamp is stale it reads
+the folder's origin, and only when that account has `OWNER/direction` audited
+locally or checked out as `direction` beside the repository's main checkout.
+A local turn or weekly audit counts only when it names that account. While either local stamp is stale it reads
 the shared turn and weekly-audit records in `OWNER/direction` once (see the
 `direction` skill), so a turn or audit on another machine counts. When it
 cannot read every open issue there, the line says unconfirmed instead of

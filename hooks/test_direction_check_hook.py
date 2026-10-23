@@ -12,7 +12,6 @@ import contextlib
 import io
 import json
 import os
-import re
 import subprocess
 import sys
 import tempfile
@@ -363,32 +362,7 @@ class ReminderTests(IsolatedDirectionHookTests):
             self.assertEqual((proc.returncode, proc.stdout), (0, ""))
 
 
-OVERALL = """# Direction
-
-## Purpose
-
-Fixture purpose.
-
-## Stop Boundaries
-
-An agent asks the owner before:
-
-- a fixture boundary
-  with a wrapped condition
-
-- another fixture boundary
-
-A fixture acceptance boundary also lives in prose after the bullets.
-
-## Journey
-
-Fixture journey.
-"""
-
-
 class OverallDirectionTests(IsolatedDirectionHookTests):
-    """A repository without its own DIRECTION.md shows its owner's overall direction."""
-
     def setUp(self) -> None:
         super().setUp()
         self.tmp = Path(tempfile.mkdtemp())
@@ -396,7 +370,6 @@ class OverallDirectionTests(IsolatedDirectionHookTests):
         self.repo = self.tmp / "product"
         subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
         subprocess.run(["git", "-C", str(self.repo), "remote", "add", "origin", "git@github.com:owner/product.git"], check=True)
-        self.calls = self.tmp / "reader-calls"
         self.marker = self.tmp / hook.MARKER_NAME
         self.audit("owner/direction")
 
@@ -405,85 +378,41 @@ class OverallDirectionTests(IsolatedDirectionHookTests):
         self.marker.write_text(json.dumps({"turn": now, "turn_repo": "owner/direction", "audits": {repo: now for repo in repos},
                                            "weekly_audit": {"ran": now, "record": "owner/direction"}}))
 
-    def reader(self, *, body: str | None = None, error: str = "gh: Not Found (HTTP 404)") -> Path:
-        script = self.tmp / "reader"
-        if body is not None:
-            (self.tmp / "body.md").write_text(body)
-            action = f'cat "{self.tmp / "body.md"}"'
-        else:
-            action = f"echo '{error}' >&2; exit 1"
-        script.write_text(f'#!/bin/sh\necho "$@" >> "{self.calls}"\n{action}\n')
-        script.chmod(0o755)
-        return script
-
-    def run_hook(self, reader: Path, cwd: Path | None = None) -> str:
+    def run_hook(self) -> str:
         output = io.StringIO()
-        with mock.patch.dict(os.environ, {"CLAUDECODE": "0"}), mock.patch.object(hook, "GH_READER", reader), mock.patch.object(hook, "marker_path", return_value=self.marker), mock.patch("pathlib.Path.cwd", return_value=cwd or self.repo), contextlib.redirect_stdout(output):
+        with (mock.patch.dict(os.environ, {"CLAUDECODE": "0"}),
+              mock.patch.object(hook, "run_reader") as reader,
+              mock.patch.object(hook, "marker_path", return_value=self.marker),
+              mock.patch("pathlib.Path.cwd", return_value=self.repo), contextlib.redirect_stdout(output)):
             self.assertEqual(hook.main(), 0)
+        reader.assert_not_called()
         return output.getvalue().strip()
 
-    def test_shows_the_merged_stop_boundaries_link_and_loop(self) -> None:
-        text = self.run_hook(self.reader(body=OVERALL))
-        self.assertIn(hook.section(OVERALL, "Stop Boundaries"), text)
-        self.assertIn("A fixture acceptance boundary also lives in prose", text)
-        self.assertNotIn("Fixture purpose", text, "only the stop boundaries are printed, not the whole file")
-        self.assertIn("https://github.com/owner/direction/", text)
-        self.assertTrue(text.endswith(hook.loop_summary(hook.LOOP_PATH.read_text())))
-        self.assertIn("repos/owner/direction/contents/DIRECTION.md", self.calls.read_text())
+    def test_current_direction_reminder_does_not_deliver_direction_or_read_it(self) -> None:
+        text = self.run_hook()
+        self.assertEqual(text, "")
 
     def test_own_direction_file_keeps_todays_output_without_a_read(self) -> None:
         (self.repo / "DIRECTION.md").write_text("# Direction\n")
         self.audit("owner/direction", "owner/product")
-        self.assertEqual(self.run_hook(self.reader(body=OVERALL)), hook.loop_summary(hook.LOOP_PATH.read_text()))
-        self.assertFalse(self.calls.exists())
+        self.assertEqual(self.run_hook(), hook.loop_summary(hook.LOOP_PATH.read_text()))
 
     def test_owner_without_an_audited_direction_repository_sees_nothing_and_costs_no_read(self) -> None:
         self.audit("owner/product", "other/direction")
-        self.assertEqual(self.run_hook(self.reader(body=OVERALL)), "")
-        self.assertFalse(self.calls.exists())
+        self.assertEqual(self.run_hook(), "")
 
     def sibling_checkout(self) -> Path:
-        """A clone of owner/direction beside the product, on an unmerged proposal branch."""
-        upstream = self.tmp / "upstream"
-        subprocess.run(["git", "init", "-q", "-b", "main", str(upstream)], check=True)
-        (upstream / "DIRECTION.md").write_text(OVERALL)
-        subprocess.run(["git", "-C", str(upstream), "add", "DIRECTION.md"], check=True)
-        subprocess.run(["git", "-C", str(upstream), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "d"], check=True)
         local = self.tmp / "direction"
-        subprocess.run(["git", "clone", "-q", str(upstream), str(local)], check=True)
-        subprocess.run(["git", "-C", str(local), "remote", "set-url", "origin", "https://github.com/owner/direction.git"], check=True)
-        subprocess.run(["git", "-C", str(local), "checkout", "-qb", "proposal"], check=True)
-        (local / "DIRECTION.md").write_text("committed proposal\n")
-        subprocess.run(["git", "-C", str(local), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "p"], check=True)
-        (local / "DIRECTION.md").write_text("uncommitted draft\n")
+        subprocess.run(["git", "init", "-q", str(local)], check=True)
+        subprocess.run(["git", "-C", str(local), "remote", "add", "origin", "https://github.com/owner/direction.git"], check=True)
         return local
-
-    def test_falls_back_to_the_fetched_default_branch_of_a_sibling_checkout(self) -> None:
-        local = self.sibling_checkout()
-        worktree = self.tmp / "linked"
-        subprocess.run(["git", "-C", str(self.repo), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "i"], check=True)
-        subprocess.run(["git", "-C", str(self.repo), "worktree", "add", "-q", str(worktree)], check=True)
-        text = self.run_hook(self.reader(error="error connecting to api.github.com"), cwd=worktree)
-        self.assertIn(hook.section(OVERALL, "Stop Boundaries"), text)
-        self.assertIn(str(local.resolve()), text)
-        self.assertNotIn("uncommitted draft", text)
-        self.assertNotIn("committed proposal", text)
-        shown = re.search(r"`git -C (.+?) show (\S+)`", text)
-        assert shown is not None, "the fallback names a local command for the full file"
-        read = subprocess.run(["git", "-C", shown.group(1), "show", shown.group(2)], capture_output=True, text=True, check=True)
-        self.assertEqual(read.stdout, OVERALL)
 
     def test_a_sibling_checkout_counts_as_set_up_without_an_audit(self) -> None:
         self.sibling_checkout()
         self.audit()
-        text = self.run_hook(self.reader(body=OVERALL))
-        self.assertIn(hook.section(OVERALL, "Stop Boundaries"), text)
-
-    def test_unreadable_overall_direction_is_one_line(self) -> None:
-        text = self.run_hook(self.reader(error="error connecting to api.github.com"))
-        self.assertEqual(len(text.splitlines()), 1)
-        self.assertIn("https://github.com/owner/direction/", text)
-        self.assertIn("error connecting to api.github.com", text)
+        marker_data = hook.read_marker(self.marker)
+        self.assertTrue(hook.direction_set_up("owner", self.repo, marker_data)[0])
+        self.assertEqual(self.run_hook(), "")
 
 
 class SharedRecordTests(IsolatedDirectionHookTests):
