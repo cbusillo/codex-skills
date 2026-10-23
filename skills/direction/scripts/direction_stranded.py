@@ -328,6 +328,14 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
                    and ((url and url in (c.get("body") or "")) or
                         bool(qids & set(QUESTION.findall(question_body(c).partition("\n")[0])[:1]))) for c in candidates)
 
+    open_questions = {c["html_url"] for c in comments if c.get("html_url") and login(c) in trusted
+                      and question_view.get(c["html_url"], {}).get("status") == "needs_review"
+                      and not answered(c, decisions)}
+    director_terms = ("Director", "Owner", *owners, *director_names)
+
+    def names(text, terms):
+        return any(re.search(r"\b" + re.escape(term) + r"\b", text, re.I) for term in terms)
+
     for record in records:
         item, repo = record["item"], record["repo"]
         url = item.get("html_url") or f"https://github.com/{repo}/issues/{item['number']}"
@@ -414,15 +422,24 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
             gaps.append({"source": url, "reason": "structured_wait_unreadable"})
             wait = {"state": "review", "waits": []}
         if wait["state"] == "waiting":
-            receivers = [w["waiting_for"] for w in wait["waits"] if any(
-                re.search(r"\b" + re.escape(name) + r"\b", w["waiting_for"], re.I)
-                for name in ("Supervisor", "Director", "Owner", *owners, *director_names))]
+            director = [w["waiting_for"] for w in wait["waits"] if names(w["waiting_for"], director_terms)]
+            receivers = [w["waiting_for"] for w in wait["waits"]
+                         if w["waiting_for"] not in director and names(w["waiting_for"], ("Supervisor",))]
+            sources = [item, *current]
+            source = next((s for s in reversed(sources) if login(s) in trusted
+                           and github_plan_wait.records(s.get("body") or "")), item)
+            since = None if source is item else source.get("updated_at") or source.get("created_at")
+            # A wait record alone never asks the Director; an open question on the issue or linked from the record does.
+            linked = (any(c.get("html_url") in open_questions for c in current)
+                      or any(q in json.dumps(wait) for q in open_questions))
+            if director and not linked:
+                add("unasked_director_wait", record, source.get("html_url") or url, since,
+                    "Supervisor asks the Director",
+                    "Wait on the Director has no open Director question. Post one on this issue with the exact step "
+                    "and what happens after it, and register it.",
+                    evidence=wait["waits"])
             if receivers:
-                sources = [item, *current]
-                source = next((s for s in reversed(sources) if login(s) in trusted
-                               and github_plan_wait.records(s.get("body") or "")), item)
-                add("aged_structured_wait", record, source.get("html_url") or url,
-                    None if source is item else source.get("updated_at") or source.get("created_at"), "; ".join(receivers),
+                add("aged_structured_wait", record, source.get("html_url") or url, since, "; ".join(receivers),
                     "Recorded receiver still has an unresolved wait. Body-only marker age is unknown; issue activity cannot reset the wait clock.",
                     evidence=wait["waits"])
         if routed := supervisor_next_action(item.get("body")):

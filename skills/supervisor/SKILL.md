@@ -523,7 +523,9 @@ including non-dim text, establishes neither its author nor approval.
    open Director questions. Read the latest stranded-work digest's
    `supervisor_next_action` list, oldest first: do the Supervisor-only steps,
    rewrite the rest to name the next agent and its step, or hand a batch to a
-   triage session. Report milestone state only from this check's
+   triage session. Then its `unasked_director_wait` list, oldest first: post
+   each as a Director question on its issue and register it, or correct a wait
+   that is not the Director's. Report milestone state only from this check's
    goal board. Close finished sessions using the procedure below
    on every check, including sessions that finished their item without needing
    a relaunch.

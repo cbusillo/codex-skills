@@ -101,6 +101,10 @@ changes on yes.
 - For a wait the Director asked for, do not invent a deadline or treat silence
   as approval. Continue independent authorized work. "Don't land yet" holds
   merging, not preparation or validation.
+- A wait on the Director is asked only by a `Director question:` on the same
+  issue, or one whose link is in the wait's `--evidence`. A wait record or a
+  plain comment alone never reaches the Director; the Supervisor raises an
+  unlinked wait at its next check.
 - When your own question proposes a different method or scope, everything that
   depends on the answer waits, including closing the issue. Continue only
   independent work.

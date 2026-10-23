@@ -138,10 +138,14 @@ unknown), next actor and review requirement:
   and a Markdown line give the count per repository. Status kept only in a
   comment is not read for this check.
 - Existing train blocked views, aged from their label event, plus structured
-  waits naming the Supervisor, Director, Director login or supplied aliases.
-  Body-only waits have unknown age because unrelated issue activity must not
-  reset their clock. `--owner` identifies a Director whose login differs from
-  the repository account.
+  waits naming the Supervisor. Body-only waits have unknown age because
+  unrelated issue activity must not reset their clock.
+- Structured waits naming the Director, Director login or supplied aliases
+  that no open Director question links, as `unasked_director_wait`, oldest
+  first. A question links a wait when it is on the same issue or its URL is in
+  the wait record; an answered question no longer does. A wait record alone
+  never asks the Director. `--owner` identifies a Director whose login differs
+  from the repository account.
 
 The collector emits JSON by default. Markdown is a delivery payload, including
 coverage warnings even with zero candidates. Exit 0 means complete within the
