@@ -1600,7 +1600,8 @@ do not put that field in the private payload. A new runtime/endpoint authority
 plan must be reviewed explicitly even when the chosen company stays the same.
 
 The calendar result distinguishes current runtime qualification from persisted
-policy. Apply performs an independent profile GET and reports `read_back` and
+policy. An accepted apply that matches the reviewed plan performs an independent
+profile GET and reports `read_back` and
 `read_back_matches`. The policy contains only company ID and endpoint reference.
 `product-profile-read` preserves a present `odoo_business_hours: null`, a typed
 policy, or omission as separate wire states. The producer may omit its unset
@@ -1609,9 +1610,11 @@ complete typed profile response; missing/malformed/failed reads remain unknown.
 No explicit-null observation is invented from omission.
 
 Unsafe company labels are omitted and marked `label_omitted`; keep inspection
-labels in private evidence. Unknown fields, malformed identities/digests and
+labels in private evidence. Unknown calendar/policy fields, malformed identities/digests and
 inconsistent scope or selection fail projection. The result's company scope is
-the permitted-company set, not database-wide visibility.
+the permitted-company set, bounded to 128 companies, not database-wide visibility.
+Runtime identity projects only the required lane, deployment, artifact and
+source references; other runtime metadata is omitted.
 
 A calendar qualification failure retains its service code and trace and calls
 for inspecting/correcting company, calendar, endpoint and current authority.

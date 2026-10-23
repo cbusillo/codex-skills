@@ -1176,6 +1176,10 @@ def _project_product_config_public_hosts(value: object) -> dict[str, object]:
 
 
 CALENDAR_COMPANY_LIMIT = 128
+CALENDAR_RETRY_ADVICE = " Retain the original payload and idempotency key; never retry automatically."
+CALENDAR_QUALIFICATION_ADVICE = (
+    "Inspect and correct company/calendar/endpoint references and current authority. Read back the stored policy before recovery."
+)
 
 
 def _calendar_reference(value: object, *, allow_empty: bool = False) -> str:
@@ -1362,7 +1366,7 @@ def _validate_calendar_request(body: dict[str, object]) -> None:
             raise ValueError(f"invalid_{field}")
     for field in ("reason", "source_label"):
         value = body.get(field)
-        if not isinstance(value, str) or not value.strip() or len(value) > 1000:
+        if not isinstance(value, str) or not value.strip():
             raise ValueError(f"invalid_{field}")
     calendar = _require_dict(body["odoo_business_hours"])
     if calendar.keys() - {"operation", "company_id", "expected_calendar_id", "private_endpoint_key"}:
@@ -4979,7 +4983,7 @@ def summarize_http_error(
     ):
         summary["recommendation"] = APPLICATION_STATE_VOLUME_NEXT_STEPS[error_code]
     if request.get("calendar_operation") and error_code == "calendar_qualification_unavailable":
-        summary["recommendation"] = "Inspect and correct company/calendar/endpoint references and current authority before another reviewed request. Keep the original payload and idempotency key until any uncertain apply is resolved."
+        summary["recommendation"] = CALENDAR_QUALIFICATION_ADVICE + CALENDAR_RETRY_ADVICE
     payload["summary"] = summary
     if operation == "privileged-policy-propose" and (exc.code in {404, 409} or 500 <= exc.code < 600):
         payload["status"] = (
@@ -6808,7 +6812,10 @@ def product_config_payload_body(args: argparse.Namespace, *, mode: str) -> dict[
             raise ValueError("reason_required")
     if "odoo_business_hours" in body:
         body.setdefault("source_label", "product-config-api")
-        _validate_calendar_request(body)
+        try:
+            _validate_calendar_request(body)
+        except LaunchplaneSafetyError as exc:
+            raise ValueError("invalid_calendar_request") from exc
         if mode == "apply":
             digest = _reviewed_apply_digest(args)
             evidence, result = _load_reviewed_evidence(
@@ -6826,6 +6833,8 @@ def product_config_payload_body(args: argparse.Namespace, *, mode: str) -> dict[
             if not calendar["apply_eligible"] or calendar["operation"] == "inspect":
                 raise ValueError("reviewed_dry_run_not_apply_eligible")
             body["reviewed_plan_sha256"] = digest
+    elif getattr(args, "expected_plan_digest", "") or getattr(args, "dry_run_evidence_file", ""):
+        raise ValueError("calendar_review_flags_require_calendar_request")
     return body
 
 
@@ -9692,8 +9701,11 @@ def execute_verified_apply(
             unknown = _apply_outcome_unknown(operation=operation, request=request, label=label)
             error_payload = _error_payload_from_http(exc)
             _require_dict(unknown["summary"]).update(service_response_diagnostics(error_payload))
-            if request.get("calendar_operation"):
-                _require_dict(unknown["summary"])["recommendation"] = "Inspect and correct company/calendar/endpoint references and current authority. Read back the stored policy and retain the original payload and idempotency key; do not retry automatically."
+            if (
+                request.get("calendar_operation")
+                and _require_dict(unknown["summary"]).get("error_code") == "calendar_qualification_unavailable"
+            ):
+                _require_dict(unknown["summary"])["recommendation"] = CALENDAR_QUALIFICATION_ADVICE + CALENDAR_RETRY_ADVICE
             if operation.startswith("dokploy-target-"):
                 try:
                     error = summarize_http_error(operation=operation, request=request, exc=exc,
@@ -9761,7 +9773,7 @@ def _apply_response_unverified(
         )
     ]
     if request.get("calendar_operation"):
-        _require_dict(payload["summary"])["recommendation"] += " Retain the original payload and idempotency key; never retry automatically."
+        _require_dict(payload["summary"])["recommendation"] += CALENDAR_RETRY_ADVICE
     return payload
 
 
@@ -9781,7 +9793,7 @@ def _apply_outcome_unknown(
         warning("apply_outcome_unknown", "Do not retry this apply until read-back resolves it.")
     ]
     if request.get("calendar_operation"):
-        _require_dict(payload["summary"])["recommendation"] += " Retain the original payload and idempotency key; never retry automatically."
+        _require_dict(payload["summary"])["recommendation"] += CALENDAR_RETRY_ADVICE
     return payload
 
 

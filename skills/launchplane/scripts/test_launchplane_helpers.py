@@ -2253,9 +2253,10 @@ def test_calendar_profile_read_preserves_null_and_value(policy: object) -> None:
 
 
 @pytest.mark.parametrize("readback", ["wrong-policy", "partial", "unavailable"])
-def test_calendar_uncertain_readback_preserves_accepted_write_without_retry(readback: str) -> None:
+@pytest.mark.parametrize("operation", ["set", "clear"])
+def test_calendar_uncertain_readback_preserves_accepted_write_without_retry(readback: str, operation: str) -> None:
     with TemporaryDirectory() as directory:
-        path, evidence = _calendar_review(directory)
+        path, evidence = _calendar_review(directory, operation)
         saved = _write_json(directory, "review.json", evidence)
         digest = evidence["result"]["odoo_business_hours"]["plan_digest"]
         profile: Any = _product_profile_response()
@@ -2267,15 +2268,23 @@ def test_calendar_uncertain_readback_preserves_accepted_write_without_retry(read
         key = "calendar-original-key"
         status, output, posts, reads = _run_main(
             ["product-config-apply", "--payload-file", path, *_reviewed_apply_argv(digest, saved, key=key)],
-            post=_calendar_response(mode="apply"),
+            post=_calendar_response(operation, mode="apply"),
             read=profile,
         )
         assert status == 1 and output["status"] == "accepted_unverified"
         assert len(posts) == len(reads) == 1 and posts[0]["idempotency_key"] == key
 
 
-@pytest.mark.parametrize("mode,code", [("dry-run", 503), ("apply", 409), ("apply", 503)])
-def test_calendar_qualification_error_requires_inspection_and_never_retries(mode: str, code: int) -> None:
+@pytest.mark.parametrize(
+    "mode,code,error_code",
+    [
+        ("dry-run", 503, "calendar_qualification_unavailable"),
+        ("apply", 409, "calendar_qualification_unavailable"),
+        ("apply", 503, "calendar_qualification_unavailable"),
+        ("apply", 502, "upstream_unavailable"),
+    ],
+)
+def test_calendar_qualification_error_requires_inspection_and_never_retries(mode: str, code: int, error_code: str) -> None:
     with TemporaryDirectory() as directory:
         path, evidence = _calendar_review(directory)
         saved = _write_json(directory, "review.json", evidence)
@@ -2289,7 +2298,7 @@ def test_calendar_qualification_error_requires_inspection_and_never_retries(mode
                 json.dumps(
                     {
                         "trace_id": "launchplane_req_calendar",
-                        "error": {"code": "calendar_qualification_unavailable", "message": "provider-private-calendar-body"},
+                        "error": {"code": error_code, "message": "provider-private-calendar-body"},
                     }
                 ).encode()
             ),
@@ -2299,18 +2308,29 @@ def test_calendar_qualification_error_requires_inspection_and_never_retries(mode
             argv.extend(_reviewed_apply_argv(digest, saved))
         status, output, posts, reads = _run_main(argv, post=error)
         assert status == 1 and len(posts) == 1 and not reads
-        assert output["summary"]["error_code"] == "calendar_qualification_unavailable"
+        assert output["summary"]["error_code"] == error_code
+        assert (write_action.CALENDAR_QUALIFICATION_ADVICE in output["summary"]["recommendation"]) == (
+            error_code == "calendar_qualification_unavailable"
+        )
         assert output["summary"]["trace_id"] == "launchplane_req_calendar"
         assert "provider-private-calendar-body" not in json.dumps(output)
 
 
-@pytest.mark.parametrize("change", [
-    {"applied": True}, {"apply_eligible": False}, {"policy_after": {"company_id": True}},
-    {"permitted_company_ids": [7, 7]}, {"runtime_identity": None}, {"timezone": "https://private.example.invalid"},
-    {"provider": {"token": "private-value"}}, {"plan_digest": "not-a-digest"},
-    {"permitted_company_ids": list(range(1, write_action.CALENDAR_COMPANY_LIMIT + 2))},
-    {"policy_after": {"company_id": 8, "private_endpoint_key": ""}},
-])
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"applied": True},
+        {"apply_eligible": False},
+        {"policy_after": {"company_id": True}},
+        {"permitted_company_ids": [7, 7]},
+        {"runtime_identity": None},
+        {"timezone": "https://private.example.invalid"},
+        {"provider": {"token": "private-value"}},
+        {"plan_digest": "not-a-digest"},
+        {"permitted_company_ids": list(range(1, write_action.CALENDAR_COMPANY_LIMIT + 2))},
+        {"policy_after": {"company_id": 8, "private_endpoint_key": ""}},
+    ],
+)
 def test_calendar_malformed_qualification_is_not_accepted(change: dict[str, object]) -> None:
     with TemporaryDirectory() as directory:
         path = _write_json(directory, "calendar.json", _calendar_payload())
@@ -2347,36 +2367,44 @@ def test_calendar_apply_rejects_a_different_selected_digest_before_http() -> Non
         assert status == 2 and not posts and not reads
 
 
+@pytest.mark.parametrize("option", ["--expected-plan-digest", "--dry-run-evidence-file"])
+def test_calendar_review_flags_do_not_claim_to_bind_other_product_config(option: str) -> None:
+    with TemporaryDirectory() as directory:
+        body = _calendar_payload()
+        body.pop("odoo_business_hours")
+        path = _write_json(directory, "config.json", body)
+        status, _, posts, reads = _run_main(
+            [
+                "product-config-apply",
+                "--payload-file",
+                path,
+                "--reviewed-dry-run",
+                "--idempotency-key",
+                "config-key",
+                option,
+                "unreviewed",
+            ]
+        )
+        assert status == 2 and not posts and not reads
+
+
 def _public_hosts_response(*, mode: str = "dry-run") -> dict[str, Any]:
     hosts = ["example.com", "www.example.com"]
     return {
-        "status": "accepted",
-        "trace_id": "launchplane_req_hosts",
-        "records": {},
+        "status": "accepted", "trace_id": "launchplane_req_hosts", "records": {},
         "result": {
-            "status": "ok",
-            "mode": mode,
-            "product": "example-product",
-            "context": "example-site",
-            "instance": "prod",
-            "runtime_environment": {"action": "skipped", "scope": "instance", "context": "example-site", "instance": "prod"},
+            "status": "ok", "mode": mode, "product": "example-product",
+            "context": "example-site", "instance": "prod",
+            "runtime_environment": {"action": "skipped", "scope": "instance",
+                                    "context": "example-site", "instance": "prod"},
             "runtime_key_safety": {"required": False, "status": "not_required"},
-            "secrets": [],
-            "summary": {"runtime_changed_key_count": 0, "secret_change_count": 0},
+            "secrets": [], "summary": {"runtime_changed_key_count": 0, "secret_change_count": 0},
             "next_actions": [],
             "public_hosts": {
-                "plan_digest": "b" * 64,
-                "before": [],
-                "after": hosts,
-                "added": hosts,
-                "updated": [],
-                "removed": [],
-                "unchanged": [],
-                "runtime_port": 8069,
-                "https": True,
-                "service_name": "web",
-                "certificate_type": "none",
-                "verified": mode == "apply",
+                "plan_digest": "b" * 64, "before": [], "after": hosts,
+                "added": hosts, "updated": [], "removed": [], "unchanged": [],
+                "runtime_port": 8069, "https": True, "service_name": "web",
+                "certificate_type": "none", "verified": mode == "apply",
                 "read_back_hosts": hosts if mode == "apply" else [],
             },
         },
