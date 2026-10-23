@@ -7432,6 +7432,7 @@ def privileged_policy_proposal_body(args: argparse.Namespace) -> dict[str, objec
             "desired_policy",
             "schema_migration",
             "administrator_quorum_change",
+            "workflow_rule_retirement",
             "reason",
             "related_issue",
         }

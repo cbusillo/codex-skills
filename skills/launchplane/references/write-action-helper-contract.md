@@ -2383,6 +2383,16 @@ The URL identifies the private service host, so share it only
 with destinations allowed to know it. The helper never returns policy selectors
 or credential-routing fields.
 
+For selected unmanaged workflow-rule removal, `managed-authz-policy-set` also
+accepts `request.workflow_rule_retirement`, containing the producer's exact
+active policy snapshot and fingerprint selection with `mode: plan`. Supply an
+empty `managed_set_id` and an empty schema-v2 or schema-v3 `desired_policy`.
+The producer rejects mixed policy changes and managed selections; managed rules
+are contracted through their own reviewed set. This field stays in the private
+envelope and is never echoed. The existing proposal metadata, full review URL,
+signed-in Director approval and replay rules are unchanged. See the producer's
+[reviewed retirement contract](https://github.com/cbusillo/launchplane/blob/main/docs/reviewed-retirement.md#reviewed-workflow-rule-removal).
+
 For `production-backup-policy`, `request` contains `authority` (the existing private
 backup-authority envelope with `mode: dry_run` and no reviewed digest), `reason`,
 and optional `related_issue`. The service runs and pins the dry run, saves the
