@@ -573,6 +573,20 @@ timeout locally. It is the leading explanation for the historical CI failures,
 whose process traces were not retained. The regression keeps its five-second
 deadline, and the import does not fetch the manual.
 
+### Local tests and CI
+
+Run `scripts/run-python-helper.sh {test_or_validator}` locally, replacing the
+placeholder with the tracked test helper or validator for the changed area.
+Shell behavior tests run through their own executable wrappers. For instruction
+changes, run the skill structure, reference, behavior and command-policy
+validators required by `AGENTS.md`. Safety, authorization, approval-rule,
+destructive-helper and shared-infrastructure changes also run the complete
+affected safety test modules locally. Keep required lint, type and inspection
+checks alongside those tests.
+
+The complete `./scripts/validate-skills.sh` suite runs in the Validate Skills
+workflow. Verify green CI on the current PR head before `ready` or merge.
+
 ## JetBrains inspections
 
 On macOS, `jetbrains-inspection` runs Python and Odoo assessments through stock

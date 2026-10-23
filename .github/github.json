@@ -111,7 +111,8 @@
       ]
     },
     "test": {
-      "default": "./scripts/validate-skills.sh"
+      "local": "scripts/run-python-helper.sh {test_or_validator}",
+      "ci": "./scripts/validate-skills.sh"
     },
     "syntax": {
       "python": "uv run --python 3.12 python -m compileall -q skills scripts hooks evals",
