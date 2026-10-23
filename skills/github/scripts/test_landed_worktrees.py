@@ -266,13 +266,14 @@ class MainTests(Fixture):
         self.assertEqual((code, {r["path"]: r["decision"] for r in result["worktrees"]}[source]), (0, "kept"))
         self.assertNotIn(mock.call(source, dry_run=False), run.call_args_list)
 
-    def test_claim_whose_session_lease_expired_does_not_keep_the_worktree(self):
+    def test_expired_session_lease_without_a_release_still_keeps_the_worktree(self):
         _, pull, commits = self.merged_refresh()
         github_plan_lease.renew("s1")
         os.utime(github_plan_lease.lease_path("s1"), (0, 0))
         code, result, run = self.run_main(pull, commits=commits, **self.claimed_source(released=False))
         source = str(self.root / "sample" / "source")
-        self.assertEqual({r["path"]: r["decision"] for r in result["worktrees"]}[source], "retired")
+        self.assertEqual({r["path"]: r["decision"] for r in result["worktrees"]}[source], "kept")
+        self.assertNotIn(mock.call(source, dry_run=False), run.call_args_list)
 
     def test_open_claim_on_an_issue_the_pr_refs_keeps_the_refresh_worktree(self):
         refresh, pull, commits = self.merged_refresh()
