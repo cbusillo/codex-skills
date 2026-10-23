@@ -15,7 +15,6 @@ installation and broad benchmarking scoped to tasks that need them.
 Use `scripts/local_codex_agent.py` with an explicit `--host` and either a
 verified `--model` or an explicitly configured private `--role`. The host's
 Responses API path and the selected model must support the needed tool behavior.
-Do not point the retired Every Code wrapper at a different binary.
 
 From the catalog root, a bounded example is:
 

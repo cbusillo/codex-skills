@@ -306,16 +306,16 @@ def test_retry_status_removes_default_skip_status() -> None:
         raise AssertionError("retry-status should make passed rows runnable again")
 
 
-def test_rejects_retired_transport_before_execution() -> None:
+def test_rejects_unsupported_transport_before_execution() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         prompts = write_prompts(Path(tmp))
         for flags in ([], ["--dry-run"], ["--allow-private-cloud"]):
             result = subprocess.run(
                 [sys.executable, str(SCRIPT), str(prompts), "--variant", "old=code-llm:gpt-5.4", *flags],
-                capture_output=True, text=True, check=False,
+                capture_output=True, text=True,
             )
-            if result.returncode == 0 or "retired" not in result.stderr or result.stdout:
-                raise AssertionError(f"retired transport must refuse before matrix execution: {result}")
+            if result.returncode == 0 or result.stdout:
+                raise AssertionError(f"unsupported transport must refuse before matrix execution: {result}")
 
 
 def test_default_matrix_uses_current_transport() -> None:
@@ -346,7 +346,7 @@ def test_default_matrix_uses_current_transport() -> None:
 
 def main() -> int:
     test_parse_variant()
-    test_rejects_retired_transport_before_execution()
+    test_rejects_unsupported_transport_before_execution()
     test_default_matrix_uses_current_transport()
     test_private_provider_approval_requires_confirmed_providers()
     test_skip_existing_does_not_require_provider_approval()

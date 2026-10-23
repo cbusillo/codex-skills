@@ -16,7 +16,6 @@ suites:
     command: scripts/validate-skills.sh
     required_for_pr: true
   exec_harness:
-    command: scripts/validate-exec-harness-skills.sh <scenario.json> [...]
     required_for_pr: false
     artifact_policy: local only
   local_llm_advisory:
@@ -25,7 +24,6 @@ suites:
 ci_promotion_decisions:
   deterministic_exec_harness:
     decision: conditional_local
-    ci_surface: scripts/validate-exec-harness-skills.sh <scenario.json> [...]
     not_run_reason: harness_unavailable
     rationale: >-
       Historical decision for the retired Every Code harness. Fake gh and fake
@@ -34,8 +32,6 @@ ci_promotion_decisions:
       that dependency; current host coverage needs an explicitly scoped port.
   local_llm_advisory:
     decision: advisory_local
-    ci_surface: >-
-      scripts/validate-exec-harness-skills.sh <local-llm-scenario.json>
     not_run_reason: local_endpoint_unavailable
     rationale: >-
       Historical decision for local-provider scenarios in the retired Every
