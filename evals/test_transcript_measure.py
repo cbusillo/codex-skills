@@ -140,6 +140,24 @@ class TranscriptMeasureTests(unittest.TestCase):
         self.assertEqual((skills["github"]["sessions"], skills["github"]["loads"]), (1, 0))
         self.assertEqual(skills["github-plan"]["sessions"], 1)
 
+    def test_a_one_off_checks_read_is_a_github_step_and_watching_is_babysitting(self) -> None:
+        owners = {
+            "uv run scripts/gh-pr.py --repo o/r checks 4": {"github"},
+            "uv run scripts/github-ci-diagnose.py --repo o/r --pr 4": {"github"},
+            "gh pr checks 4 --watch=false": {"github"},
+            "gh pr checks 4 -w": {"github"},
+            "gh pr checks 4 --watch --interval 30 2>&1": {"babysit-pr"},
+            "uv run --no-cache scripts/gh_pr_watch.py --pr auto --watch": {"babysit-pr"},
+            "uv run --no-cache skills/supervisor/scripts/foreign_watch.py --owner o": set(),
+            "uv run --no-cache pytest -q": {"python-uv-workflow"},
+            "uv run scripts/gh-pr.py --repo o/r list": {"github"},
+            "uv run scripts/launchplane-service-logs.py --config c": {"launchplane"},
+        }
+        for command, expected in owners.items():
+            with self.subTest(command=command):
+                steps = {event[1] for event in measure.command_events(command, False) if event[0] == "step"}
+                self.assertEqual(steps, expected)
+
     def test_a_proactive_load_is_not_a_recovery_when_a_later_block_hits(self) -> None:
         self.write(self.claude / "proj" / "s8.jsonl", [
             claude_prompt("merge PR 3"),
