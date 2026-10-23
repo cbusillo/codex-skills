@@ -264,7 +264,7 @@ Common top-level keys:
 - `prWorkflow`: repo-specific PR workflow hints such as whether a green,
   mergeable PR is only readiness evidence, whether explicit user approval is
   required before merge, and which watch skill/helper should monitor long PR
-  fix trains. The explicit owner settings planner consumes
+  fix trains. The explicit repository-owner settings planner consumes
   `mergePolicy.method` (`merge`, `squash`, or `rebase`) to select one allowed
   merge method; this metadata does not authorize a settings write.
 - `release`: repo-specific release intent and batching metadata. Use this for
@@ -367,7 +367,7 @@ Common top-level keys:
 - `githubSignals`: post-merge and security/quality signal expectations.
 - `githubSettings`: expected GitHub repository settings that snapshot helpers
   report as `ok`, `warning`, or `unavailable` without silently mutating.
-  The explicit [verified-owner settings planner](cli-reference.md#verified-owner-administration)
+  The explicit [verified repository-owner settings planner](cli-reference.md#verified-repository-owner-administration)
   consumes the existing `expected.deleteBranchOnMerge` boolean plus
   `prWorkflow.mergePolicy.method`. Other REST merge flags can be supplied
   in an explicit admin request; they are not new snapshot expectation keys.

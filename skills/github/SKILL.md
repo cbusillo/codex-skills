@@ -66,7 +66,7 @@ resources:
     description: Plans or explicitly applies the standard repository owner, automation, and direction ruleset pair, and optionally the client branch and tag lock, with active repository owner verification.
   - path: scripts/gh-owner-admin.py
     kind: script
-    description: Uses the existing verified owner transport for reviewed repository settings, collaborator removal, custom tag rulesets, and environment secret-name reads.
+    description: Uses the existing verified repository-owner transport for reviewed repository settings, collaborator removal, custom tag rulesets, and environment secret-name reads.
   - path: scripts/gh-plan.py
     kind: script
     description: Shared planning issue, milestone, Project, and next-work helper used by GitHub planning workflows.
@@ -310,7 +310,7 @@ commands:
     source: skill
     resource_path: scripts/gh-owner-admin.py
     example_argv: ["uv", "run", "scripts/gh-owner-admin.py", "plan", "--repo", "OWNER/REPO", "--request-file", "request.json", "--out", "plan.json"]
-    purpose: Plans one supported repository admin request using the verified owner.
+    purpose: Plans one supported repository admin request using the verified repository owner.
   - name: github-owner-admin-apply
     source: skill
     resource_path: scripts/gh-owner-admin.py
@@ -941,8 +941,8 @@ explicitly approves that one-off; then set
 `GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1` for that command only. This
 covers unavailable, rejected or rate-limited automation authentication, never
 an API permission refusal. For separately authorized administration on a
-personally owned repository, read [verified-owner administration](references/cli-reference.md#verified-owner-administration)
-and use `gh-owner-admin.py`, which reuses the existing ruleset owner transport.
+personally owned repository, read [verified repository-owner administration](references/cli-reference.md#verified-repository-owner-administration)
+and use `gh-owner-admin.py`, which reuses the existing ruleset repository-owner transport.
 A denial stops that action; this route is selected before a call, never used
 to replay a denied call as another identity. For
 credential sources, automation-only mode, or identity configuration, read

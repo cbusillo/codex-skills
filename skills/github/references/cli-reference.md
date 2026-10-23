@@ -514,14 +514,14 @@ stale body, closes the PR so future agents do not treat it as mergeable, and can
 delete the unused remote task branch when `--delete-branch` is explicitly
 requested.
 
-### Verified-Owner Administration
+### Verified Repository-Owner Administration
 
 Use `gh-owner-admin.py` only for separately authorized operations on the
 verified human's own repository. It reuses `RulesetClient`, clears automation
-token overrides for that explicit route, verifies `/user` against the owner,
+token overrides for that explicit route, verifies `/user` against the repository owner,
 and verifies the repository identity. It neither changes credentials or App
 grants nor automatically falls back after an App permission refusal. A source
-implementation or fixture test authorizes no live owner call. Access removal
+implementation or fixture test authorizes no live repository-owner call. Access removal
 and protection changes retain the Director's existing stop boundaries.
 
 For declared repository flags, run:
@@ -571,7 +571,7 @@ provider limitation before any write. Do not substitute an empty bypass list
 for an unsupported release-workflow exception; review the supported release
 identity or omit the blocking rule under separate authorization.
 
-For an explicitly selected owner read, use
+For an explicitly selected repository-owner read, use
 `read --repo OWNER/REPO --path /environments/ENVIRONMENT/secrets`.
 URL-encode the environment name, including slashes. This pages and returns
 secret names only, discarding all other fields; it never reads values or keys.
