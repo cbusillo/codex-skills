@@ -273,13 +273,15 @@ the failure annotation "The job has exceeded the maximum execution time of
 
 - matches the PR head, run and attempt
 - had a runner assigned and a step that was cancelled while running
-- has that annotation on its own check run
+- has that annotation on its own check run, and no other failure annotation
+  except "The operation was canceled"
 - ran at least as long as the limit the annotation names
 
 Every job in the attempt must be complete. A job cancelled by a person
 ("The run was canceled by @user"), by a concurrency group or a newer run, or
-with no readable annotation is not retried, and neither is a run where any
-cancelled job lacks the timeout evidence. A new push changes the head, so the
+with no readable annotation is not retried, even when a timeout annotation is
+also present. Neither is a run where any cancelled job lacks the timeout
+evidence. A new push changes the head, so the
 old run is no longer a candidate. The retry uses the same budget, persisted
 intent and readback as other failed-job retries.
 

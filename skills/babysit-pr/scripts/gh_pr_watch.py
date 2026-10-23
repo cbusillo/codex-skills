@@ -1780,7 +1780,10 @@ def runner_acquisition_retry(pr, run, reader, *, raise_read_errors=False):
 
 
 def job_check_run_path(pr, job):
-    path = urlparse(str(job.get("check_run_url") or ""))
+    try:
+        path = urlparse(str(job.get("check_run_url") or ""))
+    except ValueError:
+        return None
     prefix = f"/repos/{pr['repo']}/check-runs/"
     if (path.scheme != "https" or path.netloc != "api.github.com"
             or not path.path.casefold().startswith(prefix.casefold()) or not path.path[len(prefix):].isdigit()
@@ -1791,10 +1794,10 @@ def job_check_run_path(pr, job):
 
 JOB_TIMEOUT_ANNOTATION = re.compile(
     r"The job has exceeded the maximum execution time of (?=\d)(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?")
+JOB_CANCELLED_ANNOTATION = "The operation was canceled"
 
 
 def job_timeout_retry(pr, run, reader):
-    """Admit a failed-jobs retry only when every cancelled job ran out of its own time limit."""
     run_id, attempt = run.get("run_id"), run.get("run_attempt")
     if (run.get("status") != "completed" or run.get("conclusion") != "cancelled"
             or type(attempt) is not int or attempt <= 0 or type(run_id) is not int):
@@ -1824,17 +1827,19 @@ def job_exceeded_own_limit(pr, job, reader):
     try:
         elapsed = (datetime.fromisoformat(str(job.get("completed_at")))
                    - datetime.fromisoformat(str(job.get("started_at")))).total_seconds()
-    except ValueError:
+    except (TypeError, ValueError):
         return False
     annotations = reader.paged_json(check_path + "/annotations", step_prefix="timeout_annotations")
-    for annotation in annotations:
-        match = JOB_TIMEOUT_ANNOTATION.fullmatch(str(annotation.get("message") or "").strip().rstrip("."))
-        if annotation.get("annotation_level") == "failure" and match:
-            hours, minutes, seconds = (int(part or 0) for part in match.groups())
-            limit = hours * 3600 + minutes * 60 + seconds
-            if 0 < limit <= elapsed:
-                return True
-    return False
+    failures = [str(annotation.get("message") or "").strip().rstrip(".")
+                for annotation in annotations if annotation.get("annotation_level") == "failure"]
+    limits = [JOB_TIMEOUT_ANNOTATION.fullmatch(message) for message in failures]
+    timeouts = [match for match in limits if match]
+    if len(timeouts) != 1 or any(
+            not match and message != JOB_CANCELLED_ANNOTATION for message, match in zip(failures, limits)):
+        return False
+    hours, minutes, seconds = (int(part or 0) for part in timeouts[0].groups())
+    limit = hours * 3600 + minutes * 60 + seconds
+    return 0 < limit <= elapsed
 
 
 def required_codeql_workflow(pr, run, reader):

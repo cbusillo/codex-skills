@@ -2533,6 +2533,7 @@ def test_required_runner_acquisition_admitted_without_logs():
     ("jobs", {"run_attempt": 2}),
     ("jobs", {"run_id": 2}),
     ("jobs", {"check_run_url": "https://api.github.com/repos/other/repo/check-runs/9"}),
+    ("jobs", {"check_run_url": "https://[broken"}),
     ("check", {"head_sha": "old"}),
     ("check", {"id": 10}),
     ("run", {"run_attempt": 2}),
@@ -3937,8 +3938,7 @@ def timeout_job(job_id, name, conclusion, completed, steps):
             "check_run_url": f"https://api.github.com/repos/openai/codex/check-runs/{job_id}", "steps": steps}
 
 
-def setup_timeout_jobs():
-    """Attempt 1 of cbusillo/codex-skills run 39974519424, pinned to the sample PR."""
+def run_39974519424_attempt_1_jobs():
     return [
         timeout_job(120485523998, "Validate Python 3.12", "success", "15:07:21", [
             timeout_step(1, "Set up job", "success", "15:00:36", "15:00:37"),
@@ -3968,7 +3968,7 @@ class TimeoutReader:
         self.results = []
         self.cache_enabled = True
         self.degraded_reasons = []
-        self.jobs = setup_timeout_jobs()
+        self.jobs = run_39974519424_attempt_1_jobs()
         self.annotations = {120485524103: own_timeout_annotations()}
         self.paths = []
 
@@ -4008,6 +4008,7 @@ def test_job_cancelled_by_a_person_or_newer_run_is_not_retryable(message):
     "no_annotations", "notice_level", "short_elapsed", "unparsed_limit", "no_runner", "no_steps",
     "no_cancelled_step", "newer_head", "other_attempt", "other_run", "foreign_check", "unfinished_job",
     "person_cancelled_sibling", "failed_run", "actor", "read_error", "bad_pagination",
+    "timeout_then_person", "timeout_then_newer_run", "naive_timestamp", "broken_check_url",
 ])
 def test_job_timeout_with_unknown_or_conflicting_cause_is_not_retryable(case):
     reader = TimeoutReader()
@@ -4043,6 +4044,15 @@ def test_job_timeout_with_unknown_or_conflicting_cause_is_not_retryable(case):
         reader.annotations[120485523998] = [{"annotation_level": "failure", "message": "The run was canceled by @octocat."}]
     elif case == "failed_run":
         run["conclusion"] = "failure"
+    elif case == "timeout_then_person":
+        reader.annotations[120485524103].append({"annotation_level": "failure", "message": "The run was canceled by @octocat."})
+    elif case == "timeout_then_newer_run":
+        reader.annotations[120485524103].append({"annotation_level": "failure", "message":
+            "Canceling since a higher priority waiting request for 'Validate Skills-feature' exists"})
+    elif case == "naive_timestamp":
+        job["started_at"] = "2026-10-23T15:00:35"
+    elif case == "broken_check_url":
+        job["check_run_url"] = "https://[broken"
     elif case == "actor":
         reader.degraded_reasons = [{"component": "actor"}]
     elif case == "read_error":
