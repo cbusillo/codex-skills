@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import contextlib
 import functools
-import io
 import importlib.util
+import io
 import json
 import os
 import shlex
@@ -20,8 +20,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest import mock
 from pathlib import Path
+from unittest import mock
 
 HOOK = Path(__file__).resolve().parent / "command_policy_hook.py"
 sys.path.insert(0, str(HOOK.parent))
@@ -625,6 +625,7 @@ class CommandPolicyHookTests(unittest.TestCase):
                 "LAUNCHPLANE_TEST_POSTGRES_URL=postgresql://test@db.example.com/postgres " + gate + " --database-url " + local,
                 "LAUNCHPLANE_TEST_POSTGRES_URL=" + local + " " + gate + " --database-url postgresql://test@db.example.com/postgres",
                 "LAUNCHPLANE_TEST_POSTGRES_URL=" + local + " uv run launchplane service start",
+                "LAUNCHPLANE_TEST_POSTGRES_URL=" + local + " builtin . /other/setup && " + gate + " --database-url " + local,
                 "LAUNCHPLANE_TEST_POSTGRES_URL=" + local + " UV_PROJECT=/other " + gate,
                 "uv run --env-file=.env --extra dev launchplane ci postgres-integration --database-url " + local,
                 "uv run --env-file .env --extra dev launchplane ci postgres-integration --database-url " + local,

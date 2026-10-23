@@ -590,7 +590,7 @@ def exception_cwd(shell: str, cwd: Path) -> Path | None:
             return None
     for raw_argv in commands:
         argv = without_redirections(raw_argv)
-        while argv and argv[0] in TRANSPARENT | SHELL_KEYWORDS | {"builtin", "function"}:
+        while argv and (argv[0] in TRANSPARENT | SHELL_KEYWORDS | {"builtin", "function"} or ASSIGNMENT.match(argv[0])):
             wrapper = argv[0]
             argv = argv[2:] if wrapper == "function" else argv[1:]
             if wrapper in TRANSPARENT | {"builtin"}:
@@ -601,18 +601,24 @@ def exception_cwd(shell: str, cwd: Path) -> Path | None:
         if not normalized or normalized[0][:1] != ["launchplane"]:
             continue
         for position, token in enumerate(raw_argv):
-            if token in {"--active", "--no-project"} or token.startswith("-C") or token.split("=", 1)[0] in {"--chdir", "--directory", "--project", "--with", "--with-editable", "--with-requirements", "--env-file"}:
+            if (
+                token in {"--active", "--no-project"}
+                or token.startswith("-C")
+                or token.split("=", 1)[0]
+                in {"--chdir", "--directory", "--project", "--with", "--with-editable", "--with-requirements", "--env-file"}
+            ):
                 return None
-            repository = token.removeprefix("--repository=") if raw_argv[position - 1:position] != ["--repository"] else token
-            repository_slug = repository != token or raw_argv[position - 1:position] == ["--repository"]
-            if Path(token).name == "launchplane" and token != "launchplane" and not (repository_slug and REPOSITORY_SLUG.fullmatch(repository)):
+            repository = token.removeprefix("--repository=") if raw_argv[position - 1 : position] != ["--repository"] else token
+            repository_slug = repository != token or raw_argv[position - 1 : position] == ["--repository"]
+            if (
+                Path(token).name == "launchplane"
+                and token != "launchplane"
+                and not (repository_slug and REPOSITORY_SLUG.fullmatch(repository))
+            ):
                 return None
         if normalized[0][:3] == POSTGRES_GATE and not names_loopback_database(raw_argv):
             return None
-        command = argv
-        while command and command[0].startswith(POSTGRES_URL_VARIABLE):
-            command = command[1:]
-        if command[:2] != ["uv", "run"]:
+        if argv[:2] != ["uv", "run"]:
             return None
     return cwd if cwd.is_absolute() else None
 
