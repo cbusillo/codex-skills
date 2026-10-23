@@ -29,7 +29,7 @@ OPERATION_PATHS = {
 
 HELPER_OPERATIONS = {
     **{"testing-replacement-resources-" + mode: "prepare_testing_replacement_resources"
-       for mode in ("dry-run", "apply", "readback")},
+       for mode in ("dry-run", "apply", "readback", "release")},
     "agent-context": "read_agent_context",
     "product-config-preflight": "evaluate_agent_write_intent",
     "product-config-dry-run": "apply_product_config",
