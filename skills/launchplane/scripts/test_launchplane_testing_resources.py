@@ -78,21 +78,26 @@ def invoke(
     service: str = SERVICE,
     reviewed: bool = True,
     idempotency_key: str = "original-key",
+    initial: bool = False,
 ) -> Invocation:
     output = io.StringIO()
     with TemporaryDirectory() as directory:
         root = Path(directory)
         (root / "repo").mkdir()
         payload, evidence_path = root / "request.json", root / "review.json"
-        payload.write_text(json.dumps(private_request()))
+        planning = private_request(initial_generation=True, operation_id="") if initial else private_request()
+        payload.write_text(json.dumps(planning))
         with (
             patch.object(h, "active_repo_root", return_value=root / "repo"),
             patch.object(h, "prepare_operator_settings", return_value={"service_url": SERVICE}) as settings,
             patch.object(h, "request_launchplane", return_value=receipt("dry-run")) as post,
             redirect_stdout(output),
         ):
-            if mode == "apply":
-                assert h.main([PREFIX + "dry-run", "--payload-file", str(payload)]) == 0, output.getvalue()
+            if mode in {"apply", "release"}:
+                argv = [PREFIX + "dry-run", "--payload-file", str(payload)]
+                if initial:
+                    argv += ["--idempotency-key", "original-key"]
+                assert h.main(argv) == 0, output.getvalue()
                 evidence = json.loads(output.getvalue())
                 if edit_evidence:
                     edit_evidence(evidence)
@@ -101,11 +106,13 @@ def invoke(
                 settings.reset_mock()
                 output.seek(0)
                 output.truncate()
-            payload.write_text(json.dumps(private_request() if body is None else body))
+            payload.write_text(json.dumps(planning if body is None else body))
             settings.return_value = {"service_url": service}
             post.side_effect = responses if responses is not None else [receipt(mode), receipt("readback")]
             argv = [PREFIX + mode, "--payload-file", str(payload)]
-            if mode == "apply":
+            if initial and mode not in {"apply", "release"}:
+                argv += ["--idempotency-key", idempotency_key]
+            if mode in {"apply", "release"}:
                 argv += [
                     "--expected-plan-digest",
                     PLAN,
@@ -347,6 +354,89 @@ def test_accepted_apply_then_denied_readback_retains_the_denial_boundary() -> No
     assert output["result"]["resource_readback_matches"] is False
     assert output["summary"]["read_back_trace_id"] == payload["trace_id"]
     assert h.http_error_recommendation("denied") in output["summary"]["recommendation"]
+
+
+def release_receipt(**updates: object) -> dict[str, Any]:
+    return {
+        "status": "accepted",
+        "trace_id": "launchplane_req_release",
+        "result": {
+            "product": "example",
+            "context": "example-testing",
+            "instance": "testing",
+            "operation_id": "retained-fixture",
+            "released": True,
+            "provider_effects_started": False,
+            "retained_target_preserved": True,
+            **updates,
+        },
+    }
+
+
+@pytest.mark.parametrize("mode", ["dry-run", "apply", "readback", "release"])
+def test_initial_modes_keep_original_key_and_private_operation(mode: str) -> None:
+    responses = [release_receipt()] if mode == "release" else None
+    code, output, calls, _ = invoke(mode, initial=True, responses=responses)
+    assert code == 0, output
+    assert all(call.kwargs["idempotency_key"] == "original-key" for call in calls)
+    assert all(call.kwargs["body"]["initial_generation"] is True for call in calls)
+    assert all(call.kwargs["body"]["operation_id"] == "" for call in calls)
+    assert "retained-fixture" not in json.dumps(output)
+    if mode == "release":
+        assert len(calls) == 1
+        assert calls[0].kwargs["body"]["reviewed_plan_sha256"] == PLAN
+        assert output["result"]["released"] is True
+        assert output["result"]["resources_verified"] is False
+
+
+@pytest.mark.parametrize("mode", ["dry-run", "apply", "readback", "release"])
+def test_initial_modes_require_original_key(mode: str) -> None:
+    code, _, calls, _ = invoke(mode, initial=True, idempotency_key=" ")
+    assert code != 0 and calls == []
+
+
+@pytest.mark.parametrize("mode", ["apply", "release"])
+def test_initial_mutations_bind_key_and_reviewed_operation(mode: str) -> None:
+    code, _, calls, _ = invoke(mode, initial=True, idempotency_key="different-key")
+    assert code != 0 and calls == []
+    response = release_receipt(operation_id="other") if mode == "release" else receipt("apply", operation_id="other")
+    code, output, calls, _ = invoke(mode, initial=True, responses=[response])
+    assert code != 0 and len(calls) == 1 and output["status"] == "outcome_unknown"
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"provider_effects_started": True},
+        {"released": False},
+        {"retained_target_preserved": False},
+        {"context": "other"},
+        {"foreign": "PRIVATE_SENTINEL"},
+    ],
+)
+def test_release_receipt_never_hides_effects_or_scope_drift(updates: dict[str, Any]) -> None:
+    code, output, calls, _ = invoke("release", initial=True, responses=[release_receipt(**updates)])
+    assert code != 0 and len(calls) == 1 and output["status"] == "outcome_unknown"
+    assert output["result"] == {}
+
+
+def test_release_requires_initial_intent() -> None:
+    code, _, calls, _ = invoke("release")
+    assert code != 0 and calls == []
+
+
+def test_initial_apply_released_intent_is_not_allocation_success() -> None:
+    code, output, calls, _ = invoke("apply", initial=True, responses=[release_receipt()])
+    assert code != 0 and len(calls) == 1
+    assert output["status"] == "released"
+    assert output["result"]["resources_verified"] is False
+
+
+@pytest.mark.parametrize("mode", ["apply", "release"])
+def test_initial_lost_mutation_never_replays(mode: str) -> None:
+    code, output, calls, _ = invoke(mode, initial=True, responses=[TimeoutError("PRIVATE_SENTINEL")])
+    assert code != 0 and len(calls) == 1 and output["status"] == "outcome_unknown"
+    assert "PRIVATE_SENTINEL" not in json.dumps(output)
 
 
 if __name__ == "__main__":
