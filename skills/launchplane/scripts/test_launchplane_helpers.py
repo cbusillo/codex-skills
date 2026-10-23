@@ -23,6 +23,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Iterator
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
+from datetime import datetime
 from email.message import Message
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -2117,7 +2118,12 @@ def _calendar_response(operation: str = "set", mode: str = "dry-run") -> dict[st
         "company_id": 7 if operation == "set" else None,
         "calendar_id": 11 if operation == "set" else None,
         "timezone": "America/New_York" if operation == "set" else "",
-        "window": {"applies": True, "blocked_reason": "", "next_release_at": "", "timezone": "America/New_York"}
+        "window": {
+            "applies": True,
+            "blocked_reason": "The selected company is still within working hours.",
+            "next_release_at": "2026-10-23T21:00:00.123456+00:00",
+            "timezone": "America/New_York",
+        }
         if operation == "set"
         else None,
         "runtime_identity": {
@@ -2165,20 +2171,22 @@ def test_calendar_inspect_projects_private_labels_and_never_applies() -> None:
         assert status == 2 and not posts and not reads
 
 
-@pytest.mark.parametrize("operation", ["set", "clear"])
-def test_calendar_apply_uses_exact_review_then_checks_persisted_policy(operation: str) -> None:
+@pytest.mark.parametrize("operation,in_hours", [("set", True), ("set", False), ("clear", False)])
+def test_calendar_apply_uses_exact_review_then_checks_persisted_policy(operation: str, in_hours: bool) -> None:
     with TemporaryDirectory() as directory:
         path, evidence = _calendar_review(directory, operation)
         saved = _write_json(directory, "review.json", evidence)
         digest = evidence["result"]["odoo_business_hours"]["plan_digest"]
         profile = _product_profile_response()
-        profile["profile"].update(source="calendar-source")
+        profile["profile"].update(source="calendar-source", updated_at="2026-10-23T17:00:00+00:00")
         expected = _calendar_response(operation, "apply")["result"]["odoo_business_hours"]["policy_after"]
         if expected is not None:
             profile["profile"]["odoo_business_hours"] = expected
         key = "calendar-original-key"
         argv = ["product-config-apply", "--payload-file", path, *_reviewed_apply_argv(digest, saved, key=key)]
         response = _calendar_response(operation, "apply")
+        if operation == "set" and not in_hours:
+            response["result"]["odoo_business_hours"]["window"].update(blocked_reason="", next_release_at="")
         response.update(replayed=True, original_trace_id="launchplane_req_original")
         status, output, posts, reads = _run_main(argv, post=response, read=profile)
         assert status == 0 and len(posts) == len(reads) == 1
@@ -2187,6 +2195,13 @@ def test_calendar_apply_uses_exact_review_then_checks_persisted_policy(operation
         assert posts[0]["idempotency_key"] == key
         assert output["result"]["read_back_matches"] is True
         assert output["result"]["read_back"].get("odoo_business_hours") == expected
+        if operation == "set":
+            window = output["result"]["odoo_business_hours"]["window"]
+            observed = response["result"]["odoo_business_hours"]["window"]["next_release_at"]
+            if observed:
+                assert datetime.fromisoformat(window["next_release_at"]) == datetime.fromisoformat(observed)
+            else:
+                assert not window["next_release_at"]
         if expected is None:
             assert "odoo_business_hours" not in output["result"]["read_back"]
 

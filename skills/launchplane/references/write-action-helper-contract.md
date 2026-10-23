@@ -1615,6 +1615,8 @@ inconsistent scope or selection fail projection. The result's company scope is
 the permitted-company set, bounded to 128 companies, not database-wide visibility.
 Runtime identity projects only the required lane, deployment, artifact and
 source references; other runtime metadata is omitted.
+Window `next_release_at` is normalized to UTC. The producer's release prose is
+omitted from configuration output; use the observed closing time.
 
 A calendar qualification failure retains its service code and trace and calls
 for inspecting/correcting company, calendar, endpoint and current authority.

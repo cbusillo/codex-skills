@@ -1182,6 +1182,20 @@ CALENDAR_QUALIFICATION_ADVICE = (
 )
 
 
+def _utc_timestamp(value: object) -> str:
+    if not isinstance(value, str):
+        raise LaunchplaneSafetyError("invalid_response")
+    if not value:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            raise ValueError("timezone required")
+        return public_timestamp(parsed.astimezone(UTC).isoformat().replace("+00:00", "Z"))
+    except (ValueError, OverflowError):
+        raise LaunchplaneSafetyError("invalid_response") from None
+
+
 def _calendar_reference(value: object, *, allow_empty: bool = False) -> str:
     if not isinstance(value, str) or value != value.strip() or "://" in value or "@" in value:
         raise LaunchplaneSafetyError("invalid_response")
@@ -1293,12 +1307,12 @@ def _project_business_hours(value: object) -> dict[str, object]:
     projected["window"] = None
     if window is not None:
         window = _require_exact_fields(window, {"applies", "blocked_reason", "next_release_at", "timezone"})
-        if type(window["applies"]) is not bool:
+        if type(window["applies"]) is not bool or not isinstance(window["blocked_reason"], str):
             raise LaunchplaneSafetyError("invalid_response")
         projected["window"] = {
             "applies": window["applies"],
-            "blocked_reason": _optional_code(window["blocked_reason"]),
-            "next_release_at": public_timestamp(window["next_release_at"]) if window["next_release_at"] else "",
+            "blocked_reason": "",
+            "next_release_at": _utc_timestamp(window["next_release_at"]),
             "timezone": _calendar_reference(window["timezone"], allow_empty=True),
         }
     if operation == "inspect":
@@ -1437,10 +1451,12 @@ def _execute_calendar_apply(args: argparse.Namespace, body: dict[str, object], r
                 or profile.get("product") != body["product"]
                 or type(profile.get("schema_version")) is not int
                 or profile["schema_version"] < 1
-                or any(not isinstance(profile.get(field), str) for field in ("display_name", "repository", "updated_at", "source"))
+                or any(
+                    not isinstance(profile.get(field), str) or not profile[field].strip()
+                    for field in ("display_name", "repository", "updated_at", "source")
+                )
             ):
                 raise LaunchplaneSafetyError("invalid_response")
-            public_timestamp(profile["updated_at"])
             projected = _project_product_profile(profile)
             return {field: projected[field] for field in ("product", "odoo_business_hours") if field in projected}
 
@@ -7597,18 +7613,7 @@ def summarize_privileged_policy_proposal(
             "unchanged_policy_key_count",
         )
     )
-    expires_at = summary.get("expires_at")
-    if not isinstance(expires_at, str):
-        raise LaunchplaneSafetyError("invalid_response")
-    normalized_expiry = ""
-    if expires_at:
-        try:
-            expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
-            if expiry.tzinfo is None:
-                raise ValueError("timezone required")
-            normalized_expiry = expiry.astimezone(UTC).isoformat().replace("+00:00", "Z")
-        except ValueError:
-            raise LaunchplaneSafetyError("invalid_response") from None
+    normalized_expiry = _utc_timestamp(summary.get("expires_at"))
     result_status = summary.get("result_status")
     if result_status not in {"ok", "blocked"}:
         raise LaunchplaneSafetyError("invalid_response")
