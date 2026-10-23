@@ -61,6 +61,8 @@ def test_check_reports_current_drift_and_unavailable(tmp_path: Path) -> None:
     schema.write_bytes(_openapi())
     arguments = ["--openapi", str(schema)]
     assert sync.run(["sync", *arguments], pin=pin) == 0
+    expected_environment = sorted(json.loads(schema.read_bytes())["components"]["schemas"]["Environment"]["properties"])
+    assert json.loads(pin.read_bytes())["product-environment-read"] == expected_environment
     assert sync.run(["check", *arguments], pin=pin) == 0
     schema.write_bytes(_openapi("added_field"))
     assert sync.run(["check", *arguments], pin=pin) == 1

@@ -2125,7 +2125,9 @@ this skill directory. Add each new field to its read's allowlist, projecting it 
 when the read should emit it, and name the Launchplane commit in the commit
 message. The `Launchplane Read Response Fields` workflow fails on pull
 requests, on `main` and daily when the pin differs from a fresh source export
-of Launchplane's `main`. It does not fetch the retired committed snapshots.
+of Launchplane's `main`. It does not fetch the retired committed snapshots. The
+comparator exits 0 for agreement, 1 for drift and 2 when it cannot derive the
+fields from the supplied schema.
 
 The merge-train controller reply has no helper allowlist. Launchplane publishes
 its contract as `contracts/merge-train-controller-reply.schema.json` and tests
