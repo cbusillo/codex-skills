@@ -1,10 +1,9 @@
-// EventKit supplies scheduling; Reminders' native URL field supplies the visible attachment.
+// EventKit supplies scheduling; the Shortcuts "Add New Reminder" action supplies the visible URL attachment.
 // Reads a JSON request line on stdin, prints the exact list's items as a lookup line,
 // then reads reminder_save.py's target decision line. Never requests permissions or opens the terminal URL.
-import AppKit
-import ApplicationServices
 import EventKit
 import Foundation
+import SQLite3
 
 struct Request: Decodable {
     let kind: String?
@@ -21,6 +20,8 @@ struct Request: Decodable {
     let update_id: String?
     let delete_id: String?
     let preserve_existing: Bool?
+    let shortcut: String?
+    let nonce: String?
 }
 
 // reminder_save.py decides the target from the lookup; this writer only rechecks it.
@@ -70,101 +71,70 @@ func finish(_ status: String, _ message: String, extra: [String: Any] = [:]) -> 
     exit(status == "saved" || status == "deleted" ? 0 : 1)
 }
 
-func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
-    var value: CFTypeRef?
-    AXUIElementCopyAttributeValue(element, name as CFString, &value)
-    return value
-}
-func text(_ element: AXUIElement, _ name: String) -> String {
-    attribute(element, name) as? String ?? ""
-}
-func descendants(_ root: AXUIElement, depth: Int = 0) -> [AXUIElement] {
-    if depth > 22 { return [] }
-    return [root] + (attribute(root, "AXChildren") as? [AXUIElement] ?? [])
-        .flatMap { descendants($0, depth: depth + 1) }
-}
-func settleUI() { Thread.sleep(forTimeInterval: 0.3) }
-
-func remindersWindow(_ app: NSRunningApplication) -> AXUIElement? {
-    let root = AXUIElementCreateApplication(app.processIdentifier)
-    AXUIElementSetMessagingTimeout(root, 3)
-    let windows = (attribute(root, "AXWindows") as? [AXUIElement] ?? []).filter { window in
-        descendants(window).contains {
-            text($0, "AXRole") == "AXOutline" && text($0, "AXDescription") == "Account Lists"
-        }
-    }
-    // Settings and detached reminder windows are not list windows.
-    return windows.count == 1 ? windows[0] : nil
+func shortcutInstalled(_ name: String) -> Bool {
+    let list = Process()
+    let output = Pipe()
+    list.executableURL = URL(fileURLWithPath: "/usr/bin/shortcuts")
+    list.arguments = ["list"]
+    list.standardOutput = output
+    list.standardError = FileHandle.nullDevice
+    guard (try? list.run()) != nil else { return false }
+    let names = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+    list.waitUntilExit()
+    return list.terminationStatus == 0 && names.components(separatedBy: .newlines).contains(name)
 }
 
-// Never type through a global keystroke or clipboard: only the identified URL element.
-func saveAttachment(_ request: Request, app: NSRunningApplication) -> Bool {
-    app.activate()
-    settleUI()
-    guard let window = remindersWindow(app) else { return false }
-    let listOutlines = descendants(window).filter {
-        text($0, "AXRole") == "AXOutline" && text($0, "AXDescription") == "Account Lists"
+// The shortcut's only job is Add New Reminder with this title, notes and URL; EventKit does the rest.
+func runShortcut(_ name: String, title: String, notes: String, url: String) -> Bool {
+    let input = FileManager.default.temporaryDirectory.appendingPathComponent("reminder-\(UUID().uuidString).json")
+    defer { try? FileManager.default.removeItem(at: input) }
+    guard let data = try? JSONSerialization.data(withJSONObject: ["title": title, "notes": notes, "url": url]),
+          (try? data.write(to: input, options: .withoutOverwriting)) != nil else { return false }
+    let run = Process()
+    run.executableURL = URL(fileURLWithPath: "/usr/bin/shortcuts")
+    run.arguments = ["run", name, "--input-path", input.path]
+    run.standardOutput = FileHandle.nullDevice
+    run.standardError = FileHandle.nullDevice
+    guard (try? run.run()) != nil else { return false }
+    // Stop a stalled shortcut well inside reminder_save.py's 90-second watchdog.
+    let deadline = Date().addingTimeInterval(60)
+    while run.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.2) }
+    if run.isRunning {
+        run.terminate()
+        return false
     }
-    guard listOutlines.count == 1 else { return false }
-    let rows = descendants(listOutlines[0]).filter { element in
-        text(element, "AXRole") == "AXRow" &&
-        (attribute(element, "AXChildren") as? [AXUIElement] ?? []).contains {
-            text($0, "AXDescription").hasPrefix(request.list + ", ")
-        }
-    }
-    guard rows.count == 1 else { return false }
-    AXUIElementSetAttributeValue(rows[0], "AXSelected" as CFString, kCFBooleanTrue)
-    settleUI()
-    guard attribute(rows[0], "AXSelected") as? Bool == true else { return false }
+    return run.terminationStatus == 0
+}
 
-    func reminderGroups() -> [AXUIElement] {
-        descendants(window).filter {
-            text($0, "AXRole") == "AXGroup" &&
-            (attribute($0, "AXChildren") as? [AXUIElement] ?? []).contains {
-                text($0, "AXRole") == "AXTextField" && text($0, "AXValue") == request.title
-            } &&
-            descendants($0).contains { text($0, "AXDescription") == "Edit Details" }
+// EventKit cannot read the visible attachment, so read it back from the Reminders store, read-only.
+func visibleURLs(_ itemID: String) -> Set<String> {
+    let stores = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Group Containers/group.com.apple.reminders/Container_v1/Stores")
+    let files = (try? FileManager.default.contentsOfDirectory(atPath: stores.path)) ?? []
+    var urls: Set<String> = []
+    for file in files where file.hasPrefix("Data-") && file.hasSuffix(".sqlite") {
+        var db: OpaquePointer?
+        defer { sqlite3_close(db) }
+        guard sqlite3_open_v2(stores.appendingPathComponent(file).path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else { continue }
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        let query = """
+            SELECT o.ZURL FROM ZREMCDOBJECT o JOIN ZREMCDREMINDER r ON o.ZREMINDER2 = r.Z_PK
+            WHERE r.ZDACALENDARITEMUNIQUEIDENTIFIER = ? AND r.ZMARKEDFORDELETION = 0 AND o.ZURL IS NOT NULL
+            """
+        guard sqlite3_prepare_v2(db, query, -1, &statement, nil) == SQLITE_OK else { continue }
+        sqlite3_bind_text(statement, 1, itemID, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+        while sqlite3_step(statement) == SQLITE_ROW {
+            if let value = sqlite3_column_text(statement, 0) { urls.insert(String(cString: value)) }
         }
     }
-    var groups: [AXUIElement] = []
+    return urls
+}
+
+func hasVisibleURL(_ itemID: String, _ url: String) -> Bool {
     for _ in 0..<20 {
-        groups = reminderGroups()
-        if groups.count == 1 { break }
-        settleUI()
-    }
-    guard groups.count == 1 else { return false }
-    func detailsButton(_ group: AXUIElement) -> AXUIElement? {
-        descendants(group).first { text($0, "AXRole") == "AXButton" && text($0, "AXDescription") == "Edit Details" }
-    }
-    guard let button = detailsButton(groups[0]) else { return false }
-    // Some Reminders versions return cannotComplete even when the popover opens.
-    AXUIElementPerformAction(button, "AXPress" as CFString)
-    settleUI()
-    let fields = descendants(window).filter {
-        text($0, "AXRole") == "AXTextArea" && text($0, "AXDescription") == "URL"
-    }
-    guard fields.count == 1 else { return false }
-    let field = fields[0]
-    guard AXUIElementSetAttributeValue(field, "AXFocused" as CFString, kCFBooleanTrue) == .success,
-          AXUIElementSetAttributeValue(field, "AXValue" as CFString, request.url as CFString) == .success,
-          text(field, "AXValue") == request.url else { return false }
-    // Commit by moving focus to another field, then closing Details. Escape discards edits.
-    let titles = descendants(window).filter {
-        text($0, "AXRole") == "AXTextArea" && text($0, "AXDescription") == "Title"
-    }
-    guard titles.count == 1,
-          AXUIElementSetAttributeValue(titles[0], "AXFocused" as CFString, kCFBooleanTrue) == .success else { return false }
-    AXUIElementPerformAction(button, "AXPress" as CFString)
-    settleUI()
-    // Attachment proof is a link in this reminder's group, never EKReminder.url readback.
-    for _ in 0..<20 {
-        groups = reminderGroups()
-        if groups.count == 1 && descendants(groups[0]).contains(where: {
-            text($0, "AXRole") == "AXLink" &&
-            (text($0, "AXTitle") == request.url ||
-             (attribute($0, "AXURL") as? URL)?.absoluteString == request.url)
-        }) { return true }
-        settleUI()
+        if visibleURLs(itemID).contains(url) { return true }
+        Thread.sleep(forTimeInterval: 0.5)
     }
     return false
 }
@@ -228,7 +198,7 @@ do {
         }
         finish("deleted", "Owned reminder removed with absence readback")
     }
-    let reminder: EKReminder
+    var reminder: EKReminder
     if decision.action == "update", let existing = target, request.update_id == decision.id {
         itemID = existing.calendarItemIdentifier
         reminder = existing
@@ -245,14 +215,14 @@ do {
         finish("manual_required", "Remove the existing visible link through the manual workflow; no mutation")
     }
     let preserved = preserveExisting ? PreservedFields(reminder) : nil
-    var app: NSRunningApplication?
-    if hasURL {
-        guard AXIsProcessTrusted() else {
-            finish("manual_required", "Existing Accessibility access is required to save the visible URL; no mutation")
+    if hasURL, let existingID = itemID {
+        guard visibleURLs(existingID).contains(request.url) else {
+            finish("refused", "This reminder has no matching visible link and Shortcuts cannot add one to an existing reminder; delete it with --delete-id and create it again. No mutation")
         }
-        app = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.reminders").first
-        guard let app, remindersWindow(app) != nil else {
-            finish("manual_required", "Open one Reminders list window with its sidebar visible; close extra list windows before saving. No mutation")
+    } else if hasURL {
+        guard request.nonce != nil else { finish("refused", "A linked reminder needs its request nonce; no mutation") }
+        guard let shortcut = request.shortcut, shortcutInstalled(shortcut) else {
+            finish("manual_required", "Install the reminder link shortcut once with reminder_shortcut.py; no mutation")
         }
     }
     let url = hasURL ? URL(string: request.url) : nil
@@ -329,6 +299,27 @@ do {
             monthDays == [NSNumber(value: calendar.component(.day, from: due))])
     }
     created = itemID == nil
+    if hasURL && created, let shortcut = request.shortcut, let nonce = request.nonce {
+        // A one-time token in Notes finds the shortcut's reminder; EventKit then sets the real fields.
+        guard runShortcut(shortcut, title: request.title, notes: nonce, url: request.url) else {
+            finish("uncertain", "The shortcut did not finish; search all lists for Notes \(nonce) before retrying", extra: ["nonce": nonce])
+        }
+        var made: [EKReminder] = []
+        for _ in 0..<20 {
+            let fetched = DispatchSemaphore(value: 0)
+            EKEventStore().fetchReminders(matching: store.predicateForIncompleteReminders(
+                withDueDateStarting: nil, ending: nil, calendars: nil)) {
+                made = ($0 ?? []).filter { $0.notes == nonce }; fetched.signal()
+            }
+            guard fetched.wait(timeout: .now() + 15) == .success, made.isEmpty else { break }
+            Thread.sleep(forTimeInterval: 0.5)
+        }
+        guard made.count == 1, let found = store.calendarItem(withIdentifier: made[0].calendarItemIdentifier) as? EKReminder else {
+            finish("uncertain", "The shortcut's reminder was not found exactly once; search all lists for Notes \(nonce) before retrying", extra: ["nonce": nonce])
+        }
+        reminder = found
+        itemID = found.calendarItemIdentifier
+    }
     reminder.notes = request.notes
     reminder.url = url // Lookup identity only; this does not prove a visible attachment.
     if !preserveExisting {
@@ -345,8 +336,8 @@ do {
     }
     try store.save(reminder, commit: true)
     itemID = reminder.calendarItemIdentifier
-    if let app, !saveAttachment(request, app: app) {
-        finish("partial", "Reminder saved but visible URL not verified. Use this ID to finish or remove only this item; do not create another", extra: ["url": request.url])
+    if hasURL && !hasVisibleURL(reminder.calendarItemIdentifier, request.url) {
+        finish("partial", "Reminder saved but its visible URL was not found in the Reminders store. Use this ID to inspect or remove only this item; do not create another", extra: ["url": request.url])
     }
     let fresh = EKEventStore()
     guard let back = fresh.calendarItem(withIdentifier: reminder.calendarItemIdentifier) as? EKReminder,
