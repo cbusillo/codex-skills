@@ -577,15 +577,34 @@ deadline, and the import does not fetch the manual.
 
 Run `scripts/run-python-helper.sh {test_or_validator}` locally, replacing the
 placeholder with the tracked test helper or validator for the changed area.
-Shell behavior tests run through their own executable wrappers. For instruction
-changes, run the skill structure, reference, behavior and command-policy
-validators required by `AGENTS.md`. Safety, authorization, approval-rule,
-destructive-helper and shared-infrastructure changes also run the complete
-affected safety test modules locally. Keep required lint, type and inspection
-checks alongside those tests.
+Shell behavior tests run through their own executable wrappers. Follow the
+[test command contract](skills/github/references/config-schema.md#workflow-metadata)
+for local coverage and current-head CI requirements. Before pushing, run the
+metadata's lint checks, including the public-safety scan, and `scripts/typecheck.sh`.
+
+For instruction changes, run these helpers through `scripts/run-python-helper.sh`:
+`skills/skill-creator/scripts/validate-skill-repo.py`,
+`skills/skill-creator/scripts/quick_validate.py --self-test`,
+`skills/skill-creator/scripts/validate-skill-behavior.py`, and
+`skills/skill-creator/scripts/validate-command-policy-simulator.py` both with and
+without `--self-test`.
+
+Select complete safety modules by changed area, then trace callers for any
+additional affected modules:
+
+| Area | Local modules |
+| --- | --- |
+| Command approval policy | `hooks/test_command_policy_hook.py`; command-policy simulator above |
+| Claims and ready handoffs | `skills/github/scripts/test_gh_plan_claim.py`, `test_github_plan_claim_log.py`, `test_ready_handoff.py`; `skills/supervisor/scripts/test_auto_enqueue.py` |
+| Worktree creation and retirement | `skills/github/scripts/test_dev_worktree.py`, `test_git_task_worktree.py`, `test_landed_worktrees.py` |
+| Launchplane route authority | `skills/launchplane/scripts/test_launchplane_route_authority.py` |
+
+Paths after a semicolon start a new directory; other basenames share the first
+path's directory. For areas outside this table, trace the touched helper's
+callers and select their complete test modules under the shared contract.
 
 The complete `./scripts/validate-skills.sh` suite runs in the Validate Skills
-workflow. Verify green CI on the current PR head before `ready` or merge.
+workflow.
 
 ## JetBrains inspections
 
