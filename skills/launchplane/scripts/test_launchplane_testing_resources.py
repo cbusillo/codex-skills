@@ -18,7 +18,7 @@ import launchplane_testing_resources as resources
 import pytest
 from test_launchplane_helpers import write_action as h
 
-PREFIX = "testing-replacement-resources-"
+PREFIX = resources.PREFIX
 SERVICE = "https://plane.example.invalid"
 PLAN = "a" * 64
 RESOURCES = "b" * 64
@@ -243,12 +243,16 @@ def test_apply_with_unverified_readback_preserves_original_recovery(response: di
         assert output["summary"]["trace_id"] != response["trace_id"]
 
 
-@pytest.mark.parametrize("mode", ["dry-run", "apply", "readback"])
-def test_no_automatic_retries_after_lost_resource_receipt(mode: str) -> None:
+@pytest.mark.parametrize(
+    "mode,recommendation",
+    [("dry-run", resources.PLAN_RECOVERY), ("apply", resources.RECOVERY), ("readback", resources.READBACK_RECOVERY)],
+)
+def test_no_automatic_retries_after_lost_resource_receipt(mode: str, recommendation: str) -> None:
     code, output, calls, _ = invoke(mode, responses=[TimeoutError("PRIVATE_SENTINEL")])
     assert code != 0 and len(calls) == 1 and output["status"] == "outcome_unknown"
     assert "PRIVATE_SENTINEL" not in json.dumps(output)
     assert output["warnings"][0]["code"] == output["status"]
+    assert output["summary"]["recommendation"] == recommendation
 
 
 @pytest.mark.parametrize("source_mode", ["ssh", "container-export"])
@@ -259,7 +263,7 @@ def test_resource_source_mode_is_normalized_for_the_producer(source_mode: str) -
     assert ("source_mode" in calls[0].kwargs["body"]) is (source_mode != "ssh")
 
 
-@pytest.mark.parametrize("status", [403, 409, 408, 503])
+@pytest.mark.parametrize("status", [408, 503])
 def test_resource_service_errors_preserve_diagnostics_without_replay(status: int) -> None:
     response = {
         "trace_id": "launchplane_req_refused",
@@ -271,8 +275,7 @@ def test_resource_service_errors_preserve_diagnostics_without_replay(status: int
     assert output["summary"]["trace_id"] == response["trace_id"]
     assert output["summary"]["error_code"] == response["error"]["code"]
     assert "PRIVATE_SENTINEL" not in json.dumps(output)
-    if status != 403:
-        assert output["status"] == "outcome_unknown"
+    assert output["status"] == "outcome_unknown"
 
 
 @pytest.mark.parametrize("field", ["product", "context", "operation_id"])
@@ -293,10 +296,12 @@ def test_failure_classification_and_recovery_cover_every_mode(mode: str, status:
     assert code != 0 and len(calls) == 1
     if status in {401, 403}:
         assert output["summary"]["recommendation"].startswith(h.http_error_recommendation(output["status"]))
+        if mode == "apply":
+            assert resources.APPLY_DENIAL_PRESERVATION in output["summary"]["recommendation"]
     else:
         assert output["status"] == "outcome_unknown"
-        if mode != "apply":
-            assert output["summary"]["recommendation"] != resources.RECOVERY
+        expected = {"dry-run": resources.PLAN_RECOVERY, "apply": resources.RECOVERY, "readback": resources.READBACK_RECOVERY}
+        assert output["summary"]["recommendation"] == expected[mode]
 
 
 @pytest.mark.parametrize("mode,expected", [("dry-run", "stale"), ("apply", "stale"), ("readback", "outcome_unknown")])
@@ -305,7 +310,16 @@ def test_clean_refusal_is_distinct_from_uncertain_allocation(mode: str, expected
     error = urllib.error.HTTPError(SERVICE, 409, "refused", None, io.BytesIO(json.dumps(payload).encode()))
     code, output, calls, _ = invoke(mode, responses=[error])
     assert code != 0 and len(calls) == 1 and output["status"] == expected
-    assert output["summary"]["recommendation"] != resources.RECOVERY
+    expected_recommendation = resources.READBACK_RECOVERY if mode == "readback" else resources.CLEAN_REFUSAL_RECOVERY
+    assert output["summary"]["recommendation"] == expected_recommendation
+
+
+def test_missing_planning_record_points_to_the_private_request() -> None:
+    payload = {"error": {"code": "not_found"}}
+    error = urllib.error.HTTPError(SERVICE, 404, "missing", None, io.BytesIO(json.dumps(payload).encode()))
+    code, output, calls, _ = invoke(responses=[error])
+    assert code != 0 and len(calls) == 1
+    assert output["summary"]["recommendation"] == resources.MISSING_RECORD_RECOVERY
 
 
 @pytest.mark.parametrize("mode", ["dry-run", "apply", "readback"])

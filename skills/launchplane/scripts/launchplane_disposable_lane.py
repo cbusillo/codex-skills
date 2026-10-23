@@ -39,9 +39,6 @@ CLOCK_SKEW_SECONDS = 5
 DIGEST_RE = re.compile(r"[a-f0-9]{64}")
 CODE_RE = re.compile(r"[a-z][a-z0-9_]{0,63}")
 
-# Closed public vocabularies, taken from the producer (Launchplane 07c93f7d9).
-# Keep them here, in one place, and refresh them from the named sources.
-#
 # control_plane/disposable_lane_collection.py disposable_collection_coverage():
 # the producer client (scripts/collect-disposable-lane.py) requires exactly
 # these coverage sources and refuses any other set.
@@ -69,10 +66,6 @@ UNRECOGNIZED_REASON = "diagnostics_unrecognized"
 # scripts/collect-disposable-lane.py: any other qualification reads as unavailable.
 NEVER_SERVED = {"never_served", "never_served_records_incomplete", "never_served_protection_seen",
                 "never_served_not_attempted"}
-# Evidence the collector can build for each fact value:
-# control_plane/disposable_lane_collection.py collect_disposable_lane_facts and
-# collect_testing_resource_facts, plus the timestamp control_plane/http_app.py
-# appends to a fresh in_use reference. An unknown fact carries no evidence.
 _HEX = "[a-f0-9]{64}"
 _AT = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:[+-]\d{2}:\d{2}|Z)"
 EVIDENCE_FORMATS: dict[str, dict[str, tuple[tuple[str, re.Pattern[str]], ...]]] = {

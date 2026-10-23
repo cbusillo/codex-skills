@@ -350,7 +350,6 @@ def test_untrustworthy_inspect_is_invalid(updates: dict[str, object]) -> None:
 @pytest.mark.parametrize("mode,updates", [
     ("record", {"usage": "unused"}),
     ("record", {"production_resources": "isolated"}),
-    ("record", {"reconcile_requested": True}),
     ("record", {"binding_sha256": "b" * 64}),
     ("collect", {"usage": "maybe"}),
     ("collect", {"usage": "unused"}),

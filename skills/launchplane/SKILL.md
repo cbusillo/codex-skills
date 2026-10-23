@@ -462,7 +462,7 @@ commands:
     source: skill
     resource_path: scripts/launchplane-write-action.py
     example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "testing-replacement-resources-dry-run", "--payload-file", "<private-file>"]
-    purpose: Records inert preparation for empty replacement testing resources and returns a service plan for review.
+    purpose: Records retained preparation, excludes the retained executor and returns a service plan without allocating provider resources.
   - name: launchplane-testing-replacement-resources-apply
     source: skill
     resource_path: scripts/launchplane-write-action.py

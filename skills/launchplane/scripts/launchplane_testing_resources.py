@@ -15,6 +15,7 @@ from typing import Any
 PREFIX = "testing-replacement-resources-"
 MODES = ("dry-run", "apply", "readback")
 COMMANDS = frozenset(PREFIX + mode for mode in MODES)
+TIMEOUT_SECONDS = 600.0
 SCOPE = ("product", "context", "instance", "operation_id")
 INPUT_FIELDS = {*SCOPE, "reason", "source_mode"}
 PRESERVED = {"retained_target_preserved": True, "restore_started": False}
@@ -29,7 +30,7 @@ RECOVERY = (
     "delete resources, change identity or call a provider. Preparation does not restore a copy or release a fence."
 )
 PLAN_RECOVERY = (
-    "Inert preparation may have been recorded. This mode allocates no provider resources. "
+    "Preparation may have been recorded and the retained executor excluded. This mode allocates no provider resources. "
     "Inspect the lane and retained operation before explicitly preparing and reviewing a new dry run. "
     "Do not retry automatically or clear retained preparation to evade a refusal."
 )
@@ -41,14 +42,19 @@ READBACK_RECOVERY = (
 CLEAN_REFUSAL_RECOVERY = (
     "The service refused this attempt before provider work. Inspect the current lane and prepare and review a new dry run. "
     "Preserve any earlier request, review and original key; this refusal proves nothing about earlier attempts. "
-    "Retained preparation can still require its earlier digest. Stop on the service's exact refusal; "
-    "do not change keys or clear preparation to evade it."
+    "Retained preparation can still require its earlier digest. If a fresh review is refused again, "
+    "stop and report the trace with the retained operation; do not cycle plans or keys or clear preparation."
 )
+APPLY_DENIAL_PRESERVATION = "Preserve the trace, this request, its review and idempotency key."
+MISSING_RECORD_RECOVERY = "The requested testing resource record is unavailable. Verify the private product, context and retained operation before planning again."
 
 
 def recommend(h: Any, mode: str, status: str, code: str = "", refusal_status: str = "") -> str:
     if status in {"denied", "unauthorized"}:
-        return h.http_error_recommendation(status) + " Preserve the trace and any earlier original-operation artifacts."
+        preservation = (
+            APPLY_DENIAL_PRESERVATION if mode == "apply" else "Preserve the trace and any earlier original-operation artifacts."
+        )
+        return h.http_error_recommendation(status) + " " + preservation
     if status == "accepted_unverified":
         return (
             "Allocation was accepted, but its separate readback failed. "
@@ -57,7 +63,8 @@ def recommend(h: Any, mode: str, status: str, code: str = "", refusal_status: st
         )
     if status == "accepted":
         return (
-            "Save and review this plan before apply. The dry run records inert preparation; it allocates no provider resources."
+            "Save and review this plan before apply. The dry run records retained preparation and excludes the retained executor; "
+            "it allocates no provider resources."
             if mode == "dry-run"
             else "Resources were qualified as separation_ready. No restore, completed isolation or supersession is proven."
         )
@@ -65,6 +72,8 @@ def recommend(h: Any, mode: str, status: str, code: str = "", refusal_status: st
         return {"dry-run": PLAN_RECOVERY, "apply": RECOVERY, "readback": READBACK_RECOVERY}[mode]
     if code == "testing_resources_refused" and mode in {"dry-run", "apply"}:
         return CLEAN_REFUSAL_RECOVERY
+    if mode == "dry-run" and code == "not_found":
+        return MISSING_RECORD_RECOVERY
     return h.http_error_recommendation(status) + " Preserve any earlier original-operation artifacts; do not retry automatically."
 
 

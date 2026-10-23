@@ -10436,13 +10436,16 @@ def _add_reviewed_apply_arguments(parser: argparse.ArgumentParser, *, apply: boo
 OPERATION_PATH_CHECK_TIMEOUT_SECONDS = 300.0
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
+    from launchplane_testing_resources import TIMEOUT_SECONDS as testing_resources_timeout
     parser = argparse.ArgumentParser(description="Execute bounded Launchplane operator actions.")
     parser.add_argument("--config", help="Optional private operator JSON config path.")
     parser.add_argument("--env-config", help="Optional private operator .env config path.")
     parser.add_argument("--url", help="Optional Launchplane service URL override.")
     parser.add_argument(
         "--timeout", type=float, default=argparse.SUPPRESS,
-        help="HTTP timeout seconds (operation path checks: 300; disposable lane collect: 240; promotion status, Dokploy inventory and other disposable lane commands: 30; controller: 180; other commands: 10).",
+        help=(f"HTTP timeout seconds (testing replacement resources: {testing_resources_timeout:g}; "
+              "operation path checks: 300; disposable lane collect: 240; promotion status, Dokploy inventory "
+              "and other disposable lane commands: 30; controller: 180; other commands: 10)."),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     from launchplane_testing_rebuild import add_parser as add_testing_rebuild_parser
@@ -11112,7 +11115,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     args.timeout = getattr(
         args, "timeout",
         disposable_lane_timeouts[args.command] if args.command in disposable_lane_timeouts
-        else 600.0 if args.command.startswith("testing-replacement-resources-")
+        else testing_resources_timeout if args.command.startswith("testing-replacement-resources-")
         else OPERATION_PATH_CHECK_TIMEOUT_SECONDS if args.command == "path-check" and args.intent is not None
         else 180.0 if args.command == "merge-train-controller-run-once"
         else 30.0 if args.command in {"product-promotion-status-read", "dokploy-inventory-read"} else 10.0,

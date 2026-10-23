@@ -714,7 +714,9 @@ destination, volume, credential, domain or placement input. Initial-generation
 and release modes remain with the producer's own bounded client; these commands
 cover retained-operation replacements only.
 
-The dry run records inert retained-target preparation and returns the service's
+The dry run records retained-target preparation, excludes the retained executor
+and may reserve a resource namespace in metadata; it allocates no provider
+resources. It returns the service's
 `plan_sha256`. Save its output privately and review it. Apply requires that
 output as `--dry-run-evidence-file`, `--expected-plan-digest`,
 `--reviewed-dry-run`, and the original stable `--idempotency-key`. Every private
@@ -735,7 +737,8 @@ does not require an earlier plan or repeat creation; it can publish fresh
 qualification evidence. None of these receipts proves completed isolation,
 bootstrap, healthy web, supersession, absent historical effects or fence release.
 
-No command retries itself. Planning loss can leave inert preparation metadata;
+No command retries itself. Planning loss can leave preparation metadata and
+the retained executor excluded;
 inspect before explicitly planning again. Lost or malformed apply exchanges and
 uncertain 409s preserve the exact request, review, operation and key as
 `outcome_unknown`; inspect/read back before supported original-key recovery.
@@ -748,8 +751,10 @@ The producer's explicit `testing_resources_refused` on dry-run/apply is a
 pre-provider refusal: inspect the current lane and prepare/review a new dry run.
 Preserve earlier artifacts and any original key. This refusal says nothing about
 earlier attempts, and retained preparation can still require its earlier digest;
-stop on that exact refusal instead of clearing state or changing keys to evade
-it. Denials retain the established authority stop/report/no-fallback guidance,
+if a fresh review is refused again, stop and report the trace with the retained
+operation instead of cycling plans, keys or clearing preparation. Denials retain
+the established authority stop/report/no-fallback guidance and the current
+apply request, review and key,
 including when readback is denied after accepted apply. Other definite refusals
 keep their service code, trace and corrective guidance. No refusal proves that
 an earlier attempt had no effects. Never allocate a second target or delete
