@@ -3022,8 +3022,6 @@ def test_audit_identity_refused_link_keeps_other_wait_evidence() -> None:
     assert report["unavailable"] and report["unavailable"][0]["number"] == 1
 
 
-
-
 class WeeklyAccount:
     """One account on a fake reader: o/direction plus adopted o/a and o/b, and o/plain without a file."""
 

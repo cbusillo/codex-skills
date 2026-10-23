@@ -196,7 +196,6 @@ def weekly_record_body(stamp: str) -> str:
     return (
         f"{WEEKLY_RECORD_TAG}\n"
         "`direction_audit.py --weekly` updates this issue after a weekly audit that read every adopted repository. "
-        "The Director reviews its findings in the next direction session. "
         "Keep it open and do not edit it by hand.\n\n"
         f"Last weekly audit: {stamp}\n"
     )
