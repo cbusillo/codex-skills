@@ -24,7 +24,6 @@ MEMORY_MARKER_NAME = "memory-last-check.json"
 MEMORY_STALE_DAYS = 14
 MEMORY_MAX_WORDS = 30_000
 TURN_STALE = dt.timedelta(hours=24)
-AUDIT_STALE = dt.timedelta(days=7)
 LOOP_PATH = Path(__file__).resolve().parents[1] / "skills" / "references" / "executing-loop.md"
 SKILLS_PROTOCOL_PATH = LOOP_PATH.with_name("using-skills.md")
 GH_READER = Path(__file__).resolve().parents[1] / "skills" / "github" / "scripts" / "gh-with-env-token"
@@ -36,8 +35,6 @@ RUNTIME_CATCHUP_TIMEOUT_ENV = "DIRECTION_RUNTIME_CATCHUP_TIMEOUT"
 # The shared records: issues in OWNER/direction that direction_mark.py keeps current.
 TURN_RECORD_TAG = "<!-- direction-turn-record -->"
 TURN_RECORD_LINE = re.compile(r"^Last daily turn: (\S+) covering (\S+)$", re.MULTILINE)
-WEEKLY_RECORD_TAG = "<!-- direction-weekly-audit-record -->"
-WEEKLY_RECORD_LINE = re.compile(r"^Last weekly audit: (\S+)$", re.MULTILINE)
 TRUSTED_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
 # Pages of open issues read to find the records; more than that leaves them unconfirmed.
 RECORD_PAGES = 10
@@ -45,8 +42,6 @@ RECORD_PAGES = 10
 REMINDER_LINES = {
     ("turn", "due"): "Direction turn overdue",
     ("turn", "unconfirmed"): "Direction turn unconfirmed",
-    ("audit", "due"): "Weekly direction audit overdue",
-    ("audit", "unconfirmed"): "Weekly direction audit unconfirmed",
 }
 RUNTIME_HELPER = Path("skills/github/scripts/reconcile-runtime-checkout.py")
 
@@ -316,14 +311,6 @@ def parse_turn_record(body: object) -> tuple[dt.datetime, str] | None:
     return (stamp, match.group(2)) if match and stamp else None
 
 
-def parse_weekly_record(body: object) -> dt.datetime | None:
-    """The weekly-audit time from a shared weekly-audit record body, if it is one."""
-    if not isinstance(body, str) or WEEKLY_RECORD_TAG not in body:
-        return None
-    match = WEEKLY_RECORD_LINE.search(body)
-    return parse_stamp(match.group(1)) if match else None
-
-
 def read_open_issues(owner: str) -> tuple[list[object], str | None]:
     """Every open issue in OWNER/direction, oldest first, within one read budget, or why not."""
     deadline = time.monotonic() + OVERALL_READ_TIMEOUT
@@ -355,14 +342,10 @@ def read_open_issues(owner: str) -> tuple[list[object], str | None]:
 
 
 def read_shared_records(owner: str) -> tuple[dict[str, object], str | None]:
-    """The newest turn and weekly audit across OWNER/direction's shared records, and why they could not be read.
-
-    One listing of every open issue serves both records. No record yet is a missing key, not an error.
-    """
     issues, error = read_open_issues(owner)
     if error:
         return {}, error
-    turns, weeklies = [], []
+    turns = []
     for issue in issues:
         if not isinstance(issue, dict) or "pull_request" in issue:
             continue
@@ -373,15 +356,10 @@ def read_shared_records(owner: str) -> tuple[dict[str, object], str | None]:
         turn_record = parse_turn_record(issue.get("body"))
         if turn_record:
             turns.append(turn_record)
-        weekly = parse_weekly_record(issue.get("body"))
-        if weekly:
-            weeklies.append(weekly)
     found: dict[str, object] = {}
     if turns:
         # Two machines may each have created a record; the newest stamp wins.
         found["turn"] = max(turns, key=lambda record: record[0])
-    if weeklies:
-        found["weekly"] = max(weeklies)
     return found, None
 
 
@@ -414,14 +392,6 @@ def resolve_account(marker: dict[str, object], checkout: Path | None) -> str | N
     return owner if direction_set_up(owner, checkout, marker)[0] else None
 
 
-def local_weekly(marker: dict[str, object], owner: str | None) -> dt.datetime | None:
-    """This machine's last complete weekly audit, when it was of the same account."""
-    weekly, record = marker.get("weekly"), marker.get("weekly_record")
-    if not owner or not isinstance(weekly, dt.datetime) or not isinstance(record, str):
-        return None
-    return weekly if record.split("/", 1)[0].casefold() == owner.casefold() else None
-
-
 def local_turn(marker: dict[str, object], owner: str | None) -> dt.datetime | None:
     """This machine's last daily turn, when it was of the same account.
 
@@ -437,13 +407,10 @@ def local_turn(marker: dict[str, object], owner: str | None) -> dt.datetime | No
 
 
 def with_shared_records(marker: dict[str, object], now: dt.datetime, owner: str | None) -> dict[str, object]:
-    """The marker with newer stamps from the shared records, read only when a local stamp is stale."""
     if not owner:
         return marker
-    turn, weekly = local_turn(marker, owner), local_weekly(marker, owner)
-    turn_stale = turn is None or now - turn > TURN_STALE
-    weekly_stale = weekly is None or now - weekly > AUDIT_STALE
-    if not turn_stale and not weekly_stale:
+    turn = local_turn(marker, owner)
+    if turn is not None and now - turn <= TURN_STALE:
         return marker
     shared, error = read_shared_records(owner)
     result = dict(marker)
@@ -454,29 +421,17 @@ def with_shared_records(marker: dict[str, object], now: dt.datetime, owner: str 
     shared_turn = shared.get("turn")
     if isinstance(shared_turn, tuple) and (turn is None or shared_turn[0] > turn):
         result["turn"], result["turn_repo"] = shared_turn
-    shared_weekly = shared.get("weekly")
-    if isinstance(shared_weekly, dt.datetime) and (weekly is None or shared_weekly > weekly):
-        result["weekly"], result["weekly_record"] = shared_weekly, f"{owner}/{OVERALL_REPO}"
     return result
 
 
-def reminder_states(marker: dict[str, object], now: dt.datetime, owner: str | None) -> dict[str, str | None]:
-    """Each check as current, due or unconfirmed; the audit is None for an account without direction."""
+def turn_state(marker: dict[str, object], now: dt.datetime, owner: str | None) -> str:
     unreadable = isinstance(marker.get("shared_error"), str)
     turn = local_turn(marker, owner)
-    turn_state = ("current" if turn is not None and now - turn <= TURN_STALE
-                  else "unconfirmed" if unreadable else "due")
-    audit_state = None
-    if owner:
-        weekly = local_weekly(marker, owner)
-        audit_state = ("current" if weekly is not None and now - weekly <= AUDIT_STALE
-                       else "unconfirmed" if unreadable else "due")
-    return {"turn": turn_state, "audit": audit_state}
+    return "current" if turn is not None and now - turn <= TURN_STALE else "unconfirmed" if unreadable else "due"
 
 
 def reminder(marker: dict[str, object], now: dt.datetime, path: Path, owner: str | None = None) -> str:
-    """At most two lines, one for the daily turn and one for the weekly audit; empty when both are current."""
-    states = reminder_states(marker, now, owner)
+    state = turn_state(marker, now, owner)
     lines: list[str] = []
     shared_record, shared_error = marker.get("shared_record"), marker.get("shared_error")
     record = shared_record if isinstance(shared_record, str) else f"{owner}/{OVERALL_REPO}"
@@ -485,36 +440,19 @@ def reminder(marker: dict[str, object], now: dt.datetime, path: Path, owner: str
     turn = local_turn(marker, owner)
     turn_local = ("has recorded no direction turn" if turn is None
                   else f"last recorded a direction turn {(now - turn).days} days ago")
-    if states["turn"] == "unconfirmed":
+    if state == "unconfirmed":
         lines.append(
             f"{REMINDER_LINES['turn', 'unconfirmed']}: this machine {turn_local}, and the shared turn record in {record} could not "
             f"be read ({error}), so a turn taken on another machine would not show here. Tell the owner once at the "
             "start of the session that the shared record could not be read, and to run the `direction` skill only if "
             f"no machine has taken today's turn. {after}"
         )
-    elif states["turn"] == "due":
+    elif state == "due":
         detail = ("no direction turn has been recorded" if turn is None
                   else f"the last direction turn was {(now - turn).days} days ago")
         lines.append(
             f"{REMINDER_LINES['turn', 'due']}: {detail}. Tell the owner once at the start of the session to open Claude Code "
             f"and run the `direction` skill for the daily turn, then continue with the task. {after}"
-        )
-    weekly = local_weekly(marker, owner)
-    if states["audit"] == "unconfirmed":
-        local = ("has recorded no full weekly audit" if weekly is None
-                 else f"last recorded a full weekly audit {(now - weekly).days} days ago")
-        lines.append(
-            f"{REMINDER_LINES['audit', 'unconfirmed']}: this machine {local}, and the shared weekly-audit record in {record} "
-            f"could not be read ({error}), so an audit run on another machine would not show here. Tell the owner once "
-            "at the start of the session, and to run the weekly audit only if no machine has run it this week. "
-            f"{after}"
-        )
-    elif states["audit"] == "due":
-        detail = ("no full weekly audit has been recorded" if weekly is None
-                  else f"the last full weekly audit was {(now - weekly).days} days ago")
-        lines.append(
-            f"{REMINDER_LINES['audit', 'due']}: {detail}. Tell the owner once at the start of the session to run the "
-            f"`direction` skill's weekly audit for {owner}, then continue with the task. {after}"
         )
     return "\n".join(lines)
 

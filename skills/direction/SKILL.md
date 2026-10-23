@@ -379,22 +379,21 @@ The documented reader on the Director's own login also works here with
 ran; otherwise reinsert just the removed audit entries, retaining newer stamps.
 
 The catalog's session-start hook reads that marker on every host. It prints
-at most two lines, the same in every folder: one when the last turn is more
-than a day old, and one when the last weekly audit is more than a week old.
-The audit line shows only for an account with direction set up, and it names
-no repository. The account is the one whose direction repository the marker's
+one daily-turn reminder when the last turn is more than a day old, the same
+in every folder. The account is the one whose direction repository the marker's
 newest turn or weekly audit names. Only when the marker records no account
 does the hook fall back to the account of the folder's origin, and only when
 that account's `OWNER/direction` has been audited here or is checked out
-beside the folder. A local turn or weekly audit counts only
-when it names that account. While either local stamp is stale, the hook
-reads the open issues in `OWNER/direction` once and uses the newest stamp
-across every record it finds. When it cannot read them all, the line says
-unconfirmed rather than overdue. A
-reminder that will not clear means the marker was not written where the hook
-reads it; the reminder names the path. The marker is one file for every host,
-`~/.code/direction-last-check.json` unless `DIRECTION_MARKER` names another,
-on purpose: host home variables differ between Claude Code and Codex.
+beside the folder. A local turn counts only when it names that account.
+While the local turn is stale, the hook reads the open issues in `OWNER/direction`
+once and uses the newest daily-turn stamp it finds. When it cannot read them
+all, the line says unconfirmed rather than overdue. The reminder names the
+marker path: `~/.code/direction-last-check.json` unless `DIRECTION_MARKER`
+names another. Host home variables differ between Claude Code and Codex.
+
+Schedule the weekly audit once a week through the Supervisor's existing daily
+scheduler. Record registration and receiver evidence before calling it active.
+The Director sees its findings in the next direction session.
 
 ## Weekly Audit
 

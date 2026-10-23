@@ -193,11 +193,10 @@ def turn_record_body(stamp: str, repo: str) -> str:
 
 
 def weekly_record_body(stamp: str) -> str:
-    """The shared weekly-audit record the hook parses; its tag and line format are the contract."""
     return (
         f"{WEEKLY_RECORD_TAG}\n"
-        "`direction_audit.py --weekly` updates this issue after a weekly audit that read every adopted repository, "
-        "so the session-start reminder on each of the Director's machines sees the same last audit. "
+        "`direction_audit.py --weekly` updates this issue after a weekly audit that read every adopted repository. "
+        "The Director reviews its findings in the next direction session. "
         "Keep it open and do not edit it by hand.\n\n"
         f"Last weekly audit: {stamp}\n"
     )
