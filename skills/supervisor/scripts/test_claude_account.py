@@ -148,10 +148,16 @@ class MoveTests(unittest.TestCase):
         self.assertTrue(self.request.exists())
 
     def test_resume_forms_and_duplicate_or_path_resume(self):
+        for option in ("--append-system-prompt", "--settings"):
+            self.assertIsNone(account.resumed_session(["claude", option, "--resume", self.identifier]))
+        for value in ("-r" + self.identifier, "-r=" + self.identifier, "-pr" + self.identifier):
+            self.assertIsNone(account.resumed_session(["claude", value]))
+        native_resume = ["claude", "--append-system-prompt", "--", "--resume", self.identifier]
+        self.assertEqual(account.resumed_session(native_resume), self.identifier)
         self.assertEqual(account.resumed_session(["claude", "--resume=" + self.identifier]), self.identifier)
         self.assertEqual(account.resumed_session(["claude", "-r", self.identifier]), self.identifier)
         self.assertIsNone(account.resumed_session(["claude", "--resume", str(self.transcript)]))
-        self.assertEqual(account.resumed_session([*self.argv, "--resume", self.identifier]), self.identifier)
+        self.assertIsNone(account.resumed_session([*self.argv, "--resume", self.identifier]))
         self.assertIsNone(account.resumed_session([*self.argv, "--resume", str(uuid.uuid4())]))
 
     def test_exec_failure_keeps_move_request(self):
@@ -194,22 +200,24 @@ class MoveTests(unittest.TestCase):
             "[[accounts.account]]\nname = \"next\"\nprovider = \"anthropic\"\ncontext_panel_label = \"next\"\n"
             "[accounts.account.env]\nCLAUDE_CONFIG_DIR = " + json.dumps(str(self.new)) + "\n")
         child = self.root / "resume.py"
-        child.write_text("import json,os,sys\nfrom pathlib import Path\n"
+        child.write_text(f"#!{sys.executable}\nimport json,os,sys\nfrom pathlib import Path\n"
                          "identifier=sys.argv[sys.argv.index('--resume')+1]\n"
                          "transcript=Path(os.environ['CLAUDE_CONFIG_DIR'])/'projects'/(identifier+'.jsonl')\n"
                          "print(json.dumps({'session':identifier,'context':json.loads(transcript.read_text())['context'],"
-                         "'home':os.environ['CLAUDE_CONFIG_DIR'],'keep':os.environ['INHERITED']}))\n")
+                         "'home':os.environ['CLAUDE_CONFIG_DIR'],'keep':os.environ['INHERITED'],'args':sys.argv[1:]}))\n")
+        child.chmod(0o700)
         env = {**os.environ, **self.env, "CODE_HOME": str(private.parent), "HOME": str(self.root)}
         for key in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN",
                     "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"):
             env.pop(key, None)
         installed = account.install(self.old / "settings.json", self.root / "moves", write=True)
-        result = subprocess.run([*json.loads(installed["env"]["CLAUDE_CODE_PROCESS_WRAPPER"]), sys.executable,
-                                 str(child), "--resume", self.identifier], env=env,
-                                capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout), {"session": self.identifier, "context": "prior work",
-                                                   "home": str(self.new), "keep": "keep me"})
+        for options, home in ((["--append-system-prompt", "--resume"], self.old),
+                              (["--append-system-prompt", "--", "--resume"], self.new), (["--resume"], self.new)):
+            result = subprocess.run([*json.loads(installed["env"]["CLAUDE_CODE_PROCESS_WRAPPER"]),
+                                     str(child), *options, self.identifier], env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout), {"session": self.identifier, "context": "prior work",
+                                                       "home": str(home), "keep": "keep me", "args": [*options, self.identifier]})
         self.assertTrue(self.request.exists())
 
     def test_authentication_override_does_not_move_or_expose_value(self):

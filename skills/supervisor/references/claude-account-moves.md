@@ -140,7 +140,7 @@ session. The wrapper bounds its snapshot subprocess to 1.5 seconds to stay
 inside the launcher's roughly three-second startup budget; it is silent before
 exec. The entrypoint uses the operating system's `/usr/bin/perl` on supported
 POSIX hosts to preserve the inherited environment without a shell or Python
-startup. Ordinary commands go straight to exec. Only a pending marked UUID
+startup on its direct-exec path. Only a pending marked UUID
 enters the absolute Python interpreter with `-I`; missing Python or helper source
 falls back to the original command. The entrypoint preserves pre-Python locale
 state across Python's C-locale coercion. The account reader loads lazily only for
@@ -179,8 +179,9 @@ before using it for moves.
 
 `/tui` saves a user renderer preference and is not a qualified drop-in account
 move. Keep this probe in disposable homes. The wrapper recognizes a pending
-move by session UUID: any matching native `--resume` launch,
-including a renderer switch, can attempt that move. Do not use an unrelated
+move only from the shared parser's single exact native resume, including a renderer switch.
+Unknown option positions, repeated selectors and attached short forms keep the inherited
+account and argv; use the supported `--resume UUID` form when needed. Do not use an unrelated
 relaunch to bypass qualification or recovery; use the existing verified
 cancellation step when continuation in place makes the request obsolete.
 Launch restrictions such as
