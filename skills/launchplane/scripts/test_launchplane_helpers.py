@@ -10133,6 +10133,36 @@ def test_client_named_fields_read_like_their_legacy_owner_names() -> None:
                 "unchanged_policy_key_count": 1,
             },
         ),
+        (
+            "managed-authz-policy-set",
+            {
+                "managed_set_id": "",
+                "desired_policy": {"schema_version": 2},
+                "reason": "Review only the selected obsolete workflow rule.",
+                "workflow_rule_retirement": {
+                    "policy_record_id": "private-retirement-policy",
+                    "policy_revision": 1,
+                    "policy_sha256": "c" * 64,
+                    "mode": "plan",
+                    "selection": [
+                        {
+                            "rule_sha256": "d" * 64,
+                            "managed_set_id": None,
+                            "managed_rule_id": None,
+                        }
+                    ],
+                },
+            },
+            {
+                "added_rule_count": 0,
+                "adopted_rule_count": 0,
+                "updated_rule_count": 0,
+                "removed_rule_count": 1,
+                "unchanged_rule_count": 1,
+                "policy_safety_blocker_count": 0,
+                "operational_readiness_blocked_rule_count": 0,
+            },
+        ),
     ],
 )
 @pytest.mark.parametrize(
@@ -10246,6 +10276,12 @@ def test_privileged_policy_propose_sends_private_envelope_and_only_returns_revie
                 str(request_body),
             ):
                 assert private not in output.getvalue()
+            retirement = request_body.get("workflow_rule_retirement")
+            if isinstance(retirement, dict):
+                for private_field in ("policy_record_id", "policy_sha256"):
+                    assert retirement[private_field] not in output.getvalue()
+                for selection in retirement["selection"]:
+                    assert selection["rule_sha256"] not in output.getvalue()
     assert calls[0]["body"] == calls[1]["body"]
 
 
