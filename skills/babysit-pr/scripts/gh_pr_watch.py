@@ -1618,6 +1618,8 @@ def collect_locked_snapshot(args, pr, pr_diagnostic, state_path):
                     evidence_reader = watcher_reader(operation=RERUN_READ_OPERATION)
                 if runner_acquisition_retry(pr, run, evidence_reader):
                     run["retry_mode"] = "runner_acquisition"
+                elif job_timeout_retry(pr, run, evidence_reader):
+                    run["retry_mode"] = "job_timeout"
 
     review_diagnostic = None
     if is_review_readiness_unavailable(pr, checks_summary, new_review_items):
@@ -1701,7 +1703,7 @@ def retryable_failed_runs(failed_runs, failed_jobs):
         and job.get("conclusion") in {"failure", "timed_out"}
     }
     return [run for run in failed_runs if run.get("run_id") in failed_job_runs
-            or run.get("retry_mode") == "runner_acquisition"]
+            or run.get("retry_mode") in {"runner_acquisition", "job_timeout"}]
 
 
 def runner_acquisition_retry(pr, run, reader, *, raise_read_errors=False):
@@ -1724,18 +1726,15 @@ def runner_acquisition_retry(pr, run, reader, *, raise_read_errors=False):
                     or job.get("run_id") != run_id or job.get("run_attempt") != attempt
                     or job.get("runner_id") != 0):
                 return False
-            path = urlparse(str(job.get("check_run_url") or ""))
-            prefix = f"/repos/{pr['repo']}/check-runs/"
-            if (path.scheme != "https" or path.netloc != "api.github.com"
-                    or not path.path.casefold().startswith(prefix.casefold()) or not path.path[len(prefix):].isdigit()
-                    or path.query or path.fragment):
+            check_path = job_check_run_path(pr, job)
+            if check_path is None:
                 return False
-            check = reader.get_json(path.path, step="acquisition_check")
+            check = reader.get_json(check_path, step="acquisition_check")
             if (check.get("head_sha") != pr["head_sha"] or check.get("conclusion") != "cancelled"
-                    or check.get("id") != int(path.path[len(prefix):])):
+                    or check.get("id") != int(check_path.rsplit("/", 1)[1])):
                 return False
             annotations = reader.paged_json(
-                path.path + "/annotations", step_prefix="acquisition_annotations",
+                check_path + "/annotations", step_prefix="acquisition_annotations",
             )
             message = "The job was not acquired by Runner of type hosted even after multiple attempts"
             if not any(a.get("annotation_level") == "failure"
@@ -1778,6 +1777,64 @@ def runner_acquisition_retry(pr, run, reader, *, raise_read_errors=False):
         return False
     except (github_read.GitHubReadShapeError, GhCommandError):
         return False
+
+
+def job_check_run_path(pr, job):
+    path = urlparse(str(job.get("check_run_url") or ""))
+    prefix = f"/repos/{pr['repo']}/check-runs/"
+    if (path.scheme != "https" or path.netloc != "api.github.com"
+            or not path.path.casefold().startswith(prefix.casefold()) or not path.path[len(prefix):].isdigit()
+            or path.query or path.fragment):
+        return None
+    return path.path
+
+
+JOB_TIMEOUT_ANNOTATION = re.compile(
+    r"The job has exceeded the maximum execution time of (?=\d)(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?")
+
+
+def job_timeout_retry(pr, run, reader):
+    """Admit a failed-jobs retry only when every cancelled job ran out of its own time limit."""
+    run_id, attempt = run.get("run_id"), run.get("run_attempt")
+    if (run.get("status") != "completed" or run.get("conclusion") != "cancelled"
+            or type(attempt) is not int or attempt <= 0 or type(run_id) is not int):
+        return False
+    try:
+        jobs = reader.paged_json(
+            f"/repos/{pr['repo']}/actions/runs/{run_id}/attempts/{attempt}/jobs",
+            step_prefix="timeout_jobs", collection_key="jobs",
+        )
+        if any(job.get("status") != "completed" or job.get("head_sha") != pr["head_sha"]
+               or job.get("run_id") != run_id or job.get("run_attempt") != attempt for job in jobs):
+            return False
+        cancelled = [job for job in jobs if job.get("conclusion") == "cancelled"]
+        return (bool(cancelled) and all(job_exceeded_own_limit(pr, job, reader) for job in cancelled)
+                and not any(r.get("component") == "actor" for r in reader.degraded_reasons))
+    except (github_read.GitHubReadError, github_read.GitHubReadShapeError, GhCommandError):
+        return False
+
+
+def job_exceeded_own_limit(pr, job, reader):
+    runner_id = job.get("runner_id")
+    steps = job.get("steps")
+    check_path = job_check_run_path(pr, job)
+    if (type(runner_id) is not int or runner_id <= 0 or check_path is None or not isinstance(steps, list)
+            or not any(isinstance(step, dict) and step.get("conclusion") == "cancelled" for step in steps)):
+        return False
+    try:
+        elapsed = (datetime.fromisoformat(str(job.get("completed_at")))
+                   - datetime.fromisoformat(str(job.get("started_at")))).total_seconds()
+    except ValueError:
+        return False
+    annotations = reader.paged_json(check_path + "/annotations", step_prefix="timeout_annotations")
+    for annotation in annotations:
+        match = JOB_TIMEOUT_ANNOTATION.fullmatch(str(annotation.get("message") or "").strip().rstrip("."))
+        if annotation.get("annotation_level") == "failure" and match:
+            hours, minutes, seconds = (int(part or 0) for part in match.groups())
+            limit = hours * 3600 + minutes * 60 + seconds
+            if 0 < limit <= elapsed:
+                return True
+    return False
 
 
 def required_codeql_workflow(pr, run, reader):

@@ -124,7 +124,9 @@ Used by Codex to classify branch-related vs flaky/unrelated failures. Prefer the
 Reruns only failed jobs (and dependencies) for a workflow run. This is a
 GitHub write and must be owned by the configured automation account.
 A retry needs a completed failed or timed-out job; a cancelled notification
-run with no such job is skipped. An explicit API rejection saying the run cannot
+run with no such job is skipped. A job that ran out of its own `timeout-minutes`
+counts as timed out, although GitHub reports it as `cancelled`; see
+[jobs cancelled by their own timeout](#jobs-cancelled-by-their-own-timeout). An explicit API rejection saying the run cannot
 be retried (including gh’s rewritten HTTP 403 message) is also skipped without discarding earlier successful reruns.
 Each cycle consumes one retry, even when multiple runs are submitted. Intent
 and budget are saved before the write; confirmed rejections alone consume no
@@ -261,6 +263,25 @@ cover CodeQL default setup, which has no exact-head authored workflow source
 to verify here (see the recovery investigation in [#1103](https://github.com/cbusillo/codex-skills/issues/1103)),
 or implement [individual cancelled-job retries](https://cli.github.com/manual/gh_run_rerun)
 for mixed-success workflows; those require a distinct job-selection contract.
+
+### Jobs cancelled by their own timeout
+
+GitHub reports a job that exceeds its `timeout-minutes` as `cancelled`, with
+the failure annotation "The job has exceeded the maximum execution time of
+<limit>". The retry command offers the usual failed-jobs rerun for a completed
+**cancelled** run only when every cancelled job in its exact attempt:
+
+- matches the PR head, run and attempt
+- had a runner assigned and a step that was cancelled while running
+- has that annotation on its own check run
+- ran at least as long as the limit the annotation names
+
+Every job in the attempt must be complete. A job cancelled by a person
+("The run was canceled by @user"), by a concurrency group or a newer run, or
+with no readable annotation is not retried, and neither is a run where any
+cancelled job lacks the timeout evidence. A new push changes the head, so the
+old run is no longer a candidate. The retry uses the same budget, persisted
+intent and readback as other failed-job retries.
 
 ## Review-related endpoints
 
