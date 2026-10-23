@@ -65,7 +65,7 @@ def receipt(mode: str, **updates: object) -> dict[str, Any]:
         )
         if mode == "apply":
             result.update(resources_verified=True, resources_binding_sha256=RESOURCES, schedule_id="PRIVATE_SCHEDULE")
-    return {"status": "accepted", "trace_id": "launchplane_req_resources", "records": {}, "result": {**result, **updates}}
+    return {"status": "accepted", "trace_id": f"launchplane_req_resources_{mode}", "records": {}, "result": {**result, **updates}}
 
 
 def invoke(
@@ -229,13 +229,23 @@ def test_resource_receipts_fail_closed(mode: str, updates: dict[str, Any]) -> No
     assert "PRIVATE_SENTINEL" not in json.dumps(output)
 
 
-@pytest.mark.parametrize("response", [receipt("readback", resources_binding_sha256="d" * 64), TimeoutError("PRIVATE_SENTINEL")])
+@pytest.mark.parametrize(
+    "response",
+    [
+        receipt("readback", resources_binding_sha256="d" * 64),
+        receipt("readback", restore_started=True),
+        TimeoutError("PRIVATE_SENTINEL"),
+    ],
+)
 def test_apply_with_unverified_readback_preserves_original_recovery(response: dict[str, Any] | Exception) -> None:
     code, output, calls, _ = invoke("apply", responses=[receipt("apply"), response])
     assert code != 0 and len(calls) == 2
     assert output["status"] == "accepted_unverified"
     assert output["result"]["resource_readback_matches"] is False
     assert "original" in output["summary"]["recommendation"]
+    if isinstance(response, dict):
+        assert output["summary"]["read_back_trace_id"] == response["trace_id"]
+        assert output["summary"]["trace_id"] != response["trace_id"]
 
 
 @pytest.mark.parametrize("mode", ["dry-run", "apply", "readback"])
@@ -243,6 +253,7 @@ def test_no_automatic_retries_after_lost_resource_receipt(mode: str) -> None:
     code, output, calls, _ = invoke(mode, responses=[TimeoutError("PRIVATE_SENTINEL")])
     assert code != 0 and len(calls) == 1 and output["status"] == "outcome_unknown"
     assert "PRIVATE_SENTINEL" not in json.dumps(output)
+    assert output["warnings"][0]["code"] == output["status"]
 
 
 @pytest.mark.parametrize("source_mode", ["ssh", "container-export"])
@@ -266,6 +277,15 @@ def test_resource_service_errors_preserve_diagnostics_without_replay(status: int
     assert output["summary"]["error_code"] == response["error"]["code"]
     assert "PRIVATE_SENTINEL" not in json.dumps(output)
     assert "original" in output["summary"]["recommendation"]
+    if status != 403:
+        assert output["status"] == "outcome_unknown"
+
+
+@pytest.mark.parametrize("field", ["product", "context", "operation_id"])
+def test_secret_shaped_local_identifiers_are_local_input_errors(field: str) -> None:
+    code, output, calls, settings = invoke(body=private_request(**{field: "ghp_" + "a" * 36}))
+    assert code != 0 and calls == [] and settings == 0
+    assert output["warnings"][0]["code"] == "invalid_testing_resources_" + field
 
 
 if __name__ == "__main__":

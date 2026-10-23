@@ -54,7 +54,10 @@ def intent(h: Any, args: argparse.Namespace) -> tuple[dict[str, object], dict[st
         if field in SCOPE:
             if not h.PRODUCT_READ_PATH_SEGMENT_RE.fullmatch(body[field]):
                 raise ValueError("invalid_testing_resources_" + field)
-            h.public_identifier(body[field])
+            try:
+                h.public_identifier(body[field])
+            except h.LaunchplaneSafetyError:
+                raise ValueError("invalid_testing_resources_" + field) from None
     if body["instance"] != "testing":
         raise ValueError("testing_resources_requires_testing")
     source = raw.get("source_mode", "ssh")
@@ -180,8 +183,8 @@ def execute(h: Any, args: argparse.Namespace) -> int:
             accepted = True
             result["resource_readback_matches"] = False
             readback = call("readback")
+            diagnostics = h.service_response_diagnostics(readback)
             observed = project(h, readback, private, "readback")
-            diagnostics = {"read_back_" + key: value for key, value in h.service_response_diagnostics(readback).items()}
             if observed["resources_binding_sha256"] != result["resources_binding_sha256"]:
                 raise h.LaunchplaneSafetyError("invalid_response")
             result["resource_readback_matches"] = True
@@ -192,7 +195,7 @@ def execute(h: Any, args: argparse.Namespace) -> int:
         output["result"] = result
         output["summary"] = {
             **h.service_response_diagnostics(response),
-            **diagnostics,
+            **{"read_back_" + key: value for key, value in diagnostics.items()},
             "recommendation": "Save and review this plan before apply. The dry run records inert preparation; it allocates no provider resources."
             if mode == "dry-run"
             else "Resource qualification is separation_ready; no restore, isolation completion or supersession is proven. "
@@ -211,7 +214,8 @@ def execute(h: Any, args: argparse.Namespace) -> int:
                 diagnostics = {"http_status": error.code}
         finally:
             error.close()
-        if not accepted and 400 <= error.code < 500 and error.code != 408 and failure is not None:
+        uncertain_allocation = mode == "apply" and error.code == 409 and diagnostics.get("error_code") != "testing_resources_refused"
+        if not accepted and 400 <= error.code < 500 and error.code != 408 and failure is not None and not uncertain_allocation:
             failure["summary"]["recommendation"] = RECOVERY
             h.emit(failure)
             return 1
@@ -224,8 +228,11 @@ def execute(h: Any, args: argparse.Namespace) -> int:
         urllib.error.URLError,
         http.client.HTTPException,
     ) as error:
-        diagnostics = h.service_response_diagnostics(error)
+        diagnostics.update(h.service_response_diagnostics(error))
     output = h._apply_outcome_unknown(operation=args.command, request=request, label="testing resource preparation")
+    output["warnings"] = [
+        h.warning("outcome_unknown", "Do not retry automatically; inspect the original operation and retained resources.")
+    ]
     if accepted:
         output["status"] = "accepted_unverified"
         output["result"] = result

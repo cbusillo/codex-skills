@@ -148,7 +148,7 @@ Use the separate resource caller below and the producer's
 `docs/disposable-lanes.md` for the supported workflow.
 
 Output never echoes the product, context, instance, preview ID, evidence
-references, replaced operation ID or the observing identity. The request shows only the mode, the
+references, replaced operation ID or the observing identity. The request shows only the mode and the
 payload source. Collect reports each
 fact, the usage diagnostics and, for each evidence reference, only whether it is
 present and its source kind. Coverage sources, evidence kinds and usage
@@ -161,7 +161,7 @@ A receipt that fails these checks reports no facts and carries an
 `invalid_response` warning: a wrong binding, `provider_mutation` other than
 `false`, an unknown fact value, unknown coverage sources, an evidence reference
 the producer does not build for that fact, a positive fact returned for a
-testing record, preview facts that differ from those submitted, collect usage
+testing record, collect usage
 evidence that contradicts itself, or a collect window that is not current. The
 window must have started no later than now (5 seconds of clock skew allowed),
 must not have expired, and must last no longer than the requested lifetime. For
@@ -202,9 +202,6 @@ overwriting it. Do not retry automatically. A later refusal stops that attempt
 but does not establish whether an earlier capture exists, for example when the
 operation has since left `reconciliation_required`. Inspect cannot resolve
 that capture uncertainty or prove historical effects absent.
-
-Recording facts for a preview also requests a preview reconcile, reported as
-`reconcile_requested=true`.
 
 ## Read budgets and timeout diagnostics
 
@@ -735,7 +732,9 @@ bootstrap, healthy web, supersession, absent historical effects or fence release
 
 Keep the exact request, reviewed evidence, original operation and key after a
 lost exchange, malformed receipt or service refusal. No command retries itself.
-Unknown exchanges return `outcome_unknown`; refusals preserve the service code
+Unknown exchanges and apply 409s without the producer's explicit
+`testing_resources_refused` no-effect refusal return `outcome_unknown`;
+refusals preserve the service code
 and trace and do not prove that an earlier attempt had no effects. Read back the
 retained allocation first. When still unverified, inspect the original operation
 and use only the producer's supported original-key recovery. Never allocate a
