@@ -5251,6 +5251,16 @@ class LifecycleTest(unittest.TestCase):
             ("attempt sent to another session", self.timed_out_open_lease(session_id="other-session"), [], set(), True),
             ("attempt sent to another port", self.timed_out_open_lease(port=63344), [], set(), True),
             ("attempt names no process", self.timed_out_open_lease(pid=None), [], set(), True),
+            ("running sessions unknown", self.timed_out_open_lease(), [], None, True),
+            ("open still being requested", self.timed_out_open_lease() | {"state": "open_requesting"}, [], set(), True),
+            ("attempts name different processes", self.timed_out_open_lease() | {"open_attempts": [
+                self.timed_out_open_lease()["open_attempts"][0],
+                self.timed_out_open_lease(pid=754)["open_attempts"][0],
+            ]}, [], set(), True),
+            ("an attempt without an identity may have reached an IDE", self.timed_out_open_lease() | {"open_attempts": [
+                *self.timed_out_open_lease()["open_attempts"],
+                {"method": "running_ide", "accepted": False, "request_may_have_been_accepted": True},
+            ]}, [], set(), True),
         ]:
             with (
                 self.subTest(name),

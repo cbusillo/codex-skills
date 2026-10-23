@@ -12313,24 +12313,35 @@ def probe_reports_project_not_open(lease: dict[str, Any], probe: dict[str, Any] 
     )
 
 
-def can_release_dead_original_ide_lease(
+def original_session_gone_and_worktree_closed(
     lease: dict[str, Any],
     routes: list[dict[str, Any]],
     observed_sessions: set[str] | None,
 ) -> bool:
     if observed_sessions is None or lease.get("state") not in SETTLED_LEASE_STATES:
         return False
-    if lease.get("opened_by_helper") is not True or lease.get("open_request_may_have_been_accepted") is True:
-        return False
-    lease_id = lease.get("lease_id")
     session_id = lease.get("session_id")
     target = lease.get("lifecycle_target_path") or lease.get("worktree_root") or lease.get("repo_path")
-    if not lease_id or not session_id or not target or str(session_id) in observed_sessions:
+    if not lease.get("lease_id") or not session_id or not target or str(session_id) in observed_sessions:
         return False
     for route in routes:
         route_path = route.get("base_path") or route.get("project_file_path")
         if not route_path or paths_same(target, route_path):
             return False
+    return True
+
+
+def can_release_dead_original_ide_lease(
+    lease: dict[str, Any],
+    routes: list[dict[str, Any]],
+    observed_sessions: set[str] | None,
+) -> bool:
+    if lease.get("opened_by_helper") is not True or lease.get("open_request_may_have_been_accepted") is True:
+        return False
+    if not original_session_gone_and_worktree_closed(lease, routes, observed_sessions):
+        return False
+    lease_id = lease.get("lease_id")
+    session_id = lease.get("session_id")
     attempts = lease.get("open_attempts")
     if not isinstance(attempts, list) or any(
         isinstance(attempt, dict) and attempt.get("request_may_have_been_accepted") is True
@@ -12374,19 +12385,15 @@ def timed_out_open_died_with_original_ide(
     routes: list[dict[str, Any]],
     observed_sessions: set[str] | None,
 ) -> bool:
+    if lease.get("opened_by_helper") is True or not original_session_gone_and_worktree_closed(lease, routes, observed_sessions):
+        return False
+    attempts = lease.get("open_attempts")
+    if not isinstance(attempts, list):
+        return False
+    sent = [attempt for attempt in attempts if isinstance(attempt, dict) and attempt.get("identity")]
+    if not sent or not project_open_was_not_requested([attempt for attempt in attempts if attempt not in sent]):
+        return False
     session_id = lease.get("session_id")
-    target = lease.get("lifecycle_target_path") or lease.get("worktree_root") or lease.get("repo_path")
-    if (observed_sessions is None or lease.get("state") not in SETTLED_LEASE_STATES
-            or lease.get("opened_by_helper") is True or not session_id or not target
-            or str(session_id) in observed_sessions):
-        return False
-    for route in routes:
-        route_path = route.get("base_path") or route.get("project_file_path")
-        if not route_path or paths_same(target, route_path):
-            return False
-    sent = [attempt for attempt in lease.get("open_attempts") or [] if isinstance(attempt, dict) and attempt.get("identity")]
-    if not sent:
-        return False
     ide_pids: set[int] = set()
     for attempt in sent:
         identity = dict_field(attempt, "identity")
