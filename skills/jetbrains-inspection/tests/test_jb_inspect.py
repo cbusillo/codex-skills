@@ -513,6 +513,25 @@ class SdkRetirementTests(unittest.TestCase):
                 jb_inspect.offline_retirement_records(Path("/fixture/task"))
             self.assertEqual(caught.exception.payload["offline_retirement_ide_pids"], [123])
 
+    def test_explicit_offline_retirement_retains_worktree_when_an_ide_runs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            args = Namespace(command="remove-worktree", repo=str(root), dry_run=False,
+                             offline_only=True, lifecycle_lock_timeout_ms=1000)
+            with (patch.object(jb_inspect.sys, "platform", "darwin"),
+                  patch.object(jb_inspect, "retirement_worktree", return_value=root),
+                  patch.object(jb_inspect, "offline_ide_processes", return_value=[123]),
+                  patch.object(jb_inspect, "discover_identities", return_value=[]) as discover,
+                  patch.object(jb_inspect, "http_post") as post,
+                  patch.object(jb_inspect.subprocess, "run") as removal):
+                with self.assertRaises(jb_inspect.InspectError) as caught:
+                    jb_inspect.command_retire_sdks(args)
+                self.assertEqual(caught.exception.payload["offline_retirement_ide_pids"], [123])
+                discover.assert_not_called()
+                post.assert_not_called()
+                removal.assert_not_called()
+                self.assertTrue(root.is_dir())
+
     def test_offline_records_hold_registered_sdks_projects_and_caches(self):
         for kind in ("jdk.table.xml", jb_inspect.HELPER_SDK_RECORD_FILENAME, "recentProjects.xml", "cache", "finalizing", "idea", "receipt"):
             with self.subTest(kind=kind), tempfile.TemporaryDirectory() as tmp:
@@ -613,26 +632,29 @@ class SdkRetirementTests(unittest.TestCase):
             root = home / "task"
             root.mkdir()
             calls = []
-            def discover(_port):
+            def retire(_root, *_args):
                 calls.append(True)
                 if len(calls) == 2:
                     (root / ".idea").mkdir()
                     (root / ".idea/workspace.xml").write_text("<project />")
-                return []
-            args = Namespace(command="remove-worktree", repo=str(root), dry_run=False, lifecycle_lock_timeout_ms=1000)
+                return root
+            args = Namespace(command="remove-worktree", repo=str(root), dry_run=False,
+                             offline_only=True, lifecycle_lock_timeout_ms=1000)
             with (patch.object(jb_inspect.Path, "home", return_value=home),
                   patch.object(jb_inspect.sys, "platform", "darwin"),
                   patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": ""}),
-                  patch.object(jb_inspect, "retirement_worktree", return_value=root),
-                  patch.object(jb_inspect, "discover_identities", side_effect=discover),
+                  patch.object(jb_inspect, "retirement_worktree", side_effect=retire),
+                  patch.object(jb_inspect, "discover_identities", return_value=[]) as discover,
                   patch.object(jb_inspect.subprocess, "run") as removal):
                 with self.assertRaises(jb_inspect.InspectError):
                     jb_inspect.command_retire_sdks(args)
+                discover.assert_not_called()
                 removal.assert_not_called()
 
     def test_unprepared_worktree_retires_without_live_ide_even_with_a_virtualenv(self):
-        for virtualenv, transition in ((False, None), (True, None), (False, "starts"), (False, "stops")):
-            with self.subTest(virtualenv=virtualenv), tempfile.TemporaryDirectory() as tmp:
+        for virtualenv, transition, offline_only in ((False, None, False), (True, None, False),
+                (False, "starts", False), (False, "stops", False), (False, None, True), (True, None, True)):
+            with self.subTest(virtualenv=virtualenv, transition=transition, offline_only=offline_only), tempfile.TemporaryDirectory() as tmp:
                 home = Path(tmp).resolve()
                 primary, root = home / "primary", home / "task"
                 subprocess.run(["git", "init", "-q", str(primary)], check=True)
@@ -651,7 +673,8 @@ class SdkRetirementTests(unittest.TestCase):
                 table = home / "Library/Application Support/JetBrains/PyCharm2026.2/options/jdk.table.xml"
                 table.parent.mkdir(parents=True)
                 table.write_text('<application />')
-                args = Namespace(command="remove-worktree", repo=str(root), dry_run=True, lifecycle_lock_timeout_ms=1000)
+                args = jb_inspect.build_parser().parse_args(["remove-worktree", "--repo", str(root)] +
+                                                           (["--offline-only"] if offline_only else []))
                 discoveries = []
                 def discover(_port):
                     discoveries.append(True)
@@ -662,7 +685,7 @@ class SdkRetirementTests(unittest.TestCase):
                 with (patch.object(jb_inspect.Path, "home", return_value=home),
                       patch.object(jb_inspect.sys, "platform", "darwin"),
                       patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": ""}),
-                      patch.object(jb_inspect, "discover_identities", side_effect=discover),
+                      patch.object(jb_inspect, "discover_identities", side_effect=discover) as discovery,
                       patch.object(jb_inspect, "http_post", return_value=response) as post):
                     self.assertFalse(jb_inspect.command_retire_sdks(args)["worktree_removed"])
                     self.assertTrue(root.is_dir())
@@ -673,6 +696,8 @@ class SdkRetirementTests(unittest.TestCase):
                     self.assertIn(str(table), result["offline_records_checked"])
                     if transition is None:
                         post.assert_not_called()
+                    if offline_only:
+                        discovery.assert_not_called()
                 self.assertFalse(root.exists())
                 subprocess.run(["git", "-C", str(primary), "show-ref", "--verify", "--quiet", "refs/heads/task"], check=True)
 

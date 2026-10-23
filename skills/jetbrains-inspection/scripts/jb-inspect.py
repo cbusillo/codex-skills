@@ -830,6 +830,7 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--lifecycle-lock-timeout-ms", type=int, default=DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS)
     subparsers.choices["cleanup-helper-sdks"].add_argument("--worktree-path", action="append", help="Exact orphan path from the reviewed dry-run; repeat for each path to apply.")
     subparsers.choices["remove-worktree"].add_argument("--repo", required=True, help="Exact eligible linked worktree to remove; establish cleanup disposition first.")
+    subparsers.choices["remove-worktree"].add_argument("--offline-only", action="store_true", help="Use only local cleanup proof without discovering or contacting an IDE; retain the worktree if proof is unavailable.")
 
     for name in ("wait-for-inspection", "agent-inspect", "inspect", "inspect-closeout"):
         subparsers.choices[name].add_argument("--timeout-ms", type=int, default=DEFAULT_WAIT_TIMEOUT_MS)
@@ -11915,7 +11916,7 @@ def command_retire_sdks(args: argparse.Namespace) -> dict[str, Any]:
     with lifecycle_lock(args.lifecycle_lock_timeout_ms):
         try:
             root = retirement_worktree(Path(args.repo), args.dry_run) if args.command == "remove-worktree" else None
-            identities = discover_identities(None)
+            identities = [] if getattr(args, "offline_only", False) else discover_identities(None)
             proof_identities = identities
             preview = unregister_helper_sdks(identities, root, True, offline_records)
             if root is not None:
@@ -11961,7 +11962,7 @@ def command_retire_sdks(args: argparse.Namespace) -> dict[str, Any]:
                 if root is not None:
                     # Recheck local state and live projects after SDK retirement.
                     retirement_worktree(root)
-                    current = discover_identities(None)
+                    current = [] if getattr(args, "offline_only", False) else discover_identities(None)
                     proof_identities = current
                     final_preview = unregister_helper_sdks(current, root, True, offline_records)
                     if any(entry["status"] != "absent" and entry["reason"] != "not_helper_owned" for item in final_preview for entry in item["result"]["sdks"]):
