@@ -98,7 +98,9 @@ and an optional `preview_id`. Collect and record also accept `lifetime_seconds`
 (1 to 900, default 300). Record accepts only testing scope and an optional
 `replaces_operation_id`; all fact assertions and evidence references are refused
 before configuration. Its service receipt reports unknown facts and requests no
-preview reconciliation. Preview record is unsupported under
+preview reconciliation. A previous testing receipt's optional
+`reconcile_requested` is accepted only when strictly `false` and is omitted
+from output. Preview record is unsupported under
 [Q652](https://github.com/cbusillo/launchplane/issues/4434#issuecomment-6341807424):
 closed-PR preview teardown uses the preview's own-resource guard, without caller
 usage or custody assertions. Inspect and collect remain observation tools.
@@ -155,7 +157,10 @@ present and its source kind. Coverage sources, evidence kinds and usage
 diagnostics are closed vocabularies copied from the producer. A usage
 diagnostic the helper does not know is reported as `diagnostics_unrecognized`,
 as the producer's own client does. On a preview, a fact kept from an earlier
-recorded observation reports the kind `recorded`.
+recorded observation reports the kind `recorded`. The producer can retain those
+earlier protective reports; this reader permits no new preview assertions.
+Testing collection also recognizes the producer's `service:testing-resources`
+evidence for reproducible data and `separation_ready` after replacement readback.
 
 A receipt that fails these checks reports no facts and carries an
 `invalid_response` warning: a wrong binding, `provider_mutation` other than
@@ -730,15 +735,25 @@ does not require an earlier plan or repeat creation; it can publish fresh
 qualification evidence. None of these receipts proves completed isolation,
 bootstrap, healthy web, supersession, absent historical effects or fence release.
 
-Keep the exact request, reviewed evidence, original operation and key after a
-lost exchange, malformed receipt or service refusal. No command retries itself.
-Unknown exchanges and apply 409s without the producer's explicit
-`testing_resources_refused` no-effect refusal return `outcome_unknown`;
-refusals preserve the service code
-and trace and do not prove that an earlier attempt had no effects. Read back the
-retained allocation first. When still unverified, inspect the original operation
-and use only the producer's supported original-key recovery. Never allocate a
-second target or delete partial resources to recover. The timeout is 600 seconds.
+No command retries itself. Planning loss can leave inert preparation metadata;
+inspect before explicitly planning again. Lost or malformed apply exchanges and
+uncertain 409s preserve the exact request, review, operation and key as
+`outcome_unknown`; inspect/read back before supported original-key recovery.
+A standalone readback 409 is unverified qualification, also `outcome_unknown`,
+and never an instruction to allocate again. After accepted apply with failed
+readback, retain `accepted_unverified` and use the separate readback command,
+without repeating apply. Both available traces and projection diagnostics survive.
+
+The producer's explicit `testing_resources_refused` on dry-run/apply is a
+pre-provider refusal: inspect the current lane and prepare/review a new dry run.
+Preserve earlier artifacts and any original key. This refusal says nothing about
+earlier attempts, and retained preparation can still require its earlier digest;
+stop on that exact refusal instead of clearing state or changing keys to evade
+it. Denials retain the established authority stop/report/no-fallback guidance,
+including when readback is denied after accepted apply. Other definite refusals
+keep their service code, trace and corrective guidance. No refusal proves that
+an earlier attempt had no effects. Never allocate a second target or delete
+partial resources to recover. The ordinary `--timeout` override remains available.
 
 Public output contains only modes, matching flags, safety booleans, qualification
 and review digests, and bounded service diagnostics. Product, context, operation,

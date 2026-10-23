@@ -85,21 +85,19 @@ EVIDENCE_FORMATS: dict[str, dict[str, tuple[tuple[str, re.Pattern[str]], ...]]] 
     },
     "data": {
         "unknown": (),
-        "reproducible": (("testing-resource-inspection", re.compile(rf"service:testing-resource-inspection:{_HEX}")),),
+        "reproducible": (("testing-resource-inspection", re.compile(rf"service:testing-resource-inspection:{_HEX}")),
+                         ("testing-resources", re.compile(rf"service:testing-resources:{_HEX}"))),
         "only_copy": (),
     },
     "production_resources": {
         "unknown": (),
         "isolated": (("testing-resource-inspection", re.compile(rf"service:testing-resource-inspection:{_HEX}")),),
-        "separation_ready": (),
+        "separation_ready": (("testing-resources", re.compile(rf"service:testing-resources:{_HEX}")),),
         "shared": (("production-target-alias", re.compile(rf"service:production-target-alias:{_HEX}:{_HEX}")),),
     },
 }
 # The usage diagnostic each unused evidence kind is built with.
 UNUSED_REASON_BY_KIND = {"odoo-testing-never-served": "never_served", "odoo-testing-usage": "complete"}
-# control_plane/disposable_lane_collection.py merge_collected_safety keeps these
-# facts from an earlier row. On a preview that row can be a recorded observation
-# whose evidence is the Director's own reference, reported only as "recorded".
 RECORDED_PREVIEW_FACTS = {"usage": {"in_use"}, "data": {"reproducible", "only_copy"},
                           "production_resources": {"isolated", "separation_ready", "shared"}}
 RESULT_FIELDS = {
@@ -109,7 +107,7 @@ RESULT_FIELDS = {
                 "historical_usage_retained", "observed_at", "odoo_usage", "never_served_qualification",
                 "expires_at", "provider_mutation", "automatic_fact_collection", "source_coverage"},
     "record": {"mode", "binding_sha256", "observed_by", "observer_kind", *FACTS, "provider_mutation",
-               "automatic_fact_collection", "source_coverage"},
+               "automatic_fact_collection", "source_coverage", "reconcile_requested"},
     "clear": {"mode", "binding_sha256", "observation_sha256", "provider_mutation"},
     "prepare-rebuild": {"mode", "binding_sha256", "operation_id", "historical_effects", "provider_mutation"},
 }
@@ -388,7 +386,8 @@ def project(h: Any, response: dict[str, Any], mode: str, body: dict[str, Any], d
         result.update(checks, evidence=_evidence_summary(h, source, facts, reason, preview),
                       automatic_fact_collection=automatic, expires_at=_lifetime(h, source, body))
     else:
-        if automatic != "unavailable" or any(value != "unknown" for value in facts.values()):
+        if (automatic != "unavailable" or any(value != "unknown" for value in facts.values())
+            or source.get("reconcile_requested", False) is not False):
             raise h.LaunchplaneSafetyError("invalid_response")
         result.update(automatic_fact_collection=automatic)
     h.assert_public_safe_shape(result)

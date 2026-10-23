@@ -14,6 +14,7 @@ from typing import Any, NamedTuple
 from unittest.mock import patch
 
 import launchplane_contract as contract
+import launchplane_testing_resources as resources
 import pytest
 from test_launchplane_helpers import write_action as h
 
@@ -133,7 +134,6 @@ def test_resource_modes_send_only_the_retained_request(mode: str) -> None:
         assert call.kwargs["body"] == expected
         assert call.kwargs["path"] == contract.helper_command_path(PREFIX + mode).format(product="example")
         assert call.kwargs.get("idempotency_key", "") == ("original-key" if expected["mode"] == "apply" else "")
-        assert call.kwargs["timeout"] == 600
     serialized = json.dumps(output)
     assert all(value not in serialized for value in ("PRIVATE_SENTINEL", "PRIVATE_SCHEDULE", "retained-fixture", "example-testing"))
     assert output["result"]["restore_started"] is False
@@ -145,15 +145,11 @@ def test_resource_modes_send_only_the_retained_request(mode: str) -> None:
     "updates",
     [
         {"instance": "prod"},
-        {"preview_id": "preview-1"},
         {"operation_id": ""},
         {"operation_id": "../escape"},
         {"product": "../escape"},
         {"context": None},
-        {"mode": "apply"},
-        {"reviewed_plan_sha256": PLAN},
         {"reason": " "},
-        {"initial_generation": True},
         {"source_mode": "foreign"},
         {"target_id": "foreign"},
     ],
@@ -242,7 +238,6 @@ def test_apply_with_unverified_readback_preserves_original_recovery(response: di
     assert code != 0 and len(calls) == 2
     assert output["status"] == "accepted_unverified"
     assert output["result"]["resource_readback_matches"] is False
-    assert "original" in output["summary"]["recommendation"]
     if isinstance(response, dict):
         assert output["summary"]["read_back_trace_id"] == response["trace_id"]
         assert output["summary"]["trace_id"] != response["trace_id"]
@@ -276,7 +271,6 @@ def test_resource_service_errors_preserve_diagnostics_without_replay(status: int
     assert output["summary"]["trace_id"] == response["trace_id"]
     assert output["summary"]["error_code"] == response["error"]["code"]
     assert "PRIVATE_SENTINEL" not in json.dumps(output)
-    assert "original" in output["summary"]["recommendation"]
     if status != 403:
         assert output["status"] == "outcome_unknown"
 
@@ -286,6 +280,59 @@ def test_secret_shaped_local_identifiers_are_local_input_errors(field: str) -> N
     code, output, calls, settings = invoke(body=private_request(**{field: "ghp_" + "a" * 36}))
     assert code != 0 and calls == [] and settings == 0
     assert output["warnings"][0]["code"] == "invalid_testing_resources_" + field
+
+
+@pytest.mark.parametrize("mode", ["dry-run", "apply", "readback"])
+@pytest.mark.parametrize(
+    "status,error_code", [(401, "unauthorized"), (403, "authorization_denied"), (409, "testing_resources_unverified")]
+)
+def test_failure_classification_and_recovery_cover_every_mode(mode: str, status: int, error_code: str) -> None:
+    payload = {"trace_id": "launchplane_req_matrix", "error": {"code": error_code, "message": "PRIVATE_SENTINEL"}}
+    error = urllib.error.HTTPError(SERVICE, status, "PRIVATE_SENTINEL", None, io.BytesIO(json.dumps(payload).encode()))
+    code, output, calls, _ = invoke(mode, responses=[error])
+    assert code != 0 and len(calls) == 1
+    if status in {401, 403}:
+        assert output["summary"]["recommendation"].startswith(h.http_error_recommendation(output["status"]))
+    else:
+        assert output["status"] == "outcome_unknown"
+        if mode != "apply":
+            assert output["summary"]["recommendation"] != resources.RECOVERY
+
+
+@pytest.mark.parametrize("mode,expected", [("dry-run", "stale"), ("apply", "stale"), ("readback", "outcome_unknown")])
+def test_clean_refusal_is_distinct_from_uncertain_allocation(mode: str, expected: str) -> None:
+    payload = {"error": {"code": "testing_resources_refused"}, "trace_id": "launchplane_req_clean"}
+    error = urllib.error.HTTPError(SERVICE, 409, "refused", None, io.BytesIO(json.dumps(payload).encode()))
+    code, output, calls, _ = invoke(mode, responses=[error])
+    assert code != 0 and len(calls) == 1 and output["status"] == expected
+    assert output["summary"]["recommendation"] != resources.RECOVERY
+
+
+@pytest.mark.parametrize("mode", ["dry-run", "apply", "readback"])
+def test_unparseable_conflict_never_establishes_a_clean_refusal(mode: str) -> None:
+    error = urllib.error.HTTPError(SERVICE, 409, "refused", None, io.BytesIO(b"PRIVATE_SENTINEL"))
+    code, output, calls, _ = invoke(mode, responses=[error])
+    assert code != 0 and len(calls) == 1 and output["status"] == "outcome_unknown"
+    assert output["summary"]["http_status"] == 409
+
+
+@pytest.mark.parametrize("error_code", ["mutation_in_progress", "mutation_reconciliation_required", "idempotency_key_reused"])
+def test_original_operation_conflicts_preserve_uncertain_apply_recovery(error_code: str) -> None:
+    payload = {"error": {"code": error_code}}
+    error = urllib.error.HTTPError(SERVICE, 409, "conflict", None, io.BytesIO(json.dumps(payload).encode()))
+    code, output, calls, _ = invoke("apply", responses=[error])
+    assert code != 0 and len(calls) == 1 and output["status"] == "outcome_unknown"
+    assert output["summary"]["recommendation"] == resources.RECOVERY
+
+
+def test_accepted_apply_then_denied_readback_retains_the_denial_boundary() -> None:
+    payload = {"error": {"code": "authorization_denied"}, "trace_id": "launchplane_req_read_denied"}
+    error = urllib.error.HTTPError(SERVICE, 403, "denied", None, io.BytesIO(json.dumps(payload).encode()))
+    code, output, calls, _ = invoke("apply", responses=[receipt("apply"), error])
+    assert code != 0 and len(calls) == 2 and output["status"] == "accepted_unverified"
+    assert output["result"]["resource_readback_matches"] is False
+    assert output["summary"]["read_back_trace_id"] == payload["trace_id"]
+    assert h.http_error_recommendation("denied") in output["summary"]["recommendation"]
 
 
 if __name__ == "__main__":

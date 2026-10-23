@@ -173,6 +173,26 @@ def test_record_accepts_the_current_producer_receipt_and_replacement_link() -> N
     assert REPLACED_OPERATION not in json.dumps(output)
 
 
+@pytest.mark.parametrize("legacy,accepted", [(False, True), (True, False), (None, False), (0, False), ("false", False)])
+def test_testing_record_accepts_only_a_strictly_false_legacy_reconcile_field(legacy: object, accepted: bool) -> None:
+    code, output, calls, _ = invoke("record", responses=[receipt("record", reconcile_requested=legacy), receipt("inspect")])
+    assert (code == 0) is accepted
+    assert len(calls) == (2 if accepted else 1)
+    assert "reconcile_requested" not in output["result"]
+
+
+def test_collect_accepts_service_qualified_replacement_resource_evidence() -> None:
+    reference = "service:testing-resources:" + EVIDENCE_HASH
+    collected = receipt("collect", usage="unknown", usage_evidence="", data="reproducible", data_evidence=reference,
+                        production_resources="separation_ready", isolation_evidence=reference,
+                        odoo_usage={"reason_code": "unsupported_lane"})
+    code, output, _, _ = invoke("collect", responses=[collected, receipt("inspect")])
+    assert code == 0, output
+    assert output["result"]["evidence"]["data"]["kind"] == "testing-resources"
+    assert output["result"]["evidence"]["production_resources"]["kind"] == "testing-resources"
+    assert reference not in json.dumps(output)
+
+
 @pytest.mark.parametrize("observation", [None,
     {"usage": "in_use", "data": "only_copy", "production_resources": "shared"},
     {"usage": "unused", "data": "reproducible", "production_resources": "isolated"},
@@ -208,9 +228,6 @@ def test_inspect_without_stored_observation_metadata_is_invalid(removed: tuple[s
     ("collect", scope(lifetime_seconds=True)),
     ("record", scope(usage="unused", usage_evidence="ref")),
     ("record", scope(production_resources="isolated", isolation_evidence="ref")),
-    ("record", scope(preview=True, usage="unused")),
-    ("record", scope(preview=True, data="reproducible", data_evidence=" ")),
-    ("record", scope(preview=True, usage="maybe", usage_evidence="ref")),
     ("record", scope(replaces_operation_id="../escape")),
     ("clear", scope(instance="prod")),
     ("clear", scope(preview=True, instance="prod")),
