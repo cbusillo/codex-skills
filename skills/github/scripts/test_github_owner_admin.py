@@ -44,6 +44,7 @@ class OwnerClient:
             "allow_rebase_merge": True,
         }
         self.collaborators = [{"login": "contributor", "id": 12}, {"login": "other", "id": 13}]
+        self.invitations: list[dict[str, Any]] = []
         self.rulesets: list[dict[str, Any]] = []
         self.actions_app: dict[str, Any] = {"id": 731, "slug": "github-actions"}
         self.calls: list[tuple[str, str, Any]] = []
@@ -72,7 +73,10 @@ class OwnerClient:
             return copy.deepcopy(self.repository)
         if method == "DELETE":
             if not self.drop_write:
-                self.collaborators = [item for item in self.collaborators if item["login"] != path.rsplit("/", 1)[1]]
+                if "/invitations/" in path:
+                    self.invitations = [item for item in self.invitations if item["id"] != int(path.rsplit("/", 1)[1])]
+                else:
+                    self.collaborators = [item for item in self.collaborators if item["login"] != path.rsplit("/", 1)[1]]
             return None
         if method in {"POST", "PUT"}:
             result = {**copy.deepcopy(body), "id": 51}
@@ -87,6 +91,8 @@ class OwnerClient:
         if "/collaborators?" in path:
             page = int(path.rsplit("page=", 1)[1])
             return copy.deepcopy(self.collaborators[(page - 1) * rules.PER_PAGE : page * rules.PER_PAGE])
+        if "/invitations?" in path:
+            return copy.deepcopy(self.invitations)
         if "/secrets?" in path:
             page = int(path.rsplit("page=", 1)[1])
             return {
@@ -208,10 +214,54 @@ class OwnerAdminTests(unittest.TestCase):
     def test_personal_github_actions_bypass_refuses_without_blocking_other_apps(self) -> None:
         body = tag_rule()
         body["bypass_actors"] = [{"actor_id": self.client.actions_app["id"], "actor_type": "Integration", "bypass_mode": "always"}]
-        with self.assertRaisesRegex(rules.RulesetError, "GitHub Actions"):
+        with self.assertRaises(rules.RulesetError) as caught:
             self.plan({"method": "POST", "path": "/rulesets", "body": body})
+        self.assertEqual(caught.exception.cause, "unsupported_personal_actions_bypass")
         body["bypass_actors"][0]["actor_id"] = self.client.actions_app["id"] + 1
         self.assertTrue(self.apply(self.plan({"method": "POST", "path": "/rulesets", "body": body}))["verified"])
+
+    def test_normalized_tag_rules_verify_without_ignoring_semantic_changes(self) -> None:
+        body = tag_rule()
+        body["rules"] = [{"type": "update"}, {"type": "tag_name_pattern", "parameters": {"operator": "starts_with", "pattern": "v"}}]
+        body["bypass_actors"] = [{"actor_type": "RepositoryRole", "actor_id": 5}]
+        original = self.client.request
+
+        def request(method: str, path: str, *, operation: str, body: Any = None) -> Any:
+            result = original(method, path, operation=operation, body=body)
+            if method in {"POST", "PUT"}:
+                current = self.client.rulesets[0]
+                current["rules"][0]["parameters"] = {"update_allows_fetch_and_merge": False}
+                current["rules"][1]["parameters"]["negate"] = False
+                current["bypass_actors"][0]["bypass_mode"] = "always"
+            return result
+
+        with patch.object(self.client, "request", side_effect=request):
+            plan = self.plan({"method": "POST", "path": "/rulesets", "body": body})
+            self.assertTrue(self.apply(plan)["verified"])
+            self.assertFalse(self.apply(plan)["changed"])
+            self.assertTrue(self.apply(plan, readback=True)["verified"])
+            body["enforcement"] = "disabled"
+            plan = self.plan({"method": "PUT", "path": "/rulesets/51", "body": body})
+            self.assertTrue(self.apply(plan)["verified"])
+            self.assertTrue(self.apply(plan, readback=True)["verified"])
+        self.client.rulesets[0]["rules"][0]["parameters"]["update_allows_fetch_and_merge"] = True
+        with self.assertRaises(rules.RulesetError):
+            self.apply(plan, readback=True)
+
+    def test_pending_invitation_is_not_verified_as_removed_and_has_a_supported_cancel_route(self) -> None:
+        invite = {"id": 81, "invitee": {"login": "new-user", "id": 18}}
+        other = {"id": 82, "invitee": {"login": "other-user", "id": 19}}
+        self.client.invitations = [invite, other]
+        with self.assertRaises(rules.RulesetError):
+            self.plan({"method": "DELETE", "path": "/collaborators/new-user"})
+        self.assertFalse(self.client.writes)
+        self.assertTrue(self.apply(self.plan({"method": "DELETE", "path": "/invitations/81"}))["verified"])
+        self.assertEqual(self.client.invitations, [other])
+        self.assertTrue(self.apply(self.plan({"method": "DELETE", "path": "/collaborators/new-user"}), readback=True)["verified"])
+        self.client.invitations.append({"id": 83, "invitee": None})
+        with self.assertRaises(rules.RulesetError):
+            self.plan({"method": "DELETE", "path": "/collaborators/new-user"})
+        self.assertTrue(self.apply(self.plan({"method": "DELETE", "path": "/invitations/83"}))["verified"])
 
     def test_unbounded_or_cross_repository_requests_never_reach_transport(self) -> None:
         requests = [
@@ -299,6 +349,40 @@ class OwnerAdminTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["failure"]["cause"], "permission_denied")
         self.assertEqual(result["failure"]["write_outcome"], "rejected")
+        self.assertEqual(len(self.client.writes), 1)
+
+    def test_unexpected_readback_failure_reports_unknown_write_without_retry(self) -> None:
+        plan = self.plan({"method": "PATCH", "path": "", "body": {"delete_branch_on_merge": True}})
+        original = self.client.request
+
+        def request(method: str, path: str, *, operation: str, body: Any = None) -> Any:
+            if method == "GET" and self.client.writes:
+                raise RuntimeError("fixture readback unavailable")
+            return original(method, path, operation=operation, body=body)
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "plan.json"
+            path.write_text(json.dumps(plan))
+            output = StringIO()
+            with (
+                patch.object(self.cli.rules, "RulesetClient", return_value=self.client),
+                patch.object(self.client, "request", side_effect=request),
+                redirect_stdout(output),
+            ):
+                status = self.cli.main(
+                    [
+                        "apply",
+                        "--plan-file",
+                        str(path),
+                        "--plan-digest",
+                        rules.check_plan_digest(plan),
+                        "--confirm-owner-admin-write",
+                    ]
+                )
+        result = json.loads(output.getvalue())
+        self.assertNotEqual(status, 0)
+        self.assertEqual(result["failure"]["write_outcome"], "unknown")
+        self.assertEqual(result["failure"]["failed_step"], "readback")
         self.assertEqual(len(self.client.writes), 1)
 
 

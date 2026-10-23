@@ -272,6 +272,7 @@ def _parameters_match(actual: Mapping[str, Any], desired: Mapping[str, Any]) -> 
         "required_review_thread_resolution": False,
         "required_reviewers": [],
         "update_allows_fetch_and_merge": False,
+        "negate": False,
     }
     for key, value in desired.items():
         observed = actual.get(key, omitted_defaults.get(key))
@@ -283,7 +284,7 @@ def _parameters_match(actual: Mapping[str, Any], desired: Mapping[str, Any]) -> 
     return True
 
 
-def ruleset_matches(ruleset: Mapping[str, Any], spec: RulesetSpec) -> bool:
+def ruleset_matches(ruleset: Mapping[str, Any], spec: RulesetSpec, *, exact: bool = False) -> bool:
     if ruleset.get("name") != spec.name:
         return False
     for key in ("target", "enforcement"):
@@ -303,6 +304,8 @@ def ruleset_matches(ruleset: Mapping[str, Any], spec: RulesetSpec) -> bool:
         actual_parameters = dict(actual_rules[rule_type].get("parameters") or {})
         desired_parameters = dict(desired_rule.get("parameters") or {})
         if not _parameters_match(actual_parameters, desired_parameters):
+            return False
+        if exact and not _parameters_match(desired_parameters, actual_parameters):
             return False
     return True
 

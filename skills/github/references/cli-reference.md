@@ -533,10 +533,10 @@ uv run scripts/gh-owner-admin.py readback --plan-file plan.json --plan-digest SH
 ```
 
 Review `plan.json`'s before/after values and use the returned digest in the
-authorized apply. The config maps `deleteBranchOnMerge`, `allowMergeCommit`,
-`allowSquashMerge`, and `allowRebaseMerge` under `githubSettings.expected`.
+authorized apply. The config maps the existing
+`githubSettings.expected.deleteBranchOnMerge` boolean.
 `prWorkflow.mergePolicy.method` selects exactly one of `merge`, `squash`, or
-`rebase`; conflicting explicit flags refuse. Undeclared flags stay unchanged.
+`rebase`. Without a merge policy, merge flags stay unchanged.
 Pass the intended effective config explicitly if using local overrides.
 
 The same `plan --repo OWNER/REPO --request-file request.json --out plan.json`
@@ -547,13 +547,17 @@ optional `body`. Its supported operations are:
 | --- | --- | --- |
 | PATCH | empty string | Boolean branch-cleanup and merge flags above, using REST names |
 | DELETE | `/collaborators/USERNAME` | None |
+| DELETE | `/invitations/ID` | None |
 | POST | `/rulesets` | Complete custom tag ruleset |
 | PUT | `/rulesets/ID` | Complete custom tag ruleset for an existing custom tag target |
 
 For example, an explicitly approved collaborator removal uses
 `{"method":"DELETE","path":"/collaborators/USERNAME"}`. Its paged before
-image binds the exact collaborator, and readback verifies absence; unrelated
-collaborators remain untouched. GitHub documents additional removal effects,
+image binds the exact collaborator and checks pending invitations. An invitation
+for that person, or one whose invitee identity is unavailable, refuses with its ID; plan and review the exact invitation
+DELETE through this same route, then plan the collaborator removal. Readback
+verifies the selected removal, while unrelated collaborators and invitations
+remain untouched. GitHub documents additional removal effects,
 including private-fork deletion, in [collaborator removal](https://docs.github.com/en/rest/collaborators/collaborators#remove-a-repository-collaborator).
 This route supplies no authorization to remove access.
 

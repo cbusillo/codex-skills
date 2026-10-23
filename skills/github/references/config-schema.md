@@ -264,7 +264,9 @@ Common top-level keys:
 - `prWorkflow`: repo-specific PR workflow hints such as whether a green,
   mergeable PR is only readiness evidence, whether explicit user approval is
   required before merge, and which watch skill/helper should monitor long PR
-  fix trains.
+  fix trains. The explicit owner settings planner consumes
+  `mergePolicy.method` (`merge`, `squash`, or `rebase`) to select one allowed
+  merge method; this metadata does not authorize a settings write.
 - `release`: repo-specific release intent and batching metadata. Use this for
   facts such as which file or workflow expresses release intent, release
   metadata files, immediate-release triggers, and defer/batch conditions. Do not
@@ -366,8 +368,9 @@ Common top-level keys:
 - `githubSettings`: expected GitHub repository settings that snapshot helpers
   report as `ok`, `warning`, or `unavailable` without silently mutating.
   The explicit [verified-owner settings planner](cli-reference.md#verified-owner-administration)
-  consumes `expected.deleteBranchOnMerge`, `allowMergeCommit`, `allowSquashMerge`,
-  and `allowRebaseMerge` booleans plus `prWorkflow.mergePolicy.method`.
+  consumes the existing `expected.deleteBranchOnMerge` boolean plus
+  `prWorkflow.mergePolicy.method`. Other REST merge flags can be supplied
+  in an explicit admin request; they are not new snapshot expectation keys.
   Config expectations do not authorize administrative writes.
 - `cleanup`: repo-local closeout cleanup policy. Boolean fields may authorize
   routine branch/worktree hygiene, `commands` may list named cleanup or audit

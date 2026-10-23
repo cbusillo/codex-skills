@@ -19,9 +19,6 @@ import github_rulesets as rules
 
 SETTINGS = {
     "deleteBranchOnMerge": "delete_branch_on_merge",
-    "allowMergeCommit": "allow_merge_commit",
-    "allowSquashMerge": "allow_squash_merge",
-    "allowRebaseMerge": "allow_rebase_merge",
 }
 MERGE_METHODS = {"merge": "allow_merge_commit", "squash": "allow_squash_merge", "rebase": "allow_rebase_merge"}
 MANAGED_NAMES = {
@@ -59,10 +56,7 @@ def settings_request(config: Any) -> dict[str, Any]:
             if not isinstance(method, str) or method not in MERGE_METHODS:
                 fail("merge policy method must be merge, squash or rebase")
             for key in MERGE_METHODS.values():
-                desired = key == MERGE_METHODS[method]
-                if key in payload and payload[key] != desired:
-                    fail("expected merge flags conflict with merge policy")
-                payload[key] = desired
+                payload[key] = key == MERGE_METHODS[method]
         return validate_request({"method": "PATCH", "path": "", "body": payload})
     except AttributeError as exc:
         raise rules.RulesetError("repository metadata must contain objects", cause="validation_error") from exc
@@ -79,11 +73,13 @@ def validate_request(value: Any) -> dict[str, Any]:
         if (
             not isinstance(body, dict)
             or not body
-            or set(body) - set(SETTINGS.values())
+            or set(body) - (set(SETTINGS.values()) | set(MERGE_METHODS.values()))
             or any(not isinstance(item, bool) for item in body.values())
         ):
             fail("settings PATCH accepts only declared boolean merge and branch-cleanup flags")
-    elif method == "DELETE" and re.fullmatch(r"/collaborators/[A-Za-z0-9][A-Za-z0-9-]{0,38}", path):
+    elif method == "DELETE" and (
+        re.fullmatch(r"/collaborators/[A-Za-z0-9][A-Za-z0-9-]{0,38}", path) or re.fullmatch(r"/invitations/[1-9][0-9]*", path)
+    ):
         if body is not None:
             fail("collaborator removal accepts no body")
     elif (method == "POST" and path == "/rulesets") or (method == "PUT" and re.fullmatch(r"/rulesets/[1-9][0-9]*", path)):
@@ -176,9 +172,34 @@ def snapshot(client: Any, repo: str, request: dict[str, Any]) -> dict[str, Any]:
             fail("repository must retain at least one merge method")
         return {"repository": identity, "value": values}
     if method == "DELETE":
+        invitations = pages(client, f"/repos/{rules.repo_path(repo)}/invitations")
+        if any(
+            type(item.get("id")) is not int
+            or "invitee" not in item
+            or (
+                item["invitee"] is not None
+                and (not isinstance(item["invitee"], dict) or not isinstance(item["invitee"].get("login"), str))
+            )
+            for item in invitations
+        ):
+            fail("incomplete repository invitation response", "invalid_response")
+        invitations = [
+            {"id": item["id"], "login": item["invitee"]["login"].casefold() if item["invitee"] else None} for item in invitations
+        ]
+        if path.startswith("/invitations/"):
+            invitation_id = int(path.rsplit("/", 1)[1])
+            matches = [item for item in invitations if item["id"] == invitation_id]
+            return {"repository": identity, "value": matches}
         login = path.rsplit("/", 1)[1]
         if login.casefold() == repo.split("/")[0].casefold():
             fail("cannot remove the repository owner")
+        pending = [item["id"] for item in invitations if item["login"] in {None, login.casefold()}]
+        if pending:
+            fail(
+                "pending invitation remains; plan and review DELETE /invitations/ID before collaborator removal",
+                "pending_invitation",
+                invitation_ids=pending,
+            )
         collaborators = pages(client, f"/repos/{rules.repo_path(repo)}/collaborators?affiliation=direct")
         if any(not isinstance(item.get("login"), str) or type(item.get("id")) is not int for item in collaborators):
             fail("incomplete collaborator response", "invalid_response")
@@ -249,11 +270,16 @@ def plan_request(client: Any, repo: str, request: Any) -> dict[str, Any]:
     return build_plan(repo, request, snapshot(client, repo, request))
 
 
-def matches_after(plan: dict[str, Any], live: dict[str, Any]) -> bool:
-    observed = copy.deepcopy(live)
-    if plan["request"]["method"] == "POST" and isinstance(observed["value"], dict):
-        observed["value"]["id"] = None
-    return observed == plan["after"]
+def matches_snapshot(expected: dict[str, Any], live: dict[str, Any], *, generated_id: bool = False) -> bool:
+    if expected["repository"] != live["repository"]:
+        return False
+    desired, actual = expected["value"], live["value"]
+    if isinstance(desired, dict) and desired.get("target") == "tag" and isinstance(actual, dict):
+        if not generated_id and desired["id"] != actual["id"]:
+            return False
+        spec = rules.RulesetSpec("custom_tag", desired["name"], frozenset(), desired)
+        return rules.ruleset_matches(actual, spec, exact=True)
+    return desired == actual
 
 
 def run_plan(client: Any, plan: Any, digest: str, *, apply: bool, confirm: bool) -> dict[str, Any]:
@@ -268,13 +294,13 @@ def run_plan(client: Any, plan: Any, digest: str, *, apply: bool, confirm: bool)
         raise rules.RulesetError("invalid reviewed plan", cause="validation_error") from exc
     repo, request = plan["repo"], plan["request"]
     live = snapshot(client, repo, request)
-    if matches_after(plan, live):
+    if matches_snapshot(plan["after"], live, generated_id=request["method"] == "POST"):
         return {"repo": repo, "changed": False, "verified": True, "plan_digest": digest}
-    if live != plan["before"]:
+    if not matches_snapshot(plan["before"], live):
         fail("repository state differs from reviewed plan; plan and review again", "plan_state_drift")
     if not apply:
         fail("reviewed change is not present", "post_write_verification_failed")
-    if snapshot(client, repo, request) != live:
+    if not matches_snapshot(live, snapshot(client, repo, request)):
         fail("repository state changed during preflight", "plan_state_drift")
     write_completed = False
     try:
@@ -285,14 +311,16 @@ def run_plan(client: Any, plan: Any, digest: str, *, apply: bool, confirm: bool)
             body=request.get("body"),
         )
         write_completed = True
-        if not matches_after(plan, snapshot(client, repo, request)):
+        if not matches_snapshot(plan["after"], snapshot(client, repo, request), generated_id=request["method"] == "POST"):
             fail("owner-admin readback differs from the reviewed result", "post_write_verification_failed")
-    except rules.RulesetError as exc:
+    except Exception as exc:
+        cause = exc.cause if isinstance(exc, rules.RulesetError) else "invalid_response"
+        details = exc.payload if isinstance(exc, rules.RulesetError) else {}
         raise rules.RulesetError(
             str(exc),
-            cause=exc.cause,
+            cause=cause,
             payload={
-                **exc.payload,
+                **details,
                 "write_attempted": True,
                 "failed_step": "readback" if write_completed else "write",
                 "plan_digest": digest,
