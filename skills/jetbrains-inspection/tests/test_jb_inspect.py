@@ -653,8 +653,12 @@ class SdkRetirementTests(unittest.TestCase):
                   patch.object(jb_inspect, "offline_ide_processes", side_effect=[[], [123]] if new_process else None,
                                return_value=[]),
                   patch.object(jb_inspect.subprocess, "run") as removal):
-                with self.assertRaises(jb_inspect.InspectError):
+                with self.assertRaises(jb_inspect.InspectError) as caught:
                     jb_inspect.command_retire_sdks(args)
+                if new_process:
+                    self.assertEqual(caught.exception.payload["offline_retirement_ide_pids"], [123])
+                else:
+                    self.assertEqual(caught.exception.payload["offline_retirement_record"], str(root / ".idea/workspace.xml"))
                 if offline_only:
                     discover.assert_not_called()
                 removal.assert_not_called()

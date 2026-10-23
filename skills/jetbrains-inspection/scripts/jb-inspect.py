@@ -11595,11 +11595,11 @@ def reconcile_retirement_leases(root: Path, dry_run: bool, offline_only: bool = 
     blockers = [(path, lease) for path, lease in leases if str(path) not in released]
     if blockers:
         ids = [str(lease.get("lease_id") or path.stem) for path, lease in blockers]
-        commands = [f"uv run {shlex.quote(str(Path(__file__).resolve()))} cleanup-helper-leases "
+        commands = [] if offline_only else [f"uv run {shlex.quote(str(Path(__file__).resolve()))} cleanup-helper-leases "
                     f"--lease-id {shlex.quote(lease_id)} --no-dry-run" for lease_id in ids]
         raise InspectError(
-            f"IDE leases block retirement: {', '.join(ids)}. After resolving ownership/activity, run: "
-            + "; ".join(commands), 3,
+            (f"IDE leases block offline retirement: {', '.join(ids)}. Retain the worktree until a session authorized to contact the IDE resolves them."
+             if offline_only else f"IDE leases block retirement: {', '.join(ids)}. After resolving ownership/activity, run: " + "; ".join(commands)), 3,
             {"blocking_lease_ids": ids, "cleanup_commands": commands, "lease_cleanup": result},
         )
 
