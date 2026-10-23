@@ -91,13 +91,17 @@ def captured(command: Any, args: argparse.Namespace) -> dict[str, Any]:
     return json.loads(output.getvalue())
 
 
-def source_references(plan: Any, repo: str, number: int, pull: dict[str, Any]) -> tuple[list[tuple[str, int]], list[tuple[str, int]]]:
-    """References discover review work; they never attest completion."""
+def linked_issues(claim_module: Any, repo: str, pull: dict[str, Any]) -> list[tuple[str, int]]:
     text = (pull.get("title") or "") + "\n" + (pull.get("body") or "")
     refs = [(match[1] or match[2] or repo, int(match[3])) for match in re.finditer(
         r"(?:https://github[.]com/([\w.-]+/[\w.-]+)/issues/|([\w.-]+/[\w.-]+)?#)([1-9]\d*)\b", text)]
-    refs = [(target, issue) for target, issue in refs if plan.github_plan_claim.pr_issue_reference(
+    return [(target, issue) for target, issue in refs if claim_module.pr_issue_reference(
         pull, issue, repo=target, local_references=target.casefold() == repo.casefold())]
+
+
+def source_references(plan: Any, repo: str, number: int, pull: dict[str, Any]) -> tuple[list[tuple[str, int]], list[tuple[str, int]]]:
+    """References discover review work; they never attest completion."""
+    refs = linked_issues(plan.github_plan_claim, repo, pull)
     timeline = []
     _, events = plan.collect_paged_rest_items(
         f"/repos/{repo}/issues/{number}/timeline", query={}, bucket="rest_core", step_prefix="landing_timeline")
