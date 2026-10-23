@@ -59,6 +59,7 @@ SIMULATOR = CATALOG / "skill-creator" / "scripts" / "validate-command-policy-sim
 CLAIM_LEASE = CATALOG / "github" / "scripts" / "github_plan_lease.py"
 CODE_HOME_SKILLS = "$CODE_HOME/skills/"
 OPERATORS = re.compile(r"^[;&|()\n]+$")
+REDIRECTION = re.compile(r"[<>][<>&|]*|&>>?")
 REPOSITORY_SLUG = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9_.-]*/launchplane")
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 TRANSPARENT = {"command", "exec", "time", "nohup"}
@@ -271,19 +272,23 @@ def reads_script_from_input(argv: list[str]) -> bool:
     return bool(shells) and not any(SHELL_COMMAND_FLAG.match(token) for token in argv[shells[0] + 1:])
 
 
-def reads_program_from_stdin(argv: list[str]) -> bool:
-    """Distinguish an interpreter's stdin program from data passed to inline code or a file."""
+def without_redirections(argv: list[str]) -> list[str]:
     arguments: list[str] = []
-    cursor = 1
+    cursor = 0
     while cursor < len(argv):
         token = argv[cursor]
-        if token.isdecimal() and cursor + 1 < len(argv) and argv[cursor + 1].startswith(("<", ">")):
-            cursor += 1  # File descriptor before a redirection.
-        elif re.fullmatch(r"[<>][<>&]*|&>>?", token):
+        if token.isdecimal() and cursor + 1 < len(argv) and REDIRECTION.fullmatch(argv[cursor + 1]):
+            cursor += 1
+        elif REDIRECTION.fullmatch(token):
             cursor += 3 if token == "<<" and argv[cursor + 1:cursor + 2] == ["-"] else 2
         else:
             arguments.append(token)
             cursor += 1
+    return arguments
+
+
+def reads_program_from_stdin(argv: list[str]) -> bool:
+    arguments = without_redirections(argv[1:])
     tool = argv[0]
     if tool == "xdotool":
         return len(arguments) == 1 and arguments[0] in STDIN_PROGRAM_PATHS
@@ -576,33 +581,38 @@ def exception_cwd(shell: str, cwd: Path) -> Path | None:
                     return None
                 return exception_cwd(tokens[index + 1], cwd)
         return None
-    for position, token in enumerate(tokens):
-        if token in {"cd", "pushd", "popd", "eval", "source", "--active", "--no-project"} or Path(token).name in SHELLS:
+    for token in tokens:
+        if Path(token).name in SHELLS:
             return None
         if token.startswith(POSTGRES_URL_VARIABLE) and loopback_database(token.removeprefix(POSTGRES_URL_VARIABLE)):
             continue
-        if token.startswith("-C") or ASSIGNMENT.match(token) or token.split("=", 1)[0] in {"-C", "--chdir", "--directory", "--project", "--with", "--with-editable", "--with-requirements", "--env-file"}:
+        if ASSIGNMENT.match(token):
             return None
-        # A path ending in launchplane is another executable; `--repository OWNER/launchplane` names this one.
-        repository = token.removeprefix("--repository=") if tokens[position - 1:position] != ["--repository"] else token
-        repository_slug = repository != token or tokens[position - 1:position] == ["--repository"]
-        if Path(token).name == "launchplane" and token != "launchplane" and not (repository_slug and REPOSITORY_SLUG.fullmatch(repository)):
-            return None
-    for argv in commands:
-        while argv and argv[0] in TRANSPARENT | SHELL_KEYWORDS | {"builtin"}:
+    for raw_argv in commands:
+        argv = without_redirections(raw_argv)
+        while argv and argv[0] in TRANSPARENT | SHELL_KEYWORDS | {"builtin", "function"}:
             wrapper = argv[0]
-            argv = argv[1:]
+            argv = argv[2:] if wrapper == "function" else argv[1:]
             if wrapper in TRANSPARENT | {"builtin"}:
                 argv = drop_flags(argv)
-        if argv[:1] == ["."] or "." in argv and any("<" in token or ">" in token for token in argv[:argv.index(".")]):
+        if argv and argv[0] in {".", "source", "cd", "pushd", "popd", "eval"}:
             return None
-        normalized = unwrap(argv)
-        if normalized and normalized[0][:3] == POSTGRES_GATE and not names_loopback_database(argv):
+        normalized = unwrap(raw_argv)
+        if not normalized or normalized[0][:1] != ["launchplane"]:
+            continue
+        for position, token in enumerate(raw_argv):
+            if token in {"--active", "--no-project"} or token.startswith("-C") or token.split("=", 1)[0] in {"--chdir", "--directory", "--project", "--with", "--with-editable", "--with-requirements", "--env-file"}:
+                return None
+            repository = token.removeprefix("--repository=") if raw_argv[position - 1:position] != ["--repository"] else token
+            repository_slug = repository != token or raw_argv[position - 1:position] == ["--repository"]
+            if Path(token).name == "launchplane" and token != "launchplane" and not (repository_slug and REPOSITORY_SLUG.fullmatch(repository)):
+                return None
+        if normalized[0][:3] == POSTGRES_GATE and not names_loopback_database(raw_argv):
             return None
         command = argv
         while command and command[0].startswith(POSTGRES_URL_VARIABLE):
             command = command[1:]
-        if any(Path(token).name == "launchplane" for token in command) and command[:2] != ["uv", "run"]:
+        if command[:2] != ["uv", "run"]:
             return None
     return cwd if cwd.is_absolute() else None
 

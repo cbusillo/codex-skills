@@ -467,6 +467,9 @@ class CommandPolicyHookTests(unittest.TestCase):
                 "time -p . /other/setup && uv run " + command,
                 ">log . /other/setup && uv run " + command,
                 "2>log . /other/setup && uv run " + command,
+                "command >log . /other/setup && uv run " + command,
+                "function f { . /other/setup; }; f && uv run " + command,
+                "function f { cd /other; }; f && uv run " + command,
                 "{ . /other/setup; uv run " + command + "; }",
                 "if . /other/setup; then uv run " + command + "; fi",
                 "! . /other/setup; uv run " + command,
@@ -569,19 +572,30 @@ class CommandPolicyHookTests(unittest.TestCase):
             subprocess.run(["git", "init", "-q", str(checkout)], check=True)
             subprocess.run(["git", "-C", str(checkout), "config", "remote.origin.url", "git@github.com:cbusillo/launchplane.git"], check=True)
             export = "uv run launchplane service export-openapi --output generated/openapi.json"
-            for gate in (
-                "uv run --extra dev launchplane ci unittest-shard local --jobs 4",
+            gate = "uv run --extra dev launchplane ci unittest-shard local --jobs 4"
+            for local_gate in (
+                gate,
                 "uv run launchplane service plan-config-authority-transition --base-branch main --required-checks-file checks.json",
             ):
                 for line in (
-                    gate + " > output.log 2>&1",
-                    "uv run ruff check . && " + gate,
-                    export + " && " + gate,
-                    gate + " && git status --short",
+                    local_gate + " > output.log 2>&1",
+                    "uv run ruff check . && " + local_gate,
+                    export + " && " + local_gate,
+                    local_gate + " && git status --short",
                 ):
                     with self.subTest(line=line):
                         self.assertEqual(bash(line, checkout).returncode, 0)
                         self.assertEqual(bash("cd " + shlex.quote(str(checkout)) + " && " + line, root).returncode, 0)
+            for command in (
+                "rg -n '->' .",
+                "rg '<div>' .",
+                "rg -n '>' .",
+                "rg source .",
+                "git log --grep cd",
+                "rg -C 3 launchplane .",
+            ):
+                with self.subTest(command=command):
+                    self.assertEqual(bash(command + " && " + gate, checkout).returncode, 0)
 
     def test_postgres_gate_runs_only_against_a_named_loopback_database(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
