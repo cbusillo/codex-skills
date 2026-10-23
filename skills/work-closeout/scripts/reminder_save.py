@@ -17,10 +17,11 @@ import threading
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote, urlsplit
-from uuid import UUID
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 from reminder_link import prepare, target_list
+from reminder_shortcut import SHORTCUT_NAME
 
 WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 
@@ -53,7 +54,6 @@ def plain_plan(title: str, notes: str, url: str | None, list_name: str,
         if (parsed.scheme not in ("https", "http") or not parsed.hostname
                 or any(c.isspace() or ord(c) < 32 for c in url)):
             raise ValueError("Plain reminder URL must be an absolute HTTP or HTTPS URL")
-        # Normalize each URL component before dry run, lookup and UI save.
         def escaped(value: str, safe: str) -> str:
             return quote(re.sub(r"%(?![0-9a-fA-F]{2})", "%25", value), safe=safe)
 
@@ -97,8 +97,6 @@ def plan(harness: str, directory: Path, session: str | None, prompt: str | None,
     identity = str(UUID(session)) if session else "fresh session"
     if title is None:
         reference = ", ".join("#" + url.rsplit("/", 1)[1] for url in links)
-        # The visible-URL step finds the row by title, counting completed ones,
-        # so the due time keeps a session's next check-in distinct from its last.
         when = f"{local:%Y-%m-%d %H:%M}"
         if repeat_days is not None:
             when = f"every {repeat_days} days from {when}"
@@ -134,13 +132,6 @@ def decide(request: dict, reminders: list[dict]) -> dict:
                       reminder_id=existing)
     if existing is None and request.get("update_id"):
         raise refusal("Update target not found; no replacement created")
-    # A URL edit finds the row by title, including shown completed rows. Plain
-    # reminders without a link use only the exact EventKit ID and can reuse completed titles.
-    title_lookup = request.get("kind") != "plain" or bool(request.get("url"))
-    if any(r["id"] != existing and r["title"] == request["title"]
-           and (title_lookup or not r["completed"]) for r in reminders):
-        raise refusal("Title is not unique in the target list, counting completed items; "
-                      "pass a distinct --title. No UI edit")
     return {"action": "update", "id": existing} if existing else {"action": "create", "id": None}
 
 
@@ -169,6 +160,8 @@ def exchange(process: subprocess.Popen, request: dict) -> dict | None:
 def native(request: dict) -> dict:
     if sys.platform != "darwin":
         raise ValueError("Native saving requires macOS 14+; use the prepared manual fields")
+    if request.get("url"):
+        request = {**request, "nonce": f"reminder-nonce:{uuid4()}"}
     # The writer prints one lookup line, then waits for this side's target decision.
     with tempfile.TemporaryFile("w+") as errors, subprocess.Popen(
             ["swift", str(Path(__file__).with_suffix(".swift"))], stdin=subprocess.PIPE,
@@ -181,7 +174,10 @@ def native(request: dict) -> dict:
             watchdog.cancel()
         if receipt is None:
             errors.seek(0)
-            raise ValueError(errors.read().strip() or "Native writer returned no receipt; read back before retrying")
+            detail = errors.read().strip() or "Native writer returned no receipt; read back before retrying"
+            if request.get("nonce"):
+                detail += f"; search all lists for Notes {request['nonce']} before retrying"
+            raise ValueError(detail)
     expected = "deleted" if request.get("delete_id") else "saved"
     if (process.returncode or receipt.get("status") != expected
             or (expected == "saved" and request.get("kind") == "plain"
@@ -244,6 +240,7 @@ def main() -> int:
             request["update_id"] = args.update_id
             request["delete_id"] = args.delete_id
             request["preserve_existing"] = args.preserve_existing
+            request["shortcut"] = SHORTCUT_NAME
             print(json.dumps(native(request), ensure_ascii=False))
         else:
             print(json.dumps({"status": "dry_run", **fields,
