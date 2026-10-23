@@ -325,7 +325,12 @@ Command model:
   storage redirects in config `idea.properties`, or local `.idea` project-model/workspace state retain the worktree for the live
   IDE cleanup route. Offline proof is repeated before Git removal and reported
   as `offline_cleanup_proved`, with `offline_records_checked` naming the records
-  read. A running supported IDE without a usable plugin identity also holds
+  read. Add `--offline-only` when the session must not contact an IDE. Preview
+  and apply then skip identity discovery and use the same local proof, repeated
+  before removal. Existing leases hold this mode without reconciliation or
+  IDE contact. A running supported IDE holds this mode; keep the worktree
+  until an authorized session can use the live cleanup route. Without that flag,
+  a running supported IDE without a usable plugin identity also holds
   offline retirement; restore its plugin route or close it. The offline scan
   covers standard macOS storage plus the explicit config override; redirects in
   VM options, environment variables or edited application bundles, and IDEs

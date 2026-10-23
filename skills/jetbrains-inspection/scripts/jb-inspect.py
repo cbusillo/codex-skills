@@ -830,6 +830,7 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--lifecycle-lock-timeout-ms", type=int, default=DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS)
     subparsers.choices["cleanup-helper-sdks"].add_argument("--worktree-path", action="append", help="Exact orphan path from the reviewed dry-run; repeat for each path to apply.")
     subparsers.choices["remove-worktree"].add_argument("--repo", required=True, help="Exact eligible linked worktree to remove; establish cleanup disposition first.")
+    subparsers.choices["remove-worktree"].add_argument("--offline-only", action="store_true", help="Use only local cleanup proof without discovering or contacting an IDE; retain the worktree if proof is unavailable.")
 
     for name in ("wait-for-inspection", "agent-inspect", "inspect", "inspect-closeout"):
         subparsers.choices[name].add_argument("--timeout-ms", type=int, default=DEFAULT_WAIT_TIMEOUT_MS)
@@ -11562,7 +11563,7 @@ def paths_same(left: Any, right: Any) -> bool:
         return str(left) == str(right)
 
 
-def retirement_worktree(path: Path, dry_run: bool = False) -> Path:
+def retirement_worktree(path: Path, dry_run: bool = False, offline_only: bool = False) -> Path:
     root = path.expanduser().resolve()
     if git_root(root) != root:
         raise InspectError("Removal requires the exact linked worktree root.", 3)
@@ -11578,27 +11579,27 @@ def retirement_worktree(path: Path, dry_run: bool = False) -> Path:
         raise InspectError("Cannot resolve the primary checkout for worktree removal.", 3)
     if subprocess.check_output(["git", "-C", str(root), "status", "--porcelain"], text=True).strip():
         raise InspectError("Preserve uncommitted work before removing this worktree.", 3)
-    reconcile_retirement_leases(root, dry_run)
+    reconcile_retirement_leases(root, dry_run, offline_only)
     return root
 
 
-def reconcile_retirement_leases(root: Path, dry_run: bool) -> None:
+def reconcile_retirement_leases(root: Path, dry_run: bool, offline_only: bool = False) -> None:
     leases = [(path, lease) for path, lease in read_local_leases()
               if paths_same(lease.get("worktree_root"), root)]
     if not leases:
         return
-    result = cleanup_stale_helper_leases(argparse.Namespace(
+    result = {} if offline_only else cleanup_stale_helper_leases(argparse.Namespace(
         max_age_ms=24 * 60 * 60 * 1000, dry_run=dry_run, worktree_root=root,
     ))
     released = set(result.get("would_remove" if dry_run else "removed") or [])
     blockers = [(path, lease) for path, lease in leases if str(path) not in released]
     if blockers:
         ids = [str(lease.get("lease_id") or path.stem) for path, lease in blockers]
-        commands = [f"uv run {shlex.quote(str(Path(__file__).resolve()))} cleanup-helper-leases "
+        commands = [] if offline_only else [f"uv run {shlex.quote(str(Path(__file__).resolve()))} cleanup-helper-leases "
                     f"--lease-id {shlex.quote(lease_id)} --no-dry-run" for lease_id in ids]
         raise InspectError(
-            f"IDE leases block retirement: {', '.join(ids)}. After resolving ownership/activity, run: "
-            + "; ".join(commands), 3,
+            (f"IDE leases block offline retirement: {', '.join(ids)}. Retain the worktree until a session authorized to contact the IDE resolves them."
+             if offline_only else f"IDE leases block retirement: {', '.join(ids)}. After resolving ownership/activity, run: " + "; ".join(commands)), 3,
             {"blocking_lease_ids": ids, "cleanup_commands": commands, "lease_cleanup": result},
         )
 
@@ -11721,7 +11722,7 @@ def offline_retirement_records(root: Path) -> list[str]:
     if sys.platform != "darwin":
         raise InspectError("Offline retirement record discovery is only supported on macOS; use a live IDE for cleanup.", 3)
     if pids := offline_ide_processes():
-        raise InspectError("An IDE is running without a usable identity; restore its plugin route or close it before offline retirement.", 3,
+        raise InspectError("An IDE is running; retain the worktree until an authorized session can use live cleanup or close the IDE before offline retirement.", 3,
                            {"offline_retirement_ide_pids": pids})
     checked: list[str] = []
 
@@ -11914,8 +11915,9 @@ def command_retire_sdks(args: argparse.Namespace) -> dict[str, Any]:
     offline_records: list[str] = []
     with lifecycle_lock(args.lifecycle_lock_timeout_ms):
         try:
-            root = retirement_worktree(Path(args.repo), args.dry_run) if args.command == "remove-worktree" else None
-            identities = discover_identities(None)
+            offline_only = getattr(args, "offline_only", False)
+            root = retirement_worktree(Path(args.repo), args.dry_run, offline_only) if args.command == "remove-worktree" else None
+            identities = [] if offline_only else discover_identities(None)
             proof_identities = identities
             preview = unregister_helper_sdks(identities, root, True, offline_records)
             if root is not None:
@@ -11960,8 +11962,8 @@ def command_retire_sdks(args: argparse.Namespace) -> dict[str, Any]:
                         raise InspectError("Reviewed orphan SDKs remain registered after apply.", 3, {"sdk_remaining": remaining})
                 if root is not None:
                     # Recheck local state and live projects after SDK retirement.
-                    retirement_worktree(root)
-                    current = discover_identities(None)
+                    retirement_worktree(root, False, offline_only)
+                    current = [] if offline_only else discover_identities(None)
                     proof_identities = current
                     final_preview = unregister_helper_sdks(current, root, True, offline_records)
                     if any(entry["status"] != "absent" and entry["reason"] != "not_helper_owned" for item in final_preview for entry in item["result"]["sdks"]):
