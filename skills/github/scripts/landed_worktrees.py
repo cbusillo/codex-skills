@@ -22,6 +22,7 @@ import github_plan_release
 RETIRE_MARKER = "retire with: dev-worktree retire"
 DEV_WORKTREE = Path(__file__).with_name("dev-worktree")
 ANY_CLAIM = {"worker": "", "session": "", "branch": "", "claimed_at": ""}
+NO_WORKTREES = {"worktrees": []}
 
 
 @dataclass(frozen=True)
@@ -237,7 +238,9 @@ def open_claims(reader, github_read, repo: str, number: int, pull: dict) -> str:
         comments = reader.paged_json(f"repos/{record_repo}/issues/{record_number}/comments",
                                      step_prefix="landed_claim_discussion")
         comments = github_plan_release.verified_comments(comments, release_evidence)
-        conflicts, _ = github_plan_claim.discussion_evidence((issue or {}).get("body") or "", comments, ANY_CLAIM)
+        released = {source["claim_id"] for source in github_plan_claim.ended_ownership(comments, NO_WORKTREES)}
+        conflicts, _ = github_plan_claim.discussion_evidence((issue or {}).get("body") or "", comments, ANY_CLAIM,
+                                                             ended_claims=released)
         found += [json.dumps(c["record"]) if "record" in c else c.get("text", "") for c in conflicts]
     return "\n".join(found)
 
