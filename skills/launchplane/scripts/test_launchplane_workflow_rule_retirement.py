@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
-# dependencies = [
-#     "pytest==9.1.1",
-# ]
+# dependencies = ["pytest==9.1.1"]
 # ///
 """Workflow-rule retirement reads bind the exact selection and never print private scope."""
 

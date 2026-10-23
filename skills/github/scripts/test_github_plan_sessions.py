@@ -1,8 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = [
-#     "aiohttp==3.14.5",
-# ]
+# dependencies = ["aiohttp==3.14.5"]
 # ///
 """Fake native daemon evidence, including refusal and read-only transport."""
 import asyncio

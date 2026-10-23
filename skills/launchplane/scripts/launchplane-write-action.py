@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
-# dependencies = [
-#     "cryptography==50.0.2",
-# ]
+# dependencies = ["cryptography==50.0.2"]
 # ///
 """Execute bounded Launchplane operator actions with public-safe output."""
 

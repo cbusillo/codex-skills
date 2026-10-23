@@ -1,9 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = [
-#     "aiohttp==3.14.5",
-#     "websockets==17.2",
-# ]
+# dependencies = ["aiohttp==3.14.5", "websockets==17.2"]
 # ///
 """Real argv, private sockets and a disposable native client exercise ingress ownership."""
 import asyncio

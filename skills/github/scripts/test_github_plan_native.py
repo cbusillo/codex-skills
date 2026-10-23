@@ -1,8 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = [
-#     "aiohttp==3.14.5",
-# ]
+# dependencies = ["aiohttp==3.14.5"]
 # ///
 """Synthetic native facts and disposable daemon transport; no native client actions."""
 import asyncio

@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
-# dependencies = [
-#     "PyYAML==6.0.3",
-# ]
+# dependencies = ["PyYAML==6.0.3"]
 # ///
 """Behavioral coverage for keyword-closure planning reconciliation."""
 from __future__ import annotations

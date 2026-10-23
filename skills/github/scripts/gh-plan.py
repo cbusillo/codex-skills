@@ -2,11 +2,11 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#     "aiohttp==3.14.5",
 #     "PyYAML==6.0.3",
+#     "aiohttp==3.14.5",
+#     "tree-sitter==0.26.0",
 #     "tree-sitter-bash==0.25.1",
 #     "tree-sitter-javascript==0.25.0",
-#     "tree-sitter==0.26.0",
 # ]
 # ///
 """Compact GitHub issue planning helper for Codex skills."""

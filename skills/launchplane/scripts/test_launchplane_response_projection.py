@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
-# dependencies = [
-#     "pytest==9.1.1",
-# ]
+# dependencies = ["pytest==9.1.1"]
 # ///
 """Exercise preview and saved-review projection through fake HTTP responses."""
 

@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
-# dependencies = [
-#     "pytest==9.1.1",
-# ]
+# dependencies = ["pytest==9.1.1"]
 # ///
 """Offline reviewed repair, CAS, drift, refusal and uncertain-effect checks."""
 from __future__ import annotations

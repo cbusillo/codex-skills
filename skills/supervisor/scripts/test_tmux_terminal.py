@@ -1,9 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = [
-#     "iterm2==2.30",
-# ]
+# dependencies = ["iterm2==2.30"]
 # ///
 """Exercise the shared launcher against a disposable real tmux server."""
 

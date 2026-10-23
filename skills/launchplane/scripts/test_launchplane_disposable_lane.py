@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
-# dependencies = [
-#     "pytest==9.1.1",
-# ]
+# dependencies = ["pytest==9.1.1"]
 # ///
 """Disposable-lane callers bind review, refuse unsafe facts and never guess outcomes."""
 

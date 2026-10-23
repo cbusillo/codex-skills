@@ -1,9 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = [
-#     "aiohttp==3.14.5",
-# ]
+# dependencies = ["aiohttp==3.14.5"]
 # ///
 """Record verified session closure and release its automation claims. Dry run by default."""
 
