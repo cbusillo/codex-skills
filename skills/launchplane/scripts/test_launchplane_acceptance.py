@@ -100,12 +100,13 @@ class AcceptanceTests(unittest.TestCase):
                 self.assertFalse(self.requires_client())
                 self.assertTrue(acceptance.read_client_release_repository(REPO))
 
-    def test_ambiguous_products_cannot_hide_client_lane_pins(self):
+    def test_ambiguous_mapping_withholds_standing(self):
         self.mapping["mapping"]["ambiguous_repositories"] = ["example/shared-client"]
         self.assertTrue(self.requires_client())
         self.assertTrue(acceptance.read_client_release_repository(REPO))
         self.mapping["mapping"]["ambiguous_repositories"] = "malformed"
         self.assertTrue(self.requires_client())
+        self.assertTrue(acceptance.read_client_release_repository(REPO))
 
     def test_client_lane_pins_override_a_director_product_record(self):
         self.entry["classification"] = "active_awareness"

@@ -555,9 +555,10 @@ installed local helper bindings.
   mismatched profile or unavailable read never supplies standing acceptance.
   Any active product classification can supply the recorded Director standing;
   a repository pinned into another Client's Odoo lane still requires Client
-  review. Unknown or truncated lane evidence preserves that review path.
-  Standing reads inspect Odoo prod/testing lane pins; an unavailable lane or
-  ambiguous product mapping keeps the Client path. All enrolled products still
+  review. Standing reads inspect Odoo prod/testing lane pins; unavailable or
+  truncated lane evidence and ambiguous mappings withhold standing. This does
+  not change ordinary Client-note discovery when its mapping is unknown.
+  All enrolled products still
   require Client test notes, including the existing no-test reason for tooling;
   standing acceptance removes the per-PR acceptance step.
 - An odd value in an optional field (for example a status Launchplane added

@@ -34,7 +34,7 @@ def repository_key(value: str) -> str:
 
 def _repository_entries(
     settings: dict[str, Any],
-) -> tuple[list[dict[str, Any]], bool] | None:
+) -> tuple[list[dict[str, Any]], object] | None:
     mapping_payload = operator.request_launchplane_read(
         service_url=settings["service_url"], settings=settings,
         path=operator.helper_command_path("repo-product-mapping-read"),
@@ -44,14 +44,12 @@ def _repository_entries(
     if not isinstance(mapping, dict) or not isinstance(mapping.get("repositories"), list):
         return None
     ambiguous = mapping.get("ambiguous_repositories", [])
-    if not isinstance(ambiguous, list):
-        return None
     entries = [
         entry for entry in mapping["repositories"]
         if isinstance(entry, dict)
         and isinstance(entry.get("repository"), str)
     ]
-    return entries, bool(ambiguous)
+    return entries, ambiguous
 
 
 def _read_active_profile(
@@ -169,7 +167,7 @@ def read_director_standing(repository: str) -> bool:
         if mapping is None:
             return False
         entries, ambiguous = mapping
-        if ambiguous:
+        if not isinstance(ambiguous, list) or ambiguous:
             return False
         matches = [
             entry for entry in entries
