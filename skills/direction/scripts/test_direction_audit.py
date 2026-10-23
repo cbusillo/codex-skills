@@ -3096,7 +3096,9 @@ def test_weekly_audit_records_once_every_adopted_repository_was_read() -> None:
     account = WeeklyAccount(module)
     with tempfile.TemporaryDirectory() as tmp:
         marker = Path(tmp) / "marker.json"
-        code, receipt = account.run(["--weekly", "--owner", "o"], marker)
+        with patch.object(module.direction_mark, "run_helper", side_effect=OSError("publishing unavailable")) as publisher:
+            code, receipt = account.run(["--weekly", "--owner", "o"], marker)
+        publisher.assert_not_called()
         assert receipt["repos"] == ["o/direction", "o/a", "o/b"], "OWNER/direction first, then each adopted repository"
         assert receipt["unread"] == {} and receipt["held"] == {}
         assert code == (0 if receipt["ok"] else 3)
@@ -3186,21 +3188,6 @@ def test_weekly_audit_refuses_an_incomplete_or_unknown_repository_listing() -> N
             else:
                 assert {"source": "repositories", "reason": gap} in receipt["discovery"]["gaps"]
             assert "weekly_audit" not in json.loads(marker.read_text())
-
-
-def test_weekly_audit_keeps_findings_and_stamps_without_shared_publishing() -> None:
-    module = load()
-    account = WeeklyAccount(module)
-    with tempfile.TemporaryDirectory() as tmp:
-        marker = Path(tmp) / "marker.json"
-        with patch.object(module.direction_mark, "run_helper", side_effect=OSError("publishing unavailable")) as publisher:
-            code, receipt = account.run(["--weekly", "--owner", "o"], marker)
-        assert code == (0 if receipt["ok"] else 3), receipt
-        publisher.assert_not_called()
-        saved = json.loads(marker.read_text())
-        assert saved["weekly_audit"]["ran"] == receipt["weekly_recorded"]["ran"]
-        assert set(receipt["audits"]) == set(saved["audits"]) == {"o/direction", "o/a", "o/b"}
-        assert all(result["findings"] for result in receipt["audits"].values()), receipt
 
 
 def test_weekly_mode_requires_an_owner_and_no_other_mode() -> None:

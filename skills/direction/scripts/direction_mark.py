@@ -237,7 +237,7 @@ def share_record(record_repo: str, tag: str, title: str, body: str) -> dict[str,
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description="Record an account-wide daily direction turn locally and publish its shared record.")
     parser.add_argument("kind", choices=["turn"], help="only a daily turn can be marked by hand")
     coverage = parser.add_mutually_exclusive_group(required=True)
     coverage.add_argument("--owner", type=account, help="the Director's account; the turn covers OWNER/direction")

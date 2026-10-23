@@ -2108,7 +2108,7 @@ def audit_one(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description="Audit merged direction against GitHub state and record local audit windows.")
     repository_scope.add_include_archived_argument(parser)
     parser.add_argument("--repo", help="OWNER/REPO; defaults to the origin remote of the current checkout")
     parser.add_argument("--owner", help="login treated as the owner; defaults to the repo owner; with --weekly, the account audited")
