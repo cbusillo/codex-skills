@@ -34,6 +34,22 @@ import session_record
 import status
 
 
+def native_launcher_fixture(root: Path, source: Path | None = None, reads: Path | None = None) -> Path:
+    path = root / "native_launcher.py"
+    path.write_text(
+        "import json, os, sys\nfrom pathlib import Path\n"
+        f"sys.path.insert(0, {str(Path(iterm_tab.__file__).parent)!r})\n"
+        "import interactive_accounts as accounts\n"
+        "def render(directory, **kwargs):\n"
+        + (f"    with Path({str(reads)!r}).open('a') as output:\n"
+           "        output.write(json.dumps({'cwd': str(directory), 'account': os.getenv('CLAUDE_CONFIG_DIR')}) + '\\n')\n"
+           if reads else "")
+        + (f"    return Path({str(source)!r}).read_text()\n" if source else "    return ''\n")
+        + "accounts.runpy.run_path = lambda *args, **kwargs: {'direction_content': render}\naccounts.main()\n"
+    )
+    return path
+
+
 def claude(text, **extra) -> dict[str, Any]:
     return {
         "type": "assistant",
@@ -2108,22 +2124,6 @@ class TabCloseTests(unittest.TestCase):
             self.close()
         self.session.async_close.assert_not_awaited()
 
-    def test_claude_exec_replaces_launch_shell(self):
-        choice = {"provider": "anthropic", "env": {}}
-        with tempfile.TemporaryDirectory() as folder:
-            probe = Path(folder) / "claude"
-            probe.write_text('#!/bin/sh\nfor last; do :; done\nprintf "%s\\n" "$$" "$CLAUDE_ACCOUNT_MOVE_ENABLED" "$last"\n')
-            probe.chmod(0o700)
-            brief = "brief has && ; exec in text"
-            with (patch("runpy.run_path", return_value={"direction_content": lambda *args, **kwargs: "Fixture direction."}),
-                  patch.dict(os.environ, {"CODE_HOME": folder})):
-                command = iterm_tab.with_account(f"cd / && exec {shlex.quote(str(probe))}", choice, brief)
-            child = subprocess.Popen(["/bin/bash", "-c", command], stdout=subprocess.PIPE, text=True,
-                env={k: v for k, v in os.environ.items() if k != "CLAUDE_ACCOUNT_MOVE_ENABLED"})
-            output, _ = child.communicate(timeout=5)
-            self.assertEqual(child.returncode, 0)
-            self.assertEqual(output.splitlines(), [str(child.pid), "1", brief])
-
     def test_returning_claude_launch_does_not_mark_later_commands(self):
         choice = {"provider": "anthropic", "env": {}}
         folder = tempfile.TemporaryDirectory()
@@ -2549,38 +2549,66 @@ class ClaudeTrustTests(unittest.TestCase):
 
 
 class TerminalTests(unittest.TestCase):
-    def test_claude_launch_generates_direction_each_time_and_preserves_custom_prompt(self) -> None:
+    def test_claude_preflight_defers_generation_until_native_exec_with_launch_cwd_and_environment(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             source = root / "direction.md"
-            custom = root / "custom.md"
+            reads = root / "reads.jsonl"
+            home = root / "account home"
+            home.mkdir()
+            custom = home / "custom.md"
             custom.write_text("Custom session instruction.")
             consumer = root / "claude"
             consumer.write_text(
-                f'#!{sys.executable}\nimport argparse\nfrom pathlib import Path\np = argparse.ArgumentParser()\n'
-                'p.add_argument("--append-system-prompt-file")\na, _ = p.parse_known_args()\n'
-                'print(Path(a.append_system_prompt_file).read_text())\n'
+                f'#!{sys.executable}\nimport json, os, sys\nfrom pathlib import Path\nargs = sys.argv[1:]\n'
+                'print(json.dumps({"pid": os.getpid(), "cwd": os.getcwd(), "account": os.getenv("CLAUDE_CONFIG_DIR"), '
+                '"marker": os.getenv("CLAUDE_ACCOUNT_MOVE_ENABLED"), "args": args, '
+                '"direction": Path(args[args.index("--append-system-prompt-file") + 1]).read_text()}))\n'
             )
             consumer.chmod(0o700)
-            launch = f"cd {shlex.quote(folder)} && exec {shlex.quote(str(consumer))} --append-system-prompt-file {shlex.quote(str(custom))}"
+            launch = (f"cd {shlex.quote(folder)} && exec {shlex.quote(str(consumer))} --model \"$MODEL\" "
+                      '--append-system-prompt-file "$CLAUDE_CONFIG_DIR/custom.md" --append-system-prompt "--desktop"')
+            command_file = root / "launch.txt"
+            command_file.write_text(launch)
+            choice = {"provider": "anthropic", "env": {"CLAUDE_CONFIG_DIR": str(home)}}
             for text in ("First merged direction.", "Updated merged direction."):
                 source.write_text(text + "\n")
-                with (patch("runpy.run_path", return_value={"direction_content": lambda *args, **kwargs: source.read_text()}),
-                      patch.object(iterm_tab.interactive_accounts, "direction_options", self.direction_options),
-                      patch.dict(os.environ, {"CODE_HOME": folder})):
-                    command = iterm_tab.append_brief(launch, "brief")
-                result = subprocess.run(["/bin/bash", "-c", command], capture_output=True, text=True, check=True,
-                                        env={**os.environ, "PATH": folder + ":" + os.environ["PATH"], "FIXTURE_DIRECTION": str(source)})
-                self.assertIn(text, result.stdout)
-                self.assertIn(custom.read_text(), result.stdout)
+                before = reads.read_text().splitlines() if reads.exists() else []
+                with (patch.object(iterm_tab, "NATIVE_LAUNCHER", native_launcher_fixture(root, source, reads)),
+                      patch("runpy.run_path") as renderer,
+                      patch.object(account_choice, "select", return_value=choice),
+                      patch.object(account_choice, "prepare_launch"),
+                      patch.object(iterm_tab, "claude_trust_writes", return_value=[]),
+                      patch.object(iterm_tab.claude_trust, "apply"),
+                      patch.object(iterm_tab, "check_claude_tools")):
+                    commands, _ = iterm_tab.prepare_launches(account_launch_args(command_file))
+                renderer.assert_not_called()
+                self.assertEqual(reads.read_text().splitlines() if reads.exists() else [], before)
+                child = subprocess.Popen(["/bin/zsh", "-df", "-c", commands[0]], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                         text=True, env={**os.environ, "CODE_HOME": str(root), "MODEL": "fixture model"})
+                stdout, stderr = child.communicate(timeout=10)
+                self.assertEqual(child.returncode, 0, stderr)
+                result = json.loads(stdout)
+                self.assertEqual(result["pid"], child.pid)
+                self.assertEqual(result["marker"], "1")
+                self.assertEqual(result["cwd"], str(root.resolve()))
+                self.assertEqual(result["account"], str(home))
+                self.assertEqual(result["args"][result["args"].index("--model") + 1], "fixture model")
+                self.assertEqual(result["args"][result["args"].index("--append-system-prompt") + 1], "--desktop")
+                self.assertEqual(result["args"][result["args"].index("--") + 1:], [BRIEF])
+                self.assertEqual(result["args"].count("--append-system-prompt-file"), 1)
+                self.assertIn(text, result["direction"])
+                self.assertIn(custom.read_text(), result["direction"])
+                recorded = reads.read_text().splitlines()
+                self.assertEqual(len(recorded), len(before) + 1)
+                self.assertEqual(json.loads(recorded[-1]), {"cwd": str(root.resolve()), "account": str(home)})
 
     def setUp(self):
-        self.direction_options = iterm_tab.interactive_accounts.direction_options
-        direction = patch.object(iterm_tab.interactive_accounts, "direction_options", return_value=[])
-        direction.start()
-        self.addCleanup(direction.stop)
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
+        native = patch.object(iterm_tab, "NATIVE_LAUNCHER", native_launcher_fixture(Path(folder.name)))
+        native.start()
+        self.addCleanup(native.stop)
         opt_in = patch.object(iterm_tab, "CHROME_OPT_IN", Path(folder.name) / "absent")
         opt_in.start()
         self.addCleanup(opt_in.stop)
@@ -2603,6 +2631,7 @@ class TerminalTests(unittest.TestCase):
 
     def assert_file_settings_argument(self, command, path, brief):
         args = shlex.split(command)
+        args = args[args.index("claude") + 1:]
         separator = args.index("--")
         parser = argparse.ArgumentParser(add_help=False)
         parser.add_argument("--settings")
@@ -2613,6 +2642,7 @@ class TerminalTests(unittest.TestCase):
     def test_claude_launch_sets_a_launch_window_so_the_autocompact_offer_cannot_block(self):
         def autocompact(command):
             args = shlex.split(command)
+            args = args[args.index("claude") + 1:]
             separator = args.index("--")
             parser = argparse.ArgumentParser(add_help=False)
             parser.add_argument("--autocompact", action="append")
@@ -2640,7 +2670,7 @@ class TerminalTests(unittest.TestCase):
                 commands.append(iterm_tab.with_account(launch, choice, "brief"))
             for command in commands:
                 with self.subTest(command=command):
-                    args = subprocess.run(["/bin/bash", "-c", command], capture_output=True, text=True, check=True).stdout.splitlines()
+                    args = subprocess.run(["/bin/zsh", "-df", "-c", command], capture_output=True, text=True, check=True).stdout.splitlines()
                     separator = args.index("--")
                     parser = argparse.ArgumentParser(add_help=False)
                     parser.add_argument("--disallowedTools", action="append")
@@ -2714,7 +2744,7 @@ class TerminalTests(unittest.TestCase):
             child.chmod(0o700)
             with patch.dict(os.environ, {iterm_tab.CLAUDE_SUGGESTION_ENV: "true"}):
                 command = iterm_tab.with_account(f"exec {shlex.quote(str(child))}", {"provider": "anthropic", "env": {}}, "brief")
-                result = subprocess.run(["/bin/bash", "-c", command], check=True, capture_output=True, text=True)
+                result = subprocess.run(["/bin/zsh", "-df", "-c", command], check=True, capture_output=True, text=True)
             self.assertNotEqual(result.stdout.strip(), "true")
             with self.assertRaises(ValueError):
                 iterm_tab.with_account(f"env {iterm_tab.CLAUDE_SUGGESTION_ENV}=true claude", {"provider": "anthropic", "env": {}}, "brief")
@@ -2872,7 +2902,7 @@ class TerminalTests(unittest.TestCase):
                 asyncio.run(iterm_tab.operate(app, args))
             sent = terminal.async_send_text.await_args_list[0].args[0]
             command = sent.removeprefix("\x1b[200~").removesuffix("\x1b[201~")
-            result = subprocess.run(["/bin/bash", "-c", command], cwd=root,
+            result = subprocess.run(["/bin/zsh", "-df", "-c", command], cwd=root,
                                     capture_output=True, text=True, check=True)
             self.assertEqual(result.stdout, "1\n" + content + "\n")
             self.assertFalse((root / "injected").exists())
@@ -3349,7 +3379,7 @@ class TerminalTests(unittest.TestCase):
             sent = terminal.async_send_text.await_args_list[0].args[0]
             if sent.startswith("\x1b[200~"):
                 sent = sent.removeprefix("\x1b[200~").removesuffix("\x1b[201~")
-            launched = subprocess.run(["/bin/bash", "-c", sent], capture_output=True, text=True, check=True)
+            launched = subprocess.run(["/bin/zsh", "-df", "-c", sent], capture_output=True, text=True, check=True)
             self.assertEqual(launched.stdout.splitlines(), [choice["env"]["CLAUDE_CONFIG_DIR"], "1", BRIEF])
         window.async_create_tab.assert_awaited_once_with(select=False)
         receipt.assert_called_once_with(choice)

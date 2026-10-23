@@ -29,6 +29,7 @@ import agent_tools
 import gui_launch
 import interactive_accounts
 
+NATIVE_LAUNCHER = Path(interactive_accounts.__file__).resolve()
 CLAUDE_SUGGESTION_SETTING = "promptSuggestionEnabled"
 CLAUDE_AUTO_MEMORY_SETTING = "autoMemoryEnabled"
 CLAUDE_UNATTENDED_SETTINGS = (CLAUDE_SUGGESTION_SETTING, CLAUDE_AUTO_MEMORY_SETTING)
@@ -414,10 +415,7 @@ def append_brief(command_text, brief):
     agent = Path(words[0]).name
     if agent == "claude":
         settings = claude_settings(command_text, words)
-        directory = launch_parts(command_text)[1]
-        direction = interactive_accounts.direction_options(words[1:], Path(directory).expanduser() if directory else Path.cwd())
-        if direction:
-            command_text += " " + shlex.join(direction)
+        command_text = native_claude_command(command_text, words)
         if settings is not None:
             command_text += " --settings " + shlex.quote(json.dumps(settings))
         command_text += f" --disallowedTools {CLAUDE_QUESTION_TOOL}"
@@ -428,6 +426,17 @@ def append_brief(command_text, brief):
             command_text += f" {CLAUDE_AUTOCOMPACT_OPTION} auto"
     prompt_option = " --prompt-interactive=" if agent == "agy" else " -- "
     return command_text + prompt_option + shlex.quote(brief)
+
+
+def native_claude_command(command_text: str, words: list[str]) -> str:
+    for match in re.finditer(r"(?:^|(?<=[\s&]))\S", command_text):
+        try:
+            if shlex.split(command_text[match.start():]) == words:
+                runner = shlex.join([sys.executable, str(NATIVE_LAUNCHER), "native", "--"])
+                return command_text[:match.start()] + runner + " " + command_text[match.start():]
+        except ValueError:
+            continue
+    raise ValueError("cannot locate the direct Claude invocation")
 
 
 async def send(session, text, submit=True, allow_tabs=False):

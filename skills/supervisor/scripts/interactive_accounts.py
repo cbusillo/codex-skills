@@ -21,32 +21,84 @@ import account_choice
 
 HARNESSES = {"claude": "anthropic", "codex": "openai"}
 CLAUDE_SUBCOMMANDS = {
-    "agents", "attach", "auth", "auto-mode", "bg", "config", "daemon", "doctor", "gateway", "import", "install", "logs",
+    "agents", "attach", "auth", "auto-mode", "daemon", "doctor", "gateway", "import", "install", "logs",
     "mcp", "plugin", "plugins", "purge", "remote-control", "respawn", "rm", "setup-token", "stop", "kill", "ultrareview",
-    "update", "upgrade",
+    "update", "upgrade", "self-hosted-runner",
 }
+CLAUDE_VALUE_OPTIONS = {
+    "--add-dir", "--advisor", "--agent", "--agents", "--allowedTools", "--allowed-tools",
+    "--append-system-prompt", "--append-system-prompt-file",
+    "--append-subagent-system-prompt", "--append-subagent-system-prompt-file", "--autocompact", "--betas",
+    "--debug-file", "--disallowedTools", "--disallowed-tools", "--effort", "--environment", "--exec", "--fallback-model",
+    "--file", "--input-format", "--json-schema", "--max-budget-usd", "--max-turns", "--mcp-config", "--model", "--name",
+    "-n", "--output-format", "--permission-mode",
+    "--permission-prompt-tool", "--permission-prompts", "--plugin-dir", "--plugin-url", "--ref", "--settings",
+    "--remote-control-session-name-prefix", "--session-id",
+    "--setting-sources", "--system-prompt", "--system-prompt-file", "--system-prompt-snapshot", "--teammate-mode", "--tools",
+}
+CLAUDE_DISPATCH_OPTIONS = {"--desktop", "--cloud", "--remote", "--environment", "--exec", "--init-only"}
 
 
-def direction_options(arguments: list[str], directory: Path) -> list[str]:
-    before_prompt = arguments[:arguments.index("--")] if "--" in arguments else arguments
-    if (before_prompt and before_prompt[0] in CLAUDE_SUBCOMMANDS) or any(
-        value in {"--help", "-h", "--version", "-v"} for value in before_prompt
-    ):
-        return []
+def prepare_claude_arguments(arguments: list[str], directory: Path) -> list[str]:
+    if arguments and arguments[0] in CLAUDE_SUBCOMMANDS:
+        return arguments
+    daemon = list(arguments)
+    while daemon and daemon[0] in {"--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"}:
+        daemon.pop(0)
+    if daemon[:1] == ["daemon"]:
+        return arguments
+    prepared, custom_files = [], []
+    tail = []
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "--":
+            tail = arguments[index:]
+            break
+        option, equals, value = argument.partition("=")
+        if option in CLAUDE_DISPATCH_OPTIONS or option in {"--help", "-h", "--version", "-v"}:
+            return arguments
+        tokens = [argument]
+        if option in CLAUDE_VALUE_OPTIONS:
+            if not equals:
+                index += 1
+                if index == len(arguments):
+                    raise ValueError(f"Claude {option} requires a value")
+                value = arguments[index]
+                tokens.append(value)
+            if option == "--append-system-prompt-file":
+                if not value:
+                    raise ValueError(f"Claude {option} requires a file path")
+                custom_files.append(value)
+            elif option != "--system-prompt-snapshot":
+                prepared.extend(tokens)
+        else:
+            prepared.extend(tokens)
+        index += 1
     renderer = runpy.run_path(str(Path(__file__).resolve().parents[3] / "hooks/direction_check_hook.py"))
     content = renderer["direction_content"](directory, include_loop=False)
     if not content:
-        return []
-    parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("--append-system-prompt-file")
-    options, _ = parser.parse_known_args(before_prompt)
-    if options.append_system_prompt_file:
-        custom = Path(os.path.expandvars(options.append_system_prompt_file)).expanduser()
-        content = (directory / custom).read_text() + "\n\n" + content
+        return arguments
+    custom_content = [(directory / Path(custom).expanduser()).read_text(encoding="utf-8") for custom in custom_files]
+    content = "\n\n".join([*custom_content, content])
     cache = Path(os.environ.get("CODE_HOME", str(Path.home() / ".code"))) / "skill-data/direction-prompts"
-    path = cache / f"{hashlib.sha256(content.encode()).hexdigest()}.md"
-    write_cache(path, content)
-    return ["--append-system-prompt-file", str(path), "--system-prompt-snapshot", "off"]
+    path = (cache.expanduser() / f"{hashlib.sha256(content.encode()).hexdigest()}.md").absolute()
+    try:
+        write_cache(path, content)
+    except OSError as error:
+        raise ValueError(f"cannot write Claude direction prompt {path}: {error}") from error
+    return [*prepared, "--append-system-prompt-file", str(path), "--system-prompt-snapshot", "off", *tail]
+
+
+def exec_native(binary: str, arguments: list[str], environment: dict[str, str]) -> None:
+    executable = shutil.which(binary, path=environment.get("PATH"))
+    if executable is None:
+        raise ValueError(f"real {binary} binary is not on PATH")
+    os.environ.clear()
+    os.environ.update(environment)
+    if Path(binary).name == "claude":
+        arguments = prepare_claude_arguments(arguments, Path.cwd())
+    os.execvpe(executable, [executable, *arguments], environment)
 
 
 def variants(config=None):
@@ -171,9 +223,6 @@ def launch(harness, argv, named=None):
     last = read_last(path, variable) if path.exists() else None
     chosen, arguments, banner = selection(harness, argv, named, config=config,
                                           snapshot=snapshot, problem=problem, last=last)
-    binary = shutil.which(harness)
-    if binary is None:
-        raise ValueError(f"real {harness} binary is not on PATH")
     child_env = dict(os.environ)
     child_env.pop(variable, None)
     child_env.update(chosen["env"])
@@ -185,19 +234,18 @@ def launch(harness, argv, named=None):
     except OSError:
         banner = banner[:-1] + "; could not save last account)"
     print(banner, file=sys.stderr, flush=True)
-    if harness == "claude":
-        index = arguments.index("--") if "--" in arguments else len(arguments)
-        arguments[index:index] = direction_options(arguments, Path.cwd())
-    os.execvpe(binary, [binary, *arguments], child_env)
+    exec_native(harness, arguments, child_env)
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     subparsers = parser.add_subparsers(dest="action", required=True)
     subparsers.add_parser("variants")
-    start = subparsers.add_parser("launch")
+    start = subparsers.add_parser("launch", allow_abbrev=False)
     start.add_argument("harness", choices=HARNESSES)
     start.add_argument("--named")
+    native = subparsers.add_parser("native", allow_abbrev=False)
+    native.add_argument("arguments", nargs=argparse.REMAINDER)
     args, argv = parser.parse_known_args()
     try:
         if args.action == "variants":
@@ -206,6 +254,11 @@ def main():
             except ValueError:
                 config = None
             print(variants(config))
+        elif args.action == "native":
+            arguments = args.arguments[1:] if args.arguments[:1] == ["--"] else args.arguments
+            if not arguments:
+                raise ValueError("native launch requires a binary")
+            exec_native(arguments[0], arguments[1:], dict(os.environ))
         else:
             launch(args.harness, argv[1:] if argv[:1] == ["--"] else argv, args.named)
     except (OSError, ValueError) as error:

@@ -662,11 +662,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Inject merged direction and session reminders")
     parser.add_argument("--compact", "--skills-only", dest="skills_only", action="store_true", help="restore skills and full direction after compaction")
     parser.add_argument("--turn", action="store_true", help="print a one-line skills reminder for each prompt")
-    parser.add_argument("--direction-only", action="store_true", help="print merged direction for a native system-prompt file")
     parser.add_argument("--runtime-catchup", action="store_true", help="Enable catch-up with the updated native hook timeout")
     parser.add_argument("--catalog-root", type=Path, help="Catalog checkout for status diagnostics")
     args = parser.parse_args()
-    if args.direction_only:
-        print(direction_content(Path.cwd()), end="", flush=True)
-    else:
-        sys.exit(main(skills_only=args.skills_only, catalog_root=args.catalog_root, runtime_catchup=args.runtime_catchup, turn=args.turn))
+    sys.exit(main(skills_only=args.skills_only, catalog_root=args.catalog_root, runtime_catchup=args.runtime_catchup, turn=args.turn))

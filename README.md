@@ -705,8 +705,10 @@ binds while its named mechanism is a suggestion unless a recorded Director
 decision requires it. Tooling fixes report `Removed:` and `Net lines:`.
 Claude's hook prints the protocol and reminders without injecting direction.
 The Supervisor and interactive account launchers supply the same merged documents
-through native `--append-system-prompt-file`, generated at each launch.
-It preserves additional prompt-file text and uses `--system-prompt-snapshot off`
+through native `--append-system-prompt-file`, generated once immediately before
+the native process starts, after the shell expands arguments and account exports.
+Supervisor preflight does not fetch direction. The shared native runner preserves
+additional prompt-file text and uses `--system-prompt-snapshot off`
 so resumed sessions also receive current direction. For hand-started terminal
 sessions, use the installer's existing `interactive_shell.source_line` in your
 zsh settings. For a catalog at `/absolute/catalog`, it is:
@@ -718,10 +720,12 @@ source /absolute/catalog/skills/supervisor/scripts/interactive-accounts.zsh
 This covers `claude` and its named-account functions. Native management subcommands
 pass through unchanged. Prompt files are private regular files retained under
 `$CODE_HOME/skill-data/direction-prompts` (default `~/.code`), so native relaunches
-can reopen them. The shared generator preserves custom prompt-file text, including
-relative and shell-variable paths. An unreadable custom file stops the launch
-before Claude starts. This shell setting does not configure sessions started
-inside Desktop or an editor extension; Claude documents no global JSON setting
+can reopen them. The shared generator replaces the original file flag with the
+combined file and preserves the native text flag. Relative paths use the launch
+directory; shell variables expand according to the caller's shell quoting.
+An unreadable custom file or unwritable direction cache stops the launch before
+Claude starts, with the failing path reported. This shell setting does not
+configure sessions started inside Desktop or an editor extension; Claude documents no global JSON setting
 for its native prompt-file flag.
 
 The session-start hook reads a local marker that `direction_mark.py` writes at the end of a daily

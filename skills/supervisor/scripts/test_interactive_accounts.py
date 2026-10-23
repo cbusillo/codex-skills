@@ -22,21 +22,42 @@ SCRIPT = Path(__file__).with_name("interactive-accounts.zsh")
 
 
 class InteractiveAccountsTests(unittest.TestCase):
+    def test_native_text_prompt_survives_direction_preparation(self) -> None:
+        for arguments in (["--append-system-prompt", "Always use TypeScript"],
+                          ["--append-system-prompt=Always use TypeScript"]):
+            with (patch.dict(os.environ, self.env, clear=True),
+                  patch("runpy.run_path", return_value={"direction_content": lambda *args, **kwargs: "Merged fixture direction."}),
+                  patch.object(accounts.os, "execvpe") as execute):
+                accounts.launch("claude", arguments)
+            self.assertEqual(execute.call_args.args[1][1:1 + len(arguments)], arguments)
+
+    def test_generated_prompt_replaces_original_file_and_snapshot_options(self) -> None:
+        custom = self.root / "custom.md"
+        custom.write_text("Custom fixture instruction.")
+        arguments = ["--append-system-prompt-file", str(custom), "--system-prompt-snapshot=on", "--", "literal prompt"]
+        with (patch.dict(os.environ, self.env, clear=True),
+              patch("runpy.run_path", return_value={"direction_content": lambda *args, **kwargs: "Merged fixture direction."}),
+              patch.object(accounts.os, "execvpe") as execute):
+            accounts.launch("claude", arguments)
+        launched = execute.call_args.args[1][1:]
+        self.assertEqual(launched.count("--append-system-prompt-file"), 1)
+        self.assertNotIn("--system-prompt-snapshot=on", launched)
+        self.assertEqual(launched[launched.index("--") + 1:], ["literal prompt"])
+
     def test_claude_launches_share_a_regular_prompt_file_that_survives_reexec(self) -> None:
         custom = self.root / "custom.md"
         custom.write_text("Custom fixture instruction.")
         for named in (None, "gamma"):
-            for path in (str(custom), "custom.md", "~/custom.md", "$FIXTURE_PROMPT"):
+            for path in (str(custom), "custom.md", "~/custom.md"):
                 with (patch.dict(os.environ, {**self.env, "FIXTURE_PROMPT": str(custom)}, clear=True),
                       patch("runpy.run_path", return_value={"direction_content": lambda *args, **kwargs: "Merged fixture direction."}),
                       patch.object(accounts.Path, "cwd", return_value=self.root),
                       patch.object(accounts.os, "execvpe") as execute):
                     accounts.launch("claude", ["--append-system-prompt-file", path, "--", "literal prompt"], named)
                 arguments = execute.call_args.args[1]
-                index = max(i for i, value in enumerate(arguments) if value == "--append-system-prompt-file")
+                index = arguments.index("--append-system-prompt-file")
                 prompt = Path(arguments[index + 1])
                 self.assertTrue(prompt.is_file())
-                self.assertFalse(str(prompt).startswith("/dev/fd/"))
                 self.assertIn("Merged fixture direction.", prompt.read_text())
                 self.assertIn(custom.read_text(), prompt.read_text())
                 self.assertEqual(arguments[arguments.index("--") + 1:], ["literal prompt"])
@@ -47,15 +68,69 @@ class InteractiveAccountsTests(unittest.TestCase):
 
     def test_claude_subcommands_and_unreadable_prompts_do_not_start_partial_sessions(self) -> None:
         with (patch.dict(os.environ, self.env, clear=True),
-              patch("runpy.run_path", return_value={"direction_content": lambda *args, **kwargs: "Merged fixture direction."}),
+              patch("runpy.run_path", return_value={"direction_content": lambda *args, **kwargs: "Merged fixture direction."}) as renderer,
               patch.object(accounts.os, "execvpe") as execute):
-            for arguments in (["auth", "status"], ["daemon", "status"], ["mcp", "list"], ["--version"]):
+            for arguments in (["auth", "status"], ["daemon", "status"], ["mcp", "list"], ["--version"],
+                              ["self-hosted-runner", "doctor"], ["--dangerously-skip-permissions", "daemon", "status"],
+                              ["--allow-dangerously-skip-permissions", "daemon", "status"], ["--desktop"],
+                              ["--bg", "--exec", "printf fixture"]):
                 accounts.launch("claude", arguments)
                 self.assertEqual(execute.call_args.args[1][1:], arguments)
+            renderer.assert_not_called()
             execute.reset_mock()
             with self.assertRaises(OSError):
                 accounts.launch("claude", ["--append-system-prompt-file", str(self.root / "missing.md")])
             execute.assert_not_called()
+
+    def test_prompt_operands_and_native_delimiter_keep_their_meaning(self) -> None:
+        cases = (["--append-system-prompt", "--desktop", "--", "--version"],
+                 ["--append-system-prompt", "--", "--model", "fixture", "--", "literal"],
+                 ["--append-system-prompt=--desktop", "--", "--append-system-prompt-file", "missing.md"],
+                 ["bg"], ["config"], ["--teleport"])
+        with (patch.dict(os.environ, self.env, clear=True),
+              patch("runpy.run_path", return_value={"direction_content": lambda *args, **kwargs: "Merged fixture direction."})):
+            for arguments in cases:
+                with self.subTest(arguments=arguments):
+                    prepared = accounts.prepare_claude_arguments(arguments, self.root)
+                    original = list(prepared)
+                    index = original.index("--append-system-prompt-file")
+                    self.assertTrue(Path(original[index + 1]).is_file())
+                    del original[index:index + 4]
+                    self.assertEqual(original, arguments)
+
+    def test_prompt_file_equals_form_and_literal_variable_path(self) -> None:
+        custom = self.root / "$FIXTURE_PROMPT"
+        custom.write_text("Literal variable filename.")
+        with (patch.dict(os.environ, {**self.env, "FIXTURE_PROMPT": "missing.md"}, clear=True),
+              patch("runpy.run_path", return_value={"direction_content": lambda *args, **kwargs: "Merged fixture direction."})):
+            prepared = accounts.prepare_claude_arguments([f"--append-system-prompt-file={custom.name}"], self.root)
+        self.assertIn(custom.read_text(), Path(prepared[prepared.index("--append-system-prompt-file") + 1]).read_text())
+
+    def test_required_directory_operand_is_not_a_prompt_delimiter(self) -> None:
+        (self.root / "--").mkdir()
+        arguments = ["--add-dir", "--", "--", "literal prompt"]
+        with (patch.dict(os.environ, self.env, clear=True),
+              patch("runpy.run_path", return_value={"direction_content": lambda *args, **kwargs: "Merged fixture direction."})):
+            prepared = accounts.prepare_claude_arguments(arguments, self.root)
+        self.assertEqual(prepared[:2], arguments[:2])
+        self.assertEqual(prepared[-2:], arguments[-2:])
+
+    def test_missing_option_values_and_cache_write_failure_are_launch_errors(self) -> None:
+        with (patch.dict(os.environ, {**self.env, "CODE_HOME": str(self.root / "code")}, clear=True),
+              patch("runpy.run_path", return_value={"direction_content": lambda *args, **kwargs: "Merged fixture direction."})):
+            for arguments in (["--append-system-prompt-file"], ["--append-system-prompt"], ["--system-prompt-snapshot"]):
+                with self.subTest(arguments=arguments), self.assertRaisesRegex(ValueError, arguments[0]):
+                    accounts.prepare_claude_arguments(arguments, self.root)
+            with patch.object(accounts, "write_cache", side_effect=OSError("fixture disk full")):
+                with self.assertRaises(ValueError) as failure:
+                    accounts.prepare_claude_arguments([], self.root)
+            self.assertIn(str(self.root / "code/skill-data/direction-prompts"), str(failure.exception))
+            self.assertIn("fixture disk full", str(failure.exception))
+
+    def test_no_direction_keeps_native_prompt_options_unchanged(self) -> None:
+        arguments = ["--append-system-prompt-file", "missing.md", "--system-prompt-snapshot=on", "--", "literal"]
+        with patch("runpy.run_path", return_value={"direction_content": lambda *args, **kwargs: ""}):
+            self.assertEqual(accounts.prepare_claude_arguments(arguments, self.root), arguments)
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

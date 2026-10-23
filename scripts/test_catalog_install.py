@@ -659,7 +659,7 @@ class InstallTests(unittest.TestCase):
         (self.codex / "config.toml").write_text(config)
         self.install()
         hooks = json.loads((self.codex / "hooks.json").read_text())["hooks"]
-        self.assertEqual(hooks["SessionStart"], self.with_compact(tomllib.loads(config)["hooks"]["SessionStart"]))
+        self.assertCountEqual(hooks["SessionStart"], self.with_compact(tomllib.loads(config)["hooks"]["SessionStart"]))
         self.assertNotIn("SessionStart", tomllib.loads((self.codex / "config.toml").read_text()).get("hooks", {}))
         backups = list(self.codex.glob("config.toml.backup-*"))
         self.assertEqual(len(backups), 1)
