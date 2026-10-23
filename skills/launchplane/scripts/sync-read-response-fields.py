@@ -69,8 +69,8 @@ def render_pin(openapi: dict[str, Any]) -> bytes:
 def run(argv: list[str], *, fetch: Fetch = fetch_upstream, pin: Path = PIN_PATH) -> int:
     parser = argparse.ArgumentParser(description="Compare pinned read fields with generated OpenAPI.")
     parser.add_argument("command", choices=("check", "sync"))
-    source = parser.add_mutually_exclusive_group()
-    source.add_argument("--ref", default="main", help="Historical ref with a published OpenAPI snapshot")
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--ref", help="Historical ref with a published OpenAPI snapshot")
     source.add_argument("--openapi-file", type=Path, help="OpenAPI exported from a producer checkout")
     args = parser.parse_args(argv)
     source_label = "the supplied generated schema" if args.openapi_file else f"Launchplane {args.ref}"

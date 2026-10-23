@@ -56,18 +56,18 @@ def _openapi(extra_environment_field: str = "") -> bytes:
 
 def test_check_reports_current_drift_and_unavailable(tmp_path: Path) -> None:
     pin = tmp_path / "pin.json"
-    assert sync.run(["sync"], fetch=lambda ref: _openapi(), pin=pin) == 0
+    assert sync.run(["sync", "--ref", "fixture"], fetch=lambda ref: _openapi(), pin=pin) == 0
     assert json.loads(pin.read_text())["product-environment-read"] == ["environment", "status", "trace_id"]
-    assert sync.run(["check"], fetch=lambda ref: _openapi(), pin=pin) == 0
-    assert sync.run(["check"], fetch=lambda ref: _openapi("added_field"), pin=pin) == 1
+    assert sync.run(["check", "--ref", "fixture"], fetch=lambda ref: _openapi(), pin=pin) == 0
+    assert sync.run(["check", "--ref", "fixture"], fetch=lambda ref: _openapi("added_field"), pin=pin) == 1
 
     def unavailable(_ref: str) -> bytes:
         raise OSError("offline")
 
-    assert sync.run(["check"], fetch=unavailable, pin=pin) == 2
+    assert sync.run(["check", "--ref", "fixture"], fetch=unavailable, pin=pin) == 2
     missing_route = json.loads(_openapi())
     del missing_route["paths"][sync.bounded_read_path("product-environment-read")]
-    assert sync.run(["check"], fetch=lambda ref: json.dumps(missing_route).encode(), pin=pin) == 2
+    assert sync.run(["check", "--ref", "fixture"], fetch=lambda ref: json.dumps(missing_route).encode(), pin=pin) == 2
 
 
 def test_sync_reads_the_requested_ref(tmp_path: Path) -> None:

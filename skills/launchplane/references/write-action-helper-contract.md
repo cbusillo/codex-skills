@@ -2116,13 +2116,20 @@ Launchplane declares there but the read does not project, such as the
 environment read's `host_network_capacity_available` and
 `host_network_capacity`, is accepted and dropped; any other field still fails
 closed. `references/launchplane-read-response-fields.json` pins the top-level
-fields Launchplane's published OpenAPI declares for each of those routes, and
-the tests require every pinned field to be in its read's allowlist. Refresh the
-pin with `uv run scripts/sync-read-response-fields.py sync` from this skill
-directory, then add each new field to its read's allowlist, projecting it only
-when the read should emit it, and name the Launchplane commit in the commit
-message. The `Launchplane Read Response Fields` workflow fails on pull
-requests, on `main` and daily when the pin differs from Launchplane's `main`.
+fields OpenAPI generated from Launchplane source declares for each route. The
+tests require every pinned field to be in its read's allowlist. In the selected
+Launchplane checkout, export with `uv run --locked launchplane service
+export-openapi --output /private/path/openapi.json`. From this skill directory,
+compare with `uv run scripts/sync-read-response-fields.py check --openapi-file
+/private/path/openapi.json`, or refresh with `sync --openapi-file` after reviewing
+the changes. Add each new field to its read's allowlist, project it only when
+the read should emit it, and name the producer commit in the commit message.
+The command returns 0 for a match/sync, 1 for drift and 2 for unavailable or
+invalid schema input. A source must be explicit: generated file input never
+fetches a remote snapshot or falls back to one. Historical `--ref REF` reads
+remain supported for revisions that published a snapshot. The `Launchplane
+Read Response Fields` workflow generates from public producer `main` and runs
+the unchanged comparison on pull requests, on `main` and daily.
 
 The merge-train controller reply has no helper allowlist. Launchplane publishes
 its contract as `contracts/merge-train-controller-reply.schema.json` and tests
@@ -2359,18 +2366,6 @@ reuse the dry run's exact keys, reason, review id and digest. A 403
 `database_storage_required` `unavailable`, and a 400 `invalid_request`, each
 with its trace. A client timeout is `unavailable` with the error code
 `client_timeout`.
-
-## Read-response compatibility
-
-The read-response compatibility check generates OpenAPI from the public producer
-source before comparison; current Launchplane no longer commits the schema JSON.
-For local checks, export with `uv run --locked launchplane service export-openapi
---output /private/path/openapi.json` in the selected Launchplane checkout, then run
-`uv run skills/launchplane/scripts/sync-read-response-fields.py check --openapi-file
-/private/path/openapi.json` from this catalog. `sync --openapi-file` updates the
-pin after reviewing changed fields and naming that producer commit. Historical
-`--ref` reads remain available for revisions that published the old snapshot.
-Missing or invalid file inputs fail closed without a network fallback.
 
 ## Policy Proposals
 
