@@ -283,6 +283,13 @@ def test_later_failed_command_outranks_earlier_continued_test_failure() -> None:
 
 
 def test_logs_without_test_summary_keep_bounded_fallbacks() -> None:
+    tail = ["ok helper"] * 100 + ["error: one or more helper tests failed", "Error: exit status 1"]
+    for failure in (
+        "Traceback (most recent call last):\nsubprocess.TimeoutExpired: helper deadline",
+        "not ok fixture", "FAILED fixture.py",
+    ):
+        snippet = snippet_for_log([f"2026-10-23T18:00:00Z {line}" for line in failure.splitlines()] + tail)
+        assert all(cause in snippet for cause in failure.splitlines()), snippet
     failure = "fatal: compiler failed to start"
     snippet = snippet_for_log(["setup"] * 60 + [failure, "compiler detail", "done"])
     assert failure in snippet, snippet
