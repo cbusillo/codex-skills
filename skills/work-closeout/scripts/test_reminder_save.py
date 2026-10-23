@@ -16,6 +16,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 import reminder_link
 import reminder_save
+import reminder_shortcut
 
 SESSION = "12345678-1234-1234-1234-123456789abc"
 ISSUE = "https://github.com/example/repo/issues/42"
@@ -169,13 +170,9 @@ class ReminderSaveTests(unittest.TestCase):
         self.assertEqual(self.decisions(), [[{"action": "delete", "id": "open"}]])
 
     def test_ambiguous_targets_are_refused_without_a_decision(self):
-        title = self.fields()["title"]
         for reminders, overrides in (
                 ([self.item("a", False), self.item("b", False)], {}),
                 ([self.item("a", False), self.item("b", False)], {"update_id": "a"}),
-                ([self.item("other", False, same_target=False, title=title)], {}),
-                ([self.item("done", True, title=title)], {}),
-                ([self.item("done", True, title=title), self.item("open", False)], {"update_id": "open"}),
                 ([self.item("done", True)], {"update_id": "missing"})):
             with self.subTest(reminders=reminders, overrides=overrides), self.assertRaises(ValueError):
                 self.save(reminders, **overrides)
@@ -207,6 +204,7 @@ class ReminderSaveTests(unittest.TestCase):
                 if flags:
                     request = backend.call_args.args[0]
                     self.assertEqual(request["update_id"], "owned-id")
+                    self.assertEqual(request["shortcut"], reminder_shortcut.SHORTCUT_NAME)
                     self.assertNotIn("fallback", request)
                     self.assertIn(SESSION, request["notes"].splitlines()[0])
                     self.assertEqual(request["notes"].splitlines()[1:], [ISSUE])
@@ -304,22 +302,19 @@ class PlainReminderTests(unittest.TestCase):
                     reminder_save.native({**request, **flags})
                 self.assertEqual(self.decisions()[0][0]["action"], action)
 
-    def test_completed_titles_allow_no_link_creation_and_updates_but_not_ui_edits(self):
+    def test_same_titles_never_block_creation_or_updates(self):
         completed = self.item("done", True, title=self.plain()["title"])
+        unrelated = self.item("other", False, same_target=False, title=self.plain()["title"])
         live = self.item("open", False, title=self.plain()["title"])
         for url in (None, "https://example.com/report"):
-            for items, flags, action in (([completed], {}, "create"),
+            for items, flags, action in (([completed, unrelated], {}, "create"),
                                         ([completed, live], {"update_id": "open"}, "update")):
                 with self.subTest(url=url, flags=flags), patch.object(reminder_save.sys, "platform", "darwin"):
-                    final = {"status": "saved", "saved_fields_verified": True, "visible_url_verified": False}
+                    final = {"status": "saved", "saved_fields_verified": True, "visible_url_verified": bool(url)}
+                    fields = self.plain(url=url) if url else self.plain()
                     with self.writer(items, final=final):
-                        if url:
-                            with self.assertRaises(ValueError):
-                                reminder_save.native({**self.plain(url=url), **flags})
-                            self.assertEqual(self.decisions(), [[]])
-                        else:
-                            reminder_save.native({**self.plain(), **flags})
-                            self.assertEqual(self.decisions()[0][0]["action"], action)
+                        reminder_save.native({**fields, **flags})
+                    self.assertEqual(self.decisions()[0][0]["action"], action)
 
     def test_web_links_are_normalized_before_writer_and_dry_run(self):
         url = "https://xn--bcher-kva.example/wiki/Köln?q=é#résumé"
