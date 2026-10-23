@@ -3597,6 +3597,74 @@ def test_product_health_legacy_evidence_stays_unknown_and_retired_aggregate_is_i
     assert check["provenance"] is None
 
 
+def test_environment_read_preserves_sidebar_attention_inputs_without_private_detail() -> None:
+    response = _product_environment_response()
+    environment = cast(dict[str, Any], response["environment"])
+    incident = {
+        "incident_id": "incident-testing-delivery", "check_name": "Odoo health (private)",
+        "status": "open", "severity": "warning", "failure_code": "testing_delivery_failed",
+        "failure_layer": "provider", "summary": "PRIVATE_INCIDENT_DETAIL",
+    }
+    warning = {"code": "public_ingress_failure", "scope": "ingress", "severity": "error",
+               "detail": "PRIVATE_WARNING_DETAIL"}
+    tls = {"domain_name": "testing.example.invalid", "status": "self_signed", "trust_state": "verified",
+           "provenance": {"freshness_status": "verified", "stale_after": "2026-10-23T12:00:00Z"},
+           "certificate": "PRIVATE_CERTIFICATE_DETAIL"}
+    environment["health_monitoring"]["open_incidents"] = [incident]
+    environment["topology"] = {"warnings": [warning], "observed": {"tls_domains": [tls]}}
+    environment["warnings"] = [warning["detail"], "PRIVATE_LANE_WARNING"]
+    status, payload, _calls = _run_product_read(
+        ["product-environment-read", "--product", "example-product", "--environment", "testing"], response,
+    )
+    assert status == 0, payload
+    result = payload["result"]
+    assert result["health_monitoring"]["open_incidents"] == [
+        {key: value for key, value in incident.items() if key != "summary"}
+    ]
+    assert result["topology"]["warnings"] == [
+        {key: value for key, value in warning.items() if key != "detail"}
+    ]
+    projected_tls = result["topology"]["observed"]["tls_domains"][0]
+    assert {key: projected_tls[key] for key in ("domain_name", "status", "trust_state")} == {
+        key: tls[key] for key in ("domain_name", "status", "trust_state")
+    }
+    assert all(projected_tls["provenance"][key] == value for key, value in tls["provenance"].items())
+    assert result["other_warning_count"] == len(environment["warnings"]) - len(environment["topology"]["warnings"])
+    assert "PRIVATE_" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("field", ["open_incidents", "warnings", "tls_domains"])
+def test_sidebar_evidence_discloses_missing_and_truncated_lists(field: str) -> None:
+    projectors = {
+        "open_incidents": (write_action._project_product_health, {}),
+        "warnings": (write_action._project_product_topology, {}),
+        "tls_domains": (lambda value: write_action._project_product_topology({"observed": value})["observed"],
+                        {"domain_name": "testing.example.invalid"}),
+    }
+    project, row = projectors[field]
+    missing = project({})
+    assert all(missing[key] is None for key in (field, f"{field}_count", f"{field}_truncated"))
+    empty = project({field: []})
+    assert empty[field] == [] and empty[f"{field}_count"] == len(empty[field])
+    assert empty[f"{field}_truncated"] is False
+    entries = [row] * (write_action.PRODUCT_OPERATIONAL_MAX_ENTRIES + 1)
+    bounded = project({field: entries})
+    assert bounded[field] == [bounded[field][0]] * write_action.PRODUCT_OPERATIONAL_MAX_ENTRIES
+    assert bounded[f"{field}_count"] == len(entries) and bounded[f"{field}_truncated"]
+
+
+def test_other_sidebar_warning_count_requires_both_source_lists() -> None:
+    for source in ({}, {"warnings": []}, {"topology": {"warnings": []}}):
+        assert write_action._product_other_warning_count(source) is None
+    assert write_action._product_other_warning_count({"warnings": [], "topology": {"warnings": []}}) == 0
+
+
+@pytest.mark.parametrize("domain", ["https://private.invalid/path", "user:password@private.invalid", "ghp_PRIVATEVALUE"])
+def test_sidebar_tls_projection_refuses_urls_and_credentials(domain: str) -> None:
+    with pytest.raises(safety.LaunchplaneSafetyError):
+        write_action._project_product_topology({"observed": {"tls_domains": [{"domain_name": domain}]}})
+
+
 @pytest.mark.parametrize("extra", [0, 1])
 def test_product_health_discloses_incomplete_check_projection(extra: int) -> None:
     checks = [{"name": f"check-{index}", "probe_effective": True}
@@ -3699,7 +3767,6 @@ def test_product_environment_read_uses_path_route_and_projects_deploy_identity()
         "private detail",
         "testing.example.invalid",
         "/v1/private",
-        "topology",
     ):
         assert dropped not in rendered, dropped
 
