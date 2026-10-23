@@ -283,7 +283,7 @@ def test_later_failed_command_outranks_earlier_continued_test_failure() -> None:
 
 
 def test_logs_without_test_summary_keep_bounded_fallbacks() -> None:
-    tail = ["ok helper"] * 100 + ["error: one or more helper tests failed"]
+    tail = ["ok helper"] * 100 + ["error: one or more helper tests failed", "Error: exit status 1"]
     for failure in (
         "Traceback (most recent call last):\nsubprocess.TimeoutExpired: helper deadline",
         "not ok fixture", "FAILED fixture.py",

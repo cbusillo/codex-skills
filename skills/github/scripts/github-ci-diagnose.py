@@ -30,7 +30,7 @@ FAILURE_SUMMARIES = (
     re.compile(LOG_MESSAGE_PREFIX + r"(?:FAIL|ERROR):\s+\S+\s+\([^\n]+\)"),
     re.compile(LOG_MESSAGE_PREFIX + r"(?:FAILED|ERROR)\s+\S+\.py::\S+"),
     re.compile(
-        LOG_MESSAGE_PREFIX + r"(?:FAILED\s+[^\s(]\S*|not ok\b|(?:\w+\.)*(?:[A-Z]\w*)?(?:Error|Exception|Expired):)"
+        LOG_MESSAGE_PREFIX + r"(?:FAILED\s+[^\s(]\S*|not ok\b|(?:\w+\.)*[A-Z]\w*(?:Error|Exception|Expired):)"
     ),
 )
 COMMAND_FAILURE = re.compile(LOG_MESSAGE_PREFIX + r"##\[error\]Process completed with exit code [1-9]\d*\.")
