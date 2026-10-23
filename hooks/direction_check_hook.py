@@ -581,6 +581,14 @@ def session_reminder(marker: dict[str, object], now: dt.datetime, checkout: Path
     return reminder(with_shared_records(marker, now, owner), now, path, owner)
 
 
+def print_direction() -> int:
+    checkout = checkout_root(Path.cwd())
+    direction = overall_direction(origin_repo(checkout), checkout, read_marker(marker_path()), loop_summary(LOOP_PATH.read_text()))
+    if direction:
+        print(f"{direction}\n\n{DIRECTION_RETENTION}", flush=True)
+    return 0
+
+
 def main(*, skills_only: bool = False, catalog_root: Path | None = None, runtime_catchup: bool = False,
          turn: bool = False) -> int:
     if turn:
@@ -616,7 +624,8 @@ def main(*, skills_only: bool = False, catalog_root: Path | None = None, runtime
         except OSError:
             loop = ""  # A missing loop reference must not hide an overdue reminder.
         checkout = checkout_root(Path.cwd())
-        overall = overall_direction(origin_repo(checkout), checkout, marker, "" if skills_only else loop)
+        overall = (overall_direction(origin_repo(checkout), checkout, marker, "" if skills_only else loop)
+                   if os.environ.get("CLAUDECODE") != "1" else "")
         if overall:
             print(overall, flush=True)
         elif root is not None and loop and not skills_only:
@@ -650,8 +659,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Inject merged direction and session reminders")
     parser.add_argument("--compact", "--skills-only", dest="skills_only", action="store_true", help="restore skills and full direction after compaction")
     parser.add_argument("--turn", action="store_true", help="print a one-line skills reminder for each prompt")
+    parser.add_argument("--direction-only", action="store_true", help="print merged direction for a native system-prompt file")
     parser.add_argument("--runtime-catchup", action="store_true", help="Enable catch-up with the updated native hook timeout")
     parser.add_argument("--catalog-root", type=Path, help="Catalog checkout for status diagnostics")
     args = parser.parse_args()
-    sys.exit(main(skills_only=args.skills_only, catalog_root=args.catalog_root, runtime_catchup=args.runtime_catchup,
+    sys.exit(print_direction() if args.direction_only else main(skills_only=args.skills_only, catalog_root=args.catalog_root, runtime_catchup=args.runtime_catchup,
                   turn=args.turn))

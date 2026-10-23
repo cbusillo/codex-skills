@@ -430,7 +430,7 @@ class OverallDirectionTests(IsolatedDirectionHookTests):
         self.assertIn(hook.loop_summary(hook.LOOP_PATH.read_text()), text)
         self.assertIn("repos/owner/direction/contents/DIRECTION.md", self.calls.read_text())
 
-    def test_own_direction_is_merged_and_follows_overall_on_both_harnesses(self) -> None:
+    def test_direction_delivery_uses_merged_documents_and_one_channel_per_harness(self) -> None:
         (self.repo / "DIRECTION.md").write_text("uncommitted draft")
         own = "# Direction\n\nRepository fixture purpose.\n"
         def read(repo: str) -> tuple[str, str]:
@@ -446,6 +446,17 @@ class OverallDirectionTests(IsolatedDirectionHookTests):
                       contextlib.redirect_stdout(output)):
                     self.assertEqual(hook.main(skills_only=compact, runtime_catchup=True), 0)
                 text = output.getvalue()
+                if harness == "1":
+                    self.assertNotIn(OVERALL.strip(), text)
+                    self.assertNotIn(own.strip(), text)
+                    self.assertNotIn(hook.DIRECTION_RETENTION, text)
+                    output = io.StringIO()
+                    with (mock.patch.object(hook, "read_merged_direction", side_effect=read),
+                          mock.patch.object(hook, "marker_path", return_value=self.marker),
+                          mock.patch("pathlib.Path.cwd", return_value=self.repo),
+                          contextlib.redirect_stdout(output)):
+                        self.assertEqual(hook.print_direction(), 0)
+                    text = output.getvalue()
                 self.assertIn(OVERALL.strip(), text)
                 self.assertIn(own.strip(), text)
                 self.assertLess(text.index(OVERALL.strip()), text.index(own.strip()))

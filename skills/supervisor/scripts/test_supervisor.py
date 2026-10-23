@@ -2548,6 +2548,30 @@ class ClaudeTrustTests(unittest.TestCase):
 
 
 class TerminalTests(unittest.TestCase):
+    def test_claude_launch_generates_direction_each_time_and_preserves_custom_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "direction.md"
+            custom = root / "custom.md"
+            custom.write_text("Custom session instruction.")
+            generator = root / "uv"
+            generator.write_text('#!/bin/sh\ncat "$FIXTURE_DIRECTION"\n')
+            generator.chmod(0o700)
+            consumer = root / "claude"
+            consumer.write_text(
+                f'#!{sys.executable}\nimport argparse\nfrom pathlib import Path\np = argparse.ArgumentParser()\n'
+                'p.add_argument("--append-system-prompt-file")\na, _ = p.parse_known_args()\n'
+                'print(Path(a.append_system_prompt_file).read_text())\n'
+            )
+            consumer.chmod(0o700)
+            launch = f"cd {shlex.quote(folder)} && exec {shlex.quote(str(consumer))} --append-system-prompt-file {shlex.quote(str(custom))}"
+            command = iterm_tab.append_brief(launch, "brief")
+            for text in ("First merged direction.", "Updated merged direction."):
+                source.write_text(text + "\n")
+                result = subprocess.run(["/bin/bash", "-c", command], capture_output=True, text=True, check=True,
+                                        env={**os.environ, "PATH": folder + ":" + os.environ["PATH"], "FIXTURE_DIRECTION": str(source)})
+                self.assertEqual(result.stdout.strip(), text + "\n" + custom.read_text())
+
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
@@ -2610,7 +2634,7 @@ class TerminalTests(unittest.TestCase):
                 commands.append(iterm_tab.with_account(launch, choice, "brief"))
             for command in commands:
                 with self.subTest(command=command):
-                    args = subprocess.run(["/bin/sh", "-c", command], capture_output=True, text=True, check=True).stdout.splitlines()
+                    args = subprocess.run(["/bin/bash", "-c", command], capture_output=True, text=True, check=True).stdout.splitlines()
                     separator = args.index("--")
                     parser = argparse.ArgumentParser(add_help=False)
                     parser.add_argument("--disallowedTools", action="append")
@@ -2684,7 +2708,7 @@ class TerminalTests(unittest.TestCase):
             child.chmod(0o700)
             with patch.dict(os.environ, {iterm_tab.CLAUDE_SUGGESTION_ENV: "true"}):
                 command = iterm_tab.with_account(f"exec {shlex.quote(str(child))}", {"provider": "anthropic", "env": {}}, "brief")
-                result = subprocess.run(["/bin/sh", "-c", command], check=True, capture_output=True, text=True)
+                result = subprocess.run(["/bin/bash", "-c", command], check=True, capture_output=True, text=True)
             self.assertNotEqual(result.stdout.strip(), "true")
             with self.assertRaises(ValueError):
                 iterm_tab.with_account(f"env {iterm_tab.CLAUDE_SUGGESTION_ENV}=true claude", {"provider": "anthropic", "env": {}}, "brief")
@@ -2842,7 +2866,7 @@ class TerminalTests(unittest.TestCase):
                 asyncio.run(iterm_tab.operate(app, args))
             sent = terminal.async_send_text.await_args_list[0].args[0]
             command = sent.removeprefix("\x1b[200~").removesuffix("\x1b[201~")
-            result = subprocess.run(["/bin/sh", "-c", command], cwd=root,
+            result = subprocess.run(["/bin/bash", "-c", command], cwd=root,
                                     capture_output=True, text=True, check=True)
             self.assertEqual(result.stdout, "1\n" + content + "\n")
             self.assertFalse((root / "injected").exists())
@@ -3319,7 +3343,7 @@ class TerminalTests(unittest.TestCase):
             sent = terminal.async_send_text.await_args_list[0].args[0]
             if sent.startswith("\x1b[200~"):
                 sent = sent.removeprefix("\x1b[200~").removesuffix("\x1b[201~")
-            launched = subprocess.run(["/bin/sh", "-c", sent], capture_output=True, text=True, check=True)
+            launched = subprocess.run(["/bin/bash", "-c", sent], capture_output=True, text=True, check=True)
             self.assertEqual(launched.stdout.splitlines(), [choice["env"]["CLAUDE_CONFIG_DIR"], "1", BRIEF])
         window.async_create_tab.assert_awaited_once_with(select=False)
         receipt.assert_called_once_with(choice)

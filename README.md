@@ -691,8 +691,8 @@ On Claude Code (`CLAUDECODE=1`) it first prints the shared
 each intermediate step. This applies even outside direction repositories.
 Codex already carries a skills protocol in its base instructions, so it does
 not receive this additional copy.
-At session start it injects the full overall `OWNER/direction` DIRECTION.md
-when that owner is configured, followed by the repository's own DIRECTION.md
+Codex's session-start hook injects the full overall `OWNER/direction` DIRECTION.md
+when `OWNER/direction` is configured, followed by the repository's own DIRECTION.md
 when present. Both come from GitHub's merged default branch, with the existing
 last-fetched default-branch fallback clearly identified when GitHub is unavailable.
 It never injects a working-tree draft. Overall direction is configured by an
@@ -701,6 +701,21 @@ The executing loop's command block and reference follow the direction.
 The message ends with the compaction reminder and the rule that a brief's goal
 binds while its named mechanism is a suggestion unless a recorded Director
 decision requires it. Tooling fixes report `Removed:` and `Net lines:`.
+Claude's hook prints the protocol and reminders without injecting direction.
+The Supervisor's terminal launcher supplies the same merged documents through
+native `--append-system-prompt-file`, generated when the shell starts Claude.
+It preserves additional prompt-file text and uses `--system-prompt-snapshot off`
+so resumed sessions also receive current direction. For hand-started terminal
+sessions, add this line to your zsh settings, replacing `/absolute/catalog`
+with your catalog checkout:
+
+```sh
+alias claude='claude --append-system-prompt-file <(uv run /absolute/catalog/hooks/direction_check_hook.py --direction-only) --system-prompt-snapshot off'
+```
+
+This is a shell setting. Claude has no documented JSON setting for its native
+prompt-file flag. It does not configure sessions started inside Desktop or an
+editor extension. Supervisor launch commands use zsh or bash process substitution.
 It reads a local marker that `direction_mark.py` writes at the end of a daily
 turn and that `direction_audit.py --weekly` writes after a weekly audit that
 read every adopted repository. It prints at most two reminder lines, the same
@@ -722,8 +737,8 @@ unless `DIRECTION_MARKER` names another file. For Codex, the installer or
 `scripts/sync-global-instructions.py --codex-hook` registers this hook in
 `hooks.json`; review it through `/hooks` once. Keep user-layer event definitions
 in JSON so later setup does not recreate inline TOML declarations.
-Both harnesses' `compact` handler uses `--compact` to restore full direction
-and Claude's skills protocol, without catalog catch-up or startup reminders.
+Both harnesses' `compact` handler uses `--compact` to restore Codex's full direction
+or Claude's skills protocol, without catalog catch-up or startup reminders.
 The legacy `--skills-only` spelling remains an alias. Codex hook synchronization
 installs this handler too and disables Codex's hook-context spilling for full direction.
 For a preserved legacy startup command, use the existing `--upgrade-session-start`
