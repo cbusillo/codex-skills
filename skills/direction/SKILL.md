@@ -246,8 +246,7 @@ copying repository lists into guidance. The daily marker records
 `OWNER/direction` as the turn's coverage; one turn clears the daily reminder
 on every machine.
 
-A **weekly audit** is one command for the whole account, run from one session
-in any folder:
+A **weekly audit** starts with one collection command for the whole account:
 
 ```bash
 uv run <skill-dir>/scripts/direction_audit.py --weekly --owner OWNER
@@ -379,22 +378,26 @@ The documented reader on the Director's own login also works here with
 ran; otherwise reinsert just the removed audit entries, retaining newer stamps.
 
 The catalog's session-start hook reads that marker on every host. It prints
-at most two lines, the same in every folder: one when the last turn is more
-than a day old, and one when the last weekly audit is more than a week old.
-The audit line shows only for an account with direction set up, and it names
-no repository. The account is the one whose direction repository the marker's
+one daily-turn reminder when the last turn is more than a day old, the same
+in every folder. The account is the one whose direction repository the marker's
 newest turn or weekly audit names. Only when the marker records no account
 does the hook fall back to the account of the folder's origin, and only when
 that account's `OWNER/direction` has been audited here or is checked out
-beside the folder. A local turn or weekly audit counts only
-when it names that account. While either local stamp is stale, the hook
-reads the open issues in `OWNER/direction` once and uses the newest stamp
-across every record it finds. When it cannot read them all, the line says
-unconfirmed rather than overdue. A
-reminder that will not clear means the marker was not written where the hook
-reads it; the reminder names the path. The marker is one file for every host,
-`~/.code/direction-last-check.json` unless `DIRECTION_MARKER` names another,
-on purpose: host home variables differ between Claude Code and Codex.
+beside the folder. A local turn counts only when it names that account.
+While the local turn is stale, the hook reads the open issues in `OWNER/direction`
+once and uses the newest daily-turn stamp it finds. When it cannot read them
+all, the line says unconfirmed rather than overdue. The reminder names the
+marker path: `~/.code/direction-last-check.json` unless `DIRECTION_MARKER`
+names another. Host home variables differ between Claude Code and Codex.
+
+Schedule `direction_audit.py --weekly --owner OWNER` once a week through the
+Supervisor's existing daily scheduler, using the automation identity. It reads
+audited repositories and records completion locally and in `OWNER/direction`.
+Record registration and receiver evidence before calling it active. The receiving
+direction session uses the saved JSON receipt, then performs per-repository
+steps 1–4, the account-wide `direction`-label and friction searches with their
+design procedure, and the [weekly finding judgments](#weekly-audit). Use that
+receipt's findings because collection has already advanced the audit windows.
 
 ## Weekly Audit
 

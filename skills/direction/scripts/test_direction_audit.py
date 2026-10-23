@@ -3022,18 +3022,6 @@ def test_audit_identity_refused_link_keeps_other_wait_evidence() -> None:
     assert report["unavailable"] and report["unavailable"][0]["number"] == 1
 
 
-
-HOOK = Path(__file__).resolve().parents[3] / "hooks" / "direction_check_hook.py"
-
-
-def load_hook() -> Any:
-    spec = importlib.util.spec_from_file_location("direction_check_hook_for_audit", HOOK)
-    assert spec and spec.loader
-    hook = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(hook)
-    return hook
-
-
 class WeeklyAccount:
     """One account on a fake reader: o/direction plus adopted o/a and o/b, and o/plain without a file."""
 
@@ -3096,13 +3084,7 @@ class WeeklyAccount:
         return code, json.loads(output.getvalue())
 
 
-def weekly_state(marker: Path, owner: str = "o") -> str | None:
-    """The session-start reminder's weekly-audit state for this machine's marker alone."""
-    hook = load_hook()
-    return hook.reminder_states(hook.read_marker(marker), dt.datetime.now(dt.timezone.utc), owner)["audit"]
-
-
-def test_single_repository_audits_of_every_adopted_repository_leave_the_weekly_reminder() -> None:
+def test_single_repository_audits_do_not_record_a_weekly_audit() -> None:
     module = load()
     account = WeeklyAccount(module)
     with tempfile.TemporaryDirectory() as tmp:
@@ -3113,7 +3095,6 @@ def test_single_repository_audits_of_every_adopted_repository_leave_the_weekly_r
         saved = json.loads(marker.read_text())
         assert set(saved["audits"]) == {"o/direction", "o/a", "o/b"}
         assert "weekly_audit" not in saved, "a single-repository audit never records the weekly audit"
-        assert weekly_state(marker) == "due"
 
 
 def test_weekly_audit_records_once_every_adopted_repository_was_read() -> None:
@@ -3131,7 +3112,6 @@ def test_weekly_audit_records_once_every_adopted_repository_was_read() -> None:
         assert saved["weekly_audit"]["record"] == "o/direction"
         assert set(saved["audits"]) == {"o/direction", "o/a", "o/b"}, "each repository's own window still advances"
         assert shared == [(receipt["started"], "o")], "the shared record is written once, after the local stamp"
-        assert weekly_state(marker) == "current"
 
 
 def test_weekly_audit_counts_a_held_window_as_read_but_not_a_failed_audit() -> None:
@@ -3149,13 +3129,11 @@ def test_weekly_audit_counts_a_held_window_as_read_but_not_a_failed_audit() -> N
             if recorded:
                 assert list(receipt["held"]) == ["o/b"] and receipt["unread"] == {}
                 assert code == 3, "the held window is still reported as a coverage finding"
-                assert weekly_state(marker) == "current"
             else:
                 assert list(receipt["unread"]) == ["o/b"] and code == 1
                 assert receipt["unread"]["o/b"].startswith("reads failed:"), receipt["unread"]
                 assert not receipt["audits"]["o/b"].get("run_recorded") and "o/b" not in saved.get("audit_runs", {})
                 assert "o/a" in saved["audits"], "repositories that were read keep their own stamps"
-                assert weekly_state(marker) == "due"
 
 
 def capacity_with_one_failed_repository(module: Any) -> list[str]:
@@ -3188,7 +3166,6 @@ def test_weekly_audit_holds_a_failed_capacity_read_and_rereads_it_next_time() ->
         code, receipt = account.run(["--weekly", "--owner", "o"], marker, shared)
         assert receipt["unread"] == {} and receipt["held"] == {"o/direction": "capacity_reads:o/fun"}, receipt["held"]
         assert code == 3 and receipt["weekly_recorded"] and shared, "a held repository counts as audited"
-        assert weekly_state(marker) == "current"
         saved = json.loads(marker.read_text())
         assert saved["audits"]["o/direction"] == stamp(window_start), "the held window keeps its start"
         assert saved["audit_runs"]["o/direction"]["held"] == "capacity_reads:o/fun"
@@ -3220,7 +3197,6 @@ def test_weekly_audit_refuses_an_incomplete_or_unknown_repository_listing() -> N
             else:
                 assert {"source": "repositories", "reason": gap} in receipt["discovery"]["gaps"]
             assert "weekly_audit" not in json.loads(marker.read_text())
-            assert weekly_state(marker) == "due"
 
 
 def test_weekly_audit_reports_a_shared_write_failure_after_the_local_stamp() -> None:
