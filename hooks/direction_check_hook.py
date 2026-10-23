@@ -584,7 +584,7 @@ def main(*, skills_only: bool = False, catalog_root: Path | None = None, runtime
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description="Print overdue direction reminders and existing startup diagnostics.")
     parser.add_argument("--skills-only", action="store_true")
     parser.add_argument("--turn", action="store_true", help="print a one-line skills reminder for each prompt")
     parser.add_argument("--runtime-catchup", action="store_true", help="Enable catch-up with the updated native hook timeout")

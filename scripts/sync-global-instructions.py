@@ -69,6 +69,9 @@ def direction_content(home: Path) -> str:
     marker_path = Path(os.environ.get("DIRECTION_MARKER", str(home / ".code" / "direction-last-check.json")))
     if not marker_path.is_file():
         return ""
+    sys.path.insert(0, str(ROOT / "skills/github/scripts"))
+    from github_api import parse_gh_include_output
+
     hook = runpy.run_path(str(ROOT / "hooks" / "direction_check_hook.py"))
     marker = hook["read_marker"](marker_path)
     owner = hook["marker_account"](marker)
@@ -93,7 +96,7 @@ def direction_content(home: Path) -> str:
         ),
     ]
     for repo in repositories:
-        failure = f"Could not read merged {repo}/DIRECTION.md; installed instructions are preserved. Rerun the sync."
+        failure = f"Could not read merged {repo}/DIRECTION.md; installed instructions are preserved. Restore the read, then rerun the sync."
         try:
             result = hook["run_reader"](
                 "api",
@@ -102,14 +105,18 @@ def direction_content(home: Path) -> str:
                 "GET",
                 "-H",
                 "Accept: application/vnd.github.raw",
+                "--include",
             )
         except (OSError, subprocess.SubprocessError) as error:
             raise ValueError(failure) from error
-        if result.returncode or not result.stdout.strip():
+        status, _, content = parse_gh_include_output(result.stdout)
+        if status == 404 and repo != overall:
+            continue
+        if result.returncode or status != 200 or not isinstance(content, str) or not content.strip():
             raise ValueError(failure)
         sections.append(
             f"## {'Overall' if repo == overall else 'Repository'} DIRECTION: {repo}\n\n"
-            f"Source: https://github.com/{repo}/blob/HEAD/DIRECTION.md (merged default branch).\n\n{result.stdout.rstrip()}"
+            f"Source: https://github.com/{repo}/blob/HEAD/DIRECTION.md (merged default branch).\n\n{content.rstrip()}"
         )
     sections.append(
         "Keep this through compaction. A brief's goal binds; a mechanism it names is a suggestion unless it is a recorded Director "

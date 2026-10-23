@@ -108,15 +108,22 @@ class InstallTests(unittest.TestCase):
         updated = self.sync.DIRECTION_START + "\nUpdated merged direction."
         for path in (self.codex / "AGENTS.md", self.claude / "CLAUDE.md"):
             path.write_text(self.sync.render(self.catalog / "instructions/global.md", private, first))
+        original_paths = (self.codex / "AGENTS.md", self.claude / "CLAUDE.md")
+        aliases = (self.home / "codex-account/AGENTS.md", self.home / "claude-account/CLAUDE.md")
+        for alias, target in zip(aliases, original_paths):
+            alias.parent.mkdir()
+            alias.symlink_to(target)
+        self.claude = aliases[1].parent
         with mock.patch.object(self.sync, "direction_content", return_value=first):
             self.install()
         with mock.patch.object(self.sync, "direction_content", return_value=updated):
-            self.install()
-            self.install()
-        for path in (self.codex / "AGENTS.md", self.claude / "CLAUDE.md"):
+            for _ in range(2):
+                installer.install(self.home, self.codex, self.claude, write=True, updater=False, refresh_instructions=True)
+        for path in (*original_paths, *aliases):
             self.assertIn(updated, path.read_text())
             self.assertNotIn(first, path.read_text())
             self.assertIn(private.read_text().strip(), path.read_text())
+        self.assertTrue(all(alias.is_symlink() for alias in aliases))
         self.assertEqual(private.read_bytes(), before)
 
     def test_unavailable_merged_direction_preserves_installed_files_and_receipt(self) -> None:
