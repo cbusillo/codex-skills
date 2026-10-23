@@ -135,7 +135,10 @@ inspection, browser, CI, deployment, or security gates.
    For Launchplane-managed trains, verify or route through `launchplane` instead
    of recommending a hand-built GitHub rollup.
 7. If UI was touched, check it in a real browser with the harness's own browser
-   tools.
+   tools. First list the claims to verify, the controls and states that matter,
+   and the viewport sizes. Interact like a user, check the state after each
+   interaction, compare against any accepted design notes, and capture
+   screenshots where they add evidence.
 8. If security is in scope, use `security-review` explicitly; do not silently
    turn normal readiness into a full security audit.
 9. Report readiness concisely, then continue into `work-closeout` for the
