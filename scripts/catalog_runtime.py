@@ -157,8 +157,9 @@ def status_line(root: Path, *, observe: bool = False) -> str:
                 stamp = recorded.get("checked_at", stamp)
                 if recorded.get("state") == "error":
                     step = recorded.get("failure_step", "catalog update")
-                    recovery = "preview scripts/install-catalog.py --refresh-instructions, reconcile, then run scripts/catalog_runtime.py --update" if step == "instruction refresh" else "run scripts/catalog_runtime.py --update"
-                    state = {"state": "blocked", "reason": f"last {step} failed; {recovery}"}
+                    recovery = "preview scripts/install-catalog.py --refresh-instructions to diagnose, then run scripts/catalog_runtime.py --update" if step == "instruction refresh" else "run scripts/catalog_runtime.py --update"
+                    detail = recorded.get("reason")
+                    state = {"state": "blocked", "reason": f"last {step} failed{f': {detail}' if detail else ''}; {recovery}"}
 
             checked_at = dt.datetime.fromisoformat(stamp) if stamp else None
             if checked_at is not None and checked_at.tzinfo is None:
@@ -215,7 +216,8 @@ def update(root: Path) -> dict:
                                              "--home-dir", installation["home"], "--codex-dir", installation["codex"], "--claude-dir", installation["claude"]],
                                             capture_output=True, text=True, timeout=60)
                     if result.returncode:
-                        raise ValueError("catalog is current but instruction refresh failed; preview scripts/install-catalog.py --refresh-instructions to diagnose and reconcile")
+                        details = result.stderr.strip().splitlines()
+                        raise ValueError(details[-1] if details else "catalog is current but instruction refresh failed; preview scripts/install-catalog.py --refresh-instructions to diagnose")
                     refreshed = json.loads(result.stdout)
                     skipped = [entry for entry in refreshed.get("outputs", []) if entry.get("state") == "skipped"]
                     if any(Path(entry["path"]).name in ("CLAUDE.md", "AGENTS.md") for entry in skipped):

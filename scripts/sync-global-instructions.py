@@ -66,13 +66,13 @@ def render(source: Path, local_source: Path, direction: str = "") -> str:
 
 
 def direction_content(home: Path) -> str:
-    marker_path = Path(os.environ.get("DIRECTION_MARKER", str(home / ".code" / "direction-last-check.json")))
+    hook = runpy.run_path(str(ROOT / "hooks" / "direction_check_hook.py"))
+    marker_path = hook["marker_path"]({**os.environ, "HOME": str(home)})
     if not marker_path.is_file():
         return ""
     sys.path.insert(0, str(ROOT / "skills/github/scripts"))
     from github_api import parse_gh_include_output
 
-    hook = runpy.run_path(str(ROOT / "hooks" / "direction_check_hook.py"))
     marker = hook["read_marker"](marker_path)
     owner = hook["marker_account"](marker)
     if not owner:
@@ -96,7 +96,7 @@ def direction_content(home: Path) -> str:
         ),
     ]
     for repo in repositories:
-        failure = f"Could not read merged {repo}/DIRECTION.md; installed instructions are preserved. Restore the read, then rerun the sync."
+        failure = f"Could not read merged {repo}/DIRECTION.md; installed instructions are preserved. Restore the read, then rerun the refresh."
         try:
             result = hook["run_reader"](
                 "api",

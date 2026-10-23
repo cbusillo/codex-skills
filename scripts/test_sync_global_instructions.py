@@ -26,6 +26,11 @@ sync = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(sync)
 
 
+def setUpModule() -> None:
+    fixture = unittest.enterModuleContext(tempfile.TemporaryDirectory())
+    unittest.enterModuleContext(mock.patch.dict(os.environ, {"DIRECTION_MARKER": str(Path(fixture) / "absent-marker")}))
+
+
 class GlobalInstructionsTests(unittest.TestCase):
     def test_direction_bundle_uses_merged_sources_and_scopes_only_the_selected_owner(
         self,
@@ -55,6 +60,10 @@ class GlobalInstructionsTests(unittest.TestCase):
                 mock.patch.object(sync.runpy, "run_path", return_value={**hook, "run_reader": read}),
             ):
                 content = sync.direction_content(home)
+            for override in ("", "~/.code/direction-last-check.json"):
+                with (mock.patch.dict(os.environ, {"HOME": str(home), "DIRECTION_MARKER": override}),
+                      mock.patch.object(sync.runpy, "run_path", return_value={**hook, "run_reader": read})):
+                    self.assertEqual(sync.direction_content(home), content)
             for failure in (subprocess.CompletedProcess([], 1, "", "read unavailable"),
                             subprocess.CompletedProcess([], 1, 'HTTP/2.0 404 Not Found\n\n{"message":"Not Found"}', ""),
                             subprocess.TimeoutExpired("reader", 6)):

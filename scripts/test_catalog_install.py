@@ -39,6 +39,11 @@ def command(*args, cwd=None):
     return subprocess.run(args, cwd=cwd, text=True, capture_output=True, check=True).stdout.strip()
 
 
+def setUpModule() -> None:
+    fixture = unittest.enterModuleContext(tempfile.TemporaryDirectory())
+    unittest.enterModuleContext(mock.patch.dict(os.environ, {"DIRECTION_MARKER": str(Path(fixture) / "absent-marker")}))
+
+
 class InstallTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -1241,6 +1246,23 @@ class UpdateTests(unittest.TestCase):
         command("git", "commit", "-qam", "second", cwd=self.seed)
         command("git", "push", "-q", "origin", "main", cwd=self.seed)
 
+    def test_refresh_failure_reason_reaches_saved_state_and_startup(self) -> None:
+        local = self.checkout / ".local"
+        local.mkdir()
+        home = self.base / "home"
+        (local / "catalog-install.json").write_text(json.dumps({"home": str(home), "codex": str(home / ".codex"),
+                                                               "claude": str(home / ".claude")}))
+        diagnostic = "fixture direction source unavailable"
+        run = subprocess.run
+        def fail_refresh(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            if len(args) > 1 and args[1] == str(self.checkout / "scripts/install-catalog.py"):
+                return subprocess.CompletedProcess(args, 1, "", diagnostic + "\n")
+            return run(args, **kwargs)
+        with mock.patch.object(runtime.subprocess, "run", side_effect=fail_refresh):
+            result = runtime.update(self.checkout)
+        self.assertIn(diagnostic, result["reason"])
+        self.assertIn(diagnostic, runtime.status_line(self.checkout))
+
     def test_clean_main_fast_forwards_and_status_goes_quiet(self):
         self.advance()
         command("git", "fetch", "-q", "origin", cwd=self.checkout)
@@ -1505,7 +1527,8 @@ class UpdateTests(unittest.TestCase):
         (self.seed / "instructions").mkdir()
         (self.seed / "instructions" / "global.md").write_text("First shared instructions.\n")
         (self.seed / "hooks").mkdir()
-        shutil.copyfile(source.parent / "hooks" / "hooks.json", self.seed / "hooks" / "hooks.json")
+        for name in ("hooks.json", "direction_check_hook.py"):
+            shutil.copyfile(source.parent / "hooks" / name, self.seed / "hooks" / name)
         (self.seed / "skills").mkdir()
         (self.seed / "skills" / "original").write_text("first")
         command("git", "add", ".", cwd=self.seed)
