@@ -71,11 +71,6 @@ SHELL_COMMAND_FLAG = re.compile(r"^-[A-Za-z]*c$")
 GH_WRAPPER_FLAGS = {"--print-auth-account", "--require-automation-auth"}
 ENV_VALUE_FLAGS = {"-u", "--unset", "-C", "--chdir"}
 UV_VALUE_FLAGS = {"--python", "-p", "--extra", "--group", "--project", "--directory", "--with", "--with-editable", "--with-requirements", "--env-file"}
-# A gate whose checkout-root option takes `.` as data, not the shell `.` source command.
-DOT_ROOT_OPTIONS = {
-    "--control-plane-root": ["launchplane", "service", "audit-config-authority"],
-    "--repo-root": ["launchplane", "action-pins"],
-}
 POSTGRES_GATE = ["launchplane", "ci", "postgres-integration"]
 POSTGRES_URL_VARIABLE = "LAUNCHPLANE_TEST_POSTGRES_URL="
 # libpq reads these query parameters and variables as the server to connect to, overriding the URL host.
@@ -599,10 +594,8 @@ def exception_cwd(shell: str, cwd: Path) -> Path | None:
         normalized = unwrap(argv)
         if normalized and normalized[0][:3] == POSTGRES_GATE and not names_loopback_database(argv):
             return None
-        for index, token in enumerate(argv):
-            gate = DOT_ROOT_OPTIONS.get(argv[index - 1]) if index > 0 else None
-            if token == "." and not (gate and normalized and normalized[0][:len(gate)] == gate):
-                return None
+        if any(command[0] == "." for command in normalized):
+            return None
         command = argv
         while command and command[0].startswith(POSTGRES_URL_VARIABLE):
             command = command[1:]

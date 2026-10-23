@@ -411,6 +411,8 @@ class CommandPolicyHookTests(unittest.TestCase):
                 "launchplane ci unittest-shard plan --shard-count 2 --timings-file timings.json",
                 "launchplane ci unittest-shard run --shard-count 2 --shard-index 0",
                 "launchplane service audit-config-authority --control-plane-root .",
+                "launchplane service plan-config-authority-transition --base-branch main --required-checks-file checks.json",
+                "launchplane local-consumer --help",
                 "launchplane odoo-ownership check --workspace-root ..",
                 "launchplane action-pins check --repo-root . --revision HEAD --repository cbusillo/launchplane",
                 "launchplane action-pins update --release-sha 0123abc",
@@ -458,6 +460,7 @@ class CommandPolicyHookTests(unittest.TestCase):
             for line in (
                 "cd /other && " + command,
                 ". /other/setup && uv run " + command,
+                "uv run ruff check . && . /other/setup && uv run " + command,
                 "builtin . /other/setup && uv run " + command,
                 "{ . /other/setup; uv run " + command + "; }",
                 "if . /other/setup; then uv run " + command + "; fi",
@@ -536,6 +539,10 @@ class CommandPolicyHookTests(unittest.TestCase):
                 "launchplane ci unittest-shard local-other",
                 "launchplane ci other-command",
                 "launchplane service audit-config-authority-other",
+                "launchplane service plan-config-authority-transition-other",
+                "launchplane local-consumer prepare --directory recipient",
+                "launchplane local-consumer receive --directory recipient --package-file package.json",
+                "launchplane local-consumer --help-other",
                 "launchplane odoo-ownership other-command",
                 "launchplane odoo-targets replacement-plan",
                 "launchplane action-pins report --revision HEAD --repository cbusillo/launchplane",
@@ -549,6 +556,30 @@ class CommandPolicyHookTests(unittest.TestCase):
             self.assertEqual(bash("launchplane ci unittest-shard local", checkout).returncode, 2)
             self.assertEqual(bash("uv run --project /other launchplane ci unittest-shard local", checkout).returncode, 2)
             self.assertEqual(bash("echo --repository; tools/launchplane action-pins check --revision HEAD", checkout).returncode, 2)
+
+    def test_local_gate_chains_and_redirections_keep_the_verified_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checkout = root / "checkout"
+            subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+            subprocess.run(["git", "-C", str(checkout), "config", "remote.origin.url", "git@github.com:cbusillo/launchplane.git"], check=True)
+            gates = (
+                "uv run --extra dev launchplane ci unittest-shard local --jobs 4",
+                "uv run launchplane service audit-config-authority --control-plane-root .",
+                "uv run launchplane service export-openapi --output generated/openapi.json",
+                "uv run launchplane service export-agent-contract --output contracts/agent.json",
+                "uv run launchplane service plan-config-authority-transition --base-branch main --required-checks-file checks.json",
+            )
+            for gate in gates:
+                for line in (
+                    gate + " > output.log 2>&1",
+                    "uv run ruff check . && " + gate,
+                    gates[2] + " && " + gate,
+                    gate + " && git status --short",
+                ):
+                    with self.subTest(line=line):
+                        self.assertEqual(bash(line, checkout).returncode, 0)
+                        self.assertEqual(bash("cd " + shlex.quote(str(checkout)) + " && " + line, root).returncode, 0)
 
     def test_postgres_gate_runs_only_against_a_named_loopback_database(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
