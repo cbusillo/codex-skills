@@ -54,7 +54,8 @@ rule above, not a reason to drop inspection.
 
 ## Retired
 
-- Every Code as a harness; its traces, fixtures, and readers describe history
+- Every Code; history lives in Git. Keep `~/.code` and its live settings,
+  auth, and other state readers until their separate migration is approved.
 - local plan files; planning lives in GitHub issues
 - reviewer approval as a merge gate, and the standing prompt that asked for
   Opus and Gemini on planning and final reviews
