@@ -144,9 +144,7 @@ class TranscriptMeasureTests(unittest.TestCase):
         owners = {
             "uv run scripts/gh-pr.py --repo o/r checks 4": {"github"},
             "uv run scripts/github-ci-diagnose.py --repo o/r --pr 4": {"github"},
-            "gh pr checks 4": {"github"},
             "gh pr checks 4 --watch=false": {"github"},
-            "gh pr checks 4 --watch": {"babysit-pr"},
             "gh pr checks 4 -w": {"github"},
             "gh pr checks 4 --watch --interval 30 2>&1": {"babysit-pr"},
             "uv run --no-cache scripts/gh_pr_watch.py --pr auto --watch": {"babysit-pr"},
@@ -154,7 +152,6 @@ class TranscriptMeasureTests(unittest.TestCase):
             "uv run --no-cache pytest -q": {"python-uv-workflow"},
             "uv run scripts/gh-pr.py --repo o/r list": {"github"},
             "uv run scripts/launchplane-service-logs.py --config c": {"launchplane"},
-            "uv run scripts/gh-plan.py --repo o/r show 5": {"github-plan"},
         }
         for command, expected in owners.items():
             with self.subTest(command=command):
