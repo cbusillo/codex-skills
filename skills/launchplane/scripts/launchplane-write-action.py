@@ -2145,7 +2145,7 @@ REVIEWED_PLAN_MODES = {"dry-run", "apply"}
 
 
 def _optional_sha256(value: object) -> str:
-    if value in {None, ""}:
+    if value is None or value == "":
         return ""
     if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
         raise LaunchplaneSafetyError("invalid_response")
@@ -2427,7 +2427,7 @@ def _product_read_path(command: str, **segments: str) -> str:
 
 
 def _optional_text(value: object, *, max_length: int = 64) -> str:
-    if value in {None, ""}:
+    if value is None or value == "":
         return ""
     return public_summary_string(value, max_length=max_length)
 
@@ -2439,13 +2439,13 @@ def _optional_response_text(value: object, *, max_length: int = 64) -> str:
 
 
 def _optional_code(value: object) -> str:
-    if value in {None, ""}:
+    if value is None or value == "":
         return ""
     return public_code(value)
 
 
 def _optional_identifier(value: object) -> str:
-    if value in {None, ""}:
+    if value is None or value == "":
         return ""
     return public_identifier(value)
 
@@ -2888,6 +2888,7 @@ def _reconcile_plan_validators() -> dict[str, Any]:
             "last_failed_error_code",
             "preview_result_error_code",
             "current_build_evidence",
+            "testing_deploy_recovery_refusal",
         ),
         _public_dotted_code,
     )
@@ -2911,6 +2912,8 @@ def _reconcile_plan_validators() -> dict[str, Any]:
                 "hold_recorded_by",
                 "preview_build_run",
                 "feedback_recovery_delivery_id",
+                "failure_trace_id",
+                "failed_restore_deployment_record_id",
             ),
             public_identifier,
         )
@@ -2929,6 +2932,7 @@ def _reconcile_plan_validators() -> dict[str, Any]:
         hold_reason=lambda value: public_operator_text(value, max_length=300, redact_denied_markers=True),
         hold_recorded_at=lambda value: public_summary_string(value, max_length=64),
         preview_url=_public_origin_url,
+        testing_runtime_drift_sha256=_project_sha256,
     )
     return fields
 
@@ -2942,6 +2946,7 @@ RECONCILE_PLAN_FLAGS = frozenset({
     "preview_execution_refused",
     "preview_transport_retryable",
     "feedback_recovery_closed_observed",
+    "held_reservations_truncated",
 })
 # Counts: testing build selection (how much run and commit history was read) and retries.
 RECONCILE_PLAN_COUNTS = frozenset({
@@ -2963,6 +2968,10 @@ RECONCILE_PLAN_WITHHELD = frozenset({
     "preview_recovery_plan",
     "destroy_retry_stop_reason",
     "feedback_recovery_stop_reason",
+    "artifact_scan",
+    "held_reservations",
+    "testing_deploy_recovery",
+    "product",
 })
 # Plan lists of setting key names (never values), by the name they are output under.
 RECONCILE_PLAN_KEY_NAME_LISTS = {
@@ -2978,28 +2987,58 @@ def _reconcile_deploy_key_digest(value: object) -> str:
 
 
 def _project_rejected_builds(entries: list[object], drops: _FieldDrops) -> list[dict[str, object]]:
-    """The newer builds testing selection skipped, newest first, by commit. Launchplane
-    records each reason only as free text, which can carry API paths and upstream errors,
-    so it is dropped and counted (launchplane#3322 adds a fixed code and run id)."""
+    validators = {"commit": _public_commit_sha, "run_id": _positive_int, "code": _public_dotted_code}
     projected: list[dict[str, object]] = []
     for entry in entries[:RECONCILE_MAX_PLAN_LIST_ITEMS]:
         if not isinstance(entry, dict):
             drops.drop("requests[].last_plan.rejected_builds[]")
             continue
-        commit = drops.keep(
-            "requests[].last_plan.rejected_builds[].commit", _public_commit_sha, entry.get("commit")
-        )
-        for key in entry:
-            if key != "commit":
+        evidence: dict[str, object] = {}
+        for key, value in entry.items():
+            if key in validators:
+                evidence[key] = (
+                    None
+                    if key == "run_id" and value is None
+                    else drops.keep(f"requests[].last_plan.rejected_builds[].{key}", validators[key], value)
+                )
+            else:
                 drops.drop(
                     "requests[].last_plan.rejected_builds[].error"
                     if key == "error"
                     else "requests[].last_plan.rejected_builds[].<unlisted field>"
                 )
-        if commit:
-            projected.append({"commit": commit})
+        if evidence.get("commit"):
+            projected.append({key: value for key, value in evidence.items() if value != ""})
+        else:
+            drops.drop("requests[].last_plan.rejected_builds[]")
     if len(entries) > RECONCILE_MAX_PLAN_LIST_ITEMS:
         drops.drop("requests[].last_plan.rejected_builds[]")
+    return projected
+
+
+def _project_reconcile_feedback(value: object, drops: _FieldDrops) -> dict[str, object]:
+    if not isinstance(value, dict):
+        drops.drop("requests[].last_plan.pr_feedback")
+        return {}
+    validators = {
+        "status": _public_dotted_code,
+        "delivery_status": _public_dotted_code,
+        "delivery_action": _public_dotted_code,
+        "owner_review": _public_dotted_code,
+        "feedback_id": public_identifier,
+        "pull_request_number": _nonnegative_int,
+        "comment_id": _nonnegative_int,
+        "body_sha256": _protected_artifact_digest,
+    }
+    projected: dict[str, object] = {}
+    for key, item in value.items():
+        if key in validators:
+            kept = drops.keep(f"requests[].last_plan.pr_feedback.{key}", validators[key], item)
+            if kept != "":
+                projected[key] = kept
+        elif key != "error" or (item is not None and item != ""):
+            path = "error" if key == "error" else "<unlisted field>"
+            drops.drop(f"requests[].last_plan.pr_feedback.{path}")
     return projected
 
 
@@ -3022,6 +3061,8 @@ def _project_reconcile_plan(plan_value: object, drops: _FieldDrops) -> dict[str,
             projected[key] = value if type(value) is int else None
         elif key == "rejected_builds" and isinstance(value, list):
             projected[key] = _project_rejected_builds(value, drops)
+        elif key == "pr_feedback":
+            projected[key] = _project_reconcile_feedback(value, drops)
         elif key in RECONCILE_PLAN_WITHHELD:
             drops.drop(f"requests[].last_plan.{key}")
         elif key in RECONCILE_PLAN_KEY_NAME_LISTS and isinstance(value, list):
@@ -3329,7 +3370,7 @@ def _project_target_replacement_result(
         known=TARGET_REPLACEMENT_RESULT_FIELDS,
         drops=drops,
     )
-    if image_reference not in {None, ""}:
+    if image_reference is not None and image_reference != "":
         # The repository part of the reference is dropped; only the digest is kept.
         drops.drop("result.image_reference")
     return projected
@@ -8020,7 +8061,7 @@ def _project_product_owner_plan(result: object) -> dict[str, object]:
 
 
 def _project_image_repository(value: object, *, pattern: re.Pattern[str]) -> str:
-    if value in {None, ""}:
+    if value is None or value == "":
         return ""
     if not isinstance(value, str) or not pattern.fullmatch(value):
         raise LaunchplaneSafetyError("invalid_response")
