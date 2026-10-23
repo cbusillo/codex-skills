@@ -275,9 +275,8 @@ policy:
 
 # Supervisor
 
-Apply [task scope and authorization](../references/execution-scope.md) and
-write every check, handoff, and question under
-[talking with the Director](../references/talking-with-the-director.md).
+Follow [task scope](../references/execution-scope.md) and
+[talking with the Director](../references/talking-with-the-director.md) for checks, handoffs and questions.
 Use [the step-to-skill table](../references/using-skills.md) for each step,
 `direction` for daily turns and escalations, and `launchplane` for train operations.
 
@@ -287,10 +286,9 @@ For a separate terminal worker, read [Harnesses](#harnesses), [Local State](#loc
 Within existing delegation authority, the launching session owns launch records, capacity nudges, monitoring and verified closeout.
 These launcher duties do not start a full Supervisor run; its remaining procedure follows below.
 
-The Director starts a full supervision run on Claude Code with `/shared:supervisor` and one line
-naming the run. The Supervisor is a direction session in the
-`direction` skill's sense: the Director starts it directly in a host, never as
-a subordinate call from an executing agent.
+For full supervision, the Director starts `/shared:supervisor` on Claude Code
+and names the run. This is a `direction` session, started directly in a host,
+never as a subordinate call from an executing agent.
 
 ## Before Taking Over: Permission Mode
 
