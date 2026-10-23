@@ -172,7 +172,7 @@ def resumed_session(argv: list[str]) -> str | None:
         _, identity, uncertain = native.execution_arguments(argv)
         if uncertain or len(identity) != 2:
             return None
-        argv = [identity[-1], *argv[2:]]
+        argv = ["claude", *argv[2:]]
     parsed = native.claude_invocation(argv)
     identifier = session_id(parsed.prefix_resume)
     return identifier if identifier and identifier == parsed.prefix_resume and all(

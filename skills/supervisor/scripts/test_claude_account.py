@@ -162,6 +162,8 @@ class MoveTests(unittest.TestCase):
         for suffix in (["--fork-session"], ["-c"], ["--resume"], ["--resume", "another-session"]):
             self.assertIsNone(account.resumed_session([*self.argv, *suffix]))
         self.assertIsNone(account.resumed_session(["node", "-r", self.identifier, "fixture-cli.js", "--resume", self.identifier]))
+        ambiguous = ["node", "fixture-cli.js", "--resume", self.identifier, "--synthetic-unknown", "--model", "--resume", str(uuid.uuid4())]
+        self.assertIsNone(account.resumed_session(ambiguous))
         launcher = account.load_module("iterm_tab", Path(account.__file__).with_name("iterm_tab.py"))
         words = launcher.launch_words(launcher.append_brief("claude", "fixture"))
         native_resume = ["claude", "--resume", self.identifier, *words[1:words.index("--")]]
