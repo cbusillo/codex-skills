@@ -5184,6 +5184,94 @@ class LifecycleTest(unittest.TestCase):
             claim.assert_not_called()
             close.assert_not_called()
 
+    def test_cleanup_command_removes_lease_that_failed_its_identity_check_before_open(self):
+        lease = {
+            "lease_id": "identity-mismatch", "state": "cleanup_pending",
+            "preparation_failure_stage": "project_open",
+            "preparation_failure_reason": "identity_port_mismatch",
+            "opened_by_helper": False, "open_request_may_have_been_accepted": False,
+            "open_attempts": [], "pid": 999999, "updated_at_ms": jb_inspect.now_ms(),
+        }
+        for changes, removable in [
+            ({}, True), ({"preparation_failure_reason": "invalid_identity_port"}, True),
+            ({"preparation_failure_reason": "inspection_api_unavailable"}, True),
+            ({"session_id": "session"}, False), ({"ide_port": 63343}, False),
+            ({"preparation_failure_stage": "route_wait"}, False),
+        ]:
+            with (
+                self.subTest(changes=changes),
+                patch.object(jb_inspect, "read_local_leases", return_value=[(Path("/tmp/identity-mismatch.json"), lease | changes)]),
+                patch.object(jb_inspect, "pid_alive", return_value=False),
+                patch.object(jb_inspect, "discover_routes_for_cleanup", return_value=([], set())),
+                patch.object(jb_inspect, "private_http_get_body") as claim,
+                patch.object(jb_inspect, "cleanup_lifecycle") as close,
+                patch.object(Path, "unlink") as unlink,
+            ):
+                result = jb_inspect.cleanup_stale_helper_leases(Namespace(max_age_ms=86400000, dry_run=False))
+            self.assertEqual(bool(result["removed"]), removable)
+            self.assertEqual(unlink.called, removable)
+            claim.assert_not_called()
+            close.assert_not_called()
+
+    def timed_out_open_lease(self, **attempt_identity: Any) -> dict[str, Any]:
+        return {
+            "lease_id": "timed-out-open",
+            "state": "cleanup_pending",
+            "opened_by_helper": False,
+            "open_request_may_have_been_accepted": True,
+            "lifecycle_target_path": "/tmp/worktree",
+            "session_id": "old-session",
+            "ide_port": 63343,
+            "open_attempts": [
+                {
+                    "method": "running_ide",
+                    "accepted": False,
+                    "request_may_have_been_accepted": True,
+                    "ownership_registered": False,
+                    "error_reason": "inspection_api_timeout",
+                    "identity": {"session_id": "old-session", "port": 63343, "pid": 753} | attempt_identity,
+                }
+            ],
+        }
+
+    def test_cleanup_releases_timed_out_open_after_the_original_ide_process_exits(self):
+        with patch.object(jb_inspect, "pid_definitively_dead", return_value=True):
+            result = jb_inspect.cleanup_stale_helper_lease(self.timed_out_open_lease(), [], {"new-session"})
+
+        self.assertEqual(result["status"], "not_needed")
+        self.assertEqual(result["reason"], "original_ide_process_dead_no_route")
+        self.assertTrue(result["released_without_close"])
+
+    def test_cleanup_retains_timed_out_open_unless_the_original_ide_is_provably_gone(self):
+        open_elsewhere = {"base_path": "/tmp/worktree", "session_id": "new-session", "project_instance_id": "new-session:1"}
+        for name, lease, routes, sessions, dead in [
+            ("original process alive", self.timed_out_open_lease(), [], set(), False),
+            ("original session still running", self.timed_out_open_lease(), [], {"old-session"}, True),
+            ("worktree open in a running IDE", self.timed_out_open_lease(), [open_elsewhere], {"new-session"}, True),
+            ("attempt sent to another session", self.timed_out_open_lease(session_id="other-session"), [], set(), True),
+            ("attempt sent to another port", self.timed_out_open_lease(port=63344), [], set(), True),
+            ("attempt names no process", self.timed_out_open_lease(pid=None), [], set(), True),
+            ("running sessions unknown", self.timed_out_open_lease(), [], None, True),
+            ("open still being requested", self.timed_out_open_lease() | {"state": "open_requesting"}, [], set(), True),
+            ("attempts name different processes", self.timed_out_open_lease() | {"open_attempts": [
+                self.timed_out_open_lease()["open_attempts"][0],
+                self.timed_out_open_lease(pid=754)["open_attempts"][0],
+            ]}, [], set(), True),
+            ("an attempt without an identity may have reached an IDE", self.timed_out_open_lease() | {"open_attempts": [
+                *self.timed_out_open_lease()["open_attempts"],
+                {"method": "running_ide", "accepted": False, "request_may_have_been_accepted": True},
+            ]}, [], set(), True),
+        ]:
+            with (
+                self.subTest(name),
+                patch.object(jb_inspect, "pid_definitively_dead", return_value=dead),
+                patch.object(jb_inspect, "identity_for_port", side_effect=OSError("no route")),
+            ):
+                result = jb_inspect.cleanup_stale_helper_lease(lease, routes, sessions)
+
+            self.assertEqual(result["status"], "skipped")
+            self.assertEqual(result["reason"], "ownership_route_unavailable")
+
     def test_cleanup_pending_lease_retains_dead_original_session_when_target_is_open_elsewhere(self):
         lease = {
             "lease_id": "pending-lease",
