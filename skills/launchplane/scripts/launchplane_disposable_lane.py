@@ -28,7 +28,7 @@ EVIDENCE = tuple(reference for _allowed, reference in FACTS.values())
 INPUT_FIELDS = {
     "inspect": {*SCOPE, "preview_id"},
     "collect": {*SCOPE, "preview_id", "lifetime_seconds"},
-    "record": {*SCOPE, "preview_id", "lifetime_seconds", *FACTS, *EVIDENCE},
+    "record": {*SCOPE, "lifetime_seconds", "replaces_operation_id"},
     "clear": {*SCOPE, "preview_id"},
     "prepare-rebuild": {*SCOPE, "replaces_operation_id"},
 }
@@ -38,11 +38,7 @@ DEFAULT_LIFETIME_SECONDS = 300
 CLOCK_SKEW_SECONDS = 5
 DIGEST_RE = re.compile(r"[a-f0-9]{64}")
 CODE_RE = re.compile(r"[a-z][a-z0-9_]{0,63}")
-OBSERVER_KINDS = {"director_agent", "director_agent_preview_cleanup"}
 
-# Closed public vocabularies, taken from the producer (Launchplane 07c93f7d9).
-# Keep them here, in one place, and refresh them from the named sources.
-#
 # control_plane/disposable_lane_collection.py disposable_collection_coverage():
 # the producer client (scripts/collect-disposable-lane.py) requires exactly
 # these coverage sources and refuses any other set.
@@ -70,10 +66,6 @@ UNRECOGNIZED_REASON = "diagnostics_unrecognized"
 # scripts/collect-disposable-lane.py: any other qualification reads as unavailable.
 NEVER_SERVED = {"never_served", "never_served_records_incomplete", "never_served_protection_seen",
                 "never_served_not_attempted"}
-# Evidence the collector can build for each fact value:
-# control_plane/disposable_lane_collection.py collect_disposable_lane_facts and
-# collect_testing_resource_facts, plus the timestamp control_plane/http_app.py
-# appends to a fresh in_use reference. An unknown fact carries no evidence.
 _HEX = "[a-f0-9]{64}"
 _AT = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:[+-]\d{2}:\d{2}|Z)"
 EVIDENCE_FORMATS: dict[str, dict[str, tuple[tuple[str, re.Pattern[str]], ...]]] = {
@@ -86,21 +78,19 @@ EVIDENCE_FORMATS: dict[str, dict[str, tuple[tuple[str, re.Pattern[str]], ...]]] 
     },
     "data": {
         "unknown": (),
-        "reproducible": (("testing-resource-inspection", re.compile(rf"service:testing-resource-inspection:{_HEX}")),),
+        "reproducible": (("testing-resource-inspection", re.compile(rf"service:testing-resource-inspection:{_HEX}")),
+                         ("testing-resources", re.compile(rf"service:testing-resources:{_HEX}"))),
         "only_copy": (),
     },
     "production_resources": {
         "unknown": (),
         "isolated": (("testing-resource-inspection", re.compile(rf"service:testing-resource-inspection:{_HEX}")),),
-        "separation_ready": (),
+        "separation_ready": (("testing-resources", re.compile(rf"service:testing-resources:{_HEX}")),),
         "shared": (("production-target-alias", re.compile(rf"service:production-target-alias:{_HEX}:{_HEX}")),),
     },
 }
 # The usage diagnostic each unused evidence kind is built with.
 UNUSED_REASON_BY_KIND = {"odoo-testing-never-served": "never_served", "odoo-testing-usage": "complete"}
-# control_plane/disposable_lane_collection.py merge_collected_safety keeps these
-# facts from an earlier row. On a preview that row can be a recorded observation
-# whose evidence is the Director's own reference, reported only as "recorded".
 RECORDED_PREVIEW_FACTS = {"usage": {"in_use"}, "data": {"reproducible", "only_copy"},
                           "production_resources": {"isolated", "separation_ready", "shared"}}
 RESULT_FIELDS = {
@@ -166,38 +156,17 @@ def intent(h: Any, mode: str, args: argparse.Namespace) -> tuple[dict[str, objec
         raise ValueError("disposable_lane_production_refused")
     if body["instance"] != "testing" and "preview_id" not in body:
         raise ValueError("disposable_lane_requires_testing_or_preview")
-    if mode == "prepare-rebuild":
-        if "replaces_operation_id" not in raw:
+    if mode in {"record", "prepare-rebuild"}:
+        if mode == "prepare-rebuild" and "replaces_operation_id" not in raw:
             raise ValueError("disposable_lane_replaces_operation_required")
-        body["replaces_operation_id"] = _scope_value(h, raw, "replaces_operation_id")
+        if "replaces_operation_id" in raw:
+            body["replaces_operation_id"] = _scope_value(h, raw, "replaces_operation_id")
     if "lifetime_seconds" in raw:
         lifetime = raw["lifetime_seconds"]
         if type(lifetime) is not int or not 0 < lifetime <= MAX_LIFETIME_SECONDS:
             raise ValueError("invalid_disposable_lane_lifetime_seconds")
         body["lifetime_seconds"] = lifetime
-    known = 0
-    if mode == "record":
-        for fact, (allowed, reference) in FACTS.items():
-            value = raw.get(fact, "unknown")
-            evidence = raw.get(reference, "")
-            if value not in allowed:
-                raise ValueError("invalid_disposable_lane_" + fact)
-            if not isinstance(evidence, str) or len(evidence) > 1024:
-                raise ValueError("invalid_disposable_lane_" + reference)
-            if value != "unknown":
-                if "preview_id" not in body:
-                    # The service collects testing facts itself; an assertion would be discarded.
-                    raise ValueError("disposable_lane_testing_facts_are_service_collected")
-                if not evidence.strip():
-                    raise ValueError("disposable_lane_fact_requires_evidence")
-                known += 1
-            if fact in raw:
-                body[fact] = value
-            if reference in raw:
-                body[reference] = evidence.strip()
     request: dict[str, object] = {"mode": mode, "payload_source": "private_file"}
-    if mode == "record":
-        request["known_fact_count"] = known
     h.assert_public_safe_shape(request)
     return request, body
 
@@ -400,7 +369,7 @@ def project(h: Any, response: dict[str, Any], mode: str, body: dict[str, Any], d
         return result
     preview = "preview_id" in body
     observer = source.get("observer_kind")
-    if observer not in OBSERVER_KINDS:
+    if observer != "director_agent":
         raise h.LaunchplaneSafetyError("invalid_response")
     result.update(observer_kind=observer, provider_mutation=False)
     if mode == "collect":
@@ -410,13 +379,10 @@ def project(h: Any, response: dict[str, Any], mode: str, body: dict[str, Any], d
         result.update(checks, evidence=_evidence_summary(h, source, facts, reason, preview),
                       automatic_fact_collection=automatic, expires_at=_lifetime(h, source, body))
     else:
-        submitted = {fact: body.get(fact, "unknown") for fact in FACTS} if preview else dict.fromkeys(FACTS, "unknown")
-        reconcile = source.get("reconcile_requested")
-        if (automatic != "unavailable" or facts != submitted or type(reconcile) is not bool
-            or reconcile is not preview
-            or observer != ("director_agent_preview_cleanup" if preview else "director_agent")):
+        if (automatic != "unavailable" or any(value != "unknown" for value in facts.values())
+            or source.get("reconcile_requested", False) is not False):
             raise h.LaunchplaneSafetyError("invalid_response")
-        result.update(automatic_fact_collection=automatic, reconcile_requested=reconcile)
+        result.update(automatic_fact_collection=automatic)
     h.assert_public_safe_shape(result)
     return result
 
@@ -533,13 +499,13 @@ def execute(h: Any, args: argparse.Namespace) -> int:
     output["result"] = result
     output["summary"] = {**h.service_response_diagnostics(response),
                          **{"read_back_" + key: value for key, value in readback.items()},
-                         "recommendation": _recommendation(mode, status, body)}
+                         "recommendation": _recommendation(mode, status)}
     h.assert_public_safe_shape(output["summary"])
     h.emit(output)
     return 0 if status == "accepted" else 1
 
 
-def _recommendation(mode: str, status: str, body: dict[str, Any]) -> str:
+def _recommendation(mode: str, status: str) -> str:
     if mode == "inspect":
         return ("Save this output privately and review the binding and stored report. It is required evidence "
                 "for collect, record, clear and prepare-rebuild. Fresh facts stay unknown until the service collects them. Stored observations "
@@ -560,9 +526,6 @@ def _recommendation(mode: str, status: str, body: dict[str, Any]) -> str:
     if status != "accepted":
         return ("The service accepted the request, but the lane binding could not be confirmed afterwards. "
                 "Inspect again before relying on it; do not retry automatically.")
-    if mode == "record" and "preview_id" in body:
-        return ("The preview observation is recorded and a preview reconcile was requested. Only the lane "
-                "binding was rechecked; the stored report was not matched to this submission.")
     return ("The observation is stored for a short time. Only the lane binding was rechecked; "
             "the stored report was not matched to this submission.")
 

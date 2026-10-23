@@ -34,5 +34,8 @@ For private testing activation and transport planning, read the producer's
 `docs/private-testing-transport.md`. For
 installed disposable-lane inspect, collect, record, clear and prepare-rebuild commands, read the
 [disposable lane contract](write-action-helper-contract.md#disposable-lane-observations).
-Subsequent replacement allocation and replacement-qualified record callers
-remain separate consumer work on [codex-skills#1308](https://github.com/cbusillo/codex-skills/issues/1308).
+Record supports the retained-operation link with all facts unknown. For reviewed
+replacement allocation and actual resource qualification, read the
+[replacement resource caller contract](write-action-helper-contract.md#empty-testing-replacement-resources).
+These consumers use the producer's existing scope and original-operation guards;
+their installation proves no live workflow outcome.
