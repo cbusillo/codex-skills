@@ -1717,7 +1717,7 @@ class UpdateTests(unittest.TestCase):
                 else:
                     update.write_text(update_text)
                 self.assertIn("Catalog blocked", runtime.status_line(self.checkout))
-                with mock.patch.object(hook, "direction_root", return_value=self.checkout), mock.patch.object(hook, "reminder", return_value="Fixture overdue reminder."):
+                with mock.patch.dict(os.environ, {"HOME": str(self.base)}), mock.patch.object(hook, "direction_root", return_value=self.checkout), mock.patch.object(hook, "session_reminder", return_value="Fixture overdue reminder."):
                     output = io.StringIO()
                     with contextlib.redirect_stdout(output):
                         self.assertEqual(hook.main(catalog_root=self.checkout), 0)
@@ -1734,7 +1734,8 @@ class UpdateTests(unittest.TestCase):
         (self.checkout / ".local").mkdir(exist_ok=True)
         (self.checkout / ".local" / "catalog-install.json").write_text("{}")
         for env in ({"CLAUDECODE": "1"}, {"CODEX_HOME": "/fixture"}):
-            with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(runtime, "status_line", return_value=actual), mock.patch.object(hook, "direction_root", return_value=None), mock.patch.object(hook, "reminder", return_value=""):
+            env = {**env, "HOME": str(self.base)}
+            with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(runtime, "status_line", return_value=actual), mock.patch.object(hook, "direction_root", return_value=None), mock.patch.object(hook, "session_reminder", return_value=""):
                 output = io.StringIO()
                 with contextlib.redirect_stdout(output):
                     self.assertEqual(hook.main(catalog_root=self.checkout), 0)
