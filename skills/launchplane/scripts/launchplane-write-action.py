@@ -2593,7 +2593,7 @@ def _project_operational_list(
 def _project_product_incident(source: dict[str, Any]) -> dict[str, object]:
     return {
         "incident_id": _optional_identifier(source.get("incident_id")),
-        "check_name": _optional_identifier(source.get("check_name")),
+        "check_name": _optional_response_text(source.get("check_name"), max_length=120),
         **{key: _optional_code(source.get(key)) for key in (
             "status", "severity", "failure_code", "failure_layer",
         )},
@@ -5345,8 +5345,9 @@ def summarize_product_environment_read(
         project=_project_product_environment,
         recommendation=(
             "Compare deployment identity and fresh health evidence with the expected build. "
-            "Also inspect open incidents, topology warning codes, TLS states and other_warning_count; "
-            "passing checks alone do not establish sidebar green. Missing or truncated evidence is unknown."
+            "Inspect open incidents, topology warning codes, TLS states and other_warning_count. "
+            "Route diagnostics do not set the sidebar color. This is attention evidence, not a green verdict; "
+            "verify green with complete canonical sidebar data. Missing or truncated evidence is unknown."
         ),
     )
 

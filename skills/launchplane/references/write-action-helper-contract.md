@@ -508,8 +508,13 @@ installed local helper bindings.
   `null`, never an empty all-clear. `other_warning_count` counts lane warnings
   whose detail is absent from topology warnings, matching the sidebar's separate
   warning branch without exposing prose. Missing warning inputs remain unknown.
-  Passing checks and identity alone never establish sidebar green: inspect all
-  attention evidence and freshness, and preserve unknown/truncated results.
+  This read exposes red evidence; it cannot settle the complete amber/green
+  state, which also needs the sidebar's placement, public-observation and
+  applicability inputs. Verify green with complete canonical sidebar data.
+  Route-diagnostic warning codes remain route-change evidence and are excluded
+  by the sidebar's `healthWarnings` rule; their severity alone is not a color.
+  Passing checks and identity alone never establish green. Preserve unknown
+  and truncated results.
   Incident summaries, warning detail, certificate contents, URLs and other
   topology fields are omitted. The helper reports evidence, not a second color
   algorithm or authority to clear an incident.

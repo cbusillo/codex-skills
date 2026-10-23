@@ -3601,7 +3601,7 @@ def test_environment_read_preserves_sidebar_attention_inputs_without_private_det
     response = _product_environment_response()
     environment = cast(dict[str, Any], response["environment"])
     incident = {
-        "incident_id": "incident-testing-delivery", "check_name": "testing-delivery-build",
+        "incident_id": "incident-testing-delivery", "check_name": "Odoo health (private)",
         "status": "open", "severity": "warning", "failure_code": "testing_delivery_failed",
         "failure_layer": "provider", "summary": "PRIVATE_INCIDENT_DETAIL",
     }
@@ -3643,11 +3643,20 @@ def test_sidebar_evidence_discloses_missing_and_truncated_lists(field: str) -> N
     }
     project, row = projectors[field]
     missing = project({})
-    assert missing[field] is None and missing[f"{field}_truncated"] is None
+    assert all(missing[key] is None for key in (field, f"{field}_count", f"{field}_truncated"))
+    empty = project({field: []})
+    assert empty[field] == [] and empty[f"{field}_count"] == len(empty[field])
+    assert empty[f"{field}_truncated"] is False
     entries = [row] * (write_action.PRODUCT_OPERATIONAL_MAX_ENTRIES + 1)
     bounded = project({field: entries})
     assert bounded[field] == [bounded[field][0]] * write_action.PRODUCT_OPERATIONAL_MAX_ENTRIES
     assert bounded[f"{field}_count"] == len(entries) and bounded[f"{field}_truncated"]
+
+
+def test_other_sidebar_warning_count_requires_both_source_lists() -> None:
+    for source in ({}, {"warnings": []}, {"topology": {"warnings": []}}):
+        assert write_action._product_other_warning_count(source) is None
+    assert write_action._product_other_warning_count({"warnings": [], "topology": {"warnings": []}}) == 0
 
 
 @pytest.mark.parametrize("domain", ["https://private.invalid/path", "user:password@private.invalid", "ghp_PRIVATEVALUE"])
