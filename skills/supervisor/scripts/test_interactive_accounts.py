@@ -5,6 +5,7 @@
 # ///
 """Exercise sourced interactive functions with fake Context Panel and harnesses."""
 
+import io
 import json
 import os
 import shlex
@@ -13,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 from unittest.mock import patch
 
@@ -22,6 +24,20 @@ SCRIPT = Path(__file__).with_name("interactive-accounts.zsh")
 
 
 class InteractiveAccountsTests(unittest.TestCase):
+    def test_invalid_custom_prompt_encoding_reports_its_path_before_native_exec(self) -> None:
+        custom = self.root / "invalid-encoding.md"
+        custom.write_bytes(b"Custom instruction: \xff")
+        stderr = io.StringIO()
+        with (patch.dict(os.environ, self.env, clear=True),
+              patch("runpy.run_path", return_value={"direction_content": lambda *args, **kwargs: "Merged fixture direction."}),
+              patch.object(sys, "argv", [str(accounts.__file__), "native", "--", "claude", "--append-system-prompt-file", str(custom)]),
+              patch.object(accounts.os, "execvpe") as execute,
+              redirect_stderr(stderr), self.assertRaises(SystemExit) as refusal):
+            accounts.main()
+        self.assertEqual(refusal.exception.code, 1)
+        self.assertIn(str(custom), stderr.getvalue())
+        execute.assert_not_called()
+
     def test_reentering_a_generated_prompt_refreshes_direction_without_copying_the_old_payload(self) -> None:
         old, current = "Old fixture direction.", "Current fixture direction."
         contents = iter((old, current))
@@ -90,8 +106,10 @@ class InteractiveAccountsTests(unittest.TestCase):
                 self.assertEqual(execute.call_args.args[1][1:], arguments)
             renderer.assert_not_called()
             execute.reset_mock()
-            with self.assertRaises(OSError):
-                accounts.launch("claude", ["--append-system-prompt-file", str(self.root / "missing.md")])
+            missing = self.root / "missing.md"
+            with self.assertRaises(ValueError) as failure:
+                accounts.launch("claude", ["--append-system-prompt-file", str(missing)])
+            self.assertIn(str(missing), str(failure.exception))
             execute.assert_not_called()
 
     def test_prompt_operands_do_not_hide_direction_or_turn_tail_text_into_options(self) -> None:

@@ -136,11 +136,11 @@ def session_matcher_covers(group: dict, source: str, destination: Path) -> bool:
     if matcher in (None, "", "*"):
         return True
     if not isinstance(matcher, str):
-        raise ValueError(f"Invalid SessionStart matcher in {destination}: {matcher!r}")
+        raise ValueError(f"Invalid SessionStart matcher while rendering {destination}: {matcher!r}")
     try:
         return re.search(matcher, source) is not None
     except re.error as error:
-        raise ValueError(f"Invalid SessionStart matcher in {destination}: {matcher!r} ({error})") from error
+        raise ValueError(f"Invalid SessionStart matcher while rendering {destination}: {matcher!r} ({error})") from error
 
 
 def safe_content(path: Path) -> str:

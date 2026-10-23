@@ -83,8 +83,15 @@ def prepare_claude_arguments(arguments: list[str], directory: Path) -> list[str]
     if not content:
         return arguments
     cache = Path(os.environ.get("CODE_HOME", str(Path.home() / ".code"))) / "skill-data/direction-prompts"
-    custom_content = [(directory / Path(custom).expanduser()).read_text(encoding="utf-8") for custom in custom_files
-                      if not (directory / Path(custom).expanduser()).resolve().is_relative_to(cache.expanduser().resolve())]
+    custom_content = []
+    for custom in custom_files:
+        custom_path = directory / Path(custom).expanduser()
+        try:
+            if custom_path.resolve().is_relative_to(cache.expanduser().resolve()):
+                continue
+            custom_content.append(custom_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError) as error:
+            raise ValueError(f"cannot read Claude custom prompt {custom_path}: {error}") from error
     content = "\n\n".join([*custom_content, content])
     path = (cache.expanduser() / f"{hashlib.sha256(content.encode()).hexdigest()}.md").absolute()
     try:
