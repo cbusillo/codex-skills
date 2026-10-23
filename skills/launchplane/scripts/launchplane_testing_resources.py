@@ -54,7 +54,16 @@ RELEASE_RECOVERY = (
 MISSING_RECORD_RECOVERY = "The requested testing resource record is unavailable. Verify the private product, context and retained operation before planning again."
 
 
-def recommend(h: Any, mode: str, status: str, code: str = "", refusal_status: str = "") -> str:
+def recommend(h: Any, mode: str, status: str, code: str = "", refusal_status: str = "", initial: bool = False) -> str:
+    if initial:
+        recommendation = recommend(h, mode, status, code, refusal_status)
+        if mode == "dry-run" and status in {"accepted", "outcome_unknown"}:
+            return (
+                "Initial preparation metadata may have been recorded; no executor was reserved or provider resources allocated. "
+                "Inspect the reported prerequisite code and original preparation. Preserve the exact request, review and key "
+                "before another explicit request. Do not retry automatically or change keys to evade uncertainty."
+            )
+        return recommendation.replace("retained operation", "original initial preparation")
     if status in {"denied", "unauthorized"}:
         preservation = (
             APPLY_DENIAL_PRESERVATION
@@ -98,7 +107,7 @@ def is_definite_refusal(mode: str, http_status: int, code: str) -> bool:
 
 def add_parser(subparsers: Any) -> None:
     for mode in MODES:
-        parser = subparsers.add_parser(PREFIX + mode, help="Plan, allocate or qualify empty replacement testing resources.")
+        parser = subparsers.add_parser(PREFIX + mode, help="Plan, allocate, qualify or release testing resource preparation.")
         parser.add_argument("--payload-file", required=True, help="Private testing resource intent outside the repository.")
         parser.add_argument(
             "--idempotency-key", default="", help="Original key in every initial-generation mode and every mutation."
@@ -145,9 +154,8 @@ def intent(h: Any, args: argparse.Namespace) -> tuple[dict[str, object], dict[st
         body["source_mode"] = source
     if initial:
         body["initial_generation"] = True
-    request = {"payload_source": "private_file", "payload_digest": h.metadata_review_digest(body)}
-    if initial:
-        request["idempotency_key_digest"] = h.metadata_review_digest({"key": args.idempotency_key.strip()})
+    review_intent = {"intent": body, "key": args.idempotency_key.strip()} if initial else body
+    request = {"payload_source": "private_file", "payload_digest": h.metadata_review_digest(review_intent)}
     h.assert_public_safe_shape(request)
     return request, body
 
@@ -156,7 +164,7 @@ def review_binding(h: Any, request: dict[str, object], result: dict[str, Any]) -
     return h.metadata_review_digest({"request": request, "result": result})
 
 
-def require_review(h: Any, args: argparse.Namespace, request: dict[str, object]) -> dict[str, Any]:
+def require_review(h: Any, args: argparse.Namespace, request: dict[str, object], initial: bool = False) -> dict[str, Any]:
     if not args.reviewed_dry_run:
         raise ValueError("reviewed_dry_run_required")
     expected = args.expected_plan_digest.strip()
@@ -168,10 +176,7 @@ def require_review(h: Any, args: argparse.Namespace, request: dict[str, object])
         or evidence.get("operation") != PREFIX + "dry-run"
         or evidence.get("status") != "accepted"
         or evidence.get("request") != request
-        or (
-            "idempotency_key_digest" in request
-            and (not isinstance(result.get("operation_digest"), str) or not DIGEST_RE.fullmatch(result["operation_digest"]))
-        )
+        or (initial and (not isinstance(result.get("operation_id"), str) or not result["operation_id"].strip()))
         or result.get("mode") != "dry-run"
         or result.get("plan_sha256") != expected
         or result.get("applied") is not False
@@ -187,7 +192,7 @@ def require_review(h: Any, args: argparse.Namespace, request: dict[str, object])
 
 
 def project(
-    h: Any, response: dict[str, Any], body: dict[str, Any], mode: str, digest: str = "", operation_digest: str = ""
+    h: Any, response: dict[str, Any], body: dict[str, Any], mode: str, digest: str = "", reviewed_operation: str = ""
 ) -> dict[str, Any]:
     source = h._require_dict(response.get("result"))
     initial = body.get("initial_generation") is True
@@ -195,10 +200,12 @@ def project(
     if (
         not isinstance(operation, str)
         or not operation.strip()
-        or (operation_digest and h.metadata_review_digest({"operation_id": operation}) != operation_digest)
+        or (reviewed_operation and operation != reviewed_operation)
         or (body["operation_id"] and operation != body["operation_id"])
     ):
         raise h.LaunchplaneSafetyError("invalid_response")
+    if initial:
+        h.public_identifier(operation)
     released = mode == "release" or (mode == "apply" and source.get("released") is True)
     if released:
         if (
@@ -218,6 +225,7 @@ def project(
             "provider_effects_started": False,
             "retained_target_preserved": True,
             "resources_verified": False,
+            "operation_id": operation,
         }
     fields = {*SCOPE, *PRESERVED}
     facts = dict(PRESERVED)
@@ -237,7 +245,7 @@ def project(
         raise h.LaunchplaneSafetyError("invalid_response")
     result: dict[str, Any] = {"mode": mode, "scope_matches": True, **facts}
     if initial:
-        result["operation_digest"] = h.metadata_review_digest({"operation_id": operation})
+        result["operation_id"] = operation
     digests = ("binding_sha256", "resources_binding_sha256") if mode == "readback" else ("plan_sha256",)
     if mode == "apply":
         digests += ("resources_binding_sha256",)
@@ -266,10 +274,12 @@ def project(
 def execute(h: Any, args: argparse.Namespace) -> int:
     mode = args.command.removeprefix(PREFIX)
     request, private = intent(h, args)
+    initial = private.get("initial_generation") is True
     reviewed: dict[str, Any] = {}
     if mode in {"apply", "release"}:
-        h._require_idempotency(args)
-        reviewed = require_review(h, args, request)
+        if not initial:
+            h._require_idempotency(args)
+        reviewed = require_review(h, args, request, initial)
     settings = h.prepare_operator_settings(args=args, operation=args.command, request=request)
     if settings is None:
         return 2
@@ -300,11 +310,14 @@ def execute(h: Any, args: argparse.Namespace) -> int:
     accepted = False
     try:
         response = call(mode)
-        result = project(h, response, private, mode, str(reviewed.get("plan_sha256", "")), str(reviewed.get("operation_digest", "")))
+        result = project(h, response, private, mode, str(reviewed.get("plan_sha256", "")), str(reviewed.get("operation_id", "")))
         if mode == "apply" and result.get("released") is True:
             output = h.base_payload(status="released", operation=args.command, request=request)
             output["result"] = result
-            output["summary"] = {**h.service_response_diagnostics(response), "recommendation": recommend(h, mode, "released")}
+            output["summary"] = {
+                **h.service_response_diagnostics(response),
+                "recommendation": recommend(h, mode, "released", initial=initial),
+            }
             h.emit(output)
             return 1
         if mode == "apply":
@@ -312,7 +325,7 @@ def execute(h: Any, args: argparse.Namespace) -> int:
             result["resource_readback_matches"] = False
             readback = call("readback")
             diagnostics = h.service_response_diagnostics(readback)
-            observed = project(h, readback, private, "readback", operation_digest=str(reviewed.get("operation_digest", "")))
+            observed = project(h, readback, private, "readback", reviewed_operation=str(reviewed.get("operation_id", "")))
             if observed["resources_binding_sha256"] != result["resources_binding_sha256"]:
                 raise h.LaunchplaneSafetyError("invalid_response")
             result["resource_readback_matches"] = True
@@ -324,7 +337,7 @@ def execute(h: Any, args: argparse.Namespace) -> int:
         output["summary"] = {
             **h.service_response_diagnostics(response),
             **{"read_back_" + key: value for key, value in diagnostics.items()},
-            "recommendation": recommend(h, mode, "accepted"),
+            "recommendation": recommend(h, mode, "accepted", initial=initial),
         }
         h.emit(output)
         return 0
@@ -346,7 +359,9 @@ def execute(h: Any, args: argparse.Namespace) -> int:
         finally:
             error.close()
         if not accepted and is_definite_refusal(mode, error.code, str(diagnostics.get("error_code", ""))):
-            failure["summary"]["recommendation"] = recommend(h, mode, failure["status"], str(diagnostics.get("error_code", "")))
+            failure["summary"]["recommendation"] = recommend(
+                h, mode, failure["status"], str(diagnostics.get("error_code", "")), initial=initial
+            )
             h.emit(failure)
             return 1
     except (
@@ -368,6 +383,8 @@ def execute(h: Any, args: argparse.Namespace) -> int:
         output["result"] = result
     output["summary"] = h.service_response_diagnostics(response)
     output["summary"].update({("read_back_" if accepted else "") + key: value for key, value in diagnostics.items()})
-    output["summary"]["recommendation"] = recommend(h, mode, status, refusal_status=failure["status"] if failure else "")
+    output["summary"]["recommendation"] = recommend(
+        h, mode, status, refusal_status=failure["status"] if failure else "", initial=initial
+    )
     h.emit(output)
     return 1

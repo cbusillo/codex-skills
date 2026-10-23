@@ -159,6 +159,7 @@ def test_resource_modes_send_only_the_retained_request(mode: str) -> None:
         {"reason": " "},
         {"source_mode": "foreign"},
         {"target_id": "foreign"},
+        {"initial_generation": "true"},
     ],
 )
 def test_invalid_resource_intent_never_reads_configuration(updates: dict[str, Any]) -> None:
@@ -374,14 +375,14 @@ def release_receipt(**updates: object) -> dict[str, Any]:
 
 
 @pytest.mark.parametrize("mode", ["dry-run", "apply", "readback", "release"])
-def test_initial_modes_keep_original_key_and_private_operation(mode: str) -> None:
+def test_initial_modes_keep_original_key_and_return_bootstrap_operation(mode: str) -> None:
     responses = [release_receipt()] if mode == "release" else None
     code, output, calls, _ = invoke(mode, initial=True, responses=responses)
     assert code == 0, output
     assert all(call.kwargs["idempotency_key"] == "original-key" for call in calls)
     assert all(call.kwargs["body"]["initial_generation"] is True for call in calls)
     assert all(call.kwargs["body"]["operation_id"] == "" for call in calls)
-    assert "retained-fixture" not in json.dumps(output)
+    assert output["result"]["operation_id"] == receipt("dry-run")["result"]["operation_id"]
     if mode == "release":
         assert len(calls) == 1
         assert calls[0].kwargs["body"]["reviewed_plan_sha256"] == PLAN
@@ -437,6 +438,40 @@ def test_initial_lost_mutation_never_replays(mode: str) -> None:
     code, output, calls, _ = invoke(mode, initial=True, responses=[TimeoutError("PRIVATE_SENTINEL")])
     assert code != 0 and len(calls) == 1 and output["status"] == "outcome_unknown"
     assert "PRIVATE_SENTINEL" not in json.dumps(output)
+
+
+@pytest.mark.parametrize("mode", ["dry-run", "apply", "readback", "release"])
+def test_explicit_initial_operation_must_match_receipt(mode: str) -> None:
+    body = private_request(initial_generation=True, operation_id="explicit-initial")
+    responses = [release_receipt()] if mode == "release" else None
+    code, output, calls, _ = invoke(mode, initial=True, body=body, responses=responses)
+    if mode in {"apply", "release"}:
+        assert code != 0 and calls == []
+    else:
+        assert code != 0 and len(calls) == 1 and output["status"] == "outcome_unknown"
+
+
+@pytest.mark.parametrize(
+    "mode,error_code", [("dry-run", "testing_initial_usage_unverified"), ("release", "testing_resources_unverified")]
+)
+def test_initial_conflicts_keep_code_trace_and_original_recovery(mode: str, error_code: str) -> None:
+    payload = {"error": {"code": error_code}, "trace_id": "launchplane_req_initial"}
+    error = urllib.error.HTTPError(SERVICE, 409, "PRIVATE_SENTINEL", None, io.BytesIO(json.dumps(payload).encode()))
+    code, output, calls, _ = invoke(mode, initial=True, responses=[error])
+    assert code != 0 and len(calls) == 1 and output["status"] == "outcome_unknown"
+    assert output["summary"]["error_code"] == error_code
+    assert output["summary"]["trace_id"] == payload["trace_id"]
+    assert "PRIVATE_SENTINEL" not in json.dumps(output)
+
+
+@pytest.mark.parametrize("mode", ["apply", "release"])
+def test_initial_mutations_require_the_complete_original_review(mode: str) -> None:
+    for change in (lambda e: e["result"].pop("operation_id"), lambda e: e["result"].update(applied=True)):
+        code, _, calls, settings = invoke(mode, initial=True, edit_evidence=change)
+        assert code != 0 and calls == [] and settings == 0
+    for arguments in ({"reviewed": False}, {"service": "https://other.example.invalid"}):
+        code, _, calls, _ = invoke(mode, initial=True, **arguments)
+        assert code != 0 and calls == []
 
 
 if __name__ == "__main__":

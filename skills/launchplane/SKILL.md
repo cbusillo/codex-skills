@@ -1186,7 +1186,7 @@ reviewed-inspect procedure and verify the situation.
   fact limits, no retry and readback limits. Clear removes an observation;
   it does not establish disposal eligibility or resolve a hold.
 - `testing-replacement-resources-dry-run` / `-apply` / `-readback` / `-release` wrap the
-  producer's retained-operation allocation and qualification. Read the
+  producer's retained replacement and initial preparation, qualification and no-effect release. Read the
   [replacement resource caller contract](references/write-action-helper-contract.md#empty-testing-replacement-resources)
   before use, including private review evidence, original-key recovery and
   the distinction between `separation_ready` and completed isolation.

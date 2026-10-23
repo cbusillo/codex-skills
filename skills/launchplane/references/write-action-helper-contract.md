@@ -727,20 +727,20 @@ installed local helper bindings.
 `testing-replacement-resources-dry-run`, `-apply`, `-readback` and `-release` call
 `POST /v1/products/{product}/testing-replacement-resources` using the existing
 authenticated transport. Their private `--payload-file` must be outside the
-repository and contain `product`, `context`, `instance: "testing"`, the retained
-`operation_id`, and `reason`. Optional `source_mode` is `ssh` (default, omitted
+repository and contain `product`, `context`, `instance: "testing"` and `reason`.
+Retained replacements also require their `operation_id`. Optional `source_mode` is `ssh` (default, omitted
 on the wire) or `container-export`. The caller accepts no preview, production
 destination, volume, credential, domain or placement input. For initial generation,
 set `initial_generation: true` and omit `operation_id` or leave it empty; the
 service derives the initial intent from the original stable key. An explicit
 operation must still match. Supply `--idempotency-key` in every initial mode,
-including dry-run and readback. The saved review binds that key and the returned
-operation by digest, without publishing either. Keep the same private request
+including dry-run and readback. The saved review binds that key within the private-intent digest and the returned
+operation ID, which is validated and returned for bootstrap continuation. Keep the same private request
 through planning, apply, readback and release.
 
-The dry run records retained-target preparation, excludes the retained executor
-and may reserve a resource namespace in metadata; it allocates no provider
-resources. It returns the service's
+The dry run records preparation metadata and allocates no provider resources.
+Retained replacements exclude the retained executor; initial preparation does
+not reserve an executor. It returns the service's
 `plan_sha256`. Save its output privately and review it. Apply requires that
 output as `--dry-run-evidence-file`, `--expected-plan-digest`,
 `--reviewed-dry-run`, and the original stable `--idempotency-key`. Every private
@@ -759,7 +759,7 @@ An uncertain release preserves the intent, review, original key and fence;
 inspect effect evidence before another explicit original-key release. Never
 clear a fence or delete resources to resolve uncertainty.
 
-Receipts must match the exact product, context, testing instance and retained
+Receipts must match the exact product, context, testing instance and reviewed
 operation. The plan requires preserved retained target, fresh storage, no host
 ports or host SSH mounts and no restore. Apply must echo the reviewed digest and
 provide a verified resource binding. A separate actual readback must return that
@@ -796,7 +796,8 @@ partial resources to recover. The ordinary `--timeout` override remains availabl
 
 Public output contains only modes, matching flags, safety booleans, qualification
 and review digests, and bounded service diagnostics. Product, context, operation,
-reason and schedule identity remain private. Scope and service fingerprints bind
+reason and schedule identity remain private, except the validated initial
+preparation operation ID required by bootstrap. Scope and service fingerprints bind
 the review without exposing those values. Runtime qualification remains with the
 owning operational issue after source delivery.
 
