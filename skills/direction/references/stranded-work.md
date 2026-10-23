@@ -142,7 +142,8 @@ unknown), next actor and review requirement:
   unrelated issue activity must not reset their clock.
 - Structured waits on the Director that no open Director question links, as
   `unasked_director_wait`, oldest first. The comment radar's Director-wait
-  classifier decides whether a wait is on the Director now. A question links a
+  classifier decides whether a wait is on the Director now; a wait worded as a
+  hold is listed until the Director has spoken on the issue. A question links a
   wait when it is unanswered and on the same open issue, or registered, or on
   another open issue whose comment link is in the wait record. A wait record
   alone never asks the Director. `--owner` identifies a Director whose login

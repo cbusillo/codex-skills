@@ -426,8 +426,10 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
             gaps.append({"source": url, "reason": "structured_wait_unreadable"})
             wait = {"state": "review", "waits": []}
         if wait["state"] == "waiting":
-            director = [w["waiting_for"] for w in wait["waits"]
-                        if attention.current_director_wait(w["waiting_for"], director_terms, owners) == "decision"]
+            kinds = {w["waiting_for"]: attention.current_director_wait(w["waiting_for"], director_terms, owners)
+                     for w in wait["waits"]}
+            director = [text for text, kind in kinds.items() if kind]
+            director_spoke = any(c in decisions for c in current)
             receivers = [w["waiting_for"] for w in wait["waits"] if w["waiting_for"] not in director and any(
                 re.search(r"\b" + re.escape(name) + r"\b", w["waiting_for"], re.I) for name in receiver_terms)]
             sources = [item, *current]
@@ -436,7 +438,7 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
             since = None if source is item else source.get("updated_at") or source.get("created_at")
             linked = (any(c.get("html_url") in open_questions for c in current)
                       or bool(set(COMMENT_LINK.findall(json.dumps(wait))) & open_questions))
-            if director and not linked:
+            if director and not linked and not (director_spoke and all(kinds[t] == "director_hold" for t in director)):
                 add("unasked_director_wait", record, source.get("html_url") or url, since,
                     "Supervisor asks the Director",
                     "Wait on the Director has no open Director question. Post one on this issue with the exact step "

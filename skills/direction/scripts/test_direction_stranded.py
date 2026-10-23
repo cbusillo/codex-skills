@@ -459,17 +459,20 @@ class OverdueTriggerTests(unittest.TestCase):
             self.issue(11, comments=[waiting(11, 110, 3.5, "Director", evidence=f"Asked in {question['html_url']}0")]),
             self.issue(12, comments=[waiting(12, 120, 4, "The upstream repository owner releases a fix")]),
             self.issue(13, comments=[waiting(13, 130, 4, "example/catalog#5 lands")]),
+            self.issue(14, comments=[waiting(14, 140, 1, "Director approval to resume deployment")]),
+            self.issue(15, comments=[comment(15, 151, 1.5, "Director decision: park this until the trip ends."),
+                                     waiting(15, 150, 1, "Chris to resume after the trip")]),
         ]
         records[9]["item"]["state"] = "closed"
         result = self.report(records, director_names=("Chris",))
         rows = [r for r in result["findings"] if r["kind"] == "unasked_director_wait"]
-        self.assertEqual([r["number"] for r in rows], [1, 9, 11, 2, 7])
+        self.assertEqual([r["number"] for r in rows], [1, 9, 11, 2, 7, 14])
         self.assertTrue(all(r["url"].endswith(f"#issuecomment-{r['number']}0") for r in rows))
         others = {(r["kind"], r["number"]) for r in result["findings"] if r["kind"] != "unasked_director_wait"}
         self.assertIn(("aged_structured_wait", 8), others)
         self.assertFalse(any(number in {1, 2, 3, 4, 6, 7} for kind, number in others if kind == "aged_structured_wait"))
         parsed = [r for r in digest_summary.parse(sweep.markdown(result))[2] if r["kind"] == "unasked_director_wait"]
-        self.assertEqual([r["person"] for r in parsed], [True] * 5)
+        self.assertEqual([r["person"] for r in parsed], [True] * 6)
 
     def test_next_action_counts_only_the_supervisor_as_an_actor(self):
         """codex-skills#2096: a path or description naming the Supervisor is not a handoff to it."""
