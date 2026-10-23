@@ -80,6 +80,25 @@ class LeaseRetirementTests(unittest.TestCase):
         self.assertFalse(args.dry_run)
         self.assertIn(command, str(caught.exception))
 
+    def test_offline_retirement_keeps_leases_without_discovery_or_cleanup(self):
+        root = self.worktree()
+        path, lease = self.lease(root, updated_at_ms=1, opened_by_helper=True,
+                                 open_not_attempted=False, open_request_may_have_been_accepted=True)
+        for dry_run in (True, False):
+            args = Namespace(command="remove-worktree", repo=str(root), dry_run=dry_run,
+                             offline_only=True, lifecycle_lock_timeout_ms=1000)
+            with (self.subTest(dry_run=dry_run),
+                  patch.object(jb_inspect, "pid_alive", return_value=False),
+                  patch.object(jb_inspect, "discover_identities", return_value=[]) as discover,
+                  patch.object(jb_inspect, "http_post") as post):
+                with self.assertRaises(jb_inspect.InspectError) as caught:
+                    jb_inspect.command_retire_sdks(args)
+                discover.assert_not_called()
+                post.assert_not_called()
+                self.assertEqual(caught.exception.payload["blocking_lease_ids"], [lease["lease_id"]])
+                self.assertTrue(path.exists())
+                self.assertTrue(root.is_dir())
+
     def test_cleanup_preview_reports_proved_removal_and_changes_nothing(self):
         path, _ = self.lease(self.base / "task")
         with patch.object(jb_inspect, "pid_alive", return_value=False):

@@ -627,6 +627,11 @@ class SdkRetirementTests(unittest.TestCase):
                 jb_inspect.offline_retirement_records(home / "task")
 
     def test_offline_apply_rechecks_records_after_preview(self):
+        for offline_only, new_process in ((False, False), (True, False), (True, True)):
+            with self.subTest(offline_only=offline_only, new_process=new_process):
+                self.check_offline_apply_rechecks(offline_only, new_process)
+
+    def check_offline_apply_rechecks(self, offline_only, new_process):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp).resolve()
             root = home / "task"
@@ -634,21 +639,24 @@ class SdkRetirementTests(unittest.TestCase):
             calls = []
             def retire(_root, *_args):
                 calls.append(True)
-                if len(calls) == 2:
+                if len(calls) == 2 and not new_process:
                     (root / ".idea").mkdir()
                     (root / ".idea/workspace.xml").write_text("<project />")
                 return root
             args = Namespace(command="remove-worktree", repo=str(root), dry_run=False,
-                             offline_only=True, lifecycle_lock_timeout_ms=1000)
+                             offline_only=offline_only, lifecycle_lock_timeout_ms=1000)
             with (patch.object(jb_inspect.Path, "home", return_value=home),
                   patch.object(jb_inspect.sys, "platform", "darwin"),
                   patch.dict(os.environ, {"JETBRAINS_INSPECTION_IDE_CONFIG_DIR": ""}),
                   patch.object(jb_inspect, "retirement_worktree", side_effect=retire),
                   patch.object(jb_inspect, "discover_identities", return_value=[]) as discover,
+                  patch.object(jb_inspect, "offline_ide_processes", side_effect=[[], [123]] if new_process else None,
+                               return_value=[]),
                   patch.object(jb_inspect.subprocess, "run") as removal):
                 with self.assertRaises(jb_inspect.InspectError):
                     jb_inspect.command_retire_sdks(args)
-                discover.assert_not_called()
+                if offline_only:
+                    discover.assert_not_called()
                 removal.assert_not_called()
 
     def test_unprepared_worktree_retires_without_live_ide_even_with_a_virtualenv(self):

@@ -327,7 +327,8 @@ Command model:
   as `offline_cleanup_proved`, with `offline_records_checked` naming the records
   read. Add `--offline-only` when the session must not contact an IDE. Preview
   and apply then skip identity discovery and use the same local proof, repeated
-  before removal. A running supported IDE holds this mode; keep the worktree
+  before removal. Existing leases hold this mode without reconciliation or
+  IDE contact. A running supported IDE holds this mode; keep the worktree
   until an authorized session can use the live cleanup route. Without that flag,
   a running supported IDE without a usable plugin identity also holds
   offline retirement; restore its plugin route or close it. The offline scan
