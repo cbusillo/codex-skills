@@ -1759,6 +1759,7 @@ class ProcessArgumentsTests(unittest.TestCase):
 
     def test_claude_exact_resume_respects_required_values_and_command_position(self):
         unsafe = (["--append-system-prompt", "--resume", self.other],
+                  ["--system-prompt-snapshot", "--resume", self.other],
                   ["--append-system-prompt", "-r", self.other],
                   ["--append-system-prompt", "--resume=" + self.other],
                   ["--append-system-prompt", "-r" + self.other],
@@ -1770,6 +1771,8 @@ class ProcessArgumentsTests(unittest.TestCase):
             with self.subTest(args=args), self.assertRaisesRegex(ValueError, "unidentified harness"):
                 self.probe(["claude", *args], harness="claude")
         supported = (["--resume", self.other], ["-r", self.other], ["--resume=" + self.other],
+                     ["--system-prompt-snapshot", "off", "--resume", self.other],
+                     ["--system-prompt-snapshot=off", "--resume", self.other],
                      ["--model", "synthetic-model", "--resume", self.other],
                      ["--verbose", "--debug=synthetic-filter", "-r", self.other],
                      ["--append-system-prompt", "--resume", "--resume", self.other],

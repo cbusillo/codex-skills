@@ -22,6 +22,18 @@ SCRIPT = Path(__file__).with_name("interactive-accounts.zsh")
 
 
 class InteractiveAccountsTests(unittest.TestCase):
+    def test_reentering_a_generated_prompt_refreshes_direction_without_copying_the_old_payload(self) -> None:
+        old, current = "Old fixture direction.", "Current fixture direction."
+        contents = iter((old, current))
+        with (patch.dict(os.environ, self.env, clear=True),
+              patch("runpy.run_path", return_value={"direction_content": lambda *args, **kwargs: next(contents)})):
+            first = accounts.prepare_claude_arguments([], self.root)
+            prepared = accounts.prepare_claude_arguments(first, self.root)
+        first_path = Path(first[first.index("--append-system-prompt-file") + 1])
+        current_path = Path(prepared[prepared.index("--append-system-prompt-file") + 1])
+        self.assertEqual(first_path.read_text(), old)
+        self.assertEqual(current_path.read_text(), current)
+
     def test_native_text_prompt_survives_direction_preparation(self) -> None:
         for arguments in (["--append-system-prompt", "Always use TypeScript"],
                           ["--append-system-prompt=Always use TypeScript"]):
@@ -82,7 +94,7 @@ class InteractiveAccountsTests(unittest.TestCase):
                 accounts.launch("claude", ["--append-system-prompt-file", str(self.root / "missing.md")])
             execute.assert_not_called()
 
-    def test_prompt_operands_and_native_delimiter_keep_their_meaning(self) -> None:
+    def test_prompt_operands_do_not_hide_direction_or_turn_tail_text_into_options(self) -> None:
         cases = (["--append-system-prompt", "--desktop", "--", "--version"],
                  ["--append-system-prompt", "--", "--model", "fixture", "--", "literal"],
                  ["--append-system-prompt=--desktop", "--", "--append-system-prompt-file", "missing.md"],
@@ -92,11 +104,11 @@ class InteractiveAccountsTests(unittest.TestCase):
             for arguments in cases:
                 with self.subTest(arguments=arguments):
                     prepared = accounts.prepare_claude_arguments(arguments, self.root)
-                    original = list(prepared)
-                    index = original.index("--append-system-prompt-file")
-                    self.assertTrue(Path(original[index + 1]).is_file())
-                    del original[index:index + 4]
-                    self.assertEqual(original, arguments)
+                    index = next(i for i, value in enumerate(prepared)
+                                 if value.partition("=")[0] == "--append-system-prompt-file")
+                    option, equals, value = prepared[index].partition("=")
+                    prompt = Path(value if equals else prepared[index + 1])
+                    self.assertTrue(prompt.is_file())
 
     def test_prompt_file_equals_form_and_literal_variable_path(self) -> None:
         custom = self.root / "$FIXTURE_PROMPT"
@@ -121,11 +133,15 @@ class InteractiveAccountsTests(unittest.TestCase):
             for arguments in (["--append-system-prompt-file"], ["--append-system-prompt"], ["--system-prompt-snapshot"]):
                 with self.subTest(arguments=arguments), self.assertRaisesRegex(ValueError, arguments[0]):
                     accounts.prepare_claude_arguments(arguments, self.root)
-            with patch.object(accounts, "write_cache", side_effect=OSError("fixture disk full")):
+            with patch.object(accounts, "write_cache", side_effect=OSError("fixture disk full")) as write:
                 with self.assertRaises(ValueError) as failure:
                     accounts.prepare_claude_arguments([], self.root)
-            self.assertIn(str(self.root / "code/skill-data/direction-prompts"), str(failure.exception))
+            self.assertIn(str(write.call_args.args[0]), str(failure.exception))
             self.assertIn("fixture disk full", str(failure.exception))
+            with patch("runpy.run_path", side_effect=SyntaxError("fixture parse failure")) as read:
+                with self.assertRaises(ValueError) as invalid_renderer:
+                    accounts.prepare_claude_arguments([], self.root)
+            self.assertIn(str(read.call_args.args[0]), str(invalid_renderer.exception))
 
     def test_no_direction_keeps_native_prompt_options_unchanged(self) -> None:
         arguments = ["--append-system-prompt-file", "missing.md", "--system-prompt-snapshot=on", "--", "literal"]

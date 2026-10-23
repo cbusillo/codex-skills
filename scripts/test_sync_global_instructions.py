@@ -33,6 +33,15 @@ class GlobalInstructionsTests(unittest.TestCase):
             sync.render_codex_hook_content({"hooks": {"SessionStart": [legacy]}}, destination)
         self.assertIn(str(destination), str(failure.exception))
         self.assertIn(legacy["matcher"], str(failure.exception))
+        with tempfile.TemporaryDirectory() as folder:
+            codex = Path(folder)
+            source = codex / "config.toml"
+            command = legacy["hooks"][0]["command"]
+            source.write_text(f'[[hooks.SessionStart]]\nmatcher = {json.dumps(legacy["matcher"])}\n'
+                              f'[[hooks.SessionStart.hooks]]\ncommand = {json.dumps(command)}\n')
+            with self.assertRaises(ValueError) as migrated:
+                sync.prepare_codex_hooks(codex)
+            self.assertIn(str(source), str(migrated.exception))
 
     def test_unrelated_session_matchers_are_preserved_without_interpretation(self) -> None:
         unrelated = {"matcher": "*startup", "hooks": [{"command": "unrelated-hook"}]}

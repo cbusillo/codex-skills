@@ -287,7 +287,12 @@ def prepare_codex_hooks(codex: Path, catalog: Path = ROOT, *, upgrade_session_st
         json.dumps(config)
     except TypeError as exc:
         raise ValueError("Inline hooks contain values unsupported by hooks.json; inspect config.toml before rerunning") from exc
-    outputs = {hook_path: render_codex_hook(hook_path, catalog, include_session_start=not existing_session, config=config)}
+    try:
+        outputs = {hook_path: render_codex_hook(hook_path, catalog, include_session_start=not existing_session, config=config)}
+    except ValueError as error:
+        if events:
+            raise ValueError(f"{error}; inline hook sources were read from {config_path}") from error
+        raise
     rendered_hooks = json.loads(outputs[hook_path])["hooks"]
     for disabled in disabled_migrated:
         event = disabled["event"]

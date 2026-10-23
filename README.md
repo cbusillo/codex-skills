@@ -708,7 +708,7 @@ The Supervisor and interactive account launchers supply the same merged document
 through native `--append-system-prompt-file`, generated once immediately before
 the native process starts, after the shell expands arguments and account exports.
 Supervisor preflight does not fetch direction. The shared native runner preserves
-additional prompt-file text and uses `--system-prompt-snapshot off`
+additional prompt-file text and replaces any snapshot option with `--system-prompt-snapshot off`
 so resumed sessions also receive current direction. For hand-started terminal
 sessions, use the installer's existing `interactive_shell.source_line` in your
 zsh settings. For a catalog at `/absolute/catalog`, it is:
@@ -723,6 +723,9 @@ pass through unchanged. Prompt files are private regular files retained under
 can reopen them. The shared generator replaces the original file flag with the
 combined file and preserves the native text flag. Relative paths use the launch
 directory; shell variables expand according to the caller's shell quoting.
+Generated cache files are replaced with fresh direction when passed back through
+the launcher. Pass the original custom source file to retain its additional rules;
+native relaunches reopen the combined file directly.
 An unreadable custom file or unwritable direction cache stops the launch before
 Claude starts, with the failing path reported. This shell setting does not
 configure sessions started inside Desktop or an editor extension; Claude documents no global JSON setting

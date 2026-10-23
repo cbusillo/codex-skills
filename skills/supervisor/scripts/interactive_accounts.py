@@ -18,6 +18,7 @@ import tempfile
 from pathlib import Path
 
 import account_choice
+from session_liveness import CLAUDE_RESUME_VALUE_OPTIONS
 
 HARNESSES = {"claude": "anthropic", "codex": "openai"}
 CLAUDE_SUBCOMMANDS = {
@@ -25,16 +26,14 @@ CLAUDE_SUBCOMMANDS = {
     "mcp", "plugin", "plugins", "purge", "remote-control", "respawn", "rm", "setup-token", "stop", "kill", "ultrareview",
     "update", "upgrade", "self-hosted-runner",
 }
-CLAUDE_VALUE_OPTIONS = {
-    "--add-dir", "--advisor", "--agent", "--agents", "--allowedTools", "--allowed-tools",
-    "--append-system-prompt", "--append-system-prompt-file",
+CLAUDE_VALUE_OPTIONS = CLAUDE_RESUME_VALUE_OPTIONS | {
+    "--add-dir", "--advisor", "--agents", "--allowedTools", "--allowed-tools", "--channels",
     "--append-subagent-system-prompt", "--append-subagent-system-prompt-file", "--autocompact", "--betas",
-    "--debug-file", "--disallowedTools", "--disallowed-tools", "--effort", "--environment", "--exec", "--fallback-model",
-    "--file", "--input-format", "--json-schema", "--max-budget-usd", "--max-turns", "--mcp-config", "--model", "--name",
-    "-n", "--output-format", "--permission-mode",
-    "--permission-prompt-tool", "--permission-prompts", "--plugin-dir", "--plugin-url", "--ref", "--settings",
+    "--dangerously-load-development-channels", "--disallowedTools", "--disallowed-tools", "--environment", "--exec", "--fallback-model",
+    "--file", "--json-schema", "--max-budget-usd", "--max-turns", "--mcp-config", "--name", "-n",
+    "--permission-prompt-tool", "--permission-prompts", "--plugin-dir", "--plugin-url", "--ref",
     "--remote-control-session-name-prefix", "--session-id",
-    "--setting-sources", "--system-prompt", "--system-prompt-file", "--system-prompt-snapshot", "--teammate-mode", "--tools",
+    "--teammate-mode", "--tools",
 }
 CLAUDE_DISPATCH_OPTIONS = {"--desktop", "--cloud", "--remote", "--environment", "--exec", "--init-only"}
 
@@ -75,13 +74,18 @@ def prepare_claude_arguments(arguments: list[str], directory: Path) -> list[str]
         else:
             prepared.extend(tokens)
         index += 1
-    renderer = runpy.run_path(str(Path(__file__).resolve().parents[3] / "hooks/direction_check_hook.py"))
-    content = renderer["direction_content"](directory, include_loop=False)
+    renderer_path = Path(__file__).resolve().parents[3] / "hooks/direction_check_hook.py"
+    try:
+        renderer = runpy.run_path(str(renderer_path))
+        content = renderer["direction_content"](directory, include_loop=False)
+    except Exception as error:
+        raise ValueError(f"cannot prepare Claude direction from {renderer_path}: {error}") from error
     if not content:
         return arguments
-    custom_content = [(directory / Path(custom).expanduser()).read_text(encoding="utf-8") for custom in custom_files]
-    content = "\n\n".join([*custom_content, content])
     cache = Path(os.environ.get("CODE_HOME", str(Path.home() / ".code"))) / "skill-data/direction-prompts"
+    custom_content = [(directory / Path(custom).expanduser()).read_text(encoding="utf-8") for custom in custom_files
+                      if not (directory / Path(custom).expanduser()).resolve().is_relative_to(cache.expanduser().resolve())]
+    content = "\n\n".join([*custom_content, content])
     path = (cache.expanduser() / f"{hashlib.sha256(content.encode()).hexdigest()}.md").absolute()
     try:
         write_cache(path, content)
@@ -262,7 +266,7 @@ def main():
         else:
             launch(args.harness, argv[1:] if argv[:1] == ["--"] else argv, args.named)
     except (OSError, ValueError) as error:
-        parser.exit(1, f"interactive account launch refused: {error}\n")
+        parser.exit(1, f"native launch refused: {error}\n")
 
 
 if __name__ == "__main__":

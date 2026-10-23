@@ -303,13 +303,15 @@ SWITCH_OPTIONS = {"--all", "--json", "--last", "--include-non-interactive", "--s
                   "--approve-for-me", "--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust",
                   "--worktree", "--search", "--no-alt-screen", "--no-daemon", "--skip-git-repo-check",
                   "--ephemeral", "--ignore-user-config", "--ignore-rules", "--help", "-h", "--version", "-V"}
+CLAUDE_RESUME_VALUE_OPTIONS = {
+    "--model", "--permission-mode", "--effort", "--agent", "--system-prompt", "--system-prompt-file",
+    "--append-system-prompt", "--append-system-prompt-file", "--settings", "--setting-sources", "--output-format",
+    "--input-format", "--debug-file", "--system-prompt-snapshot",
+}
 
 
 def claude_invocation(argv):
     """Known native option arities establish authority; uncertain tokens only veto."""
-    required = {"--model", "--permission-mode", "--effort", "--agent", "--system-prompt",
-                "--system-prompt-file", "--append-system-prompt", "--append-system-prompt-file",
-                "--settings", "--setting-sources", "--output-format", "--input-format", "--debug-file"}
     switches = {"--verbose", "--dangerously-skip-permissions", "--allow-dangerously-skip-permissions",
                 "-p", "--print", "-c", "--continue"}
     words = list(argv[1:])
@@ -319,7 +321,7 @@ def claude_invocation(argv):
         if arg == "--":
             break
         option, equals, value = arg.partition("=")
-        if option in required:
+        if option in CLAUDE_RESUME_VALUE_OPTIONS:
             if not equals:
                 # Native Commander consumes even a flag-shaped required value.
                 index += 1
