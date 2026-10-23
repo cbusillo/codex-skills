@@ -718,26 +718,13 @@ afterward so its receipt follows the written files. A running session keeps its
 loaded snapshot; restart it for updated context.
 
 The plugin's `SessionStart` hook, `hooks/direction_check_hook.py`, keeps the small
-daily-turn and weekly-audit reminder. It no longer delivers direction text.
+daily-turn reminder. The [direction skill](skills/direction/SKILL.md) owns its
+marker, account-selection and shared-record rules.
 Existing skills-protocol, executing-loop and unrelated startup diagnostics stay
 in their existing hooks. The executing loop's command block and reference print
 in repositories with their own root `DIRECTION.md`; Claude also receives the
 shared [skills protocol](skills/references/using-skills.md).
-It reads a local marker that `direction_mark.py` writes at the end of a daily
-turn and that `direction_audit.py --weekly` writes after a weekly audit that
-read every adopted repository. It prints at most two reminder lines, the same
-in every folder: one while the daily turn is more than a day old, and one while
-the weekly audit is more than a week old for an account with direction set up.
-Audits of single repositories never clear the weekly line. The account is the
-one whose direction repository the marker's newest turn or weekly audit names.
-Only when the marker records no account does it fall back to the account of
-the folder's origin, and only when that account has `OWNER/direction` audited
-locally or checked out as `direction` beside the repository's main checkout.
-A local turn or weekly audit counts only when it names that account. While either local stamp is stale it reads
-the shared turn and weekly-audit records in `OWNER/direction` once (see the
-`direction` skill), so a turn or audit on another machine counts. When it
-cannot read every open issue there, the line says unconfirmed instead of
-overdue. It never
+The hook never
 reads stdin, always exits 0, runs only on `startup`, `resume`, and `clear`
 (not after a compaction), and uses the registered hook timeout with Python downloads
 disabled. The marker is `~/.code/direction-last-check.json` on every host
@@ -746,7 +733,7 @@ unless `DIRECTION_MARKER` names another file. For Codex, the installer or
 `hooks.json`; review it through `/hooks` once. Keep user-layer event definitions
 in JSON so later setup does not recreate inline TOML declarations.
 Claude's separate `compact` handler uses `--skills-only` to restore the protocol
-without repeating the executing loop or overdue-audit reminder. Claude's
+without repeating the executing loop or daily-turn reminder. Claude's
 `UserPromptSubmit` handler uses `--turn` to print a one-line reminder to name
 and load each step's owning skill. The full table stays in the startup and
 compaction protocol; `evals/transcript-measure.py` reports how real sessions

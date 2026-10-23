@@ -302,8 +302,6 @@ def test_two_machines_one_turn() -> None:
         assert "HTTP 403" in hook.reminder(blind, soon, second, "owner")
 
 
-
-
 def test_turn_and_weekly_records_leave_each_other_untouched() -> None:
     mark = load(SCRIPT, "direction_mark_separate_records")
     with tempfile.TemporaryDirectory() as tmp:

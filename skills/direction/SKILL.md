@@ -246,8 +246,7 @@ copying repository lists into guidance. The daily marker records
 `OWNER/direction` as the turn's coverage; one turn clears the daily reminder
 on every machine.
 
-A **weekly audit** is one command for the whole account, run from one session
-in any folder:
+A **weekly audit** starts with one read-only command for the whole account:
 
 ```bash
 uv run <skill-dir>/scripts/direction_audit.py --weekly --owner OWNER
@@ -391,9 +390,10 @@ all, the line says unconfirmed rather than overdue. The reminder names the
 marker path: `~/.code/direction-last-check.json` unless `DIRECTION_MARKER`
 names another. Host home variables differ between Claude Code and Codex.
 
-Schedule the weekly audit once a week through the Supervisor's existing daily
-scheduler. Record registration and receiver evidence before calling it active.
-The Director sees its findings in the next direction session.
+Schedule the read-only collection command below once a week through the
+Supervisor's existing daily scheduler. Record registration and receiver evidence
+before calling it active. Once the receiver is qualified, the next direction
+session reads the saved receipt and performs the weekly checks below.
 
 ## Weekly Audit
 

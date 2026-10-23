@@ -257,7 +257,6 @@ class ReminderTests(IsolatedDirectionHookTests):
         self.assertEqual(len(hook.reminder(fresh_audit, NOW, MARKER, "owner").splitlines()), 1)
         self.assertIn(hook.REMINDER_LINES["turn", "due"], hook.reminder(fresh_audit, NOW, MARKER, "owner"))
 
-
     def test_no_account_shows_only_the_turn_line(self) -> None:
         self.assertEqual(hook.reminder(marker(ago(hours=2)), NOW, MARKER), "")
         self.assertEqual(hook.turn_state(marker(ago(days=2)), NOW, None), "due")
@@ -431,7 +430,6 @@ class SharedRecordTests(IsolatedDirectionHookTests):
     def record(stamp: str, **issue: object) -> dict[str, object]:
         body = f"{hook.TURN_RECORD_TAG}\nLast daily turn: {stamp} covering owner/direction\n"
         return {"number": 1, "body": body, "author_association": "OWNER", "user": {"type": "User"}, **issue}
-
 
     def fresh(self, turn: dt.datetime | None = None) -> dict[str, object]:
         return {**marker(turn or ago(hours=2)), "turn_repo": "owner/direction", "weekly": ago(days=1), "weekly_record": "owner/direction"}

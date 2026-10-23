@@ -3024,9 +3024,6 @@ def test_audit_identity_refused_link_keeps_other_wait_evidence() -> None:
 
 
 
-
-
-
 class WeeklyAccount:
     """One account on a fake reader: o/direction plus adopted o/a and o/b, and o/plain without a file."""
 
@@ -3087,8 +3084,6 @@ class WeeklyAccount:
               redirect_stdout(output), redirect_stderr(StringIO())):
             code = self.module.main([*argv, "--automation", "bot", "--gh", "fixture-gh"])
         return code, json.loads(output.getvalue())
-
-
 
 
 def test_single_repository_audits_do_not_record_a_weekly_audit() -> None:
