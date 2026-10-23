@@ -28,18 +28,19 @@ from pathlib import Path
 
 # Patterns match the start of a shell segment, either as written or with its helper path
 # reduced to the program name ("uv run /x/gh-pr.py merge 3" also as "gh-pr.py merge 3").
+UV_RUN = r"uv run (?:--(?:quiet|no-cache) )*+"
 STEPS = {
     "github": r"gh pr (create|merge|ready|edit|comment|view|update-branch)|gh pr checks(?!.*\s--watch(\s|$))|git push"
-    r"|gh-pr(\.py)? (--repo \S+ )?(create|merge|ready|edit|comment|view|update-branch|supersede|checks)"
+    r"|gh-pr(\.py)?( |$)"
     r"|git-(commit|push)-as-bot|reconcile-runtime-checkout|gh api|gh-with-env-token (api|pr|issue)|github_api(\.py)?"
-    r"|gh issue (create|edit|close|comment|view)|gh-issue|gh-comment|github-ci-diagnose",
-    "babysit-pr": r"gh pr checks.*\s--watch(\s|$)|gh run watch|gh_pr_watch|github_workflow_babysit",
+    r"|gh issue (create|edit|close|comment|view)|gh-issue|gh-comment|github-ci-diagnose|github_workflow_babysit|gh run watch",
+    "babysit-pr": r"gh pr checks.*\s--watch(\s|$)|gh_pr_watch",
     "github-plan": r"gh issue list|gh search issues|gh project|gh-plan(\.py)?",
     "python-uv-workflow": r"uv (sync|add|lock|remove)|pytest|pip3? install|python3? -m (pytest|pip|venv)"
-    r"|uv run (--quiet )?(?!--quiet)(?!--with)(?!--no-project)(?!python3? -c)(?!\S*skills/)(?!\$)\S+",
+    r"|" + UV_RUN + r"(?!--with)(?!--no-project)(?!python3? -c)(?!\S*skills/)(?!\$)\S+",
     "infra-ops": r"ssh |systemctl |docker (-H|--context|compose|exec) |pct |qm |zfs |tailscale |npmplus-ops|private-context-check",
     "docs-lookup": r"op (read|item)|security find-(generic|internet)-password|bw get",
-    "launchplane": r"launchplane(-context|-ordinary-agent|-owner-review|-write-action|-train-drive)?(\.py)?( |$)|check-agent-operator-contract",
+    "launchplane": r"launchplane(?:-[\w-]+)?(?:\.py)?( |$)|check-agent-operator-contract",
     "model-review": r"codex exec|claude (-p|--print)|agy |gemini |review_with_model",
     "local-llm": r"lms |lm_studio_|local_codex_agent",
     "google-seo": r"lighthouse |bing-webmaster|google-search-console|google-cloud-inventory",
@@ -119,7 +120,7 @@ def skill_reads(segment: str) -> list[str]:
 
 def program(segment: str) -> str:
     """The segment with its helper path reduced to the program name."""
-    segment = re.sub(r"^uv run (--quiet )?(\S*/)?(\S+\.py)\b", r"\3", segment)
+    segment = re.sub("^" + UV_RUN + r"(\S*/)?(\S+\.py)\b", r"\2", segment)
     return re.sub(r"^\S*/(\S+)", r"\1", segment)
 
 

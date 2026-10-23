@@ -149,24 +149,17 @@ class TranscriptMeasureTests(unittest.TestCase):
             "gh pr checks 4 --watch": {"babysit-pr"},
             "gh pr checks 4 -w": {"github"},
             "gh pr checks 4 --watch --interval 30 2>&1": {"babysit-pr"},
-            "gh run watch 9": {"babysit-pr"},
+            "uv run --no-cache scripts/gh_pr_watch.py --pr auto --watch": {"babysit-pr"},
+            "uv run --no-cache skills/supervisor/scripts/foreign_watch.py --owner o": set(),
+            "uv run --no-cache pytest -q": {"python-uv-workflow"},
+            "uv run scripts/gh-pr.py --repo o/r list": {"github"},
+            "uv run scripts/launchplane-service-logs.py --config c": {"launchplane"},
+            "uv run scripts/gh-plan.py --repo o/r show 5": {"github-plan"},
         }
         for command, expected in owners.items():
             with self.subTest(command=command):
                 steps = {event[1] for event in measure.command_events(command, False) if event[0] == "step"}
                 self.assertEqual(steps, expected)
-
-    def test_a_skill_helper_run_by_relative_path_is_not_a_uv_step(self) -> None:
-        self.write(self.claude / "proj" / "s10.jsonl", [
-            claude_prompt("review the change"),
-            claude_call("Skill", skill="model-review"),
-            claude_call("Bash", command="uv run scripts/review_with_model.py run --author-provider anthropic --repo /r"),
-            claude_call("Bash", command="uv run scripts/gh-plan.py --repo o/r show 5"),
-        ])
-        report, _ = self.run_measure()
-        skills = report["skills"]["claude"]
-        self.assertEqual(skills["model-review"]["before"], 1)
-        self.assertNotIn("python-uv-workflow", skills)
 
     def test_a_proactive_load_is_not_a_recovery_when_a_later_block_hits(self) -> None:
         self.write(self.claude / "proj" / "s8.jsonl", [
