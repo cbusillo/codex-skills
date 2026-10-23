@@ -253,6 +253,10 @@ def _normalized_actor(actor: Mapping[str, Any]) -> tuple[str, int | None, str]:
     return actor_type, int(actor_id) if actor_id is not None else None, str(actor.get("bypass_mode") or "always")
 
 
+def _actor_order(actor: tuple[str, int | None, str]) -> tuple[str, int, str]:
+    return actor[0], actor[1] or 0, actor[2]
+
+
 def _rules_by_type(ruleset: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
     result: dict[str, Mapping[str, Any]] = {}
     for rule in ruleset.get("rules") or []:
@@ -292,8 +296,8 @@ def ruleset_matches(ruleset: Mapping[str, Any], spec: RulesetSpec, *, exact: boo
             return False
     if ruleset.get("conditions") != spec.payload["conditions"]:
         return False
-    actual_actors = sorted(_normalized_actor(actor) for actor in ruleset.get("bypass_actors") or [])
-    desired_actors = sorted(_normalized_actor(actor) for actor in spec.payload.get("bypass_actors") or [])
+    actual_actors = sorted((_normalized_actor(actor) for actor in ruleset.get("bypass_actors") or []), key=_actor_order)
+    desired_actors = sorted((_normalized_actor(actor) for actor in spec.payload.get("bypass_actors") or []), key=_actor_order)
     if actual_actors != desired_actors:
         return False
     actual_rules = _rules_by_type(ruleset)
@@ -313,7 +317,7 @@ def ruleset_matches(ruleset: Mapping[str, Any], spec: RulesetSpec, *, exact: boo
 def _actor_dicts(actors: Iterable[tuple[str, int | None, str]]) -> tuple[dict[str, Any], ...]:
     return tuple(
         {"actor_type": actor_type, "actor_id": actor_id, "bypass_mode": bypass_mode}
-        for actor_type, actor_id, bypass_mode in sorted(actors, key=lambda item: (item[0], item[1] or 0, item[2]))
+        for actor_type, actor_id, bypass_mode in sorted(actors, key=_actor_order)
     )
 
 

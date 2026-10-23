@@ -62,6 +62,48 @@ def settings_request(config: Any) -> dict[str, Any]:
         raise rules.RulesetError("repository metadata must contain objects", cause="validation_error") from exc
 
 
+def check_tag_shape(value: Any, *, cause: str) -> None:
+    if (
+        not isinstance(value, dict)
+        or any(key not in value for key in rules.RULESET_FIELDS)
+        or any(not isinstance(value[key], str) or not value[key] for key in ("name", "target", "enforcement"))
+        or not isinstance(value["conditions"], dict)
+        or any(not isinstance(value[key], list) for key in ("rules", "bypass_actors"))
+    ):
+        fail("invalid custom tag ruleset shape", cause)
+    rule_types = set()
+    for rule in value["rules"]:
+        if (
+            not isinstance(rule, dict)
+            or not isinstance(rule.get("type"), str)
+            or not rule["type"]
+            or rule["type"] in rule_types
+            or (rule.get("parameters") is not None and not isinstance(rule["parameters"], dict))
+        ):
+            fail("invalid or duplicate custom tag rule", cause)
+        rule_types.add(rule["type"])
+        parameters = rule.get("parameters") or {}
+        if "allowed_merge_methods" in parameters and (
+            not isinstance(parameters["allowed_merge_methods"], list)
+            or any(not isinstance(item, str) for item in parameters["allowed_merge_methods"])
+        ):
+            fail("invalid merge-method parameter shape", cause)
+    actors = set()
+    for actor in value["bypass_actors"]:
+        if (
+            not isinstance(actor, dict)
+            or not isinstance(actor.get("actor_type"), str)
+            or not actor["actor_type"]
+            or (actor.get("actor_id") is not None and (type(actor["actor_id"]) is not int or actor["actor_id"] <= 0))
+            or ("bypass_mode" in actor and (not isinstance(actor["bypass_mode"], str) or not actor["bypass_mode"]))
+        ):
+            fail("invalid custom tag bypass actor", cause)
+        identity = actor["actor_type"], actor.get("actor_id")
+        if identity in actors:
+            fail("duplicate custom tag bypass actor", cause)
+        actors.add(identity)
+
+
 def validate_request(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict) or set(value) - {"method", "path", "body"}:
         fail("request must contain method, repository-relative path and optional body")
@@ -83,18 +125,13 @@ def validate_request(value: Any) -> dict[str, Any]:
         if body is not None:
             fail("collaborator removal accepts no body")
     elif (method == "POST" and path == "/rulesets") or (method == "PUT" and re.fullmatch(r"/rulesets/[1-9][0-9]*", path)):
+        check_tag_shape(body, cause="validation_error")
         if (
-            not isinstance(body, dict)
-            or set(body) != set(rules.RULESET_FIELDS)
+            set(body) != set(rules.RULESET_FIELDS)
             or body.get("target") != "tag"
-            or not isinstance(body.get("name"), str)
             or not body["name"].strip()
             or body["name"] in MANAGED_NAMES
-            or not isinstance(body.get("enforcement"), str)
             or body["enforcement"] not in {"active", "disabled", "evaluate"}
-            or not isinstance(body.get("bypass_actors"), list)
-            or not isinstance(body.get("rules"), list)
-            or not isinstance(body.get("conditions"), dict)
         ):
             fail("custom ruleset writes need a complete tag ruleset, separate from managed rulesets")
         refs = body["conditions"].get("ref_name")
@@ -107,8 +144,6 @@ def validate_request(value: Any) -> dict[str, Any]:
                 not isinstance(refs[key], list) or any(not isinstance(item, str) or not item for item in refs[key])
                 for key in ("include", "exclude")
             )
-            or any(not isinstance(item, dict) or not isinstance(item.get("type"), str) for item in body["rules"])
-            or any(not isinstance(item, dict) or not isinstance(item.get("actor_type"), str) for item in body["bypass_actors"])
         ):
             fail("invalid custom tag-rule conditions, rules or bypass actors")
     else:
@@ -236,6 +271,7 @@ def snapshot(client: Any, repo: str, request: dict[str, Any]) -> dict[str, Any]:
             fail("incomplete custom tag ruleset response", "invalid_response")
         value = {key: copy.deepcopy(matches[0][key]) for key in rules.RULESET_FIELDS}
         value["id"] = matches[0]["id"]
+        check_tag_shape(value, cause="invalid_response")
     return {"repository": identity, "value": value}
 
 
@@ -258,6 +294,8 @@ def build_plan(repo: str, request: dict[str, Any], before: dict[str, Any]) -> di
             fail("invalid collaborator snapshot")
         after["value"] = []
     else:
+        if before["value"] is not None:
+            check_tag_shape(before["value"], cause="validation_error")
         if request["method"] == "POST" and before["value"] is not None:
             fail("custom ruleset name already exists; use its exact id to update")
         after["value"] = copy.deepcopy(request["body"])

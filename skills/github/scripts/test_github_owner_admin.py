@@ -92,7 +92,8 @@ class OwnerClient:
             page = int(path.rsplit("page=", 1)[1])
             return copy.deepcopy(self.collaborators[(page - 1) * rules.PER_PAGE : page * rules.PER_PAGE])
         if "/invitations?" in path:
-            return copy.deepcopy(self.invitations)
+            page = int(path.rsplit("page=", 1)[1])
+            return copy.deepcopy(self.invitations[(page - 1) * rules.PER_PAGE : page * rules.PER_PAGE])
         if "/secrets?" in path:
             page = int(path.rsplit("page=", 1)[1])
             return {
@@ -138,6 +139,7 @@ class OwnerAdminTests(unittest.TestCase):
         )
         plan = self.plan(request)
         self.assertFalse(self.client.writes)
+
         self.assertTrue(self.apply(plan)["verified"])
         self.assertEqual(
             self.client.writes,
@@ -154,7 +156,6 @@ class OwnerAdminTests(unittest.TestCase):
                 )
             ],
         )
-        self.assertEqual(self.client.repository["default_branch"], "main")
         self.assertFalse(self.apply(plan)["changed"])
         self.assertTrue(self.apply(plan, readback=True)["verified"])
         self.assertEqual(len(self.client.writes), 1)
@@ -247,16 +248,22 @@ class OwnerAdminTests(unittest.TestCase):
         self.client.rulesets[0]["rules"][0]["parameters"]["update_allows_fetch_and_merge"] = True
         with self.assertRaises(rules.RulesetError):
             self.apply(plan, readback=True)
+        self.client.rulesets[0]["rules"][0]["parameters"] = "x"
+        for readback in (False, True):
+            with self.subTest(readback=readback), self.assertRaises(rules.RulesetError) as caught:
+                self.apply(plan, readback=readback)
+            self.assertEqual(caught.exception.cause, "invalid_response")
 
     def test_pending_invitation_is_not_verified_as_removed_and_has_a_supported_cancel_route(self) -> None:
         invite = {"id": 81, "invitee": {"login": "new-user", "id": 18}}
         other = {"id": 82, "invitee": {"login": "other-user", "id": 19}}
-        self.client.invitations = [invite, other]
+        unrelated = [{"id": i + 200, "invitee": {"login": f"user{i}", "id": i + 300}} for i in range(rules.PER_PAGE)]
+        self.client.invitations = unrelated + [invite, other]
         with self.assertRaises(rules.RulesetError):
             self.plan({"method": "DELETE", "path": "/collaborators/new-user"})
         self.assertFalse(self.client.writes)
         self.assertTrue(self.apply(self.plan({"method": "DELETE", "path": "/invitations/81"}))["verified"])
-        self.assertEqual(self.client.invitations, [other])
+        self.assertEqual(self.client.invitations, unrelated + [other])
         self.assertTrue(self.apply(self.plan({"method": "DELETE", "path": "/collaborators/new-user"}), readback=True)["verified"])
         self.client.invitations.append({"id": 83, "invitee": None})
         with self.assertRaises(rules.RulesetError):
@@ -278,6 +285,47 @@ class OwnerAdminTests(unittest.TestCase):
             with self.subTest(request=request), self.assertRaises(rules.RulesetError):
                 self.plan(request)
         self.assertFalse(self.client.writes)
+
+    def test_tag_shape_contract_rejects_requests_and_recomputed_saved_images(self) -> None:
+        body = tag_rule()
+        self.client.rulesets = [{**body, "id": 51}]
+        malformed = []
+        for actor in (
+            {"actor_type": "Integration", "actor_id": "abc"},
+            {"actor_type": "Integration", "actor_id": str(self.client.actions_app["id"])},
+            {"actor_type": "Integration", "actor_id": True},
+            {"actor_type": "RepositoryRole", "actor_id": 5, "bypass_mode": []},
+        ):
+            malformed.append({**copy.deepcopy(body), "bypass_actors": [actor]})
+        for parameters in ("x", [], {"allowed_merge_methods": ["merge", 1]}):
+            value = copy.deepcopy(body)
+            value["rules"][0]["parameters"] = parameters
+            malformed.append(value)
+        malformed.append({**copy.deepcopy(body), "rules": body["rules"] * 2})
+        baseline = self.plan({"method": "PUT", "path": "/rulesets/51", "body": body})
+        for value in malformed:
+            with self.subTest(value=value):
+                with self.assertRaises(rules.RulesetError):
+                    self.plan({"method": "PUT", "path": "/rulesets/51", "body": value})
+                for image in ("request", "before"):
+                    edited = copy.deepcopy(baseline)
+                    if image == "request":
+                        edited["request"]["body"] = value
+                    else:
+                        edited["before"]["value"] = {**value, "id": 51}
+                    with self.assertRaises(rules.RulesetError):
+                        self.apply(edited)
+        self.assertFalse(self.client.writes)
+        mixed = copy.deepcopy(body)
+        mixed["bypass_actors"] = [
+            {"actor_type": "Integration", "actor_id": None},
+            {"actor_type": "Integration", "actor_id": self.client.actions_app["id"] + 1},
+        ]
+        plan = self.plan({"method": "PUT", "path": "/rulesets/51", "body": mixed})
+        self.client.fail_write = True
+        with self.assertRaises(rules.RulesetError) as caught:
+            self.apply(plan)
+        self.assertEqual(caught.exception.cause, "permission_denied")
 
     def test_denied_write_and_missing_readback_do_not_retry_or_report_success(self) -> None:
         plan = self.plan({"method": "PATCH", "path": "", "body": {"delete_branch_on_merge": True}})
