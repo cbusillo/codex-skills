@@ -3,13 +3,6 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""Install the shortcut that gives agent reminders a visible, clickable URL.
-
-The shortcut runs Shortcuts' built-in Add New Reminder action with a title, notes
-and URL read from a JSON input file. reminder_save.swift calls it, then uses
-EventKit for the exact list, schedule and readback. Installing signs the
-definition on this Mac and opens it; the Director clicks Add Shortcut once.
-"""
 from __future__ import annotations
 
 import argparse
@@ -70,7 +63,8 @@ def install(folder: Path) -> Path:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(
+        description="Install the shortcut that gives agent reminders a visible, clickable URL")
     parser.add_argument("--check", action="store_true", help="Report whether the shortcut is installed")
     args = parser.parse_args()
     if sys.platform != "darwin":

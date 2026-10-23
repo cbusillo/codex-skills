@@ -54,7 +54,6 @@ def plain_plan(title: str, notes: str, url: str | None, list_name: str,
         if (parsed.scheme not in ("https", "http") or not parsed.hostname
                 or any(c.isspace() or ord(c) < 32 for c in url)):
             raise ValueError("Plain reminder URL must be an absolute HTTP or HTTPS URL")
-        # Normalize each URL component before dry run, lookup and save.
         def escaped(value: str, safe: str) -> str:
             return quote(re.sub(r"%(?![0-9a-fA-F]{2})", "%25", value), safe=safe)
 
@@ -98,7 +97,6 @@ def plan(harness: str, directory: Path, session: str | None, prompt: str | None,
     identity = str(UUID(session)) if session else "fresh session"
     if title is None:
         reference = ", ".join("#" + url.rsplit("/", 1)[1] for url in links)
-        # The due time keeps a session's next check-in distinct from its last.
         when = f"{local:%Y-%m-%d %H:%M}"
         if repeat_days is not None:
             when = f"every {repeat_days} days from {when}"
@@ -163,7 +161,6 @@ def native(request: dict) -> dict:
     if sys.platform != "darwin":
         raise ValueError("Native saving requires macOS 14+; use the prepared manual fields")
     if request.get("url"):
-        # Kept here so a killed writer still reports how to find a reminder its shortcut made.
         request = {**request, "nonce": f"reminder-nonce:{uuid4()}"}
     # The writer prints one lookup line, then waits for this side's target decision.
     with tempfile.TemporaryFile("w+") as errors, subprocess.Popen(

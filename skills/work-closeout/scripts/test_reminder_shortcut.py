@@ -3,7 +3,6 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""Offline shortcut definition and install tests; no Shortcuts or Reminders access."""
 import plistlib
 import sys
 import tempfile
