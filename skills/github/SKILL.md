@@ -886,8 +886,8 @@ and say why.
 - **Comments and reviews**: `scripts/gh-pr.py comment --body-file` or
   `scripts/gh-comment` for timeline comments;
   `scripts/gh-with-env-token pr review --body-file` for review feedback.
-- **CI failures**: `github-ci-diagnose.py`. Raw `gh run view` or `gh api` log
-  reads are fallback diagnostics.
+- **CI failures**: `github-ci-diagnose.py` prioritizes test, helper and validator
+  causes. Raw `gh run view` or `gh api` log reads are fallback diagnostics.
 
 `gh-issue`, `gh-comment`, and `gh-with-env-token` are shell executables without
 a `.sh` suffix; run them directly. Run PEP 723 `.py` helpers with `uv run`; see

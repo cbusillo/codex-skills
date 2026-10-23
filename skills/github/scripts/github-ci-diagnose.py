@@ -22,24 +22,16 @@ import github_identity
 FAILURE_VALUES = {"failure", "error", "cancelled", "timed_out", "action_required", "startup_failure"}
 FAILURE_BUCKETS = {"fail"}
 PENDING_VALUES = {"pending", "queued", "in_progress", "waiting", "requested"}
-FAILURE_MARKERS = (
-    "error",
-    "failed",
-    "failure",
-    "traceback",
-    "exception",
-    "assert",
-    "panic",
-    "fatal",
-    "timeout",
-    "segmentation fault",
-)
+FAILURE_MARKERS = re.compile(r"error|failed|failure|traceback|exception|assert|panic|fatal|timeout|segmentation fault")
 # Runner summaries outrank incidental errors printed during service cleanup.
 # Match at the start of a message, optionally after an Actions log timestamp.
 LOG_MESSAGE_PREFIX = r"^(?:\d{4}-\d{2}-\d{2}T\S+\s+)?"
 FAILURE_SUMMARIES = (
     re.compile(LOG_MESSAGE_PREFIX + r"(?:FAIL|ERROR):\s+\S+\s+\([^\n]+\)"),
     re.compile(LOG_MESSAGE_PREFIX + r"(?:FAILED|ERROR)\s+\S+\.py::\S+"),
+    re.compile(
+        LOG_MESSAGE_PREFIX + r"(?:FAILED\s+[^\s(]\S*|not ok\b|(?:\w+\.)*(?:[A-Z]\w*)?(?:Error|Exception|Expired):)"
+    ),
 )
 COMMAND_FAILURE = re.compile(LOG_MESSAGE_PREFIX + r"##\[error\]Process completed with exit code [1-9]\d*\.")
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -427,18 +419,14 @@ def extract_job_id(url: str) -> Optional[int]:
 
 def extract_failure_snippet(log_text: str, max_lines: int, context: int) -> str:
     lines = log_text.splitlines()
-    if not lines:
-        return ""
     marker_index = find_failure_index(lines)
     if marker_index is None:
         return "\n".join(lines[-max_lines:])
     start = max(0, marker_index - context)
     end = min(len(lines), marker_index + context + 1)
-    window = lines[start:end]
-    if len(window) > max_lines:
+    if end - start > max_lines:
         start = max(start, min(marker_index - max_lines // 2, end - max_lines))
-        window = lines[start:min(end, start + max_lines)]
-    return "\n".join(window)
+    return "\n".join(lines[start:min(end, start + max_lines)])
 
 
 def find_failure_index(lines: Sequence[str]) -> int | None:
@@ -454,7 +442,7 @@ def find_failure_index(lines: Sequence[str]) -> int | None:
         if COMMAND_FAILURE.search(lines[index]):
             continue
         lowered = lines[index].lower()
-        if any(marker in lowered for marker in FAILURE_MARKERS):
+        if FAILURE_MARKERS.search(lowered):
             return index
     return command_failures[-1] if command_failures else None
 
