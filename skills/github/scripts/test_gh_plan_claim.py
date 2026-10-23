@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
-<<<<<<< HEAD
 # dependencies = [
 #     "aiohttp==3.14.5",
 #     "tree-sitter-bash==0.25.1",
