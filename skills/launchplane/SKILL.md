@@ -741,6 +741,10 @@ policy:
         - repository: cbusillo/launchplane
           argv_prefix: ["launchplane", "service", "audit-config-authority"]
         - repository: cbusillo/launchplane
+          argv_prefix: ["launchplane", "service", "plan-config-authority-transition"]
+        - repository: cbusillo/launchplane
+          argv_prefix: ["launchplane", "local-consumer", "--help"]
+        - repository: cbusillo/launchplane
           argv_prefix: ["launchplane", "odoo-ownership", "check"]
         - repository: cbusillo/launchplane
           argv_prefix: ["launchplane", "ci", "postgres-integration"]
@@ -779,6 +783,7 @@ policy:
 
 The source-only `service export-openapi`, `service export-agent-contract`,
 `service export-owner-control-contract`, `service audit-config-authority`,
+`service plan-config-authority-transition`, `local-consumer --help`,
 `odoo-ownership check`, `action-pins check|update`, and
 `ci unittest-shard local|plan|run` gates may run through
 `uv run [--extra dev] launchplane` in a verified `cbusillo/launchplane`
@@ -791,7 +796,8 @@ is not visible to the hook, so use the `cd` prefix. Other shell
 directory/project overrides retain the block. All live/admin CLI commands
 retain their helper route below. Consumers without
 repository-exception support keep the original block; do not bypass it through
-an alternate entry point.
+an alternate entry point. The local gates support chained checks and output
+redirection. `local-consumer prepare|receive` remain Director-run transfers.
 
 Use this skill to inspect product/runtime state and perform safe,
 authenticated mutations via the Launchplane service API.
