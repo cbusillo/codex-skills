@@ -83,6 +83,8 @@ Rules for this brief (every Supervisor brief carries them):
   line. Every PR in a repository that feeds a Client release carries
   a `## Client test notes` section. Launchplane and codex-skills have no
   Client.
+- Briefs state the goal and observable finish line, not a mechanism to build.
+  A named mechanism is a suggestion unless it records a Director decision.
 - Scope ([approved scope rule](https://github.com/cbusillo/codex-skills/issues/1043#issuecomment-6091977127)):
   small fixes in the same file or area that share the change's reason go in
   the same PR; different behavior, its own risk, security, access or

@@ -9,6 +9,8 @@
 
 import importlib.util
 import json
+import os
+import runpy
 import shlex
 import subprocess
 import sys
@@ -24,7 +26,65 @@ sync = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(sync)
 
 
+def setUpModule() -> None:
+    fixture = unittest.enterModuleContext(tempfile.TemporaryDirectory())
+    unittest.enterModuleContext(mock.patch.dict(os.environ, {"DIRECTION_MARKER": str(Path(fixture) / "absent-marker")}))
+
+
 class GlobalInstructionsTests(unittest.TestCase):
+    def test_direction_bundle_uses_merged_sources_and_scopes_only_the_selected_owner(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            marker = home / ".code/direction-last-check.json"
+            marker.parent.mkdir()
+            sources = {"owner/direction": "# Overall fixture\n\nComplete purpose and boundaries.\n",
+                       "owner/product": "# Product fixture\n\nComplete journey.\n"}
+            stamp = "2026-10-23T12:00:00Z"
+            absent = "owner/retired"
+            marker.write_text(json.dumps({"turn": stamp, "turn_repo": "owner/direction",
+                                          "audits": dict.fromkeys((*sources, "other/product", absent), stamp)}))
+            calls = []
+
+            def read(*args: str) -> subprocess.CompletedProcess[str]:
+                calls.append(args)
+                repo = args[1].removeprefix("repos/").removesuffix("/contents/DIRECTION.md")
+                if repo == absent:
+                    return subprocess.CompletedProcess(args, 1, 'HTTP/2.0 404 Not Found\n\n{"message":"Not Found"}', "")
+                return subprocess.CompletedProcess(args, 0, "HTTP/2.0 200 OK\ncontent-type: text/plain\n\n" + sources[repo], "")
+
+            hook = runpy.run_path(str(sync.ROOT / "hooks/direction_check_hook.py"))
+            with (
+                mock.patch.dict(os.environ, {"DIRECTION_MARKER": str(marker)}),
+                mock.patch.object(sync.runpy, "run_path", return_value={**hook, "run_reader": read}),
+            ):
+                content = sync.direction_content(home)
+            for override in ("", "~/.code/direction-last-check.json"):
+                with (mock.patch.dict(os.environ, {"HOME": str(home), "DIRECTION_MARKER": override}),
+                      mock.patch.object(sync.runpy, "run_path", return_value={**hook, "run_reader": read})):
+                    self.assertEqual(sync.direction_content(home), content)
+            for failure in (subprocess.CompletedProcess([], 1, "", "read unavailable"),
+                            subprocess.CompletedProcess([], 1, 'HTTP/2.0 404 Not Found\n\n{"message":"Not Found"}', ""),
+                            subprocess.TimeoutExpired("reader", 6)):
+                failed_reader = (mock.Mock(side_effect=failure) if isinstance(failure, Exception)
+                                 else mock.Mock(return_value=failure))
+                with (mock.patch.dict(os.environ, {"DIRECTION_MARKER": str(marker)}),
+                      mock.patch.object(sync.runpy, "run_path", return_value={**hook, "run_reader": failed_reader})):
+                    with self.assertRaisesRegex(ValueError, "owner/direction"):
+                        sync.direction_content(home)
+            for repo, source in sources.items():
+                self.assertIn(source, content)
+                self.assertIn(repo, content)
+            self.assertNotIn("other/product", content)
+            self.assertEqual({call[1] for call in calls}, {f"repos/{repo}/contents/DIRECTION.md" for repo in (*sources, absent)})
+            self.assertLess(
+                content.index(sources["owner/direction"]),
+                content.index(sources["owner/product"]),
+            )
+            with mock.patch.dict(os.environ, {"DIRECTION_MARKER": str(home / "missing")}):
+                self.assertEqual(sync.direction_content(home), "")
+
     def test_explicit_upgrade_adopts_legacy_catalog_hook_and_preserves_other_handlers(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             codex = Path(directory)
