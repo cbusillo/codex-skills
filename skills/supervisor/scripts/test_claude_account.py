@@ -148,11 +148,26 @@ class MoveTests(unittest.TestCase):
         self.assertTrue(self.request.exists())
 
     def test_resume_forms_and_duplicate_or_path_resume(self):
+        for option in ("--append-system-prompt", "--settings", "--synthetic-unknown"):
+            self.assertIsNone(account.resumed_session(["claude", option, "--resume", self.identifier]))
+        for value in ("-r" + self.identifier, "-r=" + self.identifier, "-pr" + self.identifier, "--resume=urn:uuid:" + self.identifier):
+            self.assertIsNone(account.resumed_session(["claude", value]))
+        native_resume = ["claude", "--append-system-prompt", "--", "--resume", self.identifier]
+        self.assertEqual(account.resumed_session(native_resume), self.identifier)
         self.assertEqual(account.resumed_session(["claude", "--resume=" + self.identifier]), self.identifier)
         self.assertEqual(account.resumed_session(["claude", "-r", self.identifier]), self.identifier)
         self.assertIsNone(account.resumed_session(["claude", "--resume", str(self.transcript)]))
         self.assertEqual(account.resumed_session([*self.argv, "--resume", self.identifier]), self.identifier)
         self.assertIsNone(account.resumed_session([*self.argv, "--resume", str(uuid.uuid4())]))
+        for suffix in (["--fork-session"], ["-c"], ["--resume"], ["--resume", "another-session"]):
+            self.assertIsNone(account.resumed_session([*self.argv, *suffix]))
+        self.assertIsNone(account.resumed_session(["node", "-r", self.identifier, "fixture-cli.js", "--resume", self.identifier]))
+        ambiguous = ["node", "fixture-cli.js", "--resume", self.identifier, "--synthetic-unknown", "--model", "--resume", str(uuid.uuid4())]
+        self.assertIsNone(account.resumed_session(ambiguous))
+        launcher = account.load_module("iterm_tab", Path(account.__file__).with_name("iterm_tab.py"))
+        words = launcher.launch_words(launcher.append_brief("claude", "fixture"))
+        native_resume = ["claude", "--resume", self.identifier, *words[1:words.index("--")]]
+        self.assertEqual(account.resumed_session(native_resume), self.identifier)
 
     def test_exec_failure_keeps_move_request(self):
         self.record()
@@ -194,22 +209,27 @@ class MoveTests(unittest.TestCase):
             "[[accounts.account]]\nname = \"next\"\nprovider = \"anthropic\"\ncontext_panel_label = \"next\"\n"
             "[accounts.account.env]\nCLAUDE_CONFIG_DIR = " + json.dumps(str(self.new)) + "\n")
         child = self.root / "resume.py"
-        child.write_text("import json,os,sys\nfrom pathlib import Path\n"
+        child.write_text(f"#!{sys.executable}\nimport json,os,sys\nfrom pathlib import Path\n"
                          "identifier=sys.argv[sys.argv.index('--resume')+1]\n"
                          "transcript=Path(os.environ['CLAUDE_CONFIG_DIR'])/'projects'/(identifier+'.jsonl')\n"
                          "print(json.dumps({'session':identifier,'context':json.loads(transcript.read_text())['context'],"
-                         "'home':os.environ['CLAUDE_CONFIG_DIR'],'keep':os.environ['INHERITED']}))\n")
+                         "'home':os.environ['CLAUDE_CONFIG_DIR'],'keep':os.environ['INHERITED'],'args':sys.argv[1:]}))\n")
+        child.chmod(0o700)
+        node = self.root / "node"
+        node.symlink_to(child)
         env = {**os.environ, **self.env, "CODE_HOME": str(private.parent), "HOME": str(self.root)}
         for key in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN",
                     "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"):
             env.pop(key, None)
         installed = account.install(self.old / "settings.json", self.root / "moves", write=True)
-        result = subprocess.run([*json.loads(installed["env"]["CLAUDE_CODE_PROCESS_WRAPPER"]), sys.executable,
-                                 str(child), "--resume", self.identifier], env=env,
-                                capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout), {"session": self.identifier, "context": "prior work",
-                                                   "home": str(self.new), "keep": "keep me"})
+        for prefix, options, home in (([str(child)], ["--append-system-prompt", "--resume"], self.old),
+                                      ([str(node), "fixture-cli.js"], ["--append-system-prompt", "--", "--resume"], self.new),
+                                      ([str(child)], ["--resume", self.identifier, "--disallowed-tools", "AskUserQuestion", "--autocompact", "auto", "--resume"], self.new)):
+            result = subprocess.run([*json.loads(installed["env"]["CLAUDE_CODE_PROCESS_WRAPPER"]),
+                                     *prefix, *options, self.identifier], env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout), {"session": self.identifier, "context": "prior work",
+                                                       "home": str(home), "keep": "keep me", "args": [*prefix[1:], *options, self.identifier]})
         self.assertTrue(self.request.exists())
 
     def test_authentication_override_does_not_move_or_expose_value(self):

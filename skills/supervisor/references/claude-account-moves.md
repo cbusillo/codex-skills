@@ -140,13 +140,14 @@ session. The wrapper bounds its snapshot subprocess to 1.5 seconds to stay
 inside the launcher's roughly three-second startup budget; it is silent before
 exec. The entrypoint uses the operating system's `/usr/bin/perl` on supported
 POSIX hosts to preserve the inherited environment without a shell or Python
-startup. Ordinary commands go straight to exec. Only a pending marked UUID
-enters the absolute Python interpreter with `-I`; missing Python or helper source
-falls back to the original command. The entrypoint preserves pre-Python locale
+startup on its direct-exec path. An argument containing a pending request's UUID
+enters the absolute Python interpreter with `-I`; only Python decides whether it
+is a resume. Missing Python or helper source falls back to the original command. The entrypoint preserves pre-Python locale
 state across Python's C-locale coercion. The account reader loads lazily only for
 a pending move. Install refuses if the OS entrypoint interpreter is unavailable;
-qualify the supported host before enrollment. Failed exec/startup leaves the move request for recovery. A new rate limit
-replaces that session's previous attempt and clears its old resume receipt.
+qualify the supported host before enrollment. Failed exec/startup leaves the move
+request for recovery. A new rate limit replaces that session's previous attempt
+and clears its old resume receipt.
 
 ## Version qualification
 
@@ -179,9 +180,11 @@ before using it for moves.
 
 `/tui` saves a user renderer preference and is not a qualified drop-in account
 move. Keep this probe in disposable homes. The wrapper recognizes a pending
-move by session UUID: any matching native `--resume` launch,
-including a renderer switch, can attempt that move. Do not use an unrelated
-relaunch to bypass qualification or recovery; use the existing verified
+move from the first resume value reached before unknown options, in canonical UUID
+form, with all resume values agreeing and no continue, picker or fork. Known
+JavaScript entrypoint prefixes use the shared execution-prefix reader. Otherwise
+the inherited account and argv stay. Do not use an unrelated relaunch to bypass
+qualification or recovery; use the existing verified
 cancellation step when continuation in place makes the request obsolete.
 Launch restrictions such as
 `--setting-sources` can make the native command refuse to relaunch; preserve

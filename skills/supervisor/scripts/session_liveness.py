@@ -14,6 +14,14 @@ import re
 import uuid
 import sys
 import ctypes
+from typing import NamedTuple
+
+
+class ClaudeArguments(NamedTuple):
+    candidates: list[str]
+    kind: str | None
+    exact: str | None
+    prefix_resume: str | None
 
 
 def native_uuid(value):
@@ -305,8 +313,7 @@ SWITCH_OPTIONS = {"--all", "--json", "--last", "--include-non-interactive", "--s
                   "--ephemeral", "--ignore-user-config", "--ignore-rules", "--help", "-h", "--version", "-V"}
 
 
-def claude_invocation(argv):
-    """Known native option arities establish authority; uncertain tokens only veto."""
+def claude_invocation(argv: list[str]) -> ClaudeArguments:
     required = {"--model", "--permission-mode", "--effort", "--agent", "--system-prompt",
                 "--system-prompt-file", "--append-system-prompt", "--append-system-prompt-file",
                 "--settings", "--setting-sources", "--output-format", "--input-format", "--debug-file"}
@@ -314,6 +321,7 @@ def claude_invocation(argv):
                 "-p", "--print", "-c", "--continue"}
     words = list(argv[1:])
     parsed, index, uncertain, continued, kind = [], 0, False, False, None
+    resume = None
     while index < len(words):
         arg = words[index]
         if arg == "--":
@@ -338,8 +346,11 @@ def claude_invocation(argv):
             if option in {"--resume", "-r"}:
                 kind = "resume"
                 if value:
+                    if not parsed and not uncertain:
+                        resume = value
                     parsed.append(value)
                 else:
+                    resume = None
                     uncertain = True  # A picker does not identify another session.
         elif arg in switches:
             continued |= arg in {"-c", "--continue"}
@@ -357,7 +368,8 @@ def claude_invocation(argv):
     # unknown option may consume that token as its value instead.
     candidates, candidate_kind, _ = uncertain_invocation(argv if uncertain else argv[:index + 1])
     exact = parsed[0] if len(parsed) == 1 and not uncertain and not continued else None
-    return list(dict.fromkeys([*candidates, *parsed])), "resume" if continued else kind or candidate_kind, exact
+    return ClaudeArguments(list(dict.fromkeys([*candidates, *parsed])), "resume" if continued else kind or candidate_kind,
+                           exact, resume if not continued and all(value == resume for value in parsed) else None)
 
 
 def uncertain_invocation(argv):
@@ -390,7 +402,7 @@ def invocation(argv, *, bounded=True):
     if family is None:
         return [], None, None
     if family == "claude":
-        return claude_invocation(argv)
+        return claude_invocation(argv)[:3]
 
     last = False
     uncertain = False

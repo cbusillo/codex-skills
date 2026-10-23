@@ -164,18 +164,19 @@ def hook(payload, env):
         (root / (identifier + ".resumed.json")).unlink(missing_ok=True)
 
 
-def resumed_session(argv):
+def resumed_session(argv: list[str]) -> str | None:
     if "--fork-session" in argv:
         return None
-    identifiers = []
-    for index, argument in enumerate(argv[1:], 1):
-        if argument == "--":
-            break
-        if argument in ("--resume", "-r"):
-            identifiers.append(session_id(argv[index + 1]) if index + 1 < len(argv) else None)
-        elif argument.startswith("--resume="):
-            identifiers.append(session_id(argument.split("=", 1)[1]))
-    return identifiers[0] if identifiers and identifiers[0] and len(set(identifiers)) == 1 else None
+    native = load_module("session_liveness", Path(__file__).with_name("session_liveness.py"))
+    if argv and native.interpreter_family(argv[0]) == "javascript":
+        _, identity, uncertain = native.execution_arguments(argv)
+        if uncertain or len(identity) != 2:
+            return None
+        argv = ["claude", *argv[2:]]
+    parsed = native.claude_invocation(argv)
+    identifier = session_id(parsed.prefix_resume)
+    return identifier if identifier and identifier == parsed.prefix_resume and all(
+        session_id(value) in (None, identifier) for value in parsed.candidates) else None
 
 
 def bounded_snapshot(*args, **kwargs):
@@ -294,19 +295,11 @@ def shim_content(python, script):
         return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
     return SHIM_HEADER + "use strict;\nuse warnings;\n" + (
         "my $python = " + literal(python) + ";\nmy $script = " + literal(script) + ";\n"
-    ) + r'''my $session = '';
-my $next = 0;
-for my $argument (@ARGV[1 .. $#ARGV]) {
-    last if $argument eq '--';
-    if ($next) { $session = $argument; $next = 0; }
-    elsif ($argument eq '--resume' || $argument eq '-r') { $next = 1; }
-    elsif ($argument =~ /^--resume=(.*)$/) { $session = $1; }
-}
-if (($ENV{'CLAUDE_ACCOUNT_MOVE_ENABLED'} // '') eq '1'
-    && $session =~ /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/
+    ) + r'''if (($ENV{'CLAUDE_ACCOUNT_MOVE_ENABLED'} // '') eq '1'
     && $ENV{'CLAUDE_ACCOUNT_MOVE_DIR'}
-    && -f "$ENV{'CLAUDE_ACCOUNT_MOVE_DIR'}/$session.json"
-    && -x $python && -f $script) {
+    && -x $python && -f $script
+    && grep { /([0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12})/
+              && -f "$ENV{'CLAUDE_ACCOUNT_MOVE_DIR'}/$1.json" } @ARGV[1 .. $#ARGV]) {
     $ENV{'CLAUDE_ACCOUNT_MOVE_LC_SET'} = exists $ENV{'LC_CTYPE'} ? '1' : '0';
     $ENV{'CLAUDE_ACCOUNT_MOVE_LC_VALUE'} = $ENV{'LC_CTYPE'} // '';
     exec {$python} $python, '-I', $script, 'wrap', @ARGV;
