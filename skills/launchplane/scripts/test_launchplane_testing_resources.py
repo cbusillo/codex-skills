@@ -440,15 +440,12 @@ def test_initial_lost_mutation_never_replays(mode: str) -> None:
     assert "PRIVATE_SENTINEL" not in json.dumps(output)
 
 
-@pytest.mark.parametrize("mode", ["dry-run", "apply", "readback", "release"])
+@pytest.mark.parametrize("mode", ["dry-run", "readback"])
 def test_explicit_initial_operation_must_match_receipt(mode: str) -> None:
     body = private_request(initial_generation=True, operation_id="explicit-initial")
     responses = [release_receipt()] if mode == "release" else None
     code, output, calls, _ = invoke(mode, initial=True, body=body, responses=responses)
-    if mode in {"apply", "release"}:
-        assert code != 0 and calls == []
-    else:
-        assert code != 0 and len(calls) == 1 and output["status"] == "outcome_unknown"
+    assert code != 0 and len(calls) == 1 and output["status"] == "outcome_unknown"
 
 
 @pytest.mark.parametrize(
@@ -472,6 +469,14 @@ def test_initial_mutations_require_the_complete_original_review(mode: str) -> No
     for arguments in ({"reviewed": False}, {"service": "https://other.example.invalid"}):
         code, _, calls, _ = invoke(mode, initial=True, **arguments)
         assert code != 0 and calls == []
+
+
+@pytest.mark.parametrize("mode", ["apply", "release"])
+def test_initial_operation_cannot_change_after_review(mode: str) -> None:
+    code, _, calls, settings = invoke(
+        mode, initial=True, body=private_request(initial_generation=True, operation_id="explicit-initial")
+    )
+    assert code != 0 and calls == [] and settings == 0
 
 
 if __name__ == "__main__":

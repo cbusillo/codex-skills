@@ -23,7 +23,7 @@ PLAN_FACTS = {"fresh_storage_required": True, "published_host_ports": False, "ho
 RESOURCE_FIELDS = {"resources_verified", "resources_binding_sha256", "schedule_id"}
 DIGEST_RE = re.compile(r"[a-f0-9]{64}")
 RECOVERY = (
-    "Preserve the exact private request, reviewed plan, retained operation and original idempotency key. "
+    "Preserve the exact private request, reviewed plan, original operation or preparation and original idempotency key. "
     "Use testing-replacement-resources-readback for actual resource qualification. If it is unverified, "
     "retain partial resources and inspect the original operation; explicitly resume only the original-key "
     "apply through the service's supported recovery. Do not retry automatically, allocate another target, "
@@ -42,8 +42,8 @@ READBACK_RECOVERY = (
 CLEAN_REFUSAL_RECOVERY = (
     "The service refused this attempt before provider work. Inspect the current lane and prepare and review a new dry run. "
     "Preserve any earlier request, review and original key; this refusal proves nothing about earlier attempts. "
-    "Retained preparation can still require its earlier digest. If a fresh review is refused again, "
-    "stop and report the trace with the retained operation; do not cycle plans or keys or clear preparation."
+    "Existing preparation can still require its earlier digest. If a fresh review is refused again, "
+    "stop and report the trace with the original operation or preparation; do not cycle plans or keys or clear preparation."
 )
 APPLY_DENIAL_PRESERVATION = "Preserve the trace, this request, its review and idempotency key."
 RELEASE_RECOVERY = (
@@ -51,19 +51,10 @@ RELEASE_RECOVERY = (
     "Inspect the original preparation and provider-effect evidence before another explicit original-key release. "
     "Do not allocate resources, clear the fence, delete resources or retry automatically."
 )
-MISSING_RECORD_RECOVERY = "The requested testing resource record is unavailable. Verify the private product, context and retained operation before planning again."
+MISSING_RECORD_RECOVERY = "The requested testing resource record is unavailable. Verify the private product, context and original operation or preparation before planning again."
 
 
 def recommend(h: Any, mode: str, status: str, code: str = "", refusal_status: str = "", initial: bool = False) -> str:
-    if initial:
-        recommendation = recommend(h, mode, status, code, refusal_status)
-        if mode == "dry-run" and status in {"accepted", "outcome_unknown"}:
-            return (
-                "Initial preparation metadata may have been recorded; no executor was reserved or provider resources allocated. "
-                "Inspect the reported prerequisite code and original preparation. Preserve the exact request, review and key "
-                "before another explicit request. Do not retry automatically or change keys to evade uncertainty."
-            )
-        return recommendation.replace("retained operation", "original initial preparation")
     if status in {"denied", "unauthorized"}:
         preservation = (
             APPLY_DENIAL_PRESERVATION
@@ -80,6 +71,11 @@ def recommend(h: Any, mode: str, status: str, code: str = "", refusal_status: st
     if status == "released":
         return "The original initial intent was released without provider effects. Preserve its history; review a new intent before allocation."
     if status == "accepted":
+        if initial and mode == "dry-run":
+            return (
+                "Save and review this plan before apply. It records initial preparation metadata, "
+                "reserves no executor and allocates no provider resources. Preserve the original request and key."
+            )
         if mode == "release":
             return "Initial preparation released with no provider effects started; resources were not allocated or qualified."
         return (
@@ -89,6 +85,12 @@ def recommend(h: Any, mode: str, status: str, code: str = "", refusal_status: st
             else "Resources were qualified as separation_ready. No restore, completed isolation or supersession is proven."
         )
     if status == "outcome_unknown":
+        if initial and mode == "dry-run":
+            return (
+                "Initial preparation metadata may have been recorded; no executor was reserved or provider resources allocated. "
+                "Inspect the reported prerequisite code and original preparation. Preserve the exact request, review and key "
+                "before another explicit request. Do not retry automatically or change keys to evade uncertainty."
+            )
         return {"dry-run": PLAN_RECOVERY, "apply": RECOVERY, "readback": READBACK_RECOVERY, "release": RELEASE_RECOVERY}[mode]
     if code == "testing_resources_refused" and mode in {"dry-run", "apply"}:
         return CLEAN_REFUSAL_RECOVERY
