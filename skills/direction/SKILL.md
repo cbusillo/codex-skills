@@ -335,8 +335,7 @@ recorded, when its archive state is unknown, or when its `DIRECTION.md` could
 not be read as present or absent. A repository listing cut at its page
 limit or an App installed on selected repositories only also stops the record;
 `discovery` names the gap. Exit 1 means the weekly audit was not recorded, or
-`marker_error` reports a local write failure, and nothing is shared. Exit 2 means it was recorded on
-this machine but its shared record failed; report `shared.error`. Exit 3 means
+`marker_error` reports a local write failure. Exit 3 means
 it was recorded and there are findings or held repositories, and 0 means
 recorded and clean. When
 the App sees only selected repositories, run it with `--gh gh` on the
@@ -348,8 +347,8 @@ whose reads were incomplete records its run with a `held` reason and leaves
 the window start in place so the next audit rereads it; report that as "audit
 ran, window held (reason)", never as an overdue audit. An audit that confirms
 its repository is archived removes it from both maps. `weekly_audit` holds when
-the last complete weekly audit ran and its `OWNER/direction`. The turn and the
-weekly audit are also shared across machines; the window starts are not, so a
+the last complete weekly audit ran and its `OWNER/direction`. The daily turn
+is shared across machines. Audit stamps and window starts stay local, so a
 machine that never audited a repository reads its last seven days.
 
 To clean older markers that included archived or unadopted repositories, preview with
@@ -392,7 +391,7 @@ names another. Host home variables differ between Claude Code and Codex.
 
 Schedule `direction_audit.py --weekly --owner OWNER` once a week through the
 Supervisor's existing daily scheduler, using the automation identity. It reads
-audited repositories and records completion locally and in `OWNER/direction`.
+audited repositories and records completion in the local marker.
 Record registration and receiver evidence before calling it active. The receiving
 direction session uses the saved JSON receipt, then performs per-repository
 steps 1–4, the account-wide `direction`-label and friction searches with their
@@ -409,9 +408,8 @@ It reads the merged `DIRECTION.md` from the default branch, never a checkout.
 It writes nothing to GitHub; it only stamps this repository's audit in the
 local marker. `--weekly --owner OWNER` runs this audit for `OWNER/direction`
 and each adopted repository. After every read is done, and only then, it
-writes the local weekly stamp and one GitHub record: an open issue titled
-"Weekly direction audits" in `OWNER/direction`, through the same automation
-helpers as the turn record. It never touches the turn record. Exit 1 with `marker_error` still carries the audit's findings;
+writes the local weekly stamp. The saved JSON receipt carries the findings
+for the receiving direction session. Exit 1 with `marker_error` still carries the audit's findings;
 report them along with the persistence failure. Exit 1 with only `error` means
 the reads failed before producing an audit result.
 When the Director explicitly selects `--gh gh` or declares

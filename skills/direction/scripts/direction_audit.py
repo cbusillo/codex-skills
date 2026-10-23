@@ -5,16 +5,6 @@
 #     "PyYAML==6.0.3",
 # ]
 # ///
-"""Read-only audit of a repository's DIRECTION.md against GitHub state.
-
-Reports, as JSON, where milestones, escalations, and issue text have drifted
-from the direction file. `--repo` audits one repository and stamps only its
-own window in the local marker. `--weekly` audits the account named by
-`--owner`: its direction repository first, then every adopted repository. It
-records the weekly audit only when every one of them was read. It never writes to the checkout, and to
-GitHub only the weekly run's one shared weekly-audit record in OWNER/direction.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -1757,16 +1747,6 @@ def direction_adoption(repo: str, *, fetch: Callable[[list[str]], Any]) -> tuple
 def weekly_audit(
     owner: str, *, gh: str, automation: str | None = None, include_archived: bool = False,
 ) -> tuple[int, dict[str, Any]]:
-    """Audit OWNER/direction, then every adopted repository, and record the weekly audit once.
-
-    The weekly audit is recorded, locally and then in its shared record, only when the
-    repository listing is complete and every adopted repository's audit run was recorded.
-    A held window counts: the run was recorded, the window keeps its start, and the next
-    audit rereads what failed or was capped. The receipt lists held repositories and their
-    reasons. A repository with no recorded run does not count. Exit 1: not recorded or the
-    marker failed; 2: recorded here but not shared; 3: recorded with findings or held
-    repositories; 0: recorded and clean.
-    """
     started = dt.datetime.now(dt.timezone.utc)
     fetch = lambda a: gh_json(a, gh=gh)  # noqa: E731
     direction_repo = f"{owner}/direction"
@@ -1814,7 +1794,7 @@ def weekly_audit(
         "repos": repos, "discovery": discovery, "unread": unread, "held": held, "audits": audits,
         "ok": (all(result.get("ok") for result in audits.values()) and discovery["complete"]
                and not unread and not held),
-        "weekly_recorded": None, "shared": None,
+        "weekly_recorded": None,
     }
     if marker_error:
         receipt["marker_error"] = marker_error
@@ -1829,13 +1809,9 @@ def weekly_audit(
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         receipt["ok"] = False
         receipt["marker_error"] = f"Could not record the weekly audit at {shown}: {exc}"
-        print(f"ERROR: {receipt['marker_error']}. The weekly audit was not recorded or shared.", file=sys.stderr)
+        print(f"ERROR: {receipt['marker_error']}. The weekly audit was not recorded.", file=sys.stderr)
         return 1, receipt
     receipt["weekly_recorded"] = {"marker": shown, **written["weekly_audit"]}  # type: ignore[dict-item]
-    receipt["shared"] = direction_mark.share_weekly(direction_mark.utc_stamp(started), owner)
-    if not receipt["shared"]["ok"]:
-        print(f"ERROR: Weekly audit recorded at {shown}, but the shared record failed: {receipt['shared']['error']}", file=sys.stderr)
-        return 2, receipt
     return (0 if receipt["ok"] else 3), receipt
 
 

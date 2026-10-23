@@ -3063,12 +3063,7 @@ class WeeklyAccount:
             return [self.closed] * 100
         return []
 
-    def run(self, argv: list[str], marker: Path, shared: list[tuple[str, str]] | None = None) -> tuple[int, dict[str, Any]]:
-        def share(stamp_text: str, owner: str) -> dict[str, Any]:
-            if shared is not None:
-                shared.append((stamp_text, owner))
-            return {"ok": True, "repo": f"{owner}/direction", "issue": 7}
-
+    def run(self, argv: list[str], marker: Path) -> tuple[int, dict[str, Any]]:
         output = StringIO()
         with (patch.dict(os.environ, {"DIRECTION_MARKER": str(marker)}),
               patch.dict(vars(self.module), {
@@ -3076,7 +3071,6 @@ class WeeklyAccount:
                   "fetch_capacity": lambda *_args, **_kwargs: (summary(self.module), list(self.capacity_errors)),
                   "active_unadopted_report": lambda *_args, **_kwargs: {"complete": True, "repositories": [], "unavailable": []},
               }),
-              patch.object(self.module.direction_mark, "share_weekly", share),
               patch.dict(vars(self.module.github_identity), {"configured_bot_logins": lambda: ("bot",),
                                                              "automation_login": lambda: None}),
               redirect_stdout(output), redirect_stderr(StringIO())):
@@ -3102,8 +3096,7 @@ def test_weekly_audit_records_once_every_adopted_repository_was_read() -> None:
     account = WeeklyAccount(module)
     with tempfile.TemporaryDirectory() as tmp:
         marker = Path(tmp) / "marker.json"
-        shared: list[tuple[str, str]] = []
-        code, receipt = account.run(["--weekly", "--owner", "o"], marker, shared)
+        code, receipt = account.run(["--weekly", "--owner", "o"], marker)
         assert receipt["repos"] == ["o/direction", "o/a", "o/b"], "OWNER/direction first, then each adopted repository"
         assert receipt["unread"] == {} and receipt["held"] == {}
         assert code == (0 if receipt["ok"] else 3)
@@ -3111,7 +3104,6 @@ def test_weekly_audit_records_once_every_adopted_repository_was_read() -> None:
         assert receipt["weekly_recorded"]["ran"] == saved["weekly_audit"]["ran"] == receipt["started"]
         assert saved["weekly_audit"]["record"] == "o/direction"
         assert set(saved["audits"]) == {"o/direction", "o/a", "o/b"}, "each repository's own window still advances"
-        assert shared == [(receipt["started"], "o")], "the shared record is written once, after the local stamp"
 
 
 def test_weekly_audit_counts_a_held_window_as_read_but_not_a_failed_audit() -> None:
@@ -3121,11 +3113,10 @@ def test_weekly_audit_counts_a_held_window_as_read_but_not_a_failed_audit() -> N
         getattr(account, broken).add("o/b")
         with tempfile.TemporaryDirectory() as tmp:
             marker = Path(tmp) / "marker.json"
-            shared: list[tuple[str, str]] = []
-            code, receipt = account.run(["--weekly", "--owner", "o"], marker, shared)
+            code, receipt = account.run(["--weekly", "--owner", "o"], marker)
             saved = json.loads(marker.read_text())
             assert ("weekly_audit" in saved) is recorded, receipt
-            assert bool(receipt["weekly_recorded"]) is recorded and bool(shared) is recorded
+            assert bool(receipt["weekly_recorded"]) is recorded
             if recorded:
                 assert list(receipt["held"]) == ["o/b"] and receipt["unread"] == {}
                 assert code == 3, "the held window is still reported as a coverage finding"
@@ -3162,10 +3153,9 @@ def test_weekly_audit_holds_a_failed_capacity_read_and_rereads_it_next_time() ->
         marker = Path(tmp) / "marker.json"
         window_start = NOW - dt.timedelta(days=3)
         module.direction_mark.mark_audit(marker, "o/direction", window_start)
-        shared: list[tuple[str, str]] = []
-        code, receipt = account.run(["--weekly", "--owner", "o"], marker, shared)
+        code, receipt = account.run(["--weekly", "--owner", "o"], marker)
         assert receipt["unread"] == {} and receipt["held"] == {"o/direction": "capacity_reads:o/fun"}, receipt["held"]
-        assert code == 3 and receipt["weekly_recorded"] and shared, "a held repository counts as audited"
+        assert code == 3 and receipt["weekly_recorded"], "a held repository counts as audited"
         saved = json.loads(marker.read_text())
         assert saved["audits"]["o/direction"] == stamp(window_start), "the held window keeps its start"
         assert saved["audit_runs"]["o/direction"]["held"] == "capacity_reads:o/fun"
@@ -3185,12 +3175,11 @@ def test_weekly_audit_refuses_an_incomplete_or_unknown_repository_listing() -> N
             account.unknown.add("o/plain")
         with tempfile.TemporaryDirectory() as tmp:
             marker = Path(tmp) / "marker.json"
-            shared: list[tuple[str, str]] = []
             listing = module.owner_repositories
             capped = (lambda owner, **kwargs: (listing(owner, **kwargs)[0], True)) if gap == "page_limit" else listing
             with patch.object(module, "owner_repositories", capped):
-                code, receipt = account.run(["--weekly", "--owner", "o"], marker, shared)
-            assert code == 1 and receipt["weekly_recorded"] is None and not shared, (gap, receipt)
+                code, receipt = account.run(["--weekly", "--owner", "o"], marker)
+            assert code == 1 and receipt["weekly_recorded"] is None, (gap, receipt)
             assert receipt["discovery"]["complete"] is False
             if gap == "unknown_adoption":
                 assert list(receipt["unread"]) == ["o/plain"], "an unreadable DIRECTION.md is not treated as absent"
@@ -3199,23 +3188,19 @@ def test_weekly_audit_refuses_an_incomplete_or_unknown_repository_listing() -> N
             assert "weekly_audit" not in json.loads(marker.read_text())
 
 
-def test_weekly_audit_reports_a_shared_write_failure_after_the_local_stamp() -> None:
+def test_weekly_audit_keeps_findings_and_stamps_without_shared_publishing() -> None:
     module = load()
     account = WeeklyAccount(module)
     with tempfile.TemporaryDirectory() as tmp:
         marker = Path(tmp) / "marker.json"
-        failed = {"ok": False, "repo": "o/direction", "error": "gh: HTTP 403"}
-        with patch.object(module.direction_mark, "share_weekly", lambda *_args: failed):
-            output = StringIO()
-            with (patch.dict(os.environ, {"DIRECTION_MARKER": str(marker)}),
-                  patch.dict(vars(module), {"gh_json": account.fetch,
-                                            "fetch_capacity": lambda *_a, **_k: (summary(module), []),
-                                            "active_unadopted_report": lambda *_a, **_k: {"complete": True, "repositories": [], "unavailable": []}}),
-                  redirect_stdout(output), redirect_stderr(StringIO())):
-                code = module.main(["--weekly", "--owner", "o", "--automation", "bot", "--gh", "fixture-gh"])
-        receipt = json.loads(output.getvalue())
-        assert code == 2 and receipt["shared"] == failed
-        assert json.loads(marker.read_text())["weekly_audit"]["ran"] == receipt["weekly_recorded"]["ran"]
+        with patch.object(module.direction_mark, "run_helper", side_effect=OSError("publishing unavailable")) as publisher:
+            code, receipt = account.run(["--weekly", "--owner", "o"], marker)
+        assert code == (0 if receipt["ok"] else 3), receipt
+        publisher.assert_not_called()
+        saved = json.loads(marker.read_text())
+        assert saved["weekly_audit"]["ran"] == receipt["weekly_recorded"]["ran"]
+        assert set(receipt["audits"]) == set(saved["audits"]) == {"o/direction", "o/a", "o/b"}
+        assert all(result["findings"] for result in receipt["audits"].values()), receipt
 
 
 def test_weekly_mode_requires_an_owner_and_no_other_mode() -> None:
