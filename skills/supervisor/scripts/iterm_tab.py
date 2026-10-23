@@ -27,6 +27,7 @@ import account_choice
 import claude_trust
 import agent_tools
 import gui_launch
+import interactive_accounts
 
 CLAUDE_SUGGESTION_SETTING = "promptSuggestionEnabled"
 CLAUDE_AUTO_MEMORY_SETTING = "autoMemoryEnabled"
@@ -413,18 +414,10 @@ def append_brief(command_text, brief):
     agent = Path(words[0]).name
     if agent == "claude":
         settings = claude_settings(command_text, words)
-        direction = shlex.join([
-            "uv", "run", str(Path(__file__).resolve().parents[3] / "hooks/direction_check_hook.py"), "--direction-only",
-        ])
-        custom_prompt = None
-        for index, word in enumerate(words[1:], 1):
-            if word == "--append-system-prompt-file" and index + 1 < len(words):
-                custom_prompt = words[index + 1]
-            elif word.startswith("--append-system-prompt-file="):
-                custom_prompt = word.split("=", 1)[1]
-        if custom_prompt is not None:
-            direction = f"cat <({direction}) {shlex.quote(custom_prompt)}"
-        command_text += f" --append-system-prompt-file <({direction}) --system-prompt-snapshot off"
+        directory = launch_parts(command_text)[1]
+        direction = interactive_accounts.direction_options(words[1:], Path(directory).expanduser() if directory else Path.cwd())
+        if direction:
+            command_text += " " + shlex.join(direction)
         if settings is not None:
             command_text += " --settings " + shlex.quote(json.dumps(settings))
         command_text += f" --disallowedTools {CLAUDE_QUESTION_TOOL}"

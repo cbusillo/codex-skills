@@ -510,7 +510,9 @@ has fallen behind, run its own copy:
 
 The registered session-start hook also runs this catch-up for its bound catalog,
 so a landing without a local train driver is picked up on configured startup,
-resume, or clear events on either harness. Compaction restores direction without running catalog catch-up; legacy matcher scope remains as configured. Manual unbound development
+resume, or clear events on either harness. Compaction restores Codex direction
+or Claude's skills protocol without catalog catch-up; legacy matcher scope remains
+as configured. Manual unbound development
 invocations skip catch-up. Discovery and network reads are bounded to five seconds, reporting a
 blocker or failure without preventing the session from starting. Startup guidance
 is flushed first. A local fast-forward and its verification retain the
@@ -702,21 +704,27 @@ The message ends with the compaction reminder and the rule that a brief's goal
 binds while its named mechanism is a suggestion unless a recorded Director
 decision requires it. Tooling fixes report `Removed:` and `Net lines:`.
 Claude's hook prints the protocol and reminders without injecting direction.
-The Supervisor's terminal launcher supplies the same merged documents through
-native `--append-system-prompt-file`, generated when the shell starts Claude.
+The Supervisor and interactive account launchers supply the same merged documents
+through native `--append-system-prompt-file`, generated at each launch.
 It preserves additional prompt-file text and uses `--system-prompt-snapshot off`
 so resumed sessions also receive current direction. For hand-started terminal
-sessions, add this line to your zsh settings, replacing `/absolute/catalog`
-with your catalog checkout:
+sessions, use the installer's existing `interactive_shell.source_line` in your
+zsh settings. For a catalog at `/absolute/catalog`, it is:
 
 ```sh
-alias claude='claude --append-system-prompt-file <(uv run /absolute/catalog/hooks/direction_check_hook.py --direction-only) --system-prompt-snapshot off'
+source /absolute/catalog/skills/supervisor/scripts/interactive-accounts.zsh
 ```
 
-This is a shell setting. Claude has no documented JSON setting for its native
-prompt-file flag. It does not configure sessions started inside Desktop or an
-editor extension. Supervisor launch commands use zsh or bash process substitution.
-It reads a local marker that `direction_mark.py` writes at the end of a daily
+This covers `claude` and its named-account functions. Native management subcommands
+pass through unchanged. Prompt files are private regular files retained under
+`$CODE_HOME/skill-data/direction-prompts` (default `~/.code`), so native relaunches
+can reopen them. The shared generator preserves custom prompt-file text, including
+relative and shell-variable paths. An unreadable custom file stops the launch
+before Claude starts. This shell setting does not configure sessions started
+inside Desktop or an editor extension; Claude documents no global JSON setting
+for its native prompt-file flag.
+
+The session-start hook reads a local marker that `direction_mark.py` writes at the end of a daily
 turn and that `direction_audit.py --weekly` writes after a weekly audit that
 read every adopted repository. It prints at most two reminder lines, the same
 in every folder: one while the daily turn is more than a day old, and one while

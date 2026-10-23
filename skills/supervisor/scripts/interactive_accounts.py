@@ -6,9 +6,11 @@
 """Generate interactive zsh functions and launch the real harness binary."""
 
 import argparse
+import hashlib
 import json
 import os
 import re
+import runpy
 import shlex
 import shutil
 import sys
@@ -18,6 +20,33 @@ from pathlib import Path
 import account_choice
 
 HARNESSES = {"claude": "anthropic", "codex": "openai"}
+CLAUDE_SUBCOMMANDS = {
+    "agents", "attach", "auth", "auto-mode", "bg", "config", "daemon", "doctor", "gateway", "import", "install", "logs",
+    "mcp", "plugin", "plugins", "purge", "remote-control", "respawn", "rm", "setup-token", "stop", "kill", "ultrareview",
+    "update", "upgrade",
+}
+
+
+def direction_options(arguments: list[str], directory: Path) -> list[str]:
+    before_prompt = arguments[:arguments.index("--")] if "--" in arguments else arguments
+    if (before_prompt and before_prompt[0] in CLAUDE_SUBCOMMANDS) or any(
+        value in {"--help", "-h", "--version", "-v"} for value in before_prompt
+    ):
+        return []
+    renderer = runpy.run_path(str(Path(__file__).resolve().parents[3] / "hooks/direction_check_hook.py"))
+    content = renderer["direction_content"](directory, include_loop=False)
+    if not content:
+        return []
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--append-system-prompt-file")
+    options, _ = parser.parse_known_args(before_prompt)
+    if options.append_system_prompt_file:
+        custom = Path(os.path.expandvars(options.append_system_prompt_file)).expanduser()
+        content = (directory / custom).read_text() + "\n\n" + content
+    cache = Path(os.environ.get("CODE_HOME", str(Path.home() / ".code"))) / "skill-data/direction-prompts"
+    path = cache / f"{hashlib.sha256(content.encode()).hexdigest()}.md"
+    write_cache(path, content)
+    return ["--append-system-prompt-file", str(path), "--system-prompt-snapshot", "off"]
 
 
 def variants(config=None):
@@ -79,13 +108,13 @@ def read_last(path, variable):
     return None
 
 
-def remember(path, chosen):
+def write_cache(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     temporary = None
     try:
-        with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False) as output:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as output:
             temporary = Path(output.name)
-            json.dump(chosen, output)
+            output.write(content)
         os.replace(temporary, path)
     finally:
         if temporary:
@@ -152,10 +181,13 @@ def launch(harness, argv, named=None):
         child_env[variable] = str(Path(child_env[variable]).expanduser())
     try:
         # Last-used state contains launch settings only, never login material.
-        remember(path, {"name": chosen["name"], "env": {variable: child_env[variable]} if variable in child_env else {}})
+        write_cache(path, json.dumps({"name": chosen["name"], "env": {variable: child_env[variable]} if variable in child_env else {}}))
     except OSError:
         banner = banner[:-1] + "; could not save last account)"
     print(banner, file=sys.stderr, flush=True)
+    if harness == "claude":
+        index = arguments.index("--") if "--" in arguments else len(arguments)
+        arguments[index:index] = direction_options(arguments, Path.cwd())
     os.execvpe(binary, [binary, *arguments], child_env)
 
 

@@ -607,7 +607,7 @@ class InstallTests(unittest.TestCase):
         existing = {"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": f"uv run {self.catalog / 'hooks' / 'direction_check_hook.py'}"}]}]}}
         (self.codex / "hooks.json").write_text(json.dumps(existing))
         self.install()
-        self.assertEqual(json.loads((self.codex / "hooks.json").read_text())["hooks"]["SessionStart"], self.with_compact(existing["hooks"]["SessionStart"]))
+        self.assertEqual(json.loads((self.codex / "hooks.json").read_text())["hooks"]["SessionStart"], existing["hooks"]["SessionStart"])
 
     def test_failed_host_write_keeps_previous_base_receipt(self):
         self.install()
@@ -1016,13 +1016,13 @@ class InstallTests(unittest.TestCase):
                 entry = {"hooks": {"SessionStart": [{"hooks": [{"command": f"uv run {token}/catalog/hooks/direction_check_hook.py"}]}]}}
                 (self.codex / "hooks.json").write_text(json.dumps(entry))
                 self.install()
-                self.assertEqual(json.loads((self.codex / "hooks.json").read_text())["hooks"]["SessionStart"], self.with_compact(entry["hooks"]["SessionStart"]))
+                self.assertEqual(json.loads((self.codex / "hooks.json").read_text())["hooks"]["SessionStart"], entry["hooks"]["SessionStart"])
 
     def test_existing_env_wrapped_hook_resolves_its_own_plugin_root(self):
         hook = {"hooks": {"SessionStart": [{"hooks": [{"command": f"env CLAUDE_PLUGIN_ROOT={self.catalog} sh -c 'uv run \"${{CLAUDE_PLUGIN_ROOT}}/hooks/direction_check_hook.py\"'"}]}]}}
         (self.codex / "hooks.json").write_text(json.dumps(hook))
         self.install()
-        self.assertEqual(json.loads((self.codex / "hooks.json").read_text())["hooks"]["SessionStart"], self.with_compact(hook["hooks"]["SessionStart"]))
+        self.assertEqual(json.loads((self.codex / "hooks.json").read_text())["hooks"]["SessionStart"], hook["hooks"]["SessionStart"])
 
     def test_login_shell_and_shell_options_preserve_correct_hooks(self):
         for shell in ("bash -lc", "zsh -lc", "bash -l -c", "bash --noprofile -c", "bash -o pipefail -c", "fish -c"):
@@ -1030,7 +1030,7 @@ class InstallTests(unittest.TestCase):
                 entry = {"hooks": {"SessionStart": [{"hooks": [{"command": f"{shell} 'uv run {self.catalog}/hooks/direction_check_hook.py'"}]}]}}
                 (self.codex / "hooks.json").write_text(json.dumps(entry))
                 self.install()
-                self.assertEqual(json.loads((self.codex / "hooks.json").read_text())["hooks"]["SessionStart"], self.with_compact(entry["hooks"]["SessionStart"]))
+                self.assertEqual(json.loads((self.codex / "hooks.json").read_text())["hooks"]["SessionStart"], entry["hooks"]["SessionStart"])
 
     def test_relative_hook_paths_are_not_mistaken_for_this_catalog(self):
         previous = Path.cwd()

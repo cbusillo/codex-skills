@@ -455,7 +455,7 @@ class OverallDirectionTests(IsolatedDirectionHookTests):
                           mock.patch.object(hook, "marker_path", return_value=self.marker),
                           mock.patch("pathlib.Path.cwd", return_value=self.repo),
                           contextlib.redirect_stdout(output)):
-                        self.assertEqual(hook.print_direction(), 0)
+                        print(hook.direction_content(self.repo), end="")
                     text = output.getvalue()
                 self.assertIn(OVERALL.strip(), text)
                 self.assertIn(own.strip(), text)

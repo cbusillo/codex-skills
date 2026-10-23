@@ -101,7 +101,11 @@ def render_codex_hook_content(config: dict, destination: Path, catalog: Path = R
         if event == "SessionStart":
             if not include_session_start:
                 declarations = [group for group in declarations if group.get("matcher") == "compact"]
-            if existing_session_hook(existing, catalog, compact=True):
+            legacy_compact = [group for group in existing if isinstance(group, dict) and (
+                group.get("matcher") in (None, "", "*")
+                or (isinstance(group.get("matcher"), str) and re.search(group["matcher"], "compact"))
+            )]
+            if existing_session_hook(existing, catalog, compact=True) or existing_session_hook(legacy_compact, catalog):
                 declarations = [group for group in declarations if group.get("matcher") != "compact"]
         label = {"PreToolUse": HOOK_LABEL, "SessionStart": "codex-skills session start"}[event]
         for group in declarations:

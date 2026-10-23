@@ -9,6 +9,7 @@
 
 import importlib.util
 import json
+import re
 import shlex
 import subprocess
 import sys
@@ -25,6 +26,29 @@ SPEC.loader.exec_module(sync)
 
 
 class GlobalInstructionsTests(unittest.TestCase):
+    def test_unscoped_legacy_hook_delivers_context_once_on_startup_and_compaction(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "hooks").mkdir()
+            (root / "hooks/hooks.json").write_bytes((sync.ROOT / "hooks/hooks.json").read_bytes())
+            script = root / "hooks/direction_check_hook.py"
+            context = "fixture native context"
+            script.write_text(f"print({context!r})\n")
+            legacy = {"hooks": [{"type": "command", "command": shlex.join([sys.executable, str(script)])}]}
+            config = {"hooks": {"SessionStart": [legacy]}}
+            rendered = json.loads(sync.render_codex_hook_content(config, root / "hooks.json", root))
+            for source in ("startup", "compact"):
+                output = []
+                for group in rendered["hooks"]["SessionStart"]:
+                    matcher = group.get("matcher", ".*")
+                    if matcher != "*" and not re.search(matcher, source):
+                        continue
+                    for handler in group["hooks"]:
+                        result = subprocess.run(["/bin/sh", "-c", handler["command"]], cwd=root,
+                                                text=True, capture_output=True, check=True)
+                        output.extend(result.stdout.splitlines())
+                self.assertEqual(output.count(context), 1)
+
     def with_compact(self, groups: list) -> list:
         rendered = json.loads(sync.render_codex_hook_content({}, Path("hooks.json"), include_session_start=True))
         return groups + [group for group in rendered["hooks"]["SessionStart"] if group.get("matcher") == "compact"]

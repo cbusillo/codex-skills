@@ -2112,12 +2112,13 @@ class TabCloseTests(unittest.TestCase):
         choice = {"provider": "anthropic", "env": {}}
         with tempfile.TemporaryDirectory() as folder:
             probe = Path(folder) / "claude"
-            probe.write_text('#!/bin/sh\nprintf "%s\\n" "$$" "$CLAUDE_ACCOUNT_MOVE_ENABLED" "$1"\n')
+            probe.write_text('#!/bin/sh\nfor last; do :; done\nprintf "%s\\n" "$$" "$CLAUDE_ACCOUNT_MOVE_ENABLED" "$last"\n')
             probe.chmod(0o700)
             brief = "brief has && ; exec in text"
-            command = iterm_tab.with_account(
-                f"cd / && exec {shlex.quote(str(probe))} {shlex.quote(brief)}", choice)
-            child = subprocess.Popen(["/bin/sh", "-c", command], stdout=subprocess.PIPE, text=True,
+            with (patch("runpy.run_path", return_value={"direction_content": lambda *args, **kwargs: "Fixture direction."}),
+                  patch.dict(os.environ, {"CODE_HOME": folder})):
+                command = iterm_tab.with_account(f"cd / && exec {shlex.quote(str(probe))}", choice, brief)
+            child = subprocess.Popen(["/bin/bash", "-c", command], stdout=subprocess.PIPE, text=True,
                 env={k: v for k, v in os.environ.items() if k != "CLAUDE_ACCOUNT_MOVE_ENABLED"})
             output, _ = child.communicate(timeout=5)
             self.assertEqual(child.returncode, 0)
@@ -2554,9 +2555,6 @@ class TerminalTests(unittest.TestCase):
             source = root / "direction.md"
             custom = root / "custom.md"
             custom.write_text("Custom session instruction.")
-            generator = root / "uv"
-            generator.write_text('#!/bin/sh\ncat "$FIXTURE_DIRECTION"\n')
-            generator.chmod(0o700)
             consumer = root / "claude"
             consumer.write_text(
                 f'#!{sys.executable}\nimport argparse\nfrom pathlib import Path\np = argparse.ArgumentParser()\n'
@@ -2565,14 +2563,22 @@ class TerminalTests(unittest.TestCase):
             )
             consumer.chmod(0o700)
             launch = f"cd {shlex.quote(folder)} && exec {shlex.quote(str(consumer))} --append-system-prompt-file {shlex.quote(str(custom))}"
-            command = iterm_tab.append_brief(launch, "brief")
             for text in ("First merged direction.", "Updated merged direction."):
                 source.write_text(text + "\n")
+                with (patch("runpy.run_path", return_value={"direction_content": lambda *args, **kwargs: source.read_text()}),
+                      patch.object(iterm_tab.interactive_accounts, "direction_options", self.direction_options),
+                      patch.dict(os.environ, {"CODE_HOME": folder})):
+                    command = iterm_tab.append_brief(launch, "brief")
                 result = subprocess.run(["/bin/bash", "-c", command], capture_output=True, text=True, check=True,
                                         env={**os.environ, "PATH": folder + ":" + os.environ["PATH"], "FIXTURE_DIRECTION": str(source)})
-                self.assertEqual(result.stdout.strip(), text + "\n" + custom.read_text())
+                self.assertIn(text, result.stdout)
+                self.assertIn(custom.read_text(), result.stdout)
 
     def setUp(self):
+        self.direction_options = iterm_tab.interactive_accounts.direction_options
+        direction = patch.object(iterm_tab.interactive_accounts, "direction_options", return_value=[])
+        direction.start()
+        self.addCleanup(direction.stop)
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         opt_in = patch.object(iterm_tab, "CHROME_OPT_IN", Path(folder.name) / "absent")

@@ -14,6 +14,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import interactive_accounts as accounts
 
@@ -21,6 +22,41 @@ SCRIPT = Path(__file__).with_name("interactive-accounts.zsh")
 
 
 class InteractiveAccountsTests(unittest.TestCase):
+    def test_claude_launches_share_a_regular_prompt_file_that_survives_reexec(self) -> None:
+        custom = self.root / "custom.md"
+        custom.write_text("Custom fixture instruction.")
+        for named in (None, "gamma"):
+            for path in (str(custom), "custom.md", "~/custom.md", "$FIXTURE_PROMPT"):
+                with (patch.dict(os.environ, {**self.env, "FIXTURE_PROMPT": str(custom)}, clear=True),
+                      patch("runpy.run_path", return_value={"direction_content": lambda *args, **kwargs: "Merged fixture direction."}),
+                      patch.object(accounts.Path, "cwd", return_value=self.root),
+                      patch.object(accounts.os, "execvpe") as execute):
+                    accounts.launch("claude", ["--append-system-prompt-file", path, "--", "literal prompt"], named)
+                arguments = execute.call_args.args[1]
+                index = max(i for i, value in enumerate(arguments) if value == "--append-system-prompt-file")
+                prompt = Path(arguments[index + 1])
+                self.assertTrue(prompt.is_file())
+                self.assertFalse(str(prompt).startswith("/dev/fd/"))
+                self.assertIn("Merged fixture direction.", prompt.read_text())
+                self.assertIn(custom.read_text(), prompt.read_text())
+                self.assertEqual(arguments[arguments.index("--") + 1:], ["literal prompt"])
+                for _ in range(2):
+                    result = subprocess.run([sys.executable, "-c", "import sys; from pathlib import Path; print(Path(sys.argv[1]).read_text())",
+                                             str(prompt)], text=True, capture_output=True, check=True)
+                    self.assertIn("Merged fixture direction.", result.stdout)
+
+    def test_claude_subcommands_and_unreadable_prompts_do_not_start_partial_sessions(self) -> None:
+        with (patch.dict(os.environ, self.env, clear=True),
+              patch("runpy.run_path", return_value={"direction_content": lambda *args, **kwargs: "Merged fixture direction."}),
+              patch.object(accounts.os, "execvpe") as execute):
+            for arguments in (["auth", "status"], ["daemon", "status"], ["mcp", "list"], ["--version"]):
+                accounts.launch("claude", arguments)
+                self.assertEqual(execute.call_args.args[1][1:], arguments)
+            execute.reset_mock()
+            with self.assertRaises(OSError):
+                accounts.launch("claude", ["--append-system-prompt-file", str(self.root / "missing.md")])
+            execute.assert_not_called()
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -59,7 +95,7 @@ class InteractiveAccountsTests(unittest.TestCase):
     def run_shell(self, invocation, *, interactive=True, env=None):
         return subprocess.run([shutil.which("zsh"), "-dfi" if interactive else "-df",
                                "-c", 'source "$1"; ' + invocation, "fixture", str(SCRIPT)],
-                              env={**self.env, **(env or {})}, text=True, capture_output=True,
+                              cwd=self.root, env={**self.env, **(env or {})}, text=True, capture_output=True,
                               timeout=30)
 
     def launched(self, invocation, **kwargs):

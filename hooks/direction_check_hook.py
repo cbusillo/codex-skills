@@ -581,12 +581,11 @@ def session_reminder(marker: dict[str, object], now: dt.datetime, checkout: Path
     return reminder(with_shared_records(marker, now, owner), now, path, owner)
 
 
-def print_direction() -> int:
-    checkout = checkout_root(Path.cwd())
-    direction = overall_direction(origin_repo(checkout), checkout, read_marker(marker_path()), loop_summary(LOOP_PATH.read_text()))
-    if direction:
-        print(f"{direction}\n\n{DIRECTION_RETENTION}", flush=True)
-    return 0
+def direction_content(directory: Path, *, include_loop: bool = True) -> str:
+    checkout = checkout_root(directory)
+    loop = loop_summary(LOOP_PATH.read_text()) if include_loop else ""
+    direction = overall_direction(origin_repo(checkout), checkout, read_marker(marker_path()), loop)
+    return f"{direction}\n\n{DIRECTION_RETENTION}\n" if direction else ""
 
 
 def main(*, skills_only: bool = False, catalog_root: Path | None = None, runtime_catchup: bool = False,
@@ -624,11 +623,15 @@ def main(*, skills_only: bool = False, catalog_root: Path | None = None, runtime
         except OSError:
             loop = ""  # A missing loop reference must not hide an overdue reminder.
         checkout = checkout_root(Path.cwd())
-        overall = (overall_direction(origin_repo(checkout), checkout, marker, "" if skills_only else loop)
+        repo = origin_repo(checkout)
+        overall = (overall_direction(repo, checkout, marker, "" if skills_only else loop)
                    if os.environ.get("CLAUDECODE") != "1" else "")
         if overall:
             print(overall, flush=True)
-        elif root is not None and loop and not skills_only:
+        elif loop and not skills_only and (root is not None or (
+            os.environ.get("CLAUDECODE") == "1" and repo is not None and checkout is not None
+            and direction_set_up(repo.split("/", 1)[0], checkout, marker)[0]
+        )):
             print(loop, flush=True)
         if skills_only:
             return 0
@@ -663,5 +666,7 @@ if __name__ == "__main__":
     parser.add_argument("--runtime-catchup", action="store_true", help="Enable catch-up with the updated native hook timeout")
     parser.add_argument("--catalog-root", type=Path, help="Catalog checkout for status diagnostics")
     args = parser.parse_args()
-    sys.exit(print_direction() if args.direction_only else main(skills_only=args.skills_only, catalog_root=args.catalog_root, runtime_catchup=args.runtime_catchup,
-                  turn=args.turn))
+    if args.direction_only:
+        print(direction_content(Path.cwd()), end="", flush=True)
+    else:
+        sys.exit(main(skills_only=args.skills_only, catalog_root=args.catalog_root, runtime_catchup=args.runtime_catchup, turn=args.turn))
