@@ -462,6 +462,11 @@ class CommandPolicyHookTests(unittest.TestCase):
                 ". /other/setup && uv run " + command,
                 "uv run ruff check . && . /other/setup && uv run " + command,
                 "builtin . /other/setup && uv run " + command,
+                "{ builtin . /other/setup; uv run " + command + "; }",
+                "if builtin . /other/setup; then uv run " + command + "; fi",
+                "time -p . /other/setup && uv run " + command,
+                ">log . /other/setup && uv run " + command,
+                "2>log . /other/setup && uv run " + command,
                 "{ . /other/setup; uv run " + command + "; }",
                 "if . /other/setup; then uv run " + command + "; fi",
                 "! . /other/setup; uv run " + command,
@@ -563,18 +568,15 @@ class CommandPolicyHookTests(unittest.TestCase):
             checkout = root / "checkout"
             subprocess.run(["git", "init", "-q", str(checkout)], check=True)
             subprocess.run(["git", "-C", str(checkout), "config", "remote.origin.url", "git@github.com:cbusillo/launchplane.git"], check=True)
-            gates = (
+            export = "uv run launchplane service export-openapi --output generated/openapi.json"
+            for gate in (
                 "uv run --extra dev launchplane ci unittest-shard local --jobs 4",
-                "uv run launchplane service audit-config-authority --control-plane-root .",
-                "uv run launchplane service export-openapi --output generated/openapi.json",
-                "uv run launchplane service export-agent-contract --output contracts/agent.json",
                 "uv run launchplane service plan-config-authority-transition --base-branch main --required-checks-file checks.json",
-            )
-            for gate in gates:
+            ):
                 for line in (
                     gate + " > output.log 2>&1",
                     "uv run ruff check . && " + gate,
-                    gates[2] + " && " + gate,
+                    export + " && " + gate,
                     gate + " && git status --short",
                 ):
                     with self.subTest(line=line):

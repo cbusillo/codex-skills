@@ -589,12 +589,15 @@ def exception_cwd(shell: str, cwd: Path) -> Path | None:
         if Path(token).name == "launchplane" and token != "launchplane" and not (repository_slug and REPOSITORY_SLUG.fullmatch(repository)):
             return None
     for argv in commands:
-        while argv and argv[0] in TRANSPARENT | {"builtin"}:
+        while argv and argv[0] in TRANSPARENT | SHELL_KEYWORDS | {"builtin"}:
+            wrapper = argv[0]
             argv = argv[1:]
+            if wrapper in TRANSPARENT | {"builtin"}:
+                argv = drop_flags(argv)
+        if argv[:1] == ["."] or "." in argv and any("<" in token or ">" in token for token in argv[:argv.index(".")]):
+            return None
         normalized = unwrap(argv)
         if normalized and normalized[0][:3] == POSTGRES_GATE and not names_loopback_database(argv):
-            return None
-        if any(command[0] == "." for command in normalized):
             return None
         command = argv
         while command and command[0].startswith(POSTGRES_URL_VARIABLE):
