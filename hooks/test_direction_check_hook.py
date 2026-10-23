@@ -197,7 +197,7 @@ class ReminderTests(IsolatedDirectionHookTests):
                     self.assertIn(str(path), text)
                     self.assertNotIn("Detailed fixture procedure", text)
 
-    def test_compaction_prints_only_the_claude_protocol(self) -> None:
+    def test_compaction_without_direction_prints_only_the_claude_protocol(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             env = {"HOME": directory, "DIRECTION_MARKER": str(Path(directory) / "missing.json"), "CLAUDECODE": "1"}
             result = subprocess.run([sys.executable, str(HOOK), "--skills-only"], cwd=directory, env=env, text=True, capture_output=True, check=True)
@@ -457,6 +457,20 @@ class OverallDirectionTests(IsolatedDirectionHookTests):
         self.audit("owner/product", "other/direction")
         self.assertEqual(self.run_hook(self.reader(body=OVERALL)), "")
         self.assertFalse(self.calls.exists())
+        (self.repo / "DIRECTION.md").write_text("Foreign repository instruction")
+        self.assertEqual(self.run_hook(self.reader(body=OVERALL)), hook.loop_summary(hook.LOOP_PATH.read_text()))
+        self.assertFalse(self.calls.exists())
+
+    def test_own_direction_fallback_uses_default_even_when_deleted_in_the_task(self) -> None:
+        own = "# Repository direction\nMerged repository purpose.\n"
+        path = self.repo / "DIRECTION.md"
+        path.write_text(own)
+        subprocess.run(["git", "-C", str(self.repo), "add", "DIRECTION.md"], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "direction"], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "update-ref", "refs/remotes/origin/main", "HEAD"], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"], check=True)
+        path.unlink()
+        self.assertIn(own.strip(), self.run_hook(self.reader(error="offline")))
 
     def sibling_checkout(self) -> Path:
         """A clone of owner/direction beside the product, on an unmerged proposal branch."""

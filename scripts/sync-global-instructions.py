@@ -168,6 +168,8 @@ def existing_session_hook(groups: list, catalog: Path, *, compact: bool = False)
                 continue
             paths = [Path(os.path.expandvars(token)).expanduser() for token in candidates]
             if not any(path.is_absolute() and path.resolve() == (catalog / "hooks" / "direction_check_hook.py").resolve() for path in paths):
+                if compact:
+                    continue
                 raise ValueError("Existing session hook preserved: direction_check_hook.py does not unambiguously resolve to this catalog; inspect the entry and use an absolute catalog script path before rerunning. Install with --skip-codex-hooks, or synchronize instructions without --codex-hook, to keep working with existing hooks.")
             found = True
     return found
@@ -178,13 +180,15 @@ def upgrade_legacy_session_hooks(groups: list, catalog: Path) -> list:
     """Explicitly adopt only plain catalog invocations, leaving custom commands intact."""
     retained = []
     script = (catalog / "hooks" / "direction_check_hook.py").resolve()
-    declaration = json.loads(render_codex_hook_content({}, Path("hooks.json"), catalog, include_session_start=True))["hooks"]["SessionStart"][0]["hooks"][0]
+    declarations = json.loads(render_codex_hook_content({}, Path("hooks.json"), catalog, include_session_start=True))["hooks"]["SessionStart"]
     for group in groups:
         handlers = []
         for handler in group["hooks"]:
-            if not existing_session_hook([{"hooks": [handler]}], catalog):
+            compact = existing_session_hook([{"hooks": [handler]}], catalog, compact=True)
+            if not compact and not existing_session_hook([{"hooks": [handler]}], catalog):
                 handlers.append(handler)
                 continue
+            declaration = next(group["hooks"][0] for group in declarations if (group["matcher"] == "compact") == compact)
             tokens = shlex.split(handler["command"])
             if (len(tokens) == 5 and tokens[0] == "env" and tokens[2:4] == ["sh", "-c"]
                     and tokens[1].startswith("CLAUDE_PLUGIN_ROOT=")
@@ -193,7 +197,7 @@ def upgrade_legacy_session_hooks(groups: list, catalog: Path) -> list:
                           for token in shlex.split(tokens[4])]
             paths = [Path(os.path.expandvars(token)).expanduser() for token in tokens[2:]]
             script_count = sum(path.is_absolute() and path.resolve() == script for path in paths)
-            allowed = {"--quiet", "--no-python-downloads", "--runtime-catchup"}
+            allowed = {"--quiet", "--no-python-downloads", "--runtime-catchup", "--skills-only", "--compact"}
             plain = handler["command"] == declaration["command"] or (tokens[:2] == ["uv", "run"] and script_count == 1 and all(
                 token in allowed or (path.is_absolute() and path.resolve() == script)
                 for token, path in zip(tokens[2:], paths)

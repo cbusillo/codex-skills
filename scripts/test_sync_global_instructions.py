@@ -25,6 +25,10 @@ SPEC.loader.exec_module(sync)
 
 
 class GlobalInstructionsTests(unittest.TestCase):
+    def with_compact(self, groups: list) -> list:
+        rendered = json.loads(sync.render_codex_hook_content({}, Path("hooks.json"), include_session_start=True))
+        return groups + [group for group in rendered["hooks"]["SessionStart"] if group.get("matcher") == "compact"]
+
     def test_explicit_upgrade_adopts_legacy_catalog_hook_and_preserves_other_handlers(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             codex = Path(directory)
@@ -38,6 +42,7 @@ class GlobalInstructionsTests(unittest.TestCase):
             outputs = sync.prepare_codex_hooks(codex, upgrade_session_start=True)
             self.assertEqual(path.read_bytes(), before)
             rendered = json.loads(outputs[path])["hooks"]["SessionStart"]
+            self.assertEqual(rendered, self.with_compact([rendered[0]]))
             self.assertEqual(rendered[0]["matcher"], "startup")
             self.assertEqual(rendered[0]["hooks"][1], unrelated)
             sync.write_codex_hooks(outputs, codex)
@@ -71,16 +76,27 @@ class GlobalInstructionsTests(unittest.TestCase):
             sync.write_codex_hooks(outputs, codex)
             self.assertEqual(sync.prepare_codex_hooks(codex, upgrade_session_start=True)[path], outputs[path])
 
-    def test_compact_only_direction_hook_keeps_managed_startup_reminder(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            codex = Path(directory)
-            command = f"uv run {sync.ROOT / 'hooks' / 'direction_check_hook.py'} --skills-only"
-            group = {"matcher": "compact", "hooks": [{"command": command}]}
-            (codex / "hooks.json").write_text(json.dumps({"hooks": {"SessionStart": [group]}}))
-            outputs = sync.prepare_codex_hooks(codex)
-            groups = json.loads(outputs[codex / "hooks.json"])["hooks"]["SessionStart"]
-            self.assertIn(group, groups)
-            self.assertTrue(any(handler.get("statusMessage") == "codex-skills session start" for group in groups for handler in group["hooks"]))
+    def test_compact_hooks_preserve_custom_entries_and_upgrade_owned_entries(self) -> None:
+        for script in (sync.ROOT / "hooks/direction_check_hook.py", Path("/old/catalog/hooks/direction_check_hook.py")):
+            with self.subTest(script=script), tempfile.TemporaryDirectory() as directory:
+                codex = Path(directory)
+                command = f"uv run {script} --skills-only"
+                group = {"matcher": "compact", "hooks": [{"command": command}]}
+                path = codex / "hooks.json"
+                path.write_text(json.dumps({"hooks": {"SessionStart": [group]}}))
+                outputs = sync.prepare_codex_hooks(codex)
+                groups = json.loads(outputs[path])["hooks"]["SessionStart"]
+                self.assertIn(group, groups)
+                sync.write_codex_hooks(outputs, codex)
+                self.assertEqual(sync.prepare_codex_hooks(codex)[path], outputs[path])
+                upgraded = sync.prepare_codex_hooks(codex, upgrade_session_start=True)
+                if script.is_relative_to(sync.ROOT):
+                    expected = self.with_compact([])[0]["hooks"][0]
+                    owned = json.loads(upgraded[path])["hooks"]["SessionStart"][0]["hooks"][0]
+                    self.assertEqual(owned["command"], expected["command"])
+                    self.assertEqual(owned["additionalContextLimit"], expected["additionalContextLimit"])
+                else:
+                    self.assertIn(group, json.loads(upgraded[path])["hooks"]["SessionStart"])
 
     def test_disabled_toml_duplicate_does_not_disable_existing_json_copy(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -215,7 +231,7 @@ class GlobalInstructionsTests(unittest.TestCase):
             (codex / "config.toml").write_text(original)
             outputs = sync.prepare_codex_hooks(codex)
             sessions = json.loads(outputs[path])["hooks"]["SessionStart"]
-            self.assertEqual([group for group in sessions if group.get("matcher") != "compact"], tomllib.loads(original)["hooks"]["SessionStart"])
+            self.assertEqual(sessions, self.with_compact([]) + tomllib.loads(original)["hooks"]["SessionStart"])
             sync.write_codex_hooks(outputs, codex)
             self.assertEqual(sync.prepare_codex_hooks(codex)[path], outputs[path])
 
@@ -284,7 +300,7 @@ hash = "existing-hash"
             self.assertEqual(config.read_text(), original)
             self.assertEqual(hook_path.read_bytes(), old_json)
             hooks = json.loads(plan[hook_path])["hooks"]
-            self.assertEqual([group for group in hooks["SessionStart"] if group.get("matcher") != "compact"], expected["hooks"]["SessionStart"])
+            self.assertEqual(hooks["SessionStart"], self.with_compact([]) + expected["hooks"]["SessionStart"])
             self.assertEqual(hooks["Stop"], json.loads(old_json)["hooks"].get("Stop", []) + expected["hooks"]["Stop"])
             self.assertEqual(len(hooks["PreToolUse"]), 1)
             receipt = sync.write_codex_hooks(plan, codex)
@@ -400,8 +416,12 @@ hash = "existing-hash"
             first = sync.render_codex_hook(path, include_session_start=True)
             rendered = json.loads(first)["hooks"]
             self.assertEqual(rendered["PreToolUse"], legacy["PreToolUse"])
-            self.assertEqual([handler["command"] for group in rendered["SessionStart"][:len(legacy["SessionStart"])] for handler in group["hooks"]],
-                             [handler["command"] for group in legacy["SessionStart"] for handler in group["hooks"]])
+            expected_sessions = self.with_compact(legacy["SessionStart"])
+            declaration = expected_sessions[-1]["hooks"][0]
+            for group in expected_sessions[:-1]:
+                for handler in group["hooks"]:
+                    handler["additionalContextLimit"] = declaration["additionalContextLimit"]
+            self.assertEqual(rendered["SessionStart"], expected_sessions)
             other = {"hooks": [{"type": "command", "command": "user-hook"}]}
             for event in ("Stop", "Interrupt"):
                 rendered[event] = [other]

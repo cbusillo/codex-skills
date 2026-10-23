@@ -243,7 +243,10 @@ def checkout_root(cwd: Path) -> Path | None:
 def direction_root(cwd: Path) -> Path | None:
     """Checkout root when cwd belongs to a repository with DIRECTION.md."""
     root = checkout_root(cwd)
-    return root if root is not None and (root / "DIRECTION.md").is_file() else None
+    if root is None:
+        return None
+    merged = git_line(root, "ls-tree", "--name-only", "refs/remotes/origin/HEAD", "--", "DIRECTION.md")
+    return root if merged == "DIRECTION.md" or (root / "DIRECTION.md").is_file() else None
 
 
 def origin_repo(root: Path | None) -> str | None:
@@ -353,7 +356,7 @@ def overall_direction(repo: str | None, root: Path | None, marker: dict[str, obj
     owner = repo.split("/", 1)[0]
     set_up, local = direction_set_up(owner, root, marker)
     parts = [direction_text(f"{owner}/{OVERALL_REPO}", local)] if set_up else []
-    if direction_root(root) is not None and not (set_up and repo.casefold() == f"{owner}/{OVERALL_REPO}".casefold()):
+    if set_up and direction_root(root) is not None and repo.casefold() != f"{owner}/{OVERALL_REPO}".casefold():
         parts.append(direction_text(repo, root))
     if parts and loop:
         parts.append(loop)
@@ -585,6 +588,7 @@ def main(*, skills_only: bool = False, catalog_root: Path | None = None, runtime
         if os.environ.get("CLAUDECODE") == "1":
             print(f"Name each step's owning skill and load it before acting; see {SKILLS_PROTOCOL_PATH}.", flush=True)
         return 0
+    overall = ""
     try:
         if os.environ.get("CLAUDECODE") == "1":
             try:
@@ -618,8 +622,6 @@ def main(*, skills_only: bool = False, catalog_root: Path | None = None, runtime
         elif root is not None and loop and not skills_only:
             print(loop, flush=True)
         if skills_only:
-            if overall:
-                print(DIRECTION_RETENTION, flush=True)
             return 0
         now = dt.datetime.now(dt.timezone.utc)
         try:
@@ -635,10 +637,11 @@ def main(*, skills_only: bool = False, catalog_root: Path | None = None, runtime
             catchup_line = catch_up_runtime(catalog)
             if catchup_line:
                 print(catchup_line, flush=True)
-        if overall:
-            print(DIRECTION_RETENTION, flush=True)
     except Exception:  # noqa: BLE001 - a reminder must never break a session start
         pass
+    finally:
+        if overall:
+            print(DIRECTION_RETENTION, flush=True)
     return 0
 
 
