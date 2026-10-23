@@ -261,7 +261,7 @@ cover intended trigger/success, adjacent routing, and boundary cases; add a
 negative/ambiguity case when practical. Judge observable actions/outputs.
 Current Codex or Claude Code execution, direct local-model responses and source
 reviews have different scopes: report the one performed. Every Code is retired;
-its fixtures/readers are historical, not a supported validation path.
+its history lives in Git.
 
 For approval, safety or destructive changes, read
 [reviews by another model](../references/model-review.md) before merging and
