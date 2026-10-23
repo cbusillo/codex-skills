@@ -422,20 +422,36 @@ class OverallDirectionTests(IsolatedDirectionHookTests):
             self.assertEqual(hook.main(), 0)
         return output.getvalue().strip()
 
-    def test_shows_the_merged_stop_boundaries_link_and_loop(self) -> None:
+    def test_shows_the_full_merged_direction_link_and_loop(self) -> None:
         text = self.run_hook(self.reader(body=OVERALL))
-        self.assertIn(hook.section(OVERALL, "Stop Boundaries"), text)
+        self.assertIn(OVERALL.strip(), text)
         self.assertIn("A fixture acceptance boundary also lives in prose", text)
-        self.assertNotIn("Fixture purpose", text, "only the stop boundaries are printed, not the whole file")
         self.assertIn("https://github.com/owner/direction/", text)
-        self.assertTrue(text.endswith(hook.loop_summary(hook.LOOP_PATH.read_text())))
+        self.assertIn(hook.loop_summary(hook.LOOP_PATH.read_text()), text)
         self.assertIn("repos/owner/direction/contents/DIRECTION.md", self.calls.read_text())
 
-    def test_own_direction_file_keeps_todays_output_without_a_read(self) -> None:
-        (self.repo / "DIRECTION.md").write_text("# Direction\n")
-        self.audit("owner/direction", "owner/product")
-        self.assertEqual(self.run_hook(self.reader(body=OVERALL)), hook.loop_summary(hook.LOOP_PATH.read_text()))
-        self.assertFalse(self.calls.exists())
+    def test_own_direction_is_merged_and_follows_overall_on_both_harnesses(self) -> None:
+        (self.repo / "DIRECTION.md").write_text("uncommitted draft")
+        own = "# Direction\n\nRepository fixture purpose.\n"
+        def read(repo: str) -> tuple[str, str]:
+            return (OVERALL if repo == "owner/direction" else own), "fixture merged default"
+        for harness in ("0", "1"):
+            for compact in (False, True):
+                output = io.StringIO()
+                with (mock.patch.dict(os.environ, {"CLAUDECODE": harness}),
+                      mock.patch.object(hook, "read_merged_direction", side_effect=read),
+                      mock.patch.object(hook, "marker_path", return_value=self.marker),
+                      mock.patch("pathlib.Path.cwd", return_value=self.repo),
+                      mock.patch.object(hook, "catch_up_runtime") as catchup,
+                      contextlib.redirect_stdout(output)):
+                    self.assertEqual(hook.main(skills_only=compact, runtime_catchup=True), 0)
+                text = output.getvalue()
+                self.assertIn(OVERALL.strip(), text)
+                self.assertIn(own.strip(), text)
+                self.assertLess(text.index(OVERALL.strip()), text.index(own.strip()))
+                self.assertNotIn("uncommitted draft", text)
+                self.assertTrue(text.strip().endswith(hook.DIRECTION_RETENTION))
+                self.assertEqual(catchup.called, not compact)
 
     def test_owner_without_an_audited_direction_repository_sees_nothing_and_costs_no_read(self) -> None:
         self.audit("owner/product", "other/direction")
@@ -464,24 +480,19 @@ class OverallDirectionTests(IsolatedDirectionHookTests):
         subprocess.run(["git", "-C", str(self.repo), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "i"], check=True)
         subprocess.run(["git", "-C", str(self.repo), "worktree", "add", "-q", str(worktree)], check=True)
         text = self.run_hook(self.reader(error="error connecting to api.github.com"), cwd=worktree)
-        self.assertIn(hook.section(OVERALL, "Stop Boundaries"), text)
+        self.assertIn(OVERALL.strip(), text)
         self.assertIn(str(local.resolve()), text)
         self.assertNotIn("uncommitted draft", text)
         self.assertNotIn("committed proposal", text)
-        shown = re.search(r"`git -C (.+?) show (\S+)`", text)
-        assert shown is not None, "the fallback names a local command for the full file"
-        read = subprocess.run(["git", "-C", shown.group(1), "show", shown.group(2)], capture_output=True, text=True, check=True)
-        self.assertEqual(read.stdout, OVERALL)
 
     def test_a_sibling_checkout_counts_as_set_up_without_an_audit(self) -> None:
         self.sibling_checkout()
         self.audit()
         text = self.run_hook(self.reader(body=OVERALL))
-        self.assertIn(hook.section(OVERALL, "Stop Boundaries"), text)
+        self.assertIn(OVERALL.strip(), text)
 
-    def test_unreadable_overall_direction_is_one_line(self) -> None:
+    def test_unreadable_overall_direction_reports_the_failure(self) -> None:
         text = self.run_hook(self.reader(error="error connecting to api.github.com"))
-        self.assertEqual(len(text.splitlines()), 1)
         self.assertIn("https://github.com/owner/direction/", text)
         self.assertIn("error connecting to api.github.com", text)
 

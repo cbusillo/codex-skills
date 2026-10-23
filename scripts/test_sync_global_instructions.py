@@ -38,7 +38,6 @@ class GlobalInstructionsTests(unittest.TestCase):
             outputs = sync.prepare_codex_hooks(codex, upgrade_session_start=True)
             self.assertEqual(path.read_bytes(), before)
             rendered = json.loads(outputs[path])["hooks"]["SessionStart"]
-            self.assertEqual(len(rendered), 1)
             self.assertEqual(rendered[0]["matcher"], "startup")
             self.assertEqual(rendered[0]["hooks"][1], unrelated)
             sync.write_codex_hooks(outputs, codex)
@@ -216,7 +215,7 @@ class GlobalInstructionsTests(unittest.TestCase):
             (codex / "config.toml").write_text(original)
             outputs = sync.prepare_codex_hooks(codex)
             sessions = json.loads(outputs[path])["hooks"]["SessionStart"]
-            self.assertEqual(sessions, tomllib.loads(original)["hooks"]["SessionStart"])
+            self.assertEqual([group for group in sessions if group.get("matcher") != "compact"], tomllib.loads(original)["hooks"]["SessionStart"])
             sync.write_codex_hooks(outputs, codex)
             self.assertEqual(sync.prepare_codex_hooks(codex)[path], outputs[path])
 
@@ -285,7 +284,7 @@ hash = "existing-hash"
             self.assertEqual(config.read_text(), original)
             self.assertEqual(hook_path.read_bytes(), old_json)
             hooks = json.loads(plan[hook_path])["hooks"]
-            self.assertEqual(hooks["SessionStart"], expected["hooks"]["SessionStart"])
+            self.assertEqual([group for group in hooks["SessionStart"] if group.get("matcher") != "compact"], expected["hooks"]["SessionStart"])
             self.assertEqual(hooks["Stop"], json.loads(old_json)["hooks"].get("Stop", []) + expected["hooks"]["Stop"])
             self.assertEqual(len(hooks["PreToolUse"]), 1)
             receipt = sync.write_codex_hooks(plan, codex)
@@ -401,7 +400,8 @@ hash = "existing-hash"
             first = sync.render_codex_hook(path, include_session_start=True)
             rendered = json.loads(first)["hooks"]
             self.assertEqual(rendered["PreToolUse"], legacy["PreToolUse"])
-            self.assertEqual(rendered["SessionStart"], legacy["SessionStart"])
+            self.assertEqual([handler["command"] for group in rendered["SessionStart"][:len(legacy["SessionStart"])] for handler in group["hooks"]],
+                             [handler["command"] for group in legacy["SessionStart"] for handler in group["hooks"]])
             other = {"hooks": [{"type": "command", "command": "user-hook"}]}
             for event in ("Stop", "Interrupt"):
                 rendered[event] = [other]

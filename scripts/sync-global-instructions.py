@@ -97,14 +97,19 @@ def render_codex_hook_content(config: dict, destination: Path, catalog: Path = R
         existing = hooks.get(event, [])
         if not isinstance(existing, list):
             raise ValueError(f"Invalid {event} configuration: {destination}")
-        declarations = copy.deepcopy(source[event]) if event != "SessionStart" or include_session_start else []
-        label = {"PreToolUse": HOOK_LABEL, "SessionStart": "codex-skills session start"}[event]
+        declarations = copy.deepcopy(source[event])
         if event == "SessionStart":
-            declarations = [group for group in declarations if group.get("matcher") != "compact"]
+            if not include_session_start:
+                declarations = [group for group in declarations if group.get("matcher") == "compact"]
+            if existing_session_hook(existing, catalog, compact=True):
+                declarations = [group for group in declarations if group.get("matcher") != "compact"]
+        label = {"PreToolUse": HOOK_LABEL, "SessionStart": "codex-skills session start"}[event]
         for group in declarations:
             for handler in group["hooks"]:
                 handler["command"] = shlex.join(["env", f"CLAUDE_PLUGIN_ROOT={catalog}", "sh", "-c", handler["command"]])
                 handler["statusMessage"] = label
+                if event == "SessionStart":
+                    handler["additionalContextLimit"] = 0
         def managed(group):
             return (isinstance(group, dict) and isinstance(group.get("hooks"), list) and len(group["hooks"]) == 1
                     and isinstance(group["hooks"][0], dict) and group["hooks"][0].get("statusMessage") == label)
@@ -130,7 +135,7 @@ def safe_content(path: Path) -> str:
     return path.read_bytes().decode() if path.exists() else ""
 
 
-def existing_session_hook(groups: list, catalog: Path) -> bool:
+def existing_session_hook(groups: list, catalog: Path, *, compact: bool = False) -> bool:
     found = False
     for group in groups:
         handlers = group.get("hooks", []) if isinstance(group, dict) else []
@@ -159,8 +164,8 @@ def existing_session_hook(groups: list, catalog: Path) -> bool:
                             candidates.extend(shlex.split(tokens[flag_index + 1]))
                             break
             candidates = [token.replace("${CLAUDE_PLUGIN_ROOT}", plugin_root).replace("$CLAUDE_PLUGIN_ROOT", plugin_root) for token in candidates]
-            if "--skills-only" in candidates:
-                continue  # A compact-only check does not provide startup reminders.
+            if ("--skills-only" in candidates or "--compact" in candidates) != compact:
+                continue
             paths = [Path(os.path.expandvars(token)).expanduser() for token in candidates]
             if not any(path.is_absolute() and path.resolve() == (catalog / "hooks" / "direction_check_hook.py").resolve() for path in paths):
                 raise ValueError("Existing session hook preserved: direction_check_hook.py does not unambiguously resolve to this catalog; inspect the entry and use an absolute catalog script path before rerunning. Install with --skip-codex-hooks, or synchronize instructions without --codex-hook, to keep working with existing hooks.")
@@ -197,7 +202,8 @@ def upgrade_legacy_session_hooks(groups: list, catalog: Path) -> list:
                 raise ValueError("Custom catalog session hook preserved: --upgrade-session-start only adopts plain uv run invocations. Omit this option to retain the custom hook while continuing setup.")
             # Keep matcher, handler position and native state keys stable. Only the
             # command and budget are adopted from the maintained declaration.
-            upgraded = {**handler, "command": declaration["command"], "timeout": declaration["timeout"]}
+            upgraded = {**handler, "command": declaration["command"], "timeout": declaration["timeout"],
+                        "additionalContextLimit": declaration["additionalContextLimit"]}
             upgraded.pop("timeout_sec", None)
             handlers.append(upgraded)
         retained.append({**group, "hooks": handlers})

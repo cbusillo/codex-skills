@@ -38,8 +38,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "uv run --quiet --no-python-downloads \"${CLAUDE_PLUGIN_ROOT}/hooks/direction_check_hook.py\" --skills-only",
-            "timeout": 15
+            "command": "uv run --quiet --no-python-downloads \"${CLAUDE_PLUGIN_ROOT}/hooks/direction_check_hook.py\" --compact",
+            "timeout": 30
           }
         ]
       }

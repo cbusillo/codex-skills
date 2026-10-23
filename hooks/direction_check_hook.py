@@ -3,32 +3,6 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""Session-start executing loop and overdue direction reminder.
-
-The `direction` skill records the end of every daily turn in a small local
-marker and in a shared turn record in OWNER/direction. `direction_audit.py
---weekly` records a weekly audit that read every adopted repository in the
-same marker and in a separate shared weekly-audit record there. Both are
-account-wide: the account is the owner of the direction repository named by
-the marker's newest turn or weekly audit. Only when the marker records no
-account does the hook fall back to the folder's origin owner, and only when
-that owner has an OWNER/direction set up on this machine. When
-this machine's own turn is older than a day, or its own weekly audit older
-than a week, the hook reads the shared records once and takes the newer
-stamps, so a turn or audit taken on another machine counts; when that read
-fails it says so instead of calling either overdue.
-With --turn, run for each Claude Code prompt, it prints a one-line skills reminder.
-At session start this hook prints the skills protocol on Claude Code and the executing loop's command block and reference for repositories with a
-root DIRECTION.md. In a repository without one, whose origin owner keeps an overall direction in OWNER/direction
-that has been audited on this machine or is checked out beside it, it prints that file's stop boundaries, where the file lives, and the loop.
-It prints at most two reminder lines, whatever folder the session opened in:
-one when the daily turn is overdue or unconfirmed, and one when the weekly
-audit is, for an account with direction set up. It prints nothing when checks
-are current. It never reads stdin, never blocks, and exits 0 whatever
-it finds, so the same script serves Claude Code's SessionStart hook and a
-Codex session-start hook.
-"""
-
 from __future__ import annotations
 
 import datetime as dt
@@ -73,6 +47,10 @@ REMINDER_LINES = {
     ("audit", "due"): "Weekly direction audit overdue",
     ("audit", "unconfirmed"): "Weekly direction audit unconfirmed",
 }
+DIRECTION_RETENTION = (
+    "Keep this through compaction. A brief's goal binds; a mechanism it names is a suggestion unless it is a recorded Director decision. "
+    "Prefer removing to adding, and report `Removed:` and `Net lines:` in every tooling fix."
+)
 RUNTIME_HELPER = Path("skills/github/scripts/reconcile-runtime-checkout.py")
 
 
@@ -280,20 +258,6 @@ def origin_repo(root: Path | None) -> str | None:
     return f"{match.group(1)}/{match.group(2)}" if match else None
 
 
-def section(text: str, heading: str) -> str | None:
-    """One `## heading` section of a Markdown file, heading included."""
-    lines: list[str] = []
-    for line in text.splitlines():
-        if line.startswith("## "):
-            if lines:
-                break
-            if line[3:].strip().lower() == heading.lower():
-                lines.append(line)
-        elif lines:
-            lines.append(line)
-    return "\n".join(lines).strip() or None
-
-
 def loop_summary(text: str) -> str:
     """Print the command block; keep the full procedure at its owning reference."""
     block = re.search(r"```text\n.*?\n```", text, re.DOTALL)
@@ -325,10 +289,9 @@ def run_reader(*args: str, timeout: float | None = None) -> subprocess.Completed
     return subprocess.CompletedProcess(process.args, process.returncode, stdout, stderr)
 
 
-def read_merged_overall(owner: str) -> tuple[str | None, str]:
-    """The merged overall DIRECTION.md from GitHub, or None and why it could not be read."""
+def read_merged_direction(repo: str) -> tuple[str | None, str]:
     try:
-        result = run_reader("api", f"repos/{owner}/{OVERALL_REPO}/contents/DIRECTION.md", "--method", "GET", "-H", "Accept: application/vnd.github.raw")
+        result = run_reader("api", f"repos/{repo}/contents/DIRECTION.md", "--method", "GET", "-H", "Accept: application/vnd.github.raw")
     except subprocess.TimeoutExpired:
         return None, "GitHub did not answer in time"
     except OSError as exc:
@@ -348,7 +311,7 @@ def local_overall_checkout(owner: str, root: Path) -> Path | None:
     return local if (origin_repo(local) or "").lower() == f"{owner}/{OVERALL_REPO}".lower() else None
 
 
-def read_local_overall(local: Path | None) -> tuple[str | None, str]:
+def read_local_direction(local: Path | None) -> tuple[str | None, str]:
     """DIRECTION.md as last fetched from the remote default branch, never a local branch or draft."""
     if local is None:
         return None, "no local checkout beside this repository"
@@ -373,38 +336,28 @@ def direction_set_up(owner: str, root: Path, marker: dict[str, object]) -> tuple
     return audited or local is not None, local
 
 
-def overall_direction(repo: str | None, root: Path | None, marker: dict[str, object], loop: str) -> str:
-    """Overall direction for a checkout without its own DIRECTION.md, empty when its owner keeps none here.
+def direction_text(repo: str, local: Path | None) -> str:
+    url = f"https://github.com/{repo}/blob/HEAD/DIRECTION.md"
+    text, source = read_merged_direction(repo)
+    if text is None:
+        text, local_reason = read_local_direction(local)
+        if text is None:
+            return f"Direction unavailable: {url} ({source}; {local_reason})."
+        source = local_reason
+    return f"Direction: {url}, from {source}:\n\n{text.strip()}"
 
-    Only an owner who set up OWNER/direction on this machine counts: it has been audited here, or
-    it is checked out beside this repository. That keeps another person's repository from putting
-    its text into the session, and it keeps owners who never set up an overall direction from
-    paying for a network read at every start.
-    """
+
+def overall_direction(repo: str | None, root: Path | None, marker: dict[str, object], loop: str) -> str:
     if not repo or root is None:
         return ""
     owner = repo.split("/", 1)[0]
     set_up, local = direction_set_up(owner, root, marker)
-    if not set_up:
-        return ""
-    url = f"https://github.com/{owner}/{OVERALL_REPO}/blob/HEAD/DIRECTION.md"
-    where = url
-    text, source = read_merged_overall(owner)
-    if text is None:
-        text, local_reason = read_local_overall(local)
-        if text is None:
-            return (
-                f"Overall direction: this repository has no DIRECTION.md of its own, so {owner}'s overall direction in "
-                f"{url} applies, but it could not be read at session start ({source}; {local_reason})."
-            )
-        source = local_reason
-        where = f"`git -C {local} show refs/remotes/origin/HEAD:DIRECTION.md` (on GitHub: {url})"
-    boundaries = section(text, "Stop Boundaries") or "(the file has no Stop Boundaries section; read it in full)"
-    return (
-        f"Overall direction: this repository has no DIRECTION.md of its own, so {owner}'s overall direction applies. "
-        f"Read {where} before acting. Its stop boundaries, from {source}:\n\n{boundaries}"
-        + (f"\n\n{loop}" if loop else "")
-    )
+    parts = [direction_text(f"{owner}/{OVERALL_REPO}", local)] if set_up else []
+    if direction_root(root) is not None and not (set_up and repo.casefold() == f"{owner}/{OVERALL_REPO}".casefold()):
+        parts.append(direction_text(repo, root))
+    if parts and loop:
+        parts.append(loop)
+    return "\n\n".join(parts)
 
 
 def parse_turn_record(body: object) -> tuple[dt.datetime, str] | None:
@@ -638,17 +591,15 @@ def main(*, skills_only: bool = False, catalog_root: Path | None = None, runtime
                 print(SKILLS_PROTOCOL_PATH.read_text().strip(), flush=True)
             except OSError:
                 pass  # A missing protocol must not hide the loop or reminder.
-        if skills_only:
-            return 0
         # Resolve the runtime catalog from this registered hook, never the task cwd.
         catalog = catalog_root or Path(__file__).resolve().parents[1]
-        tools_line = agent_tools_warning(catalog, Path.cwd(), os.environ)
+        tools_line = agent_tools_warning(catalog, Path.cwd(), os.environ) if not skills_only else ""
         if tools_line:
             print(tools_line, flush=True)
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
         try:
             from scripts.catalog_runtime import status_line
-            catalog_line = status_line(catalog, observe=True) if (catalog / ".local" / "catalog-install.json").is_file() else ""
+            catalog_line = status_line(catalog, observe=True) if not skills_only and (catalog / ".local" / "catalog-install.json").is_file() else ""
             if catalog_line:
                 print(catalog_line, flush=True)
         except (ImportError, OSError):
@@ -660,14 +611,16 @@ def main(*, skills_only: bool = False, catalog_root: Path | None = None, runtime
             loop = loop_summary(LOOP_PATH.read_text())
         except OSError:
             loop = ""  # A missing loop reference must not hide an overdue reminder.
-        if root is not None:
-            if loop:
-                print(loop, flush=True)
-        else:
-            checkout = checkout_root(Path.cwd())
-            overall = overall_direction(origin_repo(checkout), checkout, marker, loop)
+        checkout = checkout_root(Path.cwd())
+        overall = overall_direction(origin_repo(checkout), checkout, marker, "" if skills_only else loop)
+        if overall:
+            print(overall, flush=True)
+        elif root is not None and loop and not skills_only:
+            print(loop, flush=True)
+        if skills_only:
             if overall:
-                print(overall, flush=True)
+                print(DIRECTION_RETENTION, flush=True)
+            return 0
         now = dt.datetime.now(dt.timezone.utc)
         try:
             memory_text = memory_reminder(now)
@@ -682,6 +635,8 @@ def main(*, skills_only: bool = False, catalog_root: Path | None = None, runtime
             catchup_line = catch_up_runtime(catalog)
             if catchup_line:
                 print(catchup_line, flush=True)
+        if overall:
+            print(DIRECTION_RETENTION, flush=True)
     except Exception:  # noqa: BLE001 - a reminder must never break a session start
         pass
     return 0
@@ -689,8 +644,8 @@ def main(*, skills_only: bool = False, catalog_root: Path | None = None, runtime
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--skills-only", action="store_true")
+    parser = argparse.ArgumentParser(description="Inject merged direction and session reminders")
+    parser.add_argument("--compact", "--skills-only", dest="skills_only", action="store_true", help="restore skills and full direction after compaction")
     parser.add_argument("--turn", action="store_true", help="print a one-line skills reminder for each prompt")
     parser.add_argument("--runtime-catchup", action="store_true", help="Enable catch-up with the updated native hook timeout")
     parser.add_argument("--catalog-root", type=Path, help="Catalog checkout for status diagnostics")

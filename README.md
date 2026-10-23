@@ -510,8 +510,7 @@ has fallen behind, run its own copy:
 
 The registered session-start hook also runs this catch-up for its bound catalog,
 so a landing without a local train driver is picked up on configured startup,
-resume, or clear events on either harness. The maintained declarations skip
-compaction; legacy matcher scope remains as configured. Manual unbound development
+resume, or clear events on either harness. Compaction restores direction without running catalog catch-up; legacy matcher scope remains as configured. Manual unbound development
 invocations skip catch-up. Discovery and network reads are bounded to five seconds, reporting a
 blocker or failure without preventing the session from starting. Startup guidance
 is flushed first. A local fast-forward and its verification retain the
@@ -692,19 +691,16 @@ On Claude Code (`CLAUDECODE=1`) it first prints the shared
 each intermediate step. This applies even outside direction repositories.
 Codex already carries a skills protocol in its base instructions, so it does
 not receive this additional copy.
-In a repository with a root `DIRECTION.md`, it prints the shared
-[executing loop's command block](skills/references/executing-loop.md) and a link
-to its full procedure at session start. The loop
-defines `next`, `go`, escalation, landing, and closeout for either harness
-when its session-start hook is registered.
-In a repository without one, when its origin repository owner's
-`OWNER/direction` repository is in the marker's audited repositories or is checked out as
-`direction` beside the repository's main checkout, it prints that overall
-direction's stop boundaries, read from the merged default branch (or from that
-checkout's last-fetched default branch when GitHub cannot be read), with the
-file's link and the executing loop. When neither can be read
-it says so in one line. Repositories under other repository owners print
-nothing extra.
+At session start it injects the full overall `OWNER/direction` DIRECTION.md
+when that owner is configured, followed by the repository's own DIRECTION.md
+when present. Both come from GitHub's merged default branch, with the existing
+last-fetched default-branch fallback clearly identified when GitHub is unavailable.
+It never injects a working-tree draft. Overall direction is configured by an
+audited `OWNER/direction` entry or a sibling `direction` checkout of that repository.
+The executing loop's command block and reference follow the direction.
+The message ends with the compaction reminder and the rule that a brief's goal
+binds while its named mechanism is a suggestion unless a recorded Director
+decision requires it. Tooling fixes report `Removed:` and `Net lines:`.
 It reads a local marker that `direction_mark.py` writes at the end of a daily
 turn and that `direction_audit.py --weekly` writes after a weekly audit that
 read every adopted repository. It prints at most two reminder lines, the same
@@ -720,15 +716,18 @@ the shared turn and weekly-audit records in `OWNER/direction` once (see the
 `direction` skill), so a turn or audit on another machine counts. When it
 cannot read every open issue there, the line says unconfirmed instead of
 overdue. It never
-reads stdin, always exits 0, runs only on `startup`, `resume`, and `clear`
-(not after a compaction), and uses the registered hook timeout with Python downloads
+reads stdin, always exits 0, runs the full startup path on `startup`, `resume`, and `clear`, and uses the registered hook timeout with Python downloads
 disabled. The marker is `~/.code/direction-last-check.json` on every host
 unless `DIRECTION_MARKER` names another file. For Codex, the installer or
 `scripts/sync-global-instructions.py --codex-hook` registers this hook in
 `hooks.json`; review it through `/hooks` once. Keep user-layer event definitions
 in JSON so later setup does not recreate inline TOML declarations.
-Claude's separate `compact` handler uses `--skills-only` to restore the protocol
-without repeating the executing loop or overdue-audit reminder. Claude's
+Both harnesses' `compact` handler uses `--compact` to restore full direction
+and Claude's skills protocol, without catalog catch-up or startup reminders.
+The legacy `--skills-only` spelling remains an alias. Codex hook synchronization
+installs this handler too and disables Codex's hook-context spilling for full direction.
+For a preserved legacy startup command, use the existing `--upgrade-session-start`
+preview/apply path to adopt that output setting; review changed definitions through `/hooks`. Claude's
 `UserPromptSubmit` handler uses `--turn` to print a one-line reminder to name
 and load each step's owning skill. The full table stays in the startup and
 compaction protocol; `evals/transcript-measure.py` reports how real sessions
