@@ -23,14 +23,17 @@ from skills.github.scripts import github_identity, github_plan_wait, github_plan
 
 # The existing Supervisor helpers use sibling imports when called as scripts.
 sys.path.insert(0, str(audit.REPO_ROOT / "skills/supervisor/scripts"))
+sys.path.insert(0, str(audit.REPO_ROOT / "skills/github-work-rollup/scripts"))
 import oq
 import landed_worktrees
+import github_unanswered_comments as attention
 
 UTC = dt.timezone.utc
 # The Director writes status times in US Eastern ("2:20 PM ET").
 EASTERN = ZoneInfo("America/New_York")
 QUESTION = re.compile(r"\bQ[1-9][0-9]*\b")
 PREFIXES = oq.QUESTION_PREFIXES
+COMMENT_LINK = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/(?:issues|pull)/\d+#issuecomment-\d+(?!\d)")
 
 
 def is_decision(body: str) -> bool:
@@ -328,6 +331,15 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
                    and ((url and url in (c.get("body") or "")) or
                         bool(qids & set(QUESTION.findall(question_body(c).partition("\n")[0])[:1]))) for c in candidates)
 
+    open_questions = {c["html_url"] for r in records if not r.get("trigger_only") and r["item"].get("state") == "open"
+                      for c in r.get("comments", []) if c.get("html_url") and login(c) in trusted
+                      and question_view.get(c["html_url"], {}).get("status") == "needs_review"
+                      and not answered(c, decisions)}
+    open_questions |= {url for url, row in deliveries.items()
+                       if row.get("registration_url") and row.get("status") != "unread_source"}
+    director_terms = ["Director", *sorted(owners), *director_names]
+    receiver_terms = ("Supervisor", "Director", "Owner", *owners, *director_names)
+
     for record in records:
         item, repo = record["item"], record["repo"]
         url = item.get("html_url") or f"https://github.com/{repo}/issues/{item['number']}"
@@ -414,15 +426,26 @@ def report(records: list[dict], *, now: dt.datetime, age_hours: float, trusted: 
             gaps.append({"source": url, "reason": "structured_wait_unreadable"})
             wait = {"state": "review", "waits": []}
         if wait["state"] == "waiting":
-            receivers = [w["waiting_for"] for w in wait["waits"] if any(
-                re.search(r"\b" + re.escape(name) + r"\b", w["waiting_for"], re.I)
-                for name in ("Supervisor", "Director", "Owner", *owners, *director_names))]
+            kinds = {w["waiting_for"]: attention.current_director_wait(w["waiting_for"], director_terms, owners)
+                     for w in wait["waits"]}
+            director = [text for text, kind in kinds.items() if kind]
+            director_spoke = any(c in decisions for c in current)
+            receivers = [w["waiting_for"] for w in wait["waits"] if w["waiting_for"] not in director and any(
+                re.search(r"\b" + re.escape(name) + r"\b", w["waiting_for"], re.I) for name in receiver_terms)]
+            sources = [item, *current]
+            source = next((s for s in reversed(sources) if login(s) in trusted
+                           and github_plan_wait.records(s.get("body") or "")), item)
+            since = None if source is item else source.get("updated_at") or source.get("created_at")
+            linked = (any(c.get("html_url") in open_questions for c in current)
+                      or bool(set(COMMENT_LINK.findall(json.dumps(wait))) & open_questions))
+            if director and not linked and not (director_spoke and all(kinds[t] == "director_hold" for t in director)):
+                add("unasked_director_wait", record, source.get("html_url") or url, since,
+                    "Supervisor asks the Director",
+                    "Wait on the Director has no open Director question. Post one on this issue with the exact step "
+                    "and what happens after it, and register it.",
+                    evidence=wait["waits"])
             if receivers:
-                sources = [item, *current]
-                source = next((s for s in reversed(sources) if login(s) in trusted
-                               and github_plan_wait.records(s.get("body") or "")), item)
-                add("aged_structured_wait", record, source.get("html_url") or url,
-                    None if source is item else source.get("updated_at") or source.get("created_at"), "; ".join(receivers),
+                add("aged_structured_wait", record, source.get("html_url") or url, since, "; ".join(receivers),
                     "Recorded receiver still has an unresolved wait. Body-only marker age is unknown; issue activity cannot reset the wait clock.",
                     evidence=wait["waits"])
         if routed := supervisor_next_action(item.get("body")):
