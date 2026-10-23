@@ -432,7 +432,7 @@ class OverdueTriggerTests(unittest.TestCase):
         self.assertEqual([(r["number"], r["age_basis"]) for r in rows], [(2, "unknown"), (5, "recorded_event")])
 
     def test_waits_on_the_director_without_an_open_question_are_listed_oldest_first(self):
-        """codex-skills#2579: a recorded wait on Chris was skipped for five days because nobody asked him."""
+        # https://github.com/cbusillo/codex-skills/issues/2579
         reviewed = sweep.github_plan_wait.reviewed
         def comment(number, cid, days_ago, body):
             return {"id": cid, "created_at": (self.now - dt.timedelta(days=days_ago)).isoformat(),
@@ -454,18 +454,22 @@ class OverdueTriggerTests(unittest.TestCase):
                                     comment(7, 72, 1.9, "Director decision: Q902 yes, installed by hand."),
                                     waiting(7, 70, 2, "Director")]),
             self.issue(8, comments=[waiting(8, 80, 4, "Supervisor")]),
+            self.issue(9, comments=[waiting(9, 90, 4.5, "Director", evidence="Asked in https://github.com/example/catalog/issues/10#issuecomment-91")]),
+            self.issue(10, comments=[comment(10, 91, 4.6, "Director question: Q903. Install it?")]),
+            self.issue(11, comments=[waiting(11, 110, 3.5, "Director", evidence=f"Asked in {question['html_url']}0")]),
+            self.issue(12, comments=[waiting(12, 120, 4, "The upstream repository owner releases a fix")]),
+            self.issue(13, comments=[waiting(13, 130, 4, "example/catalog#5 lands")]),
         ]
+        records[9]["item"]["state"] = "closed"
         result = self.report(records, director_names=("Chris",))
         rows = [r for r in result["findings"] if r["kind"] == "unasked_director_wait"]
-        # An answered question no longer asks: the wait that outlived it is listed too.
-        self.assertEqual([r["number"] for r in rows], [1, 2, 7])
+        self.assertEqual([r["number"] for r in rows], [1, 9, 11, 2, 7])
         self.assertTrue(all(r["url"].endswith(f"#issuecomment-{r['number']}0") for r in rows))
         others = {(r["kind"], r["number"]) for r in result["findings"] if r["kind"] != "unasked_director_wait"}
         self.assertIn(("aged_structured_wait", 8), others)
         self.assertFalse(any(number in {1, 2, 3, 4, 6, 7} for kind, number in others if kind == "aged_structured_wait"))
-        # The morning digest names each one under the Director's waiting items.
         parsed = [r for r in digest_summary.parse(sweep.markdown(result))[2] if r["kind"] == "unasked_director_wait"]
-        self.assertEqual([r["person"] for r in parsed], [True, True, True])
+        self.assertEqual([r["person"] for r in parsed], [True] * 5)
 
     def test_next_action_counts_only_the_supervisor_as_an_actor(self):
         """codex-skills#2096: a path or description naming the Supervisor is not a handoff to it."""
