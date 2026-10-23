@@ -134,7 +134,8 @@ inspection, browser, CI, deployment, or security gates.
    landing through the merge train.
    For Launchplane-managed trains, verify or route through `launchplane` instead
    of recommending a hand-built GitHub rollup.
-7. If UI was touched, use `browser-ui-review` for browser-visible validation.
+7. If UI was touched, check it in a real browser with the harness's own browser
+   tools.
 8. If security is in scope, use `security-review` explicitly; do not silently
    turn normal readiness into a full security audit.
 9. Report readiness concisely, then continue into `work-closeout` for the

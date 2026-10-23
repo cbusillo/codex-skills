@@ -58,7 +58,6 @@ EXEC_CMD = re.compile(r"\bcmd\s*:\s*(\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|`(?:
 OPERATORS = ("||", "&&", "|", ";", "\n", "$(", "`", ")")
 FILE_READERS = ("cat", "sed", "head", "tail", "less", "bat", "nl", "awk")
 READ_ONLY = (*FILE_READERS, "echo", "grep", "rg", "ls", "#", "printf", "wc", "jq", "find")
-ALIASES = {"claude-in-chrome": "browser-ui-review"}
 COMPACT_SUMMARY = "This session is being continued from a previous conversation"
 # User-role records the harness writes itself: background-task results and command echoes.
 HARNESS_NOTES = ("<task-notification>", "<bash-input>", "<bash-stdout>", "<bash-stderr>", "<local-command-")
@@ -124,8 +123,7 @@ def program(segment: str) -> str:
 
 
 def skill_name(raw: str) -> str:
-    name = raw.split(":")[-1]
-    return ALIASES.get(name, name)
+    return raw.split(":")[-1]
 
 
 def command_events(command: str, edited_code: bool) -> list[tuple]:
