@@ -93,17 +93,17 @@ For the producer's supported modes and requirements, read
 [the producer contract and caller bindings](agent-operator-contract.md).
 
 Each command requires `--payload-file /absolute/private/request.json` outside
-the repository. Inspect, collect, record and clear use `product`, `context`, `instance` and an optional
-`preview_id`. Collect and record also accept `lifetime_seconds` (1 to 900,
-default 300). Record also accepts `usage` (`unknown`, `unused`, `in_use`),
-`data` (`unknown`, `reproducible`, `only_copy`), `production_resources`
-(`unknown`, `isolated`, `separation_ready`, `shared`) and the evidence
-references `usage_evidence`, `data_evidence` and `isolation_evidence`. Any
-other field is refused. The helper refuses these before reading configuration:
-instance `prod`; an instance other than `testing` without a `preview_id`; a
-known fact without its evidence reference; and any known fact on a testing
-lane. The service collects testing facts itself and would store them as
-`unknown`.
+the repository. Inspect, collect and clear use `product`, `context`, `instance`
+and an optional `preview_id`. Collect and record also accept `lifetime_seconds`
+(1 to 900, default 300). Record accepts only testing scope and an optional
+`replaces_operation_id`; all fact assertions and evidence references are refused
+before configuration. Its service receipt reports unknown facts and requests no
+preview reconciliation. Preview record is unsupported under
+[Q652](https://github.com/cbusillo/launchplane/issues/4434#issuecomment-6341807424):
+closed-PR preview teardown uses the preview's own-resource guard, without caller
+usage or custody assertions. Inspect and collect remain observation tools.
+Instance `prod` and an instance other than `testing` without a `preview_id` are
+refused before configuration.
 
 Run inspect first and save its JSON output privately. It returns the lane's
 `binding_sha256`, with every fresh fact `unknown`, plus `observation_sha256`
@@ -139,15 +139,17 @@ lane, delete resources, resolve holds or attest to historical provider effects.
 The receipt must match the requested operation and reviewed binding, return
 `historical_effects=unknown` and state `provider_mutation=false`. There is no
 dry-run mode or idempotency key; inspect is the supported lane review step.
-The subsequent record form carrying `replaces_operation_id` is not installed;
-preparation alone does not install replacement allocation, evidence or
-supersession callers. Follow the producer's `docs/disposable-lanes.md` for
-that workflow; remaining catalog callers belong to
-[codex-skills#1308](https://github.com/cbusillo/codex-skills/issues/1308).
+The record form can carry `replaces_operation_id` for that same testing lane.
+The producer resolves the retained target from its preparation record; callers
+cannot name a replacement target or assert qualifying facts. The record receipt
+and subsequent inspect do not echo or independently verify this operation link.
+Recording it does not qualify resources, complete isolation or release a fence.
+Use the separate resource caller below and the producer's
+`docs/disposable-lanes.md` for the supported workflow.
 
 Output never echoes the product, context, instance, preview ID, evidence
 references, replaced operation ID or the observing identity. The request shows only the mode, the
-payload source and, for record, the count of known facts. Collect reports each
+payload source. Collect reports each
 fact, the usage diagnostics and, for each evidence reference, only whether it is
 present and its source kind. Coverage sources, evidence kinds and usage
 diagnostics are closed vocabularies copied from the producer. A usage
@@ -697,6 +699,53 @@ installed local helper bindings.
 - Path segments must be plain identifiers; anything else is refused before a
   request is sent. Runtime settings, managed secrets, available actions, URLs,
   provider target names and driver extensions are dropped from the output.
+
+## Empty testing replacement resources
+
+`testing-replacement-resources-dry-run`, `-apply` and `-readback` call
+`POST /v1/products/{product}/testing-replacement-resources` using the existing
+authenticated transport. Their private `--payload-file` must be outside the
+repository and contain `product`, `context`, `instance: "testing"`, the retained
+`operation_id`, and `reason`. Optional `source_mode` is `ssh` (default, omitted
+on the wire) or `container-export`. The caller accepts no preview, production
+destination, volume, credential, domain or placement input. Initial-generation
+and release modes remain with the producer's own bounded client; these commands
+cover retained-operation replacements only.
+
+The dry run records inert retained-target preparation and returns the service's
+`plan_sha256`. Save its output privately and review it. Apply requires that
+output as `--dry-run-evidence-file`, `--expected-plan-digest`,
+`--reviewed-dry-run`, and the original stable `--idempotency-key`. Every private
+request field and the configured service are bound to the review. Apply sends
+the reviewed digest directly without replanning. The service owns its allocation
+namespace, retained-executor exclusion, authority comparisons and original-key
+provider recovery. The caller neither grants access nor calls a provider.
+
+Receipts must match the exact product, context, testing instance and retained
+operation. The plan requires preserved retained target, fresh storage, no host
+ports or host SSH mounts and no restore. Apply must echo the reviewed digest and
+provide a verified resource binding. A separate actual readback must return that
+same binding, preserved retained target, `separation_ready`, and no restore.
+Only then does apply return `accepted` with `resource_readback_matches=true`.
+Failed or changed readback returns `accepted_unverified`, exits nonzero and
+leaves that match false. Standalone readback needs the same private request and
+does not require an earlier plan or repeat creation; it can publish fresh
+qualification evidence. None of these receipts proves completed isolation,
+bootstrap, healthy web, supersession, absent historical effects or fence release.
+
+Keep the exact request, reviewed evidence, original operation and key after a
+lost exchange, malformed receipt or service refusal. No command retries itself.
+Unknown exchanges return `outcome_unknown`; refusals preserve the service code
+and trace and do not prove that an earlier attempt had no effects. Read back the
+retained allocation first. When still unverified, inspect the original operation
+and use only the producer's supported original-key recovery. Never allocate a
+second target or delete partial resources to recover. The timeout is 600 seconds.
+
+Public output contains only modes, matching flags, safety booleans, qualification
+and review digests, and bounded service diagnostics. Product, context, operation,
+reason and schedule identity remain private. Scope and service fingerprints bind
+the review without exposing those values. Runtime qualification remains with the
+owning operational issue after source delivery.
 
 ## Product repository identity
 

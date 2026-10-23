@@ -419,7 +419,7 @@ commands:
         "<private-inspect-output>",
         "--reviewed-inspect",
       ]
-    purpose: Records short-lived safety facts for a reviewed lane binding; known facts only for an exact preview.
+    purpose: Records unknown testing facts and optional retained-operation linkage for a reviewed lane binding; refuses preview assertions.
   - name: launchplane-disposable-lane-clear
     source: skill
     resource_path: scripts/launchplane-write-action.py
@@ -458,6 +458,21 @@ commands:
         "--reviewed-inspect",
       ]
     purpose: Requests the service's retained testing-operation capture for a reviewed lane binding; never rebuilds or proves historical effects absent.
+  - name: launchplane-testing-replacement-resources-dry-run
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "testing-replacement-resources-dry-run", "--payload-file", "<private-file>"]
+    purpose: Records inert preparation for empty replacement testing resources and returns a service plan for review.
+  - name: launchplane-testing-replacement-resources-apply
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "testing-replacement-resources-apply", "--payload-file", "<private-file>", "--expected-plan-digest", "<plan-sha256>", "--dry-run-evidence-file", "<private-review-file>", "--reviewed-dry-run", "--idempotency-key", "<original-key>"]
+    purpose: Submits the reviewed original-key testing allocation and independently reads back its resource binding.
+  - name: launchplane-testing-replacement-resources-readback
+    source: skill
+    resource_path: scripts/launchplane-write-action.py
+    example_argv: ["uv", "run", "scripts/launchplane-write-action.py", "testing-replacement-resources-readback", "--payload-file", "<private-file>"]
+    purpose: Requests actual testing resource qualification for the retained operation; never repeats provider creation.
   - name: launchplane-merge-train-policy-import-dry-run
     source: skill
     resource_path: scripts/launchplane-write-action.py
@@ -1165,6 +1180,11 @@ reviewed-inspect procedure and verify the situation.
   before use, including the reviewed binding and observation digests, testing
   fact limits, no retry and readback limits. Clear removes an observation;
   it does not establish disposal eligibility or resolve a hold.
+- `testing-replacement-resources-dry-run` / `-apply` / `-readback` wrap the
+  producer's retained-operation allocation and qualification. Read the
+  [replacement resource caller contract](references/write-action-helper-contract.md#empty-testing-replacement-resources)
+  before use, including private review evidence, original-key recovery and
+  the distinction between `separation_ready` and completed isolation.
 
 - `scripts/launchplane-context.py`: Structural state helper.
 - `scripts/launchplane-write-action.py`: Public-safe write-action wrapper for

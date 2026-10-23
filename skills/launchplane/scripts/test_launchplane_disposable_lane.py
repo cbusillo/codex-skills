@@ -68,8 +68,7 @@ def receipt(kind: str, **updates: object) -> dict[str, Any]:
         "record": {"mode": "record", "binding_sha256": BINDING, "observed_by": ACTOR,
                    "observer_kind": "director_agent", "usage": "unknown", "data": "unknown",
                    "production_resources": "unknown", "provider_mutation": False,
-                   "automatic_fact_collection": "unavailable", "source_coverage": COVERAGE,
-                   "reconcile_requested": False},
+                   "automatic_fact_collection": "unavailable", "source_coverage": COVERAGE},
         "clear": {"mode": "clear", "binding_sha256": BINDING, "observation_sha256": EVIDENCE_HASH,
                   "provider_mutation": False},
         "prepare-rebuild": {"mode": "prepare-rebuild", "operation_id": REPLACED_OPERATION,
@@ -77,11 +76,6 @@ def receipt(kind: str, **updates: object) -> dict[str, Any]:
     }[kind]
     return {"status": "accepted", "trace_id": f"launchplane_req_{kind}", "records": {"product_profile": "example"},
             "result": {**result, **updates}}
-
-
-def preview_record(**updates: object) -> dict[str, Any]:
-    return receipt("record", observer_kind="director_agent_preview_cleanup", reconcile_requested=True,
-                   usage="unused", data="reproducible", **updates)
 
 
 def invoke(mode: str = "inspect", *, body: dict[str, Any] | None = None,
@@ -164,18 +158,19 @@ def test_each_mode_sends_its_exact_body_and_rechecks_the_binding(mode: str) -> N
     assert output["result"]["provider_mutation"] is False
 
 
-def test_preview_record_sends_facts_and_reports_the_requested_reconcile() -> None:
-    body = scope(preview=True, usage="unused", data="reproducible", usage_evidence="PRIVATE_SENTINEL ref",
-                 data_evidence="PRIVATE_SENTINEL data")
-    code, output, calls, _ = invoke("record", body=body, inspect_body=scope(preview=True),
-                                    responses=[preview_record(), receipt("inspect")])
+@pytest.mark.parametrize("facts", [{}, {"usage": "unused", "usage_evidence": "PRIVATE_SENTINEL"}])
+def test_preview_record_refuses_before_configuration(facts: dict[str, str]) -> None:
+    code, _, calls, settings = invoke("record", body=scope(preview=True, **facts), inspect_body=scope(preview=True))
+    assert code != 0 and calls == [] and settings == 0
+
+
+def test_record_accepts_the_current_producer_receipt_and_replacement_link() -> None:
+    body = scope(replaces_operation_id=REPLACED_OPERATION)
+    code, output, calls, _ = invoke("record", body=body)
     assert code == 0, output
     assert calls[0]["body"] == {**body, "mode": "record", "expected_binding_sha256": BINDING}
-    assert output["result"]["reconcile_requested"] is True
-    assert output["result"]["usage"] == "unused"
-    assert output["request"] == {"mode": "record", "payload_source": "private_file", "known_fact_count": 2}
-    text = json.dumps(output)
-    assert "PRIVATE_SENTINEL" not in text and "preview-12" not in text and "example-testing" not in text
+    assert all(output["result"][fact] == "unknown" for fact in lane.FACTS)
+    assert REPLACED_OPERATION not in json.dumps(output)
 
 
 @pytest.mark.parametrize("observation", [None,
@@ -216,7 +211,7 @@ def test_inspect_without_stored_observation_metadata_is_invalid(removed: tuple[s
     ("record", scope(preview=True, usage="unused")),
     ("record", scope(preview=True, data="reproducible", data_evidence=" ")),
     ("record", scope(preview=True, usage="maybe", usage_evidence="ref")),
-    ("record", scope(replaces_operation_id="op-1")),
+    ("record", scope(replaces_operation_id="../escape")),
     ("clear", scope(instance="prod")),
     ("clear", scope(preview=True, instance="prod")),
     ("clear", scope(usage="unused")),
@@ -455,14 +450,6 @@ def test_preview_collect_refuses_a_recorded_fact_without_a_reference(blank: str)
     code, output, _, _ = invoke("collect", body=body, inspect_body=body, responses=[collected, receipt("inspect")])
     assert code != 0 and output["status"] == "outcome_unknown"
     assert "result" not in output or not output["result"]
-
-
-def test_preview_record_must_return_exactly_the_submitted_facts() -> None:
-    body = scope(preview=True, usage="unused", usage_evidence="ref")
-    code, output, calls, _ = invoke("record", body=body, inspect_body=scope(preview=True),
-                                    responses=[preview_record(), receipt("inspect")])
-    assert code != 0 and len(calls) == 1 and output["status"] == "outcome_unknown"
-    assert "result" not in output or output["result"] == {}
 
 
 def test_collect_projects_evidence_kind_only_and_omits_the_observer() -> None:
