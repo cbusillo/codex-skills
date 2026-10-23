@@ -365,6 +365,10 @@ Common top-level keys:
 - `githubSignals`: post-merge and security/quality signal expectations.
 - `githubSettings`: expected GitHub repository settings that snapshot helpers
   report as `ok`, `warning`, or `unavailable` without silently mutating.
+  The explicit [verified-owner settings planner](cli-reference.md#verified-owner-administration)
+  consumes `expected.deleteBranchOnMerge`, `allowMergeCommit`, `allowSquashMerge`,
+  and `allowRebaseMerge` booleans plus `prWorkflow.mergePolicy.method`.
+  Config expectations do not authorize administrative writes.
 - `cleanup`: repo-local closeout cleanup policy. Boolean fields may authorize
   routine branch/worktree hygiene, `commands` may list named cleanup or audit
   commands, and `handoffArtifacts` may describe temporary local handoff files

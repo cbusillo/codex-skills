@@ -1097,6 +1097,12 @@ and [App versus machine-user accounts](https://docs.github.com/en/apps/oauth-app
 
 ### Standard Repository Rulesets
 
+For separately authorized repository flags, collaborator removal, custom tag
+rulesets or environment secret-name reads, use the shared
+[verified-owner admin route](skills/github/references/cli-reference.md#verified-owner-administration).
+It reuses the existing owner transport, with saved plans and readback; no App
+grant or automatic permission-refusal fallback is introduced.
+
 `skills/github/scripts/gh-rulesets.py` maintains two repository rulesets on the
 default branch: one reserves updates for the repository owner and the configured
 automation App when configured, and the other requires code-owner review for `DIRECTION.md` and

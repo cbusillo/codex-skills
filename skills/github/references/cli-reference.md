@@ -514,6 +514,71 @@ stale body, closes the PR so future agents do not treat it as mergeable, and can
 delete the unused remote task branch when `--delete-branch` is explicitly
 requested.
 
+### Verified-Owner Administration
+
+Use `gh-owner-admin.py` only for separately authorized operations on the
+verified human's own repository. It reuses `RulesetClient`, clears automation
+token overrides for that explicit route, verifies `/user` against the owner,
+and verifies the repository identity. It neither changes credentials or App
+grants nor automatically falls back after an App permission refusal. A source
+implementation or fixture test authorizes no live owner call. Access removal
+and protection changes retain the Director's existing stop boundaries.
+
+For declared repository flags, run:
+
+```sh
+uv run scripts/gh-owner-admin.py settings-plan --repo OWNER/REPO --config .github/github.json --out plan.json
+uv run scripts/gh-owner-admin.py apply --plan-file plan.json --plan-digest SHA256 --confirm-owner-admin-write
+uv run scripts/gh-owner-admin.py readback --plan-file plan.json --plan-digest SHA256
+```
+
+Review `plan.json`'s before/after values and use the returned digest in the
+authorized apply. The config maps `deleteBranchOnMerge`, `allowMergeCommit`,
+`allowSquashMerge`, and `allowRebaseMerge` under `githubSettings.expected`.
+`prWorkflow.mergePolicy.method` selects exactly one of `merge`, `squash`, or
+`rebase`; conflicting explicit flags refuse. Undeclared flags stay unchanged.
+Pass the intended effective config explicitly if using local overrides.
+
+The same `plan --repo OWNER/REPO --request-file request.json --out plan.json`
+route accepts a JSON object with `method`, a repository-relative `path`, and
+optional `body`. Its supported operations are:
+
+| Method | Path | Body |
+| --- | --- | --- |
+| PATCH | empty string | Boolean branch-cleanup and merge flags above, using REST names |
+| DELETE | `/collaborators/USERNAME` | None |
+| POST | `/rulesets` | Complete custom tag ruleset |
+| PUT | `/rulesets/ID` | Complete custom tag ruleset for an existing custom tag target |
+
+For example, an explicitly approved collaborator removal uses
+`{"method":"DELETE","path":"/collaborators/USERNAME"}`. Its paged before
+image binds the exact collaborator, and readback verifies absence; unrelated
+collaborators remain untouched. GitHub documents additional removal effects,
+including private-fork deletion, in [collaborator removal](https://docs.github.com/en/rest/collaborators/collaborators#remove-a-repository-collaborator).
+This route supplies no authorization to remove access.
+
+Custom tag payloads contain `name`, `target: "tag"`, `enforcement`,
+`bypass_actors`, `conditions.ref_name.include`/`exclude`, and `rules`, following
+the [GitHub ruleset schema](https://docs.github.com/en/rest/repos/rules#create-a-repository-ruleset).
+Standard rulesets and client locks stay with `gh-rulesets.py`; required status
+checks stay with its additive commands below. A requested GitHub Actions
+Integration bypass on a personal-account repository refuses with the recorded
+provider limitation before any write. Do not substitute an empty bypass list
+for an unsupported release-workflow exception; review the supported release
+identity or omit the blocking rule under separate authorization.
+
+For an explicitly selected owner read, use
+`read --repo OWNER/REPO --path /environments/ENVIRONMENT/secrets`.
+URL-encode the environment name, including slashes. This pages and returns
+secret names only, discarding all other fields; it never reads values or keys.
+
+All writes compare the saved snapshot immediately before mutation and perform
+fresh readback. Already-present results are idempotent. GitHub supplies no
+conditional-write token here, so preflight and readback cannot lock concurrent
+writers. A refusal stops; an unknown write is never automatically retried.
+After an uncertain result, use `readback` before deciding recovery. A mismatch
+or unavailable read remains unverified. Do not replay under another identity.
+
 ### Required Status Checks
 
 The existing `gh-rulesets.py` verified repository owner writer supports

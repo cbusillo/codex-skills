@@ -64,6 +64,9 @@ resources:
   - path: scripts/gh-rulesets.py
     kind: script
     description: Plans or explicitly applies the standard repository owner, automation, and direction ruleset pair, and optionally the client branch and tag lock, with active repository owner verification.
+  - path: scripts/gh-owner-admin.py
+    kind: script
+    description: Uses the existing verified owner transport for reviewed repository settings, collaborator removal, custom tag rulesets, and environment secret-name reads.
   - path: scripts/gh-plan.py
     kind: script
     description: Shared planning issue, milestone, Project, and next-work helper used by GitHub planning workflows.
@@ -298,6 +301,31 @@ commands:
     resource_path: scripts/gh-rulesets.py
     example_argv: ["uv", "run", "scripts/gh-rulesets.py", "plan", "--repo", "OWNER/REPO"]
     purpose: Reads the active repository owner's full ruleset state and reports the idempotent standard-pair and selected client-lock changes without writing.
+  - name: github-owner-settings-plan
+    source: skill
+    resource_path: scripts/gh-owner-admin.py
+    example_argv: ["uv", "run", "scripts/gh-owner-admin.py", "settings-plan", "--repo", "OWNER/REPO", "--config", ".github/github.json", "--out", "plan.json"]
+    purpose: Saves a reviewable settings diff from declared expectations and merge policy without changing GitHub.
+  - name: github-owner-admin-plan
+    source: skill
+    resource_path: scripts/gh-owner-admin.py
+    example_argv: ["uv", "run", "scripts/gh-owner-admin.py", "plan", "--repo", "OWNER/REPO", "--request-file", "request.json", "--out", "plan.json"]
+    purpose: Plans one supported repository admin request using the verified owner.
+  - name: github-owner-admin-apply
+    source: skill
+    resource_path: scripts/gh-owner-admin.py
+    example_argv: ["uv", "run", "scripts/gh-owner-admin.py", "apply", "--plan-file", "plan.json", "--plan-digest", "SHA256", "--confirm-owner-admin-write"]
+    purpose: Applies the reviewed request after fresh state comparison and verifies its readback.
+  - name: github-owner-admin-readback
+    source: skill
+    resource_path: scripts/gh-owner-admin.py
+    example_argv: ["uv", "run", "scripts/gh-owner-admin.py", "readback", "--plan-file", "plan.json", "--plan-digest", "SHA256"]
+    purpose: Verifies the saved admin plan without repeating its write.
+  - name: github-owner-admin-read
+    source: skill
+    resource_path: scripts/gh-owner-admin.py
+    example_argv: ["uv", "run", "scripts/gh-owner-admin.py", "read", "--repo", "OWNER/REPO", "--path", "/environments/ENVIRONMENT/secrets"]
+    purpose: Returns paged environment secret names with all other provider fields discarded.
   - name: github-required-checks-plan
     source: skill
     resource_path: scripts/gh-rulesets.py
@@ -910,7 +938,13 @@ Private or unverified repositories still fail clearly; writes are unchanged.
 
 Otherwise never fall back to the active human `gh` account unless the user
 explicitly approves that one-off; then set
-`GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1` for that command only. For
+`GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1` for that command only. This
+covers unavailable, rejected or rate-limited automation authentication, never
+an API permission refusal. For separately authorized administration on a
+personally owned repository, read [verified-owner administration](references/cli-reference.md#verified-owner-administration)
+and use `gh-owner-admin.py`, which reuses the existing ruleset owner transport.
+A denial stops that action; this route is selected before a call, never used
+to replay a denied call as another identity. For
 credential sources, automation-only mode, or identity configuration, read
 [Authentication And Identity](references/cli-reference.md#authentication-and-identity).
 

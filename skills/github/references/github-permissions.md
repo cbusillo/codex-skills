@@ -34,6 +34,10 @@ Keep these roles explicit:
 - Ruleset/protection writes and full bypass-actor inspection use the verified
   repository owner through the existing ruleset helper. Administration read does not replace
   that writer evidence.
+- The explicit [owner-admin route](cli-reference.md#verified-owner-administration)
+  reuses that owner transport for reviewed repository flags, collaborator
+  removal and custom tag rulesets, plus environment secret-name reads.
+  Its operator capabilities add no App grants or automatic identity fallback.
 - Protected environment approvals retain the workflow helper's active human
   reviewer and exact environment authorization.
 - Publishing authoritative Checks, Commit statuses and Deployment records uses
