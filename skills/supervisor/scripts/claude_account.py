@@ -168,9 +168,14 @@ def resumed_session(argv: list[str]) -> str | None:
     if "--fork-session" in argv:
         return None
     native = load_module("session_liveness", Path(__file__).with_name("session_liveness.py"))
+    if argv and native.interpreter_family(argv[0]) == "javascript":
+        _, identity, uncertain = native.execution_arguments(argv)
+        if uncertain or len(identity) != 2:
+            return None
+        argv = [identity[-1], *argv[2:]]
     parsed = native.claude_invocation(argv)
-    identifier = session_id(parsed.resume)
-    return identifier if identifier and identifier == parsed.resume and all(
+    identifier = session_id(parsed.prefix_resume)
+    return identifier if identifier and identifier == parsed.prefix_resume and all(
         session_id(value) in (None, identifier) for value in parsed.candidates) else None
 
 

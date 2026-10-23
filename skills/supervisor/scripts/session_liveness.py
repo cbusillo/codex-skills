@@ -21,7 +21,7 @@ class ClaudeArguments(NamedTuple):
     candidates: list[str]
     kind: str | None
     exact: str | None
-    resume: str | None
+    prefix_resume: str | None
 
 
 def native_uuid(value):
