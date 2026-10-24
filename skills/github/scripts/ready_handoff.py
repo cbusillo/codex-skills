@@ -56,11 +56,7 @@ BOTH_CLASSES_MESSAGE = (
     f'Client test notes say both "{NOTHING_TO_TEST}" and "{CLIENT_CHANGE}:"; '
     "keep the one that matches the diff"
 )
-ENGINEERING_STEPS_MESSAGE = (
-    f'Engineering notes hold only "{NOTHING_TO_TEST}: <reason>"; steps for the '
-    f'Client mean the change is Client-visible, so name it with "{CLIENT_CHANGE}: <...>"'
-)
-LIST_ITEM = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s")
+BATCH_MEMBER_HEADING = re.compile(r"^### #[0-9]+")
 RELEASE_TESTS_MESSAGE = (
     f'"{ENGINEERING_RELEASE_TESTS}" asks the Client to check engineering work '
     f'at release; use "{NOTHING_TO_TEST}: <reason>", or name the change with '
@@ -175,10 +171,18 @@ def client_test_notes_error(pr, *, repository="") -> str:
 
 def _notes_units(body):
     for section in test_notes_sections(body):
-        notes = re.sub(r"<!--[\s\S]*?-->", "", section).strip()
-        parts = notes_contract.BATCH_MEMBER.split(notes)
-        members = ([parts[0]] if parts[0].strip() else []) + parts[2::2] if len(parts) > 1 else [notes]
-        yield from (member for member in members if member.strip())
+        unit = []
+        for line, heading, _fence in _markdown_lines(re.sub(r"<!--[\s\S]*?-->", "", section)):
+            if heading and BATCH_MEMBER_HEADING.match(line):
+                yield from _nonempty("\n".join(unit))
+                unit = []
+                continue
+            unit.append(line)
+        yield from _nonempty("\n".join(unit))
+
+
+def _nonempty(unit):
+    return [unit.strip()] if unit.strip() else []
 
 
 def _unit_lines(unit):
@@ -201,24 +205,14 @@ def _says_nothing_changes(unit) -> bool:
     )
 
 
-def _engineering_notes_go_beyond_reason(unit) -> bool:
-    lines = _unit_lines(unit)
-    start = next(index for index, line in enumerate(lines) if line.strip())
-    reason_end = next((index for index in range(start, len(lines)) if not lines[index].strip()), len(lines))
-    continues_as_list = any(LIST_ITEM.match(line) for line in lines[start + 1 : reason_end])
-    return continues_as_list or any(line.strip() for line in lines[reason_end:])
-
-
 def _unit_class_error(unit) -> str:
     if ENGINEERING_RELEASE_TESTS in _statements(unit):
         return RELEASE_TESTS_MESSAGE
     names_change = _names_client_change(unit)
     if names_change and _says_nothing_changes(unit):
         return BOTH_CLASSES_MESSAGE
-    if client_test_notes(unit).review_required:
-        return "" if names_change else NO_CLIENT_CHANGE_MESSAGE
-    if _engineering_notes_go_beyond_reason(unit):
-        return ENGINEERING_STEPS_MESSAGE
+    if client_test_notes(unit).review_required and not names_change:
+        return NO_CLIENT_CHANGE_MESSAGE
     return ""
 
 

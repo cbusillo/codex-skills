@@ -55,7 +55,8 @@ fails loudly when a reviewer could not read or returned nothing.
 - When a PR has Client test notes (or legacy Owner test notes), ask the reviewer to check its
   `Client change:` or `Nothing for the Client to test:` statement against the
   diff ([ready handoffs](../github/references/cli-reference.md#ready-handoffs)).
-  A wrong class in either direction is a blocking finding.
+  A wrong class in either direction, including engineering notes that ask the
+  Client to check anything, is a blocking finding.
 
 ## Before A Decision
 

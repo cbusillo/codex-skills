@@ -581,8 +581,6 @@ class ReadyTests(unittest.TestCase):
         for notes in (
             "Nothing for the Client to test: tooling.\n\nClient change: new button.",
             "Client change: new button.\nCheck it.\nNothing for the Client to test: tools.",
-            "Nothing for the Client to test: importer safeguards.\n\nAfter import, open a part and verify its costs.",
-            "Nothing for the Client to test: importer safeguards.\n- Open a part and verify its costs.",
             "### #10\nClient change: supplier column.\nCheck it.\n### #11\nApprove the new checkout screen.",
             "### #10\nClient change: supplier column.\nCheck it.\n### #11\nNothing for the Client to test: tools.\nClient change: new button.",
         ):
@@ -592,9 +590,13 @@ class ReadyTests(unittest.TestCase):
                     self.args.waiting_for_client = waiting
                     self.refuse()
 
-    def test_engineering_reason_may_wrap_and_mixed_batches_stay_supported(self):
-        self.reader.pr["body"] = "## Client test notes\nNothing for the Client to test: importer safeguards\nthat only engineering runs."
-        self.post()
+    def test_engineering_reasons_any_shape_and_mixed_batches_stay_supported(self):
+        for reason in ("importer safeguards\nthat only engineering runs.", "internal maintenance:\n- CI caches dependencies.\n\nNo screen changes."):
+            with self.subTest(reason=reason):
+                self.reader.pr["body"] = f"## Client test notes\nNothing for the Client to test: {reason}"
+                self.post()
+                self.writer.reset_mock()
+        self.reader.pr["body"] = "## Client test notes\nClient change: help shows batch examples.\nOpen Help.\n```markdown\n### #10\nExample\n```"
         self.writer.reset_mock()
         self.args.waiting_for_client = True
         self.reader.pr["body"] = (

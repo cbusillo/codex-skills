@@ -21,7 +21,6 @@ FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 INLINE_TEST_NOTES = re.compile(
     r"(?i)^(?:client|owner) test(?: notes|ing)(?:\*\*|[_`])*\s*(?::(?:\*\*|[_`])*|\s*$)"
 )
-BATCH_MEMBER = re.compile(r"(?m)^### #([0-9]+)[^\n]*\n")
 ENGINEERING_RELEASE_TESTS = "Engineering: merge to testing; Client tests at release."
 # "Nothing for Justin to test." means the marker but would otherwise read as steps.
 # Only the declaration's shape, so "Nothing happens when you try to test checkout."
@@ -94,7 +93,7 @@ def owner_test_notes(body: str) -> str:
 def client_test_notes(notes: str, *, review_override: bool = False) -> ClientTestNotes:
     """Validate a Client test notes section with Launchplane's merge-train rule."""
     notes = re.sub(r"<!--[\s\S]*?-->", "", notes).strip()
-    sections = BATCH_MEMBER.split(notes)
+    sections = re.split(r"(?m)^### #([0-9]+)[^\n]*\n", notes)
     if len(sections) > 1:
         member_notes = ([sections[0]] if sections[0].strip() else []) + sections[2::2]
         members = tuple(
