@@ -38,9 +38,9 @@ OPERATION_MARKER_LINE_RE = re.compile(
 )
 UNRENDERED_OR_MENTION_RE = re.compile(
     r"(?P<unrendered>^ {0,3}(?P<fence>`{3,}|~{3,})[\s\S]*?(?:^ {0,3}(?P=fence)|\Z)"
-    r"|(?P<ticks>`+)(?:(?!\n[ \t]*\n)[\s\S])*?(?P=ticks)"
+    r"|(?<![\\`])(?P<ticks>`+)(?!`)(?:(?!\n[ \t]*\n)[\s\S])*?(?<!`)(?P=ticks)(?!`)"
     r"|<!--[\s\S]*?(?:-->|\Z))"
-    r"|(?<![\w@`/.-])@(?P<mention>[A-Za-z0-9](?:-?[A-Za-z0-9]){0,38}(?:/[A-Za-z0-9_-]+)?)",
+    r"|(?<![\w@/.-])@(?P<mention>[A-Za-z0-9](?:-?[A-Za-z0-9]){0,38}(?:/[A-Za-z0-9_-]+)?)",
     re.MULTILINE,
 )
 
@@ -65,9 +65,9 @@ def quiet_mentions(body: str, *, notify: frozenset[str] = frozenset()) -> str:
 
     def quiet(match: re.Match[str]) -> str:
         login = match["mention"]
-        if login is None or login.split("/")[0].casefold() in notified:
+        if login is None or login.casefold() in notified:
             return match[0]
-        return f"`@{login}`"
+        return f"<code>@{login}</code>"
 
     return UNRENDERED_OR_MENTION_RE.sub(quiet, body)
 
@@ -1106,8 +1106,17 @@ def comment(
     collected_retry_summaries = retry_summaries if retry_summaries is not None else []
     try:
         if question_id.QUESTION_HEADING.match(body):
-            repo = resolve_repo(repo, gh_cmd=gh_cmd, operation=operation or f"github.comment.{kind}")
-            body = quiet_mentions(body, notify=frozenset({repo.split("/")[0]}))
+            operation = operation or f"github.comment.{kind}"
+            repo = resolve_repo(repo, gh_cmd=gh_cmd, operation=operation)
+            quiet_body = quiet_mentions(body, notify=frozenset({repo.split("/")[0]}))
+            if quiet_body != body and github_identity.acts_as_own_user(repo):
+                raise _local_error(
+                    "A personal-identity question must not notify the people it names; "
+                    "write each @login in backticks before exact-text approval, then post that text",
+                    operation=operation, cause="validation_error",
+                    expected_actor=effective_expected_actor(expected_actor), failed_step="input_validation",
+                )
+            body = quiet_body
         payload = _comment_impl(
             kind,
             number,

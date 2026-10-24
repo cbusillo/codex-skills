@@ -5257,7 +5257,7 @@ class ClaimTests(unittest.TestCase):
         self.args.evidence = "Confirmed"
         self.run_claim(command=PLAN.cmd_wait)
         visible = [wait_record.without_records(comment["body"]).strip() for comment in self.comments[-2:]]
-        self.assertEqual(visible, ["Waiting for `@mike-b` to confirm the run. This ends when `@mike-b` replies on the issue.",
+        self.assertEqual(visible, ["Waiting for <code>@mike-b</code> to confirm the run. This ends when <code>@mike-b</code> replies on the issue.",
                                    "Nothing here is waiting on a person or event."])
 
     def test_wait_review_requires_evidence_and_an_ending_condition_before_writes(self):

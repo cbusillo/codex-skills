@@ -1264,8 +1264,33 @@ def test_question_quotes_people_without_notifying_anyone_but_the_owner() -> None
         return success(comment_body(1001, body=body["body"]))
 
     with_call_stub(callback, lambda _calls: github_comment.comment("issue", 42, draft, repo="owner/repo", gh_cmd="fake-gh"))
-    assert posted == [draft.replace("@mike-b", "`@mike-b`").replace("@org/team", "`@org/team`")]
+    assert posted == [draft.replace("@mike-b", "<code>@mike-b</code>").replace("@org/team", "<code>@org/team</code>")]
 
+
+
+def test_quiet_mentions_reach_mentions_markdown_would_still_render() -> None:
+    cases = {
+        "\\`draft for @mike-b\\`": "\\`draft for <code>@mike-b</code>\\`",
+        "`draft for @mike-b``": "`draft for <code>@mike-b</code>``",
+        "x `@mike-b": "x `<code>@mike-b</code>",
+        "@acme/support and @acme": "<code>@acme/support</code> and @acme",
+    }
+    for text, quiet in cases.items():
+        assert github_comment.quiet_mentions(text, notify=frozenset({"acme"})) == quiet, text
+
+
+def test_personal_question_refuses_text_that_would_notify_someone() -> None:
+    def run(calls: list[dict[str, Any]]) -> None:
+        with patch.object(github_comment.github_identity, "acts_as_own_user", return_value=True):
+            try:
+                github_comment.comment("issue", 42, "Owner question: Q90. Reply to @mike-b?", repo="owner/repo", gh_cmd="fake-gh")
+            except github_comment.CommentError as error:
+                assert error.failure.write_outcome == "not_started"
+            else:
+                raise AssertionError("approved personal-identity text must never change silently")
+        assert not calls, calls
+
+    with_call_stub(lambda *_args, **_kwargs: success({"login": "fixture-automation"}), run)
 
 def test_ordinary_comment_keeps_its_mentions() -> None:
     reply = "@mike-b Fixed, thanks."
@@ -1322,6 +1347,8 @@ TESTS: list[Callable[[], None]] = [
     test_numbered_questions_are_unchanged_without_counter_access,
     test_question_quotes_people_without_notifying_anyone_but_the_owner,
     test_ordinary_comment_keeps_its_mentions,
+    test_quiet_mentions_reach_mentions_markdown_would_still_render,
+    test_personal_question_refuses_text_that_would_notify_someone,
     test_personal_question_uses_chat_id_before_exact_text_approval,
     test_recent_reconciliation_includes_clock_skew_boundary_and_paginates,
     test_append_filters_old_pages_but_dedupe_and_edit_last_keep_full_history,
