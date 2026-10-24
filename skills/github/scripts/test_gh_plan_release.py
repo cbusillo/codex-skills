@@ -10,6 +10,7 @@ import copy
 import shlex
 import json
 import os
+import re
 import tempfile
 import subprocess
 from datetime import datetime, timedelta, timezone
@@ -1576,6 +1577,13 @@ class OwnReleaseTests(ReleaseHarness):
         self.assertEqual((parsed.claim_comment, parsed.session),
                          (result["claim_comment"]["comment"]["id"], result["claim"]["session"]))
 
+    def test_claim_comment_is_searchable_by_its_session_outside_markup(self):
+        self.f.comments = []
+        self.f.run_claim()
+        result = self.f.emitted.call_args.args[0]
+        posted = next(c for c in self.f.comments if c["id"] == result["claim_comment"]["comment"]["id"])
+        self.assertIn(result["claim"]["session"], re.sub(r"<!--.*?-->", "", posted["body"], flags=re.S))
+
     def test_release_discovers_other_branch_prs_from_source_links(self) -> None:
         self.f.pulls = [
             {"number": 99, "state": "open", "user": {"login": BOT}, "created_at": "2026-10-01T01:00:00Z",
@@ -1617,6 +1625,14 @@ class OwnReleaseTests(ReleaseHarness):
         self.run_own_release()
         for pull in self.f.pulls:
             self.assertNotIn(pull["html_url"], self.f.comments[-1]["body"])
+
+    def test_release_leaves_the_merge_train_batch_to_the_train(self) -> None:
+        self.f.pulls = [{"number": 101, "state": "open", "user": {"login": BOT}, "created_at": "2026-10-01T01:00:00Z",
+                         "body": "Launchplane batch: #99\n\nCloses #42",
+                         "head": {"ref": CLAIM.TRAIN_BRANCH_PREFIX + "owner/repo/main/batch", "repo": {"full_name": "owner/repo"}},
+                         "base": {"repo": {"full_name": "owner/repo"}}, "html_url": "https://github.com/owner/repo/pull/101"}]
+        self.run_own_release()
+        self.assertNotIn(self.f.pulls[0]["html_url"], self.f.comments[-1]["body"])
 
     def test_release_excludes_other_sessions_prs_without_transferring_ownership(self) -> None:
         url = "https://github.com/owner/repo/pull/99"

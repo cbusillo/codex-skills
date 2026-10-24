@@ -2464,7 +2464,7 @@ def release_retained_prs(issue: dict[str, Any], source: dict[str, Any], actor: s
     ambiguous = []
     for pull in by_url.values():
         if (pull.get("state") != "open" and not (pull.get("state") == "closed" and pull.get("merged_at"))
-                or (pull.get("user") or {}).get("login") != actor):
+                or (pull.get("user") or {}).get("login") != actor or github_plan_claim.is_train_batch(pull)):
             continue
         head_repo = ((pull.get("head") or {}).get("repo") or {}).get("full_name", "")
         base_repo = ((pull.get("base") or {}).get("repo") or {}).get("full_name", "")

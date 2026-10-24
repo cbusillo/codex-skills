@@ -317,15 +317,24 @@ Keep the journal with its session; another host also needs the complete native
 lineage and recorded claim results.
 
 For older helpers, the reader reconstructs bounded literal invocations and
-native outputs without executing recorded programs. Missing or ambiguous
-claim evidence stays conditional while known targets are checked. When
-`unresolved_invocations` appears, or when recovering older/remote-host evidence,
+native outputs without executing recorded programs. A command it cannot decode,
+such as one built from a shell variable or a code-mode cell, is settled by
+GitHub's own record instead: every claim comment shows its session ID, so one
+search of the App's account for that ID finds the session's claims, and each
+one found is checked like any other target. The search settles only commands
+whose last transcript entry is at least 10 minutes old, only when it returns
+complete results that include every claim the check already knows, and only
+when the App has a single installation and no client App. Otherwise the command
+stays in `unresolved_invocations`, the reason is in `coverage.search_errors`,
+and the verdict stays conditional while known targets are checked. When
+`unresolved_invocations` remains, or when recovering older/remote-host evidence,
 read [recorded claim discovery](references/claim-discovery.md) for supported
 program/data boundaries and recovery. Use an explicit literal `--repo OWNER/REPO`
 or qualified record reference in claim commands.
 
-The check reads only those issues and PRs, including closed records. It never
-inventories App installations or scans other repositories. It verifies every
+The check reads those issues and PRs, including closed records, plus the one
+search and the App's installation list when a command needs settling. It never
+scans repositories. It verifies every
 claim on each target against its exact authored release or validated Supervisor
 release, and checks each retained PR's handoff. Repeat `--session` and
 `--transcript` for any other session to include. A transcript belonging to
@@ -345,7 +354,11 @@ The Supervisor runs the same check for any session.
 
 An open PR need not merge before a session exits. Its exact release names the
 retained PR, and the check verifies the same repository, source identity and
-independent issue link under the successor's handoff contract. A PR-only claim
+independent issue link under the successor's handoff contract. Retained work is
+a PR on the claim's branch, or an open PR by the automation identity that links
+the issue and is named in the release or opened during the claim, the same rule
+`gh-plan.py release` uses. A PR the release mentions only as context, and a
+merge-train batch PR (head under `launchplane/train/`), are not retained work. A PR-only claim
 uses the PR itself as its work record. Preserve the branch, worktree and the
 next actor's custody.
 
