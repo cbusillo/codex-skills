@@ -7496,14 +7496,22 @@ def trusted_automation_proposal_request(args: argparse.Namespace) -> dict[str, o
 
 
 def enrollment_proposal_request(args: argparse.Namespace) -> dict[str, object]:
-    if args.repository_id <= 0:
+    base_branches = args.base_branch or ["main"] * len(args.repo)
+    if len(args.repository_id) != len(args.repo) or len(base_branches) != len(args.repo):
+        raise ValueError("unpaired_enrollment_arguments")
+    if any(repository_id <= 0 for repository_id in args.repository_id):
         raise ValueError("invalid_repository_id")
+    enrollments = [
+        {"repository": _proposal_repository(repository), "repository_id": repository_id, "base_branch": public_identifier(branch)}
+        for repository, repository_id, branch in zip(args.repo, args.repository_id, base_branches, strict=True)
+    ]
+    if len({(entry["repository"].casefold(), entry["base_branch"]) for entry in enrollments}) != len(enrollments):
+        raise ValueError("unpaired_enrollment_arguments")
     return {
         **_merge_train_proposal_request(args),
-        "repository": _proposal_repository(args.repo),
-        "repository_id": args.repository_id,
+        "enrollments": enrollments,
         "like_repository": _proposal_repository(args.like),
-        "base_branch": public_identifier(args.base_branch),
+        "like_base_branch": public_identifier(args.like_base_branch),
     }
 
 
@@ -7567,23 +7575,30 @@ def enrollment_proposal_body(
     *, args: argparse.Namespace, request: dict[str, object], provider_payload: dict[str, Any]
 ) -> dict[str, object]:
     record, policy, targets = _active_merge_train_policy(args, provider_payload)
-    base_branch = request["base_branch"]
-    if any(_is_train_target(target, request["repository"], base_branch) for target in targets):
-        raise ValueError("repository_already_enrolled")
-    templates = [target for target in targets if _is_train_target(target, request["like_repository"], base_branch)]
+    enrollments = cast(list[dict[str, Any]], request["enrollments"])
+    templates = [
+        target for target in targets if _is_train_target(target, request["like_repository"], request["like_base_branch"])
+    ]
     if len(templates) != 1:
         raise ValueError("template_not_enrolled")
-    candidate = copy.deepcopy(templates[0])
-    github_token = _require_dict(candidate.get("github_token"))
-    if not _uses_only_github_app(github_token):
+    if not _uses_only_github_app(_require_dict(templates[0].get("github_token"))):
         raise ValueError("template_not_github_app")
+    for entry in enrollments:
+        if any(_is_train_target(target, entry["repository"], entry["base_branch"]) for target in targets):
+            raise ValueError("repository_already_enrolled")
+    targets.extend(_enrollment_target(templates[0], entry) for entry in enrollments)
+    request["changed_target_count"] = len(enrollments)
+    return _merge_train_proposal_envelope(args=args, request=request, active_record=record, policy=policy)
+
+
+def _enrollment_target(template: dict[str, Any], entry: dict[str, Any]) -> dict[str, Any]:
+    candidate = copy.deepcopy(template)
     for template_repository_setting in TEMPLATE_REPOSITORY_SETTINGS:
         candidate.pop(template_repository_setting, None)
-    candidate["repository"] = request["repository"]
-    github_token["github_app"]["repository_id"] = request["repository_id"]
-    targets.append(candidate)
-    request["changed_target_count"] = 1
-    return _merge_train_proposal_envelope(args=args, request=request, active_record=record, policy=policy)
+    candidate["repository"] = entry["repository"]
+    candidate["base_branch"] = entry["base_branch"]
+    candidate["github_token"]["github_app"]["repository_id"] = entry["repository_id"]
+    return candidate
 
 
 def trusted_automation_proposal_body(
@@ -11074,12 +11089,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     trusted_proposal.add_argument("--repo", action="append", required=True, help="Enrolled OWNER/REPO; repeat per repository.")
     enrollment_proposal = subparsers.add_parser(
         "merge-train-enrollment-propose",
-        help="Propose enrolling one repository branch with an enrolled repository's settings; never approve or apply.",
+        help="Propose enrolling repository branches with an enrolled repository's settings; never approve or apply.",
     )
-    enrollment_proposal.add_argument("--repo", required=True, help="OWNER/REPO to enroll.")
-    enrollment_proposal.add_argument("--repository-id", type=int, required=True, help="Its immutable GitHub repository id.")
+    enrollment_proposal.add_argument("--repo", action="append", required=True, help="OWNER/REPO to enroll; repeat per repository.")
+    enrollment_proposal.add_argument(
+        "--repository-id", type=int, action="append", required=True, help="Immutable GitHub repository id, one per --repo in order."
+    )
+    enrollment_proposal.add_argument("--base-branch", action="append", help="Branch to enroll, one per --repo in order; default main.")
     enrollment_proposal.add_argument("--like", required=True, help="Enrolled OWNER/REPO whose target settings to copy.")
-    enrollment_proposal.add_argument("--base-branch", default="main")
+    enrollment_proposal.add_argument("--like-base-branch", default="main", help="The template's enrolled branch.")
     for merge_train_proposal in (trusted_proposal, enrollment_proposal):
         merge_train_proposal.add_argument("--reason", required=True)
         merge_train_proposal.add_argument("--related-issue", default="")
