@@ -660,15 +660,15 @@ For a repository with no CI checks configured, add `--allow-no-checks` after
 verifying its required local gates. This never bypasses a pending, failing or
 unavailable check or the watcher's required-check verification.
 
-For an owner-side landing PR sharing a source SHA with an outside fork, checks
+For a same-repository landing PR sharing a source SHA with an outside fork, checks
 JSON can list an unexecuted fork approval under `approvalHeldForkRuns`;
 watcher snapshots use `approval_held_fork_runs`. Such a run is excluded from
 failure counts and failed-run/retry recommendations only after proving the
-current owner PR's repository, head and target, a matching passed owner workflow
+current PR's repository, head and target, a matching passed workflow on that PR
 with successful current-attempt check evidence, and an empty all-attempt jobs
 inventory for the outside run. The held run must have no check runs and must
 not list the current PR. This approves or retries nothing. Missing identity,
-unavailable reads, actual fork jobs or failures, and pending or failed owner
+unavailable reads, actual fork jobs or failures, and pending or failed same-repository
 executions remain blocking. Other workflow execution identities stay separate.
 
 The shared `github/scripts/ready_handoff.py` module owns the format and parser
