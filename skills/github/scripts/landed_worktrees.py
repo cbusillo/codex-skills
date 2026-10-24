@@ -219,6 +219,7 @@ def unless_fast_forwarded(pull: dict, pr_commits: set[str]) -> set[str]:
 
 def open_claims(reader, github_read, repo: str, number: int, pull: dict) -> str:
     import github_plan_landing
+    import github_plan_status.references
 
     def release_evidence(evidence_repo, _issue, comment_id):
         try:
@@ -228,7 +229,7 @@ def open_claims(reader, github_read, repo: str, number: int, pull: dict) -> str:
                 return None
             raise
 
-    records = [(repo, number), *github_plan_landing.linked_issues(github_plan_claim, repo, pull)]
+    records = [(repo, number), *github_plan_status.references.linked_issues(repo, pull)]
     base = pull.get("base") or {}
     if pull.get("merged_at") and base.get("ref") == (base.get("repo") or {}).get("default_branch"):
         records += github_plan_landing.closing_references(reader, repo, number)[1]

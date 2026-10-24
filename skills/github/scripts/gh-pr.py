@@ -23,12 +23,13 @@ import github_api as github_api_core
 import github_comment as github_comment_core
 import github_read as github_read_core
 import github_identity
-import github_plan_claim
 import github_plan_landing
+import github_plan_status.references
 import github_plan_wait
 from ready_handoff import (
     UNCONFIRMED_CLIENT_ACCEPTANCE_MESSAGE,
     client_test_notes_error,
+    handoff_class_error,
     handoff_body,
     requires_client_acceptance,
     review_evidence_gap,
@@ -644,6 +645,9 @@ def cmd_ready(args: argparse.Namespace) -> dict[str, Any]:
     notes_error = client_test_notes_error(current, repository=repo)
     if notes_error:
         raise PrHelperError(notes_error, repo=repo, pr=number)
+    class_error = handoff_class_error(current, waiting_for_client=args.waiting_for_client)
+    if class_error:
+        raise PrHelperError(class_error, repo=repo, pr=number)
     if not args.waiting_for_client and requires_client_acceptance(current, checks["checkRuns"], repository=repo):
         if not any(
             check.get("name") == "launchplane/owner-review"
@@ -697,7 +701,7 @@ def ready_review_gap(repo: str, number: int, pr: dict[str, Any]) -> str:
 
 def unowned_linked_issues(repo: str, number: int, pr: dict[str, Any]) -> list[str]:
     owner = repo.split("/")[0].casefold()
-    linked = [ref for ref in github_plan_landing.linked_issues(github_plan_claim, repo, pr)
+    linked = [ref for ref in github_plan_status.references.linked_issues(repo, pr)
               if ref[0].split("/")[0].casefold() == owner]
     if not linked:
         return []

@@ -731,30 +731,35 @@ still requires current-head acceptance. This read grants no release authority.
 Read-back and uncertain-comment recovery
 use the [shared retry policy](#shared-retry-policy); do not replay an unknown write.
 
-For engineering work that merges to testing now and has Client checks at release,
-start the notes with this exact plain line, followed by real release test steps:
+The notes make one statement that classifies the PR
+([Q762](https://github.com/cbusillo/direction/issues/98#issuecomment-6386995776)),
+and the [Client Products rules](../../supervisor/SKILL.md#client-products) say
+what each class needs:
 
 ```markdown
 ## Client test notes
-Engineering: merge to testing; Client tests at release.
+Client change: each part shows its supplier costs.
 
-After the real-data import, check the imported parts and supplier costs.
+Open a part and check its supplier costs.
 ```
 
-The notes classify the PR: `Nothing for the Client to test: <reason>` and this
-engineering marker allow ordinary checked `ready`. The legacy marker
-`Nothing for the owner to test` also accepts `:` or `.` followed by a nonempty
-reason. Other "nothing to test" wording, such as naming the Client
-(`Nothing for Justin to test.`), is a notes error rather than test steps, so
-`ready` refuses and the `owner-review` check fails with the exact wording to
-use. Unmarked test steps need Client acceptance before merge. Never use
-the engineering marker when the Client
-must approve wording, screens, workflows or data before merge; keep those PRs on
-`--waiting-for-client`. A review label, a non-neutral review check, or another
-section or batch member requiring acceptance still keeps that gate. The marker
-needs real steps and applies only at the start of its notes section or batch
-member, outside comments and code examples. Every release still needs the
-Client's acceptance; engineering classification grants no release authority.
+Client-visible notes carry that plain `Client change:` line, naming what the
+Client will see or do differently. Engineering notes say
+`Nothing for the Client to test: <reason>`, the reason saying why nothing
+changes for the Client; the legacy `Nothing for the owner to test` also accepts
+`:` or `.`. Other "nothing to test" wording, such as
+`Nothing for Sam to test.`, is a notes error, so `ready` refuses and the
+`owner-review` check fails with the exact wording to use. Each notes section or
+batch member makes its own statement. `ready` and the auto-enqueue watcher
+refuse a class that disagrees with it: Client test steps or
+`--waiting-for-client` without `Client change:`, a unit holding both
+statements, or release test steps on engineering work
+(`Engineering: merge to testing; Client tests at release.`). The review by
+another model checks the statement and any engineering reason against the
+diff. The release review is not a safety net. A review label, a non-neutral review check, or another
+section or batch member requiring acceptance still keeps that gate. Every
+release still needs the Client's acceptance; engineering classification grants
+no release authority.
 
 `github/scripts/github_plan_status/client_test_notes.py` owns the marker and body-level parser, exported
 by the existing `codex-skills-plan-status` package alongside planning status.

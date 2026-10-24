@@ -494,6 +494,7 @@ class ReadyTests(unittest.TestCase):
 
     def test_waiting_for_client_invalidates_ready_without_bypassing_ci(self):
         self.args.waiting_for_client = True
+        self.reader.pr["body"] = "## Client test notes\nClient change: a new feature.\nTry it."
         self.reader.pr["labels"] = [{"name": "owner-review"}]
         self.reader.checks.append({"id": 2, "name": "launchplane/owner-review", "status": "in_progress", "conclusion": None})
         _, waiting = self.post()
@@ -515,7 +516,7 @@ class ReadyTests(unittest.TestCase):
     def test_real_client_notes_require_acceptance_without_label(self):
         for heading in ("Client", "Owner"):
             with self.subTest(heading=heading):
-                self.reader.pr["body"] = f"## {heading} test notes\nTry the new feature."
+                self.reader.pr["body"] = f"## {heading} test notes\nClient change: a new feature.\nTry the new feature."
                 message = self.refuse()
                 self.assertIn("--waiting-for-client", message)
                 self.assertIn(ready_handoff.NOTHING_TO_TEST, message)
@@ -524,7 +525,7 @@ class ReadyTests(unittest.TestCase):
         self.assertFalse(latest_ready(self.reader.pr, [comment], {"engineer"}))
 
     def test_standing_product_notes_allow_ready_but_explicit_holds_remain(self):
-        self.reader.pr["body"] = "## Client test notes\nTry the new feature."
+        self.reader.pr["body"] = "## Client test notes\nClient change: a new feature.\nTry the new feature."
         self.standing.return_value = True
         _, comment = self.post()
         self.standing.assert_called_once_with(REPO)
@@ -542,41 +543,70 @@ class ReadyTests(unittest.TestCase):
         self.reader.pr["body"] = "## Client test notes\nNothing for the Client to test: automated tooling."
         self.post()
 
-    def test_release_testing_engineering_notes_allow_checked_ready(self):
-        self.reader.pr["body"] = (
-            "## Client test notes\n"
-            f"{ready_handoff.ENGINEERING_RELEASE_TESTS}\n\n"
-            "After the real-data import, check the imported parts and supplier costs."
-        )
+    def test_engineering_handoff_refuses_notes_asking_the_client_to_check_at_release(self):
+        release_steps = f"{ready_handoff.ENGINEERING_RELEASE_TESTS}\n\nAfter the real-data import, check the imported parts."
         self.client_release.return_value = True
         self.reader.checks.append({"id": 2, "name": "launchplane/owner-review", "status": "completed", "conclusion": "neutral"})
-        _, comment = self.post()
-        self.assertTrue(latest_ready(self.reader.pr, [comment], {"engineer"}))
-        self.assertFalse(ready_handoff.requires_client_acceptance(self.reader.pr, self.reader.checks, repository=REPO))
-        self.standing.assert_not_called()
+        for notes in (release_steps, f"### #10\n{release_steps}\n### #11\nNothing for the Client to test: internal tooling."):
+            for waiting in (False, True):
+                with self.subTest(notes=notes, waiting=waiting):
+                    self.reader.pr["body"] = f"## Client test notes\n{notes}"
+                    self.args.waiting_for_client = waiting
+                    self.assertIn(ready_handoff.NOTHING_TO_TEST, self.refuse())
 
-    def test_engineering_marker_preserves_explicit_client_review_and_other_sections(self):
-        engineering = (
-            f"{ready_handoff.ENGINEERING_RELEASE_TESTS}\n"
-            "Check the imported parts at release."
-        )
-        for body, labels, checks in (
-            (f"## Client test notes\n{engineering}", [{"name": "owner-review"}], []),
-            (f"## Client test notes\n{engineering}", [], [{"id": 2, "name": "launchplane/owner-review", "status": "in_progress"}]),
-            (f"## Client test notes\n{engineering}", [], [{"id": 2, "name": "launchplane/owner-review", "status": "completed", "conclusion": "failure"}]),
-            (f"## Client test notes\n{engineering}\n## Owner test notes\nApprove the wording before merge.", [], []),
-            (f"## Client test notes\n### #10\n{engineering}\n### #11\nApprove the screen before merge.", [], []),
+    def test_client_handoff_needs_a_named_client_change(self):
+        self.args.waiting_for_client = True
+        for body in (
+            "## Client test notes\nNothing for the Client to test: importer safeguards.",
+            "## Client test notes\nEngineering should run the importer checks.",
+            "## Client test notes\n<!-- Client change: draft -->\nTry the preview.",
+            "## Client test notes\n```\nClient change: example\n```\nTry the preview.",
+            "## Client test notes\nClient change:\nTry the preview.",
+            "Client change: outside the notes.\n\n## Client test notes\nTry the preview.",
         ):
-            with self.subTest(body=body, labels=labels, checks=checks):
-                self.reader.pr.update(body=body, labels=labels)
-                self.reader.checks = [dict(OWNER_REVIEW_ACCEPTED)] if labels else []
-                self.reader.checks = [{"id": 1, "name": "unit", "status": "completed", "conclusion": "success"}] + checks + self.reader.checks
-                if labels:
-                    self.assertTrue(ready_handoff.requires_client_acceptance(self.reader.pr, self.reader.checks, repository=REPO))
-                    self.post()
-                    self.writer.reset_mock()
-                    self.reader.checks.pop()
-                self.refuse()
+            with self.subTest(body=body):
+                self.reader.pr["body"] = body
+                self.assertIn(ready_handoff.CLIENT_CHANGE, self.refuse())
+        self.reader.pr["body"] = "## Client test notes\nClient change: the parts list shows supplier costs.\n\nOpen a part."
+        self.post()
+
+    def test_client_steps_without_named_change_refuse_even_after_acceptance(self):
+        self.reader.checks.append(dict(OWNER_REVIEW_ACCEPTED))
+        self.reader.pr["body"] = "## Client test notes\nOpen a part and check its supplier costs."
+        self.assertIn(ready_handoff.CLIENT_CHANGE, self.refuse())
+        self.reader.pr["body"] = "## Client test notes\n- Client change: parts show supplier costs.\n- Open a part."
+        self.post()
+
+    def test_each_notes_unit_keeps_one_matching_statement(self):
+        for notes in (
+            "Nothing for the Client to test: tooling.\n\nClient change: new button.",
+            "Client change: new button.\nCheck it.\nNothing for the Client to test: tools.",
+            "### #10\nClient change: supplier column.\nCheck it.\n### #11\nApprove the new checkout screen.",
+            "### #10\nClient change: supplier column.\nCheck it.\n### #11\nNothing for the Client to test: tools.\nClient change: new button.",
+        ):
+            for waiting in (False, True):
+                with self.subTest(notes=notes, waiting=waiting):
+                    self.reader.pr["body"] = f"## Client test notes\n{notes}"
+                    self.args.waiting_for_client = waiting
+                    self.refuse()
+
+    def test_engineering_reasons_any_shape_and_mixed_batches_stay_supported(self):
+        for reason in ("importer safeguards\nthat only engineering runs.", "internal maintenance:\n- CI caches dependencies.\n\nNo screen changes."):
+            with self.subTest(reason=reason):
+                self.reader.pr["body"] = f"## Client test notes\nNothing for the Client to test: {reason}"
+                self.post()
+                self.writer.reset_mock()
+        self.args.waiting_for_client = True
+        for notes in (
+            "### #10\nClient change: supplier column.\nCheck it.\n### #11\nNothing for the Client to test: tools.",
+            "Client change: help shows batch examples.\nOpen Help.\n```markdown\n### #10\nExample\n```",
+            f"Client change: help shows examples.\nRead them:\n> {ready_handoff.NOTHING_TO_TEST}: tools.\n> {ready_handoff.ENGINEERING_RELEASE_TESTS}",
+            f"Client change: help shows examples.\nRead them:\n\n    {ready_handoff.NOTHING_TO_TEST}: tools.",
+        ):
+            with self.subTest(notes=notes):
+                self.reader.pr["body"] = f"## Client test notes\n{notes}"
+                self.post()
+                self.writer.reset_mock()
 
     def test_engineering_marker_needs_plain_first_line_and_release_steps(self):
         marker = ready_handoff.ENGINEERING_RELEASE_TESTS
@@ -584,14 +614,6 @@ class ReadyTests(unittest.TestCase):
             with self.subTest(notes=notes):
                 self.reader.pr["body"] = f"## Client test notes\n{notes}"
                 self.refuse()
-
-    def test_all_engineering_batch_members_allow_ready(self):
-        self.reader.pr["body"] = (
-            "## Client test notes\n### #10\n"
-            f"{ready_handoff.ENGINEERING_RELEASE_TESTS}\nCheck the imported parts.\n"
-            "### #11\nNothing for the Client to test: internal tooling."
-        )
-        self.post()
 
     def test_completed_neutral_advisory_allows_docs_handoff(self):
         self.reader.pr["body"] = "## Client test notes\nNothing for the Client to test: documentation only."

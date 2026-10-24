@@ -43,8 +43,24 @@ MISSING_CLIENT_TEST_NOTES_MESSAGE = (
 UNCONFIRMED_CLIENT_ACCEPTANCE_MESSAGE = (
     "Client acceptance is not confirmed; use --waiting-for-client, or for "
     'engineering-only changes use "Nothing for the Client to test: <reason>" '
-    f'or start release test steps with "{ENGINEERING_RELEASE_TESTS}" '
     'under "## Client test notes"'
+)
+CLIENT_CHANGE = "Client change"
+CLIENT_CHANGE_LINE = re.compile(rf"^{CLIENT_CHANGE}:[ \t]*\S")
+NO_CLIENT_CHANGE_MESSAGE = (
+    f'Client test notes name no Client-visible change; add "{CLIENT_CHANGE}: '
+    '<what the Client will see or do differently>", or if nothing changes for '
+    f'the Client use "{NOTHING_TO_TEST}: <reason>" and plain ready'
+)
+BOTH_CLASSES_MESSAGE = (
+    f'Client test notes say both "{NOTHING_TO_TEST}" and "{CLIENT_CHANGE}:"; '
+    "keep the one that matches the diff"
+)
+BATCH_MEMBER_HEADING = re.compile(r"^### #[0-9]+")
+RELEASE_TESTS_MESSAGE = (
+    f'"{ENGINEERING_RELEASE_TESTS}" asks the Client to check engineering work '
+    f'at release; use "{NOTHING_TO_TEST}: <reason>", or name the change with '
+    f'"{CLIENT_CHANGE}: <...>" and use --waiting-for-client'
 )
 REVIEW_CONFIG_PATH = ".github/github.json"
 # Leads sessions and the Supervisor already write; see model-review Reporting.
@@ -150,6 +166,67 @@ def client_test_notes_error(pr, *, repository="") -> str:
         return ""
     if repository and client_release_repository(repository):
         return MISSING_CLIENT_TEST_NOTES_MESSAGE
+    return ""
+
+
+def _notes_units(body):
+    for section in test_notes_sections(body):
+        unit = []
+        for line, heading, _fence in _markdown_lines(re.sub(r"<!--[\s\S]*?-->", "", section)):
+            if heading and BATCH_MEMBER_HEADING.match(line):
+                yield from _nonempty("\n".join(unit))
+                unit = []
+                continue
+            unit.append(line)
+        yield from _nonempty("\n".join(unit))
+
+
+def _nonempty(unit):
+    return [unit.strip()] if unit.strip() else []
+
+
+def _unit_lines(unit):
+    return [line for line, heading, fence in _markdown_lines(unit) if not fence and not heading]
+
+
+def _statements(unit):
+    return [_strip_note_decoration(line.strip()) for line in _unit_lines(unit) if line.strip() and not _is_example(line)]
+
+
+def _is_example(line) -> bool:
+    return line.startswith(("    ", "\t")) or line.lstrip().startswith(">")
+
+
+def _names_client_change(unit) -> bool:
+    return any(CLIENT_CHANGE_LINE.match(line) for line in _statements(unit))
+
+
+def _says_nothing_changes(unit) -> bool:
+    return any(
+        line.casefold().startswith(marker.casefold())
+        for line in _statements(unit)
+        for marker in notes_contract.NO_TEST_MARKERS
+    )
+
+
+def _unit_class_error(unit) -> str:
+    if ENGINEERING_RELEASE_TESTS in _statements(unit):
+        return RELEASE_TESTS_MESSAGE
+    names_change = _names_client_change(unit)
+    if names_change and _says_nothing_changes(unit):
+        return BOTH_CLASSES_MESSAGE
+    if client_test_notes(unit).review_required and not names_change:
+        return NO_CLIENT_CHANGE_MESSAGE
+    return ""
+
+
+def handoff_class_error(pr, *, waiting_for_client=False) -> str:
+    units = tuple(_notes_units(pr.get("body") or ""))
+    error = next((error for error in map(_unit_class_error, units) if error), "")
+    if error:
+        return error
+    if waiting_for_client and not any(map(_names_client_change, units)):
+        return NO_CLIENT_CHANGE_MESSAGE
     return ""
 
 
