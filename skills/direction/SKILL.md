@@ -19,6 +19,9 @@ resources:
   - path: references/stranded-work.md
     kind: reference
     description: Daily read-only stranded-work sweep, coverage limits and reuse of existing Supervisor Discord delivery.
+  - path: scripts/repository_setup.py
+    kind: script
+    description: Read-only list of the standard setup each non-archived repository is missing, and who fixes each gap.
   - path: scripts/question_id.py
     kind: script
     description: Allocates unique Director question IDs from one shared locked counter, seeded from current GitHub discussions.
@@ -48,6 +51,11 @@ commands:
     resource_path: scripts/director_waits.py
     example_argv: ["uv", "run", "scripts/director_waits.py", "--owner", "OWNER"]
     purpose: Read all visible open Director waits with age and possible staleness, without stamping a turn or audit.
+  - name: direction-repository-setup
+    source: skill
+    resource_path: scripts/repository_setup.py
+    example_argv: ["uv", "run", "scripts/repository_setup.py", "--owner", "OWNER"]
+    purpose: Report missing merge-train enrollment, Renovate, standard rulesets, App installation, checkouts and Codex folder trust without fixing anything.
   - name: director-question-next
     source: skill
     resource_path: scripts/question_id.py
@@ -193,6 +201,23 @@ or `plan:waiting` label and waits that already have a posted question:
 ```bash
 uv run <skill-dir>/scripts/director_waits.py --owner OWNER
 ```
+
+Also report the standard setup each repository is missing, so a new
+repository is not forgotten:
+
+```bash
+uv run <skill-dir>/scripts/repository_setup.py --owner OWNER
+```
+
+It reads every repository the weekly audit lists and reports, per repository,
+missing merge-train enrollment, Renovate configuration, the standard ruleset
+pair, the automation App installation, a checkout under `~/Developer`, and
+Codex folder trust in each configured Codex home on this host. Claude folder
+trust is not checked: the Supervisor launcher writes it. Each fix names its
+helper and whether an agent or the Director does it. When nothing is missing
+it prints one line. It changes nothing; fixing a gap is ordinary work, except
+that enrollment needs the Director's approval of the proposal. Exit 3 means a
+read failed; those repositories are listed as unread, not as set up.
 
 Cross-repository searches and audit repository discovery exclude archived repositories
 by default. Add `--include-archived` to `gh-plan.py search`, `director_waits.py`,
