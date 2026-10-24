@@ -6,9 +6,9 @@
 import json
 import tempfile
 import unittest
-from unittest import mock
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 import direction_audit as audit
 import repository_setup as setup
