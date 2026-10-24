@@ -86,6 +86,15 @@ if ((${#helper_tests[@]} == 0)); then
 	exit 1
 fi
 
+# Ordinary pull requests run the helpers their change reaches. Merge-train
+# candidates, other events and any selection failure run every helper.
+if selected_helpers=$(printf '%s\n' "${helper_tests[@]}" | scripts/run-python-helper.sh scripts/select_validation_tests.py); then
+	mapfile -t helper_tests < <(printf '%s' "$selected_helpers" | sed '/^$/d')
+fi
+if ((${#helper_tests[@]} == 0)); then
+	exit 0
+fi
+
 # Helpers are independent, so run them in parallel and print each log only when
 # it fails. VALIDATE_SKILLS_JOBS=1 restores serial execution.
 helper_jobs="${VALIDATE_SKILLS_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}"
