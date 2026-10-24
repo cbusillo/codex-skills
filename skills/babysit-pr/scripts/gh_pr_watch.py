@@ -1599,6 +1599,9 @@ def collect_locked_snapshot(args, pr, pr_diagnostic, state_path):
     if getattr(args, "batch_read", False):
         checks_diagnostic["batch_read"]=reader.batch_diagnostic
     checks_summary = summarize_checks(checks, expected_head_sha=pr["head_sha"])
+    approval_held_fork_runs = checks.get("approvalHeldForkRuns", [])
+    approval_held_ids = {run["id"] for run in approval_held_fork_runs}
+    workflow_runs = [run for run in workflow_runs if run.get("id") not in approval_held_ids]
     failed_runs = failed_runs_from_workflow_runs(workflow_runs, pr["head_sha"])
     failed_jobs = failed_jobs_from_workflow_runs(pr["repo"], workflow_runs, pr["head_sha"], reader=reader)
     pending_reruns = reconcile_pending_reruns(state, pr["head_sha"], workflow_runs)
@@ -1670,6 +1673,7 @@ def collect_locked_snapshot(args, pr, pr_diagnostic, state_path):
         "failed_jobs": failed_jobs,
         "superseded_workflow_runs": github_read.current_workflow_runs(workflow_runs, pr["head_sha"])["superseded"],
         "superseded_check_runs": checks.get("supersededCheckRuns", []),
+        "approval_held_fork_runs": approval_held_fork_runs,
         "new_review_items": new_review_items,
         "owner_review_items": state.get("owner_review_items", []),
         "owner_review_errors": state.get("owner_review_errors", []),

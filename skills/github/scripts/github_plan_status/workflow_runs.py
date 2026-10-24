@@ -5,16 +5,31 @@ from typing import Any, Optional
 
 def workflow_execution_identity(run: dict[str, Any]) -> Optional[tuple[Any, ...]]:
     numbers = [run.get(field) for field in ("id", "workflow_id", "run_number", "run_attempt", "check_suite_id")]
-    repository_id = (run.get("head_repository") or {}).get("id")
+    head_repository = run.get("head_repository")
+    if not isinstance(head_repository, dict):
+        return None
+    repository_id = head_repository.get("id")
     valid_numbers = all(isinstance(value, int) and not isinstance(value, bool) and value > 0
                         for value in [*numbers, repository_id])
     if not valid_numbers or not run.get("head_sha") or not run.get("event") or not run.get("head_branch"):
         return None
+    pulls = run.get("pull_requests", [])
+    if not isinstance(pulls, list):
+        return None
+    for pull in pulls:
+        if not isinstance(pull, dict) or not isinstance(pull.get("base"), dict):
+            return None
+        base = pull["base"]
+        if not isinstance(base.get("repo"), dict) or not isinstance(base.get("ref"), str) or not base["ref"]:
+            return None
+        if any(not isinstance(value, int) or isinstance(value, bool) or value <= 0
+               for value in (pull.get("number"), base["repo"].get("id"))):
+            return None
     identity = (run["head_sha"], run["workflow_id"], run["event"], run["head_branch"], repository_id)
     pull_targets = tuple(sorted(
         (pull.get("number"), (pull.get("base") or {}).get("ref"),
          ((pull.get("base") or {}).get("repo") or {}).get("id"))
-        for pull in run.get("pull_requests", [])
+        for pull in pulls
     ))
     identity += (pull_targets,)
     # Dispatches can use different inputs on the very same head.
