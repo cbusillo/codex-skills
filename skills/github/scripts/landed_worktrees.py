@@ -244,11 +244,12 @@ def open_claims(reader, github_read, repo: str, number: int, pull: dict) -> str:
 
 
 def issues_naming(reader, owner: str, branch: str) -> list[tuple[str, int]]:
-    query = f'"{branch}" user:{owner} is:issue is:open'
+    query = f'"{branch}" user:{owner} is:issue'
     result = reader.request("GET", "search/issues?" + urlencode({"q": query, "per_page": SEARCH_PAGE}),
                             step="landed_branch_claims", bucket="search").body
-    items = result.get("items") or []
-    if result.get("incomplete_results") or result.get("total_count", 0) > len(items):
+    items = result.get("items") if isinstance(result, dict) else None
+    if (not isinstance(items, list) or result.get("incomplete_results") is not False
+            or result.get("total_count") != len(items)):
         raise ValueError(f"issue search for {branch} is incomplete")
     return [(item["repository_url"].split("/repos/", 1)[1], item["number"]) for item in items]
 

@@ -169,14 +169,14 @@ class MainTests(Fixture):
         self.git(self.repo, "remote", "set-url", "origin", "https://github.com/o/sample.git")
 
     def run_main(self, pull, repo="o/sample", commits=(), discussions=None, bodies=None, branch=None, branch_pulls=(),
-                 claim_issues=()):
+                 claim_issues=(), search=None):
         config = self.base / "worktrees.json"
         config.write_text(json.dumps({"root": str(self.root), "hostHelper": str(self.base / "host-helper")}))
         discussions = discussions or {}
         reader = mock.Mock()
         reader.get_json.side_effect = lambda path, step: pull if path.endswith("/pulls/7") else {
             "body": (bodies or {}).get(path.rsplit("/", 1)[-1], "")}
-        reader.request.return_value = mock.Mock(body={
+        reader.request.return_value = mock.Mock(body=search if search is not None else {
             "total_count": len(claim_issues), "incomplete_results": False,
             "items": [{"repository_url": f"https://api.github.com/repos/{repo}", "number": n} for n in claim_issues]})
 
@@ -250,6 +250,13 @@ class MainTests(Fixture):
         _, result, run = self.run_main(None, branch="work/claimed", claim_issues=[4], discussions={"4": [claim]})
         self.assertEqual([r["reason"] for r in result["worktrees"]], ["an open claim names this branch"])
         run.assert_not_called()
+
+    def test_branch_without_a_pr_retires_nothing_when_the_claim_search_is_unproven(self):
+        self.settled_worktree("unsearched")
+        for search in ({}, {"items": []}, {"total_count": 0, "incomplete_results": True, "items": []}):
+            code, result, run = self.run_main(None, branch="work/unsearched", search=search)
+            self.assertEqual((code, result["ok"]), (2, False))
+            run.assert_not_called()
 
     def test_branch_without_a_pr_keeps_commits_the_default_branch_lacks(self):
         self.commit(self.settled_worktree("unlanded"), "Not landed")
