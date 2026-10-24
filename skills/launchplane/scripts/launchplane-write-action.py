@@ -3914,10 +3914,14 @@ def _project_target_replacement_current_target(
         name: _project_env_key_names(target.get(name), path=f"plan.current_target.{name}", drops=drops)
         for name in TARGET_REPLACEMENT_CURRENT_TARGET_KEY_LISTS
     }
+    deployment_status = target.get("latest_deployment_status")
+    projected["latest_deployment_status"] = (
+        public_code(deployment_status) if deployment_status not in (None, "") else None
+    )
     _report_dropped_fields(
         target,
         prefix="plan.current_target",
-        kept=set(TARGET_REPLACEMENT_CURRENT_TARGET_KEY_LISTS),
+        kept=set(projected),
         known=TARGET_REPLACEMENT_CURRENT_TARGET_FIELDS,
         drops=drops,
     )

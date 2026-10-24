@@ -738,13 +738,21 @@ installed local helper bindings.
   and inventory found flags, `allow_empty_data`, `retired_provider_keys`,
   `delivered_runtime_keys` (`null` when the service does not report the list),
   `blocker_codes`, `blocker_keys` by code, `blocker_count`, `warning_count`,
-  the current target's `env_keys` and `required_volume_keys_missing`, and each
+  the current target's `env_keys`, `required_volume_keys_missing` and
+  `latest_deployment_status`, and each
   step's `step_id` and `status`. Every key list keeps names that match
   `[A-Za-z_][A-Za-z0-9_]*` only. Blocker, step and warning text, the next
   target's name and domains, the approval issue URL, and the current target's
   id, name, domains and live volume values are dropped and listed in
   `dropped_field_paths`, as are names that are not env keys. A secret-looking
   value in a kept field fails the read.
+  Provider deployment status is a bounded code from the latest reported
+  deployment; omitted, null or blank status stays `null` (unknown). Invalid or
+  credential-shaped status refuses the read. This is separate from plan
+  readiness and does not prove an idle source, a complete deployment inventory
+  or exclusion of concurrent maintenance. Read the source's current operation
+  and deployment evidence before testing restore; no source apply is available
+  through this command.
 - Path segments must be plain identifiers; anything else is refused before a
   request is sent. Runtime settings, managed secrets, available actions, URLs,
   provider target names and driver extensions are dropped from the output.
