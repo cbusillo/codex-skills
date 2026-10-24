@@ -29,6 +29,7 @@ import github_plan_wait
 from ready_handoff import (
     UNCONFIRMED_CLIENT_ACCEPTANCE_MESSAGE,
     client_test_notes_error,
+    handoff_class_error,
     handoff_body,
     requires_client_acceptance,
     review_evidence_gap,
@@ -644,6 +645,9 @@ def cmd_ready(args: argparse.Namespace) -> dict[str, Any]:
     notes_error = client_test_notes_error(current, repository=repo)
     if notes_error:
         raise PrHelperError(notes_error, repo=repo, pr=number)
+    class_error = handoff_class_error(current, waiting_for_client=args.waiting_for_client)
+    if class_error:
+        raise PrHelperError(class_error, repo=repo, pr=number)
     if not args.waiting_for_client and requires_client_acceptance(current, checks["checkRuns"], repository=repo):
         if not any(
             check.get("name") == "launchplane/owner-review"

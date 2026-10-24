@@ -1731,7 +1731,7 @@ class QualificationTests(unittest.TestCase):
         return self.io.qualified(TARGET, self.pull, set(), self.agent_review_required)
 
     def test_standing_product_notes_qualify_without_saved_client_decision(self):
-        self.pull["body"] = "## Client test notes\nTry the new feature."
+        self.pull["body"] = "## Client test notes\nClient change: a new feature.\nTry the new feature."
         self.standing.return_value = True
         self.io.acceptance = Mock(return_value=False)
         self.assertTrue(self.qualified())
@@ -1861,26 +1861,22 @@ class QualificationTests(unittest.TestCase):
             lambda: self.checks["checkRuns"].append(
                 {"name": "launchplane/owner-review"}
             ),
-            lambda: self.pull.update(body="## Client test notes\nTry the preview."),
+            lambda: self.pull.update(body="## Client test notes\nClient change: a preview.\nTry the preview."),
         ):
             configure()
             self.assertFalse(self.qualified())
         self.io.acceptance = lambda *_args: True
         self.assertTrue(self.qualified())
 
-    def test_engineering_release_notes_enqueue_without_claiming_client_acceptance(self):
-        self.pull["body"] = (
-            "## Client test notes\n"
-            f"{ready_handoff.ENGINEERING_RELEASE_TESTS}\n"
-            "Check the imported parts at release."
-        )
-        self.io.acceptance = lambda *_args: False
-        self.assertTrue(self.qualified())
-        self.pull["labels"] = [{"name": "owner-review"}]
-        self.assertFalse(self.qualified())
-        self.pull["labels"] = []
-        self.pull["body"] += "\n## Owner test notes\nApprove the wording before merge."
-        self.assertFalse(self.qualified())
+    def test_handoff_class_mismatch_never_enqueues(self):
+        self.io.acceptance = lambda *_args: True
+        for body in (
+            f"## Client test notes\n{ready_handoff.ENGINEERING_RELEASE_TESTS}\nCheck the imported parts at release.",
+            "## Client test notes\nCheck the imported parts.",
+        ):
+            with self.subTest(body=body):
+                self.pull["body"] = body
+                self.assertFalse(self.qualified())
 
     def test_latest_current_head_changes_requested_refuses(self):
         self.reviews = [
