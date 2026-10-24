@@ -3,11 +3,14 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""Read standing acceptance for a repository without granting release authority."""
+"""Read whether Launchplane ties a repository to a Client, without granting release authority."""
 
 import http.client
 import importlib.util
+import os
+import sys
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 import urllib.error
@@ -19,6 +22,24 @@ spec = importlib.util.spec_from_file_location(
 assert spec is not None and spec.loader is not None
 operator: Any = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(operator)
+
+CLIENT = "client"
+DIRECTOR_STANDING = "director_standing"
+NO_CLIENT = "no_client"
+UNKNOWN = "unknown"
+READ_FAILURES = (ValueError, OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException)
+
+
+@dataclass(frozen=True)
+class ClientRelease:
+    """One of CLIENT, DIRECTOR_STANDING, NO_CLIENT or UNKNOWN, with a public-safe reason."""
+
+    state: str
+    reason: str = ""
+
+
+class UnsettledRead(Exception):
+    """Launchplane evidence that cannot settle whether a repository has a Client."""
 
 
 def repository_key(value: str) -> str:
@@ -32,188 +53,142 @@ def repository_key(value: str) -> str:
     return raw.strip("/").casefold()
 
 
-def _repository_entries(
-    settings: dict[str, Any],
-) -> tuple[list[dict[str, Any]], object] | None:
-    mapping_payload = operator.request_launchplane_read(
-        service_url=settings["service_url"], settings=settings,
-        path=operator.helper_command_path("repo-product-mapping-read"),
-        query={}, timeout=10,
+def launchplane_configuration() -> str:
+    """The github skill's host check: "not_configured" only when this host has no Launchplane at all."""
+    sys.path.insert(0, str(SCRIPT_DIR.parents[2]))
+    from skills.github.scripts import github_launchplane
+
+    return github_launchplane.configuration_status(
+        {}, home=Path.home(), environ=os.environ, expected_home=github_launchplane.director_home()
     )
-    mapping = mapping_payload.get("mapping")
+
+
+def _read(settings: dict[str, Any], path: str) -> dict[str, Any]:
+    return operator.request_launchplane_read(
+        service_url=settings["service_url"], settings=settings, path=path, query={}, timeout=10,
+    )
+
+
+def _repository_entries(settings: dict[str, Any]) -> list[dict[str, Any]]:
+    mapping = _read(settings, operator.helper_command_path("repo-product-mapping-read")).get("mapping")
     if not isinstance(mapping, dict) or not isinstance(mapping.get("repositories"), list):
-        return None
+        raise UnsettledRead("Launchplane's repository mapping is malformed")
     ambiguous = mapping.get("ambiguous_repositories", [])
-    entries = [
-        entry for entry in mapping["repositories"]
-        if isinstance(entry, dict)
-        and isinstance(entry.get("repository"), str)
-    ]
-    return entries, ambiguous
+    if not isinstance(ambiguous, list) or ambiguous:
+        # An ambiguous product's lanes are hidden from the mapping, so its pins cannot be checked.
+        raise UnsettledRead("Launchplane maps a repository to more than one product")
+    entries = mapping["repositories"]
+    if not all(isinstance(entry, dict) and isinstance(entry.get("repository"), str) for entry in entries):
+        raise UnsettledRead("Launchplane's repository mapping is malformed")
+    return entries
 
 
-def _read_active_profile(
-    settings: dict[str, Any], entry: dict[str, Any]
-) -> dict[str, Any] | None:
-    try:
-        product = operator.public_identifier(entry.get("product"))
-        profile_payload = operator.request_launchplane_read(
-            service_url=settings["service_url"], settings=settings,
-            path=operator.helper_command_path("product-profile-read").format(product=product),
-            query={}, timeout=10,
-        )
-        profile = operator.summarize_product_profile_read(
-            request={"product": product}, provider_payload=profile_payload
-        )
-    except (ValueError, OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException):
+def _client_profile(settings: dict[str, Any], entry: dict[str, Any]) -> dict[str, Any] | None:
+    """The mapped product's profile when it has a Client; None when the entry names no Client."""
+    if not entry.get("product"):
         return None
-    result = profile["result"]
+    product = operator.public_identifier(entry["product"])
+    summary = operator.summarize_product_profile_read(
+        request={"product": product},
+        provider_payload=_read(settings, operator.helper_command_path("product-profile-read").format(product=product)),
+    )
+    result = summary["result"]
     if (
-        profile["status"] != "ok"
+        summary["status"] != "ok"
         or result["product"] != product
         or not isinstance(result.get("repository"), str)
         or repository_key(result["repository"]) != repository_key(entry["repository"])
+        # The mapping lists only active products; any other state is a moving or broken record.
         or result.get("lifecycle_state") != "active"
     ):
-        return None
-    return result
+        raise UnsettledRead("Launchplane's product record does not match its repository mapping")
+    return result if result["owner_github_login"] else None
 
 
-def _lane_pins_addon_source(
-    settings: dict[str, Any], *, product: str, instance: str, target_key: str
-) -> bool | None:
-    try:
-        env_payload = operator.request_launchplane_read(
-            service_url=settings["service_url"], settings=settings,
-            path=operator.helper_command_path("product-environment-read").format(
-                product=product, environment=instance
-            ),
-            query={}, timeout=10,
-        )
-        summary = operator.summarize_product_environment_read(
-            request={"product": product, "environment": instance},
-            provider_payload=env_payload,
-        )
-    except (ValueError, OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException):
-        return None
-    env_result = summary["result"]
-    if (
-        summary["status"] != "ok"
-        or env_result["product"] != product
-        or env_result["environment"] != instance
-    ):
-        return None
-    environment = env_payload.get("environment")
+def _lane_pins(settings: dict[str, Any], *, product: str, instance: str, target_key: str) -> bool:
+    payload = _read(
+        settings,
+        operator.helper_command_path("product-environment-read").format(product=product, environment=instance),
+    )
+    summary = operator.summarize_product_environment_read(
+        request={"product": product, "environment": instance}, provider_payload=payload,
+    )
+    result = summary["result"]
+    if summary["status"] != "ok" or result["product"] != product or result["environment"] != instance:
+        raise UnsettledRead("Launchplane's lane record does not match its product")
+    environment = payload.get("environment")
     target = environment.get("target") if isinstance(environment, dict) else None
     manifest = target.get("artifact_manifest") if isinstance(target, dict) else None
     sources = manifest.get("addon_sources") if isinstance(manifest, dict) else None
-    if not isinstance(sources, list):
-        return None
-    if any(
-        isinstance(source, dict)
-        and isinstance(source.get("repository"), str)
-        and repository_key(source["repository"]) == target_key
-        for source in sources
+    if not isinstance(sources, list) or not all(
+        isinstance(source, dict) and isinstance(source.get("repository"), str) for source in sources
     ):
-        return True
-    if any(
-        not isinstance(source, dict)
-        or not isinstance(source.get("repository"), str)
-        or "/" not in repository_key(source["repository"])
-        for source in sources
-    ):
-        return None
-    return False
+        raise UnsettledRead("Launchplane's addon sources for an Odoo lane are unreadable")
+    target_name = target_key.split("/", 1)[1]
+    keys = {repository_key(source["repository"]) for source in sources}
+    # A source recorded without its owner may be this repository under the same name.
+    return target_key in keys or target_name in keys
 
 
-def _pinned_release_modes(settings: dict[str, Any], entries: list[dict[str, Any]], target_key: str) -> Iterator[str | None]:
+def _pinned_release_modes(
+    settings: dict[str, Any], entries: list[dict[str, Any]], target_key: str
+) -> Iterator[str]:
+    """Release modes of Client products whose prod or testing lane pins the repository as an addon source."""
     for entry in entries:
         if entry.get("driver_id") != "odoo":
             continue
-        profile = _read_active_profile(settings, entry)
+        profile = _client_profile(settings, entry)
         if profile is None:
-            yield None
             continue
-        if profile.get("driver_id") != "odoo":
-            yield None
-            continue
-        if profile.get("lanes_truncated"):
-            yield None
-        for instance in dict.fromkeys(
-            str(lane["instance"])
-            for lane in (profile.get("lanes") or [])
+        if profile.get("driver_id") != "odoo" or profile.get("lanes_truncated"):
+            raise UnsettledRead("Launchplane's lane list for an Odoo product is incomplete")
+        instances = dict.fromkeys(
+            str(lane["instance"]) for lane in profile.get("lanes") or []
             if isinstance(lane, dict) and lane.get("instance") in {"prod", "testing"}
-        ):
-            pinned = _lane_pins_addon_source(settings, product=str(profile["product"]), instance=instance, target_key=target_key)
-            if pinned is None:
-                yield None
-            elif pinned:
-                yield profile["release_on_acceptance"] if profile["owner_github_login"] else None
-
-
-def read_director_standing(repository: str) -> bool:
-    """Unknown evidence preserves the Client acceptance path. Explicit PR holds
-    are handled by the caller before this optional exemption is considered."""
-    try:
-        target_key = repository_key(repository)
-        if not target_key or "/" not in target_key:
-            return False
-        args = operator.parse_args(["product-profile-read", "--product", "unused"])
-        settings = operator.resolve_settings(args)
-        operator.validate_service_url(settings["service_url"])
-        if not settings["token"]:
-            return False
-        mapping = _repository_entries(settings)
-        if mapping is None:
-            return False
-        entries, ambiguous = mapping
-        if not isinstance(ambiguous, list) or ambiguous:
-            return False
-        matches = [
-            entry for entry in entries
-            if repository_key(entry["repository"]) == target_key
-        ]
-        if len(matches) != 1:
-            return False
-        result = _read_active_profile(settings, matches[0])
-        return bool(
-            result is not None
-            and result["owner_github_login"]
-            and result["release_on_acceptance"] == "director_standing"
-            and all(mode == "director_standing" for mode in _pinned_release_modes(settings, entries, target_key))
         )
-    except (ValueError, OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException):
-        # Provider bodies, private config and exception text never reach GitHub.
-        return False
+        if any(
+            _lane_pins(settings, product=str(profile["product"]), instance=instance, target_key=target_key)
+            for instance in instances
+        ):
+            yield profile["release_on_acceptance"]
 
 
-def read_client_release_repository(repository: str) -> bool:
-    """Return True when Launchplane maps the repository or a pinned Odoo addon
-    source to an active product with a Client login."""
+def _settled_release(settings: dict[str, Any], target_key: str) -> str:
+    entries = _repository_entries(settings)
+    matches = [entry for entry in entries if repository_key(entry["repository"]) == target_key]
+    if len(matches) > 1:
+        raise UnsettledRead("Launchplane maps the repository more than once")
+    modes = [
+        profile["release_on_acceptance"]
+        for entry in matches
+        if (profile := _client_profile(settings, entry)) is not None
+    ]
+    if any(mode != DIRECTOR_STANDING for mode in modes):
+        return CLIENT
+    for mode in _pinned_release_modes(settings, entries, target_key):
+        if mode != DIRECTOR_STANDING:
+            return CLIENT
+        modes.append(mode)
+    return DIRECTOR_STANDING if modes else NO_CLIENT
+
+
+def read_client_release(repository: str) -> ClientRelease:
+    """Whether Launchplane maps the repository, directly or as a pinned Odoo addon source, to an
+    active product with a Client. A Client whose product releases on the Director's standing
+    acceptance reads as DIRECTOR_STANDING. Any evidence that cannot settle it reads as UNKNOWN."""
+    target_key = repository_key(repository)
+    if target_key.count("/") != 1:
+        return ClientRelease(UNKNOWN, "the repository is not named as owner/name")
     try:
-        target_key = repository_key(repository)
-        if not target_key or "/" not in target_key:
-            return False
-        args = operator.parse_args(["product-profile-read", "--product", "unused"])
-        settings = operator.resolve_settings(args)
+        if launchplane_configuration() == "not_configured":
+            return ClientRelease(NO_CLIENT, "this host has no Launchplane, so no product maps the repository")
+        settings = operator.resolve_settings(operator.parse_args(["product-profile-read", "--product", "unused"]))
         operator.validate_service_url(settings["service_url"])
         if not settings["token"]:
-            return False
-        mapping = _repository_entries(settings)
-        if mapping is None:
-            return False
-        entries, _ = mapping
-        matches = [
-            entry for entry in entries
-            if repository_key(entry["repository"]) == target_key
-        ]
-        if len(matches) > 1:
-            return False
-        for entry in matches:
-            profile = _read_active_profile(settings, entry)
-            if profile is not None and profile["owner_github_login"]:
-                return True
-        return any(_pinned_release_modes(settings, entries, target_key))
-    except (ValueError, OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException):
+            return ClientRelease(UNKNOWN, "no Launchplane operator token is configured")
+        return ClientRelease(_settled_release(settings, target_key))
+    except UnsettledRead as unsettled:
+        return ClientRelease(UNKNOWN, str(unsettled))
+    except READ_FAILURES:
         # Provider bodies, private config and exception text never reach GitHub.
-        return False
+        return ClientRelease(UNKNOWN, "the Launchplane read failed")

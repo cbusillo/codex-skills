@@ -186,10 +186,9 @@ class ReadyTests(unittest.TestCase):
         self.writer = self.writer_patch.start()
         self.addCleanup(self.reader_patch.stop)
         self.addCleanup(self.writer_patch.stop)
-        standing_patch = patch.object(ready_handoff, "director_standing_acceptance", return_value=False)
-        self.standing = standing_patch.start()
-        self.addCleanup(standing_patch.stop)
-        client_release_patch = patch.object(ready_handoff, "client_release_repository", return_value=False)
+        states = ready_handoff.acceptance_reader()
+        self.client_repository = states.ClientRelease(states.CLIENT)
+        client_release_patch = patch.object(ready_handoff, "client_release", return_value=states.ClientRelease(states.NO_CLIENT))
         self.client_release = client_release_patch.start()
         self.addCleanup(client_release_patch.stop)
         helper.CURRENT_OPERATION = "github.pr.ready"
@@ -508,12 +507,15 @@ class ReadyTests(unittest.TestCase):
 
     def test_owner_review_requires_success_for_ready(self):
         self.reader.pr["labels"] = [{"name": "owner-review"}]
-        self.refuse()
+        self.assertIn("Client test notes are missing", self.refuse())
+        self.reader.pr["body"] = "## Client test notes\nClient change: a new feature.\nTry it."
+        self.assertIn("--waiting-for-client", self.refuse())
         self.reader.checks.append({"id": 2, "name": "launchplane/owner-review", "status": "completed", "conclusion": "success"})
         _, comment = self.post()
         self.assertTrue(latest_ready(self.reader.pr, [comment], {"engineer"}))
 
     def test_real_client_notes_require_acceptance_without_label(self):
+        self.client_release.return_value = self.client_repository
         for heading in ("Client", "Owner"):
             with self.subTest(heading=heading):
                 self.reader.pr["body"] = f"## {heading} test notes\nClient change: a new feature.\nTry the new feature."
@@ -524,28 +526,13 @@ class ReadyTests(unittest.TestCase):
         _, comment = self.post()
         self.assertFalse(latest_ready(self.reader.pr, [comment], {"engineer"}))
 
-    def test_standing_product_notes_allow_ready_but_explicit_holds_remain(self):
-        self.reader.pr["body"] = "## Client test notes\nClient change: a new feature.\nTry the new feature."
-        self.standing.return_value = True
-        _, comment = self.post()
-        self.standing.assert_called_once_with(REPO)
-        self.assertTrue(latest_ready(self.reader.pr, [comment], {"engineer"}))
-        self.reader.pr["head"]["sha"] = "b" * 40
-        self.assertFalse(latest_ready(self.reader.pr, [comment], {"engineer"}))
-        self.writer.reset_mock()
-        self.reader.pr["labels"] = [{"name": "owner-review"}]
-        self.refuse()
-        self.reader.pr["labels"] = []
-        self.reader.checks.append({"id": 2, "name": "launchplane/owner-review", "status": "completed", "conclusion": "skipped"})
-        self.refuse()
-
     def test_nothing_to_test_uses_watcher_exemption(self):
         self.reader.pr["body"] = "## Client test notes\nNothing for the Client to test: automated tooling."
         self.post()
 
     def test_engineering_handoff_refuses_notes_asking_the_client_to_check_at_release(self):
         release_steps = f"{ready_handoff.ENGINEERING_RELEASE_TESTS}\n\nAfter the real-data import, check the imported parts."
-        self.client_release.return_value = True
+        self.client_release.return_value = self.client_repository
         self.reader.checks.append({"id": 2, "name": "launchplane/owner-review", "status": "completed", "conclusion": "neutral"})
         for notes in (release_steps, f"### #10\n{release_steps}\n### #11\nNothing for the Client to test: internal tooling."):
             for waiting in (False, True):
@@ -578,6 +565,7 @@ class ReadyTests(unittest.TestCase):
         self.post()
 
     def test_each_notes_unit_keeps_one_matching_statement(self):
+        self.client_release.return_value = self.client_repository
         for notes in (
             "Nothing for the Client to test: tooling.\n\nClient change: new button.",
             "Client change: new button.\nCheck it.\nNothing for the Client to test: tools.",
@@ -609,6 +597,7 @@ class ReadyTests(unittest.TestCase):
                 self.writer.reset_mock()
 
     def test_engineering_marker_needs_plain_first_line_and_release_steps(self):
+        self.client_release.return_value = self.client_repository
         marker = ready_handoff.ENGINEERING_RELEASE_TESTS
         for notes in (marker, marker + "\nTODO", marker + "\n<!-- add steps -->", "- " + marker + "\nCheck parts.", "```\n" + marker + "\n```\nCheck parts.", "Check parts.\n" + marker):
             with self.subTest(notes=notes):
@@ -616,6 +605,7 @@ class ReadyTests(unittest.TestCase):
                 self.refuse()
 
     def test_completed_neutral_advisory_allows_docs_handoff(self):
+        self.client_release.return_value = self.client_repository
         self.reader.pr["body"] = "## Client test notes\nNothing for the Client to test: documentation only."
         self.reader.checks.append({"id": 2, "name": "launchplane/owner-review", "status": "completed", "conclusion": "neutral"})
         _, comment = self.post()
@@ -713,6 +703,7 @@ class ReadyTests(unittest.TestCase):
                 self.assertFalse(intent.error)
 
     def test_legacy_nothing_to_test_marker(self):
+        self.client_release.return_value = self.client_repository
         for separator in (":", "."):
             with self.subTest(separator=separator):
                 self.reader.pr["body"] = f"## Owner test notes\nNothing for the owner to test{separator} Legacy tooling."
@@ -724,6 +715,7 @@ class ReadyTests(unittest.TestCase):
                 self.assertIn(ready_handoff.NOTHING_TO_TEST, self.refuse())
 
     def test_inline_client_test_notes_and_missing_client_release_notes_refuse(self):
+        self.client_release.return_value = self.client_repository
         for body in (
             "Summary\n\nClient test notes: Nothing for the Client to test; this only prepares local gitignore rules.",
             "Summary\n\nClient testing: none required for this repo-hygiene change.",
@@ -740,7 +732,7 @@ class ReadyTests(unittest.TestCase):
                 self.assertEqual(self.refuse(), ready_handoff.MISSING_CLIENT_TEST_NOTES_MESSAGE)
 
         self.reader.pr["body"] = "Summary without any test notes section."
-        self.client_release.return_value = True
+        self.client_release.return_value = self.client_repository
         self.assertEqual(self.refuse(), ready_handoff.MISSING_CLIENT_TEST_NOTES_MESSAGE)
         self.reader.pr["user"] = {"login": "dependabot[bot]", "type": "Bot"}
         self.post()
@@ -765,6 +757,7 @@ class ReadyTests(unittest.TestCase):
         self.post()
 
     def test_decorated_no_test_marker_and_fenced_heading_refuse(self):
+        self.client_release.return_value = self.client_repository
         for note in (
             "- Nothing for the Client to test: bullet list.",
             "**Nothing for the Client to test:** bold prefix.",
@@ -777,10 +770,11 @@ class ReadyTests(unittest.TestCase):
             "```markdown\n## Client test notes\n"
             "Nothing for the Client to test: inside code fence.\n```\n"
         )
-        self.client_release.return_value = True
+        self.client_release.return_value = self.client_repository
         self.assertEqual(self.refuse(), ready_handoff.MISSING_CLIENT_TEST_NOTES_MESSAGE)
 
     def test_no_test_marker_outside_or_after_real_notes_never_exempts(self):
+        self.client_release.return_value = self.client_repository
         for body in (
             "Nothing for the owner to test: outside section\n\n## Client test notes\nTry the preview.",
             "## Client test notes\nTry the preview.\nNothing for the Client to test: second line.",

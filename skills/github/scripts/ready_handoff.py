@@ -12,6 +12,7 @@ import sys
 from datetime import datetime
 from fnmatch import fnmatchcase
 from pathlib import Path
+from typing import NamedTuple
 from urllib.parse import quote
 
 READY = "Ready for the merge train"
@@ -101,22 +102,16 @@ def handoff_body(head_sha: str, *, waiting_for_client: bool = False) -> str:
     return f"{first}\n\nHead: {head_sha}"
 
 
-def director_standing_acceptance(repository):
-    """Use Launchplane's repository mapping and scoped profile, never repo config."""
+def acceptance_reader():
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-    from skills.launchplane.scripts.launchplane_acceptance import read_director_standing
+    from skills.launchplane.scripts import launchplane_acceptance
 
-    return read_director_standing(repository)
+    return launchplane_acceptance
 
 
-def client_release_repository(repository):
-    """Check whether Launchplane maps the repository to a Client release."""
-    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-    from skills.launchplane.scripts.launchplane_acceptance import (
-        read_client_release_repository,
-    )
-
-    return read_client_release_repository(repository)
+def client_release(repository):
+    """Launchplane's answer for the repository: Client, Director standing, no Client or unknown."""
+    return acceptance_reader().read_client_release(repository)
 
 
 def has_inline_client_test_notes(body: str) -> bool:
@@ -146,8 +141,8 @@ def _is_dependabot_pr(pr) -> bool:
     return True
 
 
-def client_test_notes_error(pr, *, repository="") -> str:
-    """Return an actionable error when the merge train would reject the PR's notes."""
+def client_test_notes_error(pr) -> str:
+    """Return the error the merge train gives notes on a repository with a Client."""
     has_review_label = any(
         label["name"].casefold() == "owner-review" for label in pr.get("labels") or []
     )
@@ -164,9 +159,7 @@ def client_test_notes_error(pr, *, repository="") -> str:
         return MISSING_CLIENT_TEST_NOTES_MESSAGE
     if _is_dependabot_pr(pr) and not has_review_label:
         return ""
-    if repository and client_release_repository(repository):
-        return MISSING_CLIENT_TEST_NOTES_MESSAGE
-    return ""
+    return MISSING_CLIENT_TEST_NOTES_MESSAGE
 
 
 def _notes_units(body):
@@ -220,7 +213,7 @@ def _unit_class_error(unit) -> str:
     return ""
 
 
-def handoff_class_error(pr, *, waiting_for_client=False) -> str:
+def _handoff_class_error(pr, *, waiting_for_client=False) -> str:
     units = tuple(_notes_units(pr.get("body") or ""))
     error = next((error for error in map(_unit_class_error, units) if error), "")
     if error:
@@ -230,27 +223,67 @@ def handoff_class_error(pr, *, waiting_for_client=False) -> str:
     return ""
 
 
-def requires_client_acceptance(pr, check_runs, *, repository=""):
-    """Keep the producer and watcher on the same Client-review path."""
-    if any(label["name"].casefold() == "owner-review" for label in pr["labels"]):
+class ClientHandoff(NamedTuple):
+    """What the merge train needs from the Client before this head can land."""
+
+    error: str = ""
+    acceptance_required: bool = False
+    unknown_reason: str = ""
+
+    def refusal(self, *, accepted) -> str:
+        message = self.error or (
+            UNCONFIRMED_CLIENT_ACCEPTANCE_MESSAGE if self.acceptance_required and not accepted else ""
+        )
+        if message and self.unknown_reason:
+            return f"{message.rstrip('.')}. {self.unknown_reason}."
+        return message
+
+
+def explicit_client_hold(pr, check_runs) -> bool:
+    if any(label["name"].casefold() == "owner-review" for label in pr.get("labels") or []):
         return True
     # Launchplane completes engineering-only advisory checks as neutral.
     # Pending, accepted and rejected reviews still follow the acceptance path.
-    if any(
+    return any(
         check["name"] == "launchplane/owner-review"
         and not (check.get("status") == "completed" and check.get("conclusion") == "neutral")
         for check in check_runs
-    ):
-        return True
+    )
+
+
+def _client_path(pr, *, held, waiting_for_client) -> ClientHandoff:
+    """The handoff for a repository with a Client: the train's notes rules plus a named class."""
+    error = client_test_notes_error(pr) or _handoff_class_error(pr, waiting_for_client=waiting_for_client)
     body = pr.get("body") or ""
-    sections = test_notes_sections(body)
-    if not sections:
-        return False
+    if held or not test_notes_sections(body):
+        return ClientHandoff(error, held)
     intent = body_client_test_notes(body)
-    if intent.error:
-        return True
-    return intent.review_required and not (
-        repository and director_standing_acceptance(repository)
+    return ClientHandoff(error, bool(intent.error or intent.review_required))
+
+
+def client_handoff(pr, check_runs, *, repository, waiting_for_client=False) -> ClientHandoff:
+    """The one Client rule for gh-pr.py ready and Supervisor auto-enqueue.
+
+    Client acceptance is required only when Launchplane maps the repository to
+    an active product whose Client is not the Director, or the PR carries an
+    explicit hold. A read that cannot settle the mapping keeps the Client path.
+    """
+    held = explicit_client_hold(pr, check_runs)
+    strict = _client_path(pr, held=held, waiting_for_client=waiting_for_client)
+    if held or waiting_for_client or strict == ClientHandoff():
+        return strict
+    release, states = client_release(repository), acceptance_reader()
+    if release.state == states.NO_CLIENT:
+        return ClientHandoff()
+    if release.state == states.DIRECTOR_STANDING:
+        return ClientHandoff(client_test_notes_error(pr))
+    if release.state == states.CLIENT:
+        return strict
+    return ClientHandoff(
+        strict.error,
+        strict.acceptance_required,
+        f"Launchplane could not confirm whether {repository} has a Client ({release.reason}), "
+        "so this PR stays on the Client path",
     )
 
 

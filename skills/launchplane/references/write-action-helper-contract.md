@@ -549,19 +549,17 @@ installed local helper bindings.
   An omitted field reads as `held`; any other value or type fails the whole
   read with `invalid_response`. A malformed or secret-looking value fails the
   whole read.
-- The shared ready-handoff acceptance reader uses the bounded helper
-  `repo-product-mapping-read` route internally to resolve a repository's product
-  before `product-profile-read`. The dedicated mapping read is GET-only; it is
-  not an exposed write-action CLI command. An absent or ambiguous mapping,
-  mismatched profile or unavailable read never supplies standing acceptance.
-  Any active product classification can supply the recorded Director standing;
-  a repository pinned into another Client's Odoo lane still requires Client
-  review. Standing reads inspect Odoo prod/testing lane pins; unavailable or
-  truncated lane evidence and ambiguous mappings withhold standing. This does
-  not change ordinary Client-note discovery when its mapping is unknown.
-  All enrolled products still
-  require Client test notes, including the existing no-test reason for tooling;
-  standing acceptance removes the per-PR acceptance step.
+- The shared ready-handoff Client reader (`launchplane_acceptance.py`) uses the
+  bounded helper `repo-product-mapping-read` route internally, then
+  `product-profile-read` and, for Odoo products with a Client, prod and testing
+  `product-environment-read` addon-source pins. The dedicated mapping read is
+  GET-only; it is not an exposed write-action CLI command. It answers Client,
+  Director standing (every mapped Client product releases on
+  `director_standing`), no Client, or unknown. Missing credentials, a failed
+  read, an ambiguous or malformed mapping, a mismatched profile, truncated lanes
+  or unreadable addon sources answer unknown, which keeps the Client path and is
+  never an exemption. The [ready handoff rule](../../github/references/cli-reference.md#ready-handoffs)
+  owns what each answer requires.
 - An odd value in an optional field (for example a status Launchplane added
   later) is dropped to `""` and listed by path in `dropped_field_paths`, with
   `dropped_field_count`; an event without a usable id or type is left out and
