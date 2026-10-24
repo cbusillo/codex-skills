@@ -721,11 +721,11 @@ PR carries an explicit hold: an `owner-review` label, or a
 releases on `director_standing` is the Director's, so it keeps standing
 acceptance unless explicitly held. A repository with no Client gets a plain
 Ready with no notes, `Client change:` statement or no-test declaration.
-Launchplane answers Client, Director standing, no Client, or unknown. A failed,
-ambiguous, malformed or truncated read is unknown: the PR stays on the Client
-path and the refusal names the read. Only a host with no Launchplane
-configuration at all (the snapshot's `not_configured`) reads as no Client. This
-read grants no release authority.
+Launchplane answers Client, Director standing, no Client, or unknown. Missing
+credentials and a failed, ambiguous, malformed or truncated read are unknown:
+the PR stays on the Client path and the refusal names the read, so
+`Nothing for the Client to test: <reason>` still gets a plain Ready. This read
+grants no release authority.
 
 On the Client path, a normal handoff requiring acceptance (a hold or real Client
 test notes) needs a successful current-head `launchplane/owner-review` check,

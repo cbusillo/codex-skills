@@ -7,8 +7,6 @@
 
 import http.client
 import importlib.util
-import os
-import sys
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -53,16 +51,6 @@ def repository_key(value: str) -> str:
     return raw.strip("/").casefold()
 
 
-def launchplane_configuration() -> str:
-    """The github skill's host check: "not_configured" only when this host has no Launchplane at all."""
-    sys.path.insert(0, str(SCRIPT_DIR.parents[2]))
-    from skills.github.scripts import github_launchplane
-
-    return github_launchplane.configuration_status(
-        {}, home=Path.home(), environ=os.environ, expected_home=github_launchplane.director_home()
-    )
-
-
 def _read(settings: dict[str, Any], path: str) -> dict[str, Any]:
     return operator.request_launchplane_read(
         service_url=settings["service_url"], settings=settings, path=path, query={}, timeout=10,
@@ -86,15 +74,21 @@ def _repository_entries(settings: dict[str, Any]) -> list[dict[str, Any]]:
 def _client_profile(settings: dict[str, Any], entry: dict[str, Any]) -> dict[str, Any] | None:
     """The mapped product's profile when it has a Client; None when the entry names no Client."""
     if not entry.get("product"):
-        return None
+        # Only a work request maps a repository without a product.
+        if entry.get("source") == "every_code_work_request":
+            return None
+        raise UnsettledRead("Launchplane's repository mapping names no product for a product entry")
     product = operator.public_identifier(entry["product"])
-    summary = operator.summarize_product_profile_read(
-        request={"product": product},
-        provider_payload=_read(settings, operator.helper_command_path("product-profile-read").format(product=product)),
-    )
+    payload = _read(settings, operator.helper_command_path("product-profile-read").format(product=product))
+    summary = operator.summarize_product_profile_read(request={"product": product}, provider_payload=payload)
     result = summary["result"]
+    raw = payload.get("profile")
     if (
-        summary["status"] != "ok"
+        not isinstance(raw, dict)
+        # Launchplane always sends both; a missing one would read as no Client or no lanes.
+        or not ({"client", "owner"} & raw.keys())
+        or not isinstance(raw.get("lanes"), list)
+        or summary["status"] != "ok"
         or result["product"] != product
         or not isinstance(result.get("repository"), str)
         or repository_key(result["repository"]) != repository_key(entry["repository"])
@@ -135,10 +129,11 @@ def _pinned_release_modes(
 ) -> Iterator[str]:
     """Release modes of Client products whose prod or testing lane pins the repository as an addon source."""
     for entry in entries:
-        if entry.get("driver_id") != "odoo":
+        # The mapping omits an empty driver, so only the profile can rule an unnamed one out.
+        if entry.get("driver_id") not in {"odoo", None}:
             continue
         profile = _client_profile(settings, entry)
-        if profile is None:
+        if profile is None or (profile.get("driver_id") != "odoo" and entry.get("driver_id") is None):
             continue
         if profile.get("driver_id") != "odoo" or profile.get("lanes_truncated"):
             raise UnsettledRead("Launchplane's lane list for an Odoo product is incomplete")
@@ -180,8 +175,6 @@ def read_client_release(repository: str) -> ClientRelease:
     if target_key.count("/") != 1:
         return ClientRelease(UNKNOWN, "the repository is not named as owner/name")
     try:
-        if launchplane_configuration() == "not_configured":
-            return ClientRelease(NO_CLIENT, "this host has no Launchplane, so no product maps the repository")
         settings = operator.resolve_settings(operator.parse_args(["product-profile-read", "--product", "unused"]))
         operator.validate_service_url(settings["service_url"])
         if not settings["token"]:

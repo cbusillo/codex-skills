@@ -85,7 +85,6 @@ class ClientRuleTests(unittest.TestCase):
         for target, name, kwargs in (
             (lp, "resolve_settings", {"side_effect": lambda _args: {"service_url": "https://launchplane.example", "token": self.token}}),
             (lp, "request_launchplane_read", {"side_effect": self.launchplane.read}),
-            (acceptance, "launchplane_configuration", {"return_value": "configured", "create": True}),
         ):
             started = patch.object(target, name, **kwargs)
             started.start()

@@ -28,11 +28,12 @@ def state(repository=REPO):
 
 class AcceptanceTests(unittest.TestCase):
     def setUp(self):
-        self.entry = {"repository": REPO, "classification": "managed_runtime", "product": PRODUCT}
+        self.entry = {"repository": REPO, "classification": "managed_runtime", "product": PRODUCT,
+                      "source": "product_profile"}
         self.mapping: dict[str, Any] = {"mapping": {"repositories": [self.entry]}}
         self.profile: dict[str, Any] = {"status": "ok", "trace_id": "test-trace", "profile": {
             "product": PRODUCT, "repository": REPO, "production_use": "live", "lifecycle_state": "active",
-            "release_on_acceptance": "director_standing", "owner": {"github_login": "director"},
+            "release_on_acceptance": "director_standing", "owner": {"github_login": "director"}, "lanes": [],
             "updated_at": "2026-01-01T00:00:00Z",
         }}
         self.environment: dict[str, Any] = {
@@ -71,9 +72,6 @@ class AcceptanceTests(unittest.TestCase):
         transport_patch = patch.object(acceptance.operator, "request_launchplane_read", side_effect=self.read)
         self.transport = transport_patch.start()
         self.addCleanup(transport_patch.stop)
-        configuration_patch = patch.object(acceptance, "launchplane_configuration", return_value="configured")
-        self.configuration = configuration_patch.start()
-        self.addCleanup(configuration_patch.stop)
 
     def read(self, **kwargs):
         if kwargs["path"] == acceptance.operator.helper_command_path("repo-product-mapping-read"):
@@ -96,7 +94,7 @@ class AcceptanceTests(unittest.TestCase):
         client_product, client_repository = "client-runtime", "example/client"
         self.mapping["mapping"]["repositories"].append(
             {"repository": client_repository, "classification": "managed_runtime",
-             "product": client_product, "driver_id": "odoo"}
+             "product": client_product, "driver_id": "odoo", "source": "product_profile"}
         )
         client_profile = copy.deepcopy(self.profile)
         client_profile["profile"].update(
@@ -108,6 +106,7 @@ class AcceptanceTests(unittest.TestCase):
         environment["environment"].update(product=client_product, repository=client_repository)
         sources = environment["environment"]["target"]["artifact_manifest"]["addon_sources"]
         sources[0]["repository"] = REPO
+        self.client_entry = self.mapping["mapping"]["repositories"][-1]
 
         def read(**kwargs):
             if kwargs["path"] == acceptance.operator.helper_command_path("product-profile-read").format(product=client_product):
@@ -133,6 +132,7 @@ class AcceptanceTests(unittest.TestCase):
         self.profile["profile"]["owner"] = None
         self.assertEqual(state(), acceptance.NO_CLIENT)
         self.entry.pop("product")
+        self.entry["source"] = "every_code_work_request"
         self.assertEqual(state(), acceptance.NO_CLIENT)
 
     def test_client_lane_pin_overrides_a_director_product(self):
@@ -145,6 +145,9 @@ class AcceptanceTests(unittest.TestCase):
         self.assertEqual(state(), acceptance.CLIENT)
         sources[0]["repository"] = "other-addons"
         self.assertEqual(state(), acceptance.DIRECTOR_STANDING)
+        sources[0]["repository"] = REPO
+        self.client_entry.pop("driver_id")
+        self.assertEqual(state(), acceptance.CLIENT)
 
     def test_unsettled_evidence_reads_unknown(self):
         truncated = [{"context": f"lane-{index}", "instance": "prod"}
@@ -164,6 +167,9 @@ class AcceptanceTests(unittest.TestCase):
             "Client lanes truncated": lambda pin: pin[0].update(lanes=truncated),
             "unreadable source": lambda pin: pin[2].append({"repository": 42}),
             "no lane record": lambda pin: pin[1].pop("environment"),
+            "product entry without product": lambda pin: self.entry.pop("product"),
+            "profile omits its Client": lambda pin: self.profile["profile"].pop("owner"),
+            "profile omits its lanes": lambda pin: self.profile["profile"].pop("lanes"),
         }
         for name, mutate in mutations.items():
             with self.subTest(evidence=name):
@@ -181,12 +187,12 @@ class AcceptanceTests(unittest.TestCase):
                 self.transport.side_effect = error
                 self.assertEqual(state(), acceptance.UNKNOWN)
 
-    def test_only_a_host_without_launchplane_skips_the_read(self):
-        self.transport.side_effect = TimeoutError()
-        self.configuration.return_value = "not_configured"
-        self.assertEqual(state(), acceptance.NO_CLIENT)
-        self.configuration.return_value = "unknown"
-        self.assertEqual(state(), acceptance.UNKNOWN)
+    def test_missing_operator_token_is_unknown(self):
+        with patch.object(acceptance.operator, "resolve_settings", return_value={
+            "service_url": "https://launchplane.example", "token": "",
+        }):
+            self.assertEqual(state(), acceptance.UNKNOWN)
+        self.transport.assert_not_called()
 
 
 if __name__ == "__main__":
