@@ -61,23 +61,26 @@ def _repository_entries(settings: dict[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(ambiguous, list) or ambiguous:
         raise UnsettledRead("Launchplane maps a repository to more than one product")
     entries = mapping["repositories"]
-    if not all(isinstance(entry, dict) and isinstance(entry.get("repository"), str) for entry in entries):
+    if not all(
+        isinstance(entry, dict)
+        and isinstance(entry.get("repository"), str)
+        and (entry.get("product") or entry.get("source") == "every_code_work_request")
+        for entry in entries
+    ):
         raise UnsettledRead("Launchplane's repository mapping is malformed")
     return entries
 
 
 def _client_profile(settings: dict[str, Any], entry: dict[str, Any]) -> dict[str, Any] | None:
     if not entry.get("product"):
-        if entry.get("source") == "every_code_work_request":
-            return None
-        raise UnsettledRead("Launchplane's repository mapping names no product for a product entry")
+        return None
     product = operator.public_identifier(entry["product"])
     payload = _read(settings, operator.helper_command_path("product-profile-read").format(product=product))
     summary = operator.summarize_product_profile_read(request={"product": product}, provider_payload=payload)
     result = summary["result"]
     raw = payload.get("profile")
     if (
-        _omits_client_or_lanes(raw)
+        _omits_required_profile_fields(raw)
         or summary["status"] != "ok"
         or result["product"] != product
         or not isinstance(result.get("repository"), str)
@@ -88,11 +91,12 @@ def _client_profile(settings: dict[str, Any], entry: dict[str, Any]) -> dict[str
     return result if result["owner_github_login"] else None
 
 
-def _omits_client_or_lanes(raw_profile: object) -> bool:
+def _omits_required_profile_fields(raw_profile: object) -> bool:
     return (
         not isinstance(raw_profile, dict)
         or not ({"client", "owner"} & raw_profile.keys())
         or not isinstance(raw_profile.get("lanes"), list)
+        or "driver_id" not in raw_profile
     )
 
 
@@ -126,10 +130,11 @@ def _pinned_release_modes(
     settings: dict[str, Any], entries: list[dict[str, Any]], target_key: str
 ) -> Iterator[str]:
     for entry in entries:
-        if entry.get("driver_id") not in {"odoo", None}:
+        mapped_driver = entry.get("driver_id") or None
+        if mapped_driver not in {"odoo", None}:
             continue
         profile = _client_profile(settings, entry)
-        if profile is None or (profile.get("driver_id") != "odoo" and entry.get("driver_id") is None):
+        if profile is None or (profile.get("driver_id") != "odoo" and mapped_driver is None):
             continue
         if profile.get("driver_id") != "odoo" or profile.get("lanes_truncated"):
             raise UnsettledRead("Launchplane's lane list for an Odoo product is incomplete")

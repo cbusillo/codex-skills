@@ -32,6 +32,7 @@ class AcceptanceTests(unittest.TestCase):
         self.profile: dict[str, Any] = {"status": "ok", "trace_id": "test-trace", "profile": {
             "product": PRODUCT, "repository": REPO, "production_use": "live", "lifecycle_state": "active",
             "release_on_acceptance": "director_standing", "owner": {"github_login": "director"}, "lanes": [],
+            "driver_id": "",
             "updated_at": "2026-01-01T00:00:00Z",
         }}
         self.environment: dict[str, Any] = {
@@ -145,6 +146,8 @@ class AcceptanceTests(unittest.TestCase):
         sources[0]["repository"] = REPO
         self.client_entry.pop("driver_id")
         self.assertEqual(state(), acceptance.CLIENT)
+        self.client_entry["driver_id"] = ""
+        self.assertEqual(state(), acceptance.CLIENT)
 
     def test_unsettled_evidence_reads_unknown(self):
         truncated = [{"context": f"lane-{index}", "instance": "prod"}
@@ -167,6 +170,10 @@ class AcceptanceTests(unittest.TestCase):
             "product entry without product": lambda pin: self.entry.pop("product"),
             "profile omits its Client": lambda pin: self.profile["profile"].pop("owner"),
             "profile omits its lanes": lambda pin: self.profile["profile"].pop("lanes"),
+            "Client profile omits its driver": lambda pin: pin[0].pop("driver_id"),
+            "unrelated entry without product": lambda pin: self.mapping["mapping"]["repositories"].append(
+                {"repository": "example/web", "classification": "managed_runtime", "driver_id": "generic-web",
+                 "source": "product_profile"}),
         }
         for name, mutate in mutations.items():
             with self.subTest(evidence=name):
