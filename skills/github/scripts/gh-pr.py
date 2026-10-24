@@ -23,6 +23,9 @@ import github_api as github_api_core
 import github_comment as github_comment_core
 import github_read as github_read_core
 import github_identity
+import github_plan_claim
+import github_plan_landing
+import github_plan_wait
 from ready_handoff import (
     UNCONFIRMED_CLIENT_ACCEPTANCE_MESSAGE,
     client_test_notes_error,
@@ -652,6 +655,9 @@ def cmd_ready(args: argparse.Namespace) -> dict[str, Any]:
     review_gap = ready_review_gap(repo, number, current)
     if review_gap:
         raise PrHelperError(review_gap, repo=repo, pr=number)
+    unowned = unowned_linked_issues(repo, number, current)
+    if unowned:
+        raise PrHelperError(unowned_linked_issues_message(unowned), repo=repo, pr=number, unownedIssues=unowned)
     try:
         body = handoff_body(checks["headSha"], waiting_for_client=args.waiting_for_client)
     except ValueError as exc:
@@ -687,6 +693,51 @@ def ready_review_gap(repo: str, number: int, pr: dict[str, Any]) -> str:
         record_retry_summary(reader.retry_summary())
         if not any(result.status == 404 for result in config_reader.failed_results):
             record_retry_summary(config_reader.retry_summary())
+
+
+def unowned_linked_issues(repo: str, number: int, pr: dict[str, Any]) -> list[str]:
+    owner = repo.split("/")[0].casefold()
+    linked = [ref for ref in github_plan_landing.linked_issues(github_plan_claim, repo, pr)
+              if ref[0].split("/")[0].casefold() == owner]
+    if not linked:
+        return []
+    reader = github_read_core.GitHubReader(
+        gh_cmd=GH, expected_actor=EXPECTED_ACTOR, operation=read_operation(), cache_enabled=False,
+    )
+    try:
+        _, closing = github_plan_landing.closing_references(reader, repo, number, landed=False)
+        closed_by_pr = {(issue_repo.casefold(), issue_number) for issue_repo, issue_number in closing}
+        return [f"{issue_repo}#{issue_number}" for issue_repo, issue_number in dict.fromkeys(linked)
+                if (issue_repo.casefold(), issue_number) not in closed_by_pr
+                and not remaining_steps_owned(reader, issue_repo, issue_number)]
+    except github_read_core.GitHubReadError as exc:
+        raise PrHelperError(f"Linked-issue follow-up evidence is unavailable: {exc}", failure=exc.result.failure,
+                            api_result=exc.result.as_dict(), diagnostics=exc.diagnostics, repo=repo, pr=number) from exc
+    except (github_read_core.GitHubReadShapeError, KeyError, TypeError, ValueError) as exc:
+        raise PrHelperError(f"Linked-issue follow-up evidence is unavailable: {exc}", diagnostics=reader.diagnostics(), repo=repo, pr=number) from exc
+    finally:
+        record_retry_summary(reader.retry_summary())
+
+
+def remaining_steps_owned(reader: github_read_core.GitHubReader, repo: str, number: int) -> bool:
+    issue = reader.get_json(f"/repos/{repo}/issues/{number}", step="linked_issue")
+    if issue.get("state") != "open" or "pull_request" in issue:
+        return True
+    sub_issues = reader.paged_json(f"/repos/{repo}/issues/{number}/sub_issues", step_prefix="linked_issue_sub_issues")
+    if any(child.get("state") == "open" for child in sub_issues):
+        return True
+    comments = reader.paged_json(f"/repos/{repo}/issues/{number}/comments", step_prefix="linked_issue_comments")
+    trusted = github_plan_wait.authors(repo, expected_actor=EXPECTED_ACTOR)
+    return github_plan_wait.current(issue, comments, trusted)["state"] == "waiting"
+
+
+def unowned_linked_issues_message(issues: list[str]) -> str:
+    steps = "; ".join(
+        f"{issue}: write Closes {issue} if this PR finishes it, otherwise split every remaining step into an open "
+        f"sub-issue that names its next actor (gh-plan.py create, then gh-plan.py --repo {issue.replace('#', ' link ')} subissue NEW) "
+        "or record the event it waits on (gh-plan.py wait)"
+        for issue in issues)
+    return f"PR leaves linked issues open with no owner for their remaining steps. {steps}. Then post ready again."
 
 
 def validate_ready_pr(pr: dict[str, Any], *, repo: str, number: int) -> None:
