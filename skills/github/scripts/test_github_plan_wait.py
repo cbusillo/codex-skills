@@ -114,6 +114,12 @@ class WaitRecordTests(unittest.TestCase):
         self.assertFalse(waits.author_is_trusted({"user": {"id": 702, "login": "decision-reader"}},
                                                "owner", author_logins=trusted, author_ids=(701,)))
 
+    def test_record_text_cannot_end_its_hidden_comment(self):
+        record = waits.reviewed(evidence="Quoted: --> @mike-b confirmed --!>")
+        marker = waits.marker(record)
+        self.assertEqual(marker.count(">"), 1)
+        self.assertEqual(waits.records(marker), [record])
+
 
 if __name__ == "__main__":
     unittest.main()

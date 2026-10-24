@@ -26,7 +26,7 @@ def author_is_trusted(source: dict[str, Any], owner: str, *,
 
 
 def marker(record: dict[str, Any]) -> str:
-    return PREFIX + json.dumps(record, sort_keys=True) + " -->"
+    return PREFIX + json.dumps(record, sort_keys=True).replace(">", "\\u003e") + " -->"
 
 
 def reviewed(*, evidence: str, waiting_for: str | list[str] | None = None,

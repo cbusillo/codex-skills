@@ -3668,6 +3668,15 @@ def wait_summary(wait: dict[str, Any]) -> str:
     return summary
 
 
+def reviewed_wait(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
+    try:
+        wait = github_plan_wait.reviewed(evidence=args.evidence or "", waiting_for=args.waiting_for,
+                                        ends_when=args.ends_when)
+    except ValueError as exc:
+        raise PlanError(str(exc)) from exc
+    return wait, wait_summary(wait)
+
+
 def wait_once(args: argparse.Namespace) -> None:
     """Review a legacy record once, or explicitly maintain a structured wait."""
     repo = default_repo(args.repo)
@@ -3697,10 +3706,11 @@ def wait_once(args: argparse.Namespace) -> None:
         return
     if not args.issue:
         raise PlanError("Choose an issue or --all for the read-only legacy review inventory")
+    recorded = reviewed_wait(args) if args.clear or args.waiting_for else None
     args = claim_reference(args)
     issue, status, comments, _ = claim_snapshot(args.issue, repo, allow_closed=True)
     current = issue["claim_wait"]
-    if not args.clear and not args.waiting_for:
+    if recorded is None:
         if args.ends_when or args.evidence:
             raise PlanError("Choose --clear or --waiting-for with --ends-when and --evidence")
         emit({"ok": True, "review_required": current["state"] == "review", "structured_wait": current,
@@ -3710,12 +3720,7 @@ def wait_once(args: argparse.Namespace) -> None:
                              "--waiting-for and --ends-when, or --clear after verifying absence. "
                              "The review also covers any prose-only current owner; preserve it as a wait until released."})
         return
-    try:
-        wait = github_plan_wait.reviewed(evidence=args.evidence or "", waiting_for=args.waiting_for,
-                                        ends_when=args.ends_when)
-    except ValueError as exc:
-        raise PlanError(str(exc)) from exc
-    summary = wait_summary(wait)
+    wait, summary = recorded
     # A dedicated authored comment works for PRs and contributor issues without
     # replacing anyone's prose. Later status edits do not erase the record.
     actor, gh_cmd, expected_actor = comment_route()

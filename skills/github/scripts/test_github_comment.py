@@ -1281,7 +1281,8 @@ def test_question_refuses_live_mentions_of_anyone_but_the_owner() -> None:
 def test_only_an_unescaped_code_tag_quiets_a_mention() -> None:
     owner = frozenset({"acme"})
     assert github_comment.live_mentions("<code>@mike-b</code> @acme a@b.com", notify=owner) == []
-    for live in ("`@mike-b`", "\\<code>@mike-b</code>", "<code>@mike-b </code>", "@acme/support", "(mentions:@mike-b)"):
+    for live in ("`@mike-b`", "\\<code>@mike-b</code>", "<code>@mike-b </code>", "@acme/support", "(mentions:@mike-b)",
+                 "&#64;mike-b", "&#x40;mike-b", "&commat;mike-b", "@acme&#45;bot", "&lt;code&gt;@mike-b&lt;/code&gt;"):
         assert github_comment.live_mentions(live, notify=owner), live
 
 

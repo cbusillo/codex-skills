@@ -11,6 +11,7 @@ import argparse
 import dataclasses
 import datetime as dt
 import hashlib
+import html
 import json
 import os
 import pathlib
@@ -18,6 +19,7 @@ import re
 import subprocess
 import sys
 import urllib.parse
+from collections import Counter
 from typing import Any, Callable, Optional
 
 import github_api as github_api_core
@@ -64,8 +66,11 @@ def _is_quiet_mention(body: str, match: re.Match[str]) -> bool:
 
 def live_mentions(body: str, *, notify: frozenset[str] = frozenset()) -> list[str]:
     notified = {login.casefold() for login in notify}
-    return [f"@{match['login']}" for match in MENTION_RE.finditer(body)
-            if match["login"].casefold() not in notified and not _is_quiet_mention(body, match)]
+    written = list(MENTION_RE.finditer(body))
+    rendered = Counter(match["login"] for match in MENTION_RE.finditer(html.unescape(body)))
+    entity_made = rendered - Counter(match["login"] for match in written)
+    live = [match["login"] for match in written if not _is_quiet_mention(body, match)] + list(entity_made)
+    return [f"@{login}" for login in live if login.casefold() not in notified]
 
 
 def effective_expected_actor(expected_actor: Optional[str]) -> Optional[str]:
