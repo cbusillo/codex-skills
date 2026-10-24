@@ -26,7 +26,7 @@ PRODUCT = "different-product-id"
 class AcceptanceTests(unittest.TestCase):
     def setUp(self):
         self.entry = {"repository": REPO, "classification": "managed_runtime", "product": PRODUCT}
-        self.mapping = {"mapping": {"repositories": [self.entry]}}
+        self.mapping: dict[str, Any] = {"mapping": {"repositories": [self.entry]}}
         self.profile: dict[str, Any] = {"status": "ok", "trace_id": "test-trace", "profile": {
             "product": PRODUCT, "repository": REPO, "production_use": "live", "lifecycle_state": "active",
             "release_on_acceptance": "director_standing", "owner": {"github_login": "director"},
@@ -151,6 +151,11 @@ class AcceptanceTests(unittest.TestCase):
         sources.clear()
         self.assertFalse(self.requires_client())
         client_profile["profile"]["owner"] = {"github_login": "client"}
+        sources.append({"repository": "odoo-shared-addons"})
+        self.assertFalse(self.requires_client())
+        sources[0]["repository"] = "tool"
+        self.assertTrue(self.requires_client())
+        sources.clear()
         client_profile["profile"]["driver_id"] = "generic-web"
         self.assertTrue(self.requires_client())
         client_profile["profile"]["driver_id"] = "odoo"
