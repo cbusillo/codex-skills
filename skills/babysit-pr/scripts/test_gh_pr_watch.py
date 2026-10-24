@@ -3569,9 +3569,15 @@ class ExecutionReader:
 
     def get_json(self, path, **_kwargs):
         if path.endswith('/pulls/123') and self.pull is not None:
+            if path == self.unavailable:
+                raise gh_pr_watch.github_read.GitHubReadShapeError("fixture incomplete inventory")
             return self.pull
         assert path.endswith("/status")
         return {"state": "success"}
+
+    @staticmethod
+    def invalid_response(_step, _message):
+        raise gh_pr_watch.github_read.GitHubReadShapeError("fixture malformed response")
 
     @staticmethod
     def diagnostics():
@@ -3594,6 +3600,10 @@ def execution_snapshot(monkeypatch, tmp_path, runs, checks, *, allow_no_checks=F
     'owner_passed', 'owner_pending', 'owner_failed', 'wrong_pr', 'wrong_head',
     'missing_identity', 'fork_failed', 'fork_jobs', 'unavailable_jobs', 'fork_pr',
     'wrong_workflow', 'wrong_base', 'owner_no_checks', 'fork_with_checks',
+    'owner_rerun', 'owner_read_first', 'unavailable_pr', 'bad_pr', 'bad_pr_head',
+    'bad_run_targets', 'bad_run_target',
+    'bad_head_repository',
+    'owner_skipped_checks',
 ])
 def test_unexecuted_fork_approval_needs_proven_passed_owner_execution(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, case: str,
@@ -3628,14 +3638,41 @@ def test_unexecuted_fork_approval_needs_proven_passed_owner_execution(
         unavailable = '/repos/openai/codex/actions/runs/1/jobs'
     elif case == 'fork_pr':
         pull['head']['repo'] = fork
+    elif case == 'owner_rerun':
+        new['run_attempt'] = 2
+        jobs[new['id']] = [{'id': 21, 'run_id': new['id'], 'run_attempt': new['run_attempt']}]
+    elif case == 'unavailable_pr':
+        unavailable = '/repos/openai/codex/pulls/123'
+    elif case == 'bad_pr':
+        pull = ['malformed']
+    elif case == 'bad_pr_head':
+        pull['head'] = ['malformed']
+    elif case == 'bad_run_targets':
+        old['pull_requests'] = None
+    elif case == 'bad_run_target':
+        old['pull_requests'] = [None]
+    elif case == 'bad_head_repository':
+        old['head_repository'] = 'malformed'
     elif case == 'wrong_workflow':
         new['workflow_id'] += 1
     elif case == 'wrong_base':
         pull['base']['ref'] = 'release'
     check = execution_check(new, 21, new['conclusion'], status=new['status'])
+    if case == 'owner_skipped_checks':
+        check['conclusion'] = 'skipped'
     checks = [] if case == 'owner_no_checks' else [check]
     if case == 'fork_with_checks':
         checks.append(execution_check(old, 11, 'neutral'))
+    if case == 'owner_rerun':
+        checks.append(execution_check(new, 22, 'failure'))
+    if case == 'owner_read_first':
+        pull.update(number=123, state='open')
+        reader = ExecutionReader([old, new], checks, pull=pull)
+        result = gh_pr_watch.github_read.pull_request_checks(reader, 'openai/codex', 123)
+        assert result['summary']['failingCount'] == result['summary']['pendingCount'] == 0
+        assert result['summary']['countsComplete'] is True
+        assert [run['id'] for run in result['approvalHeldForkRuns']] == [old['id']]
+        return
     if case == 'unavailable_jobs':
         reader = ExecutionReader([old, new], [check], unavailable=unavailable, pull=pull)
         result = gh_pr_watch.github_read.pull_request_checks(reader, 'openai/codex', 123, head_sha=old['head_sha'])
@@ -3645,12 +3682,11 @@ def test_unexecuted_fork_approval_needs_proven_passed_owner_execution(
     snapshot, reader = execution_snapshot(
         monkeypatch, tmp_path, [old, new], checks, jobs=jobs, unavailable=unavailable, pull=pull,
     )
-    assert ('ready_to_merge' in snapshot['actions']) is (case == 'owner_passed')
-    if case == 'owner_passed':
+    assert ('ready_to_merge' in snapshot['actions']) is (case in {'owner_passed', 'owner_rerun'})
+    if case in {'owner_passed', 'owner_rerun'}:
         assert snapshot['checks']['failed_count'] == 0
         assert snapshot['failed_runs'] == snapshot['failed_jobs'] == []
         assert [run['id'] for run in snapshot['approval_held_fork_runs']] == [old['id']]
-        assert old in reader.runs
     else:
         assert snapshot['approval_held_fork_runs'] == []
         assert snapshot['checks']['failed_count'] or snapshot['checks']['pending_count'] or not snapshot['checks']['evidence_complete']

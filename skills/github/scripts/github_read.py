@@ -1016,6 +1016,8 @@ def unexecuted_fork_approvals(
     if not candidates:
         return runs, []
     pull = pull or reader.get_json(f"/repos/{repo}/pulls/{number}", step="fork_approval_pr_identity")
+    if not isinstance(pull, dict) or not isinstance(pull.get("head"), dict) or not isinstance(pull.get("base"), dict):
+        reader.invalid_response("fork_approval_pr_identity", "GitHub PR identity is malformed")
     head, base = pull.get("head") or {}, pull.get("base") or {}
     identity = _repository_identity(head.get("repo"))
     if (not identity or identity[1] != repo.casefold() or identity != _repository_identity(base.get("repo"))
@@ -1032,12 +1034,14 @@ def unexecuted_fork_approvals(
                         and _repository_identity(owner.get("repository")) == identity
                         and any(target.get("number") == number and (target.get("base") or {}).get("ref") == base.get("ref")
                                 and ((target.get("base") or {}).get("repo") or {}).get("id") == identity[0]
+                                and isinstance(target.get("head"), dict) and isinstance(target["head"].get("repo"), dict)
                                 and ((target.get("head") or {}).get("repo") or {}).get("id") == identity[0]
                                 for target in owner.get("pull_requests", []))]
         passed = False
         for owner in counterparts:
             linked = [check for check in checks if check.get("runId") == owner["id"]]
-            if linked and all(check.get("headSha") == sha and check.get("checkSuiteId") == owner["check_suite_id"]
+            if linked and any(check.get("conclusion") == "success" for check in linked) and all(
+                              check.get("headSha") == sha and check.get("checkSuiteId") == owner["check_suite_id"]
                               and check.get("status") == "completed" and check.get("conclusion") in {"success", "neutral", "skipped"}
                               for check in linked):
                 passed = True
@@ -1103,14 +1107,14 @@ def pull_request_checks(
                 f"/repos/{repo}/actions/runs", step_prefix="check_workflow_runs",
                 params={"head_sha": sha}, collection_key="workflow_runs",
             )
-        if availability["checkRuns"]:
-            workflow_runs, approval_held_runs = unexecuted_fork_approvals(
-                reader, repo, number, sha, workflow_runs, normalized_checks, pull,
-            )
         normalized_checks, superseded_checks, complete = current_check_runs(
             reader, repo, sha, normalized_checks, workflow_runs,
         )
         availability["workflowSelection"] = complete
+        if availability["checkRuns"] and complete:
+            workflow_runs, approval_held_runs = unexecuted_fork_approvals(
+                reader, repo, number, sha, workflow_runs, normalized_checks, pull,
+            )
     except (GitHubReadError, GitHubReadShapeError):
         availability["workflowSelection"] = False
     normalized_statuses = [normalize_status(item) for item in statuses]
