@@ -116,10 +116,11 @@ def _lane_pins_addon_source(
         for source in sources
     ):
         return True
+    target_name = target_key.rsplit("/", 1)[-1]
     if any(
         not isinstance(source, dict)
         or not isinstance(source.get("repository"), str)
-        or "/" not in repository_key(source["repository"])
+        or repository_key(source["repository"]) in {"", target_name}
         for source in sources
     ):
         return None
