@@ -11,6 +11,7 @@ import re
 import sys
 import time
 from collections.abc import Callable, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 
 SKILLS = Path(__file__).resolve().parents[2]
@@ -25,6 +26,7 @@ import release_session_claims as sessions
 from github_read import GitHubReader, GitHubReadError, GitHubReadShapeError
 
 CHECK_OPERATION = "work-closeout.claims"
+JOURNAL_SHIPPED = datetime(2026, 10, 22, 3, 29, 6, tzinfo=UTC)
 
 
 def explicit_pr_numbers(text, repo):
@@ -147,23 +149,56 @@ def check_record(reader, repo, number, session, actor, *, pulls_cache=None, data
 transcript_values = history.values
 
 
+def receipt_targets(rows: list[dict], native: str) -> set[tuple[str, int]]:
+    receipts = [row for row in rows if "claim" in row]
+    receipts.extend(block for blocks in history.tool_outputs(rows).values() for block in blocks)
+    return {
+        target
+        for block in receipts
+        for value in transcript_values(block)
+        if (target := history.claim_target(value, native)) is not None
+    }
+
+
+def session_start(rows: list[dict]) -> datetime | None:
+    stamps = [row["timestamp"] for row in rows if row.get("timestamp") is not None]
+    stamps.extend(meta["timestamp"] for meta in [history.metadata(rows)] if "timestamp" in meta)
+    try:
+        parsed = [datetime.fromisoformat(stamp) for stamp in stamps]
+    except (TypeError, ValueError):
+        return None
+    if not parsed or any(stamp.tzinfo is None for stamp in parsed):
+        return None
+    return min(parsed)
+
+
+def journal_covers(rows: list[dict], journal: set[tuple[str, int]], seen: set[tuple[str, int]]) -> bool:
+    began = session_start(rows)
+    return began is not None and began > JOURNAL_SHIPPED and seen <= journal
+
+
 def recorded_targets(entry: dict) -> dict:
     require_own_transcript(entry)
     native = entry["session_id"]
-    targets = claim_log.read(native)
+    journal = claim_log.read(native)
     rows = entry.get("_transcript_records") or history.read_records(Path(entry["transcript"]))
-    receipts = [row for row in rows if "claim" in row]
-    receipts.extend(block for blocks in history.tool_outputs(rows).values() for block in blocks)
-    for block in receipts:
-        for value in transcript_values(block):
-            target = history.claim_target(value, native)
-            if target is not None:
-                targets.add(target)
+    receipts = receipt_targets(rows, native)
     discovery = history.literal_targets(
         rows, native, directory=Path(entry["native_output_directory"]) if entry.get("native_output_directory") else None
     )
-    discovery["targets"].update(targets)
+    discovery["journal_covered_invocations"] = []
+    if journal_covers(rows, journal, receipts | discovery["targets"]):
+        discovery["journal_covered_invocations"] = discovery.pop("unresolved_invocations")
+        discovery["unresolved_invocations"] = []
+    discovery["targets"].update(journal | receipts)
     return discovery
+
+
+def unsettled_attempts(native: str) -> tuple[set[tuple[str, int]], set[tuple[str, int]]]:
+    attempts = claim_log.attempts(native)
+    running = {attempt.target for attempt in attempts if attempt.running}
+    without_lifecycle = claim_log.read(native) - {attempt.target for attempt in attempts}
+    return running, without_lifecycle
 
 
 def check(
@@ -176,31 +211,33 @@ def check(
     deadline = time.time() + read_timeout
     native_sessions = {entry["session_id"] for entry in entries}
     targets: dict[str, set[tuple[str, int]]] = {}
-    unresolved = []
+    unresolved, covered = [], []
     for entry in history.expand(entries):
         discovery = recorded_targets(entry)
         targets.setdefault(entry["session_id"], set()).update(discovery["targets"])
-        unresolved.extend(
-            {**item, "session": entry["session_id"], "transcript": entry["transcript"]}
-            for item in discovery["unresolved_invocations"]
-        )
+        for found, items in ((unresolved, discovery["unresolved_invocations"]), (covered, discovery["journal_covered_invocations"])):
+            found.extend({**item, "session": entry["session_id"], "transcript": entry["transcript"]} for item in items)
     repos = {repo for records in targets.values() for repo, _ in records}
     accounts = set(owners) | {repo.split("/")[0] for repo in repos}
     released, blocked, readers, pulls_cache, data_cache = [], [], {}, {}, {}
     complete = not unresolved
     for native, records in sorted(targets.items()):
+        running, without_lifecycle = unsettled_attempts(native)
         for repo, number in sorted(records):
             try:
+                if (repo, number) in running:
+                    raise ValueError("a claim attempt is still running; let it finish, then check again")
                 if repo not in readers:
                     readers[repo] = (reader_for_repo or repository_reader)(repo, deadline)
                 selected = readers[repo]
                 if not selected.expected_actor:
                     raise ValueError("repository's configured automation identity is unknown")
-                released.extend(
-                    check_record(
-                        selected, repo, number, native, selected.expected_actor, pulls_cache=pulls_cache, data_cache=data_cache
-                    )
+                found = check_record(
+                    selected, repo, number, native, selected.expected_actor, pulls_cache=pulls_cache, data_cache=data_cache
                 )
+                if not found and (repo, number) in without_lifecycle:
+                    raise ValueError("journaled claim has no published claim and no recorded attempt end; it may still be posting")
+                released.extend(found)
             except (ValueError, OSError, GitHubReadError, GitHubReadShapeError, github_identity.GitHubAppError) as error:
                 blocked.append(f"{repo}#{number}: {error}")
                 complete = False
@@ -219,6 +256,7 @@ def check(
         "released_claims": released,
         "blocked": blocked,
         "unresolved_invocations": unresolved,
+        "journal_covered_invocations": covered,
     }
 
 

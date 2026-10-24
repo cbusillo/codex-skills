@@ -3415,15 +3415,15 @@ def claim_once(args: argparse.Namespace) -> None:
         )
         # Freeze the source before any external claim write. If publication
         # fails, the closed source stays frozen for supported claim recovery.
-        github_plan_claim_log.record(claim["session"], issue_repo, number)
-        admit_observed_sources()
-        if not comment_recorded:
-            claim_comment = github_comment_core.comment(
-                record_kind, number, text, repo=issue_repo, gh_cmd=gh_cmd,
-                expected_actor=expected_actor, operation=CURRENT_OPERATION,
-                completed_steps=completed, failed_step="post_claim", dedupe_body=True,
-            )
-            completed.append("post_claim")
+        with github_plan_claim_log.attempt(claim["session"], issue_repo, number):
+            admit_observed_sources()
+            if not comment_recorded:
+                claim_comment = github_comment_core.comment(
+                    record_kind, number, text, repo=issue_repo, gh_cmd=gh_cmd,
+                    expected_actor=expected_actor, operation=CURRENT_OPERATION,
+                    completed_steps=completed, failed_step="post_claim", dedupe_body=True,
+                )
+                completed.append("post_claim")
         # Check the discussion again before touching status or labels.
         issue, status, comments, can_update = claim_snapshot(args.issue, repo)
         check_agent(issue)

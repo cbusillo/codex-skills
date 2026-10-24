@@ -44,6 +44,27 @@ class ClaimLogTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             journal.read("root")
 
+    def test_each_attempt_records_its_own_start_and_end(self) -> None:
+        with journal.attempt("root", "owner/repo", 1):
+            with journal.attempt("root", "owner/repo", 1):
+                self.assertEqual([a.running for a in journal.attempts("root")], [True, True])
+            self.assertEqual(sorted(a.running for a in journal.attempts("root")), [False, True])
+        self.assertEqual({a.target for a in journal.attempts("root") if not a.running}, {("owner/repo", 1)})
+        self.assertEqual(journal.read("root"), {("owner/repo", 1)})
+
+    def test_attempt_that_raises_still_records_its_end(self) -> None:
+        with self.assertRaises(OSError), journal.attempt("root", "owner/repo", 1):
+            raise OSError("post failed")
+        self.assertFalse(journal.attempts("root")[0].running)
+
+    def test_malformed_attempt_cannot_mean_no_running_claim(self) -> None:
+        with journal.attempt("root", "owner/repo", 1):
+            path = next((journal.log_path("root") / "attempts").glob("*.json"))
+        for content in ('{"pid":', '{"session":"root","repository":"owner/repo","record":1,"pid":"1","ended":true}'):
+            path.write_text(content)
+            with self.subTest(content=content), self.assertRaises(ValueError):
+                journal.attempts("root")
+
     def test_symlinked_store_or_file_refuses_read_and_write(self) -> None:
         journal.record("root", "owner/repo", 1)
         path = next(journal.log_path("root").glob("*.json"))

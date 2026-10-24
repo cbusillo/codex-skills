@@ -3,6 +3,12 @@
 Read this when closeout reports `unresolved_invocations`, when recovering older
 helper or remote-host evidence, or when changing the legacy reader.
 
+The reader's unresolved results count toward coverage only for a session that
+began before the claim journal shipped (`JOURNAL_SHIPPED` in
+`check_claims.py`), has no readable start time, or recorded a claim receipt or
+recognizable claim without a journal row. Other sessions report them as
+`journal_covered_invocations`.
+
 Native evaluated shell commands, older shell-tool arguments and decoded literal
 commands provide targets when output was truncated. No shell or JavaScript is
 executed. Unresolved claim commands may read their own advertised saved or

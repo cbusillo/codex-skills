@@ -5,6 +5,7 @@
 # ///
 """Exercise native-session closeout against disposable GitHub and transcript records."""
 import contextlib
+from datetime import timedelta
 from collections.abc import Callable
 import io
 import json
@@ -404,6 +405,93 @@ class ClaimCloseoutTests(unittest.TestCase):
             {(c.args[1], c.args[2], c.args[3]) for c in check.call_args_list},
             {(repo, number, SESSION) for repo, number in records} | {(REPO, 8, "child")},
         )
+
+    def journal_era_entry(self, *commands: str, began: timedelta = timedelta(hours=1)) -> dict:
+        entry = self.entry(timestamp=(helper.JOURNAL_SHIPPED + began).isoformat())
+        with Path(entry["transcript"]).open("a") as stream:
+            stream.write(json.dumps({"type": "mode", "timestamp": None, "sessionId": SESSION}) + "\n")
+            for index, command in enumerate(commands):
+                rows = json.dumps(completed_bash_call(command)).replace('"call"', f'"call-{index}"')
+                stream.write("".join(json.dumps(row) + "\n" for row in json.loads(rows)))
+        return entry
+
+    def finished_attempt(self, number: int = 1) -> None:
+        with helper.claim_log.attempt(SESSION, REPO, number):
+            pass
+
+    def test_journal_era_session_is_not_blocked_by_commands_that_cannot_be_read(self) -> None:
+        self.finished_attempt()
+        self.comments.append(self.release)
+        report = helper.check([self.journal_era_entry('eval "$CMD" claim')])
+        self.assertTrue(report["claims_clear"], report)
+        self.assertEqual([r["claim_comment"] for r in report["released_claims"]], [self.source["id"]])
+        self.assertEqual([item["reason"] for item in report["journal_covered_invocations"]], ["computed"])
+
+    def test_journal_era_session_still_blocks_on_an_unreleased_claim(self) -> None:
+        self.finished_attempt()
+        report = helper.check([self.journal_era_entry('eval "$CMD" claim')])
+        self.assertFalse(report["claims_clear"], report)
+        self.assertTrue(report["blocked"])
+
+    def test_session_begun_before_the_journal_keeps_reconstruction_coverage(self) -> None:
+        self.finished_attempt()
+        self.comments.append(self.release)
+        report = helper.check([self.journal_era_entry('eval "$CMD" claim', began=-timedelta(hours=1))])
+        self.assertFalse(report["claims_clear"], report)
+        self.assertTrue(report["unresolved_invocations"])
+
+    def test_session_without_a_start_time_keeps_reconstruction_coverage(self) -> None:
+        self.finished_attempt()
+        self.comments.append(self.release)
+        entry = self.entry(timestamp=None)
+        with Path(entry["transcript"]).open("a") as stream:
+            stream.write("".join(json.dumps(row) + "\n" for row in completed_bash_call('eval "$CMD" claim')))
+        self.assertTrue(helper.check([entry])["unresolved_invocations"])
+
+    def test_receipt_without_a_journal_row_keeps_reconstruction_coverage(self) -> None:
+        self.finished_attempt()
+        self.comments.append(self.release)
+        entry = self.journal_era_entry('eval "$CMD" claim')
+        receipt = {"operation": "github.plan.claim", "claim": SOURCE, "issue": {"repo": REPO, "number": 2}, "ok": True}
+        with Path(entry["transcript"]).open("a") as stream:
+            stream.write(json.dumps({"type": "response_item", "payload": {"type": "function_call_output",
+                                     "output": json.dumps({"output": json.dumps(receipt)})}}) + "\n")
+        report = helper.check([entry])
+        self.assertFalse(report["claims_clear"], report)
+        self.assertTrue(report["unresolved_invocations"])
+
+    def test_literal_claim_without_a_journal_row_keeps_reconstruction_coverage(self) -> None:
+        self.finished_attempt()
+        self.comments.append(self.release)
+        literal = f"uv run gh-plan.py --repo {REPO} claim 3 --session {SESSION}"
+        report = helper.check([self.journal_era_entry(literal, 'eval "$CMD" claim')])
+        self.assertFalse(report["claims_clear"], report)
+        self.assertTrue(report["unresolved_invocations"])
+
+    def test_running_claim_attempt_blocks_before_its_claim_is_visible(self) -> None:
+        self.comments.clear()
+        with helper.claim_log.attempt(SESSION, REPO, 1):
+            report = helper.check([self.journal_era_entry()])
+        self.assertFalse(report["claims_clear"], report)
+        self.assertTrue(helper.check([self.journal_era_entry()])["claims_clear"])
+
+    def test_one_running_attempt_blocks_even_after_a_concurrent_attempt_ended(self) -> None:
+        self.comments.append(self.release)
+        with helper.claim_log.attempt(SESSION, REPO, 1):
+            self.finished_attempt()
+            self.assertFalse(helper.check([self.journal_era_entry()])["claims_clear"])
+
+    def test_killed_claim_attempt_is_settled_by_readback(self) -> None:
+        self.comments.clear()
+        with helper.claim_log.attempt(SESSION, REPO, 1), patch.object(helper.claim_log, "process_running", return_value=False):
+            self.assertTrue(helper.check([self.journal_era_entry()])["claims_clear"])
+
+    def test_journal_row_without_attempt_lifecycle_needs_its_published_claim(self) -> None:
+        helper.claim_log.record(SESSION, REPO, 1)
+        self.comments.clear()
+        self.assertFalse(helper.check([self.journal_era_entry()])["claims_clear"])
+        self.comments.extend([self.source, self.release])
+        self.assertTrue(helper.check([self.journal_era_entry()])["claims_clear"])
 
     def test_journal_keeps_a_child_claim_when_the_root_transcript_has_no_receipt(self) -> None:
         helper.claim_log.record(SESSION, REPO, 1)
