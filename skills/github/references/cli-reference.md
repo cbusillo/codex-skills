@@ -625,7 +625,7 @@ weighed-outcome record for the current head, or a change to the base branch's
 and automation identity count; refusals name those identities. A raw Supervisor
 review report does not attest that its findings have been weighed.
 
-It also refuses while the PR names an open issue in the same owner's
+It also refuses while the PR names an open issue in the same account's
 repositories, in its title or after a keyword such as `Refs`, that GitHub
 does not list among its closing references, unless that issue has an open
 sub-issue or a recorded wait
