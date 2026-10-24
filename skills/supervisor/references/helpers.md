@@ -36,6 +36,13 @@ question picker from the session
 ([CLI reference](https://code.claude.com/docs/en/cli-reference)), so a worker
 asks its question on the item, as the brief rules say, instead of waiting on a
 picker nobody can answer.
+Codex launches get `-c memories.generate_memories=false` before the brief, so
+a briefed thread is never a Codex memory input: its findings belong on the
+item, and Codex memory turns brief wording into the Director's preferences
+([config reference](https://learn.chatgpt.com/docs/config-file/config-reference)).
+On the daemon route the Codex client does not forward that key, so the
+launcher's ingress also sets it on each `thread/start` it carries. The
+Director's own Codex sessions and config files are unchanged.
 Existing sessions may still draw dim suggestions. `read` retains the
 plain `screen` and adds `input_line` with the last visible `❯`, `›` or `>`
 prompt's text, line index and style (`dim`, `non_dim`, `mixed`, `empty`, or

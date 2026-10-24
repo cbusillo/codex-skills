@@ -990,5 +990,26 @@ class IngressTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.wait_for(task, 8)
 
 
+    async def test_fresh_start_reaches_native_with_memory_generation_off(self):
+        with ReceiptFixture() as f:
+            forwarded = []
+            def start(native_request):
+                forwarded.append(native_request["params"])
+                return {"thread": {"id": str(uuid.uuid4())}}
+            f.rpc_results["thread/start"] = start
+            task, request, response, _ = await self.start_client(f)
+            try:
+                for config in (None, {"memories.generate_memories": True, "features": {"x": True}}):
+                    result = await self.send(task, request, response, "thread/start", None, config=config)
+                    self.assertIn("result", result)
+                self.assertEqual([p["config"] for p in forwarded], [
+                    {"memories.generate_memories": False},
+                    {"memories.generate_memories": False, "features": {"x": True}}])
+                self.assertIn("error", await self.send(task, request, response, "thread/start", None, config=["x"]))
+                self.assertEqual(len(forwarded), 2)
+            finally:
+                (f.root / "stop").touch()
+                await asyncio.wait_for(task, 8)
+
 if __name__ == "__main__":
     unittest.main()

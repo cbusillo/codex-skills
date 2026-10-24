@@ -265,7 +265,8 @@ class ProviderLaunchTests(unittest.TestCase):
         self.assertEqual(parts[parts.index("cd") + 1], "/fixture")
         self.assertIn("TERM=fixture", parts)
         native = parts[parts.index("--") + 1:]
-        self.assertEqual(native, ["codex", "--remote", endpoint, "--", "literal $(touch NEVER)"])
+        self.assertEqual(native, ["codex", "--remote", endpoint, "-c", "memories.generate_memories=false",
+                                  "--", "literal $(touch NEVER)"])
 
     def test_codex_launch_records_account_and_verified_process_generation(self):
         import github_plan_closure

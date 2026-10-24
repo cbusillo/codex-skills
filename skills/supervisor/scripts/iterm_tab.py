@@ -422,6 +422,9 @@ def append_brief(command_text, brief):
         if not any(word == CLAUDE_AUTOCOMPACT_OPTION or word.startswith(CLAUDE_AUTOCOMPACT_OPTION + "=")
                    for word in words[1:]):
             command_text += f" {CLAUDE_AUTOCOMPACT_OPTION} auto"
+    elif agent == "codex":
+        from codex_session_proxy import MEMORY_SETTING
+        command_text += " -c " + shlex.quote(f"{MEMORY_SETTING}=false")
     prompt_option = " --prompt-interactive=" if agent == "agy" else " -- "
     return command_text + prompt_option + shlex.quote(brief)
 

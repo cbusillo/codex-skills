@@ -35,6 +35,8 @@ HOUSEKEEPING = {"thread/unarchive", "thread/name/set", "thread/metadata/update",
 # JSON Schema payloads (dynamic tools, turn output, elicitation) describe
 # fields such as threadId; they never name a thread.
 SCHEMAS = {"inputSchema", "outputSchema", "requestedSchema"}
+# https://learn.chatgpt.com/docs/config-file/config-reference
+MEMORY_SETTING = "memories.generate_memories"
 
 
 def stopped_daemon_remedy(home):
@@ -101,6 +103,14 @@ def thread_targets(value):
     elif isinstance(value, list):
         for child in value:
             yield from thread_targets(child)
+
+
+def without_memory_generation(message: dict) -> dict:
+    params = message.get("params") or {}
+    config = (params.get("config") or {}) if isinstance(params, dict) else None
+    if not isinstance(config, dict):
+        raise ValueError("thread/start params and config must be objects")
+    return {**message, "params": {**params, "config": {**config, MEMORY_SETTING: False}}}
 
 
 def managed_argv(home: Path, native: list[str]) -> list[str]:
@@ -240,6 +250,8 @@ class Ingress:
                                         raise ValueError("native thread action requires an exact identity")
                                     if targets and identity is None:
                                         raise ValueError("native action needs a request ID for acknowledgement")
+                                if method == "thread/start":
+                                    raw = json.dumps(without_memory_generation(message))
                                 if method == "thread/resume":
                                     session = message["params"]["threadId"]
                                 guarded = acquire(targets, method)

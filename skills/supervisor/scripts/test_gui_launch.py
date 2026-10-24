@@ -120,8 +120,9 @@ class GuiLaunchTests(unittest.TestCase):
         self.assertFalse(any(arg == "--remote" or arg.startswith("--remote=") for arg in argv))
         self.assertEqual(home, str(self.account))
         source = Path(home) / self.source.relative_to(self.home / ".codex")
-        overrides = [argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "-c"]
-        self.assertEqual(json.loads(overrides[-1].split("=", 1)[1]), str(source))
+        overrides = dict(argv[i + 1].split("=", 1) for i, arg in enumerate(argv[:-1]) if arg == "-c")
+        self.assertEqual(json.loads(overrides["marketplaces.openai-bundled.source"]), str(source))
+        self.assertEqual(overrides["memories.generate_memories"], "false")
         self.assertEqual(source.resolve(), self.source.resolve())
         self.assertIn(self.brief.read_text(), argv[-1])
         self.assertFalse(self.state.exists())
