@@ -577,9 +577,31 @@ class ReadyTests(unittest.TestCase):
         self.reader.pr["body"] = "## Client test notes\n- Client change: parts show supplier costs.\n- Open a part."
         self.post()
 
-    def test_engineering_notes_that_name_a_client_change_refuse(self):
-        self.reader.pr["body"] = "## Client test notes\nNothing for the Client to test: tooling.\n\nClient change: new button."
-        self.assertIn(ready_handoff.CLIENT_CHANGE, self.refuse())
+    def test_each_notes_unit_keeps_one_matching_statement(self):
+        for notes in (
+            "Nothing for the Client to test: tooling.\n\nClient change: new button.",
+            "Client change: new button.\nCheck it.\nNothing for the Client to test: tools.",
+            "Nothing for the Client to test: importer safeguards.\n\nAfter import, open a part and verify its costs.",
+            "Nothing for the Client to test: importer safeguards.\n- Open a part and verify its costs.",
+            "### #10\nClient change: supplier column.\nCheck it.\n### #11\nApprove the new checkout screen.",
+            "### #10\nClient change: supplier column.\nCheck it.\n### #11\nNothing for the Client to test: tools.\nClient change: new button.",
+        ):
+            for waiting in (False, True):
+                with self.subTest(notes=notes, waiting=waiting):
+                    self.reader.pr["body"] = f"## Client test notes\n{notes}"
+                    self.args.waiting_for_client = waiting
+                    self.refuse()
+
+    def test_engineering_reason_may_wrap_and_mixed_batches_stay_supported(self):
+        self.reader.pr["body"] = "## Client test notes\nNothing for the Client to test: importer safeguards\nthat only engineering runs."
+        self.post()
+        self.writer.reset_mock()
+        self.args.waiting_for_client = True
+        self.reader.pr["body"] = (
+            "## Client test notes\n### #10\nClient change: supplier column.\nCheck it.\n"
+            "### #11\nNothing for the Client to test: tools."
+        )
+        self.post()
 
     def test_engineering_marker_needs_plain_first_line_and_release_steps(self):
         marker = ready_handoff.ENGINEERING_RELEASE_TESTS

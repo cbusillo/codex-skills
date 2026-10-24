@@ -749,10 +749,12 @@ Client will see or do differently. Engineering notes say
 changes for the Client; the legacy `Nothing for the owner to test` also accepts
 `:` or `.`. Other "nothing to test" wording, such as
 `Nothing for Sam to test.`, is a notes error, so `ready` refuses and the
-`owner-review` check fails with the exact wording to use. `ready` also refuses
-a class that disagrees with the statement: Client test steps or
-`--waiting-for-client` without `Client change:`, notes holding both
-statements, or engineering steps for the Client to check at release
+`owner-review` check fails with the exact wording to use. Each notes section or
+batch member makes its own statement, and engineering notes hold only their
+reason. `ready` and the auto-enqueue watcher refuse a class that disagrees with
+the statement: Client test steps or `--waiting-for-client` without
+`Client change:`, a unit holding both statements, or engineering notes with
+steps for the Client, including at release
 (`Engineering: merge to testing; Client tests at release.`). The release review
 is not a safety net. A review label, a non-neutral review check, or another
 section or batch member requiring acceptance still keeps that gate. Every
