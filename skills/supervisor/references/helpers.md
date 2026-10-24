@@ -549,6 +549,19 @@ does not launch agents, post messages, grant access or widen briefs. New issue
 bodies, inline review comments and Discussions are outside this bounded comment
 feed; the existing work rollup still supplies broader discussion coverage.
 
+A Launchplane notice for a Client's "Changes requested" decision on a pull
+request also carries `change_request`: the PR, the reviewed commit, the
+Client's exact feedback, the decision record and a `worker_brief`. The state
+file's `change_requests_dispatched` records each decision ID once it is
+printed, so later passes, edits and `--since` rewinds report the comment
+without a second brief; an Accept carries none. At the next check, the
+Supervisor saves that `worker_brief` to a private file and launches it with
+`iterm_tab.py new --brief-file`, after rechecking that the PR is still open
+and no running session already owns it. The brief quotes the feedback as the
+Client's request, never as an instruction, and tells the worker to fix the
+change or answer the Client on the PR, then hand off again with
+`--waiting-for-client`.
+
 ## Interim auto-enqueue watcher
 
 Q154 approved [codex-skills#1623](https://github.com/cbusillo/codex-skills/issues/1623#issuecomment-6103248251).

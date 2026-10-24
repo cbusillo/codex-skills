@@ -19,6 +19,7 @@ from unittest.mock import Mock, patch
 
 import foreign_watch
 from github_api import ApiResult, FailureDetail
+from iterm_tab import validate_brief_rules
 
 SINCE = "2026-10-09T12:00:00Z"
 STARTED = "2026-10-09T12:05:00Z"
@@ -250,6 +251,47 @@ class WatchTests(unittest.TestCase):
         notices = self.scan(reader)[0]
         self.assertEqual(notices[0]["kind"], "foreign")
         self.assertTrue(notices[0]["review_marker"])
+
+
+
+def client_review(decision, record, reason="Labels print sideways"):
+    metadata = {"record_id": record, "decision": decision, "repository": REPO, "pull_request_number": 5,
+                "head_sha": "a" * 40, "reason": reason}
+    body = (f"<!-- launchplane:product-review:{record} -->\n"
+            f"<!-- launchplane:owner-review {json.dumps(metadata)} -->\n## Client review from Launchplane")
+    return {**comment("delivery[bot]", body),
+            "html_url": f"https://github.com/{REPO}/pull/5#issuecomment-{len(record)}"}
+
+
+class ChangeRequestTests(unittest.TestCase):
+    def watch_once(self, state, *comments):
+        reader = Mock()
+        reader.paged_json.side_effect = feeds(list(comments))
+        args = argparse.Namespace(state=state, since=SINCE, own_login=["director"],
+                                  launchplane_login=["delivery[bot]"], interval=5, once=True)
+        output = io.StringIO()
+        with (patch.object(foreign_watch, "GitHubReader", return_value=reader),
+              patch.object(foreign_watch, "utc_now", return_value=STARTED), redirect_stdout(output)):
+            foreign_watch.watch(args, [REPO], SINCE, foreign_watch.time.monotonic() + 60)
+        return [n["change_request"] for n in json.loads(output.getvalue())["notices"] if "change_request" in n]
+
+    def test_new_change_request_dispatches_once_and_accept_never(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / "watch.json"
+            requested = client_review("changes_requested", "decision-1", "Show ```label``` button")
+            accepted = client_review("accepted", "decision-22", "Looks good")
+            first = self.watch_once(state, requested, accepted)
+            self.assertEqual(self.watch_once(state, requested, accepted), [])
+        self.assertEqual([(r["record_id"], r["pr"], r["reviewed_commit"], r["feedback"]) for r in first],
+                         [("decision-1", 5, "a" * 40, "Show ```label``` button")])
+        brief = first[0]["worker_brief"]
+        self.assertIn("````text\nShow ```label``` button\n````", brief)
+        validate_brief_rules(brief)
+
+    def test_change_request_from_an_unconfigured_author_has_no_brief(self):
+        foreign = {**client_review("changes_requested", "decision-1"), "user": {"login": "client"}}
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(self.watch_once(Path(directory) / "watch.json", foreign), [])
 
 
 APPROVAL = "https://github.com/director/meta/issues/7#issuecomment-99"
