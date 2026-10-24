@@ -3,7 +3,6 @@
 # requires-python = ">=3.12"
 # dependencies = ["PyYAML==6.0.3"]
 # ///
-"""Read-only report of the standard setup each of the Director's repositories is missing."""
 from __future__ import annotations
 
 import argparse
@@ -67,8 +66,6 @@ def merge_train_missing(repo: str, policy_reader: PolicyReader) -> bool:
 def file_names(repo: str, path: str, fetch: Callable[[list[str]], Any]) -> set[str]:
     try:
         listing = fetch(["api", f"repos/{repo}/contents/{path}", "--method", "GET"])
-    except audit.ReferenceNotFound:
-        return set()
     except audit.AuditError as exc:
         raise SetupUnknown("renovate") from exc
     if not isinstance(listing, list):
@@ -133,11 +130,21 @@ def repository_gaps(repo: str, *, fetch: Callable[[list[str]], Any], policy_read
     return gaps, unknown
 
 
+def installation_readable(fetch: Callable[[list[str]], Any]) -> bool:
+    try:
+        fetch(["api", "installation/repositories?per_page=1", "--method", "GET"])
+    except audit.AuditError:
+        return False
+    return True
+
+
 def collect(owner: str, *, fetch: Callable[[list[str]], Any], policy_reader: PolicyReader,
             developer: Path, codex_homes: list[dict[str, Any]]) -> dict[str, Any]:
     repos, cut = audit.owner_repositories(owner, fetch=fetch)
     coverage = audit.repository_listing_gaps(cut, fetch=fetch)
     gaps = [gap(None, "app") for listing in coverage if listing["reason"] == "installation_selected_repositories"]
+    if not installation_readable(fetch):
+        coverage.append({"source": "app", "reason": "unavailable"})
     for key in sorted(repos):
         found, unknown = repository_gaps(str(repos[key]["full_name"]), fetch=fetch, policy_reader=policy_reader,
                                          developer=developer, codex_homes=codex_homes)
@@ -174,7 +181,7 @@ def codex_accounts() -> list[dict[str, Any]]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description="Report the standard setup each repository is missing, read-only.")
     parser.add_argument("--owner", required=True, help="the Director's GitHub account")
     parser.add_argument("--gh", default=str(audit.WRAPPER), help="gh-compatible command used for reads")
     parser.add_argument("--developer", type=Path, default=Path.home() / "Developer", help="folder holding the checkouts")

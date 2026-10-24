@@ -27,6 +27,7 @@ class Account:
         self.files = {"o/ready": {"": ["renovate.json"]}}
         self.rulesets: dict[str, Any] = {"o/ready": STANDARD}
         self.failing: set[str] = set()
+        self.owner_login = False
         self.trusted: set[str] = set()
         for name in ("ready", "old"):
             self.add_checkout(name, trusted=True)
@@ -43,10 +44,14 @@ class Account:
     def fetch(self, args: list[str]) -> Any:
         path = args[1]
         repo = "/".join(path.split("/")[1:3])
+        if path.startswith("installation/repositories") and self.owner_login:
+            raise audit.AuditError("gh: This endpoint requires an installation token (HTTP 403)")
+        if path.startswith("user/repos"):
+            path = "installation/repositories"
         if path.startswith("installation/repositories"):
             listing = [{"full_name": name, "owner": {"login": "o"}, "archived": False, **meta}
                        for name, meta in self.repos.items()]
-            return {"repositories": listing, "repository_selection": self.selection}
+            return listing if self.owner_login else {"repositories": listing, "repository_selection": self.selection}
         if repo in self.failing:
             raise audit.AuditError("gh: HTTP 502 Bad Gateway")
         if "/rulesets?" in path:
@@ -93,6 +98,7 @@ class RepositorySetupTests(unittest.TestCase):
 
     def test_new_repository_without_any_setup_reports_every_gap_with_its_fixer(self) -> None:
         self.account.repos["o/new"] = {}
+        self.account.files["o/new"] = {"": ["README.md"]}
         self.assertEqual(self.gaps(), {
             ("o/new", "merge_train", "agent"), ("o/new", "renovate", "agent"),
             ("o/new", "rulesets", "agent"), ("o/new", "checkout", "agent"),
@@ -121,6 +127,20 @@ class RepositorySetupTests(unittest.TestCase):
         self.assertIn((None, "app", "Director"), self.gaps())
         self.assertFalse(result["complete"])
 
+    def test_owner_login_cannot_see_the_app_so_its_installation_is_unread(self) -> None:
+        self.add_new_repository()
+        self.account.owner_login = True
+        result = self.account.collect()
+        self.assertEqual(result["gaps"], [])
+        self.assertEqual(result["coverage_gaps"], [{"source": "app", "reason": "unavailable"}])
+
+    def test_unreadable_repository_root_is_unread_not_missing_renovate(self) -> None:
+        self.add_new_repository()
+        del self.account.files["o/new"]
+        result = self.account.collect()
+        self.assertEqual(result["gaps"], [])
+        self.assertEqual(result["coverage_gaps"], [{"repo": "o/new", "source": "renovate", "reason": "unavailable"}])
+
     def test_unreadable_repository_is_incomplete_not_set_up(self) -> None:
         self.add_new_repository()
         self.account.failing.add("o/new")
@@ -138,6 +158,7 @@ class RepositorySetupTests(unittest.TestCase):
     def test_report_marks_forks_and_names_each_fix_once(self) -> None:
         self.account.repos["o/new"] = {"fork": True}
         self.account.repos["o/other"] = {}
+        self.account.files.update({"o/new": {"": []}, "o/other": {"": []}})
         text = setup.markdown(self.account.collect())
         self.assertIn("- o/new (fork): merge train, Renovate, ruleset pair, no checkout\n", text)
         self.assertEqual(text.count(setup.SETUPS["renovate"].fix), 1)
