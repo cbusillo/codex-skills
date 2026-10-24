@@ -168,7 +168,7 @@ class MainTests(Fixture):
         super().setUp()
         self.git(self.repo, "remote", "set-url", "origin", "https://github.com/o/sample.git")
 
-    def run_main(self, pull, repo="o/sample", commits=(), discussions=None, bodies=None):
+    def run_main(self, pull, repo="o/sample", commits=(), discussions=None, bodies=None, branch=None, branch_pulls=()):
         config = self.base / "worktrees.json"
         config.write_text(json.dumps({"root": str(self.root), "hostHelper": str(self.base / "host-helper")}))
         discussions = discussions or {}
@@ -176,7 +176,9 @@ class MainTests(Fixture):
         reader.get_json.side_effect = lambda path, step: pull if path.endswith("/pulls/7") else {
             "body": (bodies or {}).get(path.rsplit("/", 1)[-1], "")}
 
-        def paged_json(path, step_prefix):
+        def paged_json(path, step_prefix, params=None):
+            if path.endswith("/pulls"):
+                return list(branch_pulls)
             if path.endswith("/pulls/7/commits"):
                 return [{"sha": sha} for sha in commits]
             discussion = discussions.get(path.split("/issues/")[1].split("/")[0])
@@ -198,7 +200,8 @@ class MainTests(Fixture):
                 mock.patch.dict("sys.modules", {"github_read": read_errors}), \
                 mock.patch.object(landed_worktrees, "run_retire") as run, redirect_stdout(out):
             run.return_value = subprocess.CompletedProcess([], 0, "", "")
-            code = landed_worktrees.main(["--repo", repo, "--pr", "7", "--checkout", str(self.repo), "--apply"])
+            landed = ["--branch", branch] if branch else ["--pr", "7"]
+            code = landed_worktrees.main(["--repo", repo, *landed, "--checkout", str(self.repo), "--apply"])
         return code, json.loads(out.getvalue()), run
 
     def test_open_pr_retires_nothing(self):
@@ -216,6 +219,25 @@ class MainTests(Fixture):
         self.assertEqual(code, 0)
         self.assertEqual([r["decision"] for r in result["worktrees"]], ["retired"])
         self.assertEqual(run.call_args_list, [mock.call(str(path), dry_run=True), mock.call(str(path), dry_run=False)])
+
+    def test_branch_without_a_pr_retires_once_the_default_branch_holds_it(self):
+        path = self.worktree("prless")
+        code, result, run = self.run_main(None, branch="work/prless")
+        self.assertEqual((code, [r["decision"] for r in result["worktrees"]]), (0, ["retired"]))
+        self.assertEqual(run.call_args_list, [mock.call(str(path), dry_run=True), mock.call(str(path), dry_run=False)])
+
+    def test_branch_without_a_pr_keeps_commits_the_default_branch_lacks(self):
+        self.commit(self.worktree("unlanded"), "Not landed")
+        _, result, run = self.run_main(None, branch="work/unlanded")
+        self.assertEqual([r["reason"] for r in result["worktrees"]], ["local commits beyond the landed head"])
+        run.assert_not_called()
+
+    def test_branch_with_a_pr_retires_nothing(self):
+        self.worktree("haspr")
+        code, result, run = self.run_main(None, branch="work/haspr", branch_pulls=[{"number": 9}])
+        self.assertEqual((code, result["ok"]), (2, False))
+        self.assertIn("--pr", result["error"])
+        run.assert_not_called()
 
     def merged_refresh(self):
         self.worktree("source")

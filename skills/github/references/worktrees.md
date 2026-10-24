@@ -123,6 +123,9 @@ was fast-forwarded, and one whose branch an open claim on the PR or an issue
 it links names. Only an exact release ends a claim, even when its marker
 stays in Current Status; an expired session lease does not, since the session
 may still be open. The host helper's own checks still decide.
+A task branch that never had a PR retires with `--branch work/<task>` in
+place of `--pr`: the helper refuses when any PR exists for that branch and
+keeps a worktree whose HEAD is not in the default branch's tracking ref.
 Portable unlocked worktrees are outside it and follow work-closeout. The
 [daily stranded-work sweep](../../direction/references/stranded-work.md) reports
 finished worktrees the landing step left behind.

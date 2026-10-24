@@ -99,7 +99,7 @@ def landed_decisions(checkout: Path, branch: str, pr_head: str, root: Path, *,
         elif fed_the_pr and (tree.head in fresh_starts or not fresh_starts):
             row.update(decision="kept", reason="HEAD may be a fresh start on the default branch")
         elif not fed_the_pr and not contained(checkout, tree.head, pr_head):
-            row.update(decision="kept", reason="local commits beyond the landed PR head")
+            row.update(decision="kept", reason="local commits beyond the landed head")
         else:
             row.update(decision="candidate")
         rows.append(row)
@@ -246,59 +246,83 @@ def open_claims(reader, github_read, repo: str, number: int, pull: dict) -> str:
     return "\n".join(found)
 
 
+def same_repository(checkout_slug: str | None, repo: str) -> bool:
+    return bool(checkout_slug) and checkout_slug.casefold() == repo.casefold()
+
+
+def refuse(message: str) -> int:
+    print(json.dumps({"ok": False, "error": message}))
+    return 2
+
+
+def pull_rows(reader, github_read, repo: str, number: int, checkout: Path, root: Path) -> tuple[dict, list[dict]]:
+    try:
+        pull = reader.get_json(f"repos/{repo}/pulls/{number}", step="landed_pull")
+    except (github_read.GitHubReadError, github_read.GitHubReadShapeError) as exc:
+        raise LookupError(f"PR read unavailable: {exc}") from exc
+    if not isinstance(pull, dict) or not finished_pull(pull):
+        raise LookupError("PR is not merged or closed; nothing is retired")
+    head = pull.get("head") or {}
+    if ((head.get("repo") or {}).get("full_name") or "").casefold() != repo.casefold():
+        return {"note": "PR head is in another repository"}, []
+    try:
+        pr_commits = {c.get("sha") for c in reader.paged_json(f"repos/{repo}/pulls/{number}/commits",
+                                                              step_prefix="landed_pull_commits")}
+        pr_commits = unless_fast_forwarded(pull, pr_commits)
+        claims = open_claims(reader, github_read, repo, number, pull)
+    except (github_read.GitHubReadError, github_read.GitHubReadShapeError, ValueError, TypeError) as exc:
+        raise LookupError(f"PR commits or claims unavailable; nothing is retired: {exc}") from exc
+    rows = landed_decisions(checkout, head["ref"], head["sha"], root, pr_commits=pr_commits, claims=claims)
+    return {"merged": bool(pull.get("merged_at"))}, rows
+
+
+def branch_rows(reader, github_read, repo: str, branch: str, checkout: Path, root: Path) -> tuple[dict, list[dict]]:
+    try:
+        pulls = reader.paged_json(f"repos/{repo}/pulls", step_prefix="landed_branch_pulls",
+                                  params={"state": "all", "head": f"{repo.split('/')[0]}:{branch}"})
+    except (github_read.GitHubReadError, github_read.GitHubReadShapeError) as exc:
+        raise LookupError(f"PR read for {branch} unavailable: {exc}") from exc
+    if pulls:
+        raise LookupError(f"{branch} has PR #{pulls[0].get('number')}; retire with --pr instead")
+    tip = default_tracking_tip(checkout)
+    if not tip:
+        raise LookupError("the default branch's tracking ref is missing; fetch origin first")
+    return {}, landed_decisions(checkout, branch, tip, root)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Retire a landed PR's worktrees with the command each lock names.")
-    parser.add_argument("--repo", required=True, help="OWNER/REPO of the landed PR")
-    parser.add_argument("--pr", required=True, type=int)
+    parser.add_argument("--repo", required=True, help="OWNER/REPO of the landed work")
+    landed = parser.add_mutually_exclusive_group(required=True)
+    landed.add_argument("--pr", type=int)
+    landed.add_argument("--branch", help="a task branch that never had a PR and is in the default branch")
     parser.add_argument("--checkout", required=True, type=Path, help="any local checkout of that repository")
     parser.add_argument("--apply", action="store_true", help="retire; the default only previews")
     args = parser.parse_args(argv)
     try:
         root, helper = dev_worktree.configuration()
     except (dev_worktree.Refused, OSError, json.JSONDecodeError) as exc:
-        print(json.dumps({"ok": False, "error": f"worktree configuration: {exc}"}))
-        return 2
+        return refuse(f"worktree configuration: {exc}")
     if helper is None:
         # Portable worktrees carry no retire command; work-closeout removes them.
         print(json.dumps({"ok": True, "worktrees": [], "note": "no hostHelper configured; nothing to retire"}))
         return 0
+    checkout_slug = github_slug(args.checkout)
+    if not same_repository(checkout_slug, args.repo):
+        return refuse(f"checkout origin is {checkout_slug or 'not GitHub'}, not {args.repo}")
     import github_read
 
     reader = github_read.GitHubReader(operation="github.worktree.retire_landed")
     try:
-        pull = reader.get_json(f"repos/{args.repo}/pulls/{args.pr}", step="landed_pull")
-    except (github_read.GitHubReadError, github_read.GitHubReadShapeError) as exc:
-        print(json.dumps({"ok": False, "error": f"PR read unavailable: {exc}"}))
-        return 2
-    if not isinstance(pull, dict) or not finished_pull(pull):
-        print(json.dumps({"ok": False, "error": "PR is not merged or closed; nothing is retired"}))
-        return 2
-    # A sibling clone or fork can share the branch name; act only on this PR's own repository.
-    checkout_slug = github_slug(args.checkout)
-    if not checkout_slug or checkout_slug.casefold() != args.repo.casefold():
-        print(json.dumps({"ok": False, "error": f"checkout origin is {checkout_slug or 'not GitHub'}, not {args.repo}"}))
-        return 2
-    head = pull.get("head") or {}
-    if ((head.get("repo") or {}).get("full_name") or "").casefold() != args.repo.casefold():
-        print(json.dumps({"ok": True, "worktrees": [], "note": "PR head is in another repository"}))
-        return 0
-    try:
-        pr_commits = {c.get("sha") for c in reader.paged_json(f"repos/{args.repo}/pulls/{args.pr}/commits",
-                                                              step_prefix="landed_pull_commits")}
-        pr_commits = unless_fast_forwarded(pull, pr_commits)
-        claims = open_claims(reader, github_read, args.repo, args.pr, pull)
-    except (github_read.GitHubReadError, github_read.GitHubReadShapeError, ValueError, TypeError) as exc:
-        print(json.dumps({"ok": False, "error": f"PR commits or claims unavailable; nothing is retired: {exc}"}))
-        return 2
-    try:
-        rows = landed_decisions(args.checkout, head["ref"], head["sha"], root, pr_commits=pr_commits, claims=claims)
-    except (ValueError, OSError, KeyError) as exc:
-        print(json.dumps({"ok": False, "error": str(exc)}))
-        return 2
+        if args.branch:
+            summary, rows = branch_rows(reader, github_read, args.repo, args.branch, args.checkout, root)
+        else:
+            summary, rows = pull_rows(reader, github_read, args.repo, args.pr, args.checkout, root)
+    except (LookupError, ValueError, OSError) as exc:
+        return refuse(str(exc))
     rows = retire(rows, apply=args.apply)
-    print(json.dumps({"ok": True, "merged": bool(pull.get("merged_at")), "worktrees": rows}, indent=2))
+    print(json.dumps({"ok": True, **summary, "worktrees": rows}, indent=2))
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())
