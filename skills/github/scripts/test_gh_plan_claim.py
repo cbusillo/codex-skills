@@ -1667,9 +1667,12 @@ class ClaimTests(unittest.TestCase):
                 if change == "author":
                     for comment in self.comments[:2]:
                         comment["user"] = {"login": "different-author"}
-                if change == "late_release": self.comments[1]["created_at"] = "2026-10-01T00:00:01Z"
-                if change == "equal_release": self.comments[1]["created_at"] = source["claimed_at"]
-                if change == "lease_only": self.comments.pop(1)
+                if change == "late_release":
+                    self.comments[1]["created_at"] = "2026-10-01T00:00:01Z"
+                if change == "equal_release":
+                    self.comments[1]["created_at"] = source["claimed_at"]
+                if change == "lease_only":
+                    self.comments.pop(1)
                 if change == "later_claim":
                     later = {**source, "claimed_at": "2026-10-03T00:00:00Z"}
                     self.comments.extend([
@@ -1678,13 +1681,18 @@ class ClaimTests(unittest.TestCase):
                         {"id": 91, "body": "Released claim 90", "user": {"login": TEST_BOT},
                          "created_at": "2026-10-04T00:00:00Z"},
                     ])
-                if change == "selected_unreleased": self.comments.pop()
-                if change == "selected_legacy": self.comments[-1]["body"] = f"Released by {source['worker']}"
-                if change == "missing_timestamp": self.comments[1].pop("created_at")
-                if change == "late_edit": self.comments[0]["updated_at"] = "2026-09-30T02:00:00Z"
+                if change == "selected_unreleased":
+                    self.comments.pop()
+                if change == "selected_legacy":
+                    self.comments[-1]["body"] = f"Released by {source['worker']}"
+                if change == "missing_timestamp":
+                    self.comments[1].pop("created_at")
+                if change == "late_edit":
+                    self.comments[0]["updated_at"] = "2026-09-30T02:00:00Z"
                 expired = {source["session"]} if change in {"lease_only", "missing_timestamp", "late_edit"} else set()
                 with patch.object(CLAIM, "expired_lease_sessions", return_value=expired):
-                    with self.assertRaises(PLAN.PlanError): self.run_claim()
+                    with self.assertRaises(PLAN.PlanError):
+                        self.run_claim()
                 self.assert_no_writes()
 
     def test_no_pr_resume_rechecks_predecessor_release_after_publication(self) -> None:
@@ -1695,7 +1703,8 @@ class ClaimTests(unittest.TestCase):
                 def mutate() -> None:
                     self.comments[1]["user"] = {"login": "different-author"}
                 setattr(self, phase, mutate)
-                with self.assertRaises(PLAN.PlanError) as failure: self.run_claim()
+                with self.assertRaises(PLAN.PlanError) as failure:
+                    self.run_claim()
                 self.assertIn("release_own_claim", failure.exception.payload["claim_recovery"])
 
     def test_no_pr_resume_refuses_open_source_work(self):
