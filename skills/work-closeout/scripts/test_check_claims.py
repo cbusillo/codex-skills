@@ -2654,7 +2654,7 @@ print(root)"""
 
     def test_metadata_regex_filter_still_requires_exact_claim_release(self) -> None:
         root = self.entry(cli_version=SUPPORTED_CLI_VERSION)
-        source = f'text(await tools.exec_command({{cmd:"uv run gh-plan.py --repo {REPO} claim 1"}}));'
+        source = f'text(await tools.exec_command({{cmd:"uv run gh-plan.py --repo {REPO} claim 1",tty:true}}));'
         rows = [
             {
                 "payload": {
