@@ -206,6 +206,7 @@ class JavascriptData:
                 callback = node.parent
                 if (
                     method != "test"
+                    or source(callee) != source(receiver) + ".test"
                     or len(args) != 1
                     or re.fullmatch(r"/[A-Za-z0-9_ .|-]+/i?", source(receiver)) is None
                     or callback.type != "arrow_function"

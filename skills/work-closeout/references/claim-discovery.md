@@ -84,7 +84,7 @@ pending interactive claim uncertainty, including aliases, computed constructors
 and escaped shorthand keys. Every decoded target remains subject to release
 verification even when the surrounding cell is conditional. A direct expression-body
 predicate in a checked inline data callback may call a literal regex's `test`
-with one checked data argument. Its pattern contains only letters, digits,
+with one checked data argument and no gap before `.test`. Its pattern contains only letters, digits,
 underscore, space, dot, pipe or hyphen, and its flags are empty or `i`.
 Regex values, aliases, constructors, other methods and other syntax remain
 conditional. The serializable-data and unchanged-builtins assumption also
@@ -97,7 +97,8 @@ session ID and subsequent input/output on the owning issue; keep coverage
 conditional when that evidence cannot establish it. The existing Director-decision
 route applies to irrecoverable older evidence. For new cells, use the supported
 direct literal shell calls and `text(result)`; use `.includes` for plain string
-filters. Literal string replacement arguments are also supported, including
+filters; the narrow literal-regex predicate above is also supported. Literal
+string replacement arguments are also supported, including
 bounded output filenames derived from literal command lists or object entries.
 
 Process IDs alone do not establish an input channel. Starting with stable Codex

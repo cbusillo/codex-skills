@@ -627,9 +627,8 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
             "const r=[/x/];",
             'text(/x/.test("x"));',
             'const a=1;a\n/tools.exec_command({cmd:"uv run gh-plan.py claim 5"})/i.test(a);',
-            'text(ALL_TOOLS.filter(x=>/x/.test(x.name)));text(await tools.exec_command({cmd:ALL_TOOLS.map(x=>x.name).join(" ")}));',
-            'text(ALL_TOOLS.filter(x=>/x/.test(x.name)));text(await tools.write_stdin({session_id:41,chars:load("input")}));',
-            'text(ALL_TOOLS.filter(x=>/x/.test(x.name)));text(await tools.write_stdin({session_id:41,chars:"gh-plan.py claim 5\\n"}));',
+            'text(ALL_TOOLS.filter(x=>/x//**/.test(x.name)));',
+            'text(ALL_TOOLS.filter(x=>/x/ /*comment*/ .test(x.name)));',
         ]
         for flags in ("g", "y", "m", "s", "u", "v", "d", "ii"):
             expressions.append(f"text(ALL_TOOLS.filter(x=>/x/{flags}.test(x.name)));")
@@ -665,6 +664,7 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
         )
         for source in expressions:
             with self.subTest(source=source):
+                self.assertFalse(check_claims.history.claim_javascript.analyse(source)[0])
                 prefix = (
                     f"text(await tools.exec_command({{cmd:{json.dumps(COMMAND)}}}));"
                 )
@@ -673,7 +673,6 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
                 )
                 self.assertIn(("test/a", 5), report["targets"])
                 self.assertTrue(report["unresolved_invocations"])
-
 
     def test_mutation_and_shadowing_cannot_hide_execution(self) -> None:
         sources = [

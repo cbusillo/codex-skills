@@ -2664,11 +2664,9 @@ print(root)"""
                     "input": source,
                 }
             },
-            native_terminal_result(
-                "metadata",
-                json.dumps({"claim": SOURCE, "issue": {"repo": REPO, "number": 1}}),
-                javascript=True,
-            ),
+            {"payload": {"type": "custom_tool_call_output", "call_id": "metadata",
+                "output": json.dumps({"session_id": 41, "exit_code": None, "output":
+                    json.dumps({"claim": SOURCE, "issue": {"repo": REPO, "number": 1}})})}},
             {
                 "payload": {
                     "type": "custom_tool_call",
@@ -2684,6 +2682,9 @@ print(root)"""
                     "output": "[]",
                 }
             },
+            {"payload": {"type": "custom_tool_call", "name": "exec", "call_id": "poll",
+                "input": 'text(await tools.write_stdin({session_id:41,chars:""}));'}},
+            native_terminal_result("poll", javascript=True),
         ]
         with Path(root["transcript"]).open("a") as stream:
             stream.write("\n".join(json.dumps(row) for row in rows) + "\n")
@@ -2696,6 +2697,24 @@ print(root)"""
         self.assertTrue(report["coverage"]["complete"], report)
         self.assertTrue(report["claims_clear"], report)
 
+    def test_regex_comment_boundary_cannot_hide_stored_claim_execution(self) -> None:
+        root = self.entry(cli_version=SUPPORTED_CLI_VERSION)
+        inputs = [
+            f'store("c","uv run gh-plan.py --repo {REPO} claim 1");',
+            'text(ALL_TOOLS.filter(x=>/x//**/.test(x.name)));text(await tools.exec_command({cmd:load("c")}));',
+        ]
+        rows = []
+        for index, source in enumerate(inputs):
+            rows.extend([
+                {"payload": {"type": "custom_tool_call", "name": "exec", "call_id": str(index), "input": source}},
+                native_terminal_result(str(index), javascript=True),
+            ])
+        with Path(root["transcript"]).open("a") as stream:
+            stream.write("\n".join(json.dumps(row) for row in rows) + "\n")
+        report = helper.check([root])
+        self.assertFalse(report["claims_clear"], report)
+        self.assertFalse(report["coverage"]["complete"], report)
+        self.assertTrue(report["unresolved_invocations"], report)
 
     def test_recorded_held_claim_and_failed_reads_cannot_clear(self) -> None:
         entry = self.receipt_entry()
