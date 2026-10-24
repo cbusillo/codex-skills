@@ -168,13 +168,17 @@ class MainTests(Fixture):
         super().setUp()
         self.git(self.repo, "remote", "set-url", "origin", "https://github.com/o/sample.git")
 
-    def run_main(self, pull, repo="o/sample", commits=(), discussions=None, bodies=None, branch=None, branch_pulls=()):
+    def run_main(self, pull, repo="o/sample", commits=(), discussions=None, bodies=None, branch=None, branch_pulls=(),
+                 claim_issues=()):
         config = self.base / "worktrees.json"
         config.write_text(json.dumps({"root": str(self.root), "hostHelper": str(self.base / "host-helper")}))
         discussions = discussions or {}
         reader = mock.Mock()
         reader.get_json.side_effect = lambda path, step: pull if path.endswith("/pulls/7") else {
             "body": (bodies or {}).get(path.rsplit("/", 1)[-1], "")}
+        reader.request.return_value = mock.Mock(body={
+            "total_count": len(claim_issues), "incomplete_results": False,
+            "items": [{"repository_url": f"https://api.github.com/repos/{repo}", "number": n} for n in claim_issues]})
 
         def paged_json(path, step_prefix, params=None):
             if path.endswith("/pulls"):
@@ -220,14 +224,35 @@ class MainTests(Fixture):
         self.assertEqual([r["decision"] for r in result["worktrees"]], ["retired"])
         self.assertEqual(run.call_args_list, [mock.call(str(path), dry_run=True), mock.call(str(path), dry_run=False)])
 
+    def settled_worktree(self, task):
+        path = self.worktree(task)
+        admin = Path(self.git(path, "rev-parse", "--absolute-git-dir"))
+        os.utime(admin / "HEAD", (0, 0))
+        return path
+
     def test_branch_without_a_pr_retires_once_the_default_branch_holds_it(self):
-        path = self.worktree("prless")
+        path = self.settled_worktree("prless")
         code, result, run = self.run_main(None, branch="work/prless")
         self.assertEqual((code, [r["decision"] for r in result["worktrees"]]), (0, ["retired"]))
         self.assertEqual(run.call_args_list, [mock.call(str(path), dry_run=True), mock.call(str(path), dry_run=False)])
 
+    def test_branch_without_a_pr_keeps_a_fresh_start(self):
+        self.worktree("fresh")
+        _, result, run = self.run_main(None, branch="work/fresh")
+        self.assertEqual([r["decision"] for r in result["worktrees"]], ["kept"])
+        run.assert_not_called()
+
+    def test_branch_without_a_pr_keeps_a_worktree_an_open_claim_names(self):
+        self.settled_worktree("claimed")
+        claim = {"id": 11, "user": {"login": "bot"}, "created_at": "2026-10-22T00:00:00Z",
+                 "body": "Claimed by worker\n" + github_plan_claim.marker(
+                     {"worker": "worker", "session": "s1", "branch": "work/claimed", "claimed_at": "2026-10-22T00:00:00Z"})}
+        _, result, run = self.run_main(None, branch="work/claimed", claim_issues=[4], discussions={"4": [claim]})
+        self.assertEqual([r["reason"] for r in result["worktrees"]], ["an open claim names this branch"])
+        run.assert_not_called()
+
     def test_branch_without_a_pr_keeps_commits_the_default_branch_lacks(self):
-        self.commit(self.worktree("unlanded"), "Not landed")
+        self.commit(self.settled_worktree("unlanded"), "Not landed")
         _, result, run = self.run_main(None, branch="work/unlanded")
         self.assertEqual([r["reason"] for r in result["worktrees"]], ["local commits beyond the landed head"])
         run.assert_not_called()

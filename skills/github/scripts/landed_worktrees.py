@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+from urllib.parse import urlencode
 
 import dev_worktree
 import github_plan_claim
@@ -23,6 +24,8 @@ RETIRE_MARKER = "retire with: dev-worktree retire"
 DEV_WORKTREE = Path(__file__).with_name("dev-worktree")
 ANY_CLAIM = {"worker": "", "session": "", "branch": "", "claimed_at": ""}
 NO_WORKTREES = {"worktrees": []}
+FRESH_START = dt.timedelta(hours=2)
+SEARCH_PAGE = 100
 
 
 @dataclass(frozen=True)
@@ -190,11 +193,7 @@ def finished(root: Path, pulls_for, include=lambda slug: True) -> tuple[list[dic
                 if tip and contained(task, tree.head, tip):
                     # No commits of its own: date it from creation or last checkout, so a
                     # session that has only just started is inside the age threshold.
-                    admin = git(tree.path, "rev-parse", "--absolute-git-dir").stdout.strip()
-                    try:
-                        since = dt.datetime.fromtimestamp(Path(admin, "HEAD").stat().st_mtime, dt.timezone.utc)
-                    except OSError:
-                        since = None
+                    since = last_checkout(tree.path)
                     found.append({**row, "basis": "in default branch", "since": since.isoformat() if since else None})
                     continue
                 try:
@@ -213,6 +212,22 @@ def finished(root: Path, pulls_for, include=lambda slug: True) -> tuple[list[dic
     return found, gaps
 
 
+def last_checkout(path: Path) -> dt.datetime | None:
+    admin = git(path, "rev-parse", "--absolute-git-dir").stdout.strip()
+    try:
+        return dt.datetime.fromtimestamp(Path(admin, "HEAD").stat().st_mtime, dt.timezone.utc)
+    except OSError:
+        return None
+
+
+def keep_fresh_starts(rows: list[dict], now: dt.datetime) -> list[dict]:
+    for row in rows:
+        since = last_checkout(Path(row["path"]))
+        if row["decision"] == "candidate" and (since is None or now - since < FRESH_START):
+            row.update(decision="kept", reason="checked out within the last two hours; may be a fresh start")
+    return rows
+
+
 def unless_fast_forwarded(pull: dict, pr_commits: set[str]) -> set[str]:
     return set() if pull.get("merge_commit_sha") in pr_commits else pr_commits
 
@@ -221,6 +236,24 @@ def open_claims(reader, github_read, repo: str, number: int, pull: dict) -> str:
     import github_plan_landing
     import github_plan_status.references
 
+    records = [(repo, number), *github_plan_status.references.linked_issues(repo, pull)]
+    base = pull.get("base") or {}
+    if pull.get("merged_at") and base.get("ref") == (base.get("repo") or {}).get("default_branch"):
+        records += github_plan_landing.closing_references(reader, repo, number)[1]
+    return claims_on(reader, github_read, records)
+
+
+def issues_naming(reader, owner: str, branch: str) -> list[tuple[str, int]]:
+    query = f'"{branch}" user:{owner} is:issue is:open'
+    result = reader.request("GET", "search/issues?" + urlencode({"q": query, "per_page": SEARCH_PAGE}),
+                            step="landed_branch_claims", bucket="search").body
+    items = result.get("items") or []
+    if result.get("incomplete_results") or result.get("total_count", 0) > len(items):
+        raise ValueError(f"issue search for {branch} is incomplete")
+    return [(item["repository_url"].split("/repos/", 1)[1], item["number"]) for item in items]
+
+
+def claims_on(reader, github_read, records: list[tuple[str, int]]) -> str:
     def release_evidence(evidence_repo, _issue, comment_id):
         try:
             return reader.get_json(f"repos/{evidence_repo}/issues/comments/{comment_id}", step="landed_release_evidence")
@@ -229,10 +262,6 @@ def open_claims(reader, github_read, repo: str, number: int, pull: dict) -> str:
                 return None
             raise
 
-    records = [(repo, number), *github_plan_status.references.linked_issues(repo, pull)]
-    base = pull.get("base") or {}
-    if pull.get("merged_at") and base.get("ref") == (base.get("repo") or {}).get("default_branch"):
-        records += github_plan_landing.closing_references(reader, repo, number)[1]
     found = []
     for record_repo, record_number in dict.fromkeys(records):
         issue = reader.get_json(f"repos/{record_repo}/issues/{record_number}", step="landed_claim_record")
@@ -287,7 +316,12 @@ def branch_rows(reader, github_read, repo: str, branch: str, checkout: Path, roo
     tip = default_tracking_tip(checkout)
     if not tip:
         raise LookupError("the default branch's tracking ref is missing; fetch origin first")
-    return {}, landed_decisions(checkout, branch, tip, root)
+    try:
+        claims = claims_on(reader, github_read, issues_naming(reader, repo.split("/")[0], branch))
+    except (github_read.GitHubReadError, github_read.GitHubReadShapeError, ValueError, TypeError, KeyError) as exc:
+        raise LookupError(f"claims naming {branch} unavailable; nothing is retired: {exc}") from exc
+    rows = landed_decisions(checkout, branch, tip, root, claims=claims)
+    return {}, keep_fresh_starts(rows, dt.datetime.now(dt.timezone.utc))
 
 
 def main(argv: list[str] | None = None) -> int:
