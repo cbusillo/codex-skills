@@ -1635,6 +1635,23 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(output["claim"]["branch"], source["branch"])
         self.assertNotIn("retained_handoff", output["claim"])
 
+    def test_no_pr_resume_preserves_sequential_released_claims_on_its_branch(self) -> None:
+        source = self.no_pr_resume_fixture()
+        prior = {**source, "claimed_at": "2026-09-30T00:00:00Z"}
+        self.comments[:0] = [
+            {"id": 88, "body": CLAIM.marker(prior), "user": {"login": TEST_BOT},
+             "created_at": prior["claimed_at"]},
+            {"id": 89, "body": "Released claim 88", "user": {"login": TEST_BOT},
+             "created_at": "2026-09-30T01:00:00Z"},
+        ]
+        self.args.branch = source["branch"]
+        artifacts = copy.deepcopy(self.inventory)
+        self.run_claim()
+        result = self.emitted.call_args.args[0]
+        self.assertIn("metadata_readback", result["completed_steps"])
+        self.assertEqual(result["claim"]["resume_from"], str(self.args.resume_from))
+        self.assertEqual(self.inventory, artifacts)
+
     def test_no_pr_resume_refuses_open_source_work(self):
         for kind in ("source_open", "foreign_author", "unlinked", "foreign_repo"):
             with self.subTest(kind=kind):
