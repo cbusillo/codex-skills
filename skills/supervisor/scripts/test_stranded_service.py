@@ -145,16 +145,57 @@ class DailyTests(unittest.TestCase):
         self.assertEqual(self.entry().returncode, 0)
         self.assertEqual((self.root / "received").read_text(), self.payload)
 
+    def weekly_on(self, weekday):
+        self.data["weekly"] = {"owner": "OWNER", "weekday": weekday}
+        self.save()
+
+    def weekly_receipts(self):
+        return [path.read_text() for path in (self.state / "weekly").glob("*.receipt.json")]
+
+    def test_weekly_audit_receipt_is_saved_once_per_week(self):
+        self.weekly_on(dt.datetime.now().astimezone().isoweekday())
+        (self.root / "scan-code").write_text("3")
+        self.assertEqual(self.entry().returncode, 0)
+        self.assertEqual(self.weekly_receipts(), [self.payload])
+        self.assertEqual(self.entry().returncode, 0)
+        self.assertEqual(self.weekly_receipts(), [self.payload])
+
+    def test_unrecorded_weekly_audit_is_retried_the_next_run(self):
+        self.weekly_on(dt.datetime.now().astimezone().isoweekday())
+        (self.root / "scan-code").write_text("1")
+        self.assertEqual(self.entry().returncode, 1)
+        self.assertEqual(self.weekly_receipts(), [])
+        (self.root / "scan-code").write_text("0")
+        self.assertEqual(self.entry().returncode, 0)
+        self.assertEqual(self.weekly_receipts(), [self.payload])
+
+    def test_weekly_audit_runs_on_or_after_its_weekday_once_per_iso_week(self):
+        self.weekly_on(3)
+        tuesday, thursday, next_monday = dt.date(2026, 10, 20), dt.date(2026, 10, 22), dt.date(2026, 10, 26)
+        for day, expected in ((tuesday, 0), (thursday, 1), (thursday, 1), (next_monday, 1)):
+            with self.subTest(day=day), mock.patch.object(daily, "local_today", return_value=day):
+                self.assertEqual(daily.run_weekly(self.config, threading.Event()), 0)
+                self.assertEqual(len(self.weekly_receipts()), expected)
+
+    def test_daily_delivery_failure_still_runs_weekly_audit(self):
+        self.weekly_on(dt.datetime.now().astimezone().isoweekday())
+        (self.root / "send-code").write_text("1")
+        self.assertEqual(self.entry().returncode, 1)
+        self.assertEqual(self.weekly_receipts(), [self.payload])
+
     def test_invalid_config_refuses_before_rendering(self):
         for key, value in (("hour", 24), ("minute", True), ("delivery_argv", []),
-                           ("uv", "relative"), ("scan_args", ["--stranded-format=json"])):
-            with self.subTest(key=key):
-                original = self.data[key]
+                           ("uv", "relative"), ("scan_args", ["--stranded-format=json"]),
+                           ("weekly", {"owner": "OWNER", "weekday": 0}), ("weekly", {"owner": "", "weekday": 1}),
+                           ("weekly", {"owner": "OWNER", "weekday": 1, "extra": 1}), ("unknown", 1)):
+            with self.subTest(key=key, value=value):
+                original = dict(self.data)
                 self.data[key] = value
                 self.save()
                 with self.assertRaises(ValueError):
                     daily.render(self.config, self.root / "jobs")
-                self.data[key] = original
+                self.data.clear()
+                self.data.update(original)
 
     def test_stopped_child_is_reaped(self):
         stopped = threading.Event()

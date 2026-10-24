@@ -27,13 +27,17 @@ from pathlib import Path
 import services
 
 LABEL = "com.codex-skills.supervisor.stranded"
+WEEKLY_AUDIT_SECONDS = 1800
+WEEKLY_STAMP_WRITTEN_CODES = (0, 3)
 
 
 def load_config(path):
     config = json.loads(path.read_text())
     required = {"uv", "catalog", "state_dir", "scan_args", "delivery_argv", "hour", "minute"}
-    if not isinstance(config, dict) or set(config) != required:
+    if not isinstance(config, dict) or not required <= set(config) <= required | {"weekly"}:
         raise ValueError("daily configuration fields are missing or unknown")
+    if "weekly" in config:
+        validate_weekly(config["weekly"])
     for key in ("uv", "catalog", "state_dir"):
         services.absolute_path(config[key])
     for key in ("scan_args", "delivery_argv"):
@@ -50,6 +54,13 @@ def load_config(path):
     if any(a.split("=", 1)[0] in {"--stranded-format", "--stranded-work-only"} for a in config["scan_args"]):
         raise ValueError("the runner selects stranded Markdown output")
     return config
+
+
+def validate_weekly(weekly):
+    if (not isinstance(weekly, dict) or set(weekly) != {"owner", "weekday"}
+            or not isinstance(weekly["owner"], str) or not re.fullmatch(r"[\w.-]+", weekly["owner"])
+            or type(weekly["weekday"]) is not int or not 1 <= weekly["weekday"] <= 7):
+        raise ValueError("weekly audit needs an owner and an ISO weekday")
 
 
 def render(config_path, output):
@@ -137,6 +148,50 @@ def run_once(config_path, stopped):
         return 0
 
 
+def local_today():
+    return dt.datetime.now().astimezone().date()
+
+
+def audited_this_week(folder, today):
+    return any(dt.date.fromisoformat(path.name.split(".")[0]).isocalendar()[:2] == today.isocalendar()[:2]
+               for path in folder.glob("*.receipt.json"))
+
+
+def run_weekly(config_path, stopped):
+    config = load_config(config_path)
+    weekly = config.get("weekly")
+    today = local_today()
+    if not weekly or today.isoweekday() < weekly["weekday"]:
+        return 0
+    state = Path(config["state_dir"])
+    folder = state / "weekly"
+    folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with services.service_lock(state / "daily", "weekly"):
+        if audited_this_week(folder, today):
+            services.emit("weekly_already_audited", day=today.isoformat())
+            return 0
+        catalog = Path(config["catalog"])
+        audit = [config["uv"], "run", "--no-project", "--no-cache",
+                 str(catalog / "skills/direction/scripts/direction_audit.py"), "--weekly", "--owner", weekly["owner"]]
+        attempt = folder / f"{today.isoformat()}.attempt.json"
+        with attempt.open("wb") as out, (folder / f"{today.isoformat()}.stderr").open("wb") as err:
+            code = command(audit, catalog, subprocess.DEVNULL, out, err, stopped, WEEKLY_AUDIT_SECONDS)
+        if code not in WEEKLY_STAMP_WRITTEN_CODES:
+            services.emit("weekly_not_recorded", exit_code=code, output=str(attempt))
+            return 1
+        receipt = attempt.rename(folder / f"{today.isoformat()}.receipt.json")
+        services.emit("weekly_audited", exit_code=code, receipt=str(receipt))
+        return 0
+
+
+def guarded(action):
+    try:
+        return action()
+    except (OSError, ValueError, TypeError, subprocess.SubprocessError):
+        services.emit("reconciliation_required", reason="inspect retained scan and delivery evidence")
+        return 1
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -171,7 +226,9 @@ def main(argv=None):
                 marker.unlink(missing_ok=True)
             services.emit("reconciled")
             return 0
-        return run_once(args.config.resolve(), stopped)
+        config_path = args.config.resolve()
+        daily_code = guarded(lambda: run_once(config_path, stopped))
+        return guarded(lambda: run_weekly(config_path, stopped)) or daily_code
     except (OSError, ValueError, TypeError, subprocess.SubprocessError):
         services.emit("reconciliation_required", reason="inspect retained scan and delivery evidence")
         return 1
