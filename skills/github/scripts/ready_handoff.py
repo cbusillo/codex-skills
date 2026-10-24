@@ -190,7 +190,11 @@ def _unit_lines(unit):
 
 
 def _statements(unit):
-    return [_strip_note_decoration(line.strip()) for line in _unit_lines(unit) if line.strip()]
+    return [_strip_note_decoration(line.strip()) for line in _unit_lines(unit) if line.strip() and not _is_example(line)]
+
+
+def _is_example(line) -> bool:
+    return line.startswith(("    ", "\t")) or line.lstrip().startswith(">")
 
 
 def _names_client_change(unit) -> bool:

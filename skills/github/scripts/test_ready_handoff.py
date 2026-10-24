@@ -596,14 +596,17 @@ class ReadyTests(unittest.TestCase):
                 self.reader.pr["body"] = f"## Client test notes\nNothing for the Client to test: {reason}"
                 self.post()
                 self.writer.reset_mock()
-        self.reader.pr["body"] = "## Client test notes\nClient change: help shows batch examples.\nOpen Help.\n```markdown\n### #10\nExample\n```"
-        self.writer.reset_mock()
         self.args.waiting_for_client = True
-        self.reader.pr["body"] = (
-            "## Client test notes\n### #10\nClient change: supplier column.\nCheck it.\n"
-            "### #11\nNothing for the Client to test: tools."
-        )
-        self.post()
+        for notes in (
+            "### #10\nClient change: supplier column.\nCheck it.\n### #11\nNothing for the Client to test: tools.",
+            "Client change: help shows batch examples.\nOpen Help.\n```markdown\n### #10\nExample\n```",
+            f"Client change: help shows examples.\nRead them:\n> {ready_handoff.NOTHING_TO_TEST}: tools.\n> {ready_handoff.ENGINEERING_RELEASE_TESTS}",
+            f"Client change: help shows examples.\nRead them:\n\n    {ready_handoff.NOTHING_TO_TEST}: tools.",
+        ):
+            with self.subTest(notes=notes):
+                self.reader.pr["body"] = f"## Client test notes\n{notes}"
+                self.post()
+                self.writer.reset_mock()
 
     def test_engineering_marker_needs_plain_first_line_and_release_steps(self):
         marker = ready_handoff.ENGINEERING_RELEASE_TESTS
