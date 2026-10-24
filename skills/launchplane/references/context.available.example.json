@@ -40,17 +40,6 @@
         }
       ]
     },
-    "every_code": {
-      "status": "available",
-      "requests": [
-        {
-          "state": "running",
-          "source_issue_url": "https://github.com/example-org/example-app/issues/123",
-          "result_pr_url": "https://github.com/example-org/example-app/pull/456",
-          "summary_status": "Preview validation is waiting on checks."
-        }
-      ]
-    },
     "preview_readiness": {
       "status": "available",
       "items": [

@@ -6391,25 +6391,6 @@ def test_current_agent_context_service_shape() -> None:
                         },
                     },
                 },
-                "every_code_summary": {
-                    "status": "available",
-                    "reason_code": "",
-                    "payload": {
-                        "summary": {
-                            "schema_version": 1,
-                            "generated_at": "2026-07-19T23:00:00Z",
-                            "repository": "example/repo",
-                            "summaries": [
-                                {
-                                    "state": "running",
-                                    "summary_status": "active",
-                                    "issue_url": "https://github.com/example/repo/issues/1",
-                                    "result_pr_url": "https://github.com/example/repo/pull/2",
-                                }
-                            ],
-                        }
-                    },
-                },
                 "preview_readiness": {
                     "status": "available",
                     "reason_code": "",
@@ -6439,7 +6420,6 @@ def test_current_agent_context_service_shape() -> None:
     assert payload["sections"]["repo_product_mapping"]["repositories"][0][
         "product_key"
     ] == "example-product"
-    assert payload["sections"]["every_code"]["requests"][0]["summary_status"] == "active"
     assert payload["sections"]["preview_readiness"]["items"][0]["status"] == "ready"
 
 

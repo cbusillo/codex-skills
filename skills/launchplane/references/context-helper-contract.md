@@ -160,11 +160,8 @@ code instead of copied detail.
 
 Context output is projected through the documented section schema rather than
 generic provider dictionary pass-through. The helper accepts compact
-`work_graph`, `repo_product_mapping`, `every_code`, and `preview_readiness`
-fields documented by `context.available.example.json`. `every_code` only reads
-the historical request summaries Launchplane still emits until
-cbusillo/launchplane#1313 retires them; it does not route work to Every Code.
-Unexpected section keys,
+`work_graph`, `repo_product_mapping`, and `preview_readiness` fields
+documented by `context.available.example.json`. Unexpected section keys,
 secret-looking keys, raw payload containers, unsafe summary text, and unsafe
 trace identifiers fail closed as `invalid_response` instead of being copied into
 public output.
