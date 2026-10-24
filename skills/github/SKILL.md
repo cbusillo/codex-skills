@@ -941,7 +941,7 @@ explicitly approves that one-off; then set
 `GH_WITH_ENV_TOKEN_ALLOW_ACTIVE_AUTH_FALLBACK=1` for that command only. This
 covers unavailable, rejected or rate-limited automation authentication, never
 an API permission refusal. For separately authorized administration on a
-personally owned repository, read [verified repository-owner administration](references/cli-reference.md#verified-repository-owner-administration)
+personally owned repository, such as an approved archive, read [verified repository-owner administration](references/cli-reference.md#verified-repository-owner-administration)
 and use `gh-owner-admin.py`, which reuses the existing ruleset repository-owner transport.
 A denial stops that action; this route is selected before a call, never used
 to replay a denied call as another identity. For

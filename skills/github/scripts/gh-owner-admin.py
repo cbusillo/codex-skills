@@ -118,13 +118,13 @@ def validate_request(value: Any) -> dict[str, Any]:
     if not isinstance(path, str) or not isinstance(method, str):
         fail("request method and repository-relative path must be strings")
     if method == "PATCH" and path == "":
-        if (
+        if not is_archive(body) and (
             not isinstance(body, dict)
             or not body
             or set(body) - (set(SETTINGS.values()) | set(MERGE_METHODS.values()))
             or any(not isinstance(item, bool) for item in body.values())
         ):
-            fail("settings PATCH accepts only declared boolean merge and branch-cleanup flags")
+            fail("settings PATCH accepts only declared boolean merge and branch-cleanup flags, or archived: true alone")
     elif method == "PUT" and path == FORK_APPROVAL_PATH:
         if body != {"approval_policy": "all_external_contributors"}:
             fail("fork approval PUT accepts only approval_policy: all_external_contributors")
@@ -155,11 +155,18 @@ def validate_request(value: Any) -> dict[str, Any]:
         ):
             fail("invalid custom tag-rule conditions, rules or bypass actors")
     else:
-        fail("unsupported owner-admin request; use repository settings, fork approval, collaborator DELETE or custom tag rulesets")
+        fail(
+            "unsupported owner-admin request; use repository settings, archive, fork approval, collaborator DELETE "
+            "or custom tag rulesets"
+        )
     return {"method": method, "path": path, **({"body": copy.deepcopy(body)} if body is not None else {})}
 
 
-def owned_repository(client: Any, repo: str) -> dict[str, Any]:
+def is_archive(body: Any) -> bool:
+    return isinstance(body, dict) and set(body) == {"archived"} and body["archived"] is True
+
+
+def owned_repository(client: Any, repo: str, *, allow_archived: bool = False) -> dict[str, Any]:
     owner, _ = rules.resolve_repositories(client=client, repos=[repo], all_owned=False, owner=None)
     repository = client.request("GET", f"/repos/{rules.repo_path(repo)}", operation="github.owner.admin.read")
     if (
@@ -172,7 +179,8 @@ def owned_repository(client: Any, repo: str) -> dict[str, Any]:
         or repository["owner"]["login"].casefold() != owner.casefold()
         or type(repository.get("id")) is not int
         or repository["id"] <= 0
-        or repository.get("archived") is not False
+        or not isinstance(repository.get("archived"), bool)
+        or (repository["archived"] and not allow_archived)
     ):
         fail("owner-admin requires an active repository owned by the verified human", "owner_actor_mismatch")
     return repository
@@ -212,7 +220,7 @@ def check_fork_approval(value: Any, *, cause: str) -> None:
 
 
 def snapshot(client: Any, repo: str, request: dict[str, Any]) -> dict[str, Any]:
-    repository = owned_repository(client, repo)
+    repository = owned_repository(client, repo, allow_archived=request["method"] == "PATCH" and is_archive(request.get("body")))
     path, method = request["path"], request["method"]
     identity = {"id": repository["id"], "full_name": repository["full_name"].casefold()}
     if path == FORK_APPROVAL_PATH:

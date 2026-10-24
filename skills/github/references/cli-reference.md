@@ -546,11 +546,19 @@ optional `body`. Its supported operations are:
 | Method | Path | Body |
 | --- | --- | --- |
 | PATCH | empty string | Boolean branch-cleanup and merge flags above, using REST names |
+| PATCH | empty string | `{"archived":true}` alone |
 | PUT | `/actions/permissions/fork-pr-contributor-approval` | `{"approval_policy":"all_external_contributors"}` only |
 | DELETE | `/collaborators/USERNAME` | None |
 | DELETE | `/invitations/ID` | None |
 | POST | `/rulesets` | Complete custom tag ruleset |
 | PUT | `/rulesets/ID` | Complete custom tag ruleset for an existing custom tag target |
+
+Archiving is the route for a Director-approved archive of the Director's own
+repository. The App is installed there, so the own-user opt-in does not apply
+and the App's refusal is final. Each archive needs the Director's approval
+naming that repository; this route supplies none. Readback confirms
+`archived: true`. An archived repository refuses every other request here,
+and unarchiving stays the Director's own action.
 
 For separately authorized fork-workflow approval changes, read the current policy
 with `read --repo OWNER/REPO --path /actions/permissions/fork-pr-contributor-approval`,
