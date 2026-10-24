@@ -1701,7 +1701,7 @@ class ClaimTests(unittest.TestCase):
                 self.setUp()
                 self.sequential_no_pr_resume_fixture()
                 def mutate() -> None:
-                    self.comments[1]["user"] = {"login": "different-author"}
+                    self.comments[1]["created_at"] = "2026-10-01T00:00:01Z"
                 setattr(self, phase, mutate)
                 with self.assertRaises(PLAN.PlanError) as failure:
                     self.run_claim()
