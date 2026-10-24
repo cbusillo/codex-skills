@@ -11,6 +11,7 @@ import argparse
 import dataclasses
 import datetime as dt
 import hashlib
+import html
 import json
 import os
 import pathlib
@@ -18,6 +19,7 @@ import re
 import subprocess
 import sys
 import urllib.parse
+from collections import Counter
 from typing import Any, Callable, Optional
 
 import github_api as github_api_core
@@ -36,6 +38,8 @@ RECONCILIATION_CLOCK_SKEW_SECONDS = 5
 OPERATION_MARKER_LINE_RE = re.compile(
     rf"(?m)^[ \t]*{re.escape(github_api_core.OPERATION_MARKER_PREFIX)}[0-9a-f]+ -->[ \t]*(?:\r?\n)?"
 )
+MENTION_RE = re.compile(r"(?<!\w)@(?P<login>[A-Za-z0-9](?:-?[A-Za-z0-9]){0,38}(?:/[A-Za-z0-9_-]+)?)")
+QUIET_MENTION_OPEN, QUIET_MENTION_CLOSE = "<code>", "</code>"
 
 
 class CommentError(Exception):
@@ -51,6 +55,22 @@ class CommentError(Exception):
         self.failure = failure
         self.api_result: Optional[dict[str, Any]] = github_api_core.redact_body(api_result) if api_result is not None else None
         self.payload: dict[str, Any] = github_api_core.redact_body(payload or {})
+
+
+def _is_quiet_mention(body: str, match: re.Match[str]) -> bool:
+    opening = match.start() - len(QUIET_MENTION_OPEN)
+    return (body[opening:match.start()] == QUIET_MENTION_OPEN
+            and body.startswith(QUIET_MENTION_CLOSE, match.end())
+            and (opening == 0 or body[opening - 1] != "\\"))
+
+
+def live_mentions(body: str, *, notify: frozenset[str] = frozenset()) -> list[str]:
+    notified = {login.casefold() for login in notify}
+    written = list(MENTION_RE.finditer(body))
+    rendered = Counter(match["login"] for match in MENTION_RE.finditer(html.unescape(body)))
+    entity_made = rendered - Counter(match["login"] for match in written)
+    live = [match["login"] for match in written if not _is_quiet_mention(body, match)] + list(entity_made)
+    return [f"@{login}" for login in live if login.casefold() not in notified]
 
 
 def effective_expected_actor(expected_actor: Optional[str]) -> Optional[str]:
@@ -1086,6 +1106,16 @@ def comment(
 ) -> dict[str, Any]:
     collected_retry_summaries = retry_summaries if retry_summaries is not None else []
     try:
+        if question_id.QUESTION_HEADING.match(body):
+            operation = operation or f"github.comment.{kind}"
+            repo = resolve_repo(repo, gh_cmd=gh_cmd, operation=operation)
+            if mentions := live_mentions(body, notify=frozenset({repo.split("/")[0]})):
+                raise _local_error(
+                    f"A question must not notify the people it names ({', '.join(mentions)}); "
+                    "write each as <code>@login</code> or drop the @, then post that text",
+                    operation=operation, cause="validation_error",
+                    expected_actor=effective_expected_actor(expected_actor), failed_step="input_validation",
+                )
         payload = _comment_impl(
             kind,
             number,
