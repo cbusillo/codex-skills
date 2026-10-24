@@ -27,14 +27,10 @@ VALIDATION_CONTROL_FILES = (
     ".python-version",
 )
 CODE_SUFFIXES = {".py", ".sh", ".js", ".mjs", ".cjs", ".ts"}
-DATA_SUFFIXES = {".json", ".toml", ".yaml", ".yml"}
 REPOSITORY_SCANNER = re.compile(r"scripts/validate[\w-]*\.py")
 FILE_NAME_TOKEN = re.compile(r"[\w.-]+")
 IDENTIFIER_TOKEN = re.compile(r"\w+")
-PATH_CALLS = {
-    "Path", "PurePath", "PurePosixPath", "with_name", "joinpath",
-    "spec_from_file_location", "run_path", "run", "Popen", "check_call", "check_output",
-}
+PATH_LITERAL = re.compile(r"[\w./-]*[\w-][./-][\w./-]*")
 
 
 class Selection(NamedTuple):
@@ -155,7 +151,7 @@ def dependency_names(caller: str, text: str) -> set[str]:
         tree = ast.parse(text)
     except (SyntaxError, ValueError):
         return mentioned_names(text)
-    return imported_names(tree) | loaded_names(tree) | {name for name in mentioned_names(text) if PurePosixPath(name).suffix in DATA_SUFFIXES}
+    return imported_names(tree) | path_literal_names(tree)
 
 
 def is_helper(path: str) -> bool:
@@ -174,24 +170,12 @@ def imported_names(tree: ast.AST) -> set[str]:
     return names
 
 
-def loaded_names(tree: ast.AST) -> set[str]:
-    names: set[str] = set()
-    for node in ast.walk(tree):
-        if is_path_expression(node):
-            for child in ast.walk(node):
-                if isinstance(child, ast.Constant) and isinstance(child.value, str):
-                    names.update(mentioned_names(child.value))
-    return names
-
-
-def is_path_expression(node: ast.AST) -> bool:
-    if isinstance(node, ast.BinOp):
-        return isinstance(node.op, ast.Div)
-    if not isinstance(node, ast.Call):
-        return False
-    function = node.func
-    name = function.attr if isinstance(function, ast.Attribute) else getattr(function, "id", "")
-    return name in PATH_CALLS
+def path_literal_names(tree: ast.AST) -> set[str]:
+    return {
+        PurePosixPath(node.value).name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and PATH_LITERAL.fullmatch(node.value)
+    }
 
 
 def mentioned_names(text: str) -> set[str]:

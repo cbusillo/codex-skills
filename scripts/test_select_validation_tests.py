@@ -39,7 +39,7 @@ class SelectionTests(unittest.TestCase):
         self.write("skills/a/scripts/tool.py", "import shared\n")
         self.write("skills/a/scripts/test_tool.py", "TOOL = 'tool.py'\n")
         self.write("skills/a/scripts/run-me.py", "print('run')\n")
-        self.write("skills/a/scripts/hook.py", "from pathlib import Path\nHELPER = Path('skills/a/scripts/run-me.py')\nprint('see notes.py')\n")
+        self.write("skills/a/scripts/hook.py", "HELPER = load_sibling('run-me.py')\nprint('see notes.py')\n")
         self.write("skills/a/scripts/test_hook.py", "import hook\n")
         self.write("skills/a/scripts/notes.py", "print('notes')\n")
         self.write("skills/a/SKILL.md", "skill\n")
