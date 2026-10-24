@@ -789,9 +789,25 @@ do not invent a destination or provision credentials.
   "scan_args": ["--stranded-owner", "OWNER", "--question-queue", "OWNER/CATALOG#QUEUE", "--director-name", "DIRECTOR", "--max-requests", "2000", "--deadline-seconds", "600"],
   "delivery_argv": ["/absolute/path/to/uv", "run", "--no-project", "--no-cache", "/runtime/catalog/skills/supervisor/scripts/discord_digest.py", "--file", "{report}"],
   "hour": 7,
-  "minute": 30
+  "minute": 30,
+  "weekly": {"owner": "OWNER", "weekday": 1}
 }
 ```
+
+The optional `weekly` entry runs the
+[weekly direction audit](../../direction/SKILL.md#weekly-audit),
+`direction_audit.py --weekly --owner OWNER`, after the daily digest, whether or
+not that digest succeeded. It runs on the first scheduled run on or after the
+ISO `weekday` (1 is Monday) and, after a failure, on each later daily run until one
+audit records the weekly stamp that ISO week. The receipt is saved as
+`weekly/DATE.receipt.json` under `state_dir`. Each attempt that left the stamp
+unwritten stays as its own `DATE-*.attempt.json`, never overwritten, with stderr
+beside every attempt: repositories it did read already advanced their audit
+windows, so a later receipt does not repeat those findings. An attempt stopped
+by the time bound or a signal is empty, because the audit prints its receipt only
+when it finishes; findings for windows it advanced are lost. The audit is
+bounded to 30 minutes and sends nothing. The plist does not change: add the entry
+to the private configuration, and the next run picks it up.
 
 `discord_digest.py` is the standalone digest sender. It reads Markdown from
 `--file` or stdin and reads `DIRECTOR_DIGEST_DISCORD_WEBHOOK_URL` from the
