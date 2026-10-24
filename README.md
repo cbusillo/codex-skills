@@ -603,8 +603,13 @@ Paths after a semicolon start a new directory; other basenames share the first
 path's directory. For areas outside this table, trace the touched helper's
 callers and select their complete test modules under the shared contract.
 
-The complete `./scripts/validate-skills.sh` suite runs in the Validate Skills
-workflow.
+The Validate Skills workflow runs the complete `./scripts/validate-skills.sh`
+suite on every merge-train candidate, `main` push and manual run. On an
+ordinary pull request it runs every validator and lint step, but only the
+helper tests that reach a changed file through what they import, load by path
+or name; a change to `.github/`, the validation scripts or a
+code-owned path runs the complete suite. Before landing a pull request outside
+the train, run the workflow by hand on its branch and wait for it to pass.
 
 ## JetBrains inspections
 
