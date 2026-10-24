@@ -21,6 +21,12 @@ SETTINGS = {
     "deleteBranchOnMerge": "delete_branch_on_merge",
 }
 MERGE_METHODS = {"merge": "allow_merge_commit", "squash": "allow_squash_merge", "rebase": "allow_rebase_merge"}
+FORK_APPROVAL_PATH = "/actions/permissions/fork-pr-contributor-approval"
+FORK_APPROVAL_POLICIES = {
+    "first_time_contributors_new_to_github",
+    "first_time_contributors",
+    "all_external_contributors",
+}
 MANAGED_NAMES = {
     rules.LANDING_RULESET_NAME,
     rules.DIRECTION_RULESET_NAME,
@@ -119,6 +125,9 @@ def validate_request(value: Any) -> dict[str, Any]:
             or any(not isinstance(item, bool) for item in body.values())
         ):
             fail("settings PATCH accepts only declared boolean merge and branch-cleanup flags")
+    elif method == "PUT" and path == FORK_APPROVAL_PATH:
+        if body != {"approval_policy": "all_external_contributors"}:
+            fail("fork approval PUT accepts only approval_policy: all_external_contributors")
     elif method == "DELETE" and (
         re.fullmatch(r"/collaborators/[A-Za-z0-9][A-Za-z0-9-]{0,38}", path) or re.fullmatch(r"/invitations/[1-9][0-9]*", path)
     ):
@@ -146,7 +155,7 @@ def validate_request(value: Any) -> dict[str, Any]:
         ):
             fail("invalid custom tag-rule conditions, rules or bypass actors")
     else:
-        fail("unsupported owner-admin request; use repository settings, collaborator DELETE or custom tag rulesets")
+        fail("unsupported owner-admin request; use repository settings, fork approval, collaborator DELETE or custom tag rulesets")
     return {"method": method, "path": path, **({"body": copy.deepcopy(body)} if body is not None else {})}
 
 
@@ -193,10 +202,30 @@ def pages(client: Any, path: str, *, field: str | None = None) -> list[dict[str,
     fail("owner-admin listing reached page cap", "coverage_incomplete")
 
 
+def check_fork_approval(value: Any, *, cause: str) -> None:
+    if (
+        not isinstance(value, dict)
+        or not isinstance(value.get("approval_policy"), str)
+        or value["approval_policy"] not in FORK_APPROVAL_POLICIES
+    ):
+        fail("invalid fork contributor approval policy response", cause)
+
+
 def snapshot(client: Any, repo: str, request: dict[str, Any]) -> dict[str, Any]:
     repository = owned_repository(client, repo)
     path, method = request["path"], request["method"]
     identity = {"id": repository["id"], "full_name": repository["full_name"].casefold()}
+    if path == FORK_APPROVAL_PATH:
+        value = client.request(
+            "GET",
+            f"/repos/{rules.repo_path(repo)}{path}",
+            operation="github.owner.admin.read",
+        )
+        check_fork_approval(value, cause="invalid_response")
+        return {
+            "repository": identity,
+            "value": {"approval_policy": value["approval_policy"]},
+        }
     if method == "PATCH":
         values = {key: repository.get(key) for key in request["body"]}
         if any(not isinstance(value, bool) for value in values.values()):
@@ -280,7 +309,12 @@ def build_plan(repo: str, request: dict[str, Any], before: dict[str, Any]) -> di
     if not isinstance(before, dict) or set(before) != {"repository", "value"}:
         fail("invalid plan snapshot")
     after = copy.deepcopy(before)
-    if request["method"] == "PATCH":
+    if request["path"] == FORK_APPROVAL_PATH:
+        check_fork_approval(before["value"], cause="validation_error")
+        if set(before["value"]) != {"approval_policy"}:
+            fail("invalid fork approval snapshot")
+        after["value"] = copy.deepcopy(request["body"])
+    elif request["method"] == "PATCH":
         if (
             not isinstance(before["value"], dict)
             or set(before["value"]) != set(request["body"])
@@ -368,9 +402,12 @@ def run_plan(client: Any, plan: Any, digest: str, *, apply: bool, confirm: bool)
 
 
 def read_request(client: Any, repo: str, path: str) -> dict[str, Any]:
+    if path == FORK_APPROVAL_PATH:
+        current = snapshot(client, repo, {"method": "GET", "path": path})
+        return {"repo": repo, **current, "write_authorized": False}
     match = re.fullmatch(r"/environments/([^/]+)/secrets", path)
     if not match:
-        fail("owner read supports only environment secret-name listings")
+        fail("owner read supports only fork approval and environment secret-name listings")
     name = urllib.parse.unquote(match[1])
     if not name or any(ord(char) < 32 for char in name) or urllib.parse.quote(name, safe="") != match[1]:
         fail("environment name must be canonically URL encoded")

@@ -48,6 +48,7 @@ class OwnerClient:
         self.rulesets: list[dict[str, Any]] = []
         self.actions_app: dict[str, Any] = {"id": 731, "slug": "github-actions"}
         self.calls: list[tuple[str, str, Any]] = []
+        self.approval: Any = {"approval_policy": "first_time_contributors"}
         self.drop_write = False
         self.fail_write = False
 
@@ -67,6 +68,10 @@ class OwnerClient:
             raise rules.RulesetError(
                 "permission denied", cause="permission_denied", payload={"api_result": {"failure": {"write_outcome": "rejected"}}}
             )
+        if path.endswith("/actions/permissions/fork-pr-contributor-approval"):
+            if method == "PUT" and not self.drop_write:
+                self.approval = copy.deepcopy(body)
+            return copy.deepcopy(self.approval)
         if method == "PATCH":
             if not self.drop_write:
                 self.repository.update(body)
@@ -132,6 +137,98 @@ class OwnerAdminTests(unittest.TestCase):
 
     def apply(self, plan: dict[str, Any], *, confirm: bool = True, readback: bool = False) -> dict[str, Any]:
         return self.cli.run_plan(self.client, plan, rules.check_plan_digest(plan), apply=not readback, confirm=confirm)
+
+    def test_fork_approval_read_plan_apply_and_readback(self) -> None:
+        path = "/actions/permissions/fork-pr-contributor-approval"
+        desired = {"approval_policy": "all_external_contributors"}
+        before = copy.deepcopy(self.client.approval)
+        result = self.cli.read_request(self.client, "owner/repo", path)
+        self.assertEqual(result["value"], before)
+        self.assertFalse(result["write_authorized"])
+        plan = self.plan({"method": "PUT", "path": path, "body": desired})
+        self.assertEqual(plan["before"]["value"], before)
+        self.assertEqual(plan["after"]["value"], desired)
+        self.assertFalse(self.client.writes)
+        with self.assertRaises(rules.RulesetError):
+            self.apply(plan, readback=True)
+        self.assertTrue(self.apply(plan)["verified"])
+        self.assertTrue(self.apply(plan, readback=True)["verified"])
+        self.assertFalse(self.apply(plan)["changed"])
+        self.assertEqual(self.client.writes, [("PUT", f"/repos/owner/repo{path}", desired)])
+        self.assertEqual(self.client.calls[-1][:2], ("GET", f"/repos/owner/repo{path}"))
+
+    def test_fork_approval_rejects_other_writes_and_invalid_responses(self) -> None:
+        path = "/actions/permissions/fork-pr-contributor-approval"
+        for body in (
+            None,
+            {},
+            {"approval_policy": "first_time_contributors"},
+            {"approval_policy": "all_external_contributors", "enabled": True},
+            {"approval_policy": []},
+        ):
+            with self.subTest(body=body), self.assertRaises(rules.RulesetError):
+                self.plan({"method": "PUT", "path": path, "body": body})
+        for value in (
+            None,
+            {},
+            {"approval_policy": "unknown"},
+            {"approval_policy": []},
+        ):
+            self.client.approval = value
+            with self.subTest(value=value):
+                with self.assertRaises(rules.RulesetError):
+                    self.cli.read_request(self.client, "owner/repo", path)
+                with self.assertRaises(rules.RulesetError):
+                    self.plan(
+                        {
+                            "method": "PUT",
+                            "path": path,
+                            "body": {"approval_policy": "all_external_contributors"},
+                        }
+                    )
+        self.assertFalse(self.client.writes)
+
+    def test_fork_approval_preserves_confirmation_digest_identity_and_drift_guards(
+        self,
+    ) -> None:
+        request = {
+            "method": "PUT",
+            "path": "/actions/permissions/fork-pr-contributor-approval",
+            "body": {"approval_policy": "all_external_contributors"},
+        }
+        plan = self.plan(request)
+        with self.assertRaises(rules.RulesetError):
+            self.apply(plan, confirm=False)
+        with self.assertRaises(rules.RulesetError):
+            self.cli.run_plan(self.client, plan, "wrong", apply=True, confirm=True)
+        self.client.approval = {"approval_policy": "first_time_contributors_new_to_github"}
+        with self.assertRaises(rules.RulesetError):
+            self.apply(plan)
+        self.client.repository["owner"]["login"] = "another"
+        with self.assertRaises(rules.RulesetError):
+            self.cli.read_request(self.client, "owner/repo", request["path"])
+        self.assertFalse(self.client.writes)
+
+    def test_fork_approval_denial_and_failed_readback_never_retry(self) -> None:
+        plan = self.plan(
+            {
+                "method": "PUT",
+                "path": "/actions/permissions/fork-pr-contributor-approval",
+                "body": {"approval_policy": "all_external_contributors"},
+            }
+        )
+        self.client.fail_write = True
+        with self.assertRaises(rules.RulesetError) as caught:
+            self.apply(plan)
+        self.assertEqual(caught.exception.cause, "permission_denied")
+        self.assertEqual(len(self.client.writes), 1)
+        self.client.fail_write = False
+        self.client.drop_write = True
+        with self.assertRaises(rules.RulesetError) as caught:
+            self.apply(plan)
+        self.assertEqual(caught.exception.cause, "post_write_verification_failed")
+        self.assertEqual(caught.exception.payload["failed_step"], "readback")
+        self.assertEqual(len(self.client.writes), 2)
 
     def test_metadata_settings_plan_applies_only_declared_flags_and_reads_back(self) -> None:
         request = self.cli.settings_request(
