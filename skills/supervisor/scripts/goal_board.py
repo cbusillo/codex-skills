@@ -50,7 +50,7 @@ LIST_QUERY = """query SupervisorGoalBoardList($owner: String!, $name: String!, $
 COMMENT = "url createdAt updatedAt databaseId body author { __typename login }"
 BLOCKERS = f"""blockedBy(first: {BLOCKER_LIMIT}) {{ totalCount nodes {{
     number state url repository {{ nameWithOwner }} }} }}"""
-TRACK_FIELDS = f"""number title url state body createdAt lastEditedAt
+TRACK_FIELDS = f"""number title url state stateReason body createdAt lastEditedAt
       author {{ __typename login }}
       {BLOCKERS}
       milestone {{ title }}
@@ -59,7 +59,7 @@ TRACK_FIELDS = f"""number title url state body createdAt lastEditedAt
       subIssues(first: {CHILD_LIMIT}) {{
         totalCount
         nodes {{
-          number title url state body createdAt lastEditedAt
+          number title url state stateReason body createdAt lastEditedAt
           author {{ __typename login }}
           {BLOCKERS}
           repository {{ nameWithOwner }}
@@ -109,7 +109,7 @@ def derived_status(node, trusted, unread):
         return unknown
     comments = [{"body": comment.get("body") or "", "user": {"login": login(comment.get("author"))}}
                 for comment in node["comments"]["nodes"]]
-    source = {"body": node.get("body") or "", "state": node["state"],
+    source = {"body": node.get("body") or "", "state": node["state"], "state_reason": node.get("stateReason"),
               "user": {"login": login(node.get("author"))},
               "labels": [item["name"] for item in node["labels"]["nodes"]]}
     try:
