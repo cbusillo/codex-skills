@@ -1622,11 +1622,11 @@ def _resolve_cli_target(value: str, repo: Optional[str], *, operation: str) -> t
     return _resolve_repo(repo, gh_cmd=DEFAULT_GH, operation=operation), target_number
 
 
-def refresh_after_close(repo: str, number: int, payload: dict[str, Any], *, operation: str) -> dict[str, Any]:
+def refresh_projection(repo: str, number: int, payload: dict[str, Any], changed: str, *, operation: str) -> dict[str, Any]:
     """The CLI owns fanout; the shared state-mutation primitive remains unchanged."""
-    recovery = {"issue_closed": True, "issue": {"repo": repo, "number": number},
+    recovery = {f"issue_{changed}": True, "issue": {"repo": repo, "number": number},
                 "next_action": f"gh-plan.py --repo {repo} reconcile-status {number} --include-dependents --apply",
-                "scope": "Existing authorized target session repairs metadata; do not replay the close or comment"}
+                "scope": "Existing authorized target session repairs metadata; do not replay the state change or comment"}
     personal = github_identity.own_user_opted_in() or github_identity.active_auth_fallback_allowed()
     import github_plan_close_adapter
     summaries: list[github_api_core.RetrySummary] = []
@@ -1745,43 +1745,43 @@ def main() -> int:
                 cross_author_source_edit_reason=args.allow_cross_author_source_edit,
                 expected_actor=expected_actor,
             )
-        elif args.command == "close":
+        else:
             target_repo, target_number = _resolve_cli_target(args.number, args.repo, operation=operation)
             comment_body = _state_comment(args)
-            reason = _close_reason("duplicate" if args.duplicate_of else args.reason)
-            close_attention = _close_attention(target_repo, target_number, args.unanswered_decision,
-                                               expected_actor=expected_actor)
-            payload = set_issue_state(
-                target_number,
-                state="closed",
-                state_reason=reason,
-                repo=target_repo,
-                comment_body=comment_body,
-                duplicate_of=args.duplicate_of,
-                expected_actor=expected_actor,
-                operation=operation,
-            )
-            payload["close_attention"] = close_attention
-            payload["projection"] = refresh_after_close(target_repo, target_number, payload, operation=operation)
+            if args.command == "close":
+                reason = _close_reason("duplicate" if args.duplicate_of else args.reason)
+                close_attention = _close_attention(target_repo, target_number, args.unanswered_decision,
+                                                   expected_actor=expected_actor)
+                payload = set_issue_state(
+                    target_number,
+                    state="closed",
+                    state_reason=reason,
+                    repo=target_repo,
+                    comment_body=comment_body,
+                    duplicate_of=args.duplicate_of,
+                    expected_actor=expected_actor,
+                    operation=operation,
+                )
+                payload["close_attention"] = close_attention
+            else:
+                payload = set_issue_state(
+                    target_number,
+                    state="open",
+                    state_reason="reopened",
+                    repo=target_repo,
+                    comment_body=comment_body,
+                    expected_actor=expected_actor,
+                    operation=operation,
+                )
+            changed = "closed" if args.command == "close" else "reopened"
+            payload["projection"] = refresh_projection(target_repo, target_number, payload, changed, operation=operation)
             close_projection_diagnostics(payload)
             if not payload["projection"]["ok"]:
-                raise _local_error("Issue is closed; planning projection is incomplete", operation=operation,
+                raise _local_error(f"Issue is {changed}; planning projection is incomplete", operation=operation,
                     cause="planning_projection_incomplete", actor=payload.get("actor"),
                     expected_actor=payload.get("expected_actor"), write_outcome="confirmed",
                     completed_steps=payload.get("completed_steps", []), failed_step="planning_projection",
                     payload={**payload, "recovery": payload["projection"]["recovery"]})
-        else:
-            target_repo, target_number = _resolve_cli_target(args.number, args.repo, operation=operation)
-            comment_body = _state_comment(args)
-            payload = set_issue_state(
-                target_number,
-                state="open",
-                state_reason="reopened",
-                repo=target_repo,
-                comment_body=comment_body,
-                expected_actor=expected_actor,
-                operation=operation,
-            )
     except ValueError as exc:
         issue_error = _local_error(
             str(exc),

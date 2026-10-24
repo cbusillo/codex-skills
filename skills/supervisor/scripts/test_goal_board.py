@@ -204,6 +204,13 @@ class GoalBoardTests(unittest.TestCase):
         self.assertTrue(observed["scope_hold"])
         self.assertEqual(observed["status"], names["stale"])
 
+    def test_reopened_child_reads_active_despite_its_leftover_done_label(self):
+        names = github_plan_status.DEFAULT_STATUS_LABELS
+        for reason, status in (("REOPENED", names["active"]), (None, names["done"])):
+            with self.subTest(reason=reason):
+                row = {**child(10, label=names["done"]), "stateReason": reason}
+                self.assertEqual(goal_board.derived_status(row, TRUSTED, [])["status"], status)
+
     def test_known_scope_hold_is_readable_and_does_not_become_a_wait_review(self):
         names = github_plan_status.DEFAULT_STATUS_LABELS
         row = child(10, label=names["stale"])

@@ -226,6 +226,8 @@ def next_plan_status(issue: dict[str, Any], config: dict[str, Any]) -> str | Non
     plan_labels = config.get("labels") or {}
     for status in ("done", "stale", "blocked", "waiting", "active"):
         label = plan_labels.get(status)
+        if status == "done" and github_plan_status.reopened(issue):
+            continue
         if isinstance(label, str) and label.casefold() in issue_label_names:
             return status
     return None

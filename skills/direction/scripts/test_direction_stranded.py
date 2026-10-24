@@ -794,6 +794,26 @@ class InventoryTests(unittest.TestCase):
         self.assertTrue(any(g["source"] == "test/repo#1/status" and g["reason"] == "request_budget_exhausted"
                             for g in limited["coverage_gaps"]))
 
+    def test_post_merge_status_edit_by_the_primary_automation_login_earns_the_quiet_period(self):
+        self.reader.pages[("repos/test/repo/issues", 1, "open")] = [{
+            "number": 1, "state": "open", "body": "## Current Status\nState: More work",
+            "user": {"login": "fixture-app[bot]"}, "updated_at": self.now.isoformat()}]
+        self.reader.pages[("repos/test/repo/issues/1/timeline", 1, None)] = [{
+            "event": "cross-referenced", "source": {"issue": {"number": 2,
+                "pull_request": {"url": "https://api.github.com/repos/test/repo/pulls/2"},
+                "repository_url": "https://api.github.com/repos/test/repo"}}}]
+        original = self.reader.get_json
+        self.reader.get_json = lambda path, *, step: (
+            {"body": "Refs #1", "merged_at": "2026-10-14T01:00:00Z", "base": {"ref": "main"}}
+            if path == "repos/test/repo/pulls/2" else original(path, step=step))
+        self.reader.graphql_json = lambda *args, **kwargs: SimpleNamespace(ok=True, body={"data": {"repository": {
+            "issue": {"lastEditedAt": "2026-10-15T01:00:00Z", "createdAt": "2026-10-01T00:00:00Z"}}}})
+        for primary, kinds in (("fixture-app[bot]", []), (None, ["merged_link_needs_review"])):
+            with self.subTest(primary=primary), \
+                    patch.object(sweep.github_identity, "configured_bot_logins", return_value=()), \
+                    patch.object(sweep.github_identity, "automation_login", return_value=primary):
+                self.assertEqual([r["kind"] for r in self.collect()["findings"]], kinds)
+
     def test_expired_policy_read_does_not_launch_a_helper(self):
         with patch.object(sweep.subprocess, "run") as run:
             self.assertIsNone(sweep.train_policy("test/repo", deadline_at=0))

@@ -17,6 +17,10 @@ DEFAULT_STATUS_LABELS = MappingProxyType({"plan": "plan", **{key: f"plan:{key}" 
                                          ("active", "blocked", "waiting", "stale", "done")}})
 
 
+def reopened(issue: dict[str, Any]) -> bool:
+    return str(issue.get("state", "")).casefold() == "open" and str(issue.get("state_reason") or "").casefold() == "reopened"
+
+
 def derive(issue: dict[str, Any], relationships: dict[str, Any], wait: dict[str, Any], *,
            label_names: Mapping[str, str] = DEFAULT_STATUS_LABELS) -> dict[str, Any]:
     validate_wait(wait)
@@ -29,7 +33,8 @@ def derive(issue: dict[str, Any], relationships: dict[str, Any], wait: dict[str,
     pending_waits = wait["waits"]
     names = {str(item.get("name", "") if isinstance(item, dict) else item).casefold()
              for item in issue.get("labels", [])}
-    held = [key for key in ("stale", "done") if label_names.get(key, "").casefold() in names]
+    held = [key for key in ("stale", "done") if label_names.get(key, "").casefold() in names
+            and not (key == "done" and reopened(issue))]
     unassigned = (label_names.get("plan", "").casefold() in names
                   and not any(label_names.get(key, "").casefold() in names
                               for key in ("active", "blocked", "waiting", "stale", "done")))
