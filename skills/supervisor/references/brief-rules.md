@@ -136,6 +136,12 @@ Rules for this brief (every Supervisor brief carries them):
   supported route can run, record UNKNOWN with the helper's exact reason
   ([gate selection](../../repo-readiness/SKILL.md#gate-selection)); never
   report it as passed.
+- On a Client's own product repository, reply to Client and Client-team
+  comments on its issues and PRs that need an answer (questions, requests,
+  status notes) with short, accurate replies; never promise what is the
+  Director's to decide. Outbound messages anywhere else stay a stop boundary
+  under the overall
+  [DIRECTION.md](https://github.com/cbusillo/direction/blob/main/DIRECTION.md#stop-boundaries).
 - When you need Chris, post a comment on the item starting with
   `Owner question:` quoting the exact stop-boundary line from the overall or
   repository DIRECTION.md, then continue with what you can. Write no Q number
