@@ -12121,11 +12121,12 @@ def _enrollment_policy_read() -> dict[str, object]:
     return read_payload
 
 
-def _enrollment_argv(repository: str, like: str) -> list[str]:
+def _enrollment_argv(repository: str, like: str, *more: str) -> list[str]:
     return [
         "merge-train-enrollment-propose",
         "--repo", repository,
         "--repository-id", "999",
+        *more,
         "--like", like,
         "--reason", "Q755: enroll a repository",
         "--source-event-id", "test:enroll:one",
@@ -12151,13 +12152,26 @@ def test_enrollment_proposal_adds_a_copy_of_the_template_for_the_new_repository(
     assert "private-key-context" not in json.dumps(output)
 
 
+def test_enrollment_proposal_enrolls_several_branches_from_one_template_in_one_record() -> None:
+    more = ["--repo", "owner/other", "--repository-id", "998", "--base-branch", "master", "--base-branch", "main"]
+
+    exit_code, output, posted = _run_merge_train_proposal(_enrollment_argv("owner/new", "owner/alpha", *more), _enrollment_policy_read())
+
+    assert exit_code == 0
+    targets = cast(dict[str, Any], posted[0]["request"])["record"]["policy"]["policies"]
+    assert [(target["repository"], target["base_branch"], target["github_token"]["github_app"]["repository_id"])
+            for target in targets[2:]] == [("owner/new", "master", 999), ("owner/other", "main", 998)]
+    assert output["request"]["changed_target_count"] == 2
+
+
 def test_enrollment_proposal_refuses_enrolled_repository_and_unusable_template_without_posting() -> None:
     legacy_token = _enrollment_policy_read()
     cast(dict[str, Any], legacy_token["record"])["policy"]["policies"][0]["github_token"]["env_var"] = "PRIVATE_GITHUB_TOKEN"
-    for repository, like, read_payload, code in (
+    for repository, like, read_payload, code, *more in (
         ("owner/beta", "owner/alpha", _enrollment_policy_read(), "repository_already_enrolled"),
         ("owner/new", "owner/missing", _enrollment_policy_read(), "template_not_enrolled"),
         ("owner/new", "owner/alpha", legacy_token, "template_not_github_app"),
+        ("owner/new", "owner/alpha", _enrollment_policy_read(), "unpaired_enrollment_arguments", "--repo", "owner/other"),
     ):
-        exit_code, output, posted = _run_merge_train_proposal(_enrollment_argv(repository, like), read_payload)
+        exit_code, output, posted = _run_merge_train_proposal(_enrollment_argv(repository, like, *more), read_payload)
         assert (exit_code, output["warnings"][0]["code"], posted) == (2, code, [])
