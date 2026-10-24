@@ -980,6 +980,80 @@ def settle_workflow_from_jobs(
     }
 
 
+def _repository_identity(value: object) -> tuple[int, str] | None:
+    if not isinstance(value, dict):
+        return None
+    identifier, name = value.get("id"), value.get("full_name")
+    if not isinstance(identifier, int) or isinstance(identifier, bool) or identifier <= 0 or not isinstance(name, str) or not name:
+        return None
+    return identifier, name.casefold()
+
+
+def _owner_pr_run(run: dict[str, Any], repo: str, number: int, sha: str) -> bool:
+    identity = _repository_identity(run.get("repository"))
+    return bool(
+        identity and identity[1] == repo.casefold()
+        and _repository_identity(run.get("head_repository")) == identity
+        and run.get("head_sha") == sha and workflow_execution_identity(run) is not None
+        and run.get("event") == "pull_request" and run.get("status") == "completed" and run.get("conclusion") == "success"
+        and any(target.get("number") == number for target in run.get("pull_requests", []))
+    )
+
+
+def unexecuted_fork_approvals(
+    reader: GitHubReader, repo: str, number: int, sha: str, runs: list[dict[str, Any]],
+    checks: list[dict[str, Any]], pull: dict[str, Any] | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    owner_runs = [run for run in current_workflow_runs(runs, sha)["current"] if _owner_pr_run(run, repo, number, sha)]
+    candidates = [run for run in runs if (
+        run.get("head_sha") == sha and workflow_execution_identity(run) is not None
+        and run.get("event") == "pull_request" and run.get("status") == "completed" and run.get("conclusion") == "action_required"
+        and _repository_identity(run.get("head_repository")) is not None
+        and _repository_identity(run.get("repository")) is not None
+        and _repository_identity(run.get("head_repository")) != _repository_identity(run.get("repository"))
+        and any(owner.get("workflow_id") == run.get("workflow_id") for owner in owner_runs)
+    )]
+    if not candidates:
+        return runs, []
+    pull = pull or reader.get_json(f"/repos/{repo}/pulls/{number}", step="fork_approval_pr_identity")
+    head, base = pull.get("head") or {}, pull.get("base") or {}
+    identity = _repository_identity(head.get("repo"))
+    if (not identity or identity[1] != repo.casefold() or identity != _repository_identity(base.get("repo"))
+            or head.get("sha") != sha):
+        return runs, []
+    held = []
+    for run in candidates:
+        if (_repository_identity(run.get("repository")) != identity
+                or any(target.get("number") == number for target in run.get("pull_requests", []))
+                or any(check.get("runId") == run["id"] for check in checks)):
+            continue
+        counterparts = [owner for owner in owner_runs if owner.get("workflow_id") == run["workflow_id"]
+                        and owner.get("head_branch") == head.get("ref")
+                        and _repository_identity(owner.get("repository")) == identity
+                        and any(target.get("number") == number and (target.get("base") or {}).get("ref") == base.get("ref")
+                                and ((target.get("base") or {}).get("repo") or {}).get("id") == identity[0]
+                                and ((target.get("head") or {}).get("repo") or {}).get("id") == identity[0]
+                                for target in owner.get("pull_requests", []))]
+        passed = False
+        for owner in counterparts:
+            linked = [check for check in checks if check.get("runId") == owner["id"]]
+            if linked and all(check.get("headSha") == sha and check.get("checkSuiteId") == owner["check_suite_id"]
+                              and check.get("status") == "completed" and check.get("conclusion") in {"success", "neutral", "skipped"}
+                              for check in linked):
+                passed = True
+                break
+        if not passed:
+            continue
+        jobs = reader.paged_json(f"/repos/{repo}/actions/runs/{run['id']}/jobs", step_prefix=f"fork_approval_{run['id']}_jobs",
+                                 params={"filter": "all"}, collection_key="jobs")
+        if not jobs:
+            held.append({"id": run["id"], "workflowId": run["workflow_id"], "headSha": sha,
+                         "conclusion": run["conclusion"], "sourceRepository": run["head_repository"]["full_name"],
+                         "reason": "Unexecuted fork approval; matching owner-side PR workflow passed"})
+    identifiers = {run["id"] for run in held}
+    return [run for run in runs if run.get("id") not in identifiers], held
+
+
 def pull_request_checks(
     reader: GitHubReader, repo: str, number: int, *, head_sha: Optional[str] = None,
     workflow_runs: Optional[list[dict[str, Any]]] = None,
@@ -1020,6 +1094,7 @@ def pull_request_checks(
     statuses = latest_status_events(statuses)
     normalized_checks = [normalize_check_run(item) for item in check_runs]
     superseded_checks = []
+    approval_held_runs = []
     # A workflow can queue or fail before publishing its first job check.
     availability["workflowSelection"] = True
     try:
@@ -1027,6 +1102,10 @@ def pull_request_checks(
             workflow_runs = reader.paged_json(
                 f"/repos/{repo}/actions/runs", step_prefix="check_workflow_runs",
                 params={"head_sha": sha}, collection_key="workflow_runs",
+            )
+        if availability["checkRuns"]:
+            workflow_runs, approval_held_runs = unexecuted_fork_approvals(
+                reader, repo, number, sha, workflow_runs, normalized_checks, pull,
             )
         normalized_checks, superseded_checks, complete = current_check_runs(
             reader, repo, sha, normalized_checks, workflow_runs,
@@ -1083,6 +1162,7 @@ def pull_request_checks(
         },
         "checkRuns": normalized_checks,
         "supersededCheckRuns": superseded_checks,
+        "approvalHeldForkRuns": approval_held_runs,
         "statuses": normalized_statuses,
     }
 

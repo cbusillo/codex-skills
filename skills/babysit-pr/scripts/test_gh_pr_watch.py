@@ -3543,11 +3543,12 @@ def execution_check(run: dict[str, Any], job_id: int, conclusion: str | None = "
 
 
 class ExecutionReader:
-    def __init__(self, runs, checks, jobs=None, unavailable=None):
+    def __init__(self, runs, checks, jobs=None, unavailable=None, pull=None):
         self.runs = runs
         self.checks = checks
         self.jobs = jobs or {}
         self.unavailable = unavailable
+        self.pull = pull
         self.calls = []
         self.results = []
         self.cache_enabled = True
@@ -3566,8 +3567,9 @@ class ExecutionReader:
             return self.jobs.get(int(path.split("/")[-2]), [])
         raise AssertionError(path)
 
-    @staticmethod
-    def get_json(path, **_kwargs):
+    def get_json(self, path, **_kwargs):
+        if path.endswith('/pulls/123') and self.pull is not None:
+            return self.pull
         assert path.endswith("/status")
         return {"state": "success"}
 
@@ -3586,6 +3588,72 @@ def execution_snapshot(monkeypatch, tmp_path, runs, checks, *, allow_no_checks=F
                               allow_no_checks=allow_no_checks)
     snapshot, _ = gh_pr_watch.collect_snapshot(args)
     return snapshot, reader
+
+
+@pytest.mark.parametrize('case', [
+    'owner_passed', 'owner_pending', 'owner_failed', 'wrong_pr', 'wrong_head',
+    'missing_identity', 'fork_failed', 'fork_jobs', 'unavailable_jobs', 'fork_pr',
+    'wrong_workflow', 'wrong_base', 'owner_no_checks', 'fork_with_checks',
+])
+def test_unexecuted_fork_approval_needs_proven_passed_owner_execution(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, case: str,
+) -> None:
+    owner = {'id': 81, 'full_name': 'openai/codex'}
+    fork = {'id': 82, 'full_name': 'contributor/codex'}
+    pull = {
+        'head': {'sha': 'abc123', 'ref': 'feature', 'repo': owner},
+        'base': {'ref': 'main', 'repo': owner},
+    }
+    old = execution(1, 'action_required', head_branch='contribution', head_repository=fork, repository=owner)
+    new = execution(2, head_repository=owner, repository=owner, pull_requests=[{
+        'number': 123, 'head': {'repo': owner}, 'base': {'ref': 'main', 'repo': owner},
+    }])
+    jobs = {}
+    unavailable = None
+    if case == 'owner_pending':
+        new.update(status='in_progress', conclusion=None)
+    elif case == 'owner_failed':
+        new['conclusion'] = 'failure'
+    elif case == 'wrong_pr':
+        new['pull_requests'][0]['number'] = 124
+    elif case == 'wrong_head':
+        pull['head']['sha'] = 'other-head'
+    elif case == 'missing_identity':
+        old['head_repository'] = {'full_name': fork['full_name']}
+    elif case == 'fork_failed':
+        old['conclusion'] = 'failure'
+    elif case == 'fork_jobs':
+        jobs[1] = [{'id': 11, 'run_id': 1, 'status': 'completed', 'conclusion': 'failure'}]
+    elif case == 'unavailable_jobs':
+        unavailable = '/repos/openai/codex/actions/runs/1/jobs'
+    elif case == 'fork_pr':
+        pull['head']['repo'] = fork
+    elif case == 'wrong_workflow':
+        new['workflow_id'] += 1
+    elif case == 'wrong_base':
+        pull['base']['ref'] = 'release'
+    check = execution_check(new, 21, new['conclusion'], status=new['status'])
+    checks = [] if case == 'owner_no_checks' else [check]
+    if case == 'fork_with_checks':
+        checks.append(execution_check(old, 11, 'neutral'))
+    if case == 'unavailable_jobs':
+        reader = ExecutionReader([old, new], [check], unavailable=unavailable, pull=pull)
+        result = gh_pr_watch.github_read.pull_request_checks(reader, 'openai/codex', 123, head_sha=old['head_sha'])
+        assert result['summary']['countsComplete'] is False
+        assert result['summary']['failingCount'] > 0
+        return
+    snapshot, reader = execution_snapshot(
+        monkeypatch, tmp_path, [old, new], checks, jobs=jobs, unavailable=unavailable, pull=pull,
+    )
+    assert ('ready_to_merge' in snapshot['actions']) is (case == 'owner_passed')
+    if case == 'owner_passed':
+        assert snapshot['checks']['failed_count'] == 0
+        assert snapshot['failed_runs'] == snapshot['failed_jobs'] == []
+        assert [run['id'] for run in snapshot['approval_held_fork_runs']] == [old['id']]
+        assert old in reader.runs
+    else:
+        assert snapshot['approval_held_fork_runs'] == []
+        assert snapshot['checks']['failed_count'] or snapshot['checks']['pending_count'] or not snapshot['checks']['evidence_complete']
 
 
 @pytest.mark.parametrize("inventory", ["passed", "failed", "running", "empty", "recent", "unavailable", "reused"])
