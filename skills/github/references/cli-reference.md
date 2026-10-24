@@ -546,10 +546,18 @@ optional `body`. Its supported operations are:
 | Method | Path | Body |
 | --- | --- | --- |
 | PATCH | empty string | Boolean branch-cleanup and merge flags above, using REST names |
+| PUT | `/actions/permissions/fork-pr-contributor-approval` | `{"approval_policy":"all_external_contributors"}` only |
 | DELETE | `/collaborators/USERNAME` | None |
 | DELETE | `/invitations/ID` | None |
 | POST | `/rulesets` | Complete custom tag ruleset |
 | PUT | `/rulesets/ID` | Complete custom tag ruleset for an existing custom tag target |
+
+For separately authorized fork-workflow approval changes, read the current policy
+with `read --repo OWNER/REPO --path /actions/permissions/fork-pr-contributor-approval`,
+then use the existing `plan`, digest-bound `apply` and `readback` commands above.
+Only `all_external_contributors` is writable; reads accept all three documented
+policies. This route changes no other Actions setting and grants no authority
+by itself. See GitHub's [fork contributor approval API](https://docs.github.com/en/rest/actions/permissions#set-fork-pr-contributor-approval-permissions-for-a-repository).
 
 For example, an explicitly approved collaborator removal uses
 `{"method":"DELETE","path":"/collaborators/USERNAME"}`. Its paged before
