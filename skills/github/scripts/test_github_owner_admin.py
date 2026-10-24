@@ -257,6 +257,34 @@ class OwnerAdminTests(unittest.TestCase):
         self.assertTrue(self.apply(plan, readback=True)["verified"])
         self.assertEqual(len(self.client.writes), 1)
 
+    def test_archive_plan_applies_once_and_reads_back_archived(self) -> None:
+        plan = self.plan({"method": "PATCH", "path": "", "body": {"archived": True}})
+        self.assertEqual(plan["before"]["value"], {"archived": False})
+        self.assertFalse(self.client.writes)
+
+        self.assertTrue(self.apply(plan)["verified"])
+        self.assertEqual(self.client.writes, [("PATCH", "/repos/owner/repo", {"archived": True})])
+        self.assertTrue(self.client.repository["archived"])
+        self.assertFalse(self.apply(plan)["changed"])
+        self.assertTrue(self.apply(plan, readback=True)["verified"])
+        self.assertEqual(len(self.client.writes), 1)
+
+    def test_archived_repository_refuses_every_request_but_archive_readback(self) -> None:
+        self.client.repository["archived"] = True
+        for request in (
+            {"method": "PATCH", "path": "", "body": {"delete_branch_on_merge": True}},
+            {"method": "DELETE", "path": "/collaborators/contributor"},
+        ):
+            with self.subTest(request=request), self.assertRaises(rules.RulesetError):
+                self.plan(request)
+        self.assertFalse(self.client.writes)
+
+    def test_archive_request_never_combines_with_other_flags_or_unarchives(self) -> None:
+        for body in ({"archived": False}, {"archived": 1}, {"archived": True, "delete_branch_on_merge": True}, {"archived": "true"}):
+            with self.subTest(body=body), self.assertRaises(rules.RulesetError):
+                self.plan({"method": "PATCH", "path": "", "body": body})
+        self.assertFalse(self.client.writes)
+
     def test_settings_input_never_silently_coerces_bad_metadata(self) -> None:
         for config in (
             {"githubSettings": {"expected": {"deleteBranchOnMerge": "yes"}}},
