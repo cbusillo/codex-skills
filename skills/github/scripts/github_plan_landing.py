@@ -39,7 +39,18 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
 """
 
 
-def closing_references(reader: github_read.GitHubReader, repo: str, number: int) -> tuple[dict[str, Any], list[tuple[str, int]]]:
+def landing_identity(repository: dict[str, Any], pull: dict[str, Any]) -> tuple[Any, ...]:
+    if pull.get("merged") is not True:
+        raise ValueError("PR is not confirmed merged")
+    branch = repository.get("defaultBranchRef") or {}
+    sha = (pull.get("mergeCommit") or {}).get("oid")
+    if not branch.get("name") or pull.get("baseRefName") != branch["name"] or not sha:
+        raise ValueError("PR has no confirmed default-branch landing")
+    return sha, pull.get("url"), pull["baseRefName"]
+
+
+def closing_references(reader: github_read.GitHubReader, repo: str, number: int, *,
+                       landed: bool = True) -> tuple[dict[str, Any], list[tuple[str, int]]]:
     owner, name = repo.split("/", 1)
     after = None
     references: list[tuple[str, int]] = []
@@ -56,13 +67,9 @@ def closing_references(reader: github_read.GitHubReader, repo: str, number: int)
         if not isinstance(repository, dict):
             raise TypeError("Repository read unavailable")
         pull = repository.get("pullRequest")
-        if not isinstance(pull, dict) or pull.get("merged") is not True:
-            raise ValueError("PR is not confirmed merged")
-        branch = repository.get("defaultBranchRef") or {}
-        sha = (pull.get("mergeCommit") or {}).get("oid")
-        if not branch.get("name") or pull.get("baseRefName") != branch["name"] or not sha:
-            raise ValueError("PR has no confirmed default-branch landing")
-        current = (sha, pull.get("url"), pull["baseRefName"])
+        if not isinstance(pull, dict):
+            raise ValueError("PR is not confirmed merged" if landed else "PR read unavailable")
+        current = landing_identity(repository, pull) if landed else (pull.get("url"),)
         if identity is not None and identity != current:
             raise ValueError("Landing changed during pagination")
         identity = current
@@ -92,11 +99,17 @@ def captured(command: Any, args: argparse.Namespace) -> dict[str, Any]:
 
 
 def linked_issues(claim_module: Any, repo: str, pull: dict[str, Any]) -> list[tuple[str, int]]:
-    text = (pull.get("title") or "") + "\n" + (pull.get("body") or "")
+    title = pull.get("title") or ""
+    text = title + "\n" + (pull.get("body") or "")
     refs = [(match[1] or match[2] or repo, int(match[3])) for match in re.finditer(
         r"(?:https://github[.]com/([\w.-]+/[\w.-]+)/issues/|([\w.-]+/[\w.-]+)?#)([1-9]\d*)\b", text)]
     return [(target, issue) for target, issue in refs if claim_module.pr_issue_reference(
-        pull, issue, repo=target, local_references=target.casefold() == repo.casefold())]
+        pull, issue, repo=target, local_references=target.casefold() == repo.casefold())
+        or titled_qualified_reference(title, target, issue)]
+
+
+def titled_qualified_reference(title: str, repo: str, number: int) -> bool:
+    return bool(re.search(rf"(?<![\w./-]){re.escape(repo)}#{number}(?!\d)", title, re.IGNORECASE))
 
 
 def source_references(plan: Any, repo: str, number: int, pull: dict[str, Any]) -> tuple[list[tuple[str, int]], list[tuple[str, int]]]:
