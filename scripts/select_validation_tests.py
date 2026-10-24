@@ -31,6 +31,10 @@ DATA_SUFFIXES = {".json", ".toml", ".yaml", ".yml"}
 REPOSITORY_SCANNER = re.compile(r"scripts/validate[\w-]*\.py")
 FILE_NAME_TOKEN = re.compile(r"[\w.-]+")
 IDENTIFIER_TOKEN = re.compile(r"\w+")
+PATH_CALLS = {
+    "Path", "PurePath", "PurePosixPath", "with_name", "joinpath",
+    "spec_from_file_location", "run_path", "run", "Popen", "check_call", "check_output",
+}
 
 
 class Selection(NamedTuple):
@@ -147,7 +151,11 @@ def dependency_names(caller: str, text: str) -> set[str]:
         return set()
     if PurePosixPath(caller).suffix != ".py" or is_helper(caller):
         return mentioned_names(text)
-    return imported_names(text) | {name for name in mentioned_names(text) if PurePosixPath(name).suffix in DATA_SUFFIXES}
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError):
+        return mentioned_names(text)
+    return imported_names(tree) | loaded_names(tree) | {name for name in mentioned_names(text) if PurePosixPath(name).suffix in DATA_SUFFIXES}
 
 
 def is_helper(path: str) -> bool:
@@ -155,11 +163,7 @@ def is_helper(path: str) -> bool:
     return name.startswith("test_") or "validate" in name
 
 
-def imported_names(text: str) -> set[str]:
-    try:
-        tree = ast.parse(text)
-    except (SyntaxError, ValueError):
-        return set(IDENTIFIER_TOKEN.findall(text))
+def imported_names(tree: ast.AST) -> set[str]:
     names: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -168,6 +172,26 @@ def imported_names(text: str) -> set[str]:
             names.update((node.module or "").split("."))
             names.update(alias.name for alias in node.names)
     return names
+
+
+def loaded_names(tree: ast.AST) -> set[str]:
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if is_path_expression(node):
+            for child in ast.walk(node):
+                if isinstance(child, ast.Constant) and isinstance(child.value, str):
+                    names.update(mentioned_names(child.value))
+    return names
+
+
+def is_path_expression(node: ast.AST) -> bool:
+    if isinstance(node, ast.BinOp):
+        return isinstance(node.op, ast.Div)
+    if not isinstance(node, ast.Call):
+        return False
+    function = node.func
+    name = function.attr if isinstance(function, ast.Attribute) else getattr(function, "id", "")
+    return name in PATH_CALLS
 
 
 def mentioned_names(text: str) -> set[str]:

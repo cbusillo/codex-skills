@@ -18,6 +18,7 @@ import select_validation_tests as selector
 
 HELPERS = [
     "scripts/validate_words.py",
+    "skills/a/scripts/test_hook.py",
     "skills/a/scripts/test_tool.py",
     "skills/b/scripts/test_other.py",
 ]
@@ -37,6 +38,10 @@ class SelectionTests(unittest.TestCase):
         self.write("skills/a/scripts/shared.py", "VALUE = 1\n")
         self.write("skills/a/scripts/tool.py", "import shared\n")
         self.write("skills/a/scripts/test_tool.py", "TOOL = 'tool.py'\n")
+        self.write("skills/a/scripts/run-me.py", "print('run')\n")
+        self.write("skills/a/scripts/hook.py", "from pathlib import Path\nHELPER = Path('skills/a/scripts/run-me.py')\nprint('see notes.py')\n")
+        self.write("skills/a/scripts/test_hook.py", "import hook\n")
+        self.write("skills/a/scripts/notes.py", "print('notes')\n")
         self.write("skills/a/SKILL.md", "skill\n")
         self.write("skills/b/scripts/test_other.py", "print('other')\n")
         self.commit()
@@ -98,7 +103,10 @@ class SelectionTests(unittest.TestCase):
         self.assertIsNone(self.selection(self.pull_request_checkout()).helpers)
 
     def test_validation_control_change_runs_every_helper(self) -> None:
-        for path in (".github/workflows/validate.yml", *selector.VALIDATION_CONTROL_FILES):
+        for path in (
+            ".github/workflows/validate.yml", "scripts/validate-skills.sh", "scripts/run-python-helper.sh",
+            "scripts/select_validation_tests.py", "uv.toml", ".python-version",
+        ):
             with self.subTest(path=path):
                 self.assertTrue(selector.requires_every_helper(path, []))
 
@@ -106,6 +114,15 @@ class SelectionTests(unittest.TestCase):
         self.write("skills/a/scripts/shared.py", "VALUE = 2\n")
         selected = self.selection(self.pull_request_checkout()).helpers
         self.assertEqual(selected, ["scripts/validate_words.py", "skills/a/scripts/test_tool.py"])
+
+    def test_script_a_module_loads_by_path_selects_the_module_tests(self) -> None:
+        self.write("skills/a/scripts/run-me.py", "print('changed')\n")
+        selected = self.selection(self.pull_request_checkout()).helpers
+        self.assertEqual(selected, ["scripts/validate_words.py", "skills/a/scripts/test_hook.py"])
+
+    def test_file_a_module_only_names_in_a_message_selects_no_module_tests(self) -> None:
+        self.write("skills/a/scripts/notes.py", "print('changed')\n")
+        self.assertEqual(self.selection(self.pull_request_checkout()).helpers, ["scripts/validate_words.py"])
 
     def test_deleted_module_selects_its_former_callers(self) -> None:
         (self.repo / "skills/a/scripts/tool.py").unlink()
