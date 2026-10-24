@@ -511,8 +511,9 @@ Without `--repo`, each pass watches every non-archived repository of
 covered from its first pass; repeat `--repo` only to narrow a run. Repeat the
 login flags for the run's configured identities. Initial startup
 begins at the current time; `--since` supplies an explicit first watermark for
-a historical catch-up; on an existing state it rewinds each stored watermark
-later than it. Unlisted repository state stays preserved. The host's UTC clock must be correct. Restart with the same state file after a notice or
+a historical catch-up; on an existing state it rewinds each watched
+repository once, only when earlier than its stored watermark. Unlisted
+repository state stays preserved. The host's UTC clock must be correct. Restart with the same state file after a notice or
 deadline. `--once` performs one pass. Only one watcher owns each state file.
 Run it with the harness's built-in background completion notice so its exit
 wakes the Supervisor. During takeover verify the old watcher's recorded process

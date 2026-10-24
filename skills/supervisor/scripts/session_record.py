@@ -25,7 +25,9 @@ TASK_TERMINAL_NOTICE = re.compile(
     r"\A\s*<task-notification>\s*<task-id>([^<>\s]+)</task-id>\s*"
     r"(?:<(tool-use-id|output-file)>[^<]*</\2>\s*)*"
     r"(?:<status>(?:completed|failed|killed|stopped)</status>\s*(?=<summary>|<result>|</task-notification>)"
-    r"|<summary>[^<]*</summary>\s*<event>\[Monitor expired after )"
+    r"|<summary>[^<]*</summary>\s*<event>\[Monitor expired after [0-9hms]+ with (?:no events|[0-9]+ events?) delivered\."
+    r" Re-arm it if you still need the watch(?: — and widen the filter if silence was unexpected)?\.\]</event>"
+    r"\s*</task-notification>)"
 )
 
 

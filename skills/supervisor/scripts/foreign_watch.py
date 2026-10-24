@@ -179,11 +179,15 @@ def load_state(path: Path, repos, initial: str, *, rewind=False) -> dict[str, st
     for value in values.values():
         timestamp(value)
     values = dict(values)
-    for repo in repos:
-        values.setdefault(repo, initial)
-    if rewind:
-        values = {key: min(value, initial, key=timestamp) for key, value in values.items()}
+    cover(values, repos, initial, rewind)
     return values
+
+
+def cover(watermarks, repos, initial: str, rewind: bool) -> None:
+    for repo in repos:
+        watermarks.setdefault(repo, initial)
+        if rewind and timestamp(initial) < timestamp(watermarks[repo]):
+            watermarks[repo] = initial
 
 
 def save_state(path: Path, watermarks, mention_seen=None):
@@ -250,6 +254,7 @@ def main() -> int:
 def watch(args, repos, initial, deadline):
     watermarks = load_state(args.state, [*(repos or []), MENTIONS], initial, rewind=args.since is not None)
     seen = load_mention_seen(args.state)
+    covered = set(repos or [])
     while time.monotonic() < deadline:
         started = utc_now()
         reader = GitHubReader(operation="github.supervisor.foreign_watch", strict_actor=True,
@@ -260,8 +265,10 @@ def watch(args, repos, initial, deadline):
         except READ_ERRORS as error:
             notices, errors, gaps = [], [read_error("installation", error)], []
         else:
-            notices, errors, watermarks = scan(watched, {**dict.fromkeys(watched, initial), **watermarks},
-                                              args.own_login, args.launchplane_login, started, reader)
+            cover(watermarks, [repo for repo in watched if repo not in covered], initial, args.since is not None)
+            covered.update(watched)
+            notices, errors, watermarks = scan(watched, watermarks, args.own_login,
+                                              args.launchplane_login, started, reader)
             mentions, gaps, mention_errors, watermarks, seen = scan_mentions(
                 args, watched, watermarks, seen, args.own_login, started, reader)
             notices, errors = notices + mentions, errors + mention_errors

@@ -205,15 +205,20 @@ class WatchTests(unittest.TestCase):
 
     def test_default_scope_is_the_installations_active_repositories_of_the_owner(self):
         with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / "w.json"
+            foreign_watch.save_state(state, {REPO: STARTED, "director/old": STARTED})
             reader = Mock()
             reader.paged_json.side_effect = feeds([], [comment()], repositories=[
                 {"full_name": REPO, "archived": False}, {"full_name": "director/new", "archived": False},
                 {"full_name": "director/old", "archived": True}, {"full_name": "client/app", "archived": False}])
             output = io.StringIO()
             with patch.object(foreign_watch.sys, "argv", ["foreign_watch.py", "--owner", "director",
-                    "--own-login", "director", "--state", str(Path(directory) / "w.json"), "--since", SINCE, "--once"]), \
+                    "--own-login", "director", "--state", str(state), "--since", SINCE, "--once"]), \
                  patch.object(foreign_watch, "GitHubReader", return_value=reader), redirect_stdout(output):
                 self.assertEqual(foreign_watch.main(), 0)
+            self.assertEqual(json.loads(state.read_text())["watermarks"]["director/old"], STARTED)
+            first_since = reader.paged_json.call_args_list[1].kwargs["params"]["since"]
+            self.assertLess(foreign_watch.timestamp(first_since), foreign_watch.timestamp(SINCE))
             read = {call.args[0] for call in reader.paged_json.call_args_list}
             self.assertEqual(read, {"/installation/repositories", f"repos/{REPO}/issues/comments", f"repos/{REPO}/issues",
                                     "repos/director/new/issues/comments", "repos/director/new/issues"})
