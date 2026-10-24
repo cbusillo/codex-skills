@@ -36,13 +36,8 @@ RECONCILIATION_CLOCK_SKEW_SECONDS = 5
 OPERATION_MARKER_LINE_RE = re.compile(
     rf"(?m)^[ \t]*{re.escape(github_api_core.OPERATION_MARKER_PREFIX)}[0-9a-f]+ -->[ \t]*(?:\r?\n)?"
 )
-UNRENDERED_OR_MENTION_RE = re.compile(
-    r"(?P<unrendered>^ {0,3}(?P<fence>`{3,}|~{3,})[\s\S]*?(?:^ {0,3}(?P=fence)|\Z)"
-    r"|(?<![\\`])(?P<ticks>`+)(?!`)(?:(?!\n[ \t]*\n)[\s\S])*?(?<!`)(?P=ticks)(?!`)"
-    r"|<!--[\s\S]*?(?:-->|\Z))"
-    r"|(?<![\w@/.-])@(?P<mention>[A-Za-z0-9](?:-?[A-Za-z0-9]){0,38}(?:/[A-Za-z0-9_-]+)?)",
-    re.MULTILINE,
-)
+MENTION_RE = re.compile(r"(?<!\w)@(?P<login>[A-Za-z0-9](?:-?[A-Za-z0-9]){0,38}(?:/[A-Za-z0-9_-]+)?)")
+QUIET_MENTION_OPEN, QUIET_MENTION_CLOSE = "<code>", "</code>"
 
 
 class CommentError(Exception):
@@ -60,16 +55,17 @@ class CommentError(Exception):
         self.payload: dict[str, Any] = github_api_core.redact_body(payload or {})
 
 
-def quiet_mentions(body: str, *, notify: frozenset[str] = frozenset()) -> str:
+def _is_quiet_mention(body: str, match: re.Match[str]) -> bool:
+    opening = match.start() - len(QUIET_MENTION_OPEN)
+    return (body[opening:match.start()] == QUIET_MENTION_OPEN
+            and body.startswith(QUIET_MENTION_CLOSE, match.end())
+            and (opening == 0 or body[opening - 1] != "\\"))
+
+
+def live_mentions(body: str, *, notify: frozenset[str] = frozenset()) -> list[str]:
     notified = {login.casefold() for login in notify}
-
-    def quiet(match: re.Match[str]) -> str:
-        login = match["mention"]
-        if login is None or login.casefold() in notified:
-            return match[0]
-        return f"<code>@{login}</code>"
-
-    return UNRENDERED_OR_MENTION_RE.sub(quiet, body)
+    return [f"@{match['login']}" for match in MENTION_RE.finditer(body)
+            if match["login"].casefold() not in notified and not _is_quiet_mention(body, match)]
 
 
 def effective_expected_actor(expected_actor: Optional[str]) -> Optional[str]:
@@ -1108,15 +1104,13 @@ def comment(
         if question_id.QUESTION_HEADING.match(body):
             operation = operation or f"github.comment.{kind}"
             repo = resolve_repo(repo, gh_cmd=gh_cmd, operation=operation)
-            quiet_body = quiet_mentions(body, notify=frozenset({repo.split("/")[0]}))
-            if quiet_body != body and github_identity.acts_as_own_user(repo):
+            if mentions := live_mentions(body, notify=frozenset({repo.split("/")[0]})):
                 raise _local_error(
-                    "A personal-identity question must not notify the people it names; "
-                    "write each @login in backticks before exact-text approval, then post that text",
+                    f"A question must not notify the people it names ({', '.join(mentions)}); "
+                    "write each as <code>@login</code> or drop the @, then post that text",
                     operation=operation, cause="validation_error",
                     expected_actor=effective_expected_actor(expected_actor), failed_step="input_validation",
                 )
-            body = quiet_body
         payload = _comment_impl(
             kind,
             number,
