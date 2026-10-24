@@ -419,17 +419,14 @@ including non-dim text, establishes neither its author nor approval.
    approval levels (such as production data, credentials, recovery or Client
    acceptance), and truly independent work where parallel wall-clock time
    matters.
-   The brief says what the session may do, where it stops, and where it asks.
-   A fix or diagnosis brief also asks which invariant should have prevented
+   The brief writes no stop lines of its own: limits come only from DIRECTION.md,
+   the brief rules, and Director decisions quoted with their links. A fix or diagnosis brief also asks which invariant should have prevented
    the failure (add it as a test), why it went unnoticed (reuse existing
    monitors), what the fix could block on global paths such as the train,
    deploys or recovery, and whether a stuck condition underneath keeps
    producing symptoms.
    Never widen a brief after launch. Write it from the decision record,
-   quoting the Director's words, never from a PR's wording. Before issuing
-   either a worker or milestone-lead brief, check every restriction against
-   current overall and repository direction, the decision it cites, and any
-   later recorded decisions.
+   quoting the Director's words, never from a PR's wording.
    Attribute Director holds to their source; write Supervisor preferences as
    preferences, not prohibitions or reasons to request a grant, under
    [task scope](../references/execution-scope.md)

@@ -51,9 +51,10 @@ changes on yes.
 
 ## Decisions, Holds, And Work State
 
-- Record a `Director decision:` with the Director's words, the date and where
-  they were said, and a link to the question it answers when one exists. Omit clock time;
-  the GitHub comment's timestamp records when the record was posted.
+- Record a `Director decision:` as the link to the question it answers, when
+  one exists, the date and where it was said, and the Director's exact words,
+  with nothing after the quote and no clock time. Cite a decision by quoting
+  it with its link, never by its Q ID alone.
 - When a decision belongs to the Director, ask a direct question that says what
   is being decided, your recommendation, and what each choice changes. Separate
   what the Director must do by hand from what you will do after the answer.
