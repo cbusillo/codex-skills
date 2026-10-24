@@ -2895,7 +2895,7 @@ def literal_targets(records: list[dict], session: str, *, directory: Path | None
             unclassified = opaque
             opaque = opaque and (
                 claim_related_here
-                or (claim_may_be_stored and "load" in names)
+                or claim_may_be_stored
                 or (sources.interactive_opaque and claim_may_be_interactive)
             )
             for source, ended in zip(sources.commands, source_ended, strict=True):

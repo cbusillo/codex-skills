@@ -72,17 +72,28 @@ conditional except `forEach(text)`. Function literals cannot enter data directly
 Only numeric `let` counters may be incremented. Explicit property writes,
 mutating method names and loop assignment targets stay conditional. Literal
 arrays used to decode targets remain immutable. Prototype/constructor access, capability aliases, unknown calls,
-named functions, executable options, computed callees, regex/division syntax,
+named functions, executable options, computed callees, division syntax,
 identifier escapes and unsupported syntax keep coverage conditional. A parse
 error alone never proves nonexecution. The reader assumes native results,
 `load` values and tool metadata obey the harness's serializable-data contract;
-the existing stored-claim check still covers later `load` cells. Use direct
+after claim-related code may have stored data, every later opaque cell stays
+conditional because hidden or computed access cannot prove it ignored that data.
+Keep subsequent diagnostics bounded or use direct literal shell/output calls;
+keeping `store` separate from claim-related code also avoids that uncertainty.
+Complete output alone does not resolve older opaque evidence; use the existing
+Director-decision route when native evidence cannot establish coverage. Use direct
 literal shell calls and `text(result)` outside this subset. Known shell calls
 and their argument objects come from syntax-tree locations, including recovered
 nodes in unbounded cells. Any code-mode cell outside the bounded subset retains
 pending interactive claim uncertainty, including aliases, computed constructors
 and escaped shorthand keys. Every decoded target remains subject to release
-verification even when the surrounding cell is conditional.
+verification even when the surrounding cell is conditional. A direct expression-body
+predicate in a checked inline data callback may call a literal regex's `test`
+with one checked data argument and no gap before `.test`. Its pattern contains only letters, digits,
+underscore, space, dot, pipe or hyphen, and its flags are empty or `i`.
+Regex values, aliases, constructors, other methods and other syntax remain
+conditional. The serializable-data and unchanged-builtins assumption also
+covers `RegExp.prototype.exec`; no recorded regex is executed by the reader.
 
 `interactive_uncertain` means a prior invocation could have left claim input in
 an interactive process and this later cell is outside that subset. Complete
@@ -91,7 +102,8 @@ session ID and subsequent input/output on the owning issue; keep coverage
 conditional when that evidence cannot establish it. The existing Director-decision
 route applies to irrecoverable older evidence. For new cells, use the supported
 direct literal shell calls and `text(result)`; use `.includes` for plain string
-filters. Literal string replacement arguments are also supported, including
+filters; the narrow literal-regex predicate above is also supported. Literal
+string replacement arguments are also supported, including
 bounded output filenames derived from literal command lists or object entries.
 
 Process IDs alone do not establish an input channel. Starting with stable Codex

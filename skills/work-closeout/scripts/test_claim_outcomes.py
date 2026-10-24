@@ -544,6 +544,136 @@ class RecordedClaimOutcomeTests(unittest.TestCase):
                     {"targets": set(), "unresolved_invocations": []},
                 )
 
+    def test_metadata_regex_filters_preserve_native_claim_targets(self) -> None:
+        filters = (
+            'text(ALL_TOOLS.filter(x=>/github|skills|launchplane|session|supervisor/.test(x.name+" "+x.description))'
+            ".map(x=>({name:x.name,description:x.description.slice(0,130)})).slice(0,110));",
+            'const found=ALL_TOOLS.filter(x=>/launchplane|dokploy/i.test(x.name+" "+x.description));'
+            "text(found.map(x=>({name:x.name,description:x.description.slice(0,160)})));",
+        )
+        for predicate in filters:
+            for command in (
+                'pwd; rg -n "claim|gh-plan.py" /fixture/MEMORY.md',
+                COMMAND,
+            ):
+                source = f"const r=await tools.exec_command({{cmd:{json.dumps(command)},max_output_tokens:5000}});text(r.output);"
+                with self.subTest(predicate=predicate, command=command):
+                    report = check_claims.history.literal_targets(
+                        invocation(
+                            source + predicate,
+                            json.dumps({"exit_code": 0, "output": ""}),
+                        ),
+                        SESSION,
+                    )
+                    self.assertEqual(
+                        report["targets"],
+                        {("test/a", 5)} if command == COMMAND else set(),
+                    )
+                    self.assertEqual(
+                        {r["reason"] for r in report["unresolved_invocations"]},
+                        {check_claims.history.UNFINISHED_CLAIM}
+                        if command == COMMAND
+                        else set(),
+                    )
+                    if command == COMMAND:
+                        report = check_claims.history.literal_targets(
+                            invocation(source + predicate, {"session_id": 41}), SESSION
+                        )
+                        self.assertEqual(report["targets"], {("test/a", 5)})
+                        self.assertTrue(report["unresolved_invocations"])
+                        self.assertTrue(
+                            all(
+                                r["reason"] == check_claims.history.UNFINISHED_CLAIM
+                                for r in report["unresolved_invocations"]
+                            )
+                        )
+
+    def test_metadata_regex_filters_do_not_break_native_poll_completion(self) -> None:
+        predicate = 'text(ALL_TOOLS.filter(x=>/launchplane|dokploy/i.test(x.name+" "+x.description)));'
+        for version in (None, "0.86.0", "0.164.0-alpha.1", "0.164.0"):
+            with self.subTest(version=version):
+                rows = (
+                    []
+                    if version is None
+                    else [{"type": "session_meta", "payload": {"cli_version": version}}]
+                )
+                rows.extend(
+                    invocation(
+                        f"text(await tools.exec_command({{cmd:{json.dumps(COMMAND)}}}));",
+                        {"session_id": 41},
+                    )
+                )
+                rows.extend(
+                    {"payload": {**r["payload"], "call_id": "metadata"}}
+                    for r in invocation(predicate)
+                )
+                poll = 'text(await tools.write_stdin({session_id:41,chars:""}));'
+                rows.extend(
+                    {"payload": {**r["payload"], "call_id": "poll"}}
+                    for r in invocation(poll, {"exit_code": 0})
+                )
+                report = check_claims.history.literal_targets(rows, SESSION)
+                self.assertEqual(report["targets"], {("test/a", 5)})
+                self.assertEqual(report["unresolved_invocations"], [])
+
+    def test_regex_values_and_executable_shapes_remain_conditional(self) -> None:
+        expressions = [
+            "const r=/x/;text(ALL_TOOLS.filter(x=>r.test(x.name)));",
+            'text(ALL_TOOLS.filter(x=>new RegExp("x").test(x.name)));',
+            'text(ALL_TOOLS.filter(x=>RegExp("x").test(x.name)));',
+            "text(ALL_TOOLS.filter(/x/.test));",
+            "text(ALL_TOOLS.filter(x=>{return /x/.test(x.name);}));",
+            "const r={value:/x/};",
+            "const r=[/x/];",
+            'text(/x/.test("x"));',
+            'const a=1;a\n/tools.exec_command({cmd:"uv run gh-plan.py claim 5"})/i.test(a);',
+            'text(ALL_TOOLS.filter(x=>/x//**/.test(x.name)));',
+            'text(ALL_TOOLS.filter(x=>/x/ /*comment*/ .test(x.name)));',
+        ]
+        for flags in ("g", "y", "m", "s", "u", "v", "d", "ii"):
+            expressions.append(f"text(ALL_TOOLS.filter(x=>/x/{flags}.test(x.name)));")
+        for operation in (
+            "exec(x.name)",
+            "compile(x.name)",
+            "test()",
+            "test(x.name,x.description)",
+            "test.call(x.name)",
+            '["test"](x.name)',
+            "test?.(x.name)",
+            "lastIndex",
+        ):
+            separator = "" if operation.startswith("[") else "."
+            expressions.append(f"text(ALL_TOOLS.filter(x=>/x/{separator}{operation}));")
+        for pattern in (
+            r"\d",
+            '"',
+            "'",
+            "`",
+            "[/]",
+            "(?i:x)",
+            "#!",
+            "<!--",
+            "-->",
+            "*",
+        ):
+            expressions.append(f"text(ALL_TOOLS.filter(x=>/{pattern}/.test(x.name)));")
+        for method in ("split", "replace", "match"):
+            expressions.append(f"text(ALL_TOOLS.map(x=>x.name.{method}(/x/)));")
+        expressions.append(
+            "text(ALL_TOOLS.filter(x=>/'/.test(x.name)));const v=load(\"claim\");text(v);/'/;"
+        )
+        for source in expressions:
+            with self.subTest(source=source):
+                self.assertFalse(check_claims.history.claim_javascript.analyse(source)[0])
+                prefix = (
+                    f"text(await tools.exec_command({{cmd:{json.dumps(COMMAND)}}}));"
+                )
+                report = check_claims.history.literal_targets(
+                    invocation(prefix + source), SESSION
+                )
+                self.assertIn(("test/a", 5), report["targets"])
+                self.assertTrue(report["unresolved_invocations"])
+
     def test_mutation_and_shadowing_cannot_hide_execution(self) -> None:
         sources = [
             'for(const cmd of ["x"]){function build(cmd){return cmd.includes("return eval");} function invoke(cmd){return cmd.includes("tools.exec_command({cmd:\'uv run gh-plan.py claim 5\'})");} invoke({includes:build({includes:build({includes:[].filter.constructor})})});}',
