@@ -64,6 +64,9 @@ changes on yes.
   Write the heading ID as `Q300.` or `Q300 —` so it is distinct from question
   content such as `Q4 budget`. A Q ID mentioned only in the context is not the
   question's own ID.
+  A question names people without notifying them: the same helpers wrap each
+  `@login` in code formatting, except the repository owner's, so a quoted draft
+  reply pings no one until its approved text is posted on its own.
   The helpers allocate only after GitHub confirms the comment was saved, then
   add the ID through an exact-comment edit. The locked counter stores the
   comment URL and its assignment together. Failed creation consumes no number;

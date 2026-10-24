@@ -36,6 +36,13 @@ RECONCILIATION_CLOCK_SKEW_SECONDS = 5
 OPERATION_MARKER_LINE_RE = re.compile(
     rf"(?m)^[ \t]*{re.escape(github_api_core.OPERATION_MARKER_PREFIX)}[0-9a-f]+ -->[ \t]*(?:\r?\n)?"
 )
+UNRENDERED_OR_MENTION_RE = re.compile(
+    r"(?P<unrendered>^ {0,3}(?P<fence>`{3,}|~{3,})[\s\S]*?(?:^ {0,3}(?P=fence)|\Z)"
+    r"|(?P<ticks>`+)(?:(?!\n[ \t]*\n)[\s\S])*?(?P=ticks)"
+    r"|<!--[\s\S]*?(?:-->|\Z))"
+    r"|(?<![\w@`/.-])@(?P<mention>[A-Za-z0-9](?:-?[A-Za-z0-9]){0,38}(?:/[A-Za-z0-9_-]+)?)",
+    re.MULTILINE,
+)
 
 
 class CommentError(Exception):
@@ -51,6 +58,18 @@ class CommentError(Exception):
         self.failure = failure
         self.api_result: Optional[dict[str, Any]] = github_api_core.redact_body(api_result) if api_result is not None else None
         self.payload: dict[str, Any] = github_api_core.redact_body(payload or {})
+
+
+def quiet_mentions(body: str, *, notify: frozenset[str] = frozenset()) -> str:
+    notified = {login.casefold() for login in notify}
+
+    def quiet(match: re.Match[str]) -> str:
+        login = match["mention"]
+        if login is None or login.split("/")[0].casefold() in notified:
+            return match[0]
+        return f"`@{login}`"
+
+    return UNRENDERED_OR_MENTION_RE.sub(quiet, body)
 
 
 def effective_expected_actor(expected_actor: Optional[str]) -> Optional[str]:
@@ -1086,6 +1105,9 @@ def comment(
 ) -> dict[str, Any]:
     collected_retry_summaries = retry_summaries if retry_summaries is not None else []
     try:
+        if question_id.QUESTION_HEADING.match(body):
+            repo = resolve_repo(repo, gh_cmd=gh_cmd, operation=operation or f"github.comment.{kind}")
+            body = quiet_mentions(body, notify=frozenset({repo.split("/")[0]}))
         payload = _comment_impl(
             kind,
             number,

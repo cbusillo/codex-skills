@@ -3659,6 +3659,11 @@ def cmd_wait(args: argparse.Namespace) -> None:
         raise PlanError(str(exc)) from exc
 
 
+def wait_summary(wait: dict[str, Any]) -> str:
+    lines = [f"Waiting for {entry['waiting_for']}. This ends when {entry['ends_when']}." for entry in wait["waits"]]
+    return github_comment_core.quiet_mentions("\n\n".join(lines) or "Nothing here is waiting on a person or event.")
+
+
 def wait_once(args: argparse.Namespace) -> None:
     """Review a legacy record once, or explicitly maintain a structured wait."""
     repo = default_repo(args.repo)
@@ -3714,7 +3719,7 @@ def wait_once(args: argparse.Namespace) -> None:
     if latest_issue["claim_wait"] != current or latest_issue.get("body") != issue.get("body") or latest_comments != comments:
         raise PlanError("Wait evidence changed before the review write; read the new record and discussion")
     result = github_comment_core.comment(kind, issue["number"],
-        "Structured wait review\n\n" + github_plan_wait.marker(wait), repo=issue["repo"],
+        wait_summary(wait) + "\n\n" + github_plan_wait.marker(wait), repo=issue["repo"],
         gh_cmd=gh_cmd, expected_actor=expected_actor, operation=CURRENT_OPERATION, dedupe_body=True)
     try:
         observed, _, _, _ = claim_snapshot(args.issue, repo, allow_closed=True)

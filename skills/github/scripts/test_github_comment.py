@@ -1250,6 +1250,39 @@ def test_numbered_questions_are_unchanged_without_counter_access() -> None:
             with_call_stub(callback, run)
 
 
+def test_question_quotes_people_without_notifying_anyone_but_the_owner() -> None:
+    draft = ("Owner question: Q15. Post this?\n\n> @mike-b Fixed, thanks @Owner and @org/team.\n\n"
+             "Mail a@b.com, `@coded` and\n```\n@fenced\n```\n<!-- @hidden -->")
+    posted = []
+
+    def callback(method: str, endpoint: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
+        if endpoint == "/user":
+            return success({"login": "fixture-automation"})
+        if method == "GET":
+            return success([])
+        posted.append(github_comment._canonical_comment_body(body["body"]))
+        return success(comment_body(1001, body=body["body"]))
+
+    with_call_stub(callback, lambda _calls: github_comment.comment("issue", 42, draft, repo="owner/repo", gh_cmd="fake-gh"))
+    assert posted == [draft.replace("@mike-b", "`@mike-b`").replace("@org/team", "`@org/team`")]
+
+
+def test_ordinary_comment_keeps_its_mentions() -> None:
+    reply = "@mike-b Fixed, thanks."
+    posted = []
+
+    def callback(method: str, endpoint: str, body: Any, **_kwargs: Any) -> github_api.ApiResult:
+        if endpoint == "/user":
+            return success({"login": "fixture-automation"})
+        if method == "GET":
+            return success([])
+        posted.append(github_comment._canonical_comment_body(body["body"]))
+        return success(comment_body(1001, body=body["body"]))
+
+    with_call_stub(callback, lambda _calls: github_comment.comment("issue", 42, reply, repo="owner/repo", gh_cmd="fake-gh"))
+    assert posted == [reply]
+
+
 def test_personal_question_uses_chat_id_before_exact_text_approval() -> None:
     with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"CODE_HOME": directory}):
         path = question_counter.counter_path()
@@ -1287,6 +1320,8 @@ TESTS: list[Callable[[], None]] = [
     test_concurrent_numbering_reconciles_the_same_saved_body,
     test_question_numbering_follows_confirmed_write_and_repairs_same_assignment,
     test_numbered_questions_are_unchanged_without_counter_access,
+    test_question_quotes_people_without_notifying_anyone_but_the_owner,
+    test_ordinary_comment_keeps_its_mentions,
     test_personal_question_uses_chat_id_before_exact_text_approval,
     test_recent_reconciliation_includes_clock_skew_boundary_and_paginates,
     test_append_filters_old_pages_but_dedupe_and_edit_last_keep_full_history,
