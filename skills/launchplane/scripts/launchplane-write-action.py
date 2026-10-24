@@ -7555,6 +7555,14 @@ def _is_train_target(value: object, repository: object, base_branch: object) -> 
     )
 
 
+TEMPLATE_REPOSITORY_SETTINGS = ("provider_delivery_protection_expectation", "config_authority_events_enabled")
+
+
+def _uses_only_github_app(github_token: dict[str, Any]) -> bool:
+    other_sources = {name: value for name, value in github_token.items() if name != "github_app"}
+    return isinstance(github_token.get("github_app"), dict) and not any(other_sources.values())
+
+
 def enrollment_proposal_body(
     *, args: argparse.Namespace, request: dict[str, object], provider_payload: dict[str, Any]
 ) -> dict[str, object]:
@@ -7567,8 +7575,10 @@ def enrollment_proposal_body(
         raise ValueError("template_not_enrolled")
     candidate = copy.deepcopy(templates[0])
     github_token = _require_dict(candidate.get("github_token"))
-    if set(github_token) != {"github_app"} or not isinstance(github_token["github_app"], dict):
+    if not _uses_only_github_app(github_token):
         raise ValueError("template_not_github_app")
+    for template_repository_setting in TEMPLATE_REPOSITORY_SETTINGS:
+        candidate.pop(template_repository_setting, None)
     candidate["repository"] = request["repository"]
     github_token["github_app"]["repository_id"] = request["repository_id"]
     targets.append(candidate)

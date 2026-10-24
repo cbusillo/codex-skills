@@ -12112,9 +12112,12 @@ def _enrollment_policy_read() -> dict[str, object]:
     targets = cast(dict[str, Any], read_payload["record"])["policy"]["policies"]
     for repository_id, target in enumerate(targets, start=101):
         target["github_token"] = {
-            "github_app": {"app_id": 7, "repository_id": repository_id, "private_key_context": "private-key-context"}
+            "env_var": "",
+            "github_app": {"app_id": 7, "repository_id": repository_id, "private_key_context": "private-key-context"},
         }
         target["scheduler"] = {"enabled": True, "runner_mode": "controller", "mutate": True}
+        target["config_authority_events_enabled"] = True
+        target["provider_delivery_protection_expectation"] = {"required_status_checks": [{"context": "alpha-ci", "app_id": 15368}]}
     return read_payload
 
 
@@ -12140,6 +12143,7 @@ def test_enrollment_proposal_adds_a_copy_of_the_template_for_the_new_repository(
     targets = cast(dict[str, Any], posted[0]["request"])["record"]["policy"]["policies"]
     assert targets[:2] == active_targets
     expected = copy.deepcopy(active_targets[0])
+    del expected["config_authority_events_enabled"], expected["provider_delivery_protection_expectation"]
     expected["repository"] = "owner/new"
     expected["github_token"]["github_app"]["repository_id"] = 999
     assert targets[2] == expected
@@ -12149,7 +12153,7 @@ def test_enrollment_proposal_adds_a_copy_of_the_template_for_the_new_repository(
 
 def test_enrollment_proposal_refuses_enrolled_repository_and_unusable_template_without_posting() -> None:
     legacy_token = _enrollment_policy_read()
-    cast(dict[str, Any], legacy_token["record"])["policy"]["policies"][0]["github_token"] = {"env_var": "PRIVATE_GITHUB_TOKEN"}
+    cast(dict[str, Any], legacy_token["record"])["policy"]["policies"][0]["github_token"]["env_var"] = "PRIVATE_GITHUB_TOKEN"
     for repository, like, read_payload, code in (
         ("owner/beta", "owner/alpha", _enrollment_policy_read(), "repository_already_enrolled"),
         ("owner/new", "owner/missing", _enrollment_policy_read(), "template_not_enrolled"),

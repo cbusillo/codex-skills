@@ -2442,14 +2442,17 @@ unenrolled repository (`repository_not_enrolled`) or a change that alters nothin
 `merge-train-enrollment-propose --repo OWNER/REPO --repository-id ID --like
 OWNER/ENROLLED [--base-branch main] --reason TEXT --source-event-id ID` uses the
 same read, envelope, output and replay rules. It appends a copy of the `--like`
-repository's target for that base branch, changing only `repository` and
+repository's target for that base branch with the new `repository` and
 `github_token.github_app.repository_id`, so the new target inherits that
 target's labels, enqueue authority, merge identity, App credential binding and
-scheduler settings for the Director to review. It stops before any write when
-the repository branch is already enrolled (`repository_already_enrolled`), the
-template branch is not (`template_not_enrolled`), or the template does not use
-only a GitHub App credential (`template_not_github_app`). The service's review
-still decides whether the App installation and required checks support it.
+scheduler settings for the Director to review. It leaves out the template's
+own `provider_delivery_protection_expectation` and
+`config_authority_events_enabled`, which describe the template repository. It
+stops before any write when the repository branch is already enrolled
+(`repository_already_enrolled`), the template branch is not
+(`template_not_enrolled`), or the template uses any credential source besides
+a GitHub App (`template_not_github_app`). The service's review still decides
+whether the App installation and required checks support it.
 
 On a timeout, HTTP 5xx or response-verification failure, retain the same envelope and
 source event for reconciliation/replay. Never substitute a new identity or a new
