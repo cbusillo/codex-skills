@@ -543,6 +543,7 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
     policies = {}
     director = director.casefold() if director else None
     repos = [repo.casefold() for repo in repos]
+    bots = {name for name in (github_identity.automation_login(), *github_identity.configured_bot_logins()) if name}
 
     def fetch(args):
         nonlocal reads, budget
@@ -651,7 +652,6 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
     unread_registered = set()
     related_comments = []
     normalized_queue: list[dict] = []
-    bots: set[str] = set()
     queue_director = director
     if question_queue:
         question_queue = question_queue.casefold()
@@ -661,7 +661,6 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
             from skills.supervisor.scripts import question_delivery
 
             normalized_queue = [queue_comment(c) for c in queue]
-            bots = set(github_identity.configured_bot_logins())
             queue_director = director or queue_repo.split("/")[0]
             registered = sorted({r["question_url"] for r in question_delivery.records(
                 normalized_queue, bots | {queue_director})})
@@ -880,7 +879,7 @@ def collect(repos: list[str], *, reader, now: dt.datetime, age_hours: float = 2,
         except (ValueError, TypeError, KeyError, AttributeError) as error:
             gaps.append({"source": question_queue, "reason": "question_delivery_contract_error", "error_type": type(error).__name__})
     result = report(records, now=now, age_hours=age_hours,
-                    trusted=set(github_identity.configured_bot_logins()),
+                    trusted=bots,
                     owners={director} if director else {r.split('/')[0] for r in repos} | ({owner} if owner else set()),
                     gaps=gaps, director_names=director_names, delivery_view=delivery_view,
                     related_comments=related_comments, registers=registers,

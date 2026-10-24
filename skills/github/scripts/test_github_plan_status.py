@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import unittest
 
+import github_direction_next
 import github_plan_status
 from github_plan_status import waits
 import github_plan_wait
@@ -87,6 +88,19 @@ class DerivedStatusTests(unittest.TestCase):
                 self.assertFalse(result["labels_writable"])
                 self.assertNotIn("active", result["labels"])
                 self.assertEqual(issue, before)
+
+    def test_reopen_supersedes_done_but_not_a_never_closed_done_or_stale_hold(self) -> None:
+        names = github_plan_status.DEFAULT_STATUS_LABELS
+        for hold, reason, status in (("done", "reopened", "active"), ("done", None, "hold"),
+                                     ("stale", "reopened", "hold")):
+            with self.subTest(hold=hold, reason=reason):
+                issue = {**self.issue, "state_reason": reason, "labels": [names["plan"], names[hold]]}
+                derived = github_plan_status.derive(issue, {"blocked_by": []}, self.clear)
+                self.assertEqual(derived["status"], status)
+                changes = github_plan_status.label_changes(issue["labels"], names, derived)
+                self.assertEqual(changes["remove"], [names["done"]] if status == "active" else [])
+                excluded = github_direction_next.next_static_exclusion(issue, config={"labels": names}, focus=None)
+                self.assertEqual(excluded is None, status == "active")
 
     def test_package_prohibits_label_changes_for_unread_waits_and_scope_holds(self) -> None:
         names = github_plan_status.DEFAULT_STATUS_LABELS
