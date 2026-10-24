@@ -3,8 +3,6 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""Launchplane says Client, Director standing or no Client only from complete, matching evidence."""
-
 import copy
 import importlib
 from pathlib import Path
@@ -90,7 +88,6 @@ class AcceptanceTests(unittest.TestCase):
         raise AssertionError(kwargs["path"])
 
     def pin_into_client_lane(self):
-        """Map a Client's Odoo product whose prod lane pins REPO; return its profile and sources."""
         client_product, client_repository = "client-runtime", "example/client"
         self.mapping["mapping"]["repositories"].append(
             {"repository": client_repository, "classification": "managed_runtime",

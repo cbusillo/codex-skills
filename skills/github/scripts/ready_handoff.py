@@ -110,7 +110,6 @@ def acceptance_reader():
 
 
 def client_release(repository):
-    """Launchplane's answer for the repository: Client, Director standing, no Client or unknown."""
     return acceptance_reader().read_client_release(repository)
 
 
@@ -142,7 +141,6 @@ def _is_dependabot_pr(pr) -> bool:
 
 
 def client_test_notes_error(pr) -> str:
-    """Return the error the merge train gives notes on a repository with a Client."""
     has_review_label = any(
         label["name"].casefold() == "owner-review" for label in pr.get("labels") or []
     )
@@ -224,8 +222,6 @@ def _handoff_class_error(pr, *, waiting_for_client=False) -> str:
 
 
 class ClientHandoff(NamedTuple):
-    """What the merge train needs from the Client before this head can land."""
-
     error: str = ""
     acceptance_required: bool = False
     unknown_reason: str = ""
@@ -252,7 +248,6 @@ def explicit_client_hold(pr, check_runs) -> bool:
 
 
 def _client_path(pr, *, held, waiting_for_client) -> ClientHandoff:
-    """The handoff for a repository with a Client: the train's notes rules plus a named class."""
     error = client_test_notes_error(pr) or _handoff_class_error(pr, waiting_for_client=waiting_for_client)
     body = pr.get("body") or ""
     if held or not test_notes_sections(body):
@@ -262,12 +257,6 @@ def _client_path(pr, *, held, waiting_for_client) -> ClientHandoff:
 
 
 def client_handoff(pr, check_runs, *, repository, waiting_for_client=False) -> ClientHandoff:
-    """The one Client rule for gh-pr.py ready and Supervisor auto-enqueue.
-
-    Client acceptance is required only when Launchplane maps the repository to
-    an active product whose Client is not the Director, or the PR carries an
-    explicit hold. A read that cannot settle the mapping keeps the Client path.
-    """
     held = explicit_client_hold(pr, check_runs)
     strict = _client_path(pr, held=held, waiting_for_client=waiting_for_client)
     if held or waiting_for_client or strict == ClientHandoff():

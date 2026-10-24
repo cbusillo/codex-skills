@@ -3,8 +3,6 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""gh-pr.py ready and Supervisor auto-enqueue give the same Client verdict from Launchplane's mapping."""
-
 import argparse
 import copy
 import importlib
@@ -115,7 +113,6 @@ class ClientRuleTests(unittest.TestCase):
         self.addCleanup(checks.stop)
 
     def verdict(self, body, labels=()):
-        """Return (ready refusal or "", whether auto-enqueue qualifies) and assert they agree."""
         self.reader.pr = {**copy.deepcopy(PR), "body": body, "labels": [{"name": name} for name in labels]}
         self.reader.pr_reads = 0
         try:
@@ -164,7 +161,6 @@ class ClientRuleTests(unittest.TestCase):
         self.assertTrue(self.verdict(CLIENT_NOTES, labels=("owner-review",)))
         self.reader.checks.append({"id": 2, "name": "launchplane/owner-review", "status": "in_progress", "conclusion": None})
         self.assertTrue(self.verdict(CLIENT_NOTES))
-        # The train still rejects missing notes on a product with a Client.
         self.reader.checks.pop()
         self.assertIn("Client test notes are missing", self.verdict("No notes section."))
 
