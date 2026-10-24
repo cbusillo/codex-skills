@@ -2677,7 +2677,9 @@ def claim_once(args: argparse.Namespace) -> None:
         inventory = phase["inventory"]
         ended_owners = ended_ownership(current_comments, inventory)
         branches = set(inventory["local_branches"]) | set(inventory["remote_branches"]) | {t["branch"] for t in inventory["worktrees"]}
-        if any(entry["branch"] == claim["branch"] and entry["branch"] in branches and entry["claim_id"] != args.resume_from for entry in ended_owners):
+        predecessors = github_plan_claim.resumed_predecessor_claim_ids(current_comments, args.resume_from, claim["branch"])
+        if any(entry["branch"] == claim["branch"] and entry["branch"] in branches
+               and entry["claim_id"] != args.resume_from and entry["claim_id"] not in predecessors for entry in ended_owners):
             raise PlanError("Ended ownership requires a new task branch; preserve the retained source branch and worktree")
         conflicts, owned = github_plan_claim.discussion_evidence(
             current_status, current_comments, claim, resume_from=args.resume_from,

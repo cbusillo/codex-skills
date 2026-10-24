@@ -613,6 +613,34 @@ def ended_ownership(comments: list[dict[str, Any]], inventory: dict[str, Any],
     return ended
 
 
+def resumed_predecessor_claim_ids(comments: list[dict[str, Any]], source_id: int | None, branch: str) -> set[int]:
+    from github_plan_release import effective_comments, stamp
+
+    if source_id is None:
+        return set()
+    comments = effective_comments(comments)
+    released = exact_released_sources(comments)
+    source = next((item for item in released if comments[item[0]]["id"] == source_id), None)
+    if source is None:
+        return set()
+    source_index, source_record, _release_index = source
+    if source_record["branch"] != branch:
+        return set()
+    author = comments[source_index]["user"]["login"]
+    try:
+        started = min(stamp(comments[source_index].get("created_at")), stamp(source_record["claimed_at"]))
+    except (ValueError, TypeError):
+        return set()
+    return {
+        comments[index]["id"]
+        for index, record, release_index in released
+        if index < source_index and release_index < source_index
+        and all(record[key] == source_record[key] for key in ("worker", "session", "branch"))
+        and comments[index]["user"]["login"] == author
+        and stamp(comments[release_index].get("created_at")) < started
+    }
+
+
 def lease_takeovers(ended: list[dict[str, Any]]) -> str:
     return "".join(f"Lease takeover: claim {entry['claim_id']} (session {entry['session']}) had no recorded activity "
                    f"for {recorded_lease_minutes(entry['session']):g} minutes.\n\n"

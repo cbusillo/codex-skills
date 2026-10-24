@@ -1635,6 +1635,78 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(output["claim"]["branch"], source["branch"])
         self.assertNotIn("retained_handoff", output["claim"])
 
+    def sequential_no_pr_resume_fixture(self) -> dict[str, str]:
+        source = self.no_pr_resume_fixture()
+        prior = {**source, "claimed_at": "2026-09-30T00:00:00Z"}
+        self.comments[:0] = [
+            {"id": 88, "body": CLAIM.marker(prior), "user": {"login": TEST_BOT},
+             "created_at": prior["claimed_at"]},
+            {"id": 89, "body": "Released claim 88", "user": {"login": TEST_BOT},
+             "created_at": "2026-09-30T01:00:00Z"},
+        ]
+        self.args.branch = source["branch"]
+        return source
+
+    def test_no_pr_resume_preserves_sequential_released_claims_on_its_branch(self) -> None:
+        source = self.sequential_no_pr_resume_fixture()
+        self.run_claim()
+        result = self.emitted.call_args.args[0]
+        self.assertIn("metadata_readback", result["completed_steps"])
+        self.assertEqual(result["claim"]["branch"], source["branch"])
+        self.assertNotIn("retained_handoff", result["claim"])
+
+    def test_no_pr_resume_preserves_unqualified_predecessor_refusals(self) -> None:
+        for change in ("session", "worker", "author", "late_release", "equal_release", "lease_only",
+                       "later_claim", "selected_unreleased", "selected_legacy", "missing_timestamp", "late_edit"):
+            with self.subTest(change=change):
+                self.setUp()
+                source = self.sequential_no_pr_resume_fixture()
+                prior = CLAIM.records(self.comments[0]["body"])[0]
+                if change in {"session", "worker"}:
+                    self.comments[0]["body"] = CLAIM.marker({**prior, change: "different-history"})
+                if change == "author":
+                    for comment in self.comments[:2]:
+                        comment["user"] = {"login": "different-author"}
+                if change == "late_release":
+                    self.comments[1]["created_at"] = "2026-10-01T00:00:01Z"
+                if change == "equal_release":
+                    self.comments[1]["created_at"] = source["claimed_at"]
+                if change == "lease_only":
+                    self.comments.pop(1)
+                if change == "later_claim":
+                    later = {**source, "claimed_at": "2026-10-03T00:00:00Z"}
+                    self.comments.extend([
+                        {"id": 90, "body": CLAIM.marker(later), "user": {"login": TEST_BOT},
+                         "created_at": later["claimed_at"]},
+                        {"id": 91, "body": "Released claim 90", "user": {"login": TEST_BOT},
+                         "created_at": "2026-10-04T00:00:00Z"},
+                    ])
+                if change == "selected_unreleased":
+                    self.comments.pop()
+                if change == "selected_legacy":
+                    self.comments[-1]["body"] = f"Released by {source['worker']}"
+                if change == "missing_timestamp":
+                    self.comments[1].pop("created_at")
+                if change == "late_edit":
+                    self.comments[0]["updated_at"] = "2026-09-30T02:00:00Z"
+                expired = {source["session"]} if change in {"lease_only", "missing_timestamp", "late_edit"} else set()
+                with patch.object(CLAIM, "expired_lease_sessions", return_value=expired):
+                    with self.assertRaises(PLAN.PlanError):
+                        self.run_claim()
+                self.assert_no_writes()
+
+    def test_no_pr_resume_rechecks_predecessor_release_after_publication(self) -> None:
+        for phase in ("after_post", "after_status"):
+            with self.subTest(phase=phase):
+                self.setUp()
+                self.sequential_no_pr_resume_fixture()
+                def mutate() -> None:
+                    self.comments[1]["created_at"] = "2026-10-01T00:00:01Z"
+                setattr(self, phase, mutate)
+                with self.assertRaises(PLAN.PlanError) as failure:
+                    self.run_claim()
+                self.assertIn("release_own_claim", failure.exception.payload["claim_recovery"])
+
     def test_no_pr_resume_refuses_open_source_work(self):
         for kind in ("source_open", "foreign_author", "unlinked", "foreign_repo"):
             with self.subTest(kind=kind):
