@@ -99,11 +99,17 @@ def captured(command: Any, args: argparse.Namespace) -> dict[str, Any]:
 
 
 def linked_issues(claim_module: Any, repo: str, pull: dict[str, Any]) -> list[tuple[str, int]]:
-    text = (pull.get("title") or "") + "\n" + (pull.get("body") or "")
+    title = pull.get("title") or ""
+    text = title + "\n" + (pull.get("body") or "")
     refs = [(match[1] or match[2] or repo, int(match[3])) for match in re.finditer(
         r"(?:https://github[.]com/([\w.-]+/[\w.-]+)/issues/|([\w.-]+/[\w.-]+)?#)([1-9]\d*)\b", text)]
     return [(target, issue) for target, issue in refs if claim_module.pr_issue_reference(
-        pull, issue, repo=target, local_references=target.casefold() == repo.casefold())]
+        pull, issue, repo=target, local_references=target.casefold() == repo.casefold())
+        or titled_qualified_reference(title, target, issue)]
+
+
+def titled_qualified_reference(title: str, repo: str, number: int) -> bool:
+    return bool(re.search(rf"(?<![\w./-]){re.escape(repo)}#{number}(?!\d)", title, re.IGNORECASE))
 
 
 def source_references(plan: Any, repo: str, number: int, pull: dict[str, Any]) -> tuple[list[tuple[str, int]], list[tuple[str, int]]]:

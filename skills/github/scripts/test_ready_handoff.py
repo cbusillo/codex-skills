@@ -810,6 +810,12 @@ class ReadyTests(unittest.TestCase):
         self.reader.issues[8] = {"number": 8, "state": "open", "body": "", "pull_request": {}}
         self.post()
 
+    def test_qualified_reference_in_the_title_is_a_linked_issue(self):
+        self.link_open_issue()
+        self.reader.pr["body"] = ""
+        self.reader.pr["title"] = f"{REPO}#7: first slice"
+        self.refuse()
+
     def test_unreadable_linked_issue_refuses(self):
         self.reader.pr["body"] = "Refs #7"
         self.assertIn("unavailable", self.refuse())
